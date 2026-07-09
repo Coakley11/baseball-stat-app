@@ -1200,6 +1200,14 @@ def prepare_baseball_workspace(st: Any) -> bool:
             restore_auth_session(ss, st=st)
     except ImportError:
         pass
+    try:
+        from workflow_persist_guard import maybe_authenticated_workflow_cloud_writeback
+
+        maybe_authenticated_workflow_cloud_writeback(st, APP_ID)
+    except ImportError:
+        pass
+    except Exception:
+        pass
     return result
 
 

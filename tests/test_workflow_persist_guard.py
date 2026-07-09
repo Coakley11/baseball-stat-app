@@ -326,8 +326,8 @@ class WorkflowPersistGuardTests(unittest.TestCase):
 
     def test_is_draft_library_mutation_save_reason(self) -> None:
         self.assertTrue(is_draft_library_mutation_save_reason("simulator_league_context_saved"))
-        self.assertTrue(is_draft_library_mutation_save_reason("imported_league_context_saved"))
         self.assertTrue(is_draft_library_mutation_save_reason("draft_archive_saved"))
+        self.assertTrue(is_draft_library_mutation_save_reason("authenticated_migration_writeback"))
         self.assertFalse(is_draft_library_mutation_save_reason("page_change"))
 
     def test_merge_protected_workflow_authoritative_injects_session_archives(self) -> None:

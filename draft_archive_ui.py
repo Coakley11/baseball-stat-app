@@ -370,6 +370,26 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
         f"**readback count:** {int(probe.get('cloud_write_readback_count') or 0)} · "
         f"**readback ok:** {probe.get('cloud_write_readback_ok')}"
     )
+    wb_trace = probe.get("migration_writeback_trace")
+    if probe.get("migration_writeback_attempted") or (
+        isinstance(wb_trace, dict) and wb_trace.get("skipped")
+    ):
+        wb_ok = probe.get("migration_writeback_ok")
+        wb_readback = int(
+            (wb_trace or {}).get("cloud_readback_count")
+            or probe.get("cloud_write_readback_count")
+            or 0
+        )
+        wb_skipped = str((wb_trace or {}).get("skipped") or "")
+        st.markdown(
+            f"**Auth migration writeback:** "
+            f"attempted **{'yes' if probe.get('migration_writeback_attempted') else 'no'}** · "
+            f"ok **{'yes' if wb_ok else 'no'}** · "
+            f"readback **{wb_readback}**"
+            + (f" · skipped `{wb_skipped}`" if wb_skipped and not probe.get("migration_writeback_attempted") else "")
+        )
+        if isinstance(wb_trace, dict) and wb_trace.get("cloud_readback_error"):
+            st.caption(f"Migration writeback error: `{wb_trace['cloud_readback_error']}`")
     if probe.get("cloud_write_error") and probe.get("cloud_write_error") != "—":
         st.caption(f"Cloud write/readback error: `{probe['cloud_write_error']}`")
     if probe.get("last_save_reason") and probe.get("last_save_reason") != "—":

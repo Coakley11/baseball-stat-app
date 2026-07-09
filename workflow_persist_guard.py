@@ -33,6 +33,11 @@ PROTECTED_WORKFLOW_PERSIST_KEYS: tuple[str, ...] = (
 
 WORKFLOW_PERSIST_ALLOW_CLEAR_KEY = "_suite_allow_workflow_persist_clear"
 
+AUTH_MIGRATION_WRITEBACK_ATTEMPTED_KEY = "_suite_auth_migration_writeback_attempted"
+AUTH_MIGRATION_WRITEBACK_OK_KEY = "_suite_auth_migration_writeback_ok"
+AUTH_MIGRATION_WRITEBACK_TRACE_KEY = "_suite_auth_migration_writeback_trace"
+AUTH_MIGRATION_WRITEBACK_FORCE_KEY = "_suite_auth_migration_writeback_force"
+
 _EXPLICIT_WORKFLOW_CLEAR_REASONS = frozenset(
     {
         "draft_archive_cleared",
@@ -70,6 +75,7 @@ def is_draft_library_mutation_save_reason(reason: str) -> bool:
         "league_context_activated",
         "probe_test_draft_saved",
         "workflow_library_sanitized",
+        "authenticated_migration_writeback",
     }
 
 
@@ -1805,6 +1811,7 @@ def build_persistence_probe_panel(session: dict[str, Any], *, st: Any | None = N
     cloud_write_attempted = bool(
         session.get("_suite_persist_last_save_at")
         or session.get("_suite_last_cloud_app_key")
+        or session.get(AUTH_MIGRATION_WRITEBACK_ATTEMPTED_KEY)
         or isinstance(save_readback, dict)
     )
     cloud_write_ok = bool(session.get("_suite_persist_last_save_cloud"))
@@ -1949,7 +1956,193 @@ def build_persistence_probe_panel(session: dict[str, Any], *, st: Any | None = N
         "deploy_commit": _resolve_probe_deploy_commit(),
         "restore_skip_reason": restore_skip or None,
         "restore_applied": restore_applied,
+        "migration_writeback_attempted": bool(session.get(AUTH_MIGRATION_WRITEBACK_ATTEMPTED_KEY)),
+        "migration_writeback_ok": bool(session.get(AUTH_MIGRATION_WRITEBACK_OK_KEY)),
+        "migration_writeback_trace": (
+            session.get(AUTH_MIGRATION_WRITEBACK_TRACE_KEY)
+            if isinstance(session.get(AUTH_MIGRATION_WRITEBACK_TRACE_KEY), dict)
+            else None
+        ),
     }
+
+
+AUTH_MIGRATION_WRITEBACK_ATTEMPTED_KEY = "_suite_auth_migration_writeback_attempted"
+AUTH_MIGRATION_WRITEBACK_OK_KEY = "_suite_auth_migration_writeback_ok"
+AUTH_MIGRATION_WRITEBACK_TRACE_KEY = "_suite_auth_migration_writeback_trace"
+AUTH_MIGRATION_WRITEBACK_FORCE_KEY = "_suite_auth_migration_writeback_force"
+
+
+def _authenticated_migration_writeback_eligible(
+    session: dict[str, Any],
+    *,
+    app_id: str = "baseball",
+    st: Any | None = None,
+) -> tuple[bool, str]:
+    try:
+        from suite_auth import auth_session_complete, is_auth_enabled
+        from suite_storage_config import cloud_storage_enabled
+    except ImportError:
+        return False, "auth_unavailable"
+    if not is_auth_enabled():
+        return False, "auth_disabled"
+    if not auth_session_complete(session):
+        return False, "not_signed_in"
+    if not cloud_storage_enabled():
+        return False, "cloud_disabled"
+    if session.get(AUTH_MIGRATION_WRITEBACK_OK_KEY):
+        return False, "already_writeback_ok"
+    if session.get(AUTH_MIGRATION_WRITEBACK_ATTEMPTED_KEY) and not session.get(
+        AUTH_MIGRATION_WRITEBACK_FORCE_KEY
+    ):
+        return False, "already_attempted"
+
+    session_drafts = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+    disk_state = _load_disk_workflow_snapshot(app_id)
+    disk_drafts = count_draft_archives(disk_state.get(DRAFT_ARCHIVE_KEY))
+    discovery = discover_workflow_migration_sources(session, app_id=app_id)
+    migration_recoverable = int(discovery.get("recoverable_draft_count") or 0)
+    local_drafts = max(session_drafts, disk_drafts, migration_recoverable)
+    if local_drafts <= 0:
+        return False, "no_local_drafts"
+
+    if st is None:
+        return False, "streamlit_unavailable"
+    try:
+        from suite_workspace import get_active_workspace_id, normalize_workspace_id
+
+        ws = normalize_workspace_id(get_active_workspace_id(st=st))
+        cloud_probe = probe_cloud_workflow_for_workspace(ws)
+        cloud_drafts = int(cloud_probe.get("draft_archive_count") or 0)
+    except Exception:
+        return False, "cloud_probe_failed"
+    if cloud_drafts > 0:
+        return False, "cloud_already_has_drafts"
+    return True, ""
+
+
+def maybe_authenticated_workflow_cloud_writeback(
+    st: Any,
+    app_id: str = "baseball",
+) -> dict[str, Any]:
+    """
+    When signed in with recoverable disk/session drafts but empty authenticated cloud row,
+    merge local workflow state and force-save draft_archive_teams to cloud, then read back.
+    """
+    session = st.session_state
+    trace: dict[str, Any] = {
+        "attempted": False,
+        "ok": False,
+        "skipped": "",
+        "session_draft_count_before": count_draft_archives(session.get(DRAFT_ARCHIVE_KEY)),
+        "session_draft_count_after": 0,
+        "disk_draft_count": 0,
+        "cloud_readback_count": 0,
+        "cloud_readback_ok": False,
+        "cloud_readback_error": "",
+        "persist_ok": False,
+        "cloud_app_key": "",
+        "reason": "authenticated_migration_writeback",
+        "persistence_key_path": (
+            f"session[{DRAFT_ARCHIVE_KEY}] → disk[{DRAFT_ARCHIVE_KEY}] → "
+            f"cloud metrics.full_session.{DRAFT_ARCHIVE_KEY}"
+        ),
+    }
+
+    eligible, skip = _authenticated_migration_writeback_eligible(session, app_id=app_id, st=st)
+    if not eligible:
+        trace["skipped"] = skip
+        session[AUTH_MIGRATION_WRITEBACK_TRACE_KEY] = trace
+        return trace
+
+    session[AUTH_MIGRATION_WRITEBACK_ATTEMPTED_KEY] = True
+    trace["attempted"] = True
+    session.pop(AUTH_MIGRATION_WRITEBACK_FORCE_KEY, None)
+
+    try:
+        merge_protected_workflow_on_restore(session, st=st, app_id=app_id)
+    except Exception as exc:
+        trace["merge_error"] = f"{type(exc).__name__}: {exc}"
+
+    draft_count = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+    trace["session_draft_count_before"] = draft_count
+    if draft_count <= 0:
+        trace["skipped"] = "no_drafts_in_session_after_merge"
+        session[AUTH_MIGRATION_WRITEBACK_TRACE_KEY] = trace
+        return trace
+
+    mark_workflow_persist_authoritative(session)
+
+    try:
+        from suite_user_persistence import clear_workspace_autosave_block
+
+        clear_workspace_autosave_block(st, app_id)
+    except ImportError:
+        session.pop(f"_suite_autosave_fp::{app_id}", None)
+        session.pop(f"_suite_restored_fp::{app_id}", None)
+
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        trace["persist_ok"] = bool(
+            force_save_baseball_state(st, reason="authenticated_migration_writeback")
+        )
+    except Exception as exc:
+        trace["persist_error"] = f"{type(exc).__name__}: {exc}"
+        trace["persist_ok"] = False
+
+    trace["session_draft_count_after"] = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+    trace["cloud_app_key"] = str(session.get("_suite_last_cloud_app_key") or "")
+    trace["cloud_write_ok"] = bool(session.get("_suite_persist_last_save_cloud"))
+    trace["cloud_write_error"] = str(session.get("_suite_persist_last_cloud_error") or "")
+
+    try:
+        disk_state = _load_disk_workflow_snapshot(app_id)
+        trace["disk_draft_count"] = count_draft_archives(disk_state.get(DRAFT_ARCHIVE_KEY))
+    except Exception:
+        pass
+
+    readback: dict[str, Any] = {}
+    try:
+        from suite_workspace import get_active_workspace_id, scoped_cloud_app_id
+
+        ws = str(get_active_workspace_id(st=st))
+        app_key = scoped_cloud_app_id(app_id, ws)
+        readback = verify_cloud_draft_library_readback(
+            app_id,
+            min_drafts=1,
+            workspace_id=ws,
+            cloud_app_key=app_key,
+            expected_draft_count=int(trace["session_draft_count_after"] or 0),
+            session=session,
+        )
+        record_draft_library_readback(session, readback)
+        session["_suite_last_draft_save_readback"] = {
+            "cloud_app_key": app_key,
+            "workspace_id": ws,
+            "scope_user_id": readback.get("scope_user_id"),
+            "selected_row_user_id": readback.get("selected_row_user_id"),
+            "draft_count": readback.get("draft_count"),
+            "draft_ids": list(readback.get("draft_ids") or []),
+            "expected_draft_count": trace["session_draft_count_after"],
+            "authenticated_migration_writeback": True,
+        }
+    except Exception as exc:
+        readback = {"ok": False, "error": str(exc), "draft_count": 0}
+        record_draft_library_readback(session, readback)
+
+    trace["cloud_readback_count"] = int(readback.get("draft_count") or 0)
+    trace["cloud_readback_ok"] = bool(readback.get("ok"))
+    trace["cloud_readback_error"] = str(readback.get("error") or "")
+    trace["readback"] = readback
+    trace["ok"] = bool(
+        trace.get("persist_ok")
+        and trace.get("cloud_readback_ok")
+        and int(trace.get("session_draft_count_after") or 0) > 0
+    )
+    if trace["ok"]:
+        session[AUTH_MIGRATION_WRITEBACK_OK_KEY] = True
+    session[AUTH_MIGRATION_WRITEBACK_TRACE_KEY] = trace
+    return trace
 
 
 def save_probe_test_draft(st: Any, session: dict[str, Any]) -> dict[str, Any]:
