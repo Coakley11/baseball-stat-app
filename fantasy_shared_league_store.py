@@ -413,6 +413,104 @@ def get_team_ownership_from_context(context: dict[str, Any]) -> dict[str, dict[s
     return copy.deepcopy(raw) if isinstance(raw, dict) else {}
 
 
+def _claimed_teams_from_ownership(ownership: dict[str, Any] | None) -> set[str]:
+    claimed: set[str] = set()
+    if not isinstance(ownership, dict):
+        return claimed
+    for team, record in ownership.items():
+        team_name = str(team or "").strip()
+        if not team_name or not isinstance(record, dict):
+            continue
+        if str(record.get("user_id") or "").strip():
+            claimed.add(team_name)
+    return claimed
+
+
+def compare_local_and_shared_team_ownership(
+    local: dict[str, Any] | None,
+    shared: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Compare session league context ownership vs canonical shared document."""
+    local_map = local if isinstance(local, dict) else {}
+    shared_map = shared if isinstance(shared, dict) else {}
+    local_claimed = _claimed_teams_from_ownership(local_map)
+    shared_claimed = _claimed_teams_from_ownership(shared_map)
+    teams_only_in_shared = sorted(shared_claimed - local_claimed)
+    teams_only_in_local = sorted(local_claimed - shared_claimed)
+    teams_with_different_owner: list[str] = []
+    shared_has_newer_ownership = bool(teams_only_in_shared)
+    for team in sorted(local_claimed & shared_claimed):
+        local_uid = str((local_map.get(team) or {}).get("user_id") or "").strip()
+        shared_uid = str((shared_map.get(team) or {}).get("user_id") or "").strip()
+        if local_uid and shared_uid:
+            try:
+                from fantasy_league_team_ownership import account_user_ids_match
+
+                if not account_user_ids_match(local_uid, shared_uid):
+                    teams_with_different_owner.append(team)
+            except ImportError:
+                if local_uid != shared_uid:
+                    teams_with_different_owner.append(team)
+        local_ts = str((local_map.get(team) or {}).get("assigned_at") or "")
+        shared_ts = str((shared_map.get(team) or {}).get("assigned_at") or "")
+        if shared_ts > local_ts:
+            shared_has_newer_ownership = True
+    return {
+        "local_claimed_count": len(local_claimed),
+        "shared_claimed_count": len(shared_claimed),
+        "teams_only_in_shared": teams_only_in_shared,
+        "teams_only_in_local": teams_only_in_local,
+        "teams_with_different_owner": teams_with_different_owner,
+        "shared_has_newer_ownership": shared_has_newer_ownership,
+        "local_stale_vs_shared": bool(
+            teams_only_in_shared or teams_with_different_owner or shared_has_newer_ownership
+        ),
+    }
+
+
+def build_team_ownership_sync_diagnostics(
+    context: dict[str, Any] | None,
+    *,
+    shared_doc: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Local vs canonical shared ownership snapshot for diagnostics."""
+    if not isinstance(context, dict):
+        return {
+            "league_id": "",
+            "shared_doc_found": False,
+            "local_team_ownership": {},
+            "shared_team_ownership": {},
+            "comparison": compare_local_and_shared_team_ownership({}, {}),
+        }
+    league_id = str(resolve_canonical_league_id(context) or "").strip()
+    local_ownership = get_team_ownership_from_context(context)
+    local_revision = int((context.get("metadata") or {}).get("shared_revision") or 0)
+    shared = shared_doc if isinstance(shared_doc, dict) else None
+    if shared is None and league_id:
+        loaded = load_shared_league(league_id)
+        shared = loaded if isinstance(loaded, dict) else None
+    shared_ownership = (
+        copy.deepcopy(shared.get("team_ownership") or {}) if isinstance(shared, dict) else {}
+    )
+    shared_revision = int(shared.get("revision") or 0) if isinstance(shared, dict) else 0
+    comparison = compare_local_and_shared_team_ownership(local_ownership, shared_ownership)
+    if shared_revision > local_revision and not comparison.get("local_stale_vs_shared"):
+        comparison = dict(comparison)
+        comparison["shared_has_newer_ownership"] = True
+        comparison["local_stale_vs_shared"] = True
+    return {
+        "league_id": league_id or None,
+        "league_context_id": str(context.get("league_context_id") or "").strip() or None,
+        "shared_doc_found": isinstance(shared, dict),
+        "local_shared_revision": local_revision,
+        "shared_doc_revision": shared_revision,
+        "shared_doc_updated_at": str(shared.get("updated_at") or "") if isinstance(shared, dict) else None,
+        "local_team_ownership": local_ownership,
+        "shared_team_ownership": shared_ownership,
+        "comparison": comparison,
+    }
+
+
 def sync_context_with_shared_store(
     session: dict[str, Any],
     context: dict[str, Any],

@@ -1063,9 +1063,29 @@ def activate_league_context(session: dict[str, Any], league_context_id: str) -> 
     set_active_league_context(session, league_context_id)
     _sync_legacy_archive_aliases(session, context)
     try:
-        from fantasy_shared_league_store import sync_context_with_shared_store
+        from fantasy_league_team_ownership import get_team_ownership
+        from fantasy_shared_league_store import (
+            build_team_ownership_sync_diagnostics,
+            sync_context_with_shared_store,
+        )
 
+        ownership_before = copy.deepcopy(get_team_ownership(context))
+        local_revision = int((context.get("metadata") or {}).get("shared_revision") or 0)
         context = sync_context_with_shared_store(session, context)
+        ownership_after = copy.deepcopy(get_team_ownership(context))
+        shared_revision = int((context.get("metadata") or {}).get("shared_revision") or 0)
+        if ownership_before != ownership_after or shared_revision > local_revision:
+            session["_suite_last_set_active_sync_trace"] = {
+                "trigger": "activate_league_context",
+                "league_context_id": league_context_id,
+                "ownership_sync": build_team_ownership_sync_diagnostics(context),
+                "synced": ownership_before != ownership_after,
+                "shared_revision_before": local_revision,
+                "shared_revision_after": shared_revision,
+                "ownership_before": ownership_before,
+                "ownership_after": ownership_after,
+                "updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            }
     except ImportError:
         pass
     return context

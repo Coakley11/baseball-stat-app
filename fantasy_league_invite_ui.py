@@ -23,6 +23,109 @@ from fantasy_league_identity import resolve_canonical_league_id
 from fantasy_shared_league_store import load_shared_league
 
 
+def _format_ownership_summary(ownership: dict[str, Any] | None) -> str:
+    if not isinstance(ownership, dict) or not ownership:
+        return "—"
+    parts: list[str] = []
+    for team, record in sorted(ownership.items()):
+        if not isinstance(record, dict):
+            continue
+        owner = str(record.get("display_name") or record.get("user_id") or "—").strip()
+        parts.append(f"{team} → {owner}")
+    return "; ".join(parts) if parts else "—"
+
+
+def _render_team_ownership_sync_section(st: Any, sync_diag: dict[str, Any] | None) -> None:
+    """Show local session ownership vs canonical shared store."""
+    diag = dict(sync_diag) if isinstance(sync_diag, dict) else {}
+    comparison = dict(diag.get("comparison") or {})
+    st.markdown("##### Team ownership (local vs shared)")
+    st.markdown(
+        f"- **league_id:** `{diag.get('league_id') or '—'}`  \n"
+        f"- **shared doc found:** {diag.get('shared_doc_found')}  \n"
+        f"- **local revision:** {int(diag.get('local_shared_revision') or 0)} · "
+        f"**shared revision:** {int(diag.get('shared_doc_revision') or 0)}  \n"
+        f"- **local claimed:** {int(comparison.get('local_claimed_count') or 0)} · "
+        f"**shared claimed:** {int(comparison.get('shared_claimed_count') or 0)}  \n"
+        f"- **local stale vs shared:** {comparison.get('local_stale_vs_shared')}"
+    )
+    only_shared = comparison.get("teams_only_in_shared") or []
+    only_local = comparison.get("teams_only_in_local") or []
+    diff_owner = comparison.get("teams_with_different_owner") or []
+    if only_shared:
+        st.warning(
+            "Canonical shared store has team claims missing from local context: "
+            + ", ".join(str(t) for t in only_shared)
+            + ". Library auto-sync or **Set Active** should merge these."
+        )
+    elif comparison.get("local_stale_vs_shared"):
+        st.warning("Shared document has newer ownership than local context.")
+    elif diag.get("shared_doc_found"):
+        st.caption("Local context matches canonical shared ownership.")
+    if only_local:
+        st.caption(
+            "Local-only claims (not on shared doc): "
+            + ", ".join(str(t) for t in only_local)
+        )
+    if diff_owner:
+        st.error(
+            "Owner mismatch on: "
+            + ", ".join(str(t) for t in diff_owner)
+        )
+    st.caption(
+        f"Local: {_format_ownership_summary(diag.get('local_team_ownership'))}  \n"
+        f"Shared: {_format_ownership_summary(diag.get('shared_team_ownership'))}"
+    )
+    col_local, col_shared = st.columns(2)
+    with col_local:
+        st.caption("local team_ownership (session context)")
+        st.json({"team_ownership": diag.get("local_team_ownership") or {}})
+    with col_shared:
+        st.caption("shared team_ownership (baseball_shared_leagues)")
+        st.json({"team_ownership": diag.get("shared_team_ownership") or {}})
+
+
+def _render_library_sync_trace_section(st: Any, trace: dict[str, Any] | None) -> None:
+    raw = dict(trace) if isinstance(trace, dict) else {}
+    if not raw.get("updated_at"):
+        return
+    st.markdown("##### Library auto-sync (this page load)")
+    st.markdown(
+        f"- **leagues checked:** {int(raw.get('leagues_checked') or 0)}  \n"
+        f"- **leagues synced:** {int(raw.get('leagues_synced') or 0)}  \n"
+        f"- **updated_at:** `{raw.get('updated_at') or '—'}`"
+    )
+    for row in raw.get("results") or []:
+        if not isinstance(row, dict):
+            continue
+        if not row.get("auto_synced"):
+            continue
+        teams = ", ".join(str(t) for t in (row.get("teams_merged_from_shared") or []) if str(t).strip())
+        st.success(
+            f"Merged shared ownership for **{row.get('draft_name') or row.get('league_id') or 'league'}**"
+            + (f" — {teams}" if teams else "")
+        )
+
+
+def _render_set_active_sync_trace_section(st: Any, trace: dict[str, Any] | None) -> None:
+    raw = dict(trace) if isinstance(trace, dict) else {}
+    if not raw.get("updated_at"):
+        return
+    st.markdown("##### Last Set Active shared sync")
+    st.markdown(
+        f"- **trigger:** `{raw.get('trigger') or '—'}`  \n"
+        f"- **league_context_id:** `{raw.get('league_context_id') or '—'}`  \n"
+        f"- **shared revision:** {int(raw.get('shared_revision_before') or 0)} → "
+        f"{int(raw.get('shared_revision_after') or 0)}  \n"
+        f"- **ownership changed:** {raw.get('synced')}"
+    )
+    if raw.get("synced"):
+        st.success("Set Active pulled newer team ownership from the canonical shared league document.")
+    else:
+        st.caption("Set Active ran shared sync; ownership was already current.")
+    _render_team_ownership_sync_section(st, raw.get("ownership_sync"))
+
+
 def _render_last_invite_submit_section(st: Any, submit: dict[str, Any] | None) -> None:
     """Always show commissioner invite submit trace (placeholder when never submitted)."""
     snap = dict(submit) if isinstance(submit, dict) else {}
@@ -178,9 +281,9 @@ def render_invite_flow_diagnostics_panel(st: Any, session: dict[str, Any]) -> bo
                 f"status **{last_sent.get('status') or '—'}** · "
                 f"to **{last_sent.get('invitee_workspace_id') or '—'}**"
             )
-        team_claims = diag.get("team_claims")
-        if team_claims:
-            st.json({"team_claims": team_claims})
+        _render_library_sync_trace_section(st, diag.get("library_sync_trace"))
+        _render_set_active_sync_trace_section(st, diag.get("set_active_sync_trace"))
+        _render_team_ownership_sync_section(st, diag.get("ownership_sync"))
         invites = diag.get("league_invites")
         if invites:
             st.json({"league_invites": invites})
@@ -217,6 +320,9 @@ def render_commissioner_invite_diagnostics_panel(st: Any, session: dict[str, Any
 
         _render_last_invite_submit_section(st, trace.get("invite_submit_trace"))
 
+        _render_library_sync_trace_section(st, trace.get("library_sync_trace"))
+        _render_set_active_sync_trace_section(st, trace.get("set_active_sync_trace"))
+
         rows = trace.get("uploaded_leagues") or []
         if not rows:
             st.warning(
@@ -249,14 +355,7 @@ def render_commissioner_invite_diagnostics_panel(st: Any, session: dict[str, Any
                 f"- **would_select_for_invite:** {row.get('would_select_for_invite')}  \n"
                 f"- **block_reason:** {row.get('block_reason') or '—'}"
             )
-            ownership = row.get("team_ownership")
-            if ownership:
-                try:
-                    st.json({"team_ownership": ownership})
-                except Exception:
-                    st.code(str(ownership))
-            else:
-                st.caption("team_ownership: —")
+            _render_team_ownership_sync_section(st, row.get("ownership_sync"))
 
     return True
 

@@ -27,6 +27,7 @@ from fantasy_league_team_ownership import (
     owned_team_for_user,
 )
 from fantasy_shared_league_store import (
+    build_team_ownership_sync_diagnostics,
     load_shared_league,
     list_shared_league_documents,
     push_league_context_to_shared,
@@ -577,16 +578,22 @@ def build_invite_flow_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     league_id = ""
     owner_user_id = ""
     team_claims: dict[str, Any] = {}
+    team_claims_shared: dict[str, Any] = {}
+    ownership_sync: dict[str, Any] = {}
     invite_rows: list[dict[str, Any]] = []
     if isinstance(context, dict):
         league_id = str(resolve_canonical_league_id(context) or "").strip()
         owner_user_id = str(get_commissioner_user_id(context) or "").strip()
         team_claims = dict(get_team_ownership(context) or {})
+        ownership_sync = build_team_ownership_sync_diagnostics(context)
+        team_claims_shared = dict(ownership_sync.get("shared_team_ownership") or {})
         invite_rows = list(get_league_invites(context) or [])
     pending = list_pending_invites_for_session(session)
     last_sent = session.get("_last_commissioner_invite_sent")
     lookup_trace = build_invite_lookup_trace(session)
     stranded = session.get("_suite_stranded_foreign_disk_draft")
+    library_sync_trace = session.get("_suite_shared_league_library_sync_trace")
+    set_active_sync_trace = session.get("_suite_last_set_active_sync_trace")
     return {
         "current_user_id": uid or None,
         "external_id": ext or None,
@@ -595,6 +602,15 @@ def build_invite_flow_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
         "league_id": league_id or None,
         "owner_user_id": owner_user_id or None,
         "team_claims": team_claims,
+        "team_claims_local": team_claims,
+        "team_claims_shared": team_claims_shared,
+        "ownership_sync": ownership_sync,
+        "library_sync_trace": (
+            library_sync_trace if isinstance(library_sync_trace, dict) else None
+        ),
+        "set_active_sync_trace": (
+            set_active_sync_trace if isinstance(set_active_sync_trace, dict) else None
+        ),
         "league_invites": invite_rows,
         "pending_invites_for_session": pending,
         "pending_invite_count": len(pending),
@@ -1344,6 +1360,11 @@ def _invite_trace_row_for_archive(
     block_reason = explain_commissioner_invite_block(ctx, uid=uid, entry=entry)
     ownership = get_team_ownership(ctx) if isinstance(ctx, dict) else {}
     meta = (ctx or {}).get("metadata") or {}
+    ownership_sync = (
+        build_team_ownership_sync_diagnostics(ctx)
+        if isinstance(ctx, dict)
+        else build_team_ownership_sync_diagnostics(None)
+    )
     return {
         "draft_id": str(entry.get("draft_id") or "").strip(),
         "draft_name": str(entry.get("draft_name") or "").strip(),
@@ -1360,6 +1381,9 @@ def _invite_trace_row_for_archive(
         "metadata_source": str(meta.get("source") or "").strip(),
         "commissioner_user_id": get_commissioner_user_id(ctx) if isinstance(ctx, dict) else "",
         "team_ownership": ownership,
+        "team_ownership_local": ownership,
+        "team_ownership_shared": ownership_sync.get("shared_team_ownership") or {},
+        "ownership_sync": ownership_sync,
         "upload_owner_candidate": (
             is_upload_commissioner_candidate(ctx, uid) if isinstance(ctx, dict) else False
         ),
@@ -1454,6 +1478,8 @@ def build_commissioner_invite_panel_trace(session: dict[str, Any]) -> dict[str, 
         "selected_league_context_id": str((invite_context or {}).get("league_context_id") or "").strip(),
         "uploaded_leagues": league_rows,
         "invite_submit_trace": build_invite_submit_trace_snapshot(session),
+        "library_sync_trace": session.get("_suite_shared_league_library_sync_trace"),
+        "set_active_sync_trace": session.get("_suite_last_set_active_sync_trace"),
     }
 
 

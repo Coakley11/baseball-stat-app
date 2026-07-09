@@ -33,7 +33,15 @@ from fantasy_league_invites import (
     scan_pending_invites_from_shared_leagues,
 )
 from fantasy_league_team_ownership import assign_team_owner_to_context, trades_enabled
-from fantasy_shared_league_store import LocalFileSharedLeagueStore, load_shared_league, save_shared_league, set_shared_league_store
+from fantasy_shared_league_store import (
+    LocalFileSharedLeagueStore,
+    build_team_ownership_sync_diagnostics,
+    compare_local_and_shared_team_ownership,
+    load_shared_league,
+    save_shared_league,
+    set_shared_league_store,
+)
+from fantasy_shared_league_library_sync import sync_uploaded_league_contexts_on_library_render
 from tests.test_fantasy_trade_proposals import _as_user
 from tests.test_imported_shared_league import _sample_board
 
@@ -578,6 +586,79 @@ class TestFantasyLeagueInvites(unittest.TestCase):
         panel = build_commissioner_invite_panel_trace(session)
         self.assertIn("invite_submit_trace", panel)
         self.assertEqual(panel["invite_submit_trace"].get("invite_id"), "inv_test_submit")
+
+    def test_compare_ownership_flags_teams_only_in_shared(self) -> None:
+        local = {
+            "Daniel": {"team_name": "Daniel", "user_id": "user:donny", "assigned_at": "2026-01-01T00:00:00+00:00"},
+        }
+        shared = {
+            "Daniel": {"team_name": "Daniel", "user_id": "user:donny", "assigned_at": "2026-01-01T00:00:00+00:00"},
+            "Team 2": {
+                "team_name": "Team 2",
+                "user_id": "user:seal11",
+                "assigned_at": "2026-01-02T00:00:00+00:00",
+            },
+        }
+        cmp = compare_local_and_shared_team_ownership(local, shared)
+        self.assertTrue(cmp["local_stale_vs_shared"])
+        self.assertEqual(cmp["teams_only_in_shared"], ["Team 2"])
+
+    def test_library_auto_sync_merges_invitee_claim_for_commissioner(self) -> None:
+        self._write_registry(
+            {
+                "by_owner": {
+                    "user:donny": {
+                        "owner_user_id": "user:donny",
+                        "owner_external_id": "donny",
+                        "workspace_id": "daniel",
+                    },
+                    "user:seal11": {
+                        "owner_user_id": "user:seal11",
+                        "owner_external_id": "seal11",
+                        "workspace_id": "ariel",
+                    },
+                }
+            }
+        )
+        session_a: dict = {}
+        context_a = _seed_imported_league(session_a, user_id="user:donny", team="Donny")
+        league_id = resolve_canonical_league_id(context_a)
+        assert league_id
+
+        with _as_user("user:donny"):
+            invite, err = create_league_invite(session_a, context_a, invitee_target="ariel")
+        self.assertEqual(err, "")
+        assert invite is not None
+
+        session_b: dict = {"_suite_owned_workspace_id": "ariel"}
+        with _as_user("user:seal11"), self._workspace("ariel"):
+            join_shared_league_from_invite(
+                session_b,
+                league_id=league_id,
+                invite_id=str(invite["invite_id"]),
+                team_name="Team 2",
+            )
+
+        league_context_id = str(context_a.get("league_context_id") or "")
+        with _as_user("user:donny"):
+            stale = get_league_context(session_a, league_context_id)
+            assert stale is not None
+            diag_before = build_team_ownership_sync_diagnostics(stale)
+            self.assertEqual(list((diag_before.get("local_team_ownership") or {}).keys()), ["Donny"])
+            self.assertIn("Team 2", (diag_before.get("shared_team_ownership") or {}))
+
+            trace = sync_uploaded_league_contexts_on_library_render(session_a)
+            self.assertEqual(int(trace.get("leagues_synced") or 0), 1)
+            refreshed = get_league_context(session_a, league_context_id)
+            assert refreshed is not None
+            self.assertIn("Team 2", refreshed.get("team_ownership") or {})
+
+            panel = build_commissioner_invite_panel_trace(session_a)
+            row = next(r for r in (panel.get("uploaded_leagues") or []) if r.get("draft_id"))
+            sync = row.get("ownership_sync") or {}
+            self.assertFalse((sync.get("comparison") or {}).get("local_stale_vs_shared"))
+            self.assertIn("Team 2", sync.get("shared_team_ownership") or {})
+            self.assertIn("Team 2", sync.get("local_team_ownership") or {})
 
 
 if __name__ == "__main__":

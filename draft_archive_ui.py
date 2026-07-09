@@ -2387,6 +2387,19 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
     render_persistence_probe_panel(st, session)
 
     try:
+        from fantasy_shared_league_library_sync import (
+            summarize_library_sync_for_banner,
+            sync_uploaded_league_contexts_on_library_render,
+        )
+
+        library_sync_trace = sync_uploaded_league_contexts_on_library_render(session)
+        sync_banner = summarize_library_sync_for_banner(library_sync_trace)
+        if sync_banner:
+            st.success(sync_banner)
+    except ImportError:
+        pass
+
+    try:
         from fantasy_league_invite_ui import (
             render_commissioner_invite_diagnostics_panel,
             render_commissioner_invite_panel,
