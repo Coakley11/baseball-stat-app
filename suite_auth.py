@@ -424,8 +424,29 @@ def _persist_auth_session(
     st: Any | None = None,
 ) -> None:
     old_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
+    old_ext = str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip()
+    old_cloud = str(session_state.get("_suite_cloud_user_id") or "").strip()
     _apply_authenticated_user(session_state, user, tokens=tokens, email_fallback=email_fallback)
     new_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
+    suite_user_id = ""
+    try:
+        suite_user_id = _sync_auth_account_identity(session_state, st=st)
+    except Exception:
+        pass
+    new_ext = str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip()
+    new_cloud = str(suite_user_id or session_state.get("_suite_cloud_user_id") or "").strip()
+    scope_changed = bool(
+        (old_uid and new_uid and old_uid != new_uid)
+        or (old_ext and new_ext and old_ext != new_ext)
+        or (old_cloud and new_cloud and old_cloud != new_cloud)
+    )
+    if scope_changed:
+        try:
+            from workflow_persist_guard import clear_draft_library_on_account_scope_change
+
+            clear_draft_library_on_account_scope_change(session_state)
+        except ImportError:
+            pass
     if old_uid != new_uid:
         try:
             from draft_room_participant_state import on_auth_user_switch
@@ -433,11 +454,6 @@ def _persist_auth_session(
             on_auth_user_switch(session_state, from_user_id=old_uid, to_user_id=new_uid)
         except ImportError:
             pass
-    suite_user_id = ""
-    try:
-        suite_user_id = _sync_auth_account_identity(session_state, st=st)
-    except Exception:
-        pass
     try:
         from suite_user_persistence import preserve_page_through_auth
 

@@ -15,6 +15,7 @@ from draft_archive_state import (
     list_draft_archives,
     rename_draft_archive,
 )
+from draft_archive_visibility import list_visible_draft_archives, prune_invisible_shared_league_state
 from fantasy_league_context import (
     activate_archive_league_context,
     archive_my_team_player_count,
@@ -2274,14 +2275,16 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         unsafe_allow_html=True,
     )
 
-    archives = list_draft_archives(session)
+    prune_invisible_shared_league_state(session)
     try:
         from fantasy_league_context import repair_missing_draft_archives_from_contexts
 
         if repair_missing_draft_archives_from_contexts(session):
-            archives = list_draft_archives(session)
+            prune_invisible_shared_league_state(session)
     except ImportError:
         pass
+
+    archives = list_visible_draft_archives(session)
     active = get_active_draft_archive(session)
     active_context = get_active_league_context(session)
     active_id = str((active or {}).get("draft_id") or "")

@@ -1761,6 +1761,10 @@ def repair_missing_draft_archives_from_contexts(session: dict[str, Any]) -> int:
     raw = session.get(DRAFT_ARCHIVE_KEY)
     entries = [dict(x) for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
     existing_ids = {str(e.get("draft_id") or "").strip() for e in entries if str(e.get("draft_id") or "").strip()}
+    try:
+        from draft_archive_visibility import is_saved_draft_visible_to_session
+    except ImportError:
+        is_saved_draft_visible_to_session = None
     repaired: list[dict[str, Any]] = []
     for context in contexts.values():
         if not isinstance(context, dict):
@@ -1773,6 +1777,12 @@ def repair_missing_draft_archives_from_contexts(session: dict[str, Any]) -> int:
             continue
         draft_id = str(stub.get("draft_id") or "").strip()
         if not draft_id or draft_id in deleted_drafts or draft_id in existing_ids or get_draft_archive(session, draft_id):
+            continue
+        if is_saved_draft_visible_to_session is not None and not is_saved_draft_visible_to_session(
+            session,
+            {"draft_id": draft_id, "league_context_id": context_id},
+            context=context,
+        ):
             continue
         repaired.append(stub)
         existing_ids.add(draft_id)
@@ -1801,4 +1811,10 @@ def apply_fantasy_league_context_disk_state(session: dict[str, Any], state: dict
     try:
         repair_missing_draft_archives_from_contexts(session)
     except Exception:
+        pass
+    try:
+        from draft_archive_visibility import prune_invisible_shared_league_state
+
+        prune_invisible_shared_league_state(session)
+    except ImportError:
         pass

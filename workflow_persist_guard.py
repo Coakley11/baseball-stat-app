@@ -532,6 +532,14 @@ def _merge_richer_workflow_into_state(
 def _cloud_workflow_fallback_workspace_ids(session: dict[str, Any]) -> list[str]:
     """Extra workspace profiles to scan when the active workspace cloud row is empty."""
     try:
+        from suite_auth import is_auth_enabled, is_authenticated
+        from suite_workspace_registry import is_admin_account
+
+        if is_auth_enabled() and is_authenticated(session) and not is_admin_account(session_state=session):
+            return []
+    except ImportError:
+        pass
+    try:
         from suite_workspace import DEFAULT_WORKSPACE_ID, get_active_workspace_id, normalize_workspace_id
 
         active = normalize_workspace_id(
@@ -552,6 +560,17 @@ def _cloud_workflow_fallback_workspace_ids(session: dict[str, Any]) -> list[str]
     except ImportError:
         pass
     return fallbacks
+
+
+def clear_draft_library_on_account_scope_change(session: dict[str, Any]) -> None:
+    """Drop workflow library blobs when auth account scope changes; cloud restore reloads owned data."""
+    from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, DRAFT_ARCHIVE_KEY
+
+    session.pop(DRAFT_ARCHIVE_KEY, None)
+    session.pop(ACTIVE_DRAFT_ARCHIVE_KEY, None)
+    session.pop(LEAGUE_CONTEXT_STATE_KEY, None)
+    session.pop("_draft_archives_repaired_from_contexts", None)
+    session["_suite_workspace_force_sync"] = True
 
 
 def _merge_cloud_workflow_blobs(*blobs: dict[str, Any]) -> dict[str, Any]:
@@ -954,6 +973,14 @@ def ensure_session_workflow_hydrated(
     out["session_after"] = after
     if after > before:
         out["hydrated"] = True
+        try:
+            from draft_archive_visibility import prune_invisible_shared_league_state
+
+            prune_invisible_shared_league_state(session)
+            after = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+            out["session_after"] = after
+        except ImportError:
+            pass
         if cloud_count >= disk_count and cloud_count > 0:
             out["source"] = "cloud"
         elif disk_count > 0:
