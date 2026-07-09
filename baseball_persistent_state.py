@@ -148,6 +148,12 @@ _WORKFLOW_KEYS = (
     "_draft_save_button_trace",
     "_draft_save_trace_expand",
     "_draft_save_ui_flash",
+    "_suite_last_invite_submit_trace",
+    "_last_commissioner_invite_sent",
+    "_last_commissioner_invite_submit_error",
+    "_last_invite_shared_push_ok",
+    "_last_invite_shared_push_error",
+    "_last_invite_shared_league_id",
 )
 
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"

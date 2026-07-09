@@ -2401,8 +2401,9 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         try:
             render_pending_league_invites(st, session)
             render_invite_flow_diagnostics_panel(st, session)
-            render_commissioner_invite_diagnostics_panel(st, session)
+            # Invite panel before diagnostics so submit trace is recorded first on the same run.
             render_commissioner_invite_panel(st, session)
+            render_commissioner_invite_diagnostics_panel(st, session)
         except Exception as exc:
             st.error(f"Shared league invite UI failed while rendering: {exc}")
 

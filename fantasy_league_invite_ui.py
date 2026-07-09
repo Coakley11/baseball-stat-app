@@ -23,6 +23,35 @@ from fantasy_league_identity import resolve_canonical_league_id
 from fantasy_shared_league_store import load_shared_league
 
 
+def _render_last_invite_submit_section(st: Any, submit: dict[str, Any] | None) -> None:
+    """Always show commissioner invite submit trace (placeholder when never submitted)."""
+    snap = dict(submit) if isinstance(submit, dict) else {}
+    st.markdown("##### Last invite submit")
+    if not snap.get("updated_at"):
+        st.caption(
+            "No invite submit recorded yet. Use **Send invite** below; "
+            "fields update on the same page run after submit."
+        )
+    st.markdown(
+        f"- **button_clicked:** {snap.get('button_clicked') if snap.get('updated_at') else '—'}  \n"
+        f"- **create_league_invite_called:** "
+        f"{snap.get('create_league_invite_called') if snap.get('updated_at') else '—'}  \n"
+        f"- **target:** `{snap.get('target_trimmed') or snap.get('target_raw') or '—'}`  \n"
+        f"- **invite_id:** `{snap.get('invite_id') or '—'}`  \n"
+        f"- **create_error:** {snap.get('create_error') or '—'}  \n"
+        f"- **_last_invite_shared_push_ok:** "
+        f"{snap.get('last_invite_shared_push_ok') if snap.get('updated_at') else '—'}  \n"
+        f"- **_last_invite_shared_push_error:** "
+        f"`{snap.get('last_invite_shared_push_error') or '—'}`  \n"
+        f"- **league_invite_sent reason set:** "
+        f"{snap.get('league_invite_sent_reason_set') if snap.get('updated_at') else '—'}  \n"
+        f"- **persist_last_save_reason:** `{snap.get('persist_last_save_reason') or '—'}`"
+    )
+    if snap.get("updated_at"):
+        with st.expander("Invite submit trace (full)", expanded=False):
+            st.json(snap)
+
+
 def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
     """Surface pending shared-league invites at the top of Saved Draft Library."""
     pending = list_pending_invites_for_session(session)
@@ -155,10 +184,7 @@ def render_invite_flow_diagnostics_panel(st: Any, session: dict[str, Any]) -> bo
         invites = diag.get("league_invites")
         if invites:
             st.json({"league_invites": invites})
-        submit = diag.get("invite_submit_trace")
-        if isinstance(submit, dict) and submit.get("updated_at"):
-            with st.expander("Invite submit trace (commissioner)", expanded=not bool(submit.get("invite_id"))):
-                st.json(submit)
+        _render_last_invite_submit_section(st, diag.get("invite_submit_trace"))
     return True
 
 
@@ -188,6 +214,8 @@ def render_commissioner_invite_diagnostics_panel(st: Any, session: dict[str, Any
             f"**session_auth_user_id:** `{trace.get('session_auth_user_id') or '—'}`  \n"
             f"**session_external_id:** `{trace.get('session_external_id') or '—'}`"
         )
+
+        _render_last_invite_submit_section(st, trace.get("invite_submit_trace"))
 
         rows = trace.get("uploaded_leagues") or []
         if not rows:
@@ -230,22 +258,6 @@ def render_commissioner_invite_diagnostics_panel(st: Any, session: dict[str, Any
             else:
                 st.caption("team_ownership: —")
 
-        submit = trace.get("invite_submit_trace")
-        if isinstance(submit, dict) and submit.get("updated_at"):
-            st.markdown("##### Last invite submit")
-            st.markdown(
-                f"- **button_clicked:** {submit.get('button_clicked')}  \n"
-                f"- **create_league_invite_called:** {submit.get('create_league_invite_called')}  \n"
-                f"- **target:** `{submit.get('target_trimmed') or submit.get('target_raw') or '—'}`  \n"
-                f"- **invite_id:** `{submit.get('invite_id') or '—'}`  \n"
-                f"- **create_error:** {submit.get('create_error') or '—'}  \n"
-                f"- **_last_invite_shared_push_ok:** {submit.get('last_invite_shared_push_ok')}  \n"
-                f"- **_last_invite_shared_push_error:** `{submit.get('last_invite_shared_push_error') or '—'}`  \n"
-                f"- **league_invite_sent reason set:** {submit.get('league_invite_sent_reason_set')}  \n"
-                f"- **persist_last_save_reason:** `{submit.get('persist_last_save_reason') or '—'}`"
-            )
-            with st.expander("Invite submit trace (full)", expanded=False):
-                st.json(submit)
     return True
 
 
@@ -264,7 +276,7 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
     if not is_league_commissioner(context, uid):
         st.warning(
             "Invite controls are hidden because `is_league_commissioner` failed after "
-            "`commissioner_invite_context` returned a context. See **Invite panel diagnostic** above."
+            "`commissioner_invite_context` returned a context. See **Invite panel diagnostic** below."
         )
         return False
 
@@ -272,6 +284,7 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
     league_id = str(resolve_canonical_league_id(context) or "").strip()
     last_sent = session.get("_last_commissioner_invite_sent")
     submit_err = str(session.get("_last_commissioner_invite_submit_error") or "").strip()
+    submit_snap = build_invite_submit_trace_snapshot(session)
     if submit_err:
         st.error(submit_err)
     if isinstance(last_sent, dict) and str(last_sent.get("status") or "") == "pending":
@@ -288,77 +301,97 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
                 f"Shared league push failed or incomplete. "
                 f"ok={push_ok} · error `{push_err or '—'}`"
             )
+    if submit_snap.get("updated_at"):
+        st.caption(
+            f"Last submit: button_clicked={submit_snap.get('button_clicked')} · "
+            f"create_called={submit_snap.get('create_league_invite_called')} · "
+            f"invite_id=`{submit_snap.get('invite_id') or '—'}` · "
+            f"push_ok={submit_snap.get('last_invite_shared_push_ok')}"
+        )
+
+    submitted = False
+    target = ""
     with st.expander("Invite managers to this shared league", expanded=False):
         st.caption(
             f"Invite another account to join **{league_name}**. "
             "They will see the invite in their Saved Draft Library, claim a team, "
             "and link to the same canonical league — not a duplicate import."
         )
-        target = st.text_input(
-            "Workspace or account id",
-            key="commissioner_invite_target",
-            placeholder="e.g. ariel, coakley11",
-            help="Use the invitee's workspace slug or account external id.",
-        )
-        if st.button("Send invite", key="commissioner_invite_send_btn", type="primary"):
-            target_trimmed = str(target or "").strip()
-            resolved = resolve_invitee_target(target_trimmed) if target_trimmed else {}
-            record_invite_submit_trace(
-                session,
-                button_clicked=True,
-                target_raw=target,
-                target_trimmed=target_trimmed,
-                resolved_target=resolved,
-                context_league_id=league_id or None,
-                create_league_invite_called=False,
-                create_error=None,
-                invite_id=None,
+        with st.form("commissioner_invite_form", clear_on_submit=False):
+            target = st.text_input(
+                "Workspace or account id",
+                key="commissioner_invite_target",
+                placeholder="e.g. ariel, coakley11",
+                help="Use the invitee's workspace slug or account external id.",
             )
-            invite, err = create_league_invite(session, context, invitee_target=target_trimmed)
-            record_invite_submit_trace(
-                session,
-                create_league_invite_called=True,
-                create_error=err or None,
-                invite_id=str(invite.get("invite_id") or "") if isinstance(invite, dict) else None,
-                last_invite_shared_push_ok=session.get("_last_invite_shared_push_ok"),
-                last_invite_shared_push_error=session.get("_last_invite_shared_push_error"),
-                last_invite_shared_league_id=session.get("_last_invite_shared_league_id"),
-            )
-            if err:
-                session["_last_commissioner_invite_submit_error"] = err
-                st.error(err)
-            elif invite:
-                session.pop("_last_commissioner_invite_submit_error", None)
-                session["_last_commissioner_invite_sent"] = dict(invite)
-                ws = str(invite.get("invitee_workspace_id") or target_trimmed).strip()
-                st.success(
-                    f"Invite sent to **{ws}** for **{league_name}** · "
-                    f"status **{invite.get('status') or 'pending'}** · "
-                    f"id `{invite.get('invite_id') or '—'}`"
-                )
-                saved = False
-                try:
-                    from baseball_persistent_state import force_save_baseball_state
+            submitted = st.form_submit_button("Send invite", type="primary")
 
-                    saved = bool(force_save_baseball_state(st, reason="league_invite_sent"))
-                except Exception as exc:
-                    record_invite_submit_trace(
-                        session,
-                        force_save_attempted=True,
-                        force_save_ok=False,
-                        force_save_error=str(exc),
-                    )
-                persist_reason = str(session.get("_suite_persist_last_save_reason") or "").strip()
+    if submitted:
+        target_trimmed = str(target or "").strip()
+        resolved = resolve_invitee_target(target_trimmed) if target_trimmed else {}
+        record_invite_submit_trace(
+            session,
+            button_clicked=True,
+            target_raw=target,
+            target_trimmed=target_trimmed,
+            resolved_target=resolved,
+            context_league_id=league_id or None,
+            create_league_invite_called=False,
+            create_error=None,
+            invite_id=None,
+        )
+        invite, err = create_league_invite(session, context, invitee_target=target_trimmed)
+        record_invite_submit_trace(
+            session,
+            create_league_invite_called=True,
+            create_error=err or None,
+            invite_id=str(invite.get("invite_id") or "") if isinstance(invite, dict) else None,
+            last_invite_shared_push_ok=session.get("_last_invite_shared_push_ok"),
+            last_invite_shared_push_error=session.get("_last_invite_shared_push_error"),
+            last_invite_shared_league_id=session.get("_last_invite_shared_league_id"),
+        )
+        if err:
+            session["_last_commissioner_invite_submit_error"] = err
+            st.error(err)
+        elif invite:
+            session.pop("_last_commissioner_invite_submit_error", None)
+            session["_last_commissioner_invite_sent"] = dict(invite)
+            ws = str(invite.get("invitee_workspace_id") or target_trimmed).strip()
+            st.success(
+                f"Invite sent to **{ws}** for **{league_name}** · "
+                f"status **{invite.get('status') or 'pending'}** · "
+                f"id `{invite.get('invite_id') or '—'}`"
+            )
+            push_ok = session.get("_last_invite_shared_push_ok")
+            push_err = str(session.get("_last_invite_shared_push_error") or "").strip()
+            if push_ok is False or push_err:
+                st.warning(
+                    f"Shared league push failed or incomplete. "
+                    f"ok={push_ok} · error `{push_err or '—'}`"
+                )
+            saved = False
+            try:
+                from baseball_persistent_state import force_save_baseball_state
+
+                saved = bool(force_save_baseball_state(st, reason="league_invite_sent"))
+            except Exception as exc:
                 record_invite_submit_trace(
                     session,
                     force_save_attempted=True,
-                    force_save_ok=saved,
-                    persist_last_save_reason=persist_reason or None,
-                    league_invite_sent_reason_set=bool(persist_reason == "league_invite_sent"),
+                    force_save_ok=False,
+                    force_save_error=str(exc),
                 )
-            else:
-                msg = "Send invite returned no invite and no error."
-                session["_last_commissioner_invite_submit_error"] = msg
-                record_invite_submit_trace(session, create_error=msg)
-                st.error(msg)
+            persist_reason = str(session.get("_suite_persist_last_save_reason") or "").strip()
+            record_invite_submit_trace(
+                session,
+                force_save_attempted=True,
+                force_save_ok=saved,
+                persist_last_save_reason=persist_reason or None,
+                league_invite_sent_reason_set=bool(persist_reason == "league_invite_sent"),
+            )
+        else:
+            msg = "Send invite returned no invite and no error."
+            session["_last_commissioner_invite_submit_error"] = msg
+            record_invite_submit_trace(session, create_error=msg)
+            st.error(msg)
     return True

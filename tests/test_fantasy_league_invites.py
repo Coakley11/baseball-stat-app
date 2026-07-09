@@ -381,6 +381,35 @@ class TestFantasyLeagueInvites(unittest.TestCase):
         st.expander.assert_called_once()
         expander_title = str(st.expander.call_args[0][0])
         self.assertIn("Invite panel diagnostic", expander_title)
+        markdown_calls = [str(call.args[0]) for call in st.markdown.call_args_list if call.args]
+        self.assertTrue(any("Last invite submit" in text for text in markdown_calls))
+
+    def test_invite_submit_trace_visible_same_run_after_panel_before_diagnostics(self) -> None:
+        """Invite panel must run before diagnostics so submit trace appears on the click run."""
+        from unittest.mock import MagicMock
+
+        from fantasy_league_invite_ui import (
+            render_commissioner_invite_diagnostics_panel,
+            render_commissioner_invite_panel,
+        )
+
+        session: dict = {}
+        record_invite_submit_trace(
+            session,
+            button_clicked=True,
+            target_trimmed="coakley11",
+            create_league_invite_called=True,
+            invite_id="inv_same_run",
+            last_invite_shared_push_ok=True,
+        )
+        st = MagicMock()
+        st.expander.return_value.__enter__ = MagicMock(return_value=None)
+        st.expander.return_value.__exit__ = MagicMock(return_value=False)
+        render_commissioner_invite_panel(st, session)
+        render_commissioner_invite_diagnostics_panel(st, session)
+        markdown_calls = [str(call.args[0]) for call in st.markdown.call_args_list if call.args]
+        self.assertTrue(any("button_clicked:** True" in text for text in markdown_calls))
+        self.assertTrue(any("inv_same_run" in text for text in markdown_calls))
 
     def test_invite_joiner_is_not_commissioner(self) -> None:
         session: dict = {}
