@@ -1927,7 +1927,11 @@ def _archive_stub_from_league_context(context: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def repair_missing_draft_archives_from_contexts(session: dict[str, Any]) -> int:
+def repair_missing_draft_archives_from_contexts(
+    session: dict[str, Any],
+    *,
+    require_visibility: bool = True,
+) -> int:
     """Restore archive list entries from league contexts when restore wiped draft_archive_teams."""
     from draft_archive_state import DRAFT_ARCHIVE_KEY, DELETED_DRAFT_ARCHIVE_IDS_KEY, get_draft_archive
 
@@ -1965,10 +1969,14 @@ def repair_missing_draft_archives_from_contexts(session: dict[str, Any]) -> int:
         draft_id = str(stub.get("draft_id") or "").strip()
         if not draft_id or draft_id in deleted_drafts or draft_id in existing_ids or get_draft_archive(session, draft_id):
             continue
-        if is_saved_draft_visible_to_session is not None and not is_saved_draft_visible_to_session(
+        if (
+            require_visibility
+            and is_saved_draft_visible_to_session is not None
+            and not is_saved_draft_visible_to_session(
             session,
             {"draft_id": draft_id, "league_context_id": context_id},
             context=context,
+        )
         ):
             continue
         repaired.append(stub)

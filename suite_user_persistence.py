@@ -312,11 +312,7 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "authenticated_migration_writeback",
     "team_claimed",
     "league_invite_sent",
-    "trade_proposal_created",
-    "trade_proposal_accepted",
-    "trade_proposal_declined",
-    "trade_proposal_canceled",
-    "trade_proposal_countered",
+    "admin_draft_archive_repair",
 })
 
 
