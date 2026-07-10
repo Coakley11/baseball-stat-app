@@ -71,18 +71,40 @@ def find_league_context_by_league_id(session: dict[str, Any], league_id: str) ->
     return None
 
 
-def _owned_team_for_owner_id(shared_doc: dict[str, Any], owner_user_id: str) -> str:
+def _owned_team_for_account(
+    shared_doc: dict[str, Any],
+    *,
+    owner_user_id: str = "",
+    owner_external_id: str = "",
+    workspace_id: str = "",
+) -> str:
+    """Resolve this workspace's team from canonical shared team_ownership."""
     from fantasy_league_team_ownership import account_user_ids_match
 
     ownership = shared_doc.get("team_ownership") or {}
     if not isinstance(ownership, dict):
         return ""
     uid = str(owner_user_id or "").strip()
+    external = str(owner_external_id or "").strip().lower()
+    workspace = str(workspace_id or "").strip().lower()
+    aliases = {x for x in (uid, external, workspace, f"user:{external}" if external else "") if x}
     for team, record in ownership.items():
         if not isinstance(record, dict):
             continue
         stored = str(record.get("user_id") or "").strip()
-        if stored and account_user_ids_match(stored, uid):
+        stored_lower = stored.lower()
+        display = str(record.get("display_name") or "").strip().lower()
+        email_local = str(record.get("email") or "").strip().lower().split("@", 1)[0]
+        record_external = str(record.get("external_id") or "").strip().lower()
+        if stored and uid and account_user_ids_match(stored, uid):
+            return str(team or "").strip()
+        if stored_lower and stored_lower in aliases:
+            return str(team or "").strip()
+        if display and display in aliases:
+            return str(team or "").strip()
+        if email_local and email_local in aliases:
+            return str(team or "").strip()
+        if record_external and record_external in aliases:
             return str(team or "").strip()
     return ""
 
@@ -91,6 +113,8 @@ def build_context_from_shared_for_workspace(
     shared_doc: dict[str, Any],
     *,
     owner_user_id: str,
+    owner_external_id: str = "",
+    workspace_id: str = "",
     existing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seed or refresh a workspace league context from canonical shared league doc."""
@@ -105,8 +129,14 @@ def build_context_from_shared_for_workspace(
     shared = copy.deepcopy(shared_doc)
     draft_id = str(shared.get("draft_id") or "").strip()
     league_id = str(shared.get("league_id") or "").strip()
-    my_team = _owned_team_for_owner_id(shared, owner_user_id)
+    my_team = _owned_team_for_account(
+        shared,
+        owner_user_id=owner_user_id,
+        owner_external_id=owner_external_id,
+        workspace_id=workspace_id,
+    )
     base = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+    existing_meta = dict(base.get("metadata") or {}) if isinstance(base, dict) else {}
     if not base:
         league_context_id = context_id_for_archive(draft_id) if draft_id else ""
         base = {
@@ -124,9 +154,23 @@ def build_context_from_shared_for_workspace(
                 "commissioner_user_id": str(shared.get("commissioner_user_id") or "").strip(),
             },
         }
-    elif my_team and not str(base.get("my_team_name") or "").strip():
+    elif my_team:
         base["my_team_name"] = my_team
     merged = merge_shared_into_context(base, shared)
+    if my_team:
+        merged["my_team_name"] = my_team
+    meta = dict(merged.get("metadata") or {})
+    meta["league_id"] = league_id or str(meta.get("league_id") or "").strip()
+    meta["source_draft_id"] = draft_id or str(meta.get("source_draft_id") or "").strip()
+    meta["commissioner_user_id"] = str(shared.get("commissioner_user_id") or meta.get("commissioner_user_id") or "").strip()
+    commissioner = str(meta.get("commissioner_user_id") or "").strip()
+    if bool(existing_meta.get("joined_via_invite")):
+        meta["joined_via_invite"] = True
+    elif my_team and owner_user_id and owner_user_id != commissioner:
+        meta["joined_via_invite"] = True
+    if str(existing_meta.get("invite_id") or "").strip():
+        meta["invite_id"] = str(existing_meta.get("invite_id") or "").strip()
+    merged["metadata"] = meta
     return ensure_league_identity(merged)
 
 
@@ -229,6 +273,67 @@ def _normalize_repaired_archive_types(session: dict[str, Any]) -> int:
     return fixed
 
 
+def _sync_archives_to_workspace_team(session: dict[str, Any], context: dict[str, Any]) -> int:
+    """Rewrite existing repaired archive rows so card identity matches owned team."""
+    from draft_archive_state import DRAFT_ARCHIVE_KEY, DRAFT_TYPE_IMPORTED, _build_archive_snapshot, list_draft_archives
+
+    if not isinstance(context, dict):
+        return 0
+    meta = context.get("metadata") or {}
+    draft_id = str(meta.get("source_draft_id") or context.get("draft_id") or "").strip()
+    if not draft_id:
+        return 0
+    my_team = str(context.get("my_team_name") or "").strip()
+    if not my_team:
+        return 0
+    league_rosters = context.get("league_rosters") or {}
+    team_entry = league_rosters.get(my_team) if isinstance(league_rosters, dict) else {}
+    players = [
+        copy.deepcopy(player)
+        for player in ((team_entry or {}).get("players") or [])
+        if isinstance(player, dict)
+    ]
+    league_context_id = str(context.get("league_context_id") or "").strip()
+    entries = list_draft_archives(session)
+    changed = 0
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("draft_id") or "").strip() != draft_id:
+            continue
+        updated = copy.deepcopy(entry)
+        updated["team_name"] = my_team
+        updated["players"] = players
+        updated["draft_type"] = DRAFT_TYPE_IMPORTED
+        if isinstance(league_rosters, dict):
+            updated["league_rosters"] = copy.deepcopy(league_rosters)
+        if league_context_id:
+            updated["league_context_id"] = league_context_id
+        updated["repaired_from_context"] = True
+        needs_write = (
+            str(entry.get("team_name") or "").strip() != my_team
+            or entry.get("players") != players
+            or str(entry.get("draft_type") or "").strip() != DRAFT_TYPE_IMPORTED
+            or entry.get("league_rosters") != updated.get("league_rosters")
+            or str(entry.get("league_context_id") or "").strip() != league_context_id
+            or not bool(entry.get("repaired_from_context"))
+        )
+        if needs_write:
+            updated["snapshot"] = _build_archive_snapshot(updated, league_rosters=league_rosters if isinstance(league_rosters, dict) else {})
+            updated["updated_at"] = _utc_now_iso()
+            entries[idx] = updated
+            changed += 1
+    if changed:
+        session[DRAFT_ARCHIVE_KEY] = entries
+        try:
+            from workflow_persist_guard import mark_workflow_persist_authoritative
+
+            mark_workflow_persist_authoritative(session)
+        except ImportError:
+            pass
+    return changed
+
+
 def repair_workspace_session_for_league(
     session: dict[str, Any],
     *,
@@ -253,10 +358,12 @@ def repair_workspace_session_for_league(
         "context_created": False,
         "archives_repaired": 0,
         "archive_types_normalized": 0,
+        "archive_team_rows_rewritten": 0,
         "trade_proposals_before": 0,
         "trade_proposals_after": 0,
         "ownership_before": {},
         "ownership_after": {},
+        "resolved_workspace_team": "",
         "active_restore_trace": {},
         "errors": [],
         "skipped_duplicate": False,
@@ -269,6 +376,8 @@ def repair_workspace_session_for_league(
         return trace
 
     owner_uid = str(session.get("_suite_auth_user_id") or session.get("_suite_cloud_user_id") or "").strip()
+    owner_external = str(session.get("_suite_auth_external_id") or "").strip().lower()
+    workspace_id = str(session.get("_suite_owned_workspace_id") or session.get("_suite_active_workspace_id") or "").strip()
     context = find_league_context_by_league_id(session, league_id)
     trace["context_found"] = bool(context)
     if context:
@@ -281,8 +390,11 @@ def repair_workspace_session_for_league(
         context = build_context_from_shared_for_workspace(
             shared,
             owner_user_id=owner_uid,
+            owner_external_id=owner_external,
+            workspace_id=workspace_id,
             existing=context,
         )
+        trace["resolved_workspace_team"] = str(context.get("my_team_name") or "").strip()
         upsert_league_context(session, context, mark_persist_authoritative=False)
         store = session.get(FANTASY_LEAGUE_CONTEXT_STATE_KEY) or {}
         active_ctx_id = str(store.get("active_league_context_id") or "").strip()
@@ -312,6 +424,13 @@ def repair_workspace_session_for_league(
             repair_missing_draft_archives_from_contexts(session, require_visibility=False) or 0
         )
         trace["archive_types_normalized"] = _normalize_repaired_archive_types(session)
+        refreshed = find_league_context_by_league_id(session, league_id) or context
+        trace["archive_team_rows_rewritten"] = _sync_archives_to_workspace_team(session, refreshed)
+        repaired_draft_id = str((refreshed.get("metadata") or {}).get("source_draft_id") or "").strip()
+        if repaired_draft_id:
+            from draft_archive_state import set_active_draft_archive
+
+            set_active_draft_archive(session, repaired_draft_id)
         restore_trace = restore_active_draft_archive_selection(
             session,
             cloud_state=cloud_blob if isinstance(cloud_blob, dict) else {},
@@ -319,6 +438,14 @@ def repair_workspace_session_for_league(
             phase="admin_repair",
         )
         trace["active_restore_trace"] = restore_trace if isinstance(restore_trace, dict) else {}
+        if repaired_draft_id:
+            set_active_draft_archive(session, repaired_draft_id)
+        try:
+            from global_fantasy_settings_state import sync_active_fantasy_team_to_canonical
+
+            sync_active_fantasy_team_to_canonical(session)
+        except ImportError:
+            pass
     except Exception as exc:
         trace["errors"].append(f"archive_repair_failed:{type(exc).__name__}:{exc}")
 
@@ -329,6 +456,7 @@ def repair_workspace_session_for_league(
         or after.get("active_draft_archive_id") != trace["before"].get("active_draft_archive_id")
         or trace["archives_repaired"] > 0
         or trace["archive_types_normalized"] > 0
+        or trace["archive_team_rows_rewritten"] > 0
     )
     return trace
 

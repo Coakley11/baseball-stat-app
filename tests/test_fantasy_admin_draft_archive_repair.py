@@ -26,6 +26,7 @@ def _shared_doc(league_id: str = "league:test123", draft_id: str = "draft99") ->
         "draft_id": draft_id,
         "draft_fingerprint": "fp99",
         "league_name": "2026 Main League",
+        "commissioner_user_id": "user:donny",
         "revision": 3,
         "updated_at": "2026-07-09T00:00:00+00:00",
         "league_rosters": {
@@ -80,6 +81,20 @@ def _context_store(draft_id: str = "draft99", *, my_team: str = "Daniel", user_i
                 }
             },
         }
+    }
+
+
+def _archive_entry(draft_id: str = "draft99", *, team_name: str = "Daniel") -> dict:
+    return {
+        "draft_id": draft_id,
+        "draft_name": "2026 Main League",
+        "draft_type": "imported_draft",
+        "team_name": team_name,
+        "players": [{"player_name": "Aaron Judge", "player_key": "aaron judge"}],
+        "league_rosters": _shared_doc()["league_rosters"],
+        "league_context_id": f"archive:{draft_id}",
+        "created_at": "2026-07-09T00:00:00+00:00",
+        "updated_at": "2026-07-09T00:00:00+00:00",
     }
 
 
@@ -142,6 +157,64 @@ class AdminDraftArchiveRepairTests(unittest.TestCase):
         )
         self.assertEqual(ctx.get("my_team_name"), "Team 2")
         self.assertEqual(ctx["workflow"]["trade_proposals"][0]["trade_id"], "trade-1")
+
+    def test_build_context_from_shared_overwrites_stale_commissioner_team_for_invitee(self) -> None:
+        existing = _context_store(my_team="Daniel", user_id="user:donny")[FANTASY_LEAGUE_CONTEXT_STATE_KEY]["contexts"][
+            "archive:draft99"
+        ]
+        ctx = build_context_from_shared_for_workspace(
+            _shared_doc(),
+            owner_user_id="user:seal11",
+            owner_external_id="coakley11",
+            workspace_id="coakley11",
+            existing=existing,
+        )
+        self.assertEqual(ctx.get("my_team_name"), "Team 2")
+        self.assertTrue((ctx.get("metadata") or {}).get("joined_via_invite"))
+        self.assertEqual((ctx.get("metadata") or {}).get("commissioner_user_id"), "user:donny")
+        self.assertEqual(ctx["workflow"]["trade_proposals"][0]["trade_id"], "trade-1")
+
+    def test_repair_rewrites_existing_invitee_archive_from_commissioner_to_owned_team(self) -> None:
+        from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, DRAFT_ARCHIVE_KEY, list_draft_archives
+        from global_fantasy_settings_state import GLOBAL_TEAM_KEY
+
+        session = bootstrap_session_for_workspace(
+            "coakley11",
+            cloud_blob={
+                **_context_store(my_team="Daniel", user_id="user:donny"),
+                DRAFT_ARCHIVE_KEY: [_archive_entry(team_name="Daniel")],
+                ACTIVE_DRAFT_ARCHIVE_KEY: "draft99",
+                "_suite_auth_user_id": "user:seal11",
+                "_suite_auth_external_id": "coakley11",
+            },
+        )
+        trace = repair_workspace_session_for_league(
+            session,
+            league_id="league:test123",
+            shared_doc=_shared_doc(),
+        )
+        self.assertEqual(trace["resolved_workspace_team"], "Team 2")
+        self.assertEqual(trace["after"]["raw_archive_count"], 1)
+        self.assertEqual(trace["archive_team_rows_rewritten"], 1)
+        self.assertEqual(trace["trade_proposals_after"], 1)
+        archives = list_draft_archives(session)
+        self.assertEqual(len(archives), 1)
+        self.assertEqual(archives[0]["team_name"], "Team 2")
+        self.assertEqual(archives[0]["players"][0]["player_name"], "Mookie Betts")
+        store = session[FANTASY_LEAGUE_CONTEXT_STATE_KEY]
+        ctx = store["contexts"]["archive:draft99"]
+        self.assertEqual(ctx["my_team_name"], "Team 2")
+        self.assertTrue((ctx.get("metadata") or {}).get("joined_via_invite"))
+        self.assertEqual(session[GLOBAL_TEAM_KEY], "Team 2")
+        self.assertEqual(session["active_draft_archive_id"], "draft99")
+
+        second = repair_workspace_session_for_league(
+            session,
+            league_id="league:test123",
+            shared_doc=_shared_doc(),
+        )
+        self.assertEqual(second["after"]["raw_archive_count"], 1)
+        self.assertEqual(second["archive_team_rows_rewritten"], 0)
 
     def test_merge_repaired_workflow_preserves_unrelated_blob_keys(self) -> None:
         blob = {"active_page": "Fantasy Lineup Assistant", "comparison_state": {"players": ["A"]}}
