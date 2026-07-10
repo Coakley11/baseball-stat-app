@@ -787,5 +787,27 @@ class TradeProposalPhase3Tests(_TradeTestCase):
         self.assertTrue(any("canceled" in s.lower() for s in summaries))
 
 
+class TradeSubmitTraceTests(_TradeTestCase):
+    def test_trade_submit_trace_records_create_and_shared_push(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        proposal, err = _create_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        self.assertEqual(err, "")
+        assert proposal is not None
+        from fantasy_trade_proposals import build_trade_submit_trace_snapshot
+
+        snap = build_trade_submit_trace_snapshot(session)
+        self.assertTrue(snap.get("propose_trade_called"))
+        self.assertEqual(snap.get("trade_id"), str(proposal.get("trade_id") or proposal.get("proposal_id")))
+        self.assertIsNone(snap.get("create_error"))
+        self.assertTrue(snap.get("save_shared_league_ok"))
+
+
 if __name__ == "__main__":
     unittest.main()

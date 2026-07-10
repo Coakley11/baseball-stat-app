@@ -154,6 +154,9 @@ _WORKFLOW_KEYS = (
     "_last_invite_shared_push_ok",
     "_last_invite_shared_push_error",
     "_last_invite_shared_league_id",
+    "_suite_last_trade_submit_trace",
+    "_last_trade_proposal_submit_error",
+    "_last_trade_proposal_submit_ok",
 )
 
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"

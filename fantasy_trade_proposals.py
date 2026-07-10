@@ -39,6 +39,51 @@ TRADE_PHASE1_SIMPLE = True
 STALE_TRADE_MESSAGE = (
     "Trade can no longer be completed because one or more players are no longer on the expected roster."
 )
+TRADE_SUBMIT_TRACE_KEY = "_suite_last_trade_submit_trace"
+
+
+def record_trade_submit_trace(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    """Persist trade propose-button diagnostics across reruns."""
+    trace = dict(session.get(TRADE_SUBMIT_TRACE_KEY) or {})
+    trace.update({k: v for k, v in fields.items() if v is not None or k.endswith("_error")})
+    trace["updated_at"] = _utc_now_iso()
+    session[TRADE_SUBMIT_TRACE_KEY] = trace
+    return trace
+
+
+def build_trade_submit_trace_snapshot(session: dict[str, Any]) -> dict[str, Any]:
+    """Latest trade propose form trace for diagnostic panels."""
+    trace = dict(session.get(TRADE_SUBMIT_TRACE_KEY) or {})
+    return {
+        "button_clicked": bool(trace.get("button_clicked")),
+        "propose_trade_called": bool(trace.get("propose_trade_called")),
+        "proposer_team": trace.get("proposer_team"),
+        "recipient_team": trace.get("recipient_team"),
+        "give_players": trace.get("give_players"),
+        "receive_players": trace.get("receive_players"),
+        "trade_id": trace.get("trade_id"),
+        "validation_error": trace.get("validation_error"),
+        "create_error": trace.get("create_error"),
+        "save_shared_league_ok": trace.get("save_shared_league_ok"),
+        "save_shared_league_error": trace.get("save_shared_league_error"),
+        "pending_trade_count_before": trace.get("pending_trade_count_before"),
+        "pending_trade_count_after": trace.get("pending_trade_count_after"),
+        "outgoing_count_before": trace.get("outgoing_count_before"),
+        "outgoing_count_after": trace.get("outgoing_count_after"),
+        "league_context_id": trace.get("league_context_id"),
+        "league_id": trace.get("league_id"),
+        "updated_at": trace.get("updated_at"),
+    }
+
+
+def count_pending_trade_proposals(context: dict[str, Any] | None) -> int:
+    if not context:
+        return 0
+    return sum(
+        1
+        for proposal in get_trade_proposals(context)
+        if get_display_status(context, proposal) == TRADE_PROPOSAL_STATUS_PENDING
+    )
 
 
 def _utc_now_iso() -> str:
@@ -628,17 +673,28 @@ def create_trade_proposal(
 ) -> tuple[dict[str, Any] | None, str]:
     context, load_err = _load_mutable_context(session)
     if context is None:
+        record_trade_submit_trace(session, propose_trade_called=False, create_error=load_err or "No active league context")
         return None, load_err
 
     enabled, gate_msg = trades_enabled(context, session)
     if not enabled:
-        return None, gate_msg or TRADES_DISABLED_MESSAGE
+        err = gate_msg or TRADES_DISABLED_MESSAGE
+        record_trade_submit_trace(session, propose_trade_called=False, create_error=err)
+        return None, err
 
     proposer = str(proposer_team or "").strip()
     recipient = str(recipient_team or "").strip()
     my_owned = owned_team_for_user(context)
     if my_owned and proposer != my_owned:
-        return None, f"Your account owns {my_owned}; trades must be proposed from that team."
+        err = f"Your account owns {my_owned}; trades must be proposed from that team."
+        record_trade_submit_trace(
+            session,
+            propose_trade_called=True,
+            proposer_team=proposer,
+            recipient_team=recipient,
+            create_error=err,
+        )
+        return None, err
 
     gives = [str(x).strip() for x in proposer_gives if str(x).strip()]
     receives = [str(x).strip() for x in proposer_receives if str(x).strip()]
@@ -650,6 +706,16 @@ def create_trade_proposal(
         proposer_receives=receives,
     )
     if not ok:
+        record_trade_submit_trace(
+            session,
+            propose_trade_called=True,
+            proposer_team=proposer,
+            recipient_team=recipient,
+            give_players=gives,
+            receive_players=receives,
+            validation_error=msg,
+            create_error=msg,
+        )
         return None, msg
 
     give_refs = [_normalize_player_ref(n) for n in gives]
@@ -658,8 +724,32 @@ def create_trade_proposal(
     from_user_id = owner_user_id_for_team(context, proposer) or owned_team_for_user(context)
     to_user_id = owner_user_id_for_team(context, recipient)
     if not to_user_id:
-        return None, f"{recipient} has no account owner assigned yet."
+        err = f"{recipient} has no account owner assigned yet."
+        record_trade_submit_trace(
+            session,
+            propose_trade_called=True,
+            proposer_team=proposer,
+            recipient_team=recipient,
+            give_players=gives,
+            receive_players=receives,
+            create_error=err,
+        )
+        return None, err
     league_id = resolve_canonical_league_id(context)
+    league_context_id = str(context.get("league_context_id") or "").strip()
+    record_trade_submit_trace(
+        session,
+        propose_trade_called=True,
+        proposer_team=proposer,
+        recipient_team=recipient,
+        give_players=gives,
+        receive_players=receives,
+        league_context_id=league_context_id or None,
+        league_id=league_id or None,
+        create_error=None,
+        validation_error=None,
+        trade_id=None,
+    )
     proposal: dict[str, Any] = {
         "proposal_id": f"tp:{uuid.uuid4().hex[:12]}",
         "trade_id": "",
@@ -690,13 +780,41 @@ def create_trade_proposal(
     proposals.append(proposal)
     context = ensure_league_identity(context)
     saved = upsert_league_context(session, context)
+    reloaded = get_league_context(session, str(saved.get("league_context_id") or "")) or saved
+    save_shared_ok: bool | None = None
+    save_shared_error: str | None = None
     try:
         from fantasy_shared_league_store import push_league_context_to_shared
 
-        push_league_context_to_shared(session, saved)
+        pushed = push_league_context_to_shared(session, reloaded)
+        save_shared_ok = pushed is not None
+        if not save_shared_ok:
+            save_shared_error = "push_league_context_to_shared returned None"
     except ImportError:
-        pass
-    return get_trade_proposal(saved, str(proposal["proposal_id"])), ""
+        save_shared_ok = None
+    except Exception as exc:
+        save_shared_ok = False
+        save_shared_error = str(exc)
+    proposal_id = str(proposal["proposal_id"])
+    created = get_trade_proposal(reloaded, proposal_id)
+    if not created:
+        err = "Trade proposal saved but could not be reloaded from league context."
+        record_trade_submit_trace(
+            session,
+            trade_id=proposal_id,
+            create_error=err,
+            save_shared_league_ok=save_shared_ok,
+            save_shared_league_error=save_shared_error,
+        )
+        return None, err
+    record_trade_submit_trace(
+        session,
+        trade_id=str(created.get("trade_id") or created.get("proposal_id") or proposal_id),
+        create_error=None,
+        save_shared_league_ok=save_shared_ok,
+        save_shared_league_error=save_shared_error,
+    )
+    return created, ""
 
 
 def _execute_roster_swap(context: dict[str, Any], proposal: dict[str, Any]) -> bool:
