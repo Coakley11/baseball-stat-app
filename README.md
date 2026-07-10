@@ -399,7 +399,15 @@ Configure secrets in `.streamlit/secrets.toml` for Streamlit Cloud (see `.stream
 - **Repository:** `Coakley11/baseball-stat-app`
 - **Branch:** `dev`
 - **Main file:** `streamlit_app.py` (lowercase — required on Linux)
+- **Python version:** **3.12** — set in **Manage app → Settings → Python version** (repo also pins via `.python-version` and `pyproject.toml`). Do **not** deploy on Python 3.14; native extensions can segfault before the app loads.
 - Build marker: `deploy_commit.txt` + `suite_deploy_marker.py`
+
+**Runtime smoke (after dependency install):**
+
+```bash
+PYTHONFAULTHANDLER=1 python scripts/isolate_native_imports.py
+PYTHONFAULTHANDLER=1 python scripts/smoke_streamlit_startup.py
+```
 
 ---
 

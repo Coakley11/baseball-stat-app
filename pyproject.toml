@@ -1,0 +1,27 @@
+[project]
+name = "baseball-stat-app"
+version = "0.1.0"
+description = "Baseball stat app — Streamlit Cloud deploy target"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "streamlit>=1.40.0,<1.46.0",
+    "pandas>=2.2.0,<2.3.0",
+    "numpy>=2.1.0,<2.3.0",
+    "plotly>=5.24.0,<6.0.0",
+    "scikit-learn>=1.5.0,<1.7.0",
+    "statsmodels>=0.14.0,<0.15.0",
+    "scipy>=1.14.0,<1.16.0",
+    "matplotlib>=3.8.0,<3.10.0",
+    "pyarrow>=17.0.0,<20.0.0",
+    "requests>=2.31.0,<3.0.0",
+    "pybaseball",
+    "openpyxl",
+    "xlsxwriter",
+    "streamlit-sortables>=0.3.1,<0.5.0",
+    "supabase>=2.0.0,<3.0.0",
+    "setuptools>=65.5.0",
+]
+
+[tool.uv]
+# Streamlit Community Cloud uses uv when uv.lock is present; keep requires-python in sync.
+# Primary install path today remains requirements.txt — set Cloud Advanced settings to Python 3.12.

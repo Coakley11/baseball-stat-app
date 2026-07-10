@@ -1,19 +1,25 @@
-# deploy-bump: 2026-07-08-fantasy-source-hotfix (forces Streamlit Cloud full redeploy)
-streamlit-sortables>=0.3.1
-streamlit
-pandas
-numpy
-plotly
-scikit-learn
-statsmodels
-scipy
-matplotlib
-requests
+# deploy-bump: 2026-07-10-python312-runtime-pin (forces Streamlit Cloud full redeploy)
+# Runtime: Python 3.12 — also set Streamlit Cloud → Manage app → Settings → Python version → 3.12
+# Do not use Python 3.14 on Streamlit Cloud; native wheels (numpy/scipy/sklearn) may segfault at startup.
+
+setuptools>=65.5.0,<81
+
+streamlit>=1.40.0,<1.46.0
+streamlit-sortables>=0.3.1,<0.5.0
+
+numpy>=2.1.0,<2.3.0
+pandas>=2.2.0,<2.3.0
+pyarrow>=17.0.0,<20.0.0
+scipy>=1.14.0,<1.16.0
+scikit-learn>=1.5.0,<1.7.0
+matplotlib>=3.8.0,<3.10.0
+
+plotly>=5.24.0,<6.0.0
+statsmodels>=0.14.0,<0.15.0
+requests>=2.31.0,<3.0.0
+
 pybaseball
 openpyxl
 xlsxwriter
 
-
-supabase>=2.0.0
-
-
+supabase>=2.0.0,<3.0.0

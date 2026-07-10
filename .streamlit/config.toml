@@ -8,3 +8,8 @@ gatherUsageStats = false
 # Do not use Streamlit_app.py — removed from dev branch; uppercase breaks Linux deploys.
 # App settings: repo Coakley11/baseball-stat-app · branch dev · not pinned to an old commit.
 # After push: Manage app → Reboot app if diagnostics still show a stale commit.
+#
+# Python runtime (required for stable native wheels):
+#   Manage app → Settings → Python version → 3.12
+# Repository pins: .python-version, pyproject.toml requires-python, requirements.txt ranges.
+# Python 3.14 on Cloud has caused uvicorn segfaults before app load — not a data-loss signal.
