@@ -1262,6 +1262,14 @@ def prepare_baseball_workspace(st: Any) -> bool:
         pass
     except Exception:
         pass
+    try:
+        from workflow_persist_guard import run_consolidated_startup_workflow
+
+        ss["_suite_consolidated_startup_trace"] = run_consolidated_startup_workflow(st, APP_ID)
+    except ImportError:
+        pass
+    except Exception:
+        pass
     return result
 
 

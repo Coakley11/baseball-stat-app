@@ -39,6 +39,8 @@ AUTH_MIGRATION_WRITEBACK_OK_KEY = "_suite_auth_migration_writeback_ok"
 AUTH_MIGRATION_WRITEBACK_TRACE_KEY = "_suite_auth_migration_writeback_trace"
 AUTH_MIGRATION_WRITEBACK_FORCE_KEY = "_suite_auth_migration_writeback_force"
 AUTH_RESTORE_CYCLE_COMPLETE_KEY = "_suite_auth_restore_cycle_complete"
+STARTUP_READ_ONLY_GATE_KEY = "_suite_startup_read_only_gate"
+STARTUP_CANONICAL_SYNC_COMPLETE_KEY = "_suite_startup_canonical_sync_complete"
 WORKFLOW_DRAFT_ARCHIVE_BACKUP_KEY = "_suite_draft_archive_prewrite_backup"
 ACTIVE_DRAFT_RESTORE_TRACE_KEY = "_suite_active_draft_restore_trace"
 WORKFLOW_CLOUD_DRAFT_ARCHIVE_BACKUP_KEY = "_suite_cloud_draft_archive_prewrite_backup"
@@ -497,6 +499,9 @@ def draft_archive_shrink_blocked_reason(
     durable = summarize_durable_draft_sources(session, app_id, st=st)
     disk_max = int(durable.get("disk_max") or 0)
     max_durable = max(int(durable.get("max_draft_count") or 0), live_cloud_count, disk_max)
+    evidence = summarize_recoverable_workflow_evidence(session, app_id, st=st)
+    if max_durable <= 0 and evidence.get("recoverable"):
+        max_durable = 1
 
     if max_durable <= 0:
         return None
@@ -512,6 +517,7 @@ def draft_archive_shrink_blocked_reason(
         "live_cloud_draft_count": live_cloud_count,
         "disk_draft_max": disk_max,
         "max_durable_draft_count": max_durable,
+        "recoverable_evidence": evidence,
         "backup": backup_meta,
         "at": _utc_now_iso(),
     }
@@ -524,6 +530,8 @@ def draft_archive_shrink_blocked_reason(
         return "page_change_empty_draft_archive_blocked"
     if live_cloud_count > 0 and outbound == 0:
         return "empty_outgoing_would_erase_live_cloud_drafts"
+    if evidence.get("recoverable") and outbound == 0:
+        return "empty_outgoing_would_erase_recoverable_shared_league_evidence"
     return "empty_workflow_would_erase_durable_drafts"
 
 
@@ -554,6 +562,9 @@ def workflow_empty_save_blocked_reason(
         return None
     reason = str(save_reason or "").strip()
     session = st.session_state
+    startup_block = startup_read_only_blocked_reason(st, app_id, reason)
+    if startup_block:
+        return startup_block
     if _session_allows_workflow_clear(session, reason):
         return None
 
@@ -3175,3 +3186,169 @@ def probe_cloud_workflow_for_workspace(
         workspace_id=ws,
         max_attempts=max_attempts,
     )
+
+
+def summarize_recoverable_workflow_evidence(
+    session: dict[str, Any],
+    app_id: str = "baseball",
+    *,
+    st: Any | None = None,
+) -> dict[str, Any]:
+    """Evidence that workflow state is recoverable even when draft_archive_teams is empty."""
+    out: dict[str, Any] = {
+        "active_draft_archive_id": False,
+        "accepted_invite": False,
+        "team_ownership": False,
+        "shared_league_membership": False,
+        "pending_trade": False,
+        "recoverable": False,
+        "league_ids": [],
+        "membership_count": 0,
+    }
+    active_id = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    if not active_id:
+        disk = _load_disk_workflow_snapshot(app_id)
+        active_id = str(disk.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    if not active_id and st is not None:
+        cloud = _load_cloud_workflow_snapshot(app_id, st)
+        active_id = str(cloud.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    out["active_draft_archive_id"] = bool(active_id)
+    out["active_draft_archive_id_value"] = active_id or None
+
+    try:
+        from fantasy_shared_league_startup_sync import discover_shared_league_memberships_for_session
+
+        memberships = discover_shared_league_memberships_for_session(session)
+    except ImportError:
+        memberships = []
+    out["membership_count"] = len(memberships)
+    out["league_ids"] = [str(m.get("league_id") or "").strip() for m in memberships if m.get("league_id")]
+    for row in memberships:
+        reasons = set(row.get("reasons") or [])
+        if "team_ownership" in reasons:
+            out["team_ownership"] = True
+            out["shared_league_membership"] = True
+        if "accepted_invite" in reasons:
+            out["accepted_invite"] = True
+            out["shared_league_membership"] = True
+        if "pending_trade" in reasons:
+            out["pending_trade"] = True
+    out["recoverable"] = bool(
+        out["active_draft_archive_id"]
+        or out["accepted_invite"]
+        or out["team_ownership"]
+        or out["shared_league_membership"]
+        or out["pending_trade"]
+    )
+    return out
+
+
+def activate_startup_read_only_gate(
+    session: dict[str, Any],
+    app_id: str = "baseball",
+    *,
+    phase: str = "begin",
+) -> dict[str, Any]:
+    """Block derived-cache writes until auth, workspace, and canonical sync complete."""
+    gate = {
+        "active": True,
+        "app_id": app_id,
+        "phase": str(phase or "begin"),
+        "activated_at": _utc_now_iso(),
+    }
+    session[STARTUP_READ_ONLY_GATE_KEY] = gate
+    try:
+        from suite_user_persistence import _autosave_block_key
+
+        session[_autosave_block_key(app_id)] = True
+        session["_suite_autosave_block_reason"] = "startup_read_only_gate"
+    except ImportError:
+        pass
+    return gate
+
+
+def evaluate_startup_readiness(st: Any, app_id: str = "baseball") -> dict[str, Any]:
+    session = st.session_state
+    blocked_reason = ""
+    try:
+        from suite_auth import is_auth_enabled
+
+        auth_enabled = is_auth_enabled()
+    except ImportError:
+        auth_enabled = False
+    auth_complete = bool(session.get(AUTH_RESTORE_CYCLE_COMPLETE_KEY)) if auth_enabled else True
+    if auth_enabled and not auth_complete:
+        blocked_reason = "auth_restore_incomplete"
+
+    workspace_id = str(
+        session.get("_suite_owned_workspace_id") or session.get("_suite_active_workspace_id") or ""
+    ).strip()
+    workspace_resolved = bool(workspace_id)
+    if not workspace_resolved:
+        blocked_reason = blocked_reason or "workspace_unresolved"
+
+    canonical_loaded = bool(session.get(STARTUP_CANONICAL_SYNC_COMPLETE_KEY))
+    if not canonical_loaded:
+        blocked_reason = blocked_reason or "canonical_shared_league_sync_incomplete"
+
+    ready = auth_complete and workspace_resolved and canonical_loaded
+    return {
+        "ready": ready,
+        "blocked_reason": "" if ready else blocked_reason,
+        "auth_complete": auth_complete,
+        "workspace_resolved": workspace_resolved,
+        "workspace_id": workspace_id,
+        "canonical_loaded": canonical_loaded,
+    }
+
+
+def startup_read_only_blocked_reason(st: Any, app_id: str, save_reason: str = "") -> str | None:
+    if app_id != "baseball":
+        return None
+    session = st.session_state
+    gate = session.get(STARTUP_READ_ONLY_GATE_KEY)
+    if not isinstance(gate, dict):
+        return None
+    if gate.get("active"):
+        return "startup_read_only_gate_active"
+    if not session.get(STARTUP_CANONICAL_SYNC_COMPLETE_KEY):
+        readiness = evaluate_startup_readiness(st, app_id)
+        if not readiness.get("ready"):
+            return f"startup_readonly_{readiness.get('blocked_reason') or 'incomplete'}"
+    return None
+
+
+def run_consolidated_startup_workflow(st: Any, app_id: str = "baseball") -> dict[str, Any]:
+    """Canonical shared-league rebuild and startup gate finalization."""
+    session = st.session_state
+    trace: dict[str, Any] = {"canonical_sync": {}, "readiness": {}, "rerun_requested": False}
+    try:
+        from fantasy_shared_league_startup_sync import rebuild_workflow_from_canonical_shared_leagues
+
+        trace["canonical_sync"] = rebuild_workflow_from_canonical_shared_leagues(st, app_id)
+    except ImportError as exc:
+        trace["canonical_sync"] = {"error": str(exc)}
+    session[STARTUP_CANONICAL_SYNC_COMPLETE_KEY] = True
+    trace["readiness"] = finalize_startup_read_only_gate(st, app_id)
+    if trace["canonical_sync"].get("rebuilt") and not session.get("_suite_startup_canonical_sync_rerun_done"):
+        session["_suite_startup_canonical_sync_rerun_done"] = True
+        trace["rerun_requested"] = True
+        rerun = getattr(st, "rerun", None)
+        if callable(rerun):
+            rerun()
+    return trace
+
+
+def finalize_startup_read_only_gate(st: Any, app_id: str = "baseball") -> dict[str, Any]:
+    session = st.session_state
+    readiness = evaluate_startup_readiness(st, app_id)
+    gate = dict(session.get(STARTUP_READ_ONLY_GATE_KEY) or {})
+    gate["readiness"] = readiness
+    if readiness.get("ready"):
+        gate["active"] = False
+        gate["cleared_at"] = _utc_now_iso()
+    else:
+        gate["active"] = True
+        gate["blocked_reason"] = readiness.get("blocked_reason")
+    session[STARTUP_READ_ONLY_GATE_KEY] = gate
+    return readiness

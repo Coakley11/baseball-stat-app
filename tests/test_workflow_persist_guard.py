@@ -11,8 +11,10 @@ from unittest.mock import MagicMock, patch
 from workflow_persist_guard import (
     ACTIVE_DRAFT_ARCHIVE_KEY,
     ACTIVE_DRAFT_RESTORE_TRACE_KEY,
+    AUTH_RESTORE_CYCLE_COMPLETE_KEY,
     DRAFT_ARCHIVE_KEY,
     LEAGUE_CONTEXT_STATE_KEY,
+    STARTUP_CANONICAL_SYNC_COMPLETE_KEY,
     WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
     build_saved_draft_library_diagnostics,
     build_persistence_probe_panel,
@@ -671,6 +673,43 @@ class WorkflowPersistGuardTests(unittest.TestCase):
 
         self.assertEqual(reason, "empty_outgoing_would_erase_live_cloud_drafts")
         self.assertTrue(st.session_state.get("_suite_draft_archive_wipe_guard", {}).get("blocked"))
+
+    def test_startup_read_only_gate_blocks_page_change(self) -> None:
+        from workflow_persist_guard import activate_startup_read_only_gate, startup_read_only_blocked_reason
+
+        st = MagicMock()
+        st.session_state = {"_suite_active_workspace_id": "coakley11"}
+        activate_startup_read_only_gate(st.session_state, "baseball")
+        reason = startup_read_only_blocked_reason(st, "baseball", "page_change")
+        self.assertEqual(reason, "startup_read_only_gate_active")
+
+    def test_recoverable_shared_league_evidence_blocks_empty_save(self) -> None:
+        st = MagicMock()
+        st.session_state = {
+            "_suite_active_workspace_id": "coakley11",
+            "_suite_auth_user_id": "user:seal11",
+            AUTH_RESTORE_CYCLE_COMPLETE_KEY: True,
+            STARTUP_CANONICAL_SYNC_COMPLETE_KEY: True,
+        }
+        state = {DRAFT_ARCHIVE_KEY: []}
+        memberships = [
+            {
+                "league_id": "league:test01",
+                "reasons": ["team_ownership", "pending_trade"],
+                "owned_teams": ["Team 2"],
+            }
+        ]
+        with patch("workflow_persist_guard.read_live_cloud_draft_probe", return_value={"draft_archive_count": 0}):
+            with patch("workflow_persist_guard.summarize_durable_draft_sources", return_value={"max_draft_count": 0, "disk_max": 0}):
+                with patch("workflow_persist_guard.summarize_recoverable_workflow_evidence", return_value={"recoverable": True, "team_ownership": True}):
+                    with patch("fantasy_shared_league_startup_sync.discover_shared_league_memberships_for_session", return_value=memberships):
+                        reason = workflow_empty_save_blocked_reason(
+                            st,
+                            "baseball",
+                            state,
+                            save_reason="fantasy_edit",
+                        )
+        self.assertEqual(reason, "empty_outgoing_would_erase_recoverable_shared_league_evidence")
 
     def test_probe_auth_labels_unsigned_with_cloud_user(self) -> None:
         from workflow_persist_guard import _resolve_probe_auth_labels

@@ -360,6 +360,25 @@ def _cloud_autosave_blocked_reason(
 ) -> str | None:
     if app_id == "baseball":
         try:
+            from workflow_persist_guard import startup_read_only_blocked_reason
+
+            startup_block = startup_read_only_blocked_reason(st, app_id, save_reason)
+            if startup_block:
+                return startup_block
+        except ImportError:
+            pass
+    try:
+        from workflow_persist_guard import workflow_empty_save_blocked_reason
+
+        gated = workflow_empty_save_blocked_reason(
+            st, app_id, state, save_reason=save_reason, scope="cloud"
+        )
+        if gated:
+            return gated
+    except ImportError:
+        pass
+    if app_id == "baseball":
+        try:
             from workflow_persist_guard import (
                 WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
                 count_draft_archives,
@@ -378,16 +397,6 @@ def _cloud_autosave_blocked_reason(
                         return shrink
         except ImportError:
             pass
-    try:
-        from workflow_persist_guard import workflow_empty_save_blocked_reason
-
-        gated = workflow_empty_save_blocked_reason(
-            st, app_id, state, save_reason=save_reason, scope="cloud"
-        )
-        if gated:
-            return gated
-    except ImportError:
-        pass
     if _is_force_save_cloud_reason(save_reason):
         return None
     if st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
@@ -1716,6 +1725,29 @@ def force_autosave(
 
         from suite_cloud_state import load_cloud_full_session, save_cloud_full_session, session_page_summary
 
+        try:
+            from workflow_persist_guard import startup_read_only_blocked_reason
+
+            startup_block = startup_read_only_blocked_reason(st, app_id, reason)
+            if startup_block:
+                st.session_state["_suite_empty_startup_write_blocked"] = startup_block
+                try:
+                    from persist_write_audit import record_persist_write_audit
+
+                    record_persist_write_audit(
+                        st,
+                        app_id,
+                        source_function="force_autosave",
+                        save_reason=reason or "force_autosave",
+                        blocked=True,
+                        block_reason=startup_block,
+                    )
+                except ImportError:
+                    pass
+                return False
+        except ImportError:
+            pass
+
         block_key = _autosave_block_key(app_id)
         bypass_block = _is_force_save_cloud_reason(reason)
         if st.session_state.get(block_key) and not bypass_block:
@@ -1848,6 +1880,19 @@ def autosave_if_changed(
             st.session_state["_suite_autosave_block_reason"] = st.session_state.get(
                 "_suite_autosave_block_reason", "post-restore cooldown"
             )
+            try:
+                from persist_write_audit import record_persist_write_audit
+
+                record_persist_write_audit(
+                    st,
+                    app_id,
+                    source_function="autosave_if_changed",
+                    save_reason="autosave",
+                    blocked=True,
+                    block_reason=str(st.session_state.get("_suite_autosave_block_reason") or ""),
+                )
+            except ImportError:
+                pass
             return
 
         state = build_state(st)
@@ -1860,6 +1905,20 @@ def autosave_if_changed(
             if empty_block:
                 st.session_state["_suite_empty_startup_write_blocked"] = empty_block
                 st.session_state["_suite_persist_last_save_reason"] = "autosave"
+                try:
+                    from persist_write_audit import record_persist_write_audit
+
+                    record_persist_write_audit(
+                        st,
+                        app_id,
+                        source_function="autosave_if_changed",
+                        save_reason="autosave",
+                        outgoing_state=state,
+                        blocked=True,
+                        block_reason=empty_block,
+                    )
+                except ImportError:
+                    pass
                 return
         except ImportError:
             pass
@@ -1917,6 +1976,20 @@ def autosave_if_changed(
             _record_autosave_trace(
                 st, app_id, reason="autosave", wrote_cloud=saved_cloud, state=state
             )
+            try:
+                from persist_write_audit import record_persist_write_audit
+
+                record_persist_write_audit(
+                    st,
+                    app_id,
+                    source_function="autosave_if_changed",
+                    save_reason="autosave",
+                    outgoing_state=state,
+                    wrote_disk=saved_disk,
+                    wrote_cloud=saved_cloud,
+                )
+            except ImportError:
+                pass
             st.session_state["_suite_last_cloud_payload_comparison_players"] = _workspace_comparison_players(
                 state
             ) or None
