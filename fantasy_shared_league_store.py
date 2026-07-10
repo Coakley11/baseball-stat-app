@@ -526,7 +526,7 @@ def sync_context_with_shared_store(
     if not isinstance(shared, dict):
         return context
     merged = merge_shared_into_context(context, shared)
-    return upsert_league_context(session, merged)
+    return upsert_league_context(session, merged, mark_persist_authoritative=False)
 
 
 def push_league_context_to_shared(
@@ -569,7 +569,7 @@ def push_league_context_to_shared(
     try:
         from fantasy_league_context import upsert_league_context
 
-        upsert_league_context(session, context)
+        upsert_league_context(session, context, mark_persist_authoritative=False)
     except ImportError:
         pass
     return saved

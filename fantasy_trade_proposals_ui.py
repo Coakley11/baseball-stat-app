@@ -442,6 +442,12 @@ def render_trade_proposals_section(
                         "recipient_team": other_team,
                     }
                     if persist_fn:
+                        try:
+                            from fantasy_league_context import repair_missing_draft_archives_from_contexts
+
+                            repair_missing_draft_archives_from_contexts(session)
+                        except ImportError:
+                            pass
                         persist_fn(session, st, reason="trade_proposal_created")
                     st.success(f"Trade proposed to **{other_team}**.")
                 else:

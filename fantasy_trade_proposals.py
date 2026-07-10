@@ -146,7 +146,7 @@ def finalize_accepted_trade(session: dict[str, Any], context: dict[str, Any]) ->
             league_rosters=context.get("league_rosters") or {},
             league_context_id=league_context_id,
         )
-    saved = upsert_league_context(session, context)
+    saved = upsert_league_context(session, context, mark_persist_authoritative=False)
     try:
         from fantasy_shared_league_store import push_league_context_to_shared
 
@@ -461,7 +461,7 @@ def mark_trade_notification_seen(
     if key not in seen_list:
         seen_list.append(key)
     seen_map[team] = seen_list[-200:]
-    upsert_league_context(session, context)
+    upsert_league_context(session, context, mark_persist_authoritative=False)
 
 
 def get_display_status(context: dict[str, Any], proposal: dict[str, Any]) -> str:
@@ -779,7 +779,7 @@ def create_trade_proposal(
     proposals = _ensure_trade_proposals_workflow(context)
     proposals.append(proposal)
     context = ensure_league_identity(context)
-    saved = upsert_league_context(session, context)
+    saved = upsert_league_context(session, context, mark_persist_authoritative=False)
     reloaded = get_league_context(session, str(saved.get("league_context_id") or "")) or saved
     save_shared_ok: bool | None = None
     save_shared_error: str | None = None
@@ -887,13 +887,13 @@ def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[di
             proposal["responded_at"] = proposal["updated_at"]
             proposals[target_idx] = proposal
             _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_EXPIRED)
-            upsert_league_context(session, context)
+            upsert_league_context(session, context, mark_persist_authoritative=False)
             return None, msg
         if msg == STALE_TRADE_MESSAGE:
             proposal["status"] = TRADE_PROPOSAL_STATUS_STALE
             proposal["updated_at"] = _utc_now_iso()
             proposals[target_idx] = proposal
-            upsert_league_context(session, context)
+            upsert_league_context(session, context, mark_persist_authoritative=False)
         return None, msg
 
     recipient = str(proposal.get("recipient_team") or "").strip()
@@ -945,7 +945,7 @@ def decline_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[d
     proposal["declined_at"] = now
     proposals[target_idx] = proposal
     _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_DECLINED)
-    saved = upsert_league_context(session, context)
+    saved = upsert_league_context(session, context, mark_persist_authoritative=False)
     try:
         from fantasy_shared_league_store import push_league_context_to_shared
 
@@ -993,7 +993,7 @@ def cancel_trade_proposal(
     proposal["responded_at"] = now
     proposals[target_idx] = proposal
     _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_CANCELED)
-    saved = upsert_league_context(session, context)
+    saved = upsert_league_context(session, context, mark_persist_authoritative=False)
     try:
         from fantasy_shared_league_store import push_league_context_to_shared
 
@@ -1040,7 +1040,7 @@ def counter_trade_proposal(
         original["responded_at"] = original["updated_at"]
         proposals[target_idx] = original
         _record_trade_activity(context, original, TRADE_PROPOSAL_STATUS_EXPIRED)
-        upsert_league_context(session, context)
+        upsert_league_context(session, context, mark_persist_authoritative=False)
         return None, "This trade proposal has expired."
 
     proposer = str(original.get("proposer_team") or "").strip()
@@ -1083,7 +1083,7 @@ def counter_trade_proposal(
         "verdict": str(verdict or "").strip(),
     }
     proposals.append(counter)
-    saved = upsert_league_context(session, context)
+    saved = upsert_league_context(session, context, mark_persist_authoritative=False)
     try:
         from fantasy_shared_league_store import push_league_context_to_shared
 

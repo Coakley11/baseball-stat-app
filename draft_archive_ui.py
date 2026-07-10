@@ -2360,6 +2360,20 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
             prune_invisible_shared_league_state(session)
         if repair_missing_draft_archives_from_contexts(session):
             prune_invisible_shared_league_state(session)
+        try:
+            from workflow_persist_guard import restore_active_draft_archive_selection
+
+            restore_active_draft_archive_selection(session)
+        except ImportError:
+            pass
+    except ImportError:
+        pass
+
+    raw_archive_count = 0
+    try:
+        from draft_archive_state import list_draft_archives
+
+        raw_archive_count = len(list_draft_archives(session))
     except ImportError:
         pass
 
@@ -2463,6 +2477,10 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
 
     st.markdown("##### Saved Drafts")
     st.metric("Saved drafts", len(archives))
+    if raw_archive_count > len(archives):
+        st.caption(
+            f"Session has **{raw_archive_count}** archive(s); **{len(archives)}** visible after shared-league membership filter."
+        )
 
     if not archives:
         try:

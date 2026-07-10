@@ -1117,7 +1117,12 @@ def delete_league_context_for_archive(session: dict[str, Any], draft_id: str) ->
     return True
 
 
-def upsert_league_context(session: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+def upsert_league_context(
+    session: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    mark_persist_authoritative: bool = True,
+) -> dict[str, Any]:
     """Persist one league context; rebuild ownership_map before save."""
     store = ensure_fantasy_league_context_state(session)
     league_context_id = str(context.get("league_context_id") or "").strip()
@@ -1142,12 +1147,13 @@ def upsert_league_context(session: dict[str, Any], context: dict[str, Any]) -> d
         contexts = {}
         store["contexts"] = contexts
     contexts[league_context_id] = copy.deepcopy(context)
-    try:
-        from workflow_persist_guard import mark_workflow_persist_authoritative
+    if mark_persist_authoritative:
+        try:
+            from workflow_persist_guard import mark_workflow_persist_authoritative
 
-        mark_workflow_persist_authoritative(session)
-    except ImportError:
-        pass
+            mark_workflow_persist_authoritative(session)
+        except ImportError:
+            pass
     return copy.deepcopy(context)
 
 

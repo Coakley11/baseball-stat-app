@@ -809,5 +809,49 @@ class TradeSubmitTraceTests(_TradeTestCase):
         self.assertTrue(snap.get("save_shared_league_ok"))
 
 
+class TradeProposalPersistGuardTests(_TradeTestCase):
+    def test_create_trade_proposal_does_not_enable_workflow_allow_clear(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        session.pop("_suite_allow_workflow_persist_clear", None)
+        with _as_user("user:donny"):
+            proposal, err = _create_proposal(
+                session,
+                proposer_team="Donny",
+                recipient_team="Team 2",
+                proposer_gives=["Player A"],
+                proposer_receives=["Player B"],
+            )
+        self.assertEqual(err, "")
+        assert proposal is not None
+        self.assertFalse(session.get("_suite_allow_workflow_persist_clear"))
+
+    def test_trade_proposal_created_save_keeps_draft_archives(self) -> None:
+        from baseball_persistent_state import build_baseball_disk_state
+        from draft_archive_state import list_draft_archives
+        from unittest.mock import MagicMock
+
+        session: dict = {}
+        _seed_league(session)
+        before = len(list_draft_archives(session))
+        self.assertGreaterEqual(before, 1)
+        with _as_user("user:donny"):
+            proposal, err = _create_proposal(
+                session,
+                proposer_team="Donny",
+                recipient_team="Team 2",
+                proposer_gives=["Player A"],
+                proposer_receives=["Player B"],
+            )
+        self.assertEqual(err, "")
+        assert proposal is not None
+        st = MagicMock()
+        st.session_state = session
+        session["_suite_pending_save_reason"] = "trade_proposal_created"
+        blob = build_baseball_disk_state(st)
+        self.assertGreaterEqual(len(blob.get("draft_archive_teams") or []), before)
+        self.assertGreaterEqual(len(list_draft_archives(session)), before)
+
+
 if __name__ == "__main__":
     unittest.main()

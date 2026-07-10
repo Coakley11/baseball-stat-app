@@ -85,6 +85,11 @@ def is_draft_library_mutation_save_reason(reason: str) -> bool:
         "authenticated_migration_writeback",
         "team_claimed",
         "league_invite_sent",
+        "trade_proposal_created",
+        "trade_proposal_accepted",
+        "trade_proposal_declined",
+        "trade_proposal_canceled",
+        "trade_proposal_countered",
     }
 
 
@@ -2431,8 +2436,6 @@ def build_persistence_probe_panel(session: dict[str, Any], *, st: Any | None = N
     session_has_archive_key = DRAFT_ARCHIVE_KEY in session
     session_archive_len = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
     empty_startup_write_blocked = str(session.get("_suite_empty_startup_write_blocked") or "").strip()
-    active_trace_raw = session.get(ACTIVE_DRAFT_RESTORE_TRACE_KEY)
-    active_trace = active_trace_raw if isinstance(active_trace_raw, dict) else {}
 
     return {
         "signed_in": bool(diag.get("authenticated")),
