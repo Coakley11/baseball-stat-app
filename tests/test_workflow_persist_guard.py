@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from workflow_persist_guard import (
     ACTIVE_DRAFT_ARCHIVE_KEY,
+    ACTIVE_DRAFT_RESTORE_TRACE_KEY,
     DRAFT_ARCHIVE_KEY,
     LEAGUE_CONTEXT_STATE_KEY,
     WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
@@ -314,6 +315,82 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertEqual(probe["persistence_verdict"], "B_restore_failed")
         self.assertIn("≠ owned", probe["diagnosis"]["Did the reboot load a different workspace?"])
         self.assertIn("storage has drafts", probe["diagnosis"]["Were my drafts ever successfully persisted?"])
+
+    def _probe_diag_stub(self) -> dict:
+        return {
+            "auth_enabled": True,
+            "authenticated": True,
+            "account_email": "chris@example.com",
+            "account_user_id": "uid-123",
+            "workspace_id": "coakley11",
+            "owned_workspace_id": "coakley11",
+            "cloud_app_key": "baseball__coakley11",
+            "draft_archive_count": 1,
+            "cloud_saved_draft_count_active": 1,
+            "disk_saved_draft_count": 0,
+            "cloud_enabled": True,
+        }
+
+    def test_build_persistence_probe_panel_missing_active_trace(self) -> None:
+        """No _suite_active_draft_restore_trace key at all must not raise (f540bb2 crash)."""
+        session = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "x1", "draft_name": "My League"}],
+            ACTIVE_DRAFT_ARCHIVE_KEY: "x1",
+        }
+        with patch("workflow_persist_guard.build_saved_draft_library_diagnostics") as mock_diag:
+            mock_diag.return_value = self._probe_diag_stub()
+            probe = build_persistence_probe_panel(session)
+        self.assertEqual(probe["active_restore_source"], "—")
+        self.assertEqual(probe["active_restore_reason"], "—")
+        self.assertFalse(probe["active_restore_needs_prompt"])
+
+    def test_build_persistence_probe_panel_none_active_trace(self) -> None:
+        """Explicit None trace value must normalize to {} before .get()."""
+        session = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "x1", "draft_name": "My League"}],
+            ACTIVE_DRAFT_ARCHIVE_KEY: "x1",
+            ACTIVE_DRAFT_RESTORE_TRACE_KEY: None,
+            "_suite_startup_restore_snapshot": None,
+        }
+        with patch("workflow_persist_guard.build_saved_draft_library_diagnostics") as mock_diag:
+            mock_diag.return_value = self._probe_diag_stub()
+            probe = build_persistence_probe_panel(session)
+        self.assertEqual(probe["active_restore_source"], "—")
+        self.assertEqual(probe["active_restore_reason"], "—")
+
+    def test_build_persistence_probe_panel_malformed_active_trace(self) -> None:
+        """Non-dict trace/startup values (list/str) must not crash and fall back cleanly."""
+        for bad_value in (["not", "a", "dict"], "trace-string", 42):
+            session = {
+                DRAFT_ARCHIVE_KEY: [{"draft_id": "x1", "draft_name": "My League"}],
+                ACTIVE_DRAFT_ARCHIVE_KEY: "x1",
+                ACTIVE_DRAFT_RESTORE_TRACE_KEY: bad_value,
+                "_suite_startup_restore_snapshot": bad_value,
+            }
+            with patch("workflow_persist_guard.build_saved_draft_library_diagnostics") as mock_diag:
+                mock_diag.return_value = self._probe_diag_stub()
+                probe = build_persistence_probe_panel(session)
+            self.assertEqual(probe["active_restore_source"], "—")
+            self.assertEqual(probe["active_restore_reason"], "—")
+            self.assertFalse(probe["active_restore_needs_prompt"])
+
+    def test_build_persistence_probe_panel_valid_active_trace(self) -> None:
+        """Well-formed trace still surfaces source/reason/prompt fields."""
+        session = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "x1", "draft_name": "My League"}],
+            ACTIVE_DRAFT_ARCHIVE_KEY: "x1",
+            ACTIVE_DRAFT_RESTORE_TRACE_KEY: {
+                "active_source": "cloud",
+                "restore_reason": "matched_cloud_active_to_visible_archive",
+                "needs_set_active_prompt": True,
+            },
+        }
+        with patch("workflow_persist_guard.build_saved_draft_library_diagnostics") as mock_diag:
+            mock_diag.return_value = self._probe_diag_stub()
+            probe = build_persistence_probe_panel(session)
+        self.assertEqual(probe["active_restore_source"], "cloud")
+        self.assertEqual(probe["active_restore_reason"], "matched_cloud_active_to_visible_archive")
+        self.assertTrue(probe["active_restore_needs_prompt"])
 
     def test_inject_session_draft_library_into_save_state(self) -> None:
         session = {

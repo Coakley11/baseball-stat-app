@@ -2260,6 +2260,9 @@ def build_persistence_probe_panel(session: dict[str, Any], *, st: Any | None = N
     startup = session.get("_suite_startup_restore_snapshot")
     if not isinstance(startup, dict):
         startup = {}
+    active_trace = session.get(ACTIVE_DRAFT_RESTORE_TRACE_KEY)
+    if not isinstance(active_trace, dict):
+        active_trace = {}
 
     active_draft_id = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
     active_draft_name = ""
