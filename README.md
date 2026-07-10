@@ -400,6 +400,7 @@ Configure secrets in `.streamlit/secrets.toml` for Streamlit Cloud (see `.stream
 - **Branch:** `dev`
 - **Main file:** `streamlit_app.py` (lowercase — required on Linux)
 - **Python version:** **3.12** — set in **Manage app → Settings → Python version** (repo also pins via `.python-version` and `pyproject.toml`). Do **not** deploy on Python 3.14; native extensions can segfault before the app loads.
+- **Streamlit version:** **1.59.1** (pinned in `requirements.txt`) — required for `width="stretch"` / `width="content"` APIs used across `streamlit_app.py`.
 - Build marker: `deploy_commit.txt` + `suite_deploy_marker.py`
 
 **Runtime smoke (after dependency install):**
@@ -407,6 +408,7 @@ Configure secrets in `.streamlit/secrets.toml` for Streamlit Cloud (see `.stream
 ```bash
 PYTHONFAULTHANDLER=1 python scripts/isolate_native_imports.py
 PYTHONFAULTHANDLER=1 python scripts/smoke_streamlit_startup.py
+PYTHONFAULTHANDLER=1 python scripts/smoke_streamlit_pages.py
 ```
 
 ---

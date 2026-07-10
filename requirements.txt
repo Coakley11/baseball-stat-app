@@ -1,10 +1,10 @@
-# deploy-bump: 2026-07-10-python312-runtime-pin (forces Streamlit Cloud full redeploy)
+# deploy-bump: 2026-07-10-streamlit-159-api-compat (forces Streamlit Cloud full redeploy)
 # Runtime: Python 3.12 — also set Streamlit Cloud → Manage app → Settings → Python version → 3.12
-# Do not use Python 3.14 on Streamlit Cloud; native wheels (numpy/scipy/sklearn) may segfault at startup.
+# Streamlit 1.59.x required for width="stretch" / width="content" dataframe and chart APIs.
 
 setuptools>=65.5.0,<81
 
-streamlit>=1.40.0,<1.46.0
+streamlit==1.59.1
 streamlit-sortables>=0.3.1,<0.5.0
 
 numpy>=2.1.0,<2.3.0

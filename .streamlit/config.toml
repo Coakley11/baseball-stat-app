@@ -11,5 +11,7 @@ gatherUsageStats = false
 #
 # Python runtime (required for stable native wheels):
 #   Manage app → Settings → Python version → 3.12
+# Streamlit runtime (required for width="stretch" dataframe/chart APIs):
+#   requirements.txt pins streamlit==1.59.1
 # Repository pins: .python-version, pyproject.toml requires-python, requirements.txt ranges.
 # Python 3.14 on Cloud has caused uvicorn segfaults before app load — not a data-loss signal.

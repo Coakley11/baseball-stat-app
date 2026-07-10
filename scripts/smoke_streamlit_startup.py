@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Headless Streamlit startup smoke — verify the process stays alive past health check.
+"""Headless Streamlit startup smoke — verify process startup and major page renders.
 
 Usage:
   PYTHONFAULTHANDLER=1 python scripts/smoke_streamlit_startup.py
+  PYTHONFAULTHANDLER=1 python scripts/smoke_streamlit_startup.py --pages-only
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -22,9 +24,7 @@ STARTUP_MARKERS = (
 )
 
 
-def main() -> int:
-    env = os.environ.copy()
-    env.setdefault("PYTHONFAULTHANDLER", "1")
+def _run_startup_smoke(env: dict[str, str]) -> int:
     port = str(env.get("SMOKE_STREAMLIT_PORT", "8502"))
     cmd = [
         sys.executable,
@@ -51,7 +51,7 @@ def main() -> int:
         bufsize=1,
     )
     output: list[str] = []
-    deadline = time.time() + float(env.get("SMOKE_STREAMLIT_TIMEOUT", "60"))
+    deadline = time.time() + float(env.get("SMOKE_STREAMLIT_TIMEOUT", "90"))
     try:
         while time.time() < deadline:
             if proc.stdout is None:
@@ -80,6 +80,31 @@ def main() -> int:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+
+
+def _run_page_smoke(env: dict[str, str]) -> int:
+    cmd = [sys.executable, str(ROOT / "scripts" / "smoke_streamlit_pages.py")]
+    print(f"Running page smoke: {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=ROOT, env=env, check=False)
+    return int(result.returncode)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Streamlit startup + page smoke")
+    parser.add_argument("--pages-only", action="store_true", help="Skip subprocess startup; only AppTest pages")
+    parser.add_argument("--startup-only", action="store_true", help="Only verify startup banner")
+    args = parser.parse_args()
+
+    env = os.environ.copy()
+    env.setdefault("PYTHONFAULTHANDLER", "1")
+
+    if args.pages_only:
+        return _run_page_smoke(env)
+
+    code = _run_startup_smoke(env)
+    if code != 0 or args.startup_only:
+        return code
+    return _run_page_smoke(env)
 
 
 if __name__ == "__main__":

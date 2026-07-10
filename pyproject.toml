@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Baseball stat app — Streamlit Cloud deploy target"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "streamlit>=1.40.0,<1.46.0",
+    "streamlit==1.59.1",
     "pandas>=2.2.0,<2.3.0",
     "numpy>=2.1.0,<2.3.0",
     "plotly>=5.24.0,<6.0.0",
