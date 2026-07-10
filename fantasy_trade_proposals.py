@@ -198,6 +198,12 @@ def finalize_accepted_trade(
             league_rosters=context.get("league_rosters") or {},
             league_context_id=league_context_id,
         )
+    try:
+        from fantasy_trade_roster_sync import finalize_trade_roster_persistence
+
+        finalize_trade_roster_persistence(session, context)
+    except ImportError:
+        pass
     saved = upsert_league_context(session, context, mark_persist_authoritative=False)
     save_shared_ok: bool | None = None
     save_shared_error: str | None = None
@@ -957,6 +963,34 @@ def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[di
 
     status_before = str(proposal.get("status") or TRADE_PROPOSAL_STATUS_PENDING).strip()
     record_trade_response_trace(session, status_before=status_before)
+
+    if status_before == TRADE_PROPOSAL_STATUS_ACCEPTED:
+        try:
+            from fantasy_trade_roster_sync import (
+                accepted_trade_rosters_applied,
+                finalize_trade_roster_persistence,
+            )
+
+            if accepted_trade_rosters_applied(context, proposal):
+                return get_trade_proposal(context, proposal_id), ""
+            if _execute_roster_swap(context, proposal):
+                finalize_trade_roster_persistence(session, context)
+                saved, save_shared_ok, save_shared_error = finalize_accepted_trade(session, context)
+                record_trade_response_trace(
+                    session,
+                    roster_mutation_attempted=True,
+                    roster_mutation_ok=True,
+                    status_after=TRADE_PROPOSAL_STATUS_ACCEPTED,
+                    save_shared_league_ok=save_shared_ok,
+                    save_shared_league_error=save_shared_error,
+                    update_error=None,
+                )
+                return get_trade_proposal(saved, proposal_id), ""
+        except ImportError:
+            pass
+        err = "This trade is no longer pending."
+        record_trade_response_trace(session, update_error=err, status_after=status_before)
+        return None, err
 
     if status_before != TRADE_PROPOSAL_STATUS_PENDING:
         err = "This trade is no longer pending."

@@ -101,6 +101,22 @@ def hydrate_fantasy_in_season_to_session(session: dict[str, Any], state: dict[st
         blob = raw if isinstance(raw, dict) else None
     if not isinstance(blob, dict):
         return False
+    current_roster_sig = ""
+    try:
+        from fantasy_league_context import get_active_league_context
+        from fantasy_trade_roster_sync import roster_content_fingerprint
+
+        ctx = get_active_league_context(session)
+        if isinstance(ctx, dict):
+            current_roster_sig = roster_content_fingerprint(ctx)
+    except ImportError:
+        current_roster_sig = ""
+    stored_roster_sig = str(blob.get("league_rosters_view_sig") or "").strip()
+    roster_sig_stale = bool(
+        current_roster_sig
+        and stored_roster_sig
+        and stored_roster_sig != current_roster_sig
+    )
     applied = False
     hitters = _records_to_df(blob.get("hitter_stats_records"))
     pitchers = _records_to_df(blob.get("pitcher_stats_records"))
@@ -112,9 +128,11 @@ def hydrate_fantasy_in_season_to_session(session: dict[str, Any], state: dict[st
     if not pitchers.empty:
         session[_SESSION_PITCHER_KEY] = pitchers
         applied = True
-    if not roster.empty:
+    if not roster.empty and not roster_sig_stale:
         session[_SESSION_ROSTER_KEY] = roster
         applied = True
+    elif roster_sig_stale:
+        session.pop(_SESSION_ROSTER_KEY, None)
     if not standings.empty:
         session[_SESSION_STANDINGS_KEY] = standings
         applied = True

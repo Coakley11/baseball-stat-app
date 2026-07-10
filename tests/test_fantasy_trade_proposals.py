@@ -314,8 +314,9 @@ class TradeProposalAcceptDeclineTests(_TradeTestCase):
         pid = str(self.proposal["proposal_id"])
         _accept_proposal(self.session, pid)
         again, err = _accept_proposal(self.session, pid)
-        self.assertIsNone(again)
-        self.assertIn("no longer pending", err)
+        self.assertEqual(err, "")
+        assert again is not None
+        self.assertEqual(again["status"], TRADE_PROPOSAL_STATUS_ACCEPTED)
 
     def test_cannot_accept_stale_trade_after_roster_changed(self) -> None:
         assert self.proposal is not None
@@ -910,6 +911,93 @@ class TradeProposalPersistGuardTests(_TradeTestCase):
         blob = build_baseball_disk_state(st)
         self.assertGreaterEqual(len(blob.get("draft_archive_teams") or []), before)
         self.assertGreaterEqual(len(list_draft_archives(session)), before)
+
+
+class TradeAcceptedRosterSyncTests(_TradeTestCase):
+    def test_reconcile_accepted_trade_applies_missing_roster_swap(self) -> None:
+        from fantasy_trade_roster_sync import reconcile_accepted_trades_in_context
+        from fantasy_trade_proposals import WORKFLOW_KEY_TRADE_PROPOSALS, _utc_now_iso
+
+        session: dict = {}
+        context = _seed_league(session)
+        proposal, err = _create_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        self.assertEqual(err, "")
+        assert proposal is not None
+        league_context_id = str(context.get("league_context_id") or "")
+        loaded = get_league_context(session, league_context_id)
+        assert loaded is not None
+        loaded.setdefault("workflow", {})[WORKFLOW_KEY_TRADE_PROPOSALS] = [
+            {
+                **proposal,
+                "status": TRADE_PROPOSAL_STATUS_ACCEPTED,
+                "accepted_at": _utc_now_iso(),
+                "responded_at": _utc_now_iso(),
+            }
+        ]
+        upsert_league_context(session, loaded)
+        reconciled, changed, traces = reconcile_accepted_trades_in_context(loaded)
+        self.assertTrue(changed)
+        self.assertTrue(any("reconciled" in t for t in traces))
+        donny = [
+            p.get("player_name")
+            for p in (reconciled.get("league_rosters") or {}).get("Donny", {}).get("players") or []
+        ]
+        team2 = [
+            p.get("player_name")
+            for p in (reconciled.get("league_rosters") or {}).get("Team 2", {}).get("players") or []
+        ]
+        self.assertIn("Player B", donny)
+        self.assertIn("Player A", team2)
+
+    def test_hydrate_skips_stale_roster_stats_after_accepted_trade(self) -> None:
+        from fantasy_in_season_state import FANTASY_IN_SEASON_STATE_KEY, hydrate_fantasy_in_season_to_session
+        from fantasy_trade_roster_sync import roster_content_fingerprint
+
+        session: dict = {}
+        _seed_league(session)
+        proposal, err = _create_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        self.assertEqual(err, "")
+        assert proposal is not None
+        accepted, accept_err = _accept_proposal(session, str(proposal["proposal_id"]))
+        self.assertEqual(accept_err, "")
+        assert accepted is not None
+        context = get_active_league_context(session)
+        assert context is not None
+        stale_roster = pd.DataFrame([{"Team": "Donny", "Player": "Player A", "HR": 10}])
+        blob = {
+            "schema_version": 1,
+            "roster_stats_records": stale_roster.to_dict(orient="records"),
+            "league_rosters_view_sig": "stale-signature",
+            "hitter_stats_records": [{"Player": "Player B", "HR": 12}],
+        }
+        session["fantasy_current_roster_stats"] = stale_roster.copy()
+        session[FANTASY_IN_SEASON_STATE_KEY] = dict(blob)
+        fresh = {
+            FANTASY_LEAGUE_CONTEXT_STATE_KEY: session.get(FANTASY_LEAGUE_CONTEXT_STATE_KEY),
+            ACTIVE_DRAFT_ARCHIVE_KEY: session.get(ACTIVE_DRAFT_ARCHIVE_KEY),
+            "draft_archive_teams": session.get("draft_archive_teams"),
+        }
+        hydrate_fantasy_in_season_to_session(fresh, blob)
+        self.assertTrue(fresh.get("_fantasy_in_season_restored"))
+        self.assertNotIn("fantasy_current_roster_stats", fresh)
+        from fantasy_trade_roster_sync import roster_stats_cache_stale
+
+        self.assertTrue(roster_stats_cache_stale(session, context, stale_roster))
+        current_sig = roster_content_fingerprint(context)
+        self.assertTrue(current_sig)
+        self.assertNotEqual(blob.get("league_rosters_view_sig"), current_sig)
 
 
 if __name__ == "__main__":

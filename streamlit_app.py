@@ -23407,9 +23407,17 @@ if active_page == "Fantasy Lineup Assistant":
             get_active_league_context,
             has_full_league_rosters,
         )
+        from fantasy_trade_roster_sync import roster_stats_cache_stale
 
         _lineup_archive = get_active_draft_archive(st.session_state)
         _lineup_context = get_active_league_context(st.session_state)
+        if (
+            not roster_stats.empty
+            and _lineup_context is not None
+            and roster_stats_cache_stale(st.session_state, _lineup_context, roster_stats)
+        ):
+            roster_stats = pd.DataFrame()
+            st.session_state.pop("fantasy_current_roster_stats", None)
         if roster_stats.empty:
             _cached_hitter_stats = st.session_state.get("_fantasy_current_hitter_stats")
             if isinstance(_cached_hitter_stats, pd.DataFrame) and not _cached_hitter_stats.empty:

@@ -1712,8 +1712,19 @@ def save_draft_archive_with_league_context(
     entry = get_draft_archive(session, draft_id)
     if not entry:
         return {}
-    entry["league_rosters"] = copy.deepcopy(league_rosters)
+    league_rosters = copy.deepcopy(league_rosters)
+    entry["league_rosters"] = league_rosters
     entry["league_context_id"] = str(league_context_id or "").strip()
+    team_name = str(entry.get("team_name") or "").strip()
+    team_entry = league_rosters.get(team_name) if team_name and isinstance(league_rosters, dict) else None
+    if isinstance(team_entry, dict):
+        entry["players"] = copy.deepcopy(team_entry.get("players") or [])
+    try:
+        from draft_archive_state import _build_archive_snapshot
+
+        entry["snapshot"] = _build_archive_snapshot(entry, league_rosters=league_rosters)
+    except ImportError:
+        pass
     entries = _archive_list(session)
     for i, existing in enumerate(entries):
         if str(existing.get("draft_id") or "") == draft_id:

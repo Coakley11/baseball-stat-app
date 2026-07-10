@@ -401,6 +401,12 @@ def merge_shared_into_context(context: dict[str, Any], shared: dict[str, Any]) -
     )
     workflow[WORKFLOW_KEY_LEAGUE_ACTIVITY] = merged_activity
     out["workflow"] = workflow
+    try:
+        from fantasy_trade_roster_sync import reconcile_accepted_trades_in_context
+
+        out, _changed, _traces = reconcile_accepted_trades_in_context(out)
+    except ImportError:
+        pass
     return out
 
 
@@ -528,6 +534,9 @@ def sync_context_with_shared_store(
         return context
     pre_merge_team = str(context.get("my_team_name") or "").strip()
     merged = merge_shared_into_context(context, shared)
+    pre_roster_fp = _roster_content_fingerprint(context.get("league_rosters"))
+    post_roster_fp = _roster_content_fingerprint(merged.get("league_rosters"))
+    roster_changed = pre_roster_fp != post_roster_fp
     merged = overlay_workspace_team_on_context(
         session,
         merged,
@@ -537,6 +546,17 @@ def sync_context_with_shared_store(
     )
     if not isinstance(merged, dict):
         merged = context
+    if roster_changed:
+        try:
+            from fantasy_trade_roster_sync import finalize_trade_roster_persistence
+
+            finalize_trade_roster_persistence(session, merged)
+            merged = upsert_league_context(session, merged, mark_persist_authoritative=False)
+            push_league_context_to_shared(session, merged)
+        except ImportError:
+            pass
+        except Exception:
+            pass
     record_team_identity_trace(
         session,
         phase="sync_context_with_shared_store",
