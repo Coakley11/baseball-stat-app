@@ -487,6 +487,18 @@ except Exception:
     pass
 
 try:
+    from fantasy_admin_draft_archive_repair_ui import (
+        maybe_run_cloud_admin_draft_archive_repair,
+        render_cloud_admin_draft_archive_repair_banner,
+    )
+
+    _admin_repair_trace = maybe_run_cloud_admin_draft_archive_repair(st)
+    if _admin_repair_trace is not None:
+        render_cloud_admin_draft_archive_repair_banner(st)
+except Exception:
+    pass
+
+try:
     from baseball_account_sidebar import prepare_baseball_auth_session
 
     prepare_baseball_auth_session(st)
