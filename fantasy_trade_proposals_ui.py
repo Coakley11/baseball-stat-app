@@ -25,8 +25,10 @@ from fantasy_trade_proposals import (
     TRADE_PROPOSAL_STATUS_PENDING,
     TRADE_PROPOSAL_STATUS_STALE,
     accept_trade_proposal,
+    build_trade_response_trace_snapshot,
     build_trade_submit_trace_snapshot,
     cancel_trade_proposal,
+    count_accepted_trade_proposals,
     count_pending_trade_proposals,
     counter_trade_proposal,
     create_trade_proposal,
@@ -38,6 +40,7 @@ from fantasy_trade_proposals import (
     is_proposal_actionable,
     navigate_to_trade_proposal,
     pending_incoming_count,
+    record_trade_response_trace,
     record_trade_submit_trace,
 )
 
@@ -121,6 +124,132 @@ def _render_trade_submit_diagnostics(st: Any, session: dict[str, Any]) -> None:
                 st.json(snap)
 
 
+def _render_trade_response_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    """Always show last trade accept/decline submit trace."""
+    snap = build_trade_response_trace_snapshot(session)
+    with st.expander(
+        "Last trade response",
+        expanded=bool(
+            snap.get("updated_at")
+            and snap.get("button_clicked")
+            and (snap.get("update_error") or snap.get("validation_error") or not snap.get("status_after"))
+        ),
+    ):
+        st.caption("Explains the last **Accept Trade** click — validation, roster swap, shared save, and inbox counts.")
+        if not snap.get("updated_at"):
+            st.caption("No trade response recorded yet. Click **Accept Trade** on an incoming offer.")
+        st.markdown(
+            f"- **button_clicked:** {snap.get('button_clicked') if snap.get('updated_at') else '—'}  \n"
+            f"- **action:** `{snap.get('action') or '—'}`  \n"
+            f"- **respond_trade_called:** {snap.get('respond_trade_called') if snap.get('updated_at') else '—'}  \n"
+            f"- **trade_id:** `{snap.get('trade_id') or '—'}`  \n"
+            f"- **validation_error:** {snap.get('validation_error') or '—'}  \n"
+            f"- **update_error:** {snap.get('update_error') or '—'}  \n"
+            f"- **save_shared_league_ok:** "
+            f"{snap.get('save_shared_league_ok') if snap.get('updated_at') else '—'}  \n"
+            f"- **save_shared_league_error:** `{snap.get('save_shared_league_error') or '—'}`  \n"
+            f"- **status:** "
+            f"{snap.get('status_before') if snap.get('updated_at') else '—'}"
+            f" → {snap.get('status_after') if snap.get('updated_at') else '—'}  \n"
+            f"- **roster_mutation_attempted:** "
+            f"{snap.get('roster_mutation_attempted') if snap.get('updated_at') else '—'}  \n"
+            f"- **roster_mutation_ok:** {snap.get('roster_mutation_ok') if snap.get('updated_at') else '—'}  \n"
+            f"- **roster_mutation_error:** {snap.get('roster_mutation_error') or '—'}  \n"
+            f"- **pending_count:** "
+            f"{snap.get('pending_count_before') if snap.get('updated_at') else '—'}"
+            f" → {snap.get('pending_count_after') if snap.get('updated_at') else '—'}  \n"
+            f"- **accepted_count:** "
+            f"{snap.get('accepted_count_before') if snap.get('updated_at') else '—'}"
+            f" → {snap.get('accepted_count_after') if snap.get('updated_at') else '—'}  \n"
+            f"- **recipient_team / my_owned_team:** "
+            f"`{snap.get('recipient_team') or '—'}` / `{snap.get('my_owned_team') or '—'}`"
+        )
+        if snap.get("updated_at"):
+            with st.expander("Trade response trace (full)", expanded=False):
+                st.json(snap)
+
+
+def _process_incoming_accept_forms(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    context: dict[str, Any],
+    my_team_name: str,
+    persist_fn: Callable[..., None] | None,
+    key_prefix: str,
+) -> None:
+    """Handle Accept Trade form submits before inbox lists render (same-run visibility)."""
+    incoming = get_incoming_trade_proposals(session, my_team_name)
+    for proposal in incoming:
+        if get_display_status(context, proposal) != TRADE_PROPOSAL_STATUS_PENDING:
+            continue
+        if not is_proposal_actionable(context, proposal, as_team=my_team_name):
+            continue
+        pid = str(proposal.get("proposal_id") or "").strip()
+        if not pid:
+            continue
+        proposer = str(proposal.get("proposer_team") or "")
+        gives = _format_players(proposal.get("proposer_gives") or [])
+        receives = _format_players(proposal.get("proposer_receives") or [])
+        with st.form(f"{key_prefix}_accept_form_{pid}", clear_on_submit=False):
+            st.caption(
+                f"**Accept incoming trade** from **{proposer}**: you give {receives}, you receive {gives}"
+            )
+            submitted = st.form_submit_button("Accept Trade", type="primary")
+        if not submitted:
+            continue
+        active_ctx = get_active_league_context(session)
+        pending_before = count_pending_trade_proposals(active_ctx)
+        accepted_before = count_accepted_trade_proposals(active_ctx)
+        status_before = str(proposal.get("status") or TRADE_PROPOSAL_STATUS_PENDING)
+        record_trade_response_trace(
+            session,
+            button_clicked=True,
+            action="accept",
+            trade_id=pid,
+            respond_trade_called=False,
+            status_before=status_before,
+            pending_count_before=pending_before,
+            accepted_count_before=accepted_before,
+            validation_error=None,
+            update_error=None,
+            roster_mutation_attempted=None,
+            roster_mutation_ok=None,
+            roster_mutation_error=None,
+            status_after=None,
+            save_shared_league_ok=None,
+            save_shared_league_error=None,
+        )
+        accepted, err = accept_trade_proposal(session, pid)
+        refreshed_ctx = get_active_league_context(session)
+        pending_after = count_pending_trade_proposals(refreshed_ctx)
+        accepted_after = count_accepted_trade_proposals(refreshed_ctx)
+        record_trade_response_trace(
+            session,
+            pending_count_after=pending_after,
+            accepted_count_after=accepted_after,
+        )
+        if err:
+            session["_last_trade_response_submit_error"] = err
+            session.pop("_last_trade_response_submit_ok", None)
+            st.error(err)
+        elif accepted:
+            session.pop("_last_trade_response_submit_error", None)
+            session["_last_trade_response_submit_ok"] = {
+                "trade_id": pid,
+                "proposer_team": proposer,
+                "status": TRADE_PROPOSAL_STATUS_ACCEPTED,
+            }
+            if persist_fn:
+                persist_fn(session, st, reason="trade_proposal_accepted")
+            st.success("Trade Accepted")
+        else:
+            msg = "Accept trade returned no proposal and no error."
+            session["_last_trade_response_submit_error"] = msg
+            record_trade_response_trace(session, update_error=msg)
+            st.error(msg)
+
+
 def _status_badge(status: str) -> str:
     labels = {
         TRADE_PROPOSAL_STATUS_PENDING: "Pending",
@@ -148,6 +277,7 @@ def _render_proposal_card(
     current_get_players: list[str],
     verdict: str,
     expires_at: str,
+    skip_accept_button: bool = False,
 ) -> None:
     pid = str(proposal.get("proposal_id") or "")
     display_status = get_display_status(context, proposal)
@@ -221,15 +351,8 @@ def _render_proposal_card(
                         st.success("Counteroffer sent.")
                         st.rerun()
         with btn_accept:
-            if st.button("Accept Trade", key=f"{key_prefix}_accept_{pid}", type="primary"):
-                accepted, err = accept_trade_proposal(session, pid)
-                if err:
-                    st.error(err)
-                else:
-                    if persist_fn:
-                        persist_fn(session, st, reason="trade_proposal_accepted")
-                    st.success("Trade Accepted")
-                    st.rerun()
+            if not skip_accept_button:
+                st.caption("Use **Accept Trade** above the offer list.")
         with btn_decline:
             if st.button("Decline Trade", key=f"{key_prefix}_decline_{pid}"):
                 declined, err = decline_trade_proposal(session, pid)
@@ -346,10 +469,12 @@ def render_trade_proposals_section(
     if not enabled:
         st.info(gate_msg or TRADES_DISABLED_MESSAGE)
         _render_trade_submit_diagnostics(st, session)
+        _render_trade_response_diagnostics(st, session)
         _render_trade_history(st, context, key_prefix=key_prefix)
         return
 
     _render_trade_submit_diagnostics(st, session)
+    _render_trade_response_diagnostics(st, session)
     submit_err = str(session.get("_last_trade_proposal_submit_error") or "").strip()
     if submit_err:
         st.error(submit_err)
@@ -358,6 +483,16 @@ def render_trade_proposals_section(
         st.success(
             f"Trade proposed to **{last_ok.get('recipient_team') or '—'}** · "
             f"id `{last_ok.get('trade_id') or '—'}`"
+        )
+
+    response_err = str(session.get("_last_trade_response_submit_error") or "").strip()
+    if response_err:
+        st.error(response_err)
+    last_accept = session.get("_last_trade_response_submit_ok")
+    if isinstance(last_accept, dict) and str(last_accept.get("trade_id") or "").strip():
+        st.success(
+            f"Trade accepted from **{last_accept.get('proposer_team') or '—'}** · "
+            f"id `{last_accept.get('trade_id') or '—'}`"
         )
 
     expires_at = ""
@@ -442,12 +577,6 @@ def render_trade_proposals_section(
                         "recipient_team": other_team,
                     }
                     if persist_fn:
-                        try:
-                            from fantasy_league_context import repair_missing_draft_archives_from_contexts
-
-                            repair_missing_draft_archives_from_contexts(session)
-                        except ImportError:
-                            pass
                         persist_fn(session, st, reason="trade_proposal_created")
                     st.success(f"Trade proposed to **{other_team}**.")
                 else:
@@ -455,6 +584,25 @@ def render_trade_proposals_section(
                     session["_last_trade_proposal_submit_error"] = msg
                     record_trade_submit_trace(session, create_error=msg)
                     st.error(msg)
+
+    context = get_active_league_context(session) or context
+    incoming_preview = get_incoming_trade_proposals(session, my_team_name)
+    pending_actionable = [
+        p
+        for p in incoming_preview
+        if get_display_status(context, p) == TRADE_PROPOSAL_STATUS_PENDING
+        and is_proposal_actionable(context, p, as_team=my_team_name)
+    ]
+    if pending_actionable:
+        st.markdown("##### Respond to incoming offers")
+    _process_incoming_accept_forms(
+        st,
+        session,
+        context=context,
+        my_team_name=my_team_name,
+        persist_fn=persist_fn,
+        key_prefix=key_prefix,
+    )
 
     context = get_active_league_context(session) or context
     incoming = get_incoming_trade_proposals(session, my_team_name)
@@ -484,6 +632,7 @@ def render_trade_proposals_section(
                 current_get_players=get_players,
                 verdict=verdict,
                 expires_at=expires_at,
+                skip_accept_button=True,
             )
 
     with col_out:

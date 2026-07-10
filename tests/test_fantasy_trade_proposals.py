@@ -809,6 +809,65 @@ class TradeSubmitTraceTests(_TradeTestCase):
         self.assertTrue(snap.get("save_shared_league_ok"))
 
 
+class TradeResponseTraceTests(_TradeTestCase):
+    def test_accept_trade_response_trace_records_roster_and_shared_push(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        proposal, err = _create_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        self.assertEqual(err, "")
+        assert proposal is not None
+        pid = str(proposal["proposal_id"])
+        accepted, accept_err = _accept_proposal(session, pid)
+        self.assertEqual(accept_err, "")
+        assert accepted is not None
+        from fantasy_trade_proposals import build_trade_response_trace_snapshot
+
+        snap = build_trade_response_trace_snapshot(session)
+        self.assertTrue(snap.get("respond_trade_called"))
+        self.assertEqual(snap.get("action"), "accept")
+        self.assertEqual(snap.get("trade_id"), pid)
+        self.assertTrue(snap.get("roster_mutation_attempted"))
+        self.assertTrue(snap.get("roster_mutation_ok"))
+        self.assertEqual(snap.get("status_after"), TRADE_PROPOSAL_STATUS_ACCEPTED)
+        self.assertIsNone(snap.get("update_error"))
+        self.assertTrue(snap.get("save_shared_league_ok"))
+
+    def test_accept_trade_keeps_draft_archives(self) -> None:
+        from baseball_persistent_state import build_baseball_disk_state
+        from draft_archive_state import list_draft_archives
+        from unittest.mock import MagicMock
+
+        session: dict = {}
+        _seed_league(session)
+        before = len(list_draft_archives(session))
+        self.assertGreaterEqual(before, 1)
+        proposal, err = _create_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        self.assertEqual(err, "")
+        assert proposal is not None
+        with _as_user("user:seal11"):
+            accepted, accept_err = accept_trade_proposal(session, str(proposal["proposal_id"]))
+        self.assertEqual(accept_err, "")
+        assert accepted is not None
+        st = MagicMock()
+        st.session_state = session
+        session["_suite_pending_save_reason"] = "trade_proposal_accepted"
+        blob = build_baseball_disk_state(st)
+        self.assertGreaterEqual(len(blob.get("draft_archive_teams") or []), before)
+        self.assertGreaterEqual(len(list_draft_archives(session)), before)
+
+
 class TradeProposalPersistGuardTests(_TradeTestCase):
     def test_create_trade_proposal_does_not_enable_workflow_allow_clear(self) -> None:
         session: dict = {}

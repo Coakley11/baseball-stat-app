@@ -40,6 +40,7 @@ STALE_TRADE_MESSAGE = (
     "Trade can no longer be completed because one or more players are no longer on the expected roster."
 )
 TRADE_SUBMIT_TRACE_KEY = "_suite_last_trade_submit_trace"
+TRADE_RESPONSE_TRACE_KEY = "_suite_last_trade_response_trace"
 
 
 def record_trade_submit_trace(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
@@ -76,6 +77,44 @@ def build_trade_submit_trace_snapshot(session: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def record_trade_response_trace(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    """Persist trade accept/decline button diagnostics across reruns."""
+    trace = dict(session.get(TRADE_RESPONSE_TRACE_KEY) or {})
+    trace.update({k: v for k, v in fields.items() if v is not None or k.endswith("_error")})
+    trace["updated_at"] = _utc_now_iso()
+    session[TRADE_RESPONSE_TRACE_KEY] = trace
+    return trace
+
+
+def build_trade_response_trace_snapshot(session: dict[str, Any]) -> dict[str, Any]:
+    """Latest trade accept/decline trace for diagnostic panels."""
+    trace = dict(session.get(TRADE_RESPONSE_TRACE_KEY) or {})
+    return {
+        "button_clicked": bool(trace.get("button_clicked")),
+        "action": trace.get("action"),
+        "respond_trade_called": bool(trace.get("respond_trade_called")),
+        "trade_id": trace.get("trade_id"),
+        "validation_error": trace.get("validation_error"),
+        "update_error": trace.get("update_error"),
+        "save_shared_league_ok": trace.get("save_shared_league_ok"),
+        "save_shared_league_error": trace.get("save_shared_league_error"),
+        "status_before": trace.get("status_before"),
+        "status_after": trace.get("status_after"),
+        "roster_mutation_attempted": trace.get("roster_mutation_attempted"),
+        "roster_mutation_ok": trace.get("roster_mutation_ok"),
+        "roster_mutation_error": trace.get("roster_mutation_error"),
+        "pending_count_before": trace.get("pending_count_before"),
+        "pending_count_after": trace.get("pending_count_after"),
+        "accepted_count_before": trace.get("accepted_count_before"),
+        "accepted_count_after": trace.get("accepted_count_after"),
+        "recipient_team": trace.get("recipient_team"),
+        "my_owned_team": trace.get("my_owned_team"),
+        "league_context_id": trace.get("league_context_id"),
+        "league_id": trace.get("league_id"),
+        "updated_at": trace.get("updated_at"),
+    }
+
+
 def count_pending_trade_proposals(context: dict[str, Any] | None) -> int:
     if not context:
         return 0
@@ -83,6 +122,16 @@ def count_pending_trade_proposals(context: dict[str, Any] | None) -> int:
         1
         for proposal in get_trade_proposals(context)
         if get_display_status(context, proposal) == TRADE_PROPOSAL_STATUS_PENDING
+    )
+
+
+def count_accepted_trade_proposals(context: dict[str, Any] | None) -> int:
+    if not context:
+        return 0
+    return sum(
+        1
+        for proposal in get_trade_proposals(context)
+        if str(proposal.get("status") or "") == TRADE_PROPOSAL_STATUS_ACCEPTED
     )
 
 
@@ -132,7 +181,10 @@ def _load_mutable_context(session: dict[str, Any]) -> tuple[dict[str, Any] | Non
     return context, ""
 
 
-def finalize_accepted_trade(session: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+def finalize_accepted_trade(
+    session: dict[str, Any],
+    context: dict[str, Any],
+) -> tuple[dict[str, Any], bool | None, str | None]:
     """Persist roster swap to local context, archive, and shared league document."""
     context = ensure_league_identity(context)
     context["ownership_map"] = build_ownership_map(context)
@@ -147,13 +199,21 @@ def finalize_accepted_trade(session: dict[str, Any], context: dict[str, Any]) ->
             league_context_id=league_context_id,
         )
     saved = upsert_league_context(session, context, mark_persist_authoritative=False)
+    save_shared_ok: bool | None = None
+    save_shared_error: str | None = None
     try:
         from fantasy_shared_league_store import push_league_context_to_shared
 
-        push_league_context_to_shared(session, saved)
+        pushed = push_league_context_to_shared(session, saved)
+        save_shared_ok = pushed is not None
+        if not save_shared_ok:
+            save_shared_error = "push_league_context_to_shared returned None"
     except ImportError:
-        pass
-    return saved
+        save_shared_ok = None
+    except Exception as exc:
+        save_shared_ok = False
+        save_shared_error = str(exc)
+    return saved, save_shared_ok, save_shared_error
 
 
 def get_trade_history(context: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
@@ -856,15 +916,32 @@ def _execute_roster_swap(context: dict[str, Any], proposal: dict[str, Any]) -> b
 
 
 def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[dict[str, Any] | None, str]:
+    proposal_id = str(proposal_id or "").strip()
+    record_trade_response_trace(
+        session,
+        respond_trade_called=True,
+        action="accept",
+        trade_id=proposal_id or None,
+    )
     context, load_err = _load_mutable_context(session)
     if context is None:
+        record_trade_response_trace(session, update_error=load_err or "No active league context")
         return None, load_err
+
+    league_context_id = str(context.get("league_context_id") or "").strip()
+    league_id = resolve_canonical_league_id(context)
+    record_trade_response_trace(
+        session,
+        league_context_id=league_context_id or None,
+        league_id=league_id or None,
+    )
 
     enabled, gate_msg = trades_enabled(context, session)
     if not enabled:
-        return None, gate_msg or TRADES_DISABLED_MESSAGE
+        err = gate_msg or TRADES_DISABLED_MESSAGE
+        record_trade_response_trace(session, update_error=err)
+        return None, err
 
-    proposal_id = str(proposal_id or "").strip()
     proposals = _ensure_trade_proposals_workflow(context)
     target_idx = -1
     proposal: dict[str, Any] | None = None
@@ -874,10 +951,17 @@ def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[di
             proposal = dict(existing)
             break
     if proposal is None:
-        return None, "Trade proposal not found."
+        err = "Trade proposal not found."
+        record_trade_response_trace(session, update_error=err)
+        return None, err
 
-    if str(proposal.get("status") or "") != TRADE_PROPOSAL_STATUS_PENDING:
-        return None, "This trade is no longer pending."
+    status_before = str(proposal.get("status") or TRADE_PROPOSAL_STATUS_PENDING).strip()
+    record_trade_response_trace(session, status_before=status_before)
+
+    if status_before != TRADE_PROPOSAL_STATUS_PENDING:
+        err = "This trade is no longer pending."
+        record_trade_response_trace(session, update_error=err, status_after=status_before)
+        return None, err
 
     ok, msg = validate_proposal_for_acceptance(context, proposal)
     if not ok:
@@ -888,21 +972,44 @@ def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[di
             proposals[target_idx] = proposal
             _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_EXPIRED)
             upsert_league_context(session, context, mark_persist_authoritative=False)
+            record_trade_response_trace(
+                session,
+                validation_error=msg,
+                update_error=msg,
+                status_after=TRADE_PROPOSAL_STATUS_EXPIRED,
+            )
             return None, msg
         if msg == STALE_TRADE_MESSAGE:
             proposal["status"] = TRADE_PROPOSAL_STATUS_STALE
             proposal["updated_at"] = _utc_now_iso()
             proposals[target_idx] = proposal
             upsert_league_context(session, context, mark_persist_authoritative=False)
+        record_trade_response_trace(
+            session,
+            validation_error=msg,
+            update_error=msg,
+            status_after=str(proposal.get("status") or status_before),
+        )
         return None, msg
 
     recipient = str(proposal.get("recipient_team") or "").strip()
     my_owned = owned_team_for_user(context)
+    record_trade_response_trace(session, recipient_team=recipient, my_owned_team=my_owned or None)
     if my_owned and recipient != my_owned:
-        return None, f"Only the owner of {recipient} can accept this trade."
+        err = f"Only the owner of {recipient} can accept this trade."
+        record_trade_response_trace(session, validation_error=err, update_error=err)
+        return None, err
 
+    record_trade_response_trace(session, roster_mutation_attempted=True)
     if not _execute_roster_swap(context, proposal):
+        record_trade_response_trace(
+            session,
+            roster_mutation_ok=False,
+            roster_mutation_error=STALE_TRADE_MESSAGE,
+            update_error=STALE_TRADE_MESSAGE,
+        )
         return None, STALE_TRADE_MESSAGE
+    record_trade_response_trace(session, roster_mutation_ok=True, roster_mutation_error=None)
 
     now = _utc_now_iso()
     proposal["status"] = TRADE_PROPOSAL_STATUS_ACCEPTED
@@ -911,7 +1018,14 @@ def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[di
     proposal["accepted_at"] = now
     proposals[target_idx] = proposal
     _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_ACCEPTED)
-    saved = finalize_accepted_trade(session, context)
+    saved, save_shared_ok, save_shared_error = finalize_accepted_trade(session, context)
+    record_trade_response_trace(
+        session,
+        status_after=TRADE_PROPOSAL_STATUS_ACCEPTED,
+        save_shared_league_ok=save_shared_ok,
+        save_shared_league_error=save_shared_error,
+        update_error=None,
+    )
     return get_trade_proposal(saved, proposal_id), ""
 
 
@@ -945,7 +1059,7 @@ def decline_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[d
     proposal["declined_at"] = now
     proposals[target_idx] = proposal
     _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_DECLINED)
-    saved = upsert_league_context(session, context, mark_persist_authoritative=False)
+    saved = upsert_league_context(session, context)
     try:
         from fantasy_shared_league_store import push_league_context_to_shared
 
@@ -993,7 +1107,7 @@ def cancel_trade_proposal(
     proposal["responded_at"] = now
     proposals[target_idx] = proposal
     _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_CANCELED)
-    saved = upsert_league_context(session, context, mark_persist_authoritative=False)
+    saved = upsert_league_context(session, context)
     try:
         from fantasy_shared_league_store import push_league_context_to_shared
 
@@ -1083,7 +1197,7 @@ def counter_trade_proposal(
         "verdict": str(verdict or "").strip(),
     }
     proposals.append(counter)
-    saved = upsert_league_context(session, context, mark_persist_authoritative=False)
+    saved = upsert_league_context(session, context)
     try:
         from fantasy_shared_league_store import push_league_context_to_shared
 
