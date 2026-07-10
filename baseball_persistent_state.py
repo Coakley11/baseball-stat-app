@@ -1209,7 +1209,35 @@ def prepare_baseball_workspace(st: Any) -> bool:
         from suite_auth import is_auth_enabled, restore_auth_session
 
         if is_auth_enabled():
+            before_auth_workspace = str(ss.get("_suite_active_workspace_id") or "")
             restore_auth_session(ss, st=st)
+            try:
+                from suite_auth import enforce_workspace_ownership
+
+                enforce_workspace_ownership(ss)
+            except ImportError:
+                pass
+            after_auth_workspace = str(ss.get("_suite_active_workspace_id") or "")
+            try:
+                from workflow_persist_guard import ensure_session_workflow_hydrated
+
+                post_auth_hydrate = ensure_session_workflow_hydrated(st, APP_ID)
+                ss["_suite_post_auth_workflow_hydrate"] = dict(post_auth_hydrate)
+                if (
+                    post_auth_hydrate.get("hydrated")
+                    and not ss.get("_suite_post_auth_workflow_hydration_rerun_done")
+                ):
+                    ss["_suite_post_auth_workflow_hydration_rerun_done"] = True
+                    ss["_suite_post_auth_workflow_hydration_rerun_reason"] = (
+                        "workspace_changed_after_auth"
+                        if before_auth_workspace != after_auth_workspace
+                        else "post_auth_workflow_hydrated"
+                    )
+                    rerun = getattr(st, "rerun", None)
+                    if callable(rerun):
+                        rerun()
+            except ImportError:
+                pass
     except ImportError:
         pass
     try:

@@ -1851,6 +1851,18 @@ def autosave_if_changed(
             return
 
         state = build_state(st)
+        try:
+            from workflow_persist_guard import workflow_empty_save_blocked_reason
+
+            empty_block = workflow_empty_save_blocked_reason(
+                st, app_id, state, save_reason="autosave", scope="all"
+            )
+            if empty_block:
+                st.session_state["_suite_empty_startup_write_blocked"] = empty_block
+                st.session_state["_suite_persist_last_save_reason"] = "autosave"
+                return
+        except ImportError:
+            pass
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
         key = f"_suite_autosave_fp::{app_id}"

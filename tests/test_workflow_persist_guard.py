@@ -29,6 +29,7 @@ from workflow_persist_guard import (
     restore_active_draft_archive_selection,
     should_keep_session_workflow_over_blob,
     should_skip_empty_blob_workflow_over_persisted,
+    workflow_empty_save_blocked_reason,
     enrich_cloud_restore_state,
 )
 
@@ -646,6 +647,30 @@ class WorkflowPersistGuardTests(unittest.TestCase):
             st.session_state.get("_suite_empty_startup_write_blocked"),
             "hydrated_from_cloud_before_autosave",
         )
+
+    def test_force_save_reason_cannot_erase_recoverable_cloud_drafts(self) -> None:
+        st = MagicMock()
+        st.session_state = {}
+        state = {DRAFT_ARCHIVE_KEY: []}
+        cloud_state = {
+            DRAFT_ARCHIVE_KEY: [{"draft_id": "cloud01", "draft_name": "Cloud Draft"}],
+            LEAGUE_CONTEXT_STATE_KEY: {
+                "active_league_context_id": "ctx:cloud01",
+                "contexts": {"ctx:cloud01": {"league_context_id": "ctx:cloud01"}},
+            },
+        }
+        with patch("workflow_persist_guard.read_live_cloud_draft_probe", return_value={"draft_archive_count": 1}):
+            with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value=cloud_state):
+                with patch("workflow_persist_guard._load_disk_workflow_snapshot", return_value={}):
+                    reason = workflow_empty_save_blocked_reason(
+                        st,
+                        "baseball",
+                        state,
+                        save_reason="fantasy_edit",
+                    )
+
+        self.assertEqual(reason, "empty_outgoing_would_erase_live_cloud_drafts")
+        self.assertTrue(st.session_state.get("_suite_draft_archive_wipe_guard", {}).get("blocked"))
 
     def test_probe_auth_labels_unsigned_with_cloud_user(self) -> None:
         from workflow_persist_guard import _resolve_probe_auth_labels

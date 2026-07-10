@@ -556,8 +556,6 @@ def workflow_empty_save_blocked_reason(
     session = st.session_state
     if _session_allows_workflow_clear(session, reason):
         return None
-    if _is_force_save_cloud_reason(reason) and reason not in ("page_change", "autosave"):
-        return None
 
     try:
         from suite_auth import auth_session_complete, is_auth_enabled
@@ -1495,22 +1493,25 @@ def ensure_session_workflow_hydrated(
     *,
     cloud_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Hydrate saved drafts from cloud/disk when session is empty but durable storage has data.
+    """Hydrate saved drafts and league contexts from cloud/disk when session is missing them.
 
-  Runs after workspace sync (including skipped paths) so a reboot or refresh cannot leave
-  an empty session that later autosaves over a non-empty cloud ``draft_archive_teams``.
+  Runs after workspace sync (including post-auth ownership resolution) so a reboot or refresh
+  cannot leave an empty session that later autosaves over recoverable cloud/disk workflow.
     """
     session = st.session_state
     before = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+    before_contexts = count_league_contexts(session.get(LEAGUE_CONTEXT_STATE_KEY))
     out: dict[str, Any] = {
         "hydrated": False,
         "source": "",
         "session_before": before,
         "session_after": before,
+        "context_before": before_contexts,
+        "context_after": before_contexts,
         "restored_page": "",
         "empty_startup_write_would_erase": False,
     }
-    if before > 0:
+    if before > 0 and before_contexts > 0:
         return out
 
     if cloud_state is None:
@@ -1521,17 +1522,25 @@ def ensure_session_workflow_hydrated(
     cloud_count = count_draft_archives(cloud_state.get(DRAFT_ARCHIVE_KEY))
     disk_state = _load_disk_workflow_snapshot(app_id)
     disk_count = count_draft_archives(disk_state.get(DRAFT_ARCHIVE_KEY))
+    cloud_context_count = count_league_contexts(cloud_state.get(LEAGUE_CONTEXT_STATE_KEY))
+    disk_context_count = count_league_contexts(disk_state.get(LEAGUE_CONTEXT_STATE_KEY))
 
-    if cloud_count == 0 and disk_count == 0:
+    missing_drafts = before == 0 and (cloud_count > 0 or disk_count > 0)
+    missing_contexts = before_contexts == 0 and (cloud_context_count > 0 or disk_context_count > 0)
+    if not missing_drafts and not missing_contexts:
         return out
 
     out["empty_startup_write_would_erase"] = True
     session["_suite_cloud_fetch_attempted"] = True
-    session["_suite_cloud_fetch_success"] = bool(cloud_count > 0 or disk_count > 0)
+    session["_suite_cloud_fetch_success"] = bool(
+        cloud_count > 0 or disk_count > 0 or cloud_context_count > 0 or disk_context_count > 0
+    )
     merge_protected_workflow_on_restore(session, cloud_state, app_id=app_id, st=st)
     after = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+    after_contexts = count_league_contexts(session.get(LEAGUE_CONTEXT_STATE_KEY))
     out["session_after"] = after
-    if after > before:
+    out["context_after"] = after_contexts
+    if after > before or after_contexts > before_contexts:
         out["hydrated"] = True
         try:
             from draft_archive_visibility import sanitize_workflow_library_for_account
@@ -1541,9 +1550,11 @@ def ensure_session_workflow_hydrated(
             out["session_after"] = after
         except ImportError:
             pass
-        if cloud_count >= disk_count and cloud_count > 0:
+        if (cloud_count >= disk_count and cloud_count > 0) or (
+            cloud_context_count >= disk_context_count and cloud_context_count > 0
+        ):
             out["source"] = "cloud"
-        elif disk_count > 0:
+        elif disk_count > 0 or disk_context_count > 0:
             out["source"] = "disk"
         else:
             out["source"] = "union"
