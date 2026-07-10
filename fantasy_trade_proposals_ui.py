@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from fantasy_league_context import get_active_league_context
+from fantasy_league_identity import resolve_canonical_league_id
 from fantasy_league_team_ownership import (
     TEAM_ASSIGNMENT_PROMPT,
     TRADES_DISABLED_MESSAGE,
@@ -43,6 +44,73 @@ from fantasy_trade_proposals import (
     record_trade_response_trace,
     record_trade_submit_trace,
 )
+
+TRADE_RESPONSE_UI_V2_VERSION = "2026-07-10-v2"
+
+
+def build_trade_response_ui_diag(
+    session: dict[str, Any],
+    *,
+    my_team: str = "",
+    caller: str = "",
+) -> dict[str, Any]:
+    """Structured diagnostics for trade response v2 render path tracing."""
+    context = get_active_league_context(session)
+    owned_team = owned_team_for_user(context) if context else ""
+    resolved_team = resolve_trade_team_for_session(context, session) if context else ""
+    team_for_inbox = owned_team or resolved_team or str(my_team or "").strip()
+    incoming = get_incoming_trade_proposals(session, team_for_inbox) if context and team_for_inbox else []
+    pending_actionable = 0
+    if context and team_for_inbox:
+        pending_actionable = sum(
+            1
+            for proposal in incoming
+            if get_display_status(context, proposal) == TRADE_PROPOSAL_STATUS_PENDING
+            and is_proposal_actionable(context, proposal, as_team=team_for_inbox)
+        )
+    trades_ok, trades_gate = trades_enabled(context, session) if context else (False, "no_active_league_context")
+    return {
+        "version": TRADE_RESPONSE_UI_V2_VERSION,
+        "caller": str(caller or "").strip() or "—",
+        "context_loaded": bool(context),
+        "league_id": str(resolve_canonical_league_id(context) or "").strip() or None,
+        "league_context_id": str((context or {}).get("league_context_id") or "").strip() or None,
+        "owned_team": owned_team or None,
+        "resolved_team": resolved_team or None,
+        "analyzer_team": str(my_team or "").strip() or None,
+        "inbox_team": team_for_inbox or None,
+        "incoming_offer_count": len(incoming),
+        "pending_actionable_count": pending_actionable,
+        "trades_enabled": trades_ok,
+        "trades_gate": trades_gate or None,
+    }
+
+
+def render_trade_response_ui_v2_marker(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    my_team: str = "",
+    caller: str = "",
+) -> dict[str, Any]:
+    """Always-visible proof that trade response v2 module loaded and this render path ran."""
+    diag = build_trade_response_ui_diag(session, my_team=my_team, caller=caller)
+    st.info(
+        "**Trade response UI v2 active** · "
+        f"version `{diag.get('version')}` · caller `{diag.get('caller')}` · "
+        f"league_id `{diag.get('league_id') or '—'}` · "
+        f"owned_team `{diag.get('owned_team') or '—'}` · "
+        f"inbox_team `{diag.get('inbox_team') or '—'}` · "
+        f"incoming_offers **{diag.get('incoming_offer_count', 0)}** · "
+        f"actionable_pending **{diag.get('pending_actionable_count', 0)}** · "
+        f"context_loaded **{diag.get('context_loaded')}** · "
+        f"trades_enabled **{diag.get('trades_enabled')}**"
+    )
+    if not diag.get("context_loaded"):
+        st.caption("Trade response v2 marker: no active league context — proposal inbox may be hidden.")
+    elif not diag.get("trades_enabled"):
+        st.caption(f"Trade response v2 marker: trades gated — {diag.get('trades_gate') or '—'}")
+    return diag
 
 
 def _format_players(players: list[dict[str, Any]]) -> str:
@@ -434,6 +502,12 @@ def render_trade_proposals_section(
     key_prefix: str = "trade_proposals",
 ) -> None:
     """Incoming/outgoing inbox plus Propose Trade action."""
+    render_trade_response_ui_v2_marker(
+        st,
+        session,
+        my_team=my_team,
+        caller="render_trade_proposals_section",
+    )
     context = get_active_league_context(session)
     if not context:
         st.caption("Set an **Active Draft** in Saved Draft Library to propose league trades.")
@@ -593,9 +667,14 @@ def render_trade_proposals_section(
         if get_display_status(context, p) == TRADE_PROPOSAL_STATUS_PENDING
         and is_proposal_actionable(context, p, as_team=my_team_name)
     ]
-    if pending_actionable:
+    if incoming_preview:
         st.markdown("##### Respond to incoming offers")
-    _process_incoming_accept_forms(
+        if not pending_actionable:
+            st.caption(
+                f"No actionable pending offers for **{my_team_name or '—'}** "
+                f"({len(incoming_preview)} visible incoming; check owned team vs recipient)."
+            )
+    render_respond_to_incoming_offers(
         st,
         session,
         context=context,
@@ -656,3 +735,7 @@ def render_trade_proposals_section(
             )
 
     _render_trade_history(st, context, key_prefix=key_prefix)
+
+
+# Public alias for Lineup Assistant / diagnostics tracing.
+render_respond_to_incoming_offers = _process_incoming_accept_forms

@@ -144,6 +144,12 @@ def runtime_feature_verification() -> dict[str, str]:
         )
     except ImportError:
         flags["runtime_diagnostics"] = "missing"
+    try:
+        from fantasy_trade_proposals_ui import TRADE_RESPONSE_UI_V2_VERSION
+
+        flags["trade_response_ui_v2"] = TRADE_RESPONSE_UI_V2_VERSION
+    except ImportError:
+        flags["trade_response_ui_v2"] = "missing"
     return flags
 
 

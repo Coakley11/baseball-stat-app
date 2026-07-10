@@ -24110,6 +24110,19 @@ if active_page == "Fantasy Lineup Assistant":
             st.caption(
                 "Use this section after reviewing start/sit recommendations. It evaluates proposed trades and suggests roster moves using current stats, standings, and category needs."
             )
+            try:
+                from fantasy_trade_proposals_ui import render_trade_response_ui_v2_marker
+
+                render_trade_response_ui_v2_marker(
+                    st,
+                    st.session_state,
+                    my_team=str(st.session_state.get("lineup_team") or "").strip(),
+                    caller="lineup_trade_analyzer_header",
+                )
+            except ImportError as _trade_v2_import_err:
+                st.warning(f"Trade response UI v2 module missing: {_trade_v2_import_err}")
+            except Exception as _trade_v2_marker_err:
+                st.error(f"Trade response UI v2 marker failed: {type(_trade_v2_marker_err).__name__}: {_trade_v2_marker_err}")
 
             lineup_trade_roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame())
             lineup_trade_standings = st.session_state.get("fantasy_current_standings", pd.DataFrame())
@@ -24214,8 +24227,17 @@ if active_page == "Fantasy Lineup Assistant":
                             pass
 
                     try:
-                        from fantasy_trade_proposals_ui import render_trade_proposals_section
+                        from fantasy_trade_proposals_ui import (
+                            render_trade_proposals_section,
+                            render_trade_response_ui_v2_marker,
+                        )
 
+                        render_trade_response_ui_v2_marker(
+                            st,
+                            st.session_state,
+                            my_team=my_team_trade,
+                            caller="lineup_before_render_trade_proposals_section",
+                        )
                         render_trade_proposals_section(
                             st,
                             st.session_state,
@@ -24227,8 +24249,13 @@ if active_page == "Fantasy Lineup Assistant":
                             persist_fn=_persist_trade_plan,
                             key_prefix="lineup_trade_proposals",
                         )
-                    except ImportError:
-                        pass
+                    except ImportError as _trade_ui_import_err:
+                        st.warning(f"Trade proposals UI import failed: {_trade_ui_import_err}")
+                    except Exception as _trade_ui_render_err:
+                        st.error(
+                            f"Trade proposals UI render failed: "
+                            f"{type(_trade_ui_render_err).__name__}: {_trade_ui_render_err}"
+                        )
 
                     st.markdown("##### Generate Trade Ideas")
                     st.caption(
