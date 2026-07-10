@@ -201,6 +201,28 @@ def _record_removed_context_tombstones(session: dict[str, Any], removed_context_
     store["deleted_context_ids"] = sorted(deleted)
 
 
+def _repair_invitee_identities(session: dict[str, Any]) -> None:
+    """Backfill joined_via_invite for claimed teams before visibility prune."""
+    try:
+        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, list_league_contexts
+        from fantasy_league_team_ownership import owned_team_for_user
+    except ImportError:
+        return
+    uid = _resolve_session_user_id(session)
+    if not uid:
+        return
+    for ctx in list_league_contexts(session):
+        if str(ctx.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+            continue
+        meta = dict(ctx.get("metadata") or {})
+        if meta.get("joined_via_invite"):
+            continue
+        commissioner = str(meta.get("commissioner_user_id") or "").strip()
+        if owned_team_for_user(ctx, uid) and uid != commissioner:
+            meta["joined_via_invite"] = True
+            ctx["metadata"] = meta
+
+
 def _repair_league_context_identities(session: dict[str, Any]) -> None:
     """Backfill commissioner/ownership ids before visibility prune (local vs cloud uuid drift)."""
     try:
@@ -208,6 +230,7 @@ def _repair_league_context_identities(session: dict[str, Any]) -> None:
         from fantasy_league_invites import repair_commissioner_identity
     except ImportError:
         return
+    _repair_invitee_identities(session)
     for ctx in list_league_contexts(session):
         if str(ctx.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
             continue

@@ -1247,9 +1247,18 @@ def prepare_baseball_workspace(st: Any) -> bool:
     except ImportError:
         pass
     try:
+        from workflow_persist_guard import run_consolidated_startup_workflow
+
+        ss["_suite_consolidated_startup_trace"] = run_consolidated_startup_workflow(st, APP_ID)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    try:
         from fantasy_league_invites import reconcile_stranded_foreign_disk_drafts
 
-        reconcile_stranded_foreign_disk_drafts(st, APP_ID)
+        if not ss.get("_suite_shared_league_startup_sync_trace", {}).get("rebuilt"):
+            reconcile_stranded_foreign_disk_drafts(st, APP_ID)
     except ImportError:
         pass
     except Exception:
@@ -1257,15 +1266,8 @@ def prepare_baseball_workspace(st: Any) -> bool:
     try:
         from workflow_persist_guard import maybe_authenticated_workflow_cloud_writeback
 
-        maybe_authenticated_workflow_cloud_writeback(st, APP_ID)
-    except ImportError:
-        pass
-    except Exception:
-        pass
-    try:
-        from workflow_persist_guard import run_consolidated_startup_workflow
-
-        ss["_suite_consolidated_startup_trace"] = run_consolidated_startup_workflow(st, APP_ID)
+        if not ss.get("_suite_shared_league_startup_sync_trace", {}).get("rebuilt"):
+            maybe_authenticated_workflow_cloud_writeback(st, APP_ID)
     except ImportError:
         pass
     except Exception:

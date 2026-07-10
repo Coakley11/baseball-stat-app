@@ -291,3 +291,89 @@ class TestSharedLeagueStartupRebootE2E(unittest.TestCase):
         ]
         self.assertIn("Player B", donny_after)
         self.assertIn("Player A", team2_after)
+
+    def test_invitee_empty_blob_restores_visible_team2_archive_with_pending_trade(self) -> None:
+        """Accepted invitee: active id + pending trade + empty workspace blob -> one visible archive."""
+        from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY
+        from draft_archive_visibility import list_visible_draft_archives
+        from fantasy_shared_league_startup_sync import rebuild_workflow_from_canonical_shared_leagues
+        from workflow_persist_guard import AUTH_RESTORE_CYCLE_COMPLETE_KEY, STARTUP_CANONICAL_SYNC_COMPLETE_KEY
+
+        session_a, context_a = self._seed_commissioner_league()
+        league_id = resolve_canonical_league_id(context_a)
+        assert league_id
+        draft_id = str((context_a.get("metadata") or {}).get("source_draft_id") or "").strip()
+        assert draft_id
+
+        with _as_user("user:donny"):
+            invite, err = create_league_invite(session_a, context_a, invitee_target="ariel")
+        self.assertEqual(err, "")
+        assert invite is not None
+
+        session_b: dict = {
+            "draft_shared_settings": dict(_SHARED_DRAFT_CFG),
+            "_suite_owned_workspace_id": "ariel",
+        }
+        with _as_user("user:seal11"), self._workspace("ariel"):
+            _, context_b, accept_err = join_shared_league_from_invite(
+                session_b,
+                league_id=league_id,
+                invite_id=str(invite["invite_id"]),
+                team_name="Team 2",
+            )
+        self.assertEqual(accept_err, "")
+        assert context_b is not None
+
+        league_context_id_a = str(context_a.get("league_context_id") or "")
+        with _as_user("user:donny"):
+            activate_league_context(session_a, league_context_id_a)
+            ctx_a = get_league_context(session_a, league_context_id_a)
+            assert ctx_a is not None
+            synced_a = sync_context_with_shared_store(session_a, ctx_a)
+            upsert_league_context(session_a, synced_a)
+            proposal, propose_err = create_trade_proposal(
+                session_a,
+                proposer_team="Donny",
+                recipient_team="Team 2",
+                proposer_gives=["Player A"],
+                proposer_receives=["Player B"],
+            )
+        self.assertEqual(propose_err, "")
+        assert proposal is not None
+
+        rebooted: dict = {
+            "_suite_active_workspace_id": "ariel",
+            "_suite_owned_workspace_id": "ariel",
+            "_suite_auth_user_id": "user:seal11",
+            "_suite_cloud_user_id": "user:seal11",
+            "_suite_auth_external_id": "seal11",
+            "_suite_auth_session": True,
+            AUTH_RESTORE_CYCLE_COMPLETE_KEY: True,
+            ACTIVE_DRAFT_ARCHIVE_KEY: draft_id,
+        }
+        st = MagicMock()
+        st.session_state = rebooted
+        empty_blob = {ACTIVE_DRAFT_ARCHIVE_KEY: draft_id, "draft_archive_teams": []}
+        with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value=empty_blob):
+            with patch("workflow_persist_guard._load_disk_workflow_snapshot", return_value=empty_blob):
+                trace = rebuild_workflow_from_canonical_shared_leagues(st, "baseball")
+        rebooted[STARTUP_CANONICAL_SYNC_COMPLETE_KEY] = True
+
+        self.assertTrue(trace.get("rebuilt"))
+        self.assertEqual(count_draft_archives(rebooted.get(DRAFT_ARCHIVE_KEY)), 1)
+        self.assertEqual(str(rebooted.get(ACTIVE_DRAFT_ARCHIVE_KEY) or ""), draft_id)
+        with _as_user("user:seal11"):
+            visible = list_visible_draft_archives(rebooted)
+        self.assertEqual(len(visible), 1)
+        self.assertEqual(str(visible[0].get("team_name") or ""), "Team 2")
+        restore_trace = (
+            ((trace.get("results") or [{}])[0].get("repair_trace") or {}).get("finalize_trace") or {}
+        ).get("active_restore_trace", {})
+        self.assertNotEqual(restore_trace.get("restore_reason"), "cleared_stale_active_not_visible")
+
+        shared = load_shared_league(league_id)
+        assert shared is not None
+        pending = [
+            p for p in (shared.get("trade_proposals") or []) if str(p.get("status")) == TRADE_PROPOSAL_STATUS_PENDING
+        ]
+        self.assertEqual(len(pending), 1)

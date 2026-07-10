@@ -1911,7 +1911,18 @@ def _archive_stub_from_league_context(context: dict[str, Any]) -> dict[str, Any]
                 if isinstance(player, dict):
                     players.append(dict(player))
     context_type = str(context.get("context_type") or "")
-    draft_type = "live_draft_room" if context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT else "simulator"
+    try:
+        from draft_archive_state import DRAFT_TYPE_IMPORTED
+        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, SOURCE_IMPORTED_DRAFT
+
+        if context_type == CONTEXT_TYPE_REAL_LEAGUE or str(context.get("source") or "") == SOURCE_IMPORTED_DRAFT:
+            draft_type = DRAFT_TYPE_IMPORTED
+        elif context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT:
+            draft_type = "live_draft_room"
+        else:
+            draft_type = "simulator"
+    except ImportError:
+        draft_type = "live_draft_room" if context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT else "simulator"
     now = str(meta.get("updated_at") or meta.get("created_at") or _utc_now_iso())
     return {
         "draft_id": draft_id,

@@ -1283,6 +1283,7 @@ def restore_active_draft_archive_selection(
     app_id: str = "baseball",
     st: Any | None = None,
     phase: str = "restore",
+    respect_canonical_membership: bool = False,
 ) -> dict[str, Any]:
     """Reconcile active_draft_archive_id after restore/hydration/sanitize."""
     incoming_state = incoming_state if isinstance(incoming_state, dict) else {}
@@ -1305,25 +1306,50 @@ def restore_active_draft_archive_selection(
         "incoming_active": str(incoming_state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or ""),
         "visible_draft_count": 0,
         "needs_set_active_prompt": False,
+        "respect_canonical_membership": bool(respect_canonical_membership),
     }
 
-    try:
-        from draft_archive_visibility import list_visible_draft_archives
-
-        visible = list_visible_draft_archives(session)
-    except ImportError:
+    canonical_draft_ids: set[str] = set()
+    if respect_canonical_membership:
         try:
-            from draft_archive_state import list_draft_archives
+            from fantasy_shared_league_startup_sync import canonical_membership_draft_ids_for_session
 
-            visible = list_draft_archives(session)
+            canonical_draft_ids = canonical_membership_draft_ids_for_session(session)
+            trace["canonical_draft_ids"] = sorted(canonical_draft_ids)
         except ImportError:
-            visible = []
+            canonical_draft_ids = set()
 
-    visible_ids = [
-        str(entry.get("draft_id") or "").strip()
-        for entry in visible
-        if isinstance(entry, dict) and str(entry.get("draft_id") or "").strip()
-    ]
+    def _refresh_visible() -> list[str]:
+        try:
+            from draft_archive_visibility import list_visible_draft_archives
+
+            visible_entries = list_visible_draft_archives(session)
+        except ImportError:
+            try:
+                from draft_archive_state import list_draft_archives
+
+                visible_entries = list_draft_archives(session)
+            except ImportError:
+                visible_entries = []
+        return [
+            str(entry.get("draft_id") or "").strip()
+            for entry in visible_entries
+            if isinstance(entry, dict) and str(entry.get("draft_id") or "").strip()
+        ]
+
+    def _repair_canonical_archive_if_needed(draft_id: str) -> bool:
+        if not draft_id or not respect_canonical_membership or draft_id not in canonical_draft_ids:
+            return False
+        try:
+            from fantasy_league_context import repair_missing_draft_archives_from_contexts
+            from fantasy_admin_draft_archive_repair import _normalize_repaired_archive_types
+        except ImportError:
+            return False
+        repair_missing_draft_archives_from_contexts(session, require_visibility=False)
+        _normalize_repaired_archive_types(session)
+        return draft_id in _refresh_visible()
+
+    visible_ids = _refresh_visible()
     trace["visible_draft_count"] = len(visible_ids)
 
     merged_archives = session.get(DRAFT_ARCHIVE_KEY)
@@ -1337,10 +1363,22 @@ def restore_active_draft_archive_selection(
         ("session", session.get(ACTIVE_DRAFT_ARCHIVE_KEY)),
     ):
         cid = str(candidate or "").strip()
+        if not cid:
+            continue
+        if cid not in visible_ids and _repair_canonical_archive_if_needed(cid):
+            visible_ids = _refresh_visible()
         if cid and cid in visible_ids:
             session[ACTIVE_DRAFT_ARCHIVE_KEY] = cid
             trace["active_source"] = source_name
             trace["restore_reason"] = f"matched_{source_name}_active_to_visible_archive"
+            trace["session_active_after"] = cid
+            session.pop("_suite_active_draft_restore_prompt", None)
+            session[ACTIVE_DRAFT_RESTORE_TRACE_KEY] = trace
+            return trace
+        if cid and respect_canonical_membership and cid in canonical_draft_ids:
+            session[ACTIVE_DRAFT_ARCHIVE_KEY] = cid
+            trace["active_source"] = source_name
+            trace["restore_reason"] = "canonical_membership_preserved_active_archive"
             trace["session_active_after"] = cid
             session.pop("_suite_active_draft_restore_prompt", None)
             session[ACTIVE_DRAFT_RESTORE_TRACE_KEY] = trace
@@ -1364,6 +1402,24 @@ def restore_active_draft_archive_selection(
 
     current = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
     if current and current not in visible_ids:
+        if _repair_canonical_archive_if_needed(current):
+            visible_ids = _refresh_visible()
+            if current in visible_ids:
+                session[ACTIVE_DRAFT_ARCHIVE_KEY] = current
+                trace["active_source"] = "session"
+                trace["restore_reason"] = "canonical_membership_restored_active_archive"
+                trace["session_active_after"] = current
+                session.pop("_suite_active_draft_restore_prompt", None)
+                session[ACTIVE_DRAFT_RESTORE_TRACE_KEY] = trace
+                return trace
+        if respect_canonical_membership and current in canonical_draft_ids:
+            session[ACTIVE_DRAFT_ARCHIVE_KEY] = current
+            trace["active_source"] = "session"
+            trace["restore_reason"] = "canonical_membership_preserved_active_archive"
+            trace["session_active_after"] = current
+            session.pop("_suite_active_draft_restore_prompt", None)
+            session[ACTIVE_DRAFT_RESTORE_TRACE_KEY] = trace
+            return trace
         session.pop(ACTIVE_DRAFT_ARCHIVE_KEY, None)
         trace["restore_reason"] = "cleared_stale_active_not_visible"
 
@@ -1553,14 +1609,15 @@ def ensure_session_workflow_hydrated(
     out["context_after"] = after_contexts
     if after > before or after_contexts > before_contexts:
         out["hydrated"] = True
-        try:
-            from draft_archive_visibility import sanitize_workflow_library_for_account
+        if session.get(STARTUP_CANONICAL_SYNC_COMPLETE_KEY):
+            try:
+                from draft_archive_visibility import sanitize_workflow_library_for_account
 
-            sanitize_workflow_library_for_account(session, st=st, persist_cleanup=True)
-            after = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
-            out["session_after"] = after
-        except ImportError:
-            pass
+                sanitize_workflow_library_for_account(session, st=st, persist_cleanup=True)
+                after = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
+                out["session_after"] = after
+            except ImportError:
+                pass
         if (cloud_count >= disk_count and cloud_count > 0) or (
             cloud_context_count >= disk_context_count and cloud_context_count > 0
         ):
@@ -3330,6 +3387,15 @@ def run_consolidated_startup_workflow(st: Any, app_id: str = "baseball") -> dict
         trace["canonical_sync"] = {"error": str(exc)}
     session[STARTUP_CANONICAL_SYNC_COMPLETE_KEY] = True
     trace["readiness"] = finalize_startup_read_only_gate(st, app_id)
+    if trace["canonical_sync"].get("rebuilt"):
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            trace["persisted"] = bool(
+                force_save_baseball_state(st, reason="startup_canonical_workflow_persist")
+            )
+        except Exception as exc:
+            trace["persist_error"] = str(exc)
     if trace["canonical_sync"].get("rebuilt") and not session.get("_suite_startup_canonical_sync_rerun_done"):
         session["_suite_startup_canonical_sync_rerun_done"] = True
         trace["rerun_requested"] = True
