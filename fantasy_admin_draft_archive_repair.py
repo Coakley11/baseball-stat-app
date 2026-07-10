@@ -157,17 +157,26 @@ def build_context_from_shared_for_workspace(
     elif my_team:
         base["my_team_name"] = my_team
     merged = merge_shared_into_context(base, shared)
-    if my_team:
-        merged["my_team_name"] = my_team
+    resolved_team = my_team or _owned_team_for_account(
+        shared,
+        owner_user_id=owner_user_id,
+        owner_external_id=owner_external_id,
+        workspace_id=workspace_id,
+    )
+    if resolved_team:
+        merged["my_team_name"] = resolved_team
+        my_team = resolved_team
     meta = dict(merged.get("metadata") or {})
     meta["league_id"] = league_id or str(meta.get("league_id") or "").strip()
     meta["source_draft_id"] = draft_id or str(meta.get("source_draft_id") or "").strip()
     meta["commissioner_user_id"] = str(shared.get("commissioner_user_id") or meta.get("commissioner_user_id") or "").strip()
     commissioner = str(meta.get("commissioner_user_id") or "").strip()
-    if bool(existing_meta.get("joined_via_invite")):
+    if bool(existing_meta.get("joined_via_invite")) and owner_user_id and owner_user_id != commissioner:
         meta["joined_via_invite"] = True
     elif my_team and owner_user_id and owner_user_id != commissioner:
         meta["joined_via_invite"] = True
+    else:
+        meta.pop("joined_via_invite", None)
     if str(existing_meta.get("invite_id") or "").strip():
         meta["invite_id"] = str(existing_meta.get("invite_id") or "").strip()
     merged["metadata"] = meta

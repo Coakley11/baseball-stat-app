@@ -9,6 +9,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
+
+from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, list_draft_archives
+from draft_archive_visibility import list_visible_draft_archives
 from fantasy_league_context import (
     activate_league_context,
     get_league_context,
@@ -25,6 +29,7 @@ from fantasy_trade_proposals import (
     accept_trade_proposal,
     create_trade_proposal,
     get_incoming_trade_proposals,
+    get_outgoing_trade_proposals,
     get_trade_history,
 )
 from tests.test_fantasy_trade_proposals import _as_user, _league_board
@@ -44,6 +49,15 @@ _SHARED_DRAFT_CFG = {
     "slots": {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "UTIL": 1},
     "slot_instances": [],
 }
+
+
+def _daniel_league_board() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"Team": "Daniel", "Player": "Francisco Lindor", "Pick": 1},
+            {"Team": "Team 2", "Player": "Mookie Betts", "Pick": 2},
+        ]
+    )
 
 _WORKFLOW_KEYS = (
     DRAFT_ARCHIVE_KEY,
@@ -377,3 +391,162 @@ class TestSharedLeagueStartupRebootE2E(unittest.TestCase):
             p for p in (shared.get("trade_proposals") or []) if str(p.get("status")) == TRADE_PROPOSAL_STATUS_PENDING
         ]
         self.assertEqual(len(pending), 1)
+
+    def _seed_daniel_commissioner_league(self) -> tuple[dict, dict]:
+        session: dict = {
+            "draft_shared_settings": dict(_SHARED_DRAFT_CFG),
+            "_suite_owned_workspace_id": "daniel",
+        }
+        with _as_user("user:daniel"):
+            _, context = save_imported_league_context(
+                session,
+                _daniel_league_board(),
+                my_team_name="Daniel",
+                draft_name="UPLOAD TEST DEMO",
+                league_name="UPLOAD TEST DEMO",
+                config=_SHARED_DRAFT_CFG,
+                save_only=True,
+                assign_team=True,
+            )
+        return session, context
+
+    def _assert_workspace_team_views(
+        self,
+        session: dict,
+        *,
+        user_id: str,
+        expected_team: str,
+        draft_id: str,
+    ) -> None:
+        with _as_user(user_id):
+            visible = list_visible_draft_archives(session)
+        self.assertEqual(len(visible), 1)
+        self.assertEqual(str(visible[0].get("draft_id") or ""), draft_id)
+        self.assertEqual(str(visible[0].get("team_name") or ""), expected_team)
+        league_context_id = str(visible[0].get("league_context_id") or "").strip()
+        with _as_user(user_id):
+            ctx = get_league_context(session, league_context_id)
+        assert ctx is not None
+        self.assertEqual(str(ctx.get("my_team_name") or ""), expected_team)
+        self.assertEqual(owned_team_for_user(ctx, user_id), expected_team)
+
+    def test_per_account_team_identity_on_shared_archive_pending_trade(self) -> None:
+        """Daniel -> Daniel, Coakley11 -> Team 2 on same archive; trade stays Daniel -> Team 2."""
+        from fantasy_shared_league_startup_sync import rebuild_workflow_from_canonical_shared_leagues
+
+        session_a, context_a = self._seed_daniel_commissioner_league()
+        league_id = resolve_canonical_league_id(context_a)
+        assert league_id
+        draft_id = str((context_a.get("metadata") or {}).get("source_draft_id") or "").strip()
+        assert draft_id
+        league_context_id_a = str(context_a.get("league_context_id") or "")
+
+        with _as_user("user:daniel"):
+            invite, err = create_league_invite(session_a, context_a, invitee_target="coakley11")
+        self.assertEqual(err, "")
+        assert invite is not None
+
+        session_b: dict = {
+            "draft_shared_settings": dict(_SHARED_DRAFT_CFG),
+            "_suite_owned_workspace_id": "coakley11",
+        }
+        with _as_user("user:coakley11"), self._workspace("coakley11"):
+            _, context_b, accept_err = join_shared_league_from_invite(
+                session_b,
+                league_id=league_id,
+                invite_id=str(invite["invite_id"]),
+                team_name="Team 2",
+            )
+        self.assertEqual(accept_err, "")
+        assert context_b is not None
+
+        with _as_user("user:daniel"):
+            activate_league_context(session_a, league_context_id_a)
+            ctx_a = get_league_context(session_a, league_context_id_a)
+            assert ctx_a is not None
+            synced_a = sync_context_with_shared_store(session_a, ctx_a)
+            upsert_league_context(session_a, synced_a)
+            proposal, propose_err = create_trade_proposal(
+                session_a,
+                proposer_team="Daniel",
+                recipient_team="Team 2",
+                proposer_gives=["Francisco Lindor"],
+                proposer_receives=["Mookie Betts"],
+            )
+        self.assertEqual(propose_err, "")
+        assert proposal is not None
+
+        shared = load_shared_league(league_id)
+        assert shared is not None
+        self.assertEqual(str(shared["trade_proposals"][0].get("proposer_team") or ""), "Daniel")
+        self.assertEqual(str(shared["trade_proposals"][0].get("recipient_team") or ""), "Team 2")
+
+        reboot_daniel: dict = {
+            "_suite_active_workspace_id": "daniel",
+            "_suite_owned_workspace_id": "daniel",
+            "_suite_auth_user_id": "user:daniel",
+            "_suite_cloud_user_id": "user:daniel",
+            "_suite_auth_external_id": "daniel",
+            "_suite_auth_session": True,
+            AUTH_RESTORE_CYCLE_COMPLETE_KEY: True,
+            ACTIVE_DRAFT_ARCHIVE_KEY: draft_id,
+        }
+        reboot_coakley: dict = {
+            "_suite_active_workspace_id": "coakley11",
+            "_suite_owned_workspace_id": "coakley11",
+            "_suite_auth_user_id": "user:coakley11",
+            "_suite_cloud_user_id": "user:coakley11",
+            "_suite_auth_external_id": "coakley11",
+            "_suite_auth_session": True,
+            AUTH_RESTORE_CYCLE_COMPLETE_KEY: True,
+            ACTIVE_DRAFT_ARCHIVE_KEY: draft_id,
+        }
+        empty_blob = {ACTIVE_DRAFT_ARCHIVE_KEY: draft_id, "draft_archive_teams": []}
+        for rebooted in (reboot_daniel, reboot_coakley):
+            st = MagicMock()
+            st.session_state = rebooted
+            with patch("workflow_persist_guard._load_cloud_workflow_snapshot", return_value=empty_blob):
+                with patch("workflow_persist_guard._load_disk_workflow_snapshot", return_value=empty_blob):
+                    rebuild_workflow_from_canonical_shared_leagues(st, "baseball")
+            rebooted[STARTUP_CANONICAL_SYNC_COMPLETE_KEY] = True
+
+        self._assert_workspace_team_views(
+            reboot_daniel, user_id="user:daniel", expected_team="Daniel", draft_id=draft_id
+        )
+        self._assert_workspace_team_views(
+            reboot_coakley, user_id="user:coakley11", expected_team="Team 2", draft_id=draft_id
+        )
+
+        with _as_user("user:daniel"):
+            activate_league_context(reboot_daniel, league_context_id_a)
+            ctx_a = get_league_context(reboot_daniel, league_context_id_a)
+            assert ctx_a is not None
+            synced_a = sync_context_with_shared_store(reboot_daniel, ctx_a)
+            upsert_league_context(reboot_daniel, synced_a)
+            outgoing = get_outgoing_trade_proposals(reboot_daniel, "Daniel")
+            incoming = get_incoming_trade_proposals(reboot_daniel, "Daniel")
+        self.assertEqual(len(outgoing), 1)
+        self.assertEqual(len(incoming), 0)
+        self.assertEqual(str(outgoing[0].get("recipient_team") or ""), "Team 2")
+
+        with _as_user("user:coakley11"):
+            league_context_id_b = str(context_b.get("league_context_id") or "")
+            activate_league_context(reboot_coakley, league_context_id_b)
+            ctx_b = get_league_context(reboot_coakley, league_context_id_b)
+            assert ctx_b is not None
+            synced_b = sync_context_with_shared_store(reboot_coakley, ctx_b)
+            upsert_league_context(reboot_coakley, synced_b)
+            incoming_b = get_incoming_trade_proposals(reboot_coakley, "Team 2")
+            outgoing_b = get_outgoing_trade_proposals(reboot_coakley, "Team 2")
+        self.assertEqual(len(incoming_b), 1)
+        self.assertEqual(len(outgoing_b), 0)
+        self.assertEqual(str(incoming_b[0].get("proposer_team") or ""), "Daniel")
+
+        shared_after = load_shared_league(league_id)
+        assert shared_after is not None
+        pending = [
+            p for p in (shared_after.get("trade_proposals") or []) if str(p.get("status")) == TRADE_PROPOSAL_STATUS_PENDING
+        ]
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(str(pending[0].get("proposer_team") or ""), "Daniel")
+        self.assertEqual(str(pending[0].get("recipient_team") or ""), "Team 2")

@@ -152,43 +152,74 @@ def discover_shared_league_memberships_for_session(session: dict[str, Any]) -> l
     return memberships
 
 
-def apply_accepted_member_identity_from_shared(
+def resolve_workspace_team_from_shared(
+    session: dict[str, Any],
+    shared_doc: dict[str, Any],
+) -> str:
+    """Resolve the signed-in member's team from canonical shared team_ownership."""
+    from fantasy_admin_draft_archive_repair import _owned_team_for_account
+
+    uid, external, workspace = _resolve_startup_identity(session)
+    return _owned_team_for_account(
+        shared_doc,
+        owner_user_id=uid,
+        owner_external_id=external,
+        workspace_id=workspace,
+    )
+
+
+def apply_workspace_member_identity_from_shared(
     session: dict[str, Any],
     context: dict[str, Any],
     shared_doc: dict[str, Any],
 ) -> dict[str, Any]:
-    """Apply Team N identity and joined_via_invite before visibility pruning."""
+    """Apply workspace-local team identity from canonical membership; never bleed invitee fields globally."""
+    from fantasy_league_invites import is_league_commissioner
     from fantasy_league_team_ownership import assign_team_owner_to_context
 
     uid, external, workspace = _resolve_startup_identity(session)
     merged = copy.deepcopy(context)
-    my_team = str(merged.get("my_team_name") or "").strip()
     meta = dict(merged.get("metadata") or {})
-    commissioner = str(meta.get("commissioner_user_id") or shared_doc.get("commissioner_user_id") or "").strip()
+    commissioner = str(
+        meta.get("commissioner_user_id") or shared_doc.get("commissioner_user_id") or ""
+    ).strip()
 
-    invites = shared_doc.get("league_invites") or []
-    if isinstance(invites, list):
-        for invite in invites:
-            if not isinstance(invite, dict):
-                continue
-            if str(invite.get("status") or "").strip() != INVITE_STATUS_ACCEPTED:
-                continue
-            if not _record_matches_account(
-                invite,
-                user_id=uid,
-                external_id=external,
-                workspace_id=workspace,
-            ):
-                continue
+    my_team = resolve_workspace_team_from_shared(session, shared_doc)
+    if my_team:
+        merged["my_team_name"] = my_team
+
+    is_commissioner = bool(uid and (is_league_commissioner(merged, uid) or account_user_ids_match(uid, commissioner)))
+    if is_commissioner:
+        meta.pop("joined_via_invite", None)
+        meta.pop("invite_id", None)
+    else:
+        matched_invite = False
+        invites = shared_doc.get("league_invites") or []
+        if isinstance(invites, list):
+            for invite in invites:
+                if not isinstance(invite, dict):
+                    continue
+                if str(invite.get("status") or "").strip() != INVITE_STATUS_ACCEPTED:
+                    continue
+                if not _record_matches_account(
+                    invite,
+                    user_id=uid,
+                    external_id=external,
+                    workspace_id=workspace,
+                ):
+                    continue
+                meta["joined_via_invite"] = True
+                invite_id = str(invite.get("invite_id") or "").strip()
+                if invite_id:
+                    meta["invite_id"] = invite_id
+                claimed = str(invite.get("claimed_team") or "").strip()
+                if claimed:
+                    merged["my_team_name"] = claimed
+                    my_team = claimed
+                matched_invite = True
+                break
+        if not matched_invite and my_team and uid:
             meta["joined_via_invite"] = True
-            invite_id = str(invite.get("invite_id") or "").strip()
-            if invite_id:
-                meta["invite_id"] = invite_id
-            claimed = str(invite.get("claimed_team") or "").strip()
-            if claimed:
-                merged["my_team_name"] = claimed
-                my_team = claimed
-            break
 
     ownership = shared_doc.get("team_ownership") or {}
     if my_team and isinstance(ownership, dict):
@@ -201,7 +232,7 @@ def apply_accepted_member_identity_from_shared(
                 email=str(record.get("email") or ""),
                 display_name=str(record.get("display_name") or ""),
             )
-        elif uid and uid != commissioner:
+        elif uid:
             merged = assign_team_owner_to_context(
                 merged,
                 my_team,
@@ -210,10 +241,12 @@ def apply_accepted_member_identity_from_shared(
                 display_name=str(session.get("_suite_auth_external_id") or external),
             )
 
-    if my_team and uid and uid != commissioner:
-        meta["joined_via_invite"] = True
     merged["metadata"] = meta
     return merged
+
+
+# Backward-compatible alias for earlier startup-sync callers.
+apply_accepted_member_identity_from_shared = apply_workspace_member_identity_from_shared
 
 
 def canonical_membership_draft_ids_for_session(session: dict[str, Any]) -> set[str]:
@@ -251,7 +284,7 @@ def finalize_repaired_archives_for_membership(
     if not isinstance(context, dict):
         return trace
 
-    context = apply_accepted_member_identity_from_shared(session, context, shared_doc)
+    context = apply_workspace_member_identity_from_shared(session, context, shared_doc)
     upsert_league_context(session, context, mark_persist_authoritative=False)
     context = find_league_context_by_league_id(session, league_id) or context
 
@@ -280,73 +313,6 @@ def finalize_repaired_archives_for_membership(
     if draft_id:
         session[ACTIVE_DRAFT_ARCHIVE_KEY] = draft_id
     return trace
-
-    """Find canonical shared leagues this workspace participates in."""
-    uid, external, workspace = _resolve_startup_identity(session)
-    if not uid and not external and not workspace:
-        return []
-
-    memberships: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for doc in list_shared_league_documents():
-        if not isinstance(doc, dict):
-            continue
-        league_id = str(doc.get("league_id") or "").strip()
-        if not league_id or league_id in seen:
-            continue
-
-        reasons: list[str] = []
-        owned_teams: set[str] = set()
-        ownership = doc.get("team_ownership") or {}
-        if isinstance(ownership, dict):
-            for team, record in ownership.items():
-                if _record_matches_account(
-                    record if isinstance(record, dict) else {},
-                    user_id=uid,
-                    external_id=external,
-                    workspace_id=workspace,
-                ):
-                    owned_teams.add(str(team or "").strip())
-                    reasons.append("team_ownership")
-
-        invites = doc.get("league_invites") or []
-        if isinstance(invites, list):
-            for invite in invites:
-                if not isinstance(invite, dict):
-                    continue
-                status = str(invite.get("status") or "").strip()
-                if status == INVITE_STATUS_ACCEPTED and _record_matches_account(
-                    invite,
-                    user_id=uid,
-                    external_id=external,
-                    workspace_id=workspace,
-                ):
-                    reasons.append("accepted_invite")
-                    claimed = str(invite.get("claimed_team") or "").strip()
-                    if claimed:
-                        owned_teams.add(claimed)
-
-        proposals = doc.get("trade_proposals") or []
-        if isinstance(proposals, list):
-            for proposal in proposals:
-                if isinstance(proposal, dict) and _pending_trade_involves_account(
-                    proposal, owned_teams=owned_teams
-                ):
-                    reasons.append("pending_trade")
-                    break
-
-        if reasons:
-            seen.add(league_id)
-            memberships.append(
-                {
-                    "league_id": league_id,
-                    "reasons": sorted(set(reasons)),
-                    "owned_teams": sorted(owned_teams),
-                    "draft_id": str(doc.get("draft_id") or "").strip(),
-                    "revision": doc.get("revision"),
-                }
-            )
-    return memberships
 
 
 def rebuild_workflow_from_canonical_shared_leagues(
@@ -418,7 +384,7 @@ def rebuild_workflow_from_canonical_shared_leagues(
                 workspace_id=workspace_id,
                 existing=existing,
             )
-            context = apply_accepted_member_identity_from_shared(session, context, shared_doc)
+            context = apply_workspace_member_identity_from_shared(session, context, shared_doc)
             upsert_league_context(session, context, mark_persist_authoritative=False)
             finalize_trace = finalize_repaired_archives_for_membership(
                 session,
