@@ -417,18 +417,31 @@ class TestSharedLeagueStartupRebootE2E(unittest.TestCase):
         user_id: str,
         expected_team: str,
         draft_id: str,
+        league_context_id: str = "",
     ) -> None:
+        from fantasy_workspace_team_identity import (
+            resolve_archive_display_team,
+            resolve_final_rendered_context_teams,
+        )
+
         with _as_user(user_id):
             visible = list_visible_draft_archives(session)
         self.assertEqual(len(visible), 1)
         self.assertEqual(str(visible[0].get("draft_id") or ""), draft_id)
-        self.assertEqual(str(visible[0].get("team_name") or ""), expected_team)
-        league_context_id = str(visible[0].get("league_context_id") or "").strip()
+        league_context_id = league_context_id or str(visible[0].get("league_context_id") or "").strip()
         with _as_user(user_id):
             ctx = get_league_context(session, league_context_id)
         assert ctx is not None
         self.assertEqual(str(ctx.get("my_team_name") or ""), expected_team)
         self.assertEqual(owned_team_for_user(ctx, user_id), expected_team)
+        with _as_user(user_id):
+            display_team = resolve_archive_display_team(session, visible[0], ctx)
+            activate_league_context(session, league_context_id)
+            final = resolve_final_rendered_context_teams(session, draft_id=draft_id)
+        self.assertEqual(display_team, expected_team)
+        self.assertEqual(str(final.get("final_library_team") or ""), expected_team)
+        self.assertEqual(str(final.get("final_fantasy_lineup_team") or ""), expected_team)
+        self.assertEqual(str(final.get("ownership_resolved_team") or ""), expected_team)
 
     def test_per_account_team_identity_on_shared_archive_pending_trade(self) -> None:
         """Daniel -> Daniel, Coakley11 -> Team 2 on same archive; trade stays Daniel -> Team 2."""
@@ -487,6 +500,7 @@ class TestSharedLeagueStartupRebootE2E(unittest.TestCase):
             "_suite_auth_user_id": "user:daniel",
             "_suite_cloud_user_id": "user:daniel",
             "_suite_auth_external_id": "daniel",
+            "_suite_auth_user_email": "daniel.cohen11@yahoo.com",
             "_suite_auth_session": True,
             AUTH_RESTORE_CYCLE_COMPLETE_KEY: True,
             ACTIVE_DRAFT_ARCHIVE_KEY: draft_id,
@@ -501,7 +515,22 @@ class TestSharedLeagueStartupRebootE2E(unittest.TestCase):
             AUTH_RESTORE_CYCLE_COMPLETE_KEY: True,
             ACTIVE_DRAFT_ARCHIVE_KEY: draft_id,
         }
-        empty_blob = {ACTIVE_DRAFT_ARCHIVE_KEY: draft_id, "draft_archive_teams": []}
+        stale_archive_entry = {
+            "draft_id": draft_id,
+            "draft_name": "UPLOAD TEST DEMO",
+            "team_name": "Team 2",
+            "draft_type": "imported_draft",
+            "league_context_id": league_context_id_a,
+            "players": [{"Player": "Mookie Betts", "Team": "Team 2"}],
+            "league_rosters": {
+                "Daniel": {"team_name": "Daniel", "players": [{"Player": "Francisco Lindor"}]},
+                "Team 2": {"team_name": "Team 2", "players": [{"Player": "Mookie Betts"}]},
+            },
+        }
+        empty_blob = {
+            ACTIVE_DRAFT_ARCHIVE_KEY: draft_id,
+            "draft_archive_teams": [stale_archive_entry],
+        }
         for rebooted in (reboot_daniel, reboot_coakley):
             st = MagicMock()
             st.session_state = rebooted
@@ -511,11 +540,26 @@ class TestSharedLeagueStartupRebootE2E(unittest.TestCase):
             rebooted[STARTUP_CANONICAL_SYNC_COMPLETE_KEY] = True
 
         self._assert_workspace_team_views(
-            reboot_daniel, user_id="user:daniel", expected_team="Daniel", draft_id=draft_id
+            reboot_daniel,
+            user_id="user:daniel",
+            expected_team="Daniel",
+            draft_id=draft_id,
+            league_context_id=league_context_id_a,
         )
         self._assert_workspace_team_views(
-            reboot_coakley, user_id="user:coakley11", expected_team="Team 2", draft_id=draft_id
+            reboot_coakley,
+            user_id="user:coakley11",
+            expected_team="Team 2",
+            draft_id=draft_id,
+            league_context_id=str(context_b.get("league_context_id") or ""),
         )
+
+        from fantasy_shared_league_startup_sync import resolve_workspace_team_from_shared
+
+        shared_doc = load_shared_league(league_id)
+        assert shared_doc is not None
+        self.assertEqual(resolve_workspace_team_from_shared(reboot_daniel, shared_doc), "Daniel")
+        self.assertEqual(resolve_workspace_team_from_shared(reboot_coakley, shared_doc), "Team 2")
 
         with _as_user("user:daniel"):
             activate_league_context(reboot_daniel, league_context_id_a)

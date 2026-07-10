@@ -518,6 +518,7 @@ def sync_context_with_shared_store(
     store: SharedLeagueStore | None = None,
 ) -> dict[str, Any]:
     from fantasy_league_context import upsert_league_context
+    from fantasy_workspace_team_identity import overlay_workspace_team_on_context, record_team_identity_trace
 
     league_id = resolve_canonical_league_id(context)
     if not league_id:
@@ -525,7 +526,23 @@ def sync_context_with_shared_store(
     shared = load_shared_league(league_id, store=store)
     if not isinstance(shared, dict):
         return context
+    pre_merge_team = str(context.get("my_team_name") or "").strip()
     merged = merge_shared_into_context(context, shared)
+    merged = overlay_workspace_team_on_context(
+        session,
+        merged,
+        shared_doc=shared,
+        trace_phase="sync_context_with_shared_store",
+        record_trace=True,
+    )
+    if not isinstance(merged, dict):
+        merged = context
+    record_team_identity_trace(
+        session,
+        phase="sync_context_with_shared_store",
+        pre_merge_team=pre_merge_team or None,
+        post_merge_team=str(merged.get("my_team_name") or "").strip() or None,
+    )
     return upsert_league_context(session, merged, mark_persist_authoritative=False)
 
 

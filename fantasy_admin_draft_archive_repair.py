@@ -77,36 +77,26 @@ def _owned_team_for_account(
     owner_user_id: str = "",
     owner_external_id: str = "",
     workspace_id: str = "",
+    owner_email: str = "",
 ) -> str:
     """Resolve this workspace's team from canonical shared team_ownership."""
-    from fantasy_league_team_ownership import account_user_ids_match
+    from fantasy_workspace_team_identity import build_account_aliases, owned_team_from_ownership
 
     ownership = shared_doc.get("team_ownership") or {}
     if not isinstance(ownership, dict):
         return ""
     uid = str(owner_user_id or "").strip()
-    external = str(owner_external_id or "").strip().lower()
-    workspace = str(workspace_id or "").strip().lower()
-    aliases = {x for x in (uid, external, workspace, f"user:{external}" if external else "") if x}
-    for team, record in ownership.items():
-        if not isinstance(record, dict):
-            continue
-        stored = str(record.get("user_id") or "").strip()
-        stored_lower = stored.lower()
-        display = str(record.get("display_name") or "").strip().lower()
-        email_local = str(record.get("email") or "").strip().lower().split("@", 1)[0]
-        record_external = str(record.get("external_id") or "").strip().lower()
-        if stored and uid and account_user_ids_match(stored, uid):
-            return str(team or "").strip()
-        if stored_lower and stored_lower in aliases:
-            return str(team or "").strip()
-        if display and display in aliases:
-            return str(team or "").strip()
-        if email_local and email_local in aliases:
-            return str(team or "").strip()
-        if record_external and record_external in aliases:
-            return str(team or "").strip()
-    return ""
+    aliases = build_account_aliases(
+        None,
+        owner_user_id=uid,
+        owner_external_id=owner_external_id,
+        workspace_id=workspace_id,
+    )
+    email = str(owner_email or "").strip().lower()
+    if email:
+        aliases.add(email)
+        aliases.add(email.split("@", 1)[0])
+    return owned_team_from_ownership(ownership, owner_user_id=uid, aliases=aliases)
 
 
 def build_context_from_shared_for_workspace(
@@ -292,6 +282,18 @@ def _sync_archives_to_workspace_team(session: dict[str, Any], context: dict[str,
     draft_id = str(meta.get("source_draft_id") or context.get("draft_id") or "").strip()
     if not draft_id:
         return 0
+    try:
+        from fantasy_workspace_team_identity import overlay_workspace_team_on_context
+
+        overlay_ctx = overlay_workspace_team_on_context(
+            session,
+            context,
+            trace_phase="archive_team_sync",
+            record_trace=True,
+        )
+        context = overlay_ctx if isinstance(overlay_ctx, dict) else context
+    except ImportError:
+        pass
     my_team = str(context.get("my_team_name") or "").strip()
     if not my_team:
         return 0

@@ -676,7 +676,18 @@ def get_league_context(session: dict[str, Any], league_context_id: str) -> dict[
     ctx = (store.get("contexts") or {}).get(league_context_id)
     if not isinstance(ctx, dict):
         return None
-    return copy.deepcopy(ctx)
+    try:
+        from fantasy_workspace_team_identity import overlay_workspace_team_on_context
+
+        overlaid = overlay_workspace_team_on_context(
+            session,
+            ctx,
+            trace_phase="get_league_context",
+            record_trace=False,
+        )
+        return overlaid if isinstance(overlaid, dict) else copy.deepcopy(ctx)
+    except ImportError:
+        return copy.deepcopy(ctx)
 
 
 def get_active_league_context(

@@ -1345,6 +1345,8 @@ def _context_badges_html(session: dict[str, Any], entry: dict[str, Any]) -> str:
 def _format_league_matchup_label(
     context: dict[str, Any] | None,
     active_entry: dict[str, Any] | None = None,
+    *,
+    session: dict[str, Any] | None = None,
 ) -> str:
     """Compact league line: Donny vs Barry."""
     teams: list[str] = []
@@ -1354,11 +1356,20 @@ def _format_league_matchup_label(
             teams = [str(t).strip() for t in rosters.keys() if str(t).strip()]
         if not teams:
             teams = [str(t).strip() for t in (context.get("teams") or []) if str(t).strip()]
-    my_team = str(
-        (context or {}).get("my_team_name")
-        or (active_entry or {}).get("team_name")
-        or ""
-    ).strip()
+    my_team = ""
+    if session and isinstance(active_entry, dict):
+        try:
+            from fantasy_workspace_team_identity import resolve_archive_display_team
+
+            my_team = resolve_archive_display_team(session, active_entry, context)
+        except ImportError:
+            my_team = ""
+    if not my_team:
+        my_team = str(
+            (context or {}).get("my_team_name")
+            or (active_entry or {}).get("team_name")
+            or ""
+        ).strip()
     if len(teams) >= 2:
         others = [t for t in teams if t != my_team][:3]
         if my_team and others:
@@ -1992,9 +2003,10 @@ def _saved_draft_card_html(
     is_active: bool,
     player_n: int,
     team_n: int,
+    display_team: str = "",
 ) -> str:
     title = str(entry.get("draft_name") or "Saved Draft")
-    team = str(entry.get("team_name") or "—")
+    team = str(display_team or entry.get("team_name") or "—")
     modified = format_archive_modified(entry)
     card_class = "ld-archive-card ld-archive-active" if is_active else "ld-archive-card"
     active_badge = (
@@ -2068,7 +2080,7 @@ def _render_active_draft_section(
     title = str(active.get("draft_name") or "Saved Draft")
     team_count = league_team_count(context, active)
     player_n = archive_my_team_player_count(active, context=context)
-    league_line = _format_league_matchup_label(context, active)
+    league_line = _format_league_matchup_label(context, active, session=session)
     st.markdown(f"**{title}** — {league_line}")
     st.caption(
         f"{draft_type_display(active)} | {team_count} Teams | {player_n} Players · "
@@ -2528,8 +2540,21 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         )
         player_n = archive_card_player_count(entry)
         team_n = archive_card_team_count(entry)
+        display_team = ""
+        try:
+            from fantasy_workspace_team_identity import resolve_archive_display_team
+
+            display_team = resolve_archive_display_team(session, entry, context)
+        except ImportError:
+            display_team = str((context or {}).get("my_team_name") or entry.get("team_name") or "").strip()
         st.markdown(
-            _saved_draft_card_html(entry, is_active=is_active, player_n=player_n, team_n=team_n),
+            _saved_draft_card_html(
+                entry,
+                is_active=is_active,
+                player_n=player_n,
+                team_n=team_n,
+                display_team=display_team,
+            ),
             unsafe_allow_html=True,
         )
         if is_active:

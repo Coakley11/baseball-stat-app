@@ -157,15 +157,19 @@ def resolve_workspace_team_from_shared(
     shared_doc: dict[str, Any],
 ) -> str:
     """Resolve the signed-in member's team from canonical shared team_ownership."""
-    from fantasy_admin_draft_archive_repair import _owned_team_for_account
+    from fantasy_workspace_team_identity import owned_team_from_shared_doc, record_team_identity_trace
 
     uid, external, workspace = _resolve_startup_identity(session)
-    return _owned_team_for_account(
-        shared_doc,
-        owner_user_id=uid,
-        owner_external_id=external,
-        workspace_id=workspace,
+    team = owned_team_from_shared_doc(shared_doc, session)
+    record_team_identity_trace(
+        session,
+        phase="resolve_workspace_team_from_shared",
+        authenticated_workspace=workspace,
+        ownership_resolved_team=team or None,
+        auth_user_id=uid or None,
+        auth_external_id=external or None,
     )
+    return team
 
 
 def apply_workspace_member_identity_from_shared(
@@ -176,17 +180,29 @@ def apply_workspace_member_identity_from_shared(
     """Apply workspace-local team identity from canonical membership; never bleed invitee fields globally."""
     from fantasy_league_invites import is_league_commissioner
     from fantasy_league_team_ownership import assign_team_owner_to_context
+    from fantasy_workspace_team_identity import overlay_workspace_team_on_context, record_team_identity_trace
 
     uid, external, workspace = _resolve_startup_identity(session)
-    merged = copy.deepcopy(context)
+    pre_merge_team = str(context.get("my_team_name") or "").strip()
+    merged = overlay_workspace_team_on_context(
+        session,
+        context,
+        shared_doc=shared_doc,
+        trace_phase="apply_workspace_member_identity_pre_overlay",
+        record_trace=True,
+    )
+    if not isinstance(merged, dict):
+        merged = copy.deepcopy(context)
+
     meta = dict(merged.get("metadata") or {})
     commissioner = str(
         meta.get("commissioner_user_id") or shared_doc.get("commissioner_user_id") or ""
     ).strip()
-
-    my_team = resolve_workspace_team_from_shared(session, shared_doc)
-    if my_team:
-        merged["my_team_name"] = my_team
+    my_team = str(merged.get("my_team_name") or "").strip()
+    if not my_team:
+        my_team = resolve_workspace_team_from_shared(session, shared_doc)
+        if my_team:
+            merged["my_team_name"] = my_team
 
     is_commissioner = bool(uid and (is_league_commissioner(merged, uid) or account_user_ids_match(uid, commissioner)))
     if is_commissioner:
@@ -213,13 +229,11 @@ def apply_workspace_member_identity_from_shared(
                 if invite_id:
                     meta["invite_id"] = invite_id
                 claimed = str(invite.get("claimed_team") or "").strip()
-                if claimed:
+                if claimed and not my_team:
                     merged["my_team_name"] = claimed
                     my_team = claimed
                 matched_invite = True
                 break
-        if not matched_invite and my_team and uid:
-            meta["joined_via_invite"] = True
 
     ownership = shared_doc.get("team_ownership") or {}
     if my_team and isinstance(ownership, dict):
@@ -242,6 +256,14 @@ def apply_workspace_member_identity_from_shared(
             )
 
     merged["metadata"] = meta
+    record_team_identity_trace(
+        session,
+        phase="apply_workspace_member_identity_from_shared",
+        authenticated_workspace=workspace,
+        ownership_resolved_team=my_team or None,
+        pre_merge_team=pre_merge_team or None,
+        post_merge_team=str(merged.get("my_team_name") or "").strip() or None,
+    )
     return merged
 
 
@@ -297,10 +319,20 @@ def finalize_repaired_archives_for_membership(
 
     draft_id = str(shared_doc.get("draft_id") or (refreshed.get("metadata") or {}).get("source_draft_id") or "").strip()
     if draft_id:
-        from draft_archive_state import set_active_draft_archive
+        from draft_archive_state import get_draft_archive, set_active_draft_archive
+        from fantasy_workspace_team_identity import record_team_identity_trace, resolve_archive_display_team
 
         set_active_draft_archive(session, draft_id)
         session["_suite_startup_canonical_active_draft_id"] = draft_id
+        active_entry = get_draft_archive(session, draft_id)
+        active_context = find_league_context_by_league_id(session, league_id) or refreshed
+        record_team_identity_trace(
+            session,
+            phase="finalize_repaired_archives_active_archive",
+            active_archive_team=str((active_entry or {}).get("team_name") or "").strip() or None,
+            final_library_team=resolve_archive_display_team(session, active_entry, active_context) or None,
+            final_fantasy_lineup_team=str((active_context or {}).get("my_team_name") or "").strip() or None,
+        )
 
     restore_trace = restore_active_draft_archive_selection(
         session,
