@@ -1113,6 +1113,189 @@ def is_legacy_locked_lineup(saved_lineup: dict[str, Any] | None, scoring_record:
     return not bool(scoring_record.get("baseline_created_at"))
 
 
+def diagnose_weekly_scoring_record(
+    context: dict[str, Any] | None,
+    *,
+    week: int,
+    team: str,
+    saved_lineup: dict[str, Any] | None = None,
+    roster_df: pd.DataFrame | None = None,
+    profile: HitterScoringProfile | None = None,
+) -> dict[str, Any]:
+    """Structured diagnostics for weekly scoring visibility issues."""
+    league_id = resolve_canonical_league_id(context or {})
+    team_id = canonical_team_identity(context or {}, team)
+    record = get_weekly_scoring_record(context, week=week, team=team, league_id=league_id)
+    starters = (record or {}).get("starters") or {}
+    bench = (record or {}).get("bench") or {}
+    player_results = (record or {}).get("player_results") or {}
+    baselines = (record or {}).get("baselines") or {}
+    prof = profile or resolve_hitter_scoring_profile(context)
+    roster_cols = sorted(str(c) for c in (roster_df.columns if isinstance(roster_df, pd.DataFrame) else []))
+    return {
+        "canonical_league_id": league_id or None,
+        "canonical_team_identity": team_id or None,
+        "week": int(week),
+        "record_key": weekly_team_record_key(league_id, team_id, week) if league_id and team_id else None,
+        "lineup_status": str((saved_lineup or {}).get("status") or ""),
+        "lineup_weekly_scoring_record_key": str((saved_lineup or {}).get("weekly_scoring_record_key") or "") or None,
+        "baseline_created_at": (record or {}).get("baseline_created_at"),
+        "legacy": bool((record or {}).get("legacy")),
+        "starter_count": len(starters),
+        "bench_count": len(bench),
+        "baseline_player_count": len(baselines),
+        "player_result_count": len(player_results),
+        "scoring_profile": prof.to_dict() if prof else None,
+        "stats_fingerprint": (record or {}).get("stats_fingerprint"),
+        "stats_updated_at": (record or {}).get("stats_updated_at"),
+        "roster_row_count": len(roster_df) if isinstance(roster_df, pd.DataFrame) else 0,
+        "roster_has_hr": "HR" in roster_cols,
+        "roster_has_ab": "AB" in roster_cols or "H" in roster_cols,
+    }
+
+
+def ensure_weekly_scoring_populated(
+    session: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    week: int,
+    team: str,
+    roster_df: pd.DataFrame,
+    profile: HitterScoringProfile | None = None,
+) -> dict[str, Any] | None:
+    """Refresh weekly deltas when baseline exists but player cards are empty."""
+    record = get_weekly_scoring_record(context, week=week, team=team)
+    if not isinstance(record, dict) or not record.get("baseline_created_at"):
+        return record
+    if record.get("player_results"):
+        return record
+    if roster_df is None or roster_df.empty:
+        return record
+    refresh = refresh_weekly_scoring(
+        context,
+        week=week,
+        team=team,
+        roster_df=roster_df,
+        profile=profile,
+        session=session,
+    )
+    if refresh.get("ok"):
+        try:
+            from fantasy_league_context import upsert_league_context
+
+            upsert_league_context(session, context)
+        except ImportError:
+            pass
+        return refresh.get("record") or get_weekly_scoring_record(context, week=week, team=team)
+    return record
+
+
+def start_weekly_tracking_from_now(
+    session: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    week: int,
+    team: str,
+    assignments: dict[str, str],
+    roster_df: pd.DataFrame,
+    profile: HitterScoringProfile | None = None,
+) -> dict[str, Any]:
+    """
+    Commissioner-only: establish a new baseline from the current moment for a legacy locked week.
+    Does not pretend to represent the beginning of the calendar week.
+    """
+    result: dict[str, Any] = {"ok": False, "errors": [], "record": None}
+    profile = profile or resolve_hitter_scoring_profile(context, session=session)
+    if profile.blocked:
+        result["errors"].append(profile.block_message or "Weekly scoring blocked.")
+        return result
+
+    league_id = resolve_canonical_league_id(context)
+    team_id = canonical_team_identity(context, team)
+    key = weekly_team_record_key(league_id, team_id, week)
+    existing = get_weekly_scoring_record(context, week=week, team=team, league_id=league_id)
+    if isinstance(existing, dict) and existing.get("baseline_created_at") and not existing.get("legacy"):
+        result["ok"] = True
+        result["record"] = existing
+        result["skipped"] = True
+        return result
+
+    starters, bench, baselines = build_player_snapshots(roster_df, assignments, profile)
+    now = _utc_now_iso()
+    record = {
+        "record_key": key,
+        "canonical_league_id": league_id,
+        "canonical_team_identity": team_id,
+        "week": int(week),
+        "scoring_mode": profile.scoring_mode,
+        "scoring_profile": profile.to_dict(),
+        "assignments": dict(assignments),
+        "starters": starters,
+        "bench": bench,
+        "baselines": baselines,
+        "baseline_created_at": now,
+        "baseline_note": "Tracking started from current stats (not original week start).",
+        "locked_at": now,
+        "status": WEEK_SCORING_LOCKED,
+        "finalized_at": "",
+        "final_result_id": "",
+        "standings_write_id": "",
+        "stats_fingerprint": roster_data_fingerprint(roster_df),
+        "stats_updated_at": now,
+        "player_results": {},
+        "team_totals": {},
+        "legacy": False,
+        "tracking_started_midweek": True,
+    }
+    _put_weekly_scoring_record(context, record)
+    refresh_weekly_scoring(
+        context,
+        week=week,
+        team=team,
+        roster_df=roster_df,
+        profile=profile,
+        session=session,
+    )
+    try:
+        from fantasy_league_context import upsert_league_context
+
+        upsert_league_context(session, context)
+        from fantasy_lineup_perf import invalidate_lineup_page_caches
+
+        invalidate_lineup_page_caches(session)
+    except ImportError:
+        pass
+    result["ok"] = True
+    result["record"] = get_weekly_scoring_record(context, week=week, team=team)
+    return result
+
+
+def maybe_mark_legacy_lineup_scoring(
+    session: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    week: int,
+    team: str,
+    saved_lineup: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Mark pre-scoring locked lineups as legacy only when the saved lineup predates weekly scoring.
+    """
+    if not isinstance(saved_lineup, dict) or str(saved_lineup.get("status") or "") != "locked":
+        return context
+    if str(saved_lineup.get("weekly_scoring_record_key") or "").strip():
+        return context
+    if get_weekly_scoring_record(context, week=week, team=team):
+        return context
+    mark_legacy_lineup_scoring(context, week=week, team=team)
+    try:
+        from fantasy_league_context import upsert_league_context
+
+        return upsert_league_context(session, context)
+    except ImportError:
+        return context
+
+
 def mark_legacy_lineup_scoring(
     context: dict[str, Any],
     *,

@@ -107,10 +107,10 @@ class FantasyTradeIdeasTests(unittest.TestCase):
         self.assertTrue(out.empty)
 
     def test_resolve_lineup_assistant_tab_opens_trade_analyzer_on_handoff(self) -> None:
-        session: dict = {"_lineup_focus_trade_analyzer": True}
+        session: dict = {"_lineup_focus_trade_center": True}
         tab = resolve_lineup_assistant_tab(session)
-        self.assertEqual(tab, "Trade Analyzer")
-        self.assertEqual(session[LINEUP_ASSISTANT_TAB_KEY], "Trade Analyzer")
+        self.assertEqual(tab, "Trade Center")
+        self.assertEqual(session[LINEUP_ASSISTANT_TAB_KEY], "Trade Center")
 
 
 if __name__ == "__main__":

@@ -34,8 +34,10 @@ from fantasy_league_lineup_format_ui import (
     render_lineup_format_setup,
 )
 from fantasy_weekly_hitter_scoring import (
+    ensure_weekly_scoring_populated,
     get_weekly_scoring_record,
     mark_legacy_lineup_scoring,
+    maybe_mark_legacy_lineup_scoring,
     resolve_hitter_scoring_profile,
     should_start_week_empty,
 )
@@ -245,7 +247,27 @@ def render_weekly_lineup_section(
         return
 
     if team_roster is None or team_roster.empty:
-        st.warning("Load roster stats to set your weekly lineup.")
+        try:
+            from fantasy_lineup_stats_loader import ensure_lineup_page_hitter_stats
+
+            loaded = ensure_lineup_page_hitter_stats(session, context)
+            if isinstance(loaded.get("roster_stats"), pd.DataFrame) and not loaded["roster_stats"].empty:
+                team_name = str(lineup_team or context.get("my_team_name") or "").strip()
+                if team_name and "Team" in loaded["roster_stats"].columns:
+                    team_roster = loaded["roster_stats"][
+                        loaded["roster_stats"]["Team"].astype(str) == team_name
+                    ].copy()
+                else:
+                    team_roster = loaded["roster_stats"].copy()
+            elif loaded.get("error"):
+                st.warning(str(loaded["error"]))
+        except ImportError:
+            pass
+    if team_roster is None or team_roster.empty:
+        st.warning(
+            "Load roster stats to set your weekly lineup. "
+            "The app will try to fetch current MLB stats automatically when an active league is set."
+        )
         return
 
     if session.pop("lineup_format_saved_flash", None) and is_lineup_format_commissioner(session, context):
@@ -292,8 +314,13 @@ def render_weekly_lineup_section(
     lineup_locked = is_lineup_locked(context, int(selected_week), team=active_team, session=session)
     scoring_profile = resolve_hitter_scoring_profile(context, session=session)
 
-    if lineup_locked and not get_weekly_scoring_record(context, week=int(selected_week), team=active_team):
-        mark_legacy_lineup_scoring(context, week=int(selected_week), team=active_team)
+    context = maybe_mark_legacy_lineup_scoring(
+        session,
+        context,
+        week=int(selected_week),
+        team=active_team,
+        saved_lineup=saved,
+    )
 
     render_week_transition_notice(st, context=context, week=int(selected_week))
 
@@ -322,6 +349,21 @@ def render_weekly_lineup_section(
 
     if lineup_locked:
         st.info(f"Lineup locked for {week_label(int(selected_week))}")
+        try:
+            from fantasy_lineup_stats_loader import ensure_lineup_page_hitter_stats
+
+            stats_load = ensure_lineup_page_hitter_stats(session, context)
+            if stats_load.get("error") and team_roster.empty:
+                st.warning(str(stats_load["error"]))
+            elif isinstance(stats_load.get("roster_stats"), pd.DataFrame) and not stats_load["roster_stats"].empty:
+                merged = stats_load["roster_stats"]
+                if "Team" in merged.columns:
+                    subset = merged[merged["Team"].astype(str) == str(active_team)]
+                    if not subset.empty:
+                        team_roster = subset.copy()
+        except ImportError:
+            pass
+
         scoring_record = render_scoring_refresh_controls(
             st,
             session,
@@ -333,6 +375,14 @@ def render_weekly_lineup_section(
         )
         if scoring_record is None:
             scoring_record = get_weekly_scoring_record(context, week=int(selected_week), team=active_team)
+        scoring_record = ensure_weekly_scoring_populated(
+            session,
+            context,
+            week=int(selected_week),
+            team=active_team,
+            roster_df=team_roster,
+            profile=scoring_profile,
+        ) or scoring_record
         render_locked_weekly_dashboard(
             st,
             context=context,
@@ -341,6 +391,8 @@ def render_weekly_lineup_section(
             scoring_record=scoring_record,
             profile=scoring_profile,
             roster_df=team_roster,
+            saved_lineup=saved,
+            session=session,
         )
 
     board_payload = build_interactive_board_payload(

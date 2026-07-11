@@ -13,10 +13,10 @@ LINEUP_TRADE_IDEAS_DIAG_KEY = "_lineup_trade_ideas_diag"
 LINEUP_ASSISTANT_TAB_KEY = "lineup_assistant_tab"
 LINEUP_ASSISTANT_TAB_OPTIONS: tuple[str, ...] = (
     "Lineup & Weekly Stats",
-    "Trade Analyzer",
-    "Trade Ideas",
+    "Trade Center",
     "Offers & Activity",
 )
+LINEUP_TRADE_CENTER_STATE_KEY = "_lineup_trade_center_state"
 
 _EMPTY_SUGGESTIONS_MESSAGE = (
     "No suitable trade ideas were found with the current players and filters. "
@@ -40,6 +40,44 @@ def _player_value(row: pd.Series) -> float:
     if parts:
         return float(sum(parts) / len(parts))
     return 0.0
+
+
+def resolve_player_owner_team(
+    player_name: str,
+    all_rosters: pd.DataFrame,
+    *,
+    my_team: str,
+) -> str | None:
+    """Find which opposing team owns a player on the active league roster."""
+    name = _normalize_team(player_name)
+    my_team = _normalize_team(my_team)
+    if not name or all_rosters is None or all_rosters.empty or "Player" not in all_rosters.columns:
+        return None
+    if "Team" not in all_rosters.columns:
+        return None
+    matches = all_rosters[all_rosters["Player"].astype(str).str.strip() == name]
+    if matches.empty:
+        return None
+    for team in matches["Team"].dropna().astype(str).unique().tolist():
+        team = str(team).strip()
+        if team and team != my_team:
+            return team
+    return None
+
+
+def resolve_receive_target_teams(
+    forced_get: list[str] | None,
+    all_rosters: pd.DataFrame,
+    *,
+    my_team: str,
+) -> dict[str, str]:
+    """Map each acquisition target to its owning team."""
+    out: dict[str, str] = {}
+    for player in forced_get or []:
+        owner = resolve_player_owner_team(player, all_rosters, my_team=my_team)
+        if owner:
+            out[str(player)] = owner
+    return out
 
 
 def derive_category_needs(
@@ -188,6 +226,7 @@ def generate_trade_ideas(
     forced_give: list[str] | None = None,
     forced_get: list[str] | None = None,
     target_team: str | None = None,
+    target_owner_teams: dict[str, str] | None = None,
     summarize_team_category_needs_fn=None,
     league_context_id: str = "",
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
@@ -197,10 +236,12 @@ def generate_trade_ideas(
     my_team = _normalize_team(my_team)
     diag: dict[str, Any] = {
         "button_clicked": True,
+        "button_action": "find_trade_ideas",
         "selected_give_players": list(forced_give or []),
         "selected_get_players": list(forced_get or []),
         "active_league_id": str(league_context_id or "").strip() or None,
         "user_team": my_team or None,
+        "target_owner_teams": dict(target_owner_teams or {}),
         "opposing_teams_searched": [],
         "candidate_count_before_filters": 0,
         "candidate_count_after_filters": 0,
@@ -221,7 +262,10 @@ def generate_trade_ideas(
         return pd.DataFrame(), diag
 
     opposing = [t for t in teams if t != my_team]
-    if target_team:
+    owner_map = dict(target_owner_teams or {})
+    if forced_get and owner_map:
+        opposing = sorted(set(owner_map.values()) - {my_team})
+    elif target_team:
         target_team = _normalize_team(target_team)
         if target_team and target_team != my_team:
             opposing = [t for t in opposing if t == target_team]
@@ -274,10 +318,10 @@ def empty_trade_ideas_message() -> str:
 
 def resolve_lineup_assistant_tab(session: dict[str, Any]) -> str:
     """Return active tab, honoring trade handoff focus flags."""
-    if session.pop("_lineup_focus_trade_analyzer", False):
-        session[LINEUP_ASSISTANT_TAB_KEY] = "Trade Analyzer"
+    if session.pop("_lineup_focus_trade_center", False) or session.pop("_lineup_focus_trade_analyzer", False):
+        session[LINEUP_ASSISTANT_TAB_KEY] = "Trade Center"
     if session.pop("_lineup_focus_trade_ideas", False):
-        session[LINEUP_ASSISTANT_TAB_KEY] = "Trade Ideas"
+        session[LINEUP_ASSISTANT_TAB_KEY] = "Trade Center"
     tab = str(session.get(LINEUP_ASSISTANT_TAB_KEY) or LINEUP_ASSISTANT_TAB_OPTIONS[0]).strip()
     if tab not in LINEUP_ASSISTANT_TAB_OPTIONS:
         tab = LINEUP_ASSISTANT_TAB_OPTIONS[0]

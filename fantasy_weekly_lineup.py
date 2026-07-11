@@ -635,6 +635,13 @@ def save_weekly_lineup(
     drafts.pop(team_week_lineup_key(team_name, week), None)
     context = upsert_league_context(session, context)
 
+    try:
+        from fantasy_lineup_perf import invalidate_lineup_page_caches
+
+        invalidate_lineup_page_caches(session)
+    except ImportError:
+        pass
+
     draft_id = str(context.get("source_draft_id") or "").strip()
     if not draft_id:
         try:

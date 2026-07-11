@@ -23545,7 +23545,7 @@ if active_page == "Fantasy Lineup Assistant":
             from fantasy_trade_ideas import LINEUP_ASSISTANT_TAB_OPTIONS, resolve_lineup_assistant_tab
 
             if st.session_state.pop("lineup_trade_analyzer_open", False):
-                st.session_state["_lineup_focus_trade_analyzer"] = True
+                st.session_state["_lineup_focus_trade_center"] = True
             resolve_lineup_assistant_tab(st.session_state)
             ensure_select_in_options(
                 "lineup_assistant_tab",
@@ -24197,11 +24197,11 @@ if active_page == "Fantasy Lineup Assistant":
                     display_rows=bench_rows_to_show,
                 )
 
-        if _lineup_tab == "Trade Analyzer":
+        if _lineup_tab == "Trade Center":
             try:
-                from fantasy_lineup_assistant_trade_tabs_ui import render_trade_analyzer_tab
+                from fantasy_trade_center_ui import render_trade_center_tab
 
-                render_trade_analyzer_tab(
+                render_trade_center_tab(
                     st,
                     st.session_state,
                     lineup_team=str(lineup_team or ""),
@@ -24211,31 +24211,16 @@ if active_page == "Fantasy Lineup Assistant":
                     build_trade_verdict_text_fn=build_trade_verdict_text,
                     render_output_table_fn=render_output_table,
                     format_trade_eval_table_fn=format_trade_eval_table,
-                    clean_ui_columns_fn=clean_ui_columns,
-                    developer_mode_enabled_fn=developer_mode_enabled,
-                )
-            except ImportError as _trade_tab_err:
-                st.warning(f"Trade Analyzer tab unavailable: {_trade_tab_err}")
-        elif _lineup_tab == "Trade Ideas":
-            try:
-                from fantasy_lineup_assistant_trade_tabs_ui import render_trade_ideas_tab
-
-                render_trade_ideas_tab(
-                    st,
-                    st.session_state,
-                    lineup_team=str(lineup_team or ""),
-                    ensure_multiselect_state=ensure_multiselect_state,
-                    render_output_table_fn=render_output_table,
                     format_fantasy_table_fn=format_fantasy_table,
                     clean_ui_columns_fn=clean_ui_columns,
                     summarize_team_category_needs_fn=summarize_team_category_needs,
                     developer_mode_enabled_fn=developer_mode_enabled,
                 )
-            except ImportError as _ideas_tab_err:
-                st.warning(f"Trade Ideas tab unavailable: {_ideas_tab_err}")
+            except ImportError as _trade_center_err:
+                st.warning(f"Trade Center unavailable: {_trade_center_err}")
         elif _lineup_tab == "Offers & Activity":
             try:
-                from fantasy_lineup_assistant_trade_tabs_ui import render_offers_activity_tab
+                from fantasy_trade_center_ui import render_offers_activity_tab
 
                 render_offers_activity_tab(
                     st,

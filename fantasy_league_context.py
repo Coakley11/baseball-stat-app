@@ -609,7 +609,7 @@ def consume_trade_acquire_handoff(session: dict[str, Any]) -> dict[str, Any] | N
             session["lineup_trade_give_players"] = [player_name]
         elif mode == TRADE_MODE_ACQUIRE:
             session["lineup_trade_get_players"] = [player_name]
-    session["_lineup_focus_trade_analyzer"] = True
+    session["_lineup_focus_trade_center"] = True
     return handoff
 
 

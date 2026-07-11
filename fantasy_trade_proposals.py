@@ -1251,7 +1251,7 @@ def set_trade_proposal_handoff(
         "proposal_id": str(proposal_id or "").strip(),
         "view_as_team": str(view_as_team or "").strip(),
     }
-    session["_lineup_focus_trade_analyzer"] = True
+    session["_lineup_focus_trade_center"] = True
 
 
 def navigate_to_trade_proposal(
@@ -1294,5 +1294,5 @@ def consume_trade_proposal_handoff(session: dict[str, Any]) -> dict[str, Any] | 
         session["lineup_trade_give_players"] = give_players
     if receive_players:
         session["lineup_trade_get_players"] = receive_players
-    session["_lineup_focus_trade_analyzer"] = True
+    session["_lineup_focus_trade_center"] = True
     return view
