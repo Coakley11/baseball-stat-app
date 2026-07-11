@@ -9,14 +9,12 @@ import pandas as pd
 
 from fantasy_league_context import get_active_league_context
 from fantasy_lineup_ui import (
-    bench_player_cards,
-    build_slot_cards,
     build_slot_key_labels,
     build_team_header_model,
+    emit_html_block,
     inject_lineup_board_styles,
     render_action_metrics_html,
-    render_bench_section_html,
-    render_starting_lineup_board_html,
+    render_roster_board_html,
     render_team_header_html,
     slot_key_labels_as_tuples,
 )
@@ -93,21 +91,16 @@ def _render_roster_board(
     scored_roster: pd.DataFrame | None,
     validation_styles: dict[str, str] | None = None,
 ) -> None:
-    slot_cards = build_slot_cards(
-        slot_labels,
-        assignments,
-        team_roster,
-        scored_roster=scored_roster,
-        validation_styles=validation_styles,
+    emit_html_block(
+        st,
+        render_roster_board_html(
+            slot_labels,
+            assignments,
+            team_roster,
+            scored_roster=scored_roster,
+            validation_styles=validation_styles,
+        ),
     )
-    bench_cards = bench_player_cards(
-        team_roster,
-        assignments,
-        slot_labels,
-        scored_roster=scored_roster,
-    )
-    st.markdown(render_starting_lineup_board_html(slot_cards), unsafe_allow_html=True)
-    st.markdown(render_bench_section_html(bench_cards), unsafe_allow_html=True)
 
 
 def _render_classic_dropdown_builder(
@@ -156,10 +149,10 @@ def _render_drag_drop_builder(
 
     containers = build_sortable_containers(slot_keys, assignments, team_roster)
     sort_key = f"{prefix}_sortable_{selected_week}"
-    with st.expander("Drag & drop editor", expanded=True):
+    with st.expander("Drag & drop editor", expanded=False):
         st.caption(
             "Drag players between **lineup slots** and **Bench**. "
-            "The roster board above updates from these assignments."
+            "The roster board above refreshes after each change."
         )
         sorted_containers = sort_items(
             containers,
@@ -205,7 +198,7 @@ def _render_validation_and_summary(
     validation = validate_weekly_lineup(slots, assignments, team_roster)
     summary = build_lineup_summary(slots, assignments, team_roster)
 
-    st.markdown(render_action_metrics_html(validation=validation, summary=summary), unsafe_allow_html=True)
+    emit_html_block(st, render_action_metrics_html(validation=validation, summary=summary))
 
     if validation.get("messages"):
         st.markdown("**Validation**")
@@ -293,10 +286,23 @@ def render_weekly_lineup_section(
 
     if f"{prefix}_selected_week" not in session:
         session[f"{prefix}_selected_week"] = week_options[0]
-    selected_week = int(session.get(f"{prefix}_selected_week") or week_options[0])
-    saved = get_saved_weekly_lineup(context, selected_week)
-    saved_assignments = dict((saved or {}).get("assignments") or {})
 
+    st.markdown("### Weekly Lineup Management")
+    week_cols = st.columns([2, 3])
+    with week_cols[0]:
+        selected_week = st.selectbox(
+            "Fantasy week",
+            week_options,
+            format_func=week_label,
+            key=f"{prefix}_selected_week",
+        )
+    with week_cols[1]:
+        st.caption(
+            "Saved lineups persist to your active draft, league context, cloud, and disk."
+        )
+
+    saved = get_saved_weekly_lineup(context, int(selected_week))
+    saved_assignments = dict((saved or {}).get("assignments") or {})
     hydrate_key = f"{prefix}_hydrated_week"
     if session.get(hydrate_key) != selected_week:
         if saved_assignments:
@@ -313,26 +319,26 @@ def render_weekly_lineup_section(
     header_model = build_team_header_model(
         context=context,
         team_name=active_team,
-        week=selected_week,
+        week=int(selected_week),
         roster_df=team_roster,
         slot_labels=slot_labels,
         assignments=assignments,
         saved=saved,
     )
-    st.markdown(render_team_header_html(header_model), unsafe_allow_html=True)
+    emit_html_block(st, render_team_header_html(header_model))
 
-    week_cols = st.columns([2, 3])
-    with week_cols[0]:
-        selected_week = st.selectbox(
-            "Fantasy week",
-            week_options,
-            format_func=week_label,
-            key=f"{prefix}_selected_week",
-        )
-    with week_cols[1]:
-        st.caption(
-            "Saved lineups persist to your active draft, league context, cloud, and disk."
-        )
+    validation_styles = slot_validation_styles(slot_keys, assignments, team_roster)
+    _render_roster_board(
+        st,
+        slot_labels=slot_labels,
+        assignments=assignments,
+        team_roster=team_roster,
+        scored_roster=scored_roster,
+        validation_styles=validation_styles,
+    )
+
+    st.markdown("#### Edit lineup")
+    st.caption("Use the editor below to change starters. The roster board above updates after each edit.")
 
     if f"{prefix}_editor_mode" not in session:
         session[f"{prefix}_editor_mode"] = DEFAULT_WEEKLY_LINEUP_EDITOR_MODE
@@ -375,16 +381,6 @@ def render_weekly_lineup_section(
             slot_keys=slot_keys,
             team_roster=team_roster,
         )
-
-    validation_styles = slot_validation_styles(slot_keys, assignments, team_roster)
-    _render_roster_board(
-        st,
-        slot_labels=slot_labels,
-        assignments=assignments,
-        team_roster=team_roster,
-        scored_roster=scored_roster,
-        validation_styles=validation_styles,
-    )
 
     validation, _summary = _render_validation_and_summary(
         st,

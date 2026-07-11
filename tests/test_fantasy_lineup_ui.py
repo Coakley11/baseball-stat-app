@@ -19,6 +19,7 @@ from fantasy_lineup_ui import (
     initials_from_name,
     photo_html_for_player,
     render_bench_section_html,
+    render_roster_board_html,
     render_slot_card_html,
     render_starting_lineup_board_html,
     roster_names_for_team,
@@ -139,10 +140,26 @@ class BoardRenderTests(unittest.TestCase):
 
     def test_mobile_width_css_present(self) -> None:
         st = MagicMock()
+        st.html = MagicMock()
         inject_lineup_board_styles(st)
-        css = st.markdown.call_args[0][0]
+        if st.html.called:
+            css = st.html.call_args[0][0]
+        else:
+            css = st.markdown.call_args[0][0]
         self.assertIn("@media (max-width: 768px)", css)
         self.assertIn("fl-slot-grid", css)
+
+    def test_roster_board_html_includes_of_labels_and_photos(self) -> None:
+        labels = build_slot_key_labels(["OF", "OF", "OF"])
+        roster = _roster_df()[_roster_df()["Team"] == "Daniel"].copy()
+        assignments = {"OF": "Mookie Betts", "OF_2": "", "OF_3": ""}
+        html = render_roster_board_html(labels, assignments, roster)
+        self.assertIn("OF 1", html)
+        self.assertIn("OF 2", html)
+        self.assertIn("OF 3", html)
+        self.assertIn("Mookie Betts", html)
+        self.assertIn("fl-player-photo", html)
+        self.assertIn("fl-bench-grid", html)
 
 
 class ValidationTests(unittest.TestCase):
@@ -248,6 +265,7 @@ class WeeklyLineupPageSmokeTests(unittest.TestCase):
         roster = _roster_df()[_roster_df()["Team"] == "Daniel"]
 
         st = MagicMock()
+        st.html = MagicMock()
 
         def _columns(n):
             count = n if isinstance(n, int) else len(n)
@@ -274,7 +292,11 @@ class WeeklyLineupPageSmokeTests(unittest.TestCase):
         format_func = week_calls[0].kwargs.get("format_func")
         self.assertIsNotNone(format_func)
         self.assertEqual(format_func(1), "Week 1")
-        self.assertTrue(any("fl-team-header" in str(c.args[0]) for c in st.markdown.call_args_list if c.args))
+        markdown_calls = [str(c.args[0]) for c in st.markdown.call_args_list if c.args]
+        html_calls = [str(c.args[0]) for c in getattr(st, "html", MagicMock()).call_args_list if c.args]
+        combined = " ".join(markdown_calls + html_calls)
+        self.assertIn("fl-team-header", combined)
+        self.assertIn("fl-roster-shell", combined)
 
 
 if __name__ == "__main__":

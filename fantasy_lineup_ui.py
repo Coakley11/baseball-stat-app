@@ -389,6 +389,50 @@ def build_team_header_model(
     )
 
 
+def emit_html_block(st: Any, html: str) -> None:
+    """Render raw HTML via st.html when available, else markdown fallback."""
+    body = str(html or "")
+    if not body.strip():
+        return
+    if hasattr(st, "html"):
+        try:
+            st.html(body)
+            return
+        except Exception:
+            pass
+    st.markdown(body, unsafe_allow_html=True)
+
+
+def render_roster_board_html(
+    slot_labels: list,
+    assignments: dict[str, str],
+    team_roster: pd.DataFrame,
+    *,
+    scored_roster: pd.DataFrame | None = None,
+    validation_styles: dict[str, str] | None = None,
+) -> str:
+    """Single HTML block for starters + bench roster board."""
+    slot_cards = build_slot_cards(
+        slot_labels,
+        assignments,
+        team_roster,
+        scored_roster=scored_roster,
+        validation_styles=validation_styles,
+    )
+    bench_cards = bench_player_cards(
+        team_roster,
+        assignments,
+        slot_labels,
+        scored_roster=scored_roster,
+    )
+    return (
+        '<div class="fl-roster-shell">'
+        f'{render_starting_lineup_board_html(slot_cards)}'
+        f'{render_bench_section_html(bench_cards)}'
+        "</div>"
+    )
+
+
 def inject_lineup_board_styles(st: Any) -> None:
     """Scoped CSS for Fantasy Lineup roster board only."""
     try:
@@ -397,8 +441,7 @@ def inject_lineup_board_styles(st: Any) -> None:
         inject_player_photo_styles(st)
     except ImportError:
         pass
-    st.markdown(
-        """
+    css = """
 <style>
 .fl-team-header {
     border: 1px solid rgba(15, 23, 42, 0.12);
@@ -485,6 +528,7 @@ def inject_lineup_board_styles(st: Any) -> None:
 }
 .fl-action-metrics { display: flex; flex-wrap: wrap; gap: 10px 16px; font-size: 0.82rem; color: #334155; }
 .fl-validation-list { margin: 8px 0 0 0; padding-left: 18px; font-size: 0.82rem; color: #475569; }
+.fl-roster-shell { display: block; width: 100%; margin: 0 0 12px 0; }
 @media (max-width: 768px) {
     .fl-slot-grid { grid-template-columns: 1fr; }
     .fl-bench-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -495,9 +539,8 @@ def inject_lineup_board_styles(st: Any) -> None:
     .fl-bench-grid { grid-template-columns: 1fr; }
 }
 </style>
-        """,
-        unsafe_allow_html=True,
-    )
+"""
+    emit_html_block(st, css)
 
 
 def render_team_header_html(model: TeamHeaderModel) -> str:

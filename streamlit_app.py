@@ -23498,6 +23498,37 @@ if active_page == "Fantasy Lineup Assistant":
                 f"Teams available: {', '.join(lineup_teams[:6])}{'…' if len(lineup_teams) > 6 else ''}."
             )
 
+        _weekly_team_roster = (
+            roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)].copy()
+            if lineup_team
+            else pd.DataFrame()
+        )
+        if not _weekly_team_roster.empty:
+            _weekly_team_roster = enrich_lineup_roster_positions(_weekly_team_roster)
+            _lineup_fmt_resolved = resolve_lineup_scoring_format(st.session_state)
+            st.session_state["lineup_format"] = _lineup_fmt_resolved
+            _lineup_scored_for_weekly = None
+            try:
+                _lineup_scored_for_weekly = build_lineup_assistant_scores(
+                    _weekly_team_roster, _lineup_fmt_resolved, None
+                )
+            except Exception:
+                _lineup_scored_for_weekly = None
+            try:
+                from fantasy_weekly_lineup_ui import render_weekly_lineup_section
+
+                render_weekly_lineup_section(
+                    st,
+                    st.session_state,
+                    team_roster=_weekly_team_roster,
+                    lineup_team=str(lineup_team or ""),
+                    on_open_waiver_wire=open_waiver_wire_from_lineup_slot,
+                    scored_roster=_lineup_scored_for_weekly,
+                )
+                st.divider()
+            except ImportError:
+                pass
+
         _lineup_format_options = ["5x5 Roto", "Points League", "Head-to-Head Categories"]
         l2, l3 = st.columns(2)
         with l2:
@@ -23632,19 +23663,6 @@ if active_page == "Fantasy Lineup Assistant":
                 )
             except Exception:
                 lineup_scored_for_weekly = None
-            try:
-                from fantasy_weekly_lineup_ui import render_weekly_lineup_section
-
-                render_weekly_lineup_section(
-                    st,
-                    st.session_state,
-                    team_roster=team_roster,
-                    lineup_team=str(lineup_team or ""),
-                    on_open_waiver_wire=open_waiver_wire_from_lineup_slot,
-                    scored_roster=lineup_scored_for_weekly,
-                )
-            except ImportError:
-                pass
             try:
                 from fantasy_perf_cache import (
                     _df_sig,
