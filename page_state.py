@@ -141,6 +141,7 @@ PAGE_STATE_REGISTRY = {
             "lineup_team", "lineup_format", "lineup_bench_rows", "lineup_include_util", "lineup_custom_slots",
             "lineup_diagnosis_rate_col",
             "lineup_trade_my_team", "lineup_trade_other_team", "lineup_trade_give_players", "lineup_trade_get_players",
+            "lineup_assistant_tab",
             "lineup_pts_r", "lineup_pts_rbi", "lineup_pts_hr", "lineup_pts_sb", "lineup_pts_h", "lineup_pts_bb", "lineup_pts_ops",
         ],
         "prefixes": ["lineup_"],
