@@ -7,11 +7,17 @@ from typing import Any
 
 import pandas as pd
 
-from player_actions import player_names_match
+from player_trade_constants import (
+    TRADE_ACTION_ACQUIRE,
+    TRADE_ACTION_TRADE_AWAY,
+    TRADE_FLOW_SESSION_KEY,
+)
 
-TRADE_FLOW_SESSION_KEY = "_player_trade_acquire_flow"
-TRADE_ACTION_ACQUIRE = "acquire"
-TRADE_ACTION_TRADE_AWAY = "trade_away"
+
+def _player_names_match(left: Any, right: Any) -> bool:
+    from player_actions import player_names_match
+
+    return player_names_match(left, right)
 
 
 def _display_base(name: str) -> str:
@@ -193,7 +199,7 @@ def collect_player_roster_contexts(session: dict[str, Any], player_name: str) ->
                 if not isinstance(entry, dict):
                     continue
                 pname = _player_name_from_mapping(entry)
-                if not pname or not player_names_match(pname, target):
+                if not pname or not _player_names_match(pname, target):
                     continue
                 team = str(entry.get("Fantasy Team") or entry.get("Team") or "").strip()
                 _append_context(
@@ -242,7 +248,7 @@ def collect_player_roster_contexts(session: dict[str, Any], player_name: str) ->
             found = False
             for prow in players:
                 pname = _player_name_from_mapping(prow)
-                if pname and player_names_match(pname, target):
+                if pname and _player_names_match(pname, target):
                     found = True
                     break
             if not found:

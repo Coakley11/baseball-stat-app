@@ -29,7 +29,7 @@ import workflow_sidebar as wf_sb
 import page_transfers as pg_xfer
 import app_tutorial
 import player_actions as plr_act
-from player_trade_context import (
+from player_trade_bridge import (
     TRADE_ACTION_ACQUIRE,
     TRADE_ACTION_TRADE_AWAY,
     TRADE_FLOW_SESSION_KEY,
