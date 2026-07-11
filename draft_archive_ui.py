@@ -238,10 +238,7 @@ def _execute_simulator_league_context_save(
             _set_draft_save_ui_flash(
                 session,
                 level="error",
-                message=(
-                    "Saved to this session, but cloud/disk persist failed. "
-                    "Review **Save Diagnostics** below before refreshing."
-                ),
+                message="Couldn't save changes. Try again.",
             )
         else:
             try:
@@ -291,7 +288,13 @@ def _on_click_save_probe_test_draft() -> None:
 
 
 def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
-    """Always-visible post-reboot probe: account, workspace, counts, restore verdict."""
+    """Post-reboot probe: account, workspace, counts, restore verdict (Developer Mode)."""
+    try:
+        from suite_workspace import can_show_developer_tools
+    except ImportError:
+        return
+    if not can_show_developer_tools(st=st):
+        return
     try:
         from workflow_persist_guard import build_persistence_probe_panel
     except ImportError:
@@ -498,6 +501,12 @@ def render_persistence_durability_banner(st: Any, session: dict[str, Any]) -> bo
 
 
 def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    try:
+        from suite_workspace import can_show_developer_tools
+    except ImportError:
+        return
+    if not can_show_developer_tools(st=st):
+        return
     try:
         from workflow_persist_guard import build_saved_draft_library_diagnostics, probe_cloud_workflow_for_workspace
     except ImportError:
@@ -1760,10 +1769,7 @@ def _execute_live_draft_save_click(
             _set_draft_save_ui_flash(
                 session,
                 level="error",
-                message=(
-                    "Saved to this session, but cloud/disk persist failed. "
-                    "Review **Save diagnostics** below before refreshing."
-                ),
+                message="Couldn't save changes. Try again.",
             )
         elif defer_activation:
             st.toast(f"Saved draft: {entry.get('draft_name', 'Saved Draft')}")

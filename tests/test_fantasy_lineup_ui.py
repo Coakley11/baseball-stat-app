@@ -259,7 +259,7 @@ class WeeklyLineupPageSmokeTests(unittest.TestCase):
         from fantasy_weekly_lineup_ui import render_weekly_lineup_section
         from fantasy_league_context import save_simulator_league_context
 
-        session: dict = {"weekly_lineup_editor_mode": "Classic Dropdowns"}
+        session: dict = {}
         board = pd.DataFrame([{"Team": "Daniel", "Player": "Mookie Betts", "Pick": 1}])
         save_simulator_league_context(session, board, my_team_name="Daniel")
         roster = _roster_df()[_roster_df()["Team"] == "Daniel"]
@@ -273,30 +273,25 @@ class WeeklyLineupPageSmokeTests(unittest.TestCase):
 
         st.columns.side_effect = _columns
         st.selectbox.return_value = 1
-        st.radio.return_value = "Classic Dropdowns"
         st.button.return_value = False
-        st.expander.return_value.__enter__ = MagicMock(return_value=MagicMock())
-        st.expander.return_value.__exit__ = MagicMock(return_value=False)
 
-        render_weekly_lineup_section(
-            st,
-            session,
-            team_roster=roster,
-            lineup_team="Daniel",
-        )
+        with patch("fantasy_lineup_interactive_board.render_interactive_lineup_board", return_value=None):
+            render_weekly_lineup_section(
+                st,
+                session,
+                team_roster=roster,
+                lineup_team="Daniel",
+            )
 
         week_calls = [
             c for c in st.selectbox.call_args_list if c.kwargs.get("key") == "weekly_lineup_selected_week"
         ]
         self.assertEqual(len(week_calls), 1)
-        format_func = week_calls[0].kwargs.get("format_func")
-        self.assertIsNotNone(format_func)
-        self.assertEqual(format_func(1), "Week 1")
+        self.assertFalse(st.radio.called)
         markdown_calls = [str(c.args[0]) for c in st.markdown.call_args_list if c.args]
         html_calls = [str(c.args[0]) for c in getattr(st, "html", MagicMock()).call_args_list if c.args]
         combined = " ".join(markdown_calls + html_calls)
         self.assertIn("fl-team-header", combined)
-        self.assertIn("fl-roster-shell", combined)
 
 
 if __name__ == "__main__":

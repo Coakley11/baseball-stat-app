@@ -591,7 +591,7 @@ def render_team_header_html(model: TeamHeaderModel) -> str:
     active = '<span class="fl-active-badge">Your active team</span>' if model.is_active_team else ""
     saved = ""
     if model.last_saved_at:
-        saved = f'<div class="fl-last-saved">Last saved: {html_lib.escape(model.last_saved_at[:19].replace("T", " "))} UTC</div>'
+        saved = '<div class="fl-last-saved">Previously saved</div>'
     league = html_lib.escape(model.league_name)
     team = html_lib.escape(model.team_name)
     return (
@@ -600,8 +600,7 @@ def render_team_header_html(model: TeamHeaderModel) -> str:
         f'<div class="fl-league-name">{league}</div>'
         f'<div class="fl-team-meta">'
         f'{html_lib.escape(model.week_label)} · '
-        f'{model.roster_count} roster players · '
-        f'{model.filled_starters}/{model.total_starter_slots} starter slots filled'
+        f'{model.filled_starters}/{model.total_starter_slots} positions filled'
         f'</div>{saved}</div>'
     )
 

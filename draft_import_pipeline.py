@@ -623,8 +623,14 @@ def build_draft_import_debug_status(
 
 
 def render_draft_import_debug_panel(st: Any, status: dict[str, Any]) -> None:
-    """Always-visible import pipeline diagnostics for deploy troubleshooting."""
-    with st.expander("Import pipeline status", expanded=True):
+    """Import pipeline diagnostics (Developer Mode)."""
+    try:
+        from suite_workspace import can_show_developer_tools
+    except ImportError:
+        return
+    if not can_show_developer_tools(st=st):
+        return
+    with st.expander("Import pipeline status", expanded=False):
         st.markdown(
             f"**Placement:** {status.get('layout_label') or IMPORT_BLOCK_PLACEMENT_LABEL}"
         )

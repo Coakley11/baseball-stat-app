@@ -93,8 +93,14 @@ def render_trade_response_ui_v2_marker(
     my_team: str = "",
     caller: str = "",
 ) -> dict[str, Any]:
-    """Always-visible proof that trade response v2 module loaded and this render path ran."""
+    """Proof that trade response v2 loaded (Developer Mode only)."""
     diag = build_trade_response_ui_diag(session, my_team=my_team, caller=caller)
+    try:
+        from suite_workspace import can_show_developer_tools
+    except ImportError:
+        return diag
+    if not can_show_developer_tools(st=st):
+        return diag
     st.info(
         "**Trade response UI v2 active** · "
         f"version `{diag.get('version')}` · caller `{diag.get('caller')}` · "
@@ -164,7 +170,13 @@ def _validate_ui_trade_shape(give_players: list[str], get_players: list[str]) ->
 
 
 def _render_trade_submit_diagnostics(st: Any, session: dict[str, Any]) -> None:
-    """Always show last trade propose submit trace."""
+    """Last trade propose submit trace (Developer Mode)."""
+    try:
+        from suite_workspace import can_show_developer_tools
+    except ImportError:
+        return
+    if not can_show_developer_tools(st=st):
+        return
     snap = build_trade_submit_trace_snapshot(session)
     with st.expander("Trade submit diagnostic", expanded=bool(snap.get("updated_at") and not snap.get("trade_id"))):
         st.caption("Explains the last **Propose this trade** click — button, create, shared save, and inbox counts.")
@@ -193,7 +205,13 @@ def _render_trade_submit_diagnostics(st: Any, session: dict[str, Any]) -> None:
 
 
 def _render_trade_response_diagnostics(st: Any, session: dict[str, Any]) -> None:
-    """Always show last trade accept/decline submit trace."""
+    """Last trade accept/decline submit trace (Developer Mode)."""
+    try:
+        from suite_workspace import can_show_developer_tools
+    except ImportError:
+        return
+    if not can_show_developer_tools(st=st):
+        return
     snap = build_trade_response_trace_snapshot(session)
     with st.expander(
         "Last trade response",

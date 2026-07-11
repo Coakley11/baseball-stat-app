@@ -232,7 +232,13 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
 
 
 def render_invite_flow_diagnostics_panel(st: Any, session: dict[str, Any]) -> bool:
-    """Invite status, league_id, team claims, and cloud_app_key for commissioner/invitee."""
+    """Invite status, league_id, team claims, and cloud_app_key (Developer Mode)."""
+    try:
+        from suite_workspace import can_show_developer_tools
+    except ImportError:
+        return False
+    if not can_show_developer_tools(st=st):
+        return False
     with st.expander("Invite flow diagnostic", expanded=False):
         try:
             diag = build_invite_flow_diagnostics(session)
@@ -292,12 +298,14 @@ def render_invite_flow_diagnostics_panel(st: Any, session: dict[str, Any]) -> bo
 
 
 def render_commissioner_invite_diagnostics_panel(st: Any, session: dict[str, Any]) -> bool:
-    """Always show invite-panel trace on Saved Draft Library (not dev-gated)."""
-    with st.expander("Invite panel diagnostic (Saved Draft Library)", expanded=True):
-        st.caption(
-            "Always shown on **Saved Draft Library** (not Developer Mode). "
-            "Explains why **Invite managers to this shared league** is visible or hidden."
-        )
+    """Invite-panel trace on Saved Draft Library (Developer Mode)."""
+    try:
+        from suite_workspace import can_show_developer_tools
+    except ImportError:
+        return False
+    if not can_show_developer_tools(st=st):
+        return False
+    with st.expander("Invite panel diagnostic (Saved Draft Library)", expanded=False):
         try:
             trace = build_commissioner_invite_panel_trace(session)
         except Exception as exc:

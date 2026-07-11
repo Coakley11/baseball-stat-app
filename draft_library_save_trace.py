@@ -696,7 +696,13 @@ def render_save_trace_inline(
     title: str = "Save Diagnostics / Last Save Trace",
     source: str = "",
 ) -> None:
-    """Always-visible save diagnostics directly under the save button."""
+    """Save diagnostics under save buttons (Developer Mode only)."""
+    try:
+        from suite_workspace import can_show_developer_tools
+    except ImportError:
+        return
+    if not can_show_developer_tools(st=st):
+        return
     st.markdown(f"##### {title}")
     try:
         from suite_workspace import developer_mode_checkbox_enabled
