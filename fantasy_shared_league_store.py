@@ -50,6 +50,7 @@ def shared_league_document_from_context(context: dict[str, Any], *, revision: in
         "revision": int(revision or 1),
         "updated_at": _utc_now_iso(),
         "league_rosters": copy.deepcopy(context.get("league_rosters") or {}),
+        "roster_settings": copy.deepcopy(context.get("roster_settings") or {}),
         "team_ownership": copy.deepcopy(ownership if isinstance(ownership, dict) else {}),
         "trade_proposals": copy.deepcopy(proposals),
         "league_invites": copy.deepcopy(invites),
@@ -375,6 +376,24 @@ def merge_shared_into_context(context: dict[str, Any], shared: dict[str, Any]) -
         shared_revision > local_revision or shared_fp != local_fp
     ):
         out["league_rosters"] = copy.deepcopy(shared_rosters)
+    shared_roster_settings = shared.get("roster_settings")
+    local_roster_settings = out.get("roster_settings") or {}
+    shared_format = (
+        shared_roster_settings.get("lineup_format")
+        if isinstance(shared_roster_settings, dict)
+        else None
+    )
+    local_format = (
+        local_roster_settings.get("lineup_format")
+        if isinstance(local_roster_settings, dict)
+        else None
+    )
+    if isinstance(shared_roster_settings, dict) and shared_roster_settings and shared_format and (
+        not local_format or shared_revision >= local_revision
+    ):
+        merged_settings = dict(local_roster_settings if isinstance(local_roster_settings, dict) else {})
+        merged_settings.update(copy.deepcopy(shared_roster_settings))
+        out["roster_settings"] = merged_settings
     ownership = _merge_team_ownership(get_team_ownership_from_context(out), shared.get("team_ownership") or {})
     out["team_ownership"] = ownership
     meta = dict(out.get("metadata") or {})
@@ -581,6 +600,7 @@ def push_league_context_to_shared(
     revision = max(base_revision + 1, int((context.get("metadata") or {}).get("shared_revision") or 0) + 1)
     document = shared_league_document_from_context(context, revision=revision)
     document["league_rosters"] = copy.deepcopy(context.get("league_rosters") or {})
+    document["roster_settings"] = copy.deepcopy(context.get("roster_settings") or {})
     if isinstance(existing, dict):
         merged_proposals = _merge_trade_proposals(
             existing.get("trade_proposals") or [],

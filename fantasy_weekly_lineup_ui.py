@@ -9,7 +9,7 @@ import pandas as pd
 
 from fantasy_league_context import get_active_league_context
 from fantasy_lineup_interactive_board import (
-    apply_board_drop,
+    apply_drop_event,
     build_interactive_board_payload,
     parse_board_drop_result,
     render_interactive_lineup_board,
@@ -23,11 +23,13 @@ from fantasy_lineup_ui import (
     render_team_header_html,
     slot_key_labels_as_tuples,
 )
+from fantasy_league_lineup_format import hydrate_lineup_format_from_shared
 from fantasy_league_lineup_format_ui import (
     render_edit_lineup_format_action,
     render_lineup_format_setup,
 )
 from fantasy_weekly_lineup import (
+    _lineup_storage_context,
     get_saved_weekly_lineup,
     is_lineup_locked,
     list_week_options,
@@ -70,12 +72,18 @@ def ensure_canonical_assignments(
     saved_assignments: dict[str, str],
 ) -> dict[str, str]:
     """Return the canonical per-week assignments, hydrating from saved on first use."""
+    saved_norm = _normalize_assignments(saved_assignments, slot_keys)
     current = session.get(canon_key)
     if not isinstance(current, dict):
-        session[canon_key] = _normalize_assignments(saved_assignments, slot_keys)
+        session[canon_key] = dict(saved_norm)
     else:
-        for key, _label in slot_keys:
-            current.setdefault(key, "")
+        current_norm = _normalize_assignments(current, slot_keys)
+        if any(saved_norm.values()) and not any(current_norm.values()):
+            session[canon_key] = dict(saved_norm)
+        else:
+            for key, _label in slot_keys:
+                current_norm.setdefault(key, "")
+            session[canon_key] = current_norm
     return dict(session[canon_key])
 
 
@@ -213,6 +221,18 @@ def render_weekly_lineup_section(
         st.info("Set an **Active Draft** to manage your weekly lineup.")
         return
 
+    storage_context = _lineup_storage_context(session) or context
+    try:
+        from fantasy_league_identity import resolve_canonical_league_id
+        from fantasy_shared_league_store import sync_context_with_shared_store
+
+        if resolve_canonical_league_id(storage_context):
+            storage_context = sync_context_with_shared_store(session, storage_context)
+            hydrate_lineup_format_from_shared(session, storage_context)
+            context = get_active_league_context(session) or storage_context
+    except ImportError:
+        pass
+
     my_team = str(context.get("my_team_name") or "").strip()
     active_team = str(lineup_team or my_team or "").strip()
     if my_team and active_team and my_team != active_team:
@@ -293,23 +313,23 @@ def render_weekly_lineup_section(
         team_roster,
         editable=not lineup_locked,
     )
+    board_nonce_key = f"{prefix}_board_nonce_{int(selected_week)}"
+    board_nonce = int(session.get(board_nonce_key, 0))
+    component_key = f"{prefix}_circle_board_{int(selected_week)}_{board_nonce}"
     board_result = render_interactive_lineup_board(
         st,
         payload=board_payload,
-        component_key=f"{prefix}_circle_board_{int(selected_week)}",
+        component_key=component_key,
     )
     drop_event = parse_board_drop_result(board_result)
     if drop_event and not lineup_locked:
-        player = str(drop_event.get("player") or "").strip()
-        target = str(drop_event.get("target") or "").strip()
-        new_assignments = apply_board_drop(
+        new_assignments = apply_drop_event(
             assignments,
             slot_keys,
-            player=player,
-            target=target,
+            drop_event,
             roster_df=team_roster,
         )
-        if reconcile_editor_assignments(
+        if new_assignments is not None and reconcile_editor_assignments(
             session,
             canon_key=canon_key,
             slot_keys=slot_keys,
@@ -323,8 +343,10 @@ def render_weekly_lineup_section(
                 my_team=active_team,
                 roster_df=team_roster,
             )
+            session[board_nonce_key] = board_nonce + 1
             st.rerun()
-        assignments = new_assignments
+        elif new_assignments is not None:
+            assignments = new_assignments
 
     validation = _render_open_slots_and_validation(
         st,
@@ -367,4 +389,5 @@ def render_weekly_lineup_section(
     with _reset_col:
         if st.button("Reset", key=f"{prefix}_reset_btn"):
             session[canon_key] = _normalize_assignments(saved_assignments, slot_keys)
+            session[board_nonce_key] = board_nonce + 1
             st.rerun()

@@ -75,6 +75,33 @@ def needs_lineup_format_setup(context: dict[str, Any] | None) -> bool:
     return False
 
 
+def hydrate_lineup_format_from_shared(
+    session: dict[str, Any],
+    context: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Merge canonical shared-league lineup format into the active context."""
+    if not isinstance(context, dict) or lineup_format_block(context):
+        return context
+    try:
+        from fantasy_league_identity import resolve_canonical_league_id
+        from fantasy_shared_league_store import load_shared_league, merge_shared_into_context
+
+        league_id = resolve_canonical_league_id(context)
+        if not league_id:
+            return context
+        shared = load_shared_league(league_id)
+        if not isinstance(shared, dict):
+            return context
+        shared_settings = shared.get("roster_settings") or {}
+        if not isinstance(shared_settings, dict) or not shared_settings.get("lineup_format"):
+            return context
+        merged = merge_shared_into_context(context, shared)
+        upsert_league_context(session, merged)
+        return merged
+    except ImportError:
+        return context
+
+
 def is_lineup_format_commissioner(session: dict[str, Any], context: dict[str, Any] | None) -> bool:
     if not isinstance(context, dict):
         return False
@@ -233,6 +260,12 @@ def save_league_lineup_format(
         league_id=league_id,
     )
     upsert_league_context(session, updated)
+    try:
+        from fantasy_shared_league_store import push_league_context_to_shared
+
+        push_league_context_to_shared(session, updated)
+    except ImportError:
+        pass
     try:
         import streamlit as st
         from baseball_persistent_state import force_save_baseball_state
