@@ -117,7 +117,14 @@ class InteractiveBoardTests(unittest.TestCase):
         payload = build_interactive_board_payload(labels, {"OF": ""}, _daniel_roster())
         self.assertEqual(len(payload["slots"]), 1)
         self.assertEqual(len(payload["bench"]), 2)
+        self.assertEqual(len(payload["roster"]), 2)
         self.assertIn("Mookie Betts", payload["faces"])
+        self.assertIn("Mookie Betts", payload["roster"])
+
+    def test_payload_bench_excludes_assigned_starter(self) -> None:
+        labels = build_slot_key_labels(["OF"])
+        payload = build_interactive_board_payload(labels, {"OF": "Mookie Betts"}, _daniel_roster())
+        self.assertEqual([p["name"] for p in payload["bench"]], ["Bench Hitter"])
 
     def test_parse_board_drop_result(self) -> None:
         raw = json.dumps({"player": "Mookie Betts", "target": "OF", "assignments": {"OF": "Mookie Betts"}})

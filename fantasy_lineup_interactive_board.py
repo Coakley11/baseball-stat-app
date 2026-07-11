@@ -133,6 +133,7 @@ def build_interactive_board_payload(
     return {
         "slots": slots,
         "bench": bench,
+        "roster": roster_player_names(roster_df),
         "faces": faces,
         "assignments": slot_map,
         "slot_keys": [key for key, _ in slot_keys],
@@ -305,37 +306,39 @@ body.fl-drag-active {{
 <script>
 (function() {{
   const PAYLOAD = {payload_json};
-  const HOLD_MS = 280;
-  const MOVE_TOL = 8;
+  const TOUCH_HOLD_MS = 280;
+  const MOUSE_HOLD_MS = 100;
+  const MOUSE_DRAG_DIST = 5;
+  const TOUCH_CANCEL_DIST = 10;
   const BENCH = "{BENCH_ZONE}";
 
   const root = document.getElementById("fl-board-root");
   const faces = PAYLOAD.faces || {{}};
+  const roster = PAYLOAD.roster || Object.keys(faces);
   let assignments = Object.assign({{}}, PAYLOAD.assignments || {{}});
   let drag = null;
   let ghost = null;
+  let activePointer = null;
 
   function faceHtml(name) {{
     return faces[name] || '<div class="fl-face-fallback"><span class="fl-face-initials">?</span></div>';
   }}
 
-  function slotEl(key) {{
-    return document.querySelector('.fl-circle-drop[data-slot-key="' + key + '"]');
-  }}
-
-  function benchEl() {{
-    return document.querySelector('.fl-bench-zone');
+  function benchPlayers() {{
+    const starters = new Set();
+    Object.values(assignments).forEach(function(p) {{ if (p) starters.add(p); }});
+    return roster.filter(function(name) {{ return !starters.has(name); }});
   }}
 
   function eligibleFor(slotKey, player) {{
-    const slot = (PAYLOAD.slots || []).find(s => s.key === slotKey);
+    const slot = (PAYLOAD.slots || []).find(function(s) {{ return s.key === slotKey; }});
     if (!slot) return false;
-    return (slot.eligible || []).includes(player);
+    return (slot.eligible || []).indexOf(player) >= 0;
   }}
 
   function render() {{
     let html = '<div class="fl-board-title">Starting Lineup</div><div class="fl-circle-grid">';
-    (PAYLOAD.slots || []).forEach(slot => {{
+    (PAYLOAD.slots || []).forEach(function(slot) {{
       const player = assignments[slot.key] || "";
       const filled = !!player;
       html += '<div class="fl-circle-slot">';
@@ -352,10 +355,10 @@ body.fl-drag-active {{
     }});
     html += '</div><div class="fl-board-title">Bench</div>';
     html += '<div class="fl-bench-zone" data-zone="bench"><div class="fl-bench-faces">';
-    (PAYLOAD.bench || []).forEach(p => {{
+    benchPlayers().forEach(function(name) {{
       html += '<div class="fl-bench-face-wrap">';
-      html += '<div class="fl-face" data-player="' + p.name + '" data-origin="bench">' + faceHtml(p.name) + '</div>';
-      html += '<div class="fl-bench-name">' + p.name + '</div></div>';
+      html += '<div class="fl-face" data-player="' + name + '" data-origin="bench">' + faceHtml(name) + '</div>';
+      html += '<div class="fl-bench-name">' + name + '</div></div>';
     }});
     html += '</div></div>';
     root.innerHTML = html;
@@ -364,7 +367,7 @@ body.fl-drag-active {{
 
   function sendDrop(player, target) {{
     const out = Object.assign({{}}, assignments);
-    const origin = Object.keys(out).find(k => out[k] === player) || "";
+    const origin = Object.keys(out).find(function(k) {{ return out[k] === player; }}) || "";
     if (target === BENCH) {{
       if (origin) out[origin] = "";
     }} else if (target && Object.prototype.hasOwnProperty.call(out, target)) {{
@@ -380,7 +383,7 @@ body.fl-drag-active {{
   }}
 
   function clearHighlights() {{
-    document.querySelectorAll(".eligible,.hover-target,.ineligible").forEach(el => {{
+    document.querySelectorAll(".eligible,.hover-target,.ineligible").forEach(function(el) {{
       el.classList.remove("eligible", "hover-target", "ineligible");
     }});
   }}
@@ -408,8 +411,9 @@ body.fl-drag-active {{
   }}
 
   function startDrag(face, player, origin, x, y) {{
-    drag = {{ face, player, origin, x, y, active: true }};
+    drag = {{ face: face, player: player, origin: origin, active: true }};
     face.classList.add("dragging");
+    face.style.visibility = "hidden";
     document.body.classList.add("fl-drag-active");
     ghost = document.createElement("div");
     ghost.className = "fl-drag-ghost";
@@ -417,11 +421,12 @@ body.fl-drag-active {{
     ghost.style.left = x + "px";
     ghost.style.top = y + "px";
     document.body.appendChild(ghost);
-    document.querySelectorAll(".fl-circle-drop").forEach(drop => {{
+    document.querySelectorAll(".fl-circle-drop").forEach(function(drop) {{
       if (eligibleFor(drop.dataset.slotKey, player)) drop.classList.add("eligible");
       else drop.classList.add("ineligible");
     }});
-    benchEl()?.classList.add("eligible");
+    const bench = document.querySelector(".fl-bench-zone");
+    if (bench) bench.classList.add("eligible");
   }}
 
   function endDrag(x, y) {{
@@ -429,63 +434,128 @@ body.fl-drag-active {{
     const target = highlightAt(x, y, drag.player);
     const player = drag.player;
     drag.face.classList.remove("dragging");
+    drag.face.style.visibility = "";
     if (ghost) ghost.remove();
     ghost = null;
     clearHighlights();
     document.body.classList.remove("fl-drag-active");
     if (target && (target === BENCH || eligibleFor(target, player))) {{
       sendDrop(player, target);
+    }} else {{
+      render();
     }}
     drag = null;
   }}
 
-  function bindFaces() {{
-    document.querySelectorAll(".fl-face").forEach(face => {{
-      const player = face.dataset.player;
-      const origin = face.dataset.origin || "bench";
-      let holdTimer = null;
-      let startX = 0, startY = 0;
-      let tracking = false;
+  function removeWindowListeners() {{
+    window.removeEventListener("pointermove", onWindowPointerMove, true);
+    window.removeEventListener("pointerup", onWindowPointerUp, true);
+    window.removeEventListener("pointercancel", onWindowPointerUp, true);
+  }}
 
-      function onDown(e) {{
-        if (e.button !== undefined && e.button !== 0) return;
-        tracking = true;
-        startX = e.clientX;
-        startY = e.clientY;
-        holdTimer = setTimeout(() => {{
-          if (tracking) startDrag(face, player, origin, startX, startY);
-        }}, HOLD_MS);
+  function onWindowPointerMove(e) {{
+    if (!activePointer || e.pointerId !== activePointer.pointerId) return;
+    handlePointerMove(e);
+  }}
+
+  function onWindowPointerUp(e) {{
+    if (!activePointer || e.pointerId !== activePointer.pointerId) return;
+    finishPointer(e);
+  }}
+
+  function beginDrag(x, y) {{
+    if (!activePointer || activePointer.dragging) return;
+    activePointer.dragging = true;
+    clearTimeout(activePointer.holdTimer);
+    startDrag(activePointer.face, activePointer.player, activePointer.origin, x, y);
+    window.addEventListener("pointermove", onWindowPointerMove, true);
+    window.addEventListener("pointerup", onWindowPointerUp, true);
+    window.addEventListener("pointercancel", onWindowPointerUp, true);
+  }}
+
+  function cancelPointer() {{
+    if (!activePointer) return;
+    clearTimeout(activePointer.holdTimer);
+    try {{
+      activePointer.face.releasePointerCapture(activePointer.pointerId);
+    }} catch (_) {{}}
+    removeWindowListeners();
+    activePointer = null;
+  }}
+
+  function finishPointer(e) {{
+    if (!activePointer) return;
+    clearTimeout(activePointer.holdTimer);
+    if (activePointer.dragging && drag) {{
+      e.preventDefault();
+      endDrag(e.clientX, e.clientY);
+    }}
+    try {{
+      activePointer.face.releasePointerCapture(activePointer.pointerId);
+    }} catch (_) {{}}
+    removeWindowListeners();
+    activePointer = null;
+  }}
+
+  function handlePointerMove(e) {{
+    if (!activePointer) return;
+    const dx = e.clientX - activePointer.startX;
+    const dy = e.clientY - activePointer.startY;
+    const dist = Math.hypot(dx, dy);
+    if (!activePointer.dragging) {{
+      if (activePointer.isTouch) {{
+        if (dist > TOUCH_CANCEL_DIST) cancelPointer();
+      }} else if (dist >= MOUSE_DRAG_DIST) {{
+        beginDrag(e.clientX, e.clientY);
       }}
-      function onMove(e) {{
-        if (!tracking) return;
-        const dx = e.clientX - startX;
-        const dy = e.clientY - startY;
-        if (!drag && Math.hypot(dx, dy) > MOVE_TOL) {{
-          clearTimeout(holdTimer);
-          tracking = false;
-          return;
-        }}
-        if (drag && drag.active) {{
-          e.preventDefault();
-          if (ghost) {{
-            ghost.style.left = e.clientX + "px";
-            ghost.style.top = e.clientY + "px";
-          }}
-          highlightAt(e.clientX, e.clientY, player);
-        }}
-      }}
-      function onUp(e) {{
-        clearTimeout(holdTimer);
-        if (drag && drag.active) {{
-          e.preventDefault();
-          endDrag(e.clientX, e.clientY);
-        }}
-        tracking = false;
-      }}
-      face.addEventListener("pointerdown", onDown);
-      face.addEventListener("pointermove", onMove);
-      face.addEventListener("pointerup", onUp);
-      face.addEventListener("pointercancel", onUp);
+      return;
+    }}
+    e.preventDefault();
+    if (ghost) {{
+      ghost.style.left = e.clientX + "px";
+      ghost.style.top = e.clientY + "px";
+    }}
+    highlightAt(e.clientX, e.clientY, activePointer.player);
+  }}
+
+  function onFacePointerDown(e) {{
+    const face = e.currentTarget;
+    if (e.button !== undefined && e.button !== 0) return;
+    const isTouch = e.pointerType === "touch";
+    activePointer = {{
+      face: face,
+      player: face.dataset.player,
+      origin: face.dataset.origin || "bench",
+      pointerId: e.pointerId,
+      isTouch: isTouch,
+      dragging: false,
+      startX: e.clientX,
+      startY: e.clientY,
+      holdTimer: null
+    }};
+    const holdMs = isTouch ? TOUCH_HOLD_MS : MOUSE_HOLD_MS;
+    activePointer.holdTimer = setTimeout(function() {{
+      if (activePointer && !activePointer.dragging) beginDrag(e.clientX, e.clientY);
+    }}, holdMs);
+    try {{ face.setPointerCapture(e.pointerId); }} catch (_) {{}}
+  }}
+
+  function onFacePointerMove(e) {{
+    if (!activePointer || e.pointerId !== activePointer.pointerId) return;
+    handlePointerMove(e);
+  }}
+
+  function onFacePointerUp(e) {{
+    if (!activePointer || e.pointerId !== activePointer.pointerId) return;
+    finishPointer(e);
+  }}
+
+  function bindFaces() {{
+    document.querySelectorAll(".fl-face").forEach(function(face) {{
+      face.addEventListener("pointerdown", onFacePointerDown);
+      face.addEventListener("pointermove", onFacePointerMove);
+      face.addEventListener("pointerup", onFacePointerUp);
+      face.addEventListener("pointercancel", onFacePointerUp);
     }});
   }}
 

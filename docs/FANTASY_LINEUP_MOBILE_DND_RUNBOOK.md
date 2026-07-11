@@ -16,20 +16,31 @@ editor modes.
 
 ## Touch behavior (verify on Android phone)
 
-Perform on a real Android device after deploy (not desktop emulation only).
+Perform on a real Android device after deploy.
 
 ### Scroll vs drag
-- [ ] Quick vertical swipe on the page scrolls normally.
-- [ ] Touch-and-hold a bench face ~0.3s activates drag (face lifts/enlarges).
-- [ ] While dragging, page scrolling stops (`fl-drag-active` on body).
+- [ ] Quick vertical swipe scrolls normally.
+- [ ] Touch-and-hold a bench face ~0.3s activates drag.
+- [ ] While dragging, page scrolling stops.
 
-### Drop feedback
-- [ ] Eligible position circles highlight (light blue).
-- [ ] Circle under finger highlights stronger (hover-target).
-- [ ] Ineligible circles stay dimmed.
-- [ ] Drop on eligible circle — player stays after Streamlit rerun.
-- [ ] Drop on Bench — starter removed from lineup.
-- [ ] Release outside valid target — player returns to original spot.
+## Desktop mouse behavior (verify on Dell / laptop)
+
+Perform with a mouse on the deployed build (not touch emulation).
+
+### Activation
+- [ ] Mouse down on a bench or slot face.
+- [ ] Small movement (~5px) **or** brief press (~100ms) starts drag (no long hold).
+- [ ] Drag ghost follows cursor outside the original face element.
+
+### Drop
+- [ ] Release over eligible oval commits the drop.
+- [ ] Player remains in oval after Streamlit rerun.
+- [ ] **Player face disappears from Bench immediately** (no duplicate).
+- [ ] Dragging starter to Bench removes face from oval and adds to Bench immediately.
+- [ ] Dropping onto occupied slot returns displaced player to Bench immediately.
+
+### Bench deduplication (immediate, before rerun)
+- [ ] After drop into a slot, bench re-renders from current assignments — assigned player not shown on bench until dragged back.
 
 ### Persistence
 - [ ] **Save Lineup** shows “Lineup saved.”
