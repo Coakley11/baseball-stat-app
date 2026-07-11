@@ -585,8 +585,50 @@ def save_weekly_lineup(
         "saved_at": _utc_now_iso(),
         "locked_at": _utc_now_iso(),
         "status": LINEUP_STATUS_LOCKED,
-        "stats_snapshot": compute_weekly_starter_totals(roster_df, slot_map),
     }
+
+    try:
+        from fantasy_weekly_hitter_scoring import (
+            create_weekly_baseline_on_lock,
+            resolve_hitter_scoring_profile,
+        )
+
+        profile = resolve_hitter_scoring_profile(context, session=session)
+        if profile.blocked:
+            result["errors"].append(profile.block_message or "Weekly scoring is not configured for this league.")
+            return result
+        baseline_result = create_weekly_baseline_on_lock(
+            context,
+            week=int(week),
+            team=team_name,
+            assignments=slot_map,
+            roster_df=roster_df,
+            profile=profile,
+            session=session,
+        )
+        if not baseline_result.get("ok"):
+            result["errors"].extend(list(baseline_result.get("errors") or []))
+            return result
+        payload["weekly_scoring_record_key"] = (
+            (baseline_result.get("record") or {}).get("record_key") or ""
+        )
+        payload["stats_snapshot"] = compute_weekly_starter_totals(
+            roster_df,
+            slot_map,
+            categories=tuple(profile.display_categories),
+        )
+        from fantasy_weekly_hitter_scoring import refresh_weekly_scoring
+
+        refresh_weekly_scoring(
+            context,
+            week=int(week),
+            team=team_name,
+            roster_df=roster_df,
+            profile=profile,
+            session=session,
+        )
+    except ImportError:
+        payload["stats_snapshot"] = compute_weekly_starter_totals(roster_df, slot_map)
     store = _weekly_lineups_store(context)
     store[team_week_lineup_key(team_name, week)] = payload
     drafts = _weekly_lineup_drafts_store(context)

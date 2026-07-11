@@ -394,3 +394,13 @@ def parse_board_drop_result(result: Any) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             return None
     return None
+
+
+def parse_board_player_select(result: Any) -> str:
+    """Return player name when user taps a face in read-only (locked) mode."""
+    event = parse_board_drop_result(result)
+    if not isinstance(event, dict):
+        return ""
+    if str(event.get("action") or "") != "select_player":
+        return ""
+    return str(event.get("player") or "").strip()

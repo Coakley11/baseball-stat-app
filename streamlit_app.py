@@ -23228,6 +23228,36 @@ if active_page == "Fantasy Standings Tracker":
                 display_rows=300,
             )
             st.subheader("Live Fantasy Standings")
+            try:
+                from fantasy_weekly_hitter_scoring import cumulative_standings_rows
+
+                _wk_cum_rows = []
+                if active_league_context is not None:
+                    _wk_cum_rows = cumulative_standings_rows(active_league_context)
+                if _wk_cum_rows:
+                    st.subheader("Weekly Hitter Standings (finalized weeks)")
+                    _wk_df = pd.DataFrame(_wk_cum_rows)
+                    render_output_table(
+                        format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(_wk_df))),
+                        key="fantasy_weekly_hitter_standings",
+                        file_name="fantasy_weekly_hitter_standings.csv",
+                        display_rows=50,
+                    )
+                    _fin_weeks = [
+                        int(w.get("week") or 0)
+                        for w in (
+                            (active_league_context.get("workflow") or {}).get("hitter_weekly_standings_cumulative", {}).get("weeks")
+                            or []
+                        )
+                        if isinstance(w, dict)
+                    ]
+                    if _fin_weeks:
+                        st.caption(
+                            f"Weekly results from Fantasy Lineup Assistant finalization "
+                            f"(weeks: {', '.join(str(w) for w in sorted(_fin_weeks) if w)})."
+                        )
+            except ImportError:
+                pass
             render_output_table(
                 format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(standings))),
                 key="fantasy_live_standings",

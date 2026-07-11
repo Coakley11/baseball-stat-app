@@ -12,6 +12,7 @@ from fantasy_lineup_interactive_board import (
     apply_drop_event,
     build_interactive_board_payload,
     parse_board_drop_result,
+    parse_board_player_select,
     render_interactive_lineup_board,
 )
 from fantasy_lineup_ui import (
@@ -32,8 +33,20 @@ from fantasy_league_lineup_format_ui import (
     render_edit_lineup_format_action,
     render_lineup_format_setup,
 )
+from fantasy_weekly_hitter_scoring import (
+    get_weekly_scoring_record,
+    mark_legacy_lineup_scoring,
+    resolve_hitter_scoring_profile,
+    should_start_week_empty,
+)
+from fantasy_weekly_hitter_scoring_ui import (
+    render_finalize_week_section,
+    render_locked_weekly_dashboard,
+    render_player_detail_panel,
+    render_scoring_refresh_controls,
+    render_week_transition_notice,
+)
 from fantasy_weekly_lineup import (
-    _lineup_storage_context,
     get_saved_weekly_lineup,
     is_lineup_locked,
     list_week_options,
@@ -277,7 +290,18 @@ def render_weekly_lineup_section(
     saved = get_saved_weekly_lineup(context, int(selected_week), team=active_team, session=session)
     saved_assignments = dict((saved or {}).get("assignments") or {})
     lineup_locked = is_lineup_locked(context, int(selected_week), team=active_team, session=session)
+    scoring_profile = resolve_hitter_scoring_profile(context, session=session)
+
+    if lineup_locked and not get_weekly_scoring_record(context, week=int(selected_week), team=active_team):
+        mark_legacy_lineup_scoring(context, week=int(selected_week), team=active_team)
+
+    render_week_transition_notice(st, context=context, week=int(selected_week))
+
     canon_key = canonical_week_key(prefix, int(selected_week))
+    if should_start_week_empty(context, int(selected_week)) and not lineup_locked and not saved_assignments:
+        session[canon_key] = {key: "" for key, _ in slot_keys}
+        saved_assignments = dict(session[canon_key])
+
     assignments = ensure_canonical_assignments(
         session,
         canon_key=canon_key,
@@ -298,6 +322,26 @@ def render_weekly_lineup_section(
 
     if lineup_locked:
         st.info(f"Lineup locked for {week_label(int(selected_week))}")
+        scoring_record = render_scoring_refresh_controls(
+            st,
+            session,
+            context=context,
+            week=int(selected_week),
+            team=active_team,
+            roster_df=team_roster,
+            prefix=prefix,
+        )
+        if scoring_record is None:
+            scoring_record = get_weekly_scoring_record(context, week=int(selected_week), team=active_team)
+        render_locked_weekly_dashboard(
+            st,
+            context=context,
+            week=int(selected_week),
+            team=active_team,
+            scoring_record=scoring_record,
+            profile=scoring_profile,
+            roster_df=team_roster,
+        )
 
     board_payload = build_interactive_board_payload(
         slot_labels,
@@ -315,6 +359,16 @@ def render_weekly_lineup_section(
         component_key=component_key,
     )
     drop_event = parse_board_drop_result(board_result)
+    selected_player = parse_board_player_select(board_result) if lineup_locked else ""
+    if selected_player and lineup_locked:
+        scoring_record = get_weekly_scoring_record(context, week=int(selected_week), team=active_team)
+        if isinstance(scoring_record, dict) and scoring_record.get("baseline_created_at"):
+            render_player_detail_panel(
+                st,
+                player_name=selected_player,
+                scoring_record=scoring_record,
+                profile=scoring_profile,
+            )
     if drop_event and not lineup_locked:
         new_assignments = apply_drop_event(
             assignments,
@@ -359,6 +413,26 @@ def render_weekly_lineup_section(
     )
 
     if lineup_locked:
+        roster_by_team = {active_team: team_roster}
+        try:
+            from fantasy_league_context import build_roster_stats_from_league_context
+
+            full_roster = build_roster_stats_from_league_context(context)
+            if isinstance(full_roster, pd.DataFrame) and not full_roster.empty and "Team" in full_roster.columns:
+                for team_name in full_roster["Team"].dropna().astype(str).unique():
+                    roster_by_team[str(team_name).strip()] = full_roster[
+                        full_roster["Team"].astype(str) == str(team_name)
+                    ].copy()
+        except Exception:
+            pass
+        render_finalize_week_section(
+            st,
+            session,
+            context=context,
+            week=int(selected_week),
+            roster_by_team=roster_by_team,
+            prefix=prefix,
+        )
         return
 
     save_col, _reset_col = st.columns(2)

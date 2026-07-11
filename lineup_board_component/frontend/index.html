@@ -240,6 +240,10 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
     setComponentValue({ player: player, target: target, assignments: out });
   }
 
+  function sendPlayerSelect(player) {
+    setComponentValue({ action: "select_player", player: player });
+  }
+
   function clearHighlights() {
     document.querySelectorAll(".eligible,.hover-target,.ineligible").forEach(function(el) {
       el.classList.remove("eligible", "hover-target", "ineligible");
@@ -404,9 +408,19 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
     finishPointer(e);
   }
 
+  function onFaceTap(e) {
+    const face = e.currentTarget;
+    const player = face.dataset.player;
+    if (player) sendPlayerSelect(player);
+  }
+
   function bindFaces() {
-    if (PAYLOAD.editable === false) return;
     document.querySelectorAll(".fl-face").forEach(function(face) {
+      if (PAYLOAD.editable === false) {
+        face.style.cursor = "pointer";
+        face.addEventListener("click", onFaceTap);
+        return;
+      }
       face.addEventListener("pointerdown", onFacePointerDown);
       face.addEventListener("pointermove", onFacePointerMove);
       face.addEventListener("pointerup", onFacePointerUp);
