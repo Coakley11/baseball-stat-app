@@ -1,4 +1,4 @@
-"""Streamlit UI for weekly lineup management (Phase 1 + Phase 2 drag-and-drop)."""
+"""Streamlit UI for weekly lineup management — roster board redesign."""
 
 from __future__ import annotations
 
@@ -8,9 +8,20 @@ from typing import Any, Callable
 import pandas as pd
 
 from fantasy_league_context import get_active_league_context
+from fantasy_lineup_ui import (
+    bench_player_cards,
+    build_slot_cards,
+    build_slot_key_labels,
+    build_team_header_model,
+    inject_lineup_board_styles,
+    render_action_metrics_html,
+    render_bench_section_html,
+    render_starting_lineup_board_html,
+    render_team_header_html,
+    slot_key_labels_as_tuples,
+)
 from fantasy_weekly_lineup import (
     ROTO_STARTER_CATEGORIES,
-    _player_name_col,
     build_lineup_summary,
     compute_weekly_starter_totals,
     eligible_players_for_slot,
@@ -18,7 +29,6 @@ from fantasy_weekly_lineup import (
     list_week_options,
     resolve_weekly_lineup_slots,
     save_weekly_lineup,
-    slot_display_name,
     validate_weekly_lineup,
     week_label,
     waiver_filter_for_slot_label,
@@ -29,29 +39,12 @@ from fantasy_weekly_lineup_dnd import (
     assignments_from_sortable_containers,
     build_sortable_containers,
     dnd_custom_style,
-    player_card_caption,
-    recommendation_lookup,
     slot_validation_styles,
 )
 
 
 def _slot_widget_keys(slots: list[str]) -> list[tuple[str, str]]:
-    """Return (widget_key, display_label) for each lineup slot."""
-    counts: dict[str, int] = {}
-    keys: list[tuple[str, str]] = []
-    for slot in slots:
-        base = str(slot or "").strip().upper()
-        count = counts.get(base, 0) + 1
-        counts[base] = count
-        key = base if count == 1 else f"{base}_{count}"
-        if count == 1:
-            label = slot_display_name(base)
-        elif base == "UTIL":
-            label = f"Utility ({count})"
-        else:
-            label = f"{slot_display_name(base)} ({count})"
-        keys.append((key, label))
-    return keys
+    return slot_key_labels_as_tuples(build_slot_key_labels(slots))
 
 
 def _read_slot_assignments(
@@ -91,41 +84,30 @@ def _sync_dropdown_assignments_to_session(
         session[f"{prefix}_{key}"] = assignments.get(key) or ""
 
 
-def _render_player_headshots(
+def _render_roster_board(
     st: Any,
-    roster_df: pd.DataFrame,
-    player_names: list[str],
     *,
-    key_prefix: str,
+    slot_labels: list,
+    assignments: dict[str, str],
+    team_roster: pd.DataFrame,
+    scored_roster: pd.DataFrame | None,
+    validation_styles: dict[str, str] | None = None,
 ) -> None:
-    if not player_names:
-        return
-    try:
-        from player_photos import get_player_photo_info, inject_player_photo_styles, render_rec_card_photo_html
-
-        inject_player_photo_styles(st)
-        name_col = _player_name_col(roster_df)
-        lookup = {
-            str(row[name_col]).strip(): row
-            for _, row in roster_df.iterrows()
-            if str(row.get(name_col) or "").strip()
-        }
-        cells: list[str] = []
-        for name in player_names[:12]:
-            row = lookup.get(name)
-            photo_info = get_player_photo_info(full_name=name, row=row, use_api=True)
-            photo_html = render_rec_card_photo_html(photo_info, alt=name)
-            cells.append(
-                f'<div style="text-align:center;min-width:56px;">{photo_html}'
-                f'<div style="font-size:0.68rem;font-weight:600;">{name.split()[-1] if name else ""}</div></div>'
-            )
-        if cells:
-            st.markdown(
-                f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 10px;">{"".join(cells)}</div>',
-                unsafe_allow_html=True,
-            )
-    except ImportError:
-        pass
+    slot_cards = build_slot_cards(
+        slot_labels,
+        assignments,
+        team_roster,
+        scored_roster=scored_roster,
+        validation_styles=validation_styles,
+    )
+    bench_cards = bench_player_cards(
+        team_roster,
+        assignments,
+        slot_labels,
+        scored_roster=scored_roster,
+    )
+    st.markdown(render_starting_lineup_board_html(slot_cards), unsafe_allow_html=True)
+    st.markdown(render_bench_section_html(bench_cards), unsafe_allow_html=True)
 
 
 def _render_classic_dropdown_builder(
@@ -136,6 +118,7 @@ def _render_classic_dropdown_builder(
     slot_keys: list[tuple[str, str]],
     team_roster: pd.DataFrame,
 ) -> dict[str, str]:
+    st.caption("Assign starters using dropdowns — same lineup data as drag-and-drop.")
     assignment_cols = st.columns(2)
     midpoint = (len(slot_keys) + 1) // 2
     for col_idx, chunk in enumerate((slot_keys[:midpoint], slot_keys[midpoint:])):
@@ -171,25 +154,19 @@ def _render_drag_drop_builder(
         )
         return assignments
 
-    rec_map = recommendation_lookup(scored_roster)
-    name_col = _player_name_col(team_roster)
-    row_lookup = {
-        str(row[name_col]).strip(): row for _, row in team_roster.iterrows() if str(row.get(name_col) or "").strip()
-    }
-
-    starter_names = [assignments.get(key) for key, _ in slot_keys if assignments.get(key)]
-    if starter_names:
-        st.caption("**Starting lineup headshots**")
-        _render_player_headshots(st, team_roster, starter_names, key_prefix=f"{prefix}_starters")
-
     containers = build_sortable_containers(slot_keys, assignments, team_roster)
     sort_key = f"{prefix}_sortable_{selected_week}"
-    sorted_containers = sort_items(
-        containers,
-        multi_containers=True,
-        custom_style=dnd_custom_style(),
-        key=sort_key,
-    )
+    with st.expander("Drag & drop editor", expanded=True):
+        st.caption(
+            "Drag players between **lineup slots** and **Bench**. "
+            "The roster board above updates from these assignments."
+        )
+        sorted_containers = sort_items(
+            containers,
+            multi_containers=True,
+            custom_style=dnd_custom_style(),
+            key=sort_key,
+        )
     new_assignments = assignments_from_sortable_containers(sorted_containers, slot_keys, team_roster)
     _sync_dropdown_assignments_to_session(
         session,
@@ -199,7 +176,6 @@ def _render_drag_drop_builder(
     )
 
     styles = slot_validation_styles(slot_keys, new_assignments, team_roster)
-    st.caption("Drag players between **lineup slots** and **Bench**. Each player can start in one slot only.")
     status_bits = []
     for key, label in slot_keys:
         state = styles.get(key, "empty")
@@ -212,20 +188,6 @@ def _render_drag_drop_builder(
             status_bits.append(f"⚪ **{label}:** empty")
     if status_bits:
         st.markdown(" · ".join(status_bits))
-
-    bench_names = [
-        name
-        for name in sorted(row_lookup.keys())
-        if name not in {new_assignments.get(k) for k, _ in slot_keys if new_assignments.get(k)}
-    ]
-    if bench_names:
-        st.markdown("##### Bench / Available Players")
-        _render_player_headshots(st, team_roster, bench_names[:9], key_prefix=f"{prefix}_bench")
-        for name in bench_names:
-            row = row_lookup.get(name)
-            if row is None:
-                continue
-            st.markdown(f"**{name}** — {player_card_caption(row, recommendation=rec_map.get(name, ''))}")
 
     return new_assignments
 
@@ -242,6 +204,8 @@ def _render_validation_and_summary(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     validation = validate_weekly_lineup(slots, assignments, team_roster)
     summary = build_lineup_summary(slots, assignments, team_roster)
+
+    st.markdown(render_action_metrics_html(validation=validation, summary=summary), unsafe_allow_html=True)
 
     if validation.get("messages"):
         st.markdown("**Validation**")
@@ -264,46 +228,22 @@ def _render_validation_and_summary(
                     args=(slot_label,),
                 )
 
-    st.markdown("**Team summary**")
-    summary_cols = st.columns(3)
-    with summary_cols[0]:
-        st.caption("**Starting lineup**")
-        starters = summary.get("starters") or []
-        if starters:
-            for line in starters:
-                st.write(line)
-        else:
-            st.caption("No starters assigned yet.")
-    with summary_cols[1]:
-        st.caption("**Bench**")
-        bench = summary.get("bench") or []
-        if bench:
-            st.caption(", ".join(bench))
-        else:
-            st.caption("All roster players are starting.")
-    with summary_cols[2]:
-        st.caption("**Open slots**")
-        if open_slots:
-            st.caption(", ".join(open_slots))
-        else:
-            st.caption("All lineup slots filled.")
-
     totals = compute_weekly_starter_totals(team_roster, assignments)
     starter_rows = totals.get("starters") or []
     if starter_rows:
-        st.markdown("**Current starter production (season-to-date)**")
-        st.dataframe(pd.DataFrame(starter_rows), use_container_width=True, hide_index=True)
-        total_bits = []
-        for cat in ROTO_STARTER_CATEGORIES:
-            val = (totals.get("totals") or {}).get(cat)
-            if val is None:
-                continue
-            if cat == "AVG":
-                total_bits.append(f"**{cat}** {val:.3f}")
-            else:
-                total_bits.append(f"**{cat}** {val:g}")
-        if total_bits:
-            st.caption("Starter totals · " + " · ".join(total_bits))
+        with st.expander("Current starter production (season-to-date)", expanded=False):
+            st.dataframe(pd.DataFrame(starter_rows), width="stretch", hide_index=True)
+            total_bits = []
+            for cat in ROTO_STARTER_CATEGORIES:
+                val = (totals.get("totals") or {}).get(cat)
+                if val is None:
+                    continue
+                if cat == "AVG":
+                    total_bits.append(f"**{cat}** {val:.3f}")
+                else:
+                    total_bits.append(f"**{cat}** {val:g}")
+            if total_bits:
+                st.caption("Starter totals · " + " · ".join(total_bits))
 
     return validation, summary
 
@@ -333,12 +273,14 @@ def render_weekly_lineup_section(
         st.warning("Load roster stats to assign a weekly lineup.")
         return
 
+    inject_lineup_board_styles(st)
+
     slots = resolve_weekly_lineup_slots(context)
-    slot_keys = _slot_widget_keys(slots)
+    slot_labels = build_slot_key_labels(slots)
+    slot_keys = slot_key_labels_as_tuples(slot_labels)
     week_options = list_week_options()
     prefix = "weekly_lineup"
 
-    st.markdown("##### Weekly Lineup Management")
     save_flash = session.pop("weekly_lineup_save_flash", None)
     if isinstance(save_flash, dict):
         st.success(
@@ -348,38 +290,13 @@ def render_weekly_lineup_section(
             f"- **Week:** {save_flash.get('week') or '—'}\n"
             f"- **Time:** {save_flash.get('time') or '—'}"
         )
-    st.caption(
-        "Assign your active-team starters by week. Saved lineups persist to your **Active Draft**, "
-        "league context, cloud, and disk — and restore after refresh or reboot."
-    )
 
-    week_cols = st.columns([2, 3])
-    with week_cols[0]:
-        selected_week = st.selectbox(
-            "Fantasy week",
-            week_options,
-            format_func=week_label,
-            key=f"{prefix}_selected_week",
-        )
-    with week_cols[1]:
-        st.caption(
-            f"**Slots:** {', '.join(label for _k, label in slot_keys)} · "
-            f"**Team:** {active_team or '—'}"
-        )
-
-    if f"{prefix}_editor_mode" not in session:
-        session[f"{prefix}_editor_mode"] = DEFAULT_WEEKLY_LINEUP_EDITOR_MODE
-
-    editor_mode = st.radio(
-        "Lineup editor mode",
-        list(WEEKLY_LINEUP_EDITOR_MODES),
-        horizontal=True,
-        key=f"{prefix}_editor_mode",
-        help="Drag & Drop on desktop; Classic Dropdowns works better on mobile.",
-    )
-
-    saved = get_saved_weekly_lineup(context, int(selected_week))
+    if f"{prefix}_selected_week" not in session:
+        session[f"{prefix}_selected_week"] = week_options[0]
+    selected_week = int(session.get(f"{prefix}_selected_week") or week_options[0])
+    saved = get_saved_weekly_lineup(context, selected_week)
     saved_assignments = dict((saved or {}).get("assignments") or {})
+
     hydrate_key = f"{prefix}_hydrated_week"
     if session.get(hydrate_key) != selected_week:
         if saved_assignments:
@@ -393,8 +310,42 @@ def render_weekly_lineup_section(
 
     assignments = _read_slot_assignments(session, slot_keys, prefix=prefix)
 
+    header_model = build_team_header_model(
+        context=context,
+        team_name=active_team,
+        week=selected_week,
+        roster_df=team_roster,
+        slot_labels=slot_labels,
+        assignments=assignments,
+        saved=saved,
+    )
+    st.markdown(render_team_header_html(header_model), unsafe_allow_html=True)
+
+    week_cols = st.columns([2, 3])
+    with week_cols[0]:
+        selected_week = st.selectbox(
+            "Fantasy week",
+            week_options,
+            format_func=week_label,
+            key=f"{prefix}_selected_week",
+        )
+    with week_cols[1]:
+        st.caption(
+            "Saved lineups persist to your active draft, league context, cloud, and disk."
+        )
+
+    if f"{prefix}_editor_mode" not in session:
+        session[f"{prefix}_editor_mode"] = DEFAULT_WEEKLY_LINEUP_EDITOR_MODE
+
+    editor_mode = st.radio(
+        "Lineup editor mode",
+        list(WEEKLY_LINEUP_EDITOR_MODES),
+        horizontal=True,
+        key=f"{prefix}_editor_mode",
+        help="Drag & Drop on desktop; Classic Dropdowns works better on mobile.",
+    )
+
     if editor_mode == "Drag & Drop":
-        st.markdown("**Starting Lineup** — drag players into slots")
         assignments = _render_drag_drop_builder(
             st,
             session,
@@ -424,6 +375,16 @@ def render_weekly_lineup_section(
             slot_keys=slot_keys,
             team_roster=team_roster,
         )
+
+    validation_styles = slot_validation_styles(slot_keys, assignments, team_roster)
+    _render_roster_board(
+        st,
+        slot_labels=slot_labels,
+        assignments=assignments,
+        team_roster=team_roster,
+        scored_roster=scored_roster,
+        validation_styles=validation_styles,
+    )
 
     validation, _summary = _render_validation_and_summary(
         st,
@@ -465,6 +426,11 @@ def render_weekly_lineup_section(
                     st.error(str(err))
         if save_disabled:
             st.caption("Fix validation issues above before saving.")
+        if st.button("Reset unsaved changes", key=f"{prefix}_reset_btn"):
+            for key, _label in slot_keys:
+                session[f"{prefix}_{key}"] = saved_assignments.get(key) or ""
+            session[hydrate_key] = None
+            st.rerun()
 
     with status_col:
         if saved:

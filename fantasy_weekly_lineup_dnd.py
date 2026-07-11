@@ -198,26 +198,33 @@ def dnd_custom_style() -> str:
 .sortable-component { font-size: 14px; }
 .sortable-container {
     background-color: #f8fafc;
-    border: 2px dashed #cbd5e1;
-    border-radius: 10px;
+    border: 2px dashed #94a3b8;
+    border-radius: 12px;
     margin-bottom: 10px;
-    min-height: 72px;
+    min-height: 84px;
 }
 .sortable-container-header {
-    background-color: #e2e8f0;
-    font-weight: 700;
-    padding: 6px 10px;
-    border-radius: 8px 8px 0 0;
+    background: linear-gradient(180deg, #e2e8f0, #f1f5f9);
+    font-weight: 800;
+    font-size: 0.82rem;
+    letter-spacing: 0.03em;
+    color: #0b3d6e;
+    padding: 8px 10px;
+    border-radius: 10px 10px 0 0;
 }
-.sortable-container-body { padding: 6px; min-height: 48px; }
+.sortable-container-body { padding: 8px; min-height: 52px; }
 .sortable-item {
     background-color: #ffffff;
     border: 1px solid #cbd5e1;
-    border-radius: 8px;
-    padding: 8px 10px;
-    margin: 4px 0;
-    font-weight: 600;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin: 5px 0;
+    font-weight: 700;
     color: #0f172a;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
 }
-.sortable-item:hover { border-color: #64748b; }
+.sortable-item:hover { border-color: #0b3d6e; }
+@media (max-width: 768px) {
+    .sortable-item { padding: 12px 14px; font-size: 15px; }
+}
 """
