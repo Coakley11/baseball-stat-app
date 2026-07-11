@@ -23,7 +23,11 @@ from fantasy_lineup_ui import (
     render_team_header_html,
     slot_key_labels_as_tuples,
 )
-from fantasy_league_lineup_format import hydrate_lineup_format_from_shared
+from fantasy_league_lineup_format import (
+    hydrate_lineup_format_from_shared,
+    is_lineup_format_commissioner,
+    resolve_lineup_page_context,
+)
 from fantasy_league_lineup_format_ui import (
     render_edit_lineup_format_action,
     render_lineup_format_setup,
@@ -216,22 +220,10 @@ def render_weekly_lineup_section(
     """Weekly lineup builder — one circular face-to-circle interaction."""
     del scored_roster
 
-    context = get_active_league_context(session)
+    context = resolve_lineup_page_context(session)
     if not context:
         st.info("Set an **Active Draft** to manage your weekly lineup.")
         return
-
-    storage_context = _lineup_storage_context(session) or context
-    try:
-        from fantasy_league_identity import resolve_canonical_league_id
-        from fantasy_shared_league_store import sync_context_with_shared_store
-
-        if resolve_canonical_league_id(storage_context):
-            storage_context = sync_context_with_shared_store(session, storage_context)
-            hydrate_lineup_format_from_shared(session, storage_context)
-            context = get_active_league_context(session) or storage_context
-    except ImportError:
-        pass
 
     my_team = str(context.get("my_team_name") or "").strip()
     active_team = str(lineup_team or my_team or "").strip()
@@ -243,7 +235,7 @@ def render_weekly_lineup_section(
         st.warning("Load roster stats to set your weekly lineup.")
         return
 
-    if session.pop("lineup_format_saved_flash", None):
+    if session.pop("lineup_format_saved_flash", None) and is_lineup_format_commissioner(session, context):
         st.success("League lineup format saved.")
 
     editing_format = bool(session.get("lineup_format_editing"))

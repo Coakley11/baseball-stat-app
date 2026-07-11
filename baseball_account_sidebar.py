@@ -201,34 +201,48 @@ def account_sidebar_should_render(session: dict[str, Any] | None = None) -> bool
 
 
 def render_baseball_account_sidebar(st: Any) -> None:
-    """Compact sidebar account status + sign-in controls — always when auth is enabled."""
+    """Compact collapsed sidebar account section — sign-in controls only when expanded."""
     if not account_sidebar_should_render(st.session_state):
         return
     session = st.session_state
     prepare_baseball_auth_session(st)
     status = real_account_status(session)
+    dev_mode = _dev_auth_details_visible(session)
 
-    st.sidebar.markdown("**Account & sign-in**")
-    if status["signed_in"]:
-        st.sidebar.caption(f"Signed in as **{status['email'] or 'account'}**")
-    else:
-        st.sidebar.caption("Not signed in — shared drafts require Real Accounts")
+    expanded = bool(session.pop(ACCOUNT_EXPANDER_FLAG, False))
+    expander_label = "Account & Sign In"
 
-    if not status["signed_in"]:
-        st.sidebar.warning(
-            "Sign in with your Real Account to unlock authenticated cloud saves and shared draft rooms."
-        )
-    if status.get("auth_user_id"):
-        st.sidebar.caption(f"Supabase auth user id: `{status['auth_user_id']}`")
+    with st.sidebar.expander(expander_label, expanded=expanded):
+        if status["signed_in"]:
+            st.caption(f"Signed in as **{status['email'] or 'account'}**")
+            if not dev_mode:
+                try:
+                    from suite_workspace import get_active_workspace_id, workspace_label
 
-    try:
-        from suite_auth import render_auth_panel
+                    class _St:
+                        session_state = session
 
-        render_auth_panel(
-            st,
-            expanded=True,
-            show_signed_in_status=False,
-            flat_sidebar=True,
-        )
-    except ImportError:
-        st.sidebar.caption("Sign-in controls unavailable.")
+                    workspace_id = str(get_active_workspace_id(_St()) or "").strip()
+                    if workspace_id:
+                        label = workspace_label(workspace_id)
+                        if label and label != workspace_id:
+                            st.caption(f"Workspace: **{label}**")
+                except Exception:
+                    pass
+        else:
+            st.caption("Sign in to unlock shared drafts and cloud saves.")
+
+        try:
+            from suite_auth import render_auth_panel
+
+            render_auth_panel(
+                st,
+                expanded=True,
+                show_signed_in_status=False,
+                flat_sidebar=True,
+            )
+        except ImportError:
+            st.caption("Sign-in controls unavailable.")
+
+        if dev_mode and status.get("auth_user_id"):
+            st.caption(f"Supabase auth user id: `{status['auth_user_id']}`")

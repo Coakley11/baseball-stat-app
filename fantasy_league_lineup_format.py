@@ -77,9 +77,18 @@ def needs_lineup_format_setup(context: dict[str, Any] | None) -> bool:
 
 def hydrate_lineup_format_from_shared(
     session: dict[str, Any],
-    context: dict[str, Any] | None,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Merge canonical shared-league lineup format into the active context."""
+    if context is None:
+        try:
+            from fantasy_weekly_lineup import _lineup_storage_context
+
+            context = _lineup_storage_context(session)
+        except ImportError:
+            context = None
+        if not context:
+            context = get_active_league_context(session, respect_source_priority=False)
     if not isinstance(context, dict) or lineup_format_block(context):
         return context
     try:
@@ -100,6 +109,32 @@ def hydrate_lineup_format_from_shared(
         return merged
     except ImportError:
         return context
+
+
+def resolve_lineup_page_context(session: dict[str, Any]) -> dict[str, Any] | None:
+    """Sync shared league data and hydrate commissioner lineup format before lineup UI."""
+    try:
+        from fantasy_weekly_lineup import _lineup_storage_context
+    except ImportError:
+        return get_active_league_context(session)
+
+    storage = _lineup_storage_context(session)
+    if not storage:
+        return get_active_league_context(session)
+    try:
+        from fantasy_league_identity import resolve_canonical_league_id
+        from fantasy_shared_league_store import sync_context_with_shared_store
+
+        if resolve_canonical_league_id(storage):
+            storage = sync_context_with_shared_store(session, storage)
+            hydrate_lineup_format_from_shared(session, storage)
+    except ImportError:
+        pass
+    return (
+        get_active_league_context(session, respect_source_priority=False)
+        or get_active_league_context(session)
+        or storage
+    )
 
 
 def is_lineup_format_commissioner(session: dict[str, Any], context: dict[str, Any] | None) -> bool:

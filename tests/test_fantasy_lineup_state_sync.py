@@ -19,6 +19,7 @@ from fantasy_league_lineup_format import (
     CONFIG_SOURCE_UPLOADED,
     apply_lineup_format_to_context,
     hydrate_lineup_format_from_shared,
+    resolve_lineup_page_context,
     save_league_lineup_format,
 )
 from fantasy_lineup_interactive_board import apply_drop_event, parse_board_drop_result
@@ -213,16 +214,14 @@ class SharedFormatSyncTests(unittest.TestCase):
             from fantasy_league_context import get_league_context, set_active_league_context
 
             set_active_league_context(session_b, "ctx:team2")
-            synced = sync_context_with_shared_store(session_b, context_b)
-            hydrate_lineup_format_from_shared(session_b, synced)
+            resolved = resolve_lineup_page_context(session_b)
 
-            reloaded_b = get_active_league_context(session_b) or get_league_context(session_b, "ctx:team2")
-            assert reloaded_b is not None
+            assert resolved is not None
             from fantasy_league_lineup_format import needs_lineup_format_setup
             from fantasy_weekly_lineup import resolve_weekly_lineup_slots
 
-            self.assertFalse(needs_lineup_format_setup(reloaded_b))
-            self.assertEqual(resolve_weekly_lineup_slots(reloaded_b), ["C", "1B", "SS"])
+            self.assertFalse(needs_lineup_format_setup(resolved))
+            self.assertEqual(resolve_weekly_lineup_slots(resolved), ["C", "1B", "SS"])
 
 
 if __name__ == "__main__":

@@ -10,10 +10,10 @@ from fantasy_league_lineup_format import (
     configuration_source_for_context,
     detect_roster_size_hint,
     expand_position_picks,
-    hydrate_lineup_format_from_shared,
     is_lineup_format_commissioner,
     lineup_format_block,
     needs_lineup_format_setup,
+    resolve_lineup_page_context,
     save_league_lineup_format,
 )
 from fantasy_lineup_ui import build_slot_key_labels, emit_html_block, inject_lineup_board_styles
@@ -39,12 +39,9 @@ def render_lineup_format_setup(
     """Render commissioner setup. Return True when format is ready (saved or already set)."""
     from fantasy_league_context import get_active_league_context
 
-    context = get_active_league_context(session)
+    context = resolve_lineup_page_context(session)
     if not context:
         return False
-
-    hydrate_lineup_format_from_shared(session, context)
-    context = get_active_league_context(session) or context
 
     if not editing and not needs_lineup_format_setup(context):
         return True

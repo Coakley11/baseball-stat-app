@@ -67,7 +67,7 @@ class BaseballAccountSidebarTests(unittest.TestCase):
     @patch("suite_auth.auth_session_complete", return_value=False)
     @patch("suite_auth.render_auth_panel")
     @patch("baseball_account_sidebar.prepare_baseball_auth_session")
-    def test_signed_out_renders_flat_login_panel(
+    def test_signed_out_renders_compact_account_expander(
         self,
         _prepare: object,
         mock_render_auth: object,
@@ -75,13 +75,39 @@ class BaseballAccountSidebarTests(unittest.TestCase):
         _enabled: object,
     ) -> None:
         st = MagicMock()
-        st.session_state = {"_sidebar_account_rendered_this_run": True}
+        st.session_state = {}
         render_baseball_account_sidebar(st)
         mock_render_auth.assert_called_once()
         _args, kwargs = mock_render_auth.call_args
         self.assertTrue(kwargs.get("flat_sidebar"))
         self.assertTrue(kwargs.get("expanded"))
-        st.sidebar.markdown.assert_called()
+        st.sidebar.expander.assert_called_once()
+        expander_args, _expander_kwargs = st.sidebar.expander.call_args
+        self.assertEqual(expander_args[0], "Account & Sign In")
+
+    @patch("suite_auth.is_auth_enabled", return_value=True)
+    @patch("suite_auth.auth_session_complete", return_value=True)
+    @patch("suite_auth.current_auth_email", return_value="daniel@example.com")
+    @patch("suite_auth.render_auth_panel")
+    @patch("baseball_account_sidebar.prepare_baseball_auth_session")
+    @patch("baseball_account_sidebar._dev_auth_details_visible", return_value=False)
+    def test_normal_mode_hides_supabase_user_id(
+        self,
+        _dev: object,
+        _prepare: object,
+        mock_render_auth: object,
+        _email: object,
+        _complete: object,
+        _enabled: object,
+    ) -> None:
+        st = MagicMock()
+        st.session_state = {AUTH_USER_ID_KEY: "uuid-hidden"}
+        render_baseball_account_sidebar(st)
+        mock_render_auth.assert_called_once()
+        caption_texts = [str(call) for call in st.caption.call_args_list]
+        joined = " ".join(caption_texts)
+        self.assertNotIn("uuid-hidden", joined)
+        self.assertNotIn("Supabase auth user id", joined)
 
     def test_streamlit_app_renders_account_before_choose_page(self) -> None:
         from pathlib import Path

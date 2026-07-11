@@ -401,19 +401,22 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
   }
 
   function onRender(event) {
-    const args = event.detail.args || {};
-    PAYLOAD = args.payload || {};
+    const args = (event && event.detail && event.detail.args) || {};
+    PAYLOAD = args.payload || args || {};
+    if (!PAYLOAD.slots && args.slots) {
+      PAYLOAD = args;
+    }
     assignments = Object.assign({}, PAYLOAD.assignments || {});
     render();
   }
 
   window.addEventListener("message", function(event) {
-    if (event.data.type === RENDER_EVENT) {
-      onRender(event);
-    }
+    if (!event.data || event.data.type !== RENDER_EVENT) return;
+    onRender({ detail: { args: event.data.args || {} } });
   });
 
   sendMessage("streamlit:componentReady", { apiVersion: 1 });
+  setFrameHeight(220);
 })();
 </script>
 </body>

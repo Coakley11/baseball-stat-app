@@ -237,12 +237,44 @@ def render_interactive_lineup_board(
     component_key: str,
 ) -> Any:
     """Render the editable circular board; returns drop payload from prior interaction."""
+    dev_mode = False
     try:
-        from lineup_board_component import lineup_board_component
-    except ImportError:
-        st.warning("Interactive lineup board is unavailable in this environment.")
+        from suite_workspace import developer_ui_visible_from_session
+
+        dev_mode = bool(developer_ui_visible_from_session(st.session_state))
+    except Exception:
+        pass
+
+    try:
+        from lineup_board_component import (
+            component_frontend_ready,
+            get_component_frontend_dir,
+            lineup_board_component,
+        )
+    except ImportError as exc:
+        st.error("Lineup board couldn't load. Refresh the page.")
+        if dev_mode:
+            st.caption(f"Component import failed: {exc}")
         return None
-    return lineup_board_component(payload=payload, key=str(component_key or "lineup_board"))
+
+    if not component_frontend_ready():
+        st.error("Lineup board couldn't load. Refresh the page.")
+        if dev_mode:
+            st.caption(f"Component frontend path: `{get_component_frontend_dir()}`")
+        return None
+
+    if not (payload.get("slots") or []):
+        st.warning("No lineup positions are configured for this league.")
+        return None
+
+    try:
+        return lineup_board_component(payload=payload, key=str(component_key or "lineup_board"))
+    except Exception as exc:
+        st.error("Lineup board couldn't load. Refresh the page.")
+        if dev_mode:
+            st.caption(f"Component path: `{get_component_frontend_dir()}`")
+            st.caption(f"Component error: {exc}")
+        return None
 
 
 def parse_board_drop_result(result: Any) -> dict[str, Any] | None:
