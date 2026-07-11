@@ -383,14 +383,38 @@ def _on_confirm_waiver_move_click(*_args, **_kwargs) -> None:
     session = st.session_state
     tx_adds = list(session.get("waiver_tx_add_players") or [])
     tx_drops = list(session.get("waiver_tx_drop_players") or [])
-    if not tx_adds or not tx_drops:
-        set_waiver_tx_flash(session, level="warning", message="Select at least one add and one drop player.")
+    if not tx_adds:
+        set_waiver_tx_flash(session, level="warning", message="Select at least one player to add.")
         return
-    if len(tx_adds) != len(tx_drops):
+    try:
+        from fantasy_league_context import get_active_league_context
+        from fantasy_waiver_wire import waiver_roster_transaction_mode
+
+        context = get_active_league_context(session)
+        my_roster = my_team_roster_dataframe(context) if context else pd.DataFrame()
+        tx_mode = waiver_roster_transaction_mode(context, len(_player_names(my_roster)))
+    except ImportError:
+        tx_mode = "add_drop"
+    if tx_mode == "add_drop":
+        if not tx_drops:
+            set_waiver_tx_flash(
+                session,
+                level="warning",
+                message="Roster is full. Select a matching drop for each add.",
+            )
+            return
+        if len(tx_adds) != len(tx_drops):
+            set_waiver_tx_flash(
+                session,
+                level="warning",
+                message="Adds and drops must match (Add 1/Drop 1 or Add 2/Drop 2).",
+            )
+            return
+    elif tx_drops and len(tx_adds) != len(tx_drops):
         set_waiver_tx_flash(
             session,
             level="warning",
-            message="Adds and drops must match (Add 1/Drop 1 or Add 2/Drop 2).",
+            message="When dropping players, match the number of adds and drops.",
         )
         return
     if len(tx_adds) > MAX_WAIVER_MOVE_PAIRS:
@@ -403,10 +427,13 @@ def _on_confirm_waiver_move_click(*_args, **_kwargs) -> None:
             ),
         )
         return
-    pairs = [
-        {"add_player": add_name, "drop_player": drop_name}
-        for add_name, drop_name in zip(tx_adds, tx_drops)
-    ]
+    if tx_drops:
+        pairs = [
+            {"add_player": add_name, "drop_player": drop_name}
+            for add_name, drop_name in zip(tx_adds, tx_drops)
+        ]
+    else:
+        pairs = [{"add_player": add_name, "drop_player": ""} for add_name in tx_adds]
     stats_pool = _resolve_waiver_stats_pool(session)
     tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
     _apply_waiver_tx_result(session, tx_result, stats_pool=stats_pool)
@@ -688,6 +715,17 @@ def render_waiver_wire_page(
         _has_slots = False
         open_slots = []
 
+    st.markdown("##### Position filter")
+    position_filter = st.selectbox(
+        "Filter available players by position",
+        list(WAIVER_POSITION_FILTER_OPTIONS),
+        key=WAIVER_POSITION_FILTER_KEY,
+        help="Applies to recommendations, search, tables, and add/drop selectors. "
+        "Lineup Assistant pre-sets this when you open Waiver Wire for an empty slot.",
+    )
+    filtered_pool = _apply_waiver_position_filter(waiver_pool, position_filter)
+    adds = _apply_waiver_position_filter(adds, position_filter) if not adds.empty else adds
+
     st.markdown("##### League snapshot")
     rank_lines = format_league_rank_lines(needs, categories=waiver_cats)
     if rank_lines:
@@ -701,12 +739,27 @@ def render_waiver_wire_page(
 
     _apply_deferred_waiver_widget_clears(session)
 
+    try:
+        from fantasy_waiver_wire import waiver_roster_transaction_mode
+
+        tx_mode = waiver_roster_transaction_mode(context, len(_player_names(my_roster)))
+    except ImportError:
+        tx_mode = "add_drop"
+
     st.markdown("##### Waiver Transaction")
-    st.caption(
-        "**Step 1:** Select waiver players to add (1–2). **Step 2:** Select roster players to drop "
-        "(same count). **Step 3:** Confirm the move. Allowed: Add 1/Drop 1 or Add 2/Drop 2."
-    )
-    add_options = _player_names(waiver_pool)
+    if tx_mode == "add_only":
+        st.caption(
+            "**Roster has open spots.** Select waiver players to add without a drop. "
+            "You can still drop players separately if you want to swap."
+        )
+    elif tx_mode == "cleanup_required":
+        st.warning("Roster is over capacity. Drop players before adding more.")
+    else:
+        st.caption(
+            "**Step 1:** Select waiver players to add (1–2). **Step 2:** Select roster players to drop "
+            "(same count). **Step 3:** Confirm the move. Allowed: Add 1/Drop 1 or Add 2/Drop 2."
+        )
+    add_options = _player_names(filtered_pool)
     drop_options = _player_names(my_roster)
     tx_adds = st.multiselect(
         "Players to ADD (waiver pool)",
@@ -723,7 +776,7 @@ def render_waiver_wire_page(
         max_selections=MAX_WAIVER_MOVE_PAIRS,
     )
     if tx_adds or tx_drops:
-        if len(tx_adds) != len(tx_drops):
+        if tx_mode == "add_drop" and len(tx_adds) != len(tx_drops):
             st.warning(
                 f"Select the same number of adds and drops "
                 f"({len(tx_adds)} add(s) · {len(tx_drops)} drop(s)) — up to {MAX_WAIVER_MOVE_PAIRS} pairs."
@@ -734,9 +787,8 @@ def render_waiver_wire_page(
             )
     if (
         tx_adds
-        and tx_drops
-        and len(tx_adds) == len(tx_drops)
         and len(tx_adds) <= MAX_WAIVER_MOVE_PAIRS
+        and (tx_mode == "add_only" or (tx_drops and len(tx_adds) == len(tx_drops)))
     ):
         impact = compute_waiver_transaction_impact(
             my_roster,
@@ -818,25 +870,19 @@ def render_waiver_wire_page(
             )
 
     st.markdown("##### 3. Available Player Pool")
-    position_filter = st.selectbox(
-        "Position filter",
-        list(WAIVER_POSITION_FILTER_OPTIONS),
-        key=WAIVER_POSITION_FILTER_KEY,
-        help="Filter waiver pool by eligible fantasy position. Lineup Assistant can pre-set this when you open Waiver Wire for an empty slot.",
-    )
     st.caption(
-        f"{len(waiver_pool)} waiver-eligible players. Search and sort in the table — use **Plan Add** cards above or the planner below."
+        f"{len(filtered_pool)} waiver-eligible players for **{position_filter}**. "
+        "Search and sort in the table — use **Plan Add** cards above or the planner below."
     )
     search_query = st.text_input(
         "Search available players",
         key="waiver_pool_search",
         placeholder="Type a player name…",
     )
-    if waiver_pool.empty:
-        st.info("Waiver pool is empty for this context.")
+    if filtered_pool.empty:
+        st.info("No waiver players match this position filter.")
     else:
-        pool_view = waiver_pool.copy()
-        pool_view = _apply_waiver_position_filter(pool_view, position_filter)
+        pool_view = filtered_pool.copy()
         if search_query:
             names = _player_names(pool_view)
             keep = set(filter_waiver_names_by_search(names, search_query))
@@ -869,7 +915,7 @@ def render_waiver_wire_page(
     planner_add = str(session.get(WAIVER_PLANNER_ADD_KEY) or manual_add_pick or "").strip()
     planner_drop = str(session.get(WAIVER_PLANNER_DROP_KEY) or manual_drop_pick or "").strip()
     if planner_add:
-        add_row = _row_for_player(waiver_pool, planner_add)
+        add_row = _row_for_player(filtered_pool, planner_add)
         if add_row is not None:
             st.markdown("**Add target**")
             _render_player_card(
@@ -890,7 +936,7 @@ def render_waiver_wire_page(
                 button_label="Clear Drop",
                 on_click=_on_clear_planner_drop_click,
             )
-    add_row = _row_for_player(waiver_pool, planner_add) if planner_add else None
+    add_row = _row_for_player(filtered_pool, planner_add) if planner_add else None
     drop_row = _row_for_player(my_roster, planner_drop) if planner_drop else None
     impact = compute_add_drop_category_impact(
         add_row,

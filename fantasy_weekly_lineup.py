@@ -16,6 +16,9 @@ from fantasy_league_context import (
 )
 
 WORKFLOW_KEY_WEEKLY_LINEUPS = "weekly_lineups"
+WORKFLOW_KEY_WEEKLY_DRAFTS = "weekly_lineup_drafts"
+LINEUP_STATUS_DRAFT = "draft"
+LINEUP_STATUS_LOCKED = "locked"
 DEFAULT_WEEKLY_SLOTS: tuple[str, ...] = ("C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "UTIL")
 ROTO_STARTER_CATEGORIES: tuple[str, ...] = ("R", "HR", "RBI", "SB", "AVG")
 MAX_FANTASY_WEEKS = 26
@@ -133,7 +136,7 @@ def slot_display_name(slot: str) -> str:
 
 
 def resolve_weekly_lineup_slots(context: dict[str, Any] | None) -> list[str]:
-    """Starter slots for weekly lineup — context slots when present, else default 9."""
+    """Starter slots from league configuration only — no implicit default lineup."""
     context_slots = resolve_context_lineup_slots(context)
     if context_slots:
         normalized: list[str] = []
@@ -148,7 +151,7 @@ def resolve_weekly_lineup_slots(context: dict[str, Any] | None) -> list[str]:
             normalized.append(token)
         if normalized:
             return normalized
-    return list(DEFAULT_WEEKLY_SLOTS)
+    return []
 
 
 def week_label(week: int) -> str:
@@ -175,12 +178,135 @@ def weekly_lineup_key(week: int) -> str:
     return f"week_{int(week)}"
 
 
-def get_saved_weekly_lineup(context: dict[str, Any] | None, week: int) -> dict[str, Any] | None:
+def team_week_lineup_key(team: str, week: int) -> str:
+    return f"{str(team or '').strip()}|week_{int(week)}"
+
+
+def _weekly_lineup_drafts_store(context: dict[str, Any]) -> dict[str, Any]:
+    workflow = context.setdefault("workflow", {})
+    if not isinstance(workflow, dict):
+        workflow = {}
+        context["workflow"] = workflow
+    raw = workflow.get(WORKFLOW_KEY_WEEKLY_DRAFTS)
+    if not isinstance(raw, dict):
+        raw = {}
+        workflow[WORKFLOW_KEY_WEEKLY_DRAFTS] = raw
+    return raw
+
+
+def _lookup_team_week_record(store: dict[str, Any], team: str, week: int) -> dict[str, Any] | None:
+    key = team_week_lineup_key(team, week)
+    payload = store.get(key)
+    if isinstance(payload, dict):
+        return copy.deepcopy(payload)
+    legacy = store.get(weekly_lineup_key(week))
+    if isinstance(legacy, dict):
+        saved_team = str(legacy.get("my_team_name") or "").strip()
+        if not saved_team or saved_team == str(team or "").strip():
+            return copy.deepcopy(legacy)
+    return None
+
+
+def _lineup_storage_context(session: dict[str, Any]) -> dict[str, Any] | None:
+    """Durable league context for weekly lineup drafts and locks."""
+    ctx = get_active_league_context(session, respect_source_priority=False)
+    if ctx:
+        return ctx
+    return get_active_league_context(session)
+
+
+def get_weekly_lineup_state(
+    context: dict[str, Any] | None,
+    week: int,
+    *,
+    team: str = "",
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Return locked lineup, else in-progress draft, for a team/week."""
+    if session is not None:
+        stored = _lineup_storage_context(session)
+        if stored:
+            context = stored
     if not context:
         return None
-    store = _weekly_lineups_store(context)
-    payload = store.get(weekly_lineup_key(week))
-    return copy.deepcopy(payload) if isinstance(payload, dict) else None
+    team_name = str(team or context.get("my_team_name") or "").strip()
+    locked = _lookup_team_week_record(_weekly_lineups_store(context), team_name, week)
+    if isinstance(locked, dict) and str(locked.get("status") or "") == LINEUP_STATUS_LOCKED:
+        return locked
+    draft = _lookup_team_week_record(_weekly_lineup_drafts_store(context), team_name, week)
+    if isinstance(draft, dict):
+        return draft
+    if isinstance(locked, dict):
+        return locked
+    return None
+
+
+def get_saved_weekly_lineup(
+    context: dict[str, Any] | None,
+    week: int,
+    *,
+    team: str = "",
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Return persisted lineup record (locked preferred, else draft)."""
+    return get_weekly_lineup_state(context, week, team=team, session=session)
+
+
+def is_lineup_locked(
+    context: dict[str, Any] | None,
+    week: int,
+    *,
+    team: str = "",
+    session: dict[str, Any] | None = None,
+) -> bool:
+    record = get_weekly_lineup_state(context, week, team=team, session=session)
+    return isinstance(record, dict) and str(record.get("status") or "") == LINEUP_STATUS_LOCKED
+
+
+def persist_weekly_lineup_draft(
+    session: dict[str, Any],
+    *,
+    week: int,
+    slots: list[str],
+    assignments: dict[str, str],
+    my_team: str,
+    roster_df: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """Auto-save in-progress lineup draft after every valid board change."""
+    del roster_df
+    result: dict[str, Any] = {"ok": False, "errors": []}
+    context = _lineup_storage_context(session)
+    if not context:
+        result["errors"].append("No active league context.")
+        return result
+    team = str(my_team or context.get("my_team_name") or "").strip()
+    if is_lineup_locked(context, week, team=team, session=session):
+        result["errors"].append("Lineup is locked for this week.")
+        return result
+
+    slot_map = assignments_to_slot_player_map(slots, assignments)
+    payload = {
+        "week": int(week),
+        "week_label": week_label(week),
+        "my_team_name": team,
+        "slots": slots,
+        "assignments": slot_map,
+        "status": LINEUP_STATUS_DRAFT,
+        "updated_at": _utc_now_iso(),
+    }
+    drafts = _weekly_lineup_drafts_store(context)
+    drafts[team_week_lineup_key(team, week)] = payload
+    upsert_league_context(session, context)
+    try:
+        import streamlit as st
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="weekly_lineup_draft")
+    except Exception:
+        pass
+    result["ok"] = True
+    result["lineup"] = payload
+    return result
 
 
 def roster_player_names(roster_df: pd.DataFrame) -> list[str]:
@@ -413,7 +539,7 @@ def save_weekly_lineup(
 ) -> dict[str, Any]:
     """Persist weekly lineup to active league context and linked draft archive."""
     result: dict[str, Any] = {"ok": False, "errors": []}
-    context = get_active_league_context(session)
+    context = _lineup_storage_context(session)
     if not context:
         result["errors"].append("No active league context.")
         return result
@@ -436,19 +562,24 @@ def save_weekly_lineup(
             if pid:
                 assignments_by_id[slot_key] = pid
 
+    team_name = str(my_team or "").strip()
     payload = {
         "week": int(week),
         "week_label": week_label(week),
-        "my_team_name": str(my_team or "").strip(),
+        "my_team_name": team_name,
         "slots": slots,
         "assignments": slot_map,
         "assignments_by_id": assignments_by_id,
         "not_starting": not_starting_players(roster_df, slot_map),
         "saved_at": _utc_now_iso(),
+        "locked_at": _utc_now_iso(),
+        "status": LINEUP_STATUS_LOCKED,
         "stats_snapshot": compute_weekly_starter_totals(roster_df, slot_map),
     }
     store = _weekly_lineups_store(context)
-    store[weekly_lineup_key(week)] = payload
+    store[team_week_lineup_key(team_name, week)] = payload
+    drafts = _weekly_lineup_drafts_store(context)
+    drafts.pop(team_week_lineup_key(team_name, week), None)
     context = upsert_league_context(session, context)
 
     draft_id = str(context.get("source_draft_id") or "").strip()

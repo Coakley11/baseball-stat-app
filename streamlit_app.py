@@ -7081,9 +7081,18 @@ def player_matches_fantasy_position_filter(row, filter_choice: str | list | None
     choice = str(filter_choice or "").strip()
     if not choice or choice in ("All positions", "All"):
         return True
-    tokens = row.get("_position_tokens") if hasattr(row, "get") else None
+    getter = row.get if hasattr(row, "get") else lambda _k, _d=None: _d
+    tokens = getter("_position_tokens")
     if tokens is None or (isinstance(tokens, float) and pd.isna(tokens)):
-        tokens = _fantasy_position_display_tokens(row.get("careerPrimaryPos"), row.get("primaryPos"))[1]
+        tokens = getter("_pos_tokens")
+    if tokens is None or (isinstance(tokens, float) and pd.isna(tokens)):
+        for col in ("Primary Position", "Position", "Eligibility", "Positions"):
+            raw = getter(col)
+            if raw not in (None, "", np.nan):
+                tokens = _split_primary_positions(raw)
+                break
+    if tokens is None or (isinstance(tokens, float) and pd.isna(tokens)):
+        tokens = _fantasy_position_display_tokens(getter("careerPrimaryPos"), getter("primaryPos"))[1]
     elif isinstance(tokens, str):
         tokens = _split_primary_positions(tokens)
     if choice == "DH/UTIL":
@@ -7164,10 +7173,13 @@ def enrich_lineup_roster_positions(roster_df: pd.DataFrame) -> pd.DataFrame:
                 toks.extend(_split_primary_positions(row.get(col)))
         if isinstance(row.get("_position_tokens"), list):
             toks = list(dict.fromkeys(toks + list(row.get("_position_tokens"))))
+        if isinstance(row.get("_pos_tokens"), list):
+            toks = list(dict.fromkeys(toks + list(row.get("_pos_tokens"))))
         if not toks:
             toks = ["DH"]
         tokens_list.append(list(dict.fromkeys(toks)))
     out["_pos_tokens"] = tokens_list
+    out["_position_tokens"] = tokens_list
     return out
 
 
@@ -23367,7 +23379,7 @@ if active_page == "Fantasy Lineup Assistant":
     )
     render_section_header(
         _lineup_title,
-        "Use current stats, roster context, momentum, consistency, and league format to recommend who to start, bench, sit, or watch.",
+        "Set your weekly starting lineup, then optionally review Start-Sit recommendations.",
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
@@ -23377,11 +23389,7 @@ if active_page == "Fantasy Lineup Assistant":
     )
     _xfer_cats = st.session_state.pop("lineup_context_category_needs", None)
     if _xfer_cats:
-        st.info(f"Category focus from Standings: **{', '.join(_xfer_cats)}** — prioritize starters who help these areas.")
-    st.caption(
-        "Requires rosters in **Draft Room** or a **saved draft team**, plus current stats from **Fantasy Standings Tracker**. "
-        "Momentum uses season-to-date production (not daily game logs)."
-    )
+        st.info(f"Category focus from Standings: **{', '.join(_xfer_cats)}**")
 
     try:
         from draft_archive_ui import render_active_saved_draft_chip
@@ -23525,11 +23533,11 @@ if active_page == "Fantasy Lineup Assistant":
                     on_open_waiver_wire=open_waiver_wire_from_lineup_slot,
                     scored_roster=_lineup_scored_for_weekly,
                 )
-                st.divider()
             except ImportError:
                 pass
 
-        _lineup_format_options = ["5x5 Roto", "Points League", "Head-to-Head Categories"]
+        with st.expander("Start-Sit recommendations", expanded=False):
+            _lineup_format_options = ["5x5 Roto", "Points League", "Head-to-Head Categories"]
         l2, l3 = st.columns(2)
         with l2:
             _lineup_fmt_resolved = resolve_lineup_scoring_format(st.session_state)

@@ -39,11 +39,11 @@ def _roster_df() -> pd.DataFrame:
 
 
 class WeeklyLineupTests(unittest.TestCase):
-    def test_default_slots_when_context_has_no_slot_config(self) -> None:
+    def test_no_default_slots_when_context_has_no_slot_config(self) -> None:
         session: dict = {}
         board = pd.DataFrame([{"Team": "Daniel", "Player": "Catcher One", "Pick": 1}])
         _, context = save_simulator_league_context(session, board, my_team_name="Daniel")
-        self.assertEqual(resolve_weekly_lineup_slots(context), list(DEFAULT_WEEKLY_SLOTS))
+        self.assertEqual(resolve_weekly_lineup_slots(context), [])
 
     def test_player_eligible_util_accepts_dh(self) -> None:
         self.assertTrue(player_eligible_for_slot(["DH"], "UTIL"))
@@ -76,7 +76,21 @@ class WeeklyLineupTests(unittest.TestCase):
                 )
             ]
         )
+        from fantasy_league_lineup_format import apply_lineup_format_to_context, CONFIG_SOURCE_SIMULATOR
+
         save_simulator_league_context(session, board, my_team_name="Daniel")
+        context = get_active_league_context(session)
+        assert context is not None
+        context = apply_lineup_format_to_context(
+            context,
+            lineup_slots=["C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "UTIL"],
+            roster_capacity=9,
+            configured_by="daniel",
+            configuration_source=CONFIG_SOURCE_SIMULATOR,
+        )
+        from fantasy_league_context import upsert_league_context
+
+        upsert_league_context(session, context)
         roster = _roster_df()
         slots = list(DEFAULT_WEEKLY_SLOTS)
         assignments = {
@@ -101,7 +115,7 @@ class WeeklyLineupTests(unittest.TestCase):
         self.assertTrue(result.get("ok"))
         context = get_active_league_context(session)
         assert context is not None
-        saved = get_saved_weekly_lineup(context, 1)
+        saved = get_saved_weekly_lineup(context, 1, team="Daniel", session=session)
         assert saved is not None
         self.assertEqual(saved.get("week"), 1)
         self.assertEqual(saved["assignments"].get("C"), "Catcher One")
@@ -151,13 +165,26 @@ class WeeklyLineupUiTests(unittest.TestCase):
 
         session: dict = {"weekly_lineup_editor_mode": "Classic Dropdowns"}
         board = pd.DataFrame([{"Team": "Daniel", "Player": "Catcher One", "Pick": 1}])
+        from fantasy_league_lineup_format import apply_lineup_format_to_context, CONFIG_SOURCE_SIMULATOR
+        from fantasy_league_context import get_active_league_context, upsert_league_context
+
         save_simulator_league_context(session, board, my_team_name="Daniel")
+        context = get_active_league_context(session)
+        assert context is not None
+        context = apply_lineup_format_to_context(
+            context,
+            lineup_slots=["C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "UTIL"],
+            roster_capacity=9,
+            configured_by="daniel",
+            configuration_source=CONFIG_SOURCE_SIMULATOR,
+        )
+        upsert_league_context(session, context)
         roster = _roster_df()
         roster["Team"] = "Daniel"
 
         st = MagicMock()
 
-        def _columns(n):
+        def _columns(n, **kwargs):
             count = n if isinstance(n, int) else len(n)
             return [MagicMock() for _ in range(max(int(count or 1), 1))]
 

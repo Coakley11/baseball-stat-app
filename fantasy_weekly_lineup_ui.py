@@ -23,9 +23,15 @@ from fantasy_lineup_ui import (
     render_team_header_html,
     slot_key_labels_as_tuples,
 )
+from fantasy_league_lineup_format_ui import (
+    render_edit_lineup_format_action,
+    render_lineup_format_setup,
+)
 from fantasy_weekly_lineup import (
     get_saved_weekly_lineup,
+    is_lineup_locked,
     list_week_options,
+    persist_weekly_lineup_draft,
     resolve_weekly_lineup_slots,
     save_weekly_lineup,
     slot_display_name,
@@ -217,9 +223,24 @@ def render_weekly_lineup_section(
         st.warning("Load roster stats to set your weekly lineup.")
         return
 
+    if session.pop("lineup_format_saved_flash", None):
+        st.success("League lineup format saved.")
+
+    editing_format = bool(session.get("lineup_format_editing"))
+    if editing_format:
+        render_lineup_format_setup(st, session, team_roster=team_roster, editing=True)
+        return
+    if not render_lineup_format_setup(st, session, team_roster=team_roster):
+        return
+
+    render_edit_lineup_format_action(st, session)
+
     inject_lineup_board_styles(st)
 
     slots = resolve_weekly_lineup_slots(context)
+    if not slots:
+        st.info("League starting positions are not configured yet.")
+        return
     slot_labels = build_slot_key_labels(slots)
     slot_keys = slot_key_labels_as_tuples(slot_labels)
     week_options = list_week_options()
@@ -241,8 +262,9 @@ def render_weekly_lineup_section(
             key=f"{prefix}_selected_week",
         )
 
-    saved = get_saved_weekly_lineup(context, int(selected_week))
+    saved = get_saved_weekly_lineup(context, int(selected_week), team=active_team, session=session)
     saved_assignments = dict((saved or {}).get("assignments") or {})
+    lineup_locked = is_lineup_locked(context, int(selected_week), team=active_team, session=session)
     canon_key = canonical_week_key(prefix, int(selected_week))
     assignments = ensure_canonical_assignments(
         session,
@@ -262,14 +284,22 @@ def render_weekly_lineup_section(
     )
     emit_html_block(st, render_team_header_html(header_model))
 
-    board_payload = build_interactive_board_payload(slot_labels, assignments, team_roster)
+    if lineup_locked:
+        st.info(f"Lineup locked for {week_label(int(selected_week))}")
+
+    board_payload = build_interactive_board_payload(
+        slot_labels,
+        assignments,
+        team_roster,
+        editable=not lineup_locked,
+    )
     board_result = render_interactive_lineup_board(
         st,
         payload=board_payload,
         component_key=f"{prefix}_circle_board_{int(selected_week)}",
     )
     drop_event = parse_board_drop_result(board_result)
-    if drop_event:
+    if drop_event and not lineup_locked:
         player = str(drop_event.get("player") or "").strip()
         target = str(drop_event.get("target") or "").strip()
         new_assignments = apply_board_drop(
@@ -285,6 +315,14 @@ def render_weekly_lineup_section(
             slot_keys=slot_keys,
             new_assignments=new_assignments,
         ):
+            persist_weekly_lineup_draft(
+                session,
+                week=int(selected_week),
+                slots=slots,
+                assignments=new_assignments,
+                my_team=active_team,
+                roster_df=team_roster,
+            )
             st.rerun()
         assignments = new_assignments
 
@@ -294,10 +332,13 @@ def render_weekly_lineup_section(
         slot_labels=slot_labels,
         assignments=assignments,
         team_roster=team_roster,
-        on_open_waiver_wire=on_open_waiver_wire,
+        on_open_waiver_wire=on_open_waiver_wire if not lineup_locked else None,
         prefix=prefix,
         selected_week=int(selected_week),
     )
+
+    if lineup_locked:
+        return
 
     save_col, _reset_col = st.columns(2)
     with save_col:

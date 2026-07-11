@@ -88,6 +88,8 @@ def build_interactive_board_payload(
     slot_labels: list,
     assignments: dict[str, str],
     roster_df: pd.DataFrame,
+    *,
+    editable: bool = True,
 ) -> dict[str, Any]:
     """JSON-serializable payload for the interactive circular board."""
     name_col = _player_name_col(roster_df)
@@ -137,6 +139,7 @@ def build_interactive_board_payload(
         "faces": faces,
         "assignments": slot_map,
         "slot_keys": [key for key, _ in slot_keys],
+        "editable": bool(editable),
     }
 
 
@@ -563,6 +566,7 @@ body.fl-drag-active {{
   }}
 
   function bindFaces() {{
+    if (PAYLOAD.editable === false) return;
     document.querySelectorAll(".fl-face").forEach(function(face) {{
       face.addEventListener("pointerdown", onFacePointerDown);
       face.addEventListener("pointermove", onFacePointerMove);

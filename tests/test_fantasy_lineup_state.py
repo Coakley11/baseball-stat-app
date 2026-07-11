@@ -178,7 +178,7 @@ class CanonicalStateFlowTests(unittest.TestCase):
 
         context = get_active_league_context(session)
         assert context is not None
-        saved = get_saved_weekly_lineup(context, week)
+        saved = get_saved_weekly_lineup(context, week, team="Daniel", session=session)
         assert saved is not None
         fresh: dict = {}
         restored = ensure_canonical_assignments(
@@ -224,6 +224,9 @@ class OpenSlotPromptTests(unittest.TestCase):
 
 class CircleBoardRenderTests(unittest.TestCase):
     def test_no_editor_mode_or_dropdown_widgets(self) -> None:
+        from fantasy_league_context import get_active_league_context, upsert_league_context
+        from fantasy_league_lineup_format import CONFIG_SOURCE_SIMULATOR, apply_lineup_format_to_context
+
         session: dict = {}
         board = pd.DataFrame(
             [
@@ -232,6 +235,16 @@ class CircleBoardRenderTests(unittest.TestCase):
             ]
         )
         save_simulator_league_context(session, board, my_team_name="Daniel")
+        context = get_active_league_context(session)
+        assert context is not None
+        context = apply_lineup_format_to_context(
+            context,
+            lineup_slots=["C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "UTIL"],
+            roster_capacity=9,
+            configured_by="daniel",
+            configuration_source=CONFIG_SOURCE_SIMULATOR,
+        )
+        upsert_league_context(session, context)
         roster = _daniel_roster()
         st = MagicMock()
         st.html = MagicMock()

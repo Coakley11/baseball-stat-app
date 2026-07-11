@@ -92,6 +92,9 @@ WAIVER_PLANNER_ADD_KEY = "waiver_planner_add_pick"
 WAIVER_PLANNER_DROP_KEY = "waiver_planner_drop_pick"
 WAIVER_TX_FLASH_KEY = "_waiver_tx_ui_flash"
 MAX_WAIVER_MOVE_PAIRS = 2
+WAIVER_TX_MODE_ADD_ONLY = "add_only"
+WAIVER_TX_MODE_ADD_DROP = "add_drop"
+WAIVER_TX_MODE_CLEANUP = "cleanup_required"
 ROTO_STAT_MAP = {
     "HR": ("HR", "proj_HR", "Total HR"),
     "RBI": ("RBI", "proj_RBI", "Total RBI"),
@@ -1600,6 +1603,25 @@ def _player_entry_from_name(
     return _normalize_player_entry({"fullName": player_name, "Player": player_name}, team_name=team_name)
 
 
+def waiver_roster_transaction_mode(context: dict[str, Any] | None, roster_size: int) -> str:
+    """Whether waiver moves need add-only, matched add/drop, or roster cleanup."""
+    try:
+        from fantasy_league_lineup_format import roster_capacity_from_format
+        from fantasy_weekly_lineup import resolve_weekly_lineup_slots
+
+        capacity = roster_capacity_from_format(context)
+        if capacity is None:
+            slots = resolve_weekly_lineup_slots(context)
+            capacity = len(slots) if slots else roster_size
+    except ImportError:
+        capacity = roster_size
+    if roster_size < capacity:
+        return WAIVER_TX_MODE_ADD_ONLY
+    if roster_size == capacity:
+        return WAIVER_TX_MODE_ADD_DROP
+    return WAIVER_TX_MODE_CLEANUP
+
+
 def apply_waiver_move_pairs(
     session: dict[str, Any],
     pairs: list[dict[str, Any]],
@@ -1639,12 +1661,19 @@ def apply_waiver_move_pairs(
     players = [dict(p) for p in (team_entry.get("players") or []) if isinstance(p, dict)]
     working_context = copy.deepcopy(context)
     working_context["league_rosters"] = league_rosters
+    tx_mode = waiver_roster_transaction_mode(context, len(players))
+    if tx_mode == WAIVER_TX_MODE_CLEANUP:
+        result["errors"].append("Roster is over capacity. Drop players before adding more.")
+        return result
 
     for pair in pairs:
         add_name = str(pair.get("add_player") or "").strip()
         drop_name = str(pair.get("drop_player") or "").strip()
-        if not add_name or not drop_name:
-            result["errors"].append("Each move needs both an add and a drop player.")
+        if not add_name:
+            result["errors"].append("Each move needs a player to add.")
+            continue
+        if tx_mode == WAIVER_TX_MODE_ADD_DROP and not drop_name:
+            result["errors"].append("Roster is full. Each add needs a matching drop.")
             continue
         if add_name == drop_name:
             result["errors"].append(f"Add and drop cannot be the same player: {add_name}")
@@ -1652,12 +1681,15 @@ def apply_waiver_move_pairs(
         if _is_player_rostered(working_context, add_name):
             result["errors"].append(f"{add_name} is already rostered.")
             continue
-        drop_idx = _find_roster_player_index(players, drop_name)
-        if drop_idx is None:
-            result["errors"].append(f"{drop_name} is not on your roster.")
-            continue
+        drop_idx = None
+        if drop_name:
+            drop_idx = _find_roster_player_index(players, drop_name)
+            if drop_idx is None:
+                result["errors"].append(f"{drop_name} is not on your roster.")
+                continue
         new_player = _player_entry_from_name(add_name, team_name=my_team, stats_pool=stats_pool)
-        players.pop(drop_idx)
+        if drop_idx is not None:
+            players.pop(drop_idx)
         players.append(new_player)
         team_entry["players"] = players
         league_rosters[my_team] = team_entry
