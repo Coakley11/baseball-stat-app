@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 
+from fantasy_lineup_ui import compact_stat_line_from_row
 from fantasy_weekly_lineup import (
     _player_name_col,
     assignments_to_slot_player_map,
@@ -62,21 +63,9 @@ def player_card_caption(
     tokens = position_tokens_from_row(row)
     pos = "/".join(tokens[:4]) if tokens else "—"
     parts = [f"**{pos}**"]
-    getter = row.get if hasattr(row, "get") else lambda _k, _d=None: _d
-    stat_bits: list[str] = []
-    for col, label in (("HR", "HR"), ("RBI", "RBI"), ("SB", "SB"), ("OPS", "OPS"), ("BA", "AVG")):
-        val = getter(col)
-        if val is None or (isinstance(val, float) and pd.isna(val)):
-            continue
-        try:
-            if col in ("OPS", "BA"):
-                stat_bits.append(f"{label} {float(val):.3f}")
-            else:
-                stat_bits.append(f"{label} {int(float(val))}")
-        except (TypeError, ValueError):
-            continue
-    if stat_bits:
-        parts.append(" · ".join(stat_bits[:4]))
+    stat_line = compact_stat_line_from_row(row)
+    if stat_line:
+        parts.append(stat_line)
     rec = str(recommendation or "").strip()
     if rec:
         parts.append(f"**{rec}**")
@@ -194,37 +183,64 @@ def slot_validation_styles(
 
 
 def dnd_custom_style() -> str:
+    """Touch-friendly styling for the @dnd-kit powered sortable component.
+
+    The underlying component (streamlit-sortables >= 0.3) uses @dnd-kit with a
+    TouchSensor (delay 250ms, tolerance 5px) plus a PointerSensor. Touch-and-hold
+    activates a drag while normal short swipes still scroll the page, so we do NOT
+    force ``touch-action: none`` (that would block scrolling from a card). We only
+    size drop zones and cards for fingers and give clear pick-up / drop feedback.
+    """
     return """
 .sortable-component { font-size: 14px; }
 .sortable-container {
     background-color: #f8fafc;
     border: 2px dashed #94a3b8;
     border-radius: 12px;
-    margin-bottom: 10px;
-    min-height: 84px;
+    margin-bottom: 12px;
+    min-height: 96px;
+    transition: border-color 0.12s ease, background-color 0.12s ease;
 }
+.sortable-container:hover { border-color: #0b3d6e; background-color: #eef4fb; }
 .sortable-container-header {
     background: linear-gradient(180deg, #e2e8f0, #f1f5f9);
     font-weight: 800;
     font-size: 0.82rem;
     letter-spacing: 0.03em;
     color: #0b3d6e;
-    padding: 8px 10px;
+    padding: 10px 12px;
     border-radius: 10px 10px 0 0;
 }
-.sortable-container-body { padding: 8px; min-height: 52px; }
+.sortable-container-body { padding: 8px; min-height: 60px; }
 .sortable-item {
     background-color: #ffffff;
     border: 1px solid #cbd5e1;
     border-radius: 10px;
-    padding: 10px 12px;
-    margin: 5px 0;
+    padding: 14px 14px;
+    margin: 7px 0;
+    min-height: 48px;
+    display: flex;
+    align-items: center;
     font-weight: 700;
+    font-size: 15px;
     color: #0f172a;
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+    cursor: grab;
+    -webkit-user-select: none;
+    user-select: none;
 }
 .sortable-item:hover { border-color: #0b3d6e; }
+.sortable-item:active { cursor: grabbing; }
+.sortable-item.active { opacity: 0.45; border-style: dashed; }
+.sortable-item.dragging {
+    cursor: grabbing;
+    border-color: #0b3d6e;
+    box-shadow: 0 8px 20px rgba(11, 61, 110, 0.28);
+    transform: scale(1.02);
+}
 @media (max-width: 768px) {
-    .sortable-item { padding: 12px 14px; font-size: 15px; }
+    .sortable-item { padding: 16px 14px; font-size: 16px; min-height: 52px; }
+    .sortable-container { min-height: 104px; }
+    .sortable-container-body { min-height: 68px; }
 }
 """

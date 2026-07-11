@@ -151,21 +151,62 @@ def initials_from_name(name: str) -> str:
     return (parts[0][:1] + parts[-1][:1]).upper()
 
 
+# Canonical hitter stat order for player cards: Runs, HR, RBI, SB, AVG, OPS.
+# Each entry: (source column aliases, display label, "count" | "rate").
+HITTER_STAT_FIELDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (("R", "Runs"), "R", "count"),
+    (("HR",), "HR", "count"),
+    (("RBI",), "RBI", "count"),
+    (("SB",), "SB", "count"),
+    (("AVG", "BA"), "AVG", "rate"),
+    (("OPS",), "OPS", "rate"),
+)
+
+
+def format_rate_stat(value: float) -> str:
+    """Three-decimal baseball rate stat, dropping the leading zero when < 1 (.320)."""
+    text = f"{float(value):.3f}"
+    if text.startswith("0."):
+        return text[1:]
+    if text.startswith("-0."):
+        return "-" + text[2:]
+    return text
+
+
+def _first_present_value(getter: Any, aliases: tuple[str, ...]) -> Any:
+    for col in aliases:
+        val = getter(col)
+        if val is None:
+            continue
+        if isinstance(val, float) and pd.isna(val):
+            continue
+        return val
+    return None
+
+
 def compact_stat_line_from_row(row: pd.Series | dict[str, Any]) -> str:
+    """Hitter card stat line: R · HR · RBI · SB · AVG · OPS.
+
+    Missing individual columns are skipped (never truncated away), rate stats
+    render to three decimals, and counting stats render as integers.
+    """
     getter = row.get if hasattr(row, "get") else lambda _k, _d=None: _d
     bits: list[str] = []
-    for col, label in (("HR", "HR"), ("RBI", "RBI"), ("SB", "SB"), ("OPS", "OPS"), ("BA", "AVG")):
-        val = getter(col)
-        if val is None or (isinstance(val, float) and pd.isna(val)):
+    for aliases, label, kind in HITTER_STAT_FIELDS:
+        val = _first_present_value(getter, aliases)
+        if val is None:
             continue
         try:
-            if col in ("OPS", "BA"):
-                bits.append(f"{label} {float(val):.3f}")
-            else:
-                bits.append(f"{label} {int(float(val))}")
+            fval = float(val)
         except (TypeError, ValueError):
             continue
-    return " · ".join(bits[:4])
+        if pd.isna(fval):
+            continue
+        if kind == "rate":
+            bits.append(f"{label} {format_rate_stat(fval)}")
+        else:
+            bits.append(f"{label} {int(fval)}")
+    return " · ".join(bits)
 
 
 def photo_html_for_player(
@@ -504,7 +545,10 @@ def inject_lineup_board_styles(st: Any) -> None:
 .fl-player-name { font-size: 0.95rem; font-weight: 800; color: #0f172a; line-height: 1.2; }
 .fl-player-team { font-size: 0.76rem; color: #64748b; margin-top: 2px; }
 .fl-player-pos { font-size: 0.74rem; color: #475569; margin-top: 2px; }
-.fl-player-stats { font-size: 0.74rem; color: #334155; margin-top: 4px; }
+.fl-player-stats {
+    font-size: 0.74rem; color: #334155; margin-top: 4px;
+    line-height: 1.35; overflow-wrap: anywhere; word-break: normal;
+}
 .fl-player-rec { font-size: 0.72rem; font-weight: 700; color: #0b3d6e; margin-top: 4px; }
 .fl-slot-state-invalid { font-size: 0.72rem; font-weight: 700; color: #b91c1c; margin-top: 6px; }
 .fl-bench-grid {

@@ -45,41 +45,62 @@ def _slot_widget_keys(slots: list[str]) -> list[tuple[str, str]]:
     return slot_key_labels_as_tuples(build_slot_key_labels(slots))
 
 
-def _read_slot_assignments(
-    session: dict[str, Any],
+def canonical_week_key(prefix: str, week: int) -> str:
+    """Session key holding the single canonical assignment dict for a week."""
+    return f"{prefix}_canon_{int(week)}"
+
+
+def assignment_signature(
+    assignments: dict[str, str],
     slot_keys: list[tuple[str, str]],
-    *,
-    prefix: str,
+) -> tuple[tuple[str, str], ...]:
+    """Order-independent, normalized signature used to detect real changes."""
+    return tuple(
+        (key, str((assignments or {}).get(key) or "").strip()) for key, _label in slot_keys
+    )
+
+
+def _normalize_assignments(
+    assignments: dict[str, str],
+    slot_keys: list[tuple[str, str]],
 ) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for key, _label in slot_keys:
-        widget_key = f"{prefix}_{key}"
-        out[key] = str(session.get(widget_key) or "").strip()
-    return out
+    return {key: str((assignments or {}).get(key) or "").strip() for key, _label in slot_keys}
 
 
-def _hydrate_assignments_from_saved(
+def ensure_canonical_assignments(
     session: dict[str, Any],
     *,
-    prefix: str,
+    canon_key: str,
     slot_keys: list[tuple[str, str]],
     saved_assignments: dict[str, str],
-) -> None:
-    for key, _label in slot_keys:
-        widget_key = f"{prefix}_{key}"
-        if widget_key not in session and key in saved_assignments:
-            session[widget_key] = saved_assignments.get(key) or ""
+) -> dict[str, str]:
+    """Return the canonical per-week assignments, hydrating from saved on first use."""
+    current = session.get(canon_key)
+    if not isinstance(current, dict):
+        session[canon_key] = _normalize_assignments(saved_assignments, slot_keys)
+    else:
+        for key, _label in slot_keys:
+            current.setdefault(key, "")
+    return dict(session[canon_key])
 
 
-def _sync_dropdown_assignments_to_session(
+def reconcile_editor_assignments(
     session: dict[str, Any],
     *,
-    prefix: str,
+    canon_key: str,
     slot_keys: list[tuple[str, str]],
-    assignments: dict[str, str],
-) -> None:
-    for key, _label in slot_keys:
-        session[f"{prefix}_{key}"] = assignments.get(key) or ""
+    new_assignments: dict[str, str],
+) -> bool:
+    """Persist editor output to canonical state. Return True when it changed.
+
+    Comparing normalized signatures keeps a guarded, single rerun (no loop):
+    once canonical equals the editor output, subsequent runs are no-ops.
+    """
+    current = session.get(canon_key) or {}
+    if assignment_signature(new_assignments, slot_keys) != assignment_signature(current, slot_keys):
+        session[canon_key] = _normalize_assignments(new_assignments, slot_keys)
+        return True
+    return False
 
 
 def _render_roster_board(
@@ -110,34 +131,42 @@ def _render_classic_dropdown_builder(
     prefix: str,
     slot_keys: list[tuple[str, str]],
     team_roster: pd.DataFrame,
+    selected_week: int,
+    assignments: dict[str, str],
 ) -> dict[str, str]:
     st.caption("Assign starters using dropdowns — same lineup data as drag-and-drop.")
     assignment_cols = st.columns(2)
     midpoint = (len(slot_keys) + 1) // 2
+    new_assignments: dict[str, str] = {}
     for col_idx, chunk in enumerate((slot_keys[:midpoint], slot_keys[midpoint:])):
         with assignment_cols[col_idx]:
             for key, label in chunk:
                 base_slot = key.split("_", 1)[0]
                 options = [""] + eligible_players_for_slot(team_roster, base_slot)
-                st.selectbox(
+                # Dropdown widgets use their own per-week keys so they never
+                # clobber the canonical assignment state. Seed once from canonical.
+                widget_key = f"{prefix}_dd_{int(selected_week)}_{key}"
+                if widget_key not in session:
+                    seed = str(assignments.get(key) or "").strip()
+                    session[widget_key] = seed if seed in options else ""
+                chosen = st.selectbox(
                     label,
                     options,
-                    key=f"{prefix}_{key}",
+                    key=widget_key,
                     format_func=lambda name, slot_label=label: f"Select {slot_label}…" if not name else name,
                 )
-    return _read_slot_assignments(session, slot_keys, prefix=prefix)
+                new_assignments[key] = str(chosen or "").strip()
+    return new_assignments
 
 
 def _render_drag_drop_builder(
     st: Any,
-    session: dict[str, Any],
     *,
     prefix: str,
     slot_keys: list[tuple[str, str]],
     team_roster: pd.DataFrame,
     selected_week: int,
     assignments: dict[str, str],
-    scored_roster: pd.DataFrame | None,
 ) -> dict[str, str]:
     try:
         from streamlit_sortables import sort_items
@@ -148,25 +177,20 @@ def _render_drag_drop_builder(
         return assignments
 
     containers = build_sortable_containers(slot_keys, assignments, team_roster)
-    sort_key = f"{prefix}_sortable_{selected_week}"
-    with st.expander("Drag & drop editor", expanded=False):
-        st.caption(
-            "Drag players between **lineup slots** and **Bench**. "
-            "The roster board above refreshes after each change."
-        )
-        sorted_containers = sort_items(
-            containers,
-            multi_containers=True,
-            custom_style=dnd_custom_style(),
-            key=sort_key,
-        )
-    new_assignments = assignments_from_sortable_containers(sorted_containers, slot_keys, team_roster)
-    _sync_dropdown_assignments_to_session(
-        session,
-        prefix=prefix,
-        slot_keys=slot_keys,
-        assignments=new_assignments,
+    sort_key = f"{prefix}_sortable_{int(selected_week)}"
+    st.caption(
+        "Drag players between **lineup slots** and **Bench** — on phones, "
+        "**touch-and-hold** a card for a moment, then drag. The roster board "
+        "above refreshes after each change."
     )
+    sorted_containers = sort_items(
+        containers,
+        multi_containers=True,
+        direction="vertical",
+        custom_style=dnd_custom_style(),
+        key=sort_key,
+    )
+    new_assignments = assignments_from_sortable_containers(sorted_containers, slot_keys, team_roster)
 
     styles = slot_validation_styles(slot_keys, new_assignments, team_roster)
     status_bits = []
@@ -303,18 +327,13 @@ def render_weekly_lineup_section(
 
     saved = get_saved_weekly_lineup(context, int(selected_week))
     saved_assignments = dict((saved or {}).get("assignments") or {})
-    hydrate_key = f"{prefix}_hydrated_week"
-    if session.get(hydrate_key) != selected_week:
-        if saved_assignments:
-            _hydrate_assignments_from_saved(
-                session,
-                prefix=prefix,
-                slot_keys=slot_keys,
-                saved_assignments=saved_assignments,
-            )
-        session[hydrate_key] = selected_week
-
-    assignments = _read_slot_assignments(session, slot_keys, prefix=prefix)
+    canon_key = canonical_week_key(prefix, int(selected_week))
+    assignments = ensure_canonical_assignments(
+        session,
+        canon_key=canon_key,
+        slot_keys=slot_keys,
+        saved_assignments=saved_assignments,
+    )
 
     header_model = build_team_header_model(
         context=context,
@@ -348,11 +367,23 @@ def render_weekly_lineup_section(
         list(WEEKLY_LINEUP_EDITOR_MODES),
         horizontal=True,
         key=f"{prefix}_editor_mode",
-        help="Drag & Drop on desktop; Classic Dropdowns works better on mobile.",
+        help="Drag & Drop works on desktop and touch devices. Classic Dropdowns is a reliable fallback.",
     )
 
     if editor_mode == "Drag & Drop":
-        assignments = _render_drag_drop_builder(
+        new_assignments = _render_drag_drop_builder(
+            st,
+            prefix=prefix,
+            slot_keys=slot_keys,
+            team_roster=team_roster,
+            selected_week=int(selected_week),
+            assignments=assignments,
+        )
+        st.caption(
+            "Drag-and-drop not working on your device? Switch to **Classic Dropdowns** above."
+        )
+    else:
+        new_assignments = _render_classic_dropdown_builder(
             st,
             session,
             prefix=prefix,
@@ -360,27 +391,18 @@ def render_weekly_lineup_section(
             team_roster=team_roster,
             selected_week=int(selected_week),
             assignments=assignments,
-            scored_roster=scored_roster,
         )
-        with st.expander("Mobile / fallback: Classic Dropdowns", expanded=False):
-            st.caption("Use dropdowns if drag-and-drop is awkward on your device.")
-            dropdown_assignments = _render_classic_dropdown_builder(
-                st,
-                session,
-                prefix=prefix,
-                slot_keys=slot_keys,
-                team_roster=team_roster,
-            )
-            if any(dropdown_assignments.values()):
-                assignments = dropdown_assignments
-    else:
-        assignments = _render_classic_dropdown_builder(
-            st,
-            session,
-            prefix=prefix,
-            slot_keys=slot_keys,
-            team_roster=team_roster,
-        )
+
+    # Persist editor output to the single canonical per-week state and refresh the
+    # board above via one guarded rerun (no loop: signatures match after update).
+    if reconcile_editor_assignments(
+        session,
+        canon_key=canon_key,
+        slot_keys=slot_keys,
+        new_assignments=new_assignments,
+    ):
+        st.rerun()
+    assignments = _normalize_assignments(new_assignments, slot_keys)
 
     validation, _summary = _render_validation_and_summary(
         st,
@@ -423,9 +445,9 @@ def render_weekly_lineup_section(
         if save_disabled:
             st.caption("Fix validation issues above before saving.")
         if st.button("Reset unsaved changes", key=f"{prefix}_reset_btn"):
+            session[canon_key] = _normalize_assignments(saved_assignments, slot_keys)
             for key, _label in slot_keys:
-                session[f"{prefix}_{key}"] = saved_assignments.get(key) or ""
-            session[hydrate_key] = None
+                session.pop(f"{prefix}_dd_{int(selected_week)}_{key}", None)
             st.rerun()
 
     with status_col:
