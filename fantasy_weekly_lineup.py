@@ -285,6 +285,17 @@ def persist_weekly_lineup_draft(
         return result
 
     slot_map = assignments_to_slot_player_map(slots, assignments)
+    drafts = _weekly_lineup_drafts_store(context)
+    key = team_week_lineup_key(team, week)
+    existing = drafts.get(key) if isinstance(drafts, dict) else None
+    if isinstance(existing, dict) and str(existing.get("status") or "") == LINEUP_STATUS_DRAFT:
+        prior = existing.get("assignments") if isinstance(existing.get("assignments"), dict) else {}
+        if dict(prior) == dict(slot_map):
+            result["ok"] = True
+            result["lineup"] = existing
+            result["skipped"] = True
+            return result
+
     payload = {
         "week": int(week),
         "week_label": week_label(week),

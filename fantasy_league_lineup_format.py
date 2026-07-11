@@ -114,27 +114,85 @@ def hydrate_lineup_format_from_shared(
 def resolve_lineup_page_context(session: dict[str, Any]) -> dict[str, Any] | None:
     """Sync shared league data and hydrate commissioner lineup format before lineup UI."""
     try:
+        from fantasy_lineup_perf import get_cached_lineup_page_context, store_lineup_page_context
+
+        cached = get_cached_lineup_page_context(session)
+        if cached is not None:
+            try:
+                from page_perf_phases import record_cache_event
+
+                record_cache_event(session, "lineup_page_context", hit=True)
+            except ImportError:
+                pass
+            return cached
+    except ImportError:
+        pass
+
+    perf_cm = None
+    try:
+        from page_perf_phases import record_cache_event, session_perf_phase
+
+        record_cache_event(session, "lineup_page_context", hit=False)
+        perf_cm = session_perf_phase
+    except ImportError:
+        pass
+
+    def _phase(name: str):
+        if perf_cm is None:
+            from contextlib import nullcontext
+
+            return nullcontext()
+        return perf_cm(session, name)
+
+    try:
         from fantasy_weekly_lineup import _lineup_storage_context
     except ImportError:
-        return get_active_league_context(session)
+        result = get_active_league_context(session)
+        try:
+            from fantasy_lineup_perf import store_lineup_page_context
 
-    storage = _lineup_storage_context(session)
+            store_lineup_page_context(session, result)
+        except ImportError:
+            pass
+        return result
+
+    with _phase("lineup_active_context_load"):
+        storage = _lineup_storage_context(session)
     if not storage:
-        return get_active_league_context(session)
+        result = get_active_league_context(session)
+        try:
+            from fantasy_lineup_perf import store_lineup_page_context
+
+            store_lineup_page_context(session, result)
+        except ImportError:
+            pass
+        return result
+
     try:
         from fantasy_league_identity import resolve_canonical_league_id
         from fantasy_shared_league_store import sync_context_with_shared_store
 
         if resolve_canonical_league_id(storage):
-            storage = sync_context_with_shared_store(session, storage)
-            hydrate_lineup_format_from_shared(session, storage)
+            with _phase("lineup_shared_sync"):
+                storage = sync_context_with_shared_store(session, storage)
+            with _phase("lineup_format_hydrate"):
+                hydrate_lineup_format_from_shared(session, storage)
     except ImportError:
         pass
-    return (
-        get_active_league_context(session, respect_source_priority=False)
-        or get_active_league_context(session)
-        or storage
-    )
+
+    with _phase("lineup_active_context_load"):
+        result = (
+            get_active_league_context(session, respect_source_priority=False)
+            or get_active_league_context(session)
+            or storage
+        )
+    try:
+        from fantasy_lineup_perf import store_lineup_page_context
+
+        store_lineup_page_context(session, result)
+    except ImportError:
+        pass
+    return result
 
 
 def is_lineup_format_commissioner(session: dict[str, Any], context: dict[str, Any] | None) -> bool:

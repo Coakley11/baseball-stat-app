@@ -1,6 +1,7 @@
 """Player action list helpers, eligibility, and trade context discovery."""
 
 import pandas as pd
+from unittest.mock import patch
 
 import player_actions as pa
 from fantasy_league_context import (
@@ -17,6 +18,7 @@ from player_trade_context import (
     collect_player_roster_contexts,
     complete_trade_acquire_flow,
     player_has_roster_context,
+    player_trade_shortcut_eligible,
     split_trade_acquire_contexts,
     start_trade_acquire_flow,
 )
@@ -124,12 +126,41 @@ def _seed_context(session: dict, room: dict, context_id: str, *, display_name: s
     activate_league_context(session, context_id)
 
 
+def _seed_trade_eligible_league(session: dict, *, my_team: str = "Donny", other_team: str = "Team 2") -> dict:
+    """Real shared league with two claimed teams for trade shortcut tests."""
+    from fantasy_league_context import save_imported_league_context, get_league_context, set_active_league_context
+    from fantasy_league_team_ownership import assign_team_owner_to_context
+
+    board = pd.DataFrame(
+        [
+            {"Team": my_team, "Player": "Mike Trout", "Pick": 1, "Primary Position": "OF"},
+            {"Team": other_team, "Player": "Aaron Judge", "Pick": 2, "Primary Position": "OF"},
+        ]
+    )
+    _, context = save_imported_league_context(
+        session,
+        board,
+        my_team_name=my_team,
+        draft_name="Trade Shortcut League",
+        league_name="Trade Shortcut League",
+        assign_team=False,
+    )
+    league_context_id = str(context.get("league_context_id") or "").strip()
+    loaded = get_league_context(session, league_context_id) or context
+    loaded = assign_team_owner_to_context(loaded, my_team, user_id="user:donny")
+    loaded = assign_team_owner_to_context(loaded, other_team, user_id="user:rival")
+    from fantasy_league_context import upsert_league_context
+
+    upsert_league_context(session, loaded)
+    set_active_league_context(session, league_context_id)
+    return loaded
+
+
 def test_start_trade_acquire_flow_auto_acquire_persists_to_context():
     session: dict = {}
-    room = _league_room()
-    _seed_context(session, room, "live:acquire_test")
-    session["live_draft_room"] = room
-    msg = start_trade_acquire_flow(session, player_name="Aaron Judge", key_prefix="test")
+    with patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:donny"):
+        _seed_trade_eligible_league(session)
+        msg = start_trade_acquire_flow(session, player_name="Aaron Judge", key_prefix="test")
     assert msg is not None
     assert "acquire target" in msg
     assert "Opening Fantasy Lineup Assistant" in msg
@@ -139,49 +170,30 @@ def test_start_trade_acquire_flow_auto_acquire_persists_to_context():
     assert workflow_target_player_names(ctx, TRADE_MODE_ACQUIRE) == ["Aaron Judge"]
 
 
-def test_start_trade_acquire_flow_mode_prompt_and_complete():
+def test_start_trade_acquire_flow_blocks_player_not_in_active_league():
     session: dict = {}
-    _seed_context(session, _league_room(), "live:ctx_a", display_name="League A")
-    _seed_context(
-        session,
-        {
-            "config": {"league_name": "League B", "fantasy_format": "5x5 Roto", "your_team": "Daniel"},
-            "rosters": {
-                "Daniel": [{"fullName": "Mike Trout"}],
-                "East": [{"fullName": "Mookie Betts"}],
-            },
-            "draft_board": [
-                {"Fantasy Team": "Daniel", "fullName": "Mike Trout", "Pick": 1},
-                {"Fantasy Team": "East", "fullName": "Mookie Betts", "Pick": 2},
-            ],
-        },
-        "live:ctx_b",
-        display_name="League B",
+    with patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:donny"):
+        _seed_trade_eligible_league(session)
+        msg = start_trade_acquire_flow(session, player_name="Mookie Betts", key_prefix="ctx")
+    assert msg is not None
+    assert "not rostered" in msg.lower()
+
+
+def test_player_trade_shortcut_blocks_simulator_only_player():
+    session: dict = {}
+    session["draft_room_table"] = pd.DataFrame(
+        {"Round": [1], "Pick": [1], "Team": ["Daniel"], "Player": ["Mike Trout"]}
     )
-    session["live_draft_room"] = {
-        "config": {"league_name": "Mock League", "your_team": "Daniel"},
-        "draft_board": [{"Player": "Mookie Betts", "Team": "Rivals"}],
-    }
-    session["draft_room_table"] = pd.DataFrame(columns=["Round", "Pick", "Team", "Player"])
-    msg = start_trade_acquire_flow(session, player_name="Mookie Betts", key_prefix="ctx")
-    assert msg is None
-    assert session["_player_trade_acquire_flow"]["step"] == "choose_context"
-    candidates = session["_player_trade_acquire_flow"]["candidates"]
-    ctx_id = str(candidates[0].get("context_id"))
-    msg = complete_trade_acquire_flow(session, mode=TRADE_ACTION_ACQUIRE, context_id=ctx_id)
-    assert "acquire target" in msg
-    active = get_active_league_context(session)
-    assert active is not None
-    assert "Mookie Betts" in workflow_target_player_names(active, TRADE_MODE_ACQUIRE)
+    ok, msg = player_trade_shortcut_eligible(session, "Mike Trout")
+    assert ok is False
+    assert msg
 
 
 def test_start_trade_acquire_flow_trade_away_persists():
     session: dict = {}
-    room = _league_room()
-    _seed_context(session, room, "live:trade_away")
-    session["live_draft_room"] = room
-    session["draft_room_table"] = pd.DataFrame(columns=["Round", "Pick", "Team", "Player"])
-    msg = start_trade_acquire_flow(session, player_name="Mike Trout", key_prefix="trade")
+    with patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:donny"):
+        _seed_trade_eligible_league(session)
+        msg = start_trade_acquire_flow(session, player_name="Mike Trout", key_prefix="trade")
     assert msg is not None
     assert "trade candidate" in msg
     ctx = get_active_league_context(session)

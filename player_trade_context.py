@@ -75,6 +75,9 @@ def _resolve_league_context_id(session: dict[str, Any], roster_ctx: dict[str, An
         league_context_id = str(roster_ctx.get("league_context_id") or "").strip()
         if league_context_id:
             return league_context_id
+        source = str(roster_ctx.get("source") or "").strip()
+        if source in ("live_draft_room", "draft_simulator"):
+            return ""
         archive_id = str(roster_ctx.get("archive_id") or "").strip()
         if archive_id:
             try:
@@ -92,6 +95,45 @@ def _resolve_league_context_id(session: dict[str, Any], roster_ctx: dict[str, An
     except ImportError:
         pass
     return ""
+
+
+def player_trade_shortcut_eligible(session: dict[str, Any], player_name: str) -> tuple[bool, str]:
+    """True when Trade/Acquire shortcuts may use the active eligible shared league."""
+    display = _display_base(player_name)
+    if not display:
+        return False, "Pick a player first."
+    try:
+        from fantasy_league_context import get_active_league_context, normalize_player_key
+        from fantasy_league_team_ownership import owned_team_for_user, trades_enabled
+    except ImportError:
+        return False, "Trade shortcuts require an active league."
+
+    active = get_active_league_context(session)
+    if not active:
+        return False, "Set an active league in Saved Draft Library before trading."
+    ok, msg = trades_enabled(active, session)
+    if not ok:
+        return False, msg
+
+    target_key = normalize_player_key(display)
+    if not target_key:
+        return False, f"Could not resolve roster identity for {display}."
+
+    ownership = active.get("ownership_map") or {}
+    if not isinstance(ownership, dict) or target_key not in ownership:
+        league_label = str(active.get("display_name") or active.get("league_name") or "active league")
+        return False, f"{display} is not rostered in {league_label}."
+
+    my_team = owned_team_for_user(active) or str(active.get("my_team_name") or "").strip()
+    if not my_team:
+        return False, "Claim your team in this league before trading."
+
+    owner = ownership.get(target_key) or {}
+    owner_team = str(owner.get("owner_team") or "").strip() if isinstance(owner, dict) else ""
+    if not owner_team:
+        return False, f"{display} is not rostered in the active league."
+
+    return True, ""
 
 
 def _collect_fantasy_league_context_rows(
@@ -365,36 +407,50 @@ def start_trade_acquire_flow(
     player_name: str,
     key_prefix: str,
 ) -> str | None:
-    """Resolve Trade / Acquire flow. Returns flash message when complete, else None (UI picker needed)."""
+    """Resolve Trade / Acquire flow for the active eligible shared league only."""
     display = _display_base(player_name)
-    contexts = collect_player_roster_contexts(session, display)
-    trade_contexts, acquire_contexts = split_trade_acquire_contexts(contexts)
-    if not trade_contexts and not acquire_contexts:
-        return f"No **Active Draft** roster found for {display}. Set one in Saved Draft Library."
+    eligible, block_msg = player_trade_shortcut_eligible(session, display)
+    if not eligible:
+        return block_msg or f"No eligible active-league roster found for {display}."
 
-    if trade_contexts and acquire_contexts:
-        session[TRADE_FLOW_SESSION_KEY] = {
-            "player": display,
-            "key_prefix": key_prefix,
-            "step": "choose_mode",
-            "trade_contexts": copy.deepcopy(trade_contexts),
-            "acquire_contexts": copy.deepcopy(acquire_contexts),
-        }
-        return None
+    try:
+        from fantasy_league_context import get_active_league_context, normalize_player_key
+        from fantasy_league_team_ownership import owned_team_for_user
+    except ImportError:
+        return "Trade shortcuts require an active league."
 
-    mode = TRADE_ACTION_TRADE_AWAY if trade_contexts else TRADE_ACTION_ACQUIRE
-    candidates = _flow_candidates(trade_contexts, acquire_contexts, mode)
-    if len(candidates) == 1:
-        return _finalize_trade_acquire(session, player=display, mode=mode, roster_ctx=candidates[0])
-
-    session[TRADE_FLOW_SESSION_KEY] = {
-        "player": display,
-        "key_prefix": key_prefix,
-        "step": "choose_context",
-        "mode": mode,
-        "candidates": copy.deepcopy(candidates),
+    active = get_active_league_context(session)
+    assert isinstance(active, dict)
+    my_team = owned_team_for_user(active) or str(active.get("my_team_name") or "").strip()
+    league_label = str(active.get("display_name") or active.get("league_name") or "League")
+    target_key = normalize_player_key(display)
+    owner = (active.get("ownership_map") or {}).get(target_key) or {}
+    owner_team = str(owner.get("owner_team") or "").strip()
+    league_context_id = str(active.get("league_context_id") or "").strip()
+    roster_ctx = {
+        "context_id": f"flc:{league_context_id}:{owner_team}",
+        "source": "fantasy_league_context",
+        "draft_label": league_label,
+        "team_name": owner_team,
+        "is_user_team": owner_team == my_team,
+        "your_team": my_team,
+        "league_context_id": league_context_id,
     }
-    return None
+
+    if owner_team == my_team:
+        return _finalize_trade_acquire(
+            session,
+            player=display,
+            mode=TRADE_ACTION_TRADE_AWAY,
+            roster_ctx=roster_ctx,
+        )
+
+    return _finalize_trade_acquire(
+        session,
+        player=display,
+        mode=TRADE_ACTION_ACQUIRE,
+        roster_ctx=roster_ctx,
+    )
 
 
 def complete_trade_acquire_flow(session: dict[str, Any], *, mode: str | None = None, context_id: str | None = None) -> str:

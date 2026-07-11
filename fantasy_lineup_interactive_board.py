@@ -152,12 +152,116 @@ def _face_inner_html(*, player_name: str, row: pd.Series | None, size: int) -> s
     )
 
 
+def _face_compact_data(*, player_name: str, row: pd.Series | None, session: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Compact photo payload for the component (url + initials, not full HTML)."""
+    initials = initials_from_name(player_name)
+    cache_key = str(player_name or "").strip()
+    if session is not None:
+        try:
+            from fantasy_lineup_perf import get_cached_face_photo, store_face_photo
+
+            cached = get_cached_face_photo(session, cache_key)
+            if cached is not None:
+                try:
+                    from page_perf_phases import record_cache_event
+
+                    record_cache_event(session, "lineup_photo_faces", hit=True)
+                except ImportError:
+                    pass
+                return cached
+        except ImportError:
+            pass
+    url = ""
+    try:
+        from player_photos import get_player_photo_info
+
+        photo_info = get_player_photo_info(full_name=player_name, row=row, use_api=False, image_size=120)
+        url = str(photo_info.get("headshot_url") or "").strip()
+    except ImportError:
+        pass
+    face = {
+        "url": url,
+        "initials": initials,
+        "has_photo": bool(url),
+    }
+    if session is not None:
+        try:
+            from fantasy_lineup_perf import store_face_photo
+            from page_perf_phases import record_cache_event
+
+            store_face_photo(session, cache_key, face)
+            record_cache_event(session, "lineup_photo_faces", hit=False)
+        except ImportError:
+            pass
+    return face
+
+
 def build_interactive_board_payload(
     slot_labels: list,
     assignments: dict[str, str],
     roster_df: pd.DataFrame,
     *,
     editable: bool = True,
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """JSON-serializable payload for the interactive circular board."""
+    if session is not None:
+        try:
+            from fantasy_lineup_perf import (
+                get_cached_board_payload,
+                roster_payload_fingerprint,
+                store_board_payload,
+            )
+
+            fp = roster_payload_fingerprint(
+                slot_labels=slot_labels,
+                assignments=assignments,
+                roster_df=roster_df,
+                editable=editable,
+            )
+            cached = get_cached_board_payload(session, fp)
+            if cached is not None:
+                return cached
+        except ImportError:
+            fp = ""
+    else:
+        fp = ""
+
+    try:
+        from page_perf_phases import session_perf_phase
+
+        phase_ctx = session_perf_phase(session or {}, "lineup_board_payload")
+    except ImportError:
+        from contextlib import nullcontext
+
+        phase_ctx = nullcontext()
+
+    with phase_ctx:
+        payload = _build_interactive_board_payload_inner(
+            slot_labels,
+            assignments,
+            roster_df,
+            editable=editable,
+            session=session,
+        )
+
+    if session is not None and fp:
+        try:
+            from fantasy_lineup_perf import store_board_payload
+
+            store_board_payload(session, fp, payload)
+        except ImportError:
+            pass
+    return payload
+
+
+def _build_interactive_board_payload_inner(
+    slot_labels: list,
+    assignments: dict[str, str],
+    roster_df: pd.DataFrame,
+    *,
+    editable: bool = True,
+    session: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """JSON-serializable payload for the interactive circular board."""
     name_col = _player_name_col(roster_df)
@@ -195,10 +299,10 @@ def build_interactive_board_payload(
             }
         )
 
-    faces: dict[str, str] = {}
+    faces: dict[str, Any] = {}
     for name in roster_player_names(roster_df):
         row = lookup.get(name)
-        faces[name] = _face_inner_html(player_name=name, row=row, size=FACE_SIZE)
+        faces[name] = _face_compact_data(player_name=name, row=row, session=session)
 
     return {
         "slots": slots,

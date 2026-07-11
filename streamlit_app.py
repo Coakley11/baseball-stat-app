@@ -35,7 +35,7 @@ from player_trade_context import (
     TRADE_FLOW_SESSION_KEY,
     complete_trade_acquire_flow,
     format_roster_context_label,
-    player_has_roster_context,
+    player_trade_shortcut_eligible,
     start_trade_acquire_flow,
 )
 
@@ -11437,7 +11437,8 @@ def player_quick_actions_popover(
         except Exception:
             draft_ok = False
         can_draft = active_current and _player_draft_action_available() and draft_ok
-        show_trade_acquire = active_current and player_has_roster_context(st.session_state, pick)
+        trade_ok, trade_block = player_trade_shortcut_eligible(st.session_state, pick)
+        show_trade_acquire = active_current and trade_ok
         flow_key_prefix = f"{key}_qa_{sfx}"
 
         _render_player_action_button_row(
@@ -11522,7 +11523,8 @@ def render_contextual_player_actions(
     active_current = is_active_current_player({"playerID": player_id, "fullName": player_name}, source_df=source_df)
     already_drafted = player_name in _drafted_player_names_from_room()
     active_available = active_current and not already_drafted
-    show_trade_acquire = active_current and player_has_roster_context(st.session_state, player_name)
+    trade_ok, trade_block = player_trade_shortcut_eligible(st.session_state, player_name)
+    show_trade_acquire = active_current and trade_ok
     label_map = label_map or get_clean_player_label_map_yearly(source_df)
     try:
         from draft_actions import can_draft_player
@@ -11554,7 +11556,10 @@ def render_contextual_player_actions(
         if already_drafted:
             st.caption("Draft queue is hidden because this player is already drafted.")
         elif active_current and not show_trade_acquire:
-            st.caption("Trade / Acquire is hidden because this player is not on an active or saved team roster.")
+            st.caption(
+                trade_block
+                or "Trade / Acquire is available only for players rostered in your active eligible shared league."
+            )
 
         _render_trade_acquire_flow_ui(key_prefix=flow_key_prefix)
 

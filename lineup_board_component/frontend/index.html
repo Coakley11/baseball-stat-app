@@ -165,7 +165,21 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
 
   function faceHtml(name) {
     const faces = PAYLOAD.faces || {};
-    return faces[name] || '<div class="fl-face-fallback"><span class="fl-face-initials">?</span></div>';
+    const data = faces[name];
+    if (!data) {
+      return '<div class="fl-face-fallback"><span class="fl-face-initials">?</span></div>';
+    }
+    if (typeof data === "string") {
+      return data;
+    }
+    const safeName = String(name || "");
+    if (data.url) {
+      return '<img class="fl-face-img" src="' + data.url + '" alt="' + safeName + '" />';
+    }
+    const initials = String(data.initials || "?");
+    return '<div class="fl-face-fallback" aria-label="' + safeName + '">'
+      + '<span class="fl-face-fallback-icon" aria-hidden="true">⚾</span>'
+      + '<span class="fl-face-initials">' + initials + '</span></div>';
   }
 
   function benchPlayers() {

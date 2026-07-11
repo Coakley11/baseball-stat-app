@@ -304,6 +304,7 @@ def render_weekly_lineup_section(
         assignments,
         team_roster,
         editable=not lineup_locked,
+        session=session,
     )
     board_nonce_key = f"{prefix}_board_nonce_{int(selected_week)}"
     board_nonce = int(session.get(board_nonce_key, 0))
@@ -335,6 +336,12 @@ def render_weekly_lineup_section(
                 my_team=active_team,
                 roster_df=team_roster,
             )
+            try:
+                from fantasy_lineup_perf import invalidate_lineup_page_caches
+
+                invalidate_lineup_page_caches(session)
+            except ImportError:
+                pass
             session[board_nonce_key] = board_nonce + 1
             st.rerun()
         elif new_assignments is not None:
