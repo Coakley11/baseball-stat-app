@@ -15,6 +15,7 @@ from fantasy_lineup_interactive_board import (
     render_interactive_lineup_board,
 )
 from fantasy_lineup_ui import (
+    SlotKeyLabel,
     build_slot_key_labels,
     build_team_header_model,
     emit_html_block,
@@ -27,6 +28,7 @@ from fantasy_weekly_lineup import (
     list_week_options,
     resolve_weekly_lineup_slots,
     save_weekly_lineup,
+    slot_display_name,
     validate_weekly_lineup,
     week_label,
 )
@@ -86,21 +88,105 @@ def reconcile_editor_assignments(
     return False
 
 
-def _render_simple_validation(
+def _waiver_slot_label_for_open_prompt(slot_label: SlotKeyLabel) -> str:
+    """Display label passed to Waiver Wire position filter."""
+    if slot_label.base_slot == "OF":
+        return "Outfield"
+    return slot_display_name(slot_label.base_slot)
+
+
+def build_open_slot_prompts(
+    slot_labels: list[SlotKeyLabel],
+    assignments: dict[str, str],
+) -> list[dict[str, str]]:
+    """Compact open-slot rows from current canonical assignments only."""
+    open_slots = [
+        label
+        for label in slot_labels
+        if not str(assignments.get(label.key) or "").strip()
+    ]
+    if not open_slots:
+        return []
+
+    rows: list[dict[str, str]] = []
+    of_labels = [label for label in open_slots if label.base_slot == "OF"]
+    other_labels = [label for label in open_slots if label.base_slot != "OF"]
+
+    for label in other_labels:
+        rows.append(
+            {
+                "text": f"{label.label} is empty",
+                "waiver_label": _waiver_slot_label_for_open_prompt(label),
+            }
+        )
+
+    if len(of_labels) == 1:
+        rows.append({"text": f"{of_labels[0].label} is empty", "waiver_label": "Outfield"})
+    elif len(of_labels) > 1:
+        rows.append(
+            {
+                "text": f"{len(of_labels)} Outfield spots are empty",
+                "waiver_label": "Outfield",
+            }
+        )
+    return rows
+
+
+def _inject_open_slots_styles(st: Any) -> None:
+    emit_html_block(
+        st,
+        """
+<style>
+.fl-open-slots-wrap { margin: 2px 0 6px 0; }
+.fl-open-slots-wrap [data-testid="column"] { padding-top: 0.15rem; padding-bottom: 0.15rem; }
+.fl-open-slots-wrap p { margin: 0; line-height: 1.35; font-size: 0.92rem; }
+</style>
+<div class="fl-open-slots-wrap"></div>
+""",
+    )
+
+
+def _render_open_slots_and_validation(
     st: Any,
     *,
     slots: list[str],
+    slot_labels: list[SlotKeyLabel],
     assignments: dict[str, str],
     team_roster: pd.DataFrame,
+    on_open_waiver_wire: Callable[[str], None] | None,
+    prefix: str,
+    selected_week: int,
 ) -> dict[str, Any]:
     validation = validate_weekly_lineup(slots, assignments, team_roster)
-    if validation.get("messages"):
-        for message in validation.get("messages") or []:
-            lower = str(message).lower()
-            if "empty" in lower or "not eligible" in lower or "twice" in lower:
-                st.warning(message)
-            else:
-                st.info(message)
+
+    # Show only non-empty-slot issues from validate (duplicate, ineligible, roster).
+    for message in validation.get("messages") or []:
+        lower = str(message).lower()
+        if " is empty" in lower:
+            continue
+        if "need eligible" in lower and "waiver wire" in lower:
+            continue
+        if "empty" in lower or "not eligible" in lower or "twice" in lower:
+            st.warning(message)
+        else:
+            st.info(message)
+
+    open_rows = build_open_slot_prompts(slot_labels, assignments)
+    if open_rows:
+        _inject_open_slots_styles(st)
+        for idx, row in enumerate(open_rows):
+            text_col, btn_col = st.columns([5, 2], gap="small")
+            with text_col:
+                st.markdown(f"**{row['text']}**")
+            with btn_col:
+                if on_open_waiver_wire is not None:
+                    st.button(
+                        "Open Waiver Wire",
+                        key=f"{prefix}_waiver_{row['waiver_label']}_{idx}_{int(selected_week)}",
+                        on_click=on_open_waiver_wire,
+                        args=(row["waiver_label"],),
+                    )
+
     return validation
 
 
@@ -114,7 +200,7 @@ def render_weekly_lineup_section(
     scored_roster: pd.DataFrame | None = None,
 ) -> None:
     """Weekly lineup builder — one circular face-to-circle interaction."""
-    del on_open_waiver_wire, scored_roster  # board-only UI; persistence unchanged
+    del scored_roster
 
     context = get_active_league_context(session)
     if not context:
@@ -202,11 +288,15 @@ def render_weekly_lineup_section(
             st.rerun()
         assignments = new_assignments
 
-    validation = _render_simple_validation(
+    validation = _render_open_slots_and_validation(
         st,
         slots=slots,
+        slot_labels=slot_labels,
         assignments=assignments,
         team_roster=team_roster,
+        on_open_waiver_wire=on_open_waiver_wire,
+        prefix=prefix,
+        selected_week=int(selected_week),
     )
 
     save_col, _reset_col = st.columns(2)

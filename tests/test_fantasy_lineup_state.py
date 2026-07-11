@@ -25,6 +25,7 @@ from fantasy_league_context import get_active_league_context, save_simulator_lea
 from fantasy_weekly_lineup import get_saved_weekly_lineup, save_weekly_lineup
 from fantasy_weekly_lineup_ui import (
     assignment_signature,
+    build_open_slot_prompts,
     canonical_week_key,
     ensure_canonical_assignments,
     reconcile_editor_assignments,
@@ -189,6 +190,38 @@ class CanonicalStateFlowTests(unittest.TestCase):
         self.assertEqual(restored.get("OF"), "Mookie Betts")
 
 
+class OpenSlotPromptTests(unittest.TestCase):
+    def test_only_open_positions_listed(self) -> None:
+        labels = build_slot_key_labels(["C", "1B", "3B", "UTIL"])
+        rows = build_open_slot_prompts(labels, {"C": "Mookie Betts", "1B": "Bench Hitter", "3B": "", "UTIL": ""})
+        texts = [r["text"] for r in rows]
+        self.assertEqual(texts, ["Third Base is empty", "UTIL is empty"])
+        self.assertNotIn("Catcher is empty", texts)
+        self.assertNotIn("First Base is empty", texts)
+
+    def test_single_of_open_uses_slot_label(self) -> None:
+        labels = build_slot_key_labels(["OF", "OF", "OF"])
+        rows = build_open_slot_prompts(
+            labels, {"OF": "", "OF_2": "Mookie Betts", "OF_3": "Bench Hitter"}
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["text"], "OF 1 is empty")
+        self.assertEqual(rows[0]["waiver_label"], "Outfield")
+
+    def test_multiple_of_open_combined(self) -> None:
+        labels = build_slot_key_labels(["OF", "OF", "OF"])
+        rows = build_open_slot_prompts(labels, {"OF": "", "OF_2": "", "OF_3": "Mookie Betts"})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["text"], "2 Outfield spots are empty")
+        self.assertEqual(rows[0]["waiver_label"], "Outfield")
+
+    def test_waiver_labels_for_standard_positions(self) -> None:
+        labels = build_slot_key_labels(["C", "SS"])
+        rows = build_open_slot_prompts(labels, {"C": "", "SS": ""})
+        self.assertEqual(rows[0]["waiver_label"], "Catcher")
+        self.assertEqual(rows[1]["waiver_label"], "Shortstop")
+
+
 class CircleBoardRenderTests(unittest.TestCase):
     def test_no_editor_mode_or_dropdown_widgets(self) -> None:
         session: dict = {}
@@ -202,7 +235,7 @@ class CircleBoardRenderTests(unittest.TestCase):
         roster = _daniel_roster()
         st = MagicMock()
         st.html = MagicMock()
-        st.columns.side_effect = lambda n: [MagicMock() for _ in range(n if isinstance(n, int) else 2)]
+        st.columns.side_effect = lambda n, **kw: [MagicMock() for _ in range(n if isinstance(n, int) else len(n))]
         st.selectbox.return_value = 1
         st.button.return_value = False
 

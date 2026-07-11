@@ -267,7 +267,7 @@ class WeeklyLineupPageSmokeTests(unittest.TestCase):
         st = MagicMock()
         st.html = MagicMock()
 
-        def _columns(n):
+        def _columns(n, **kw):
             count = n if isinstance(n, int) else len(n)
             return [MagicMock() for _ in range(max(int(count or 1), 1))]
 

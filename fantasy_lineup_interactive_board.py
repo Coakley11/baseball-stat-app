@@ -141,11 +141,22 @@ def build_interactive_board_payload(
 
 
 def _board_height(payload: dict[str, Any]) -> int:
-    slot_count = len(payload.get("slots") or [])
-    bench_count = len(payload.get("bench") or [])
-    slot_rows = max(1, (slot_count + 3) // 4)
-    bench_rows = max(1, (bench_count + 5) // 6)
-    return 120 + slot_rows * 130 + 80 + bench_rows * 110 + 40
+    """Tight iframe height from slot count and current bench size."""
+    slots = payload.get("slots") or []
+    roster = payload.get("roster") or []
+    slot_count = len(slots)
+    assigned = sum(1 for slot in slots if slot.get("player"))
+    bench_count = max(0, len(roster) - assigned)
+
+    slot_cols = 4
+    slot_rows = max(1, (slot_count + slot_cols - 1) // slot_cols)
+    bench_cols = 6
+    bench_rows = max(1, (bench_count + bench_cols - 1) // bench_cols) if bench_count else 0
+
+    header = 52
+    slot_block = 20 + slot_rows * 112
+    bench_block = 18 + (bench_rows * 92 if bench_count else 36)
+    return header + slot_block + bench_block + 4
 
 
 def render_interactive_lineup_board(
@@ -175,19 +186,19 @@ def render_interactive_lineup_board(
 <style>
 * {{ box-sizing: border-box; }}
 body {{
-  margin: 0; padding: 8px 4px 12px;
+  margin: 0; padding: 4px 4px 4px;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color: #0f172a; background: transparent;
   -webkit-tap-highlight-color: transparent;
 }}
 .fl-board-title {{
-  font-size: 1.05rem; font-weight: 800; margin: 4px 0 12px;
+  font-size: 1.05rem; font-weight: 800; margin: 2px 0 8px;
 }}
 .fl-circle-grid {{
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
-  gap: 14px 10px;
-  margin-bottom: 18px;
+  gap: 12px 8px;
+  margin-bottom: 8px;
 }}
 .fl-circle-slot {{
   display: flex; flex-direction: column; align-items: center;
@@ -258,8 +269,9 @@ body {{
 }}
 .fl-bench-zone {{
   border: 2px dashed #cbd5e1;
-  border-radius: 16px;
-  padding: 12px;
+  border-radius: 14px;
+  padding: 8px 10px 6px;
+  margin-bottom: 0;
   background: #fafbfc;
   transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
 }}
@@ -273,8 +285,8 @@ body {{
   background: #dbeafe;
 }}
 .fl-bench-faces {{
-  display: flex; flex-wrap: wrap; gap: 12px;
-  justify-content: center; padding: 6px 0;
+  display: flex; flex-wrap: wrap; gap: 10px;
+  justify-content: center; padding: 4px 0 2px;
 }}
 .fl-bench-face-wrap {{
   display: flex; flex-direction: column; align-items: center; min-width: 72px;
