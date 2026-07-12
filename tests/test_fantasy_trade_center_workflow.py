@@ -191,8 +191,8 @@ class TradeCenterWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(view)
         handoff = session.get("_trade_center_handoff") or {}
         self.assertEqual(handoff.get("source_offer_id"), pid)
-        self.assertEqual(session.get("lineup_trade_give_players"), ["Player A"])
-        self.assertEqual(session.get("lineup_trade_get_players"), ["Player B"])
+        self.assertEqual(handoff.get("give_players"), ["Player A"])
+        self.assertEqual(handoff.get("receive_players"), ["Player B"])
 
     def test_archive_offer_hides_from_inbox_not_history(self) -> None:
         from tests.test_fantasy_trade_proposals import _as_user, _decline_proposal, _seed_league

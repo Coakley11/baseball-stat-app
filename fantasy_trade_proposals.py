@@ -1429,17 +1429,14 @@ def consume_trade_proposal_handoff(session: dict[str, Any]) -> dict[str, Any] | 
     give_players = list(view.get("give_players") or [])
     receive_players = list(view.get("receive_players") or [])
     if other_team:
-        session["lineup_trade_other_team"] = other_team
-    if give_players:
-        session["lineup_trade_give_players"] = give_players
-    if receive_players:
-        session["lineup_trade_get_players"] = receive_players
+        pass
     session["_lineup_focus_trade_center"] = True
     session["_trade_center_handoff"] = {
-        "proposal_id": proposal_id,
+        "action": "use",
         "give_players": give_players,
         "receive_players": receive_players,
         "other_team": other_team,
+        "trade_partner": other_team,
         "source_offer_id": proposal_id,
         "auto_analyze": True,
     }

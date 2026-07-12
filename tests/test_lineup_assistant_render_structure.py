@@ -71,7 +71,16 @@ class LineupAssistantRenderStructureTests(unittest.TestCase):
         self.assertNotIn("with l3:", trade_branch)
         self.assertNotIn("l2, l3", trade_branch)
 
-    def test_l2_assigned_before_with_l2(self) -> None:
+    def test_lineup_management_has_no_legacy_trade_analyzer(self) -> None:
+        block = _lineup_assistant_source_block()
+        lineup_idx = block.index('elif _assistant_tab == "Lineup Management":')
+        after = block[lineup_idx:]
+        self.assertNotIn("Trade Analyzer / Roster Move Assistant", after)
+        self.assertNotIn("lineup_trade_give_players", after)
+        self.assertNotIn("lineup_trade_get_players", after)
+        self.assertNotIn("render_trade_proposals_section(", after)
+        self.assertNotIn("Suggest Trades For My Team", after)
+
         block = _lineup_assistant_source_block()
         assign_idx = block.index("l2, l3 = st.columns(2)")
         with_idx = block.index("with l2:")

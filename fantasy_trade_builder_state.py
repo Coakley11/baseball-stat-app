@@ -13,9 +13,21 @@ from fantasy_trade_ideas import (
 )
 
 ANY_TRADE_PARTNER = "Any team"
+TRADE_BUILDER_STATE_SCHEMA_VERSION = 2
 PENDING_BUILDER_SUFFIX = "pending_builder_update"
 BUILDER_SCOPE_STAMP_SUFFIX = "builder_scope_stamp"
 BUILDER_FLASH_SUFFIX = "builder_flash"
+BUILDER_SCHEMA_SUFFIX = "builder_schema_version"
+PROPOSAL_CONFIRM_SUFFIX = "proposal_confirm"
+BUILDER_DIAG_SUFFIX = "builder_diag_last"
+
+FORCE_REASONS = (
+    "pending_update",
+    "scope_change",
+    "missing_widget",
+    "invalid_widget",
+    "none",
+)
 
 
 def pending_builder_key(scope_key: str) -> str:
@@ -36,6 +48,18 @@ def partner_widget_key(scope_key: str) -> str:
 
 def builder_scope_stamp_key(scope_key: str) -> str:
     return f"{scope_key}|{BUILDER_SCOPE_STAMP_SUFFIX}"
+
+
+def builder_schema_key(scope_key: str) -> str:
+    return f"{scope_key}|{BUILDER_SCHEMA_SUFFIX}"
+
+
+def proposal_confirm_key(scope_key: str) -> str:
+    return f"{scope_key}|{PROPOSAL_CONFIRM_SUFFIX}"
+
+
+def builder_diag_key(scope_key: str) -> str:
+    return f"{scope_key}|{BUILDER_DIAG_SUFFIX}"
 
 
 def builder_widget_keys(scope_key: str) -> dict[str, str]:
@@ -66,6 +90,15 @@ def _logical_partner(logical_state: dict[str, Any], partner_options: list[str]) 
     return partner
 
 
+def _widget_snapshot(session: dict[str, Any], scope_key: str) -> dict[str, Any]:
+    keys = builder_widget_keys(scope_key)
+    return {
+        "partner": session.get(keys["partner"]),
+        "give": list(session.get(keys["give"]) or []),
+        "receive": list(session.get(keys["receive"]) or []),
+    }
+
+
 def queue_pending_builder_update(session: dict[str, Any], scope_key: str, update: dict[str, Any]) -> None:
     """Queue a logical builder mutation to consume before widgets render on the next run."""
     session[pending_builder_key(scope_key)] = dict(update)
@@ -76,6 +109,87 @@ def consume_pending_builder_update(session: dict[str, Any], scope_key: str) -> d
     return dict(pending) if isinstance(pending, dict) else None
 
 
+def clear_legacy_lineup_trade_keys(session: dict[str, Any]) -> None:
+    for key in (
+        "lineup_trade_give_players",
+        "lineup_trade_get_players",
+        "lineup_trade_other_team",
+        "lineup_trade_analyzer_open",
+    ):
+        session.pop(key, None)
+
+
+def maybe_migrate_builder_schema(
+    session: dict[str, Any],
+    scope_key: str,
+    logical_state: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """One-time migration when stored schema version differs from current."""
+    schema_key = builder_schema_key(scope_key)
+    stored = int(session.get(schema_key) or 0)
+    if stored >= TRADE_BUILDER_STATE_SCHEMA_VERSION:
+        return logical_state, False
+
+    clear_builder_widgets(session, scope_key)
+    session.pop(pending_builder_key(scope_key), None)
+    session.pop(f"{scope_key}|{BUILDER_FLASH_SUFFIX}", None)
+    session.pop(proposal_confirm_key(scope_key), None)
+    clear_legacy_lineup_trade_keys(session)
+
+    state = dict(logical_state or {})
+    for field in (
+        "give_players",
+        "get_players",
+        "other_team",
+        "trade_partner",
+        "source_idea_id",
+        "auto_analyze",
+        "analysis",
+        "verdict",
+        "mode",
+    ):
+        state.pop(field, None)
+    state["trade_partner"] = ANY_TRADE_PARTNER
+
+    session[schema_key] = TRADE_BUILDER_STATE_SCHEMA_VERSION
+    session[f"{scope_key}|{BUILDER_FLASH_SUFFIX}"] = (
+        "Trade builder reset to a fresh editable state after a layout update."
+    )
+    return state, True
+
+
+def reset_trade_builder(
+    session: dict[str, Any],
+    scope_key: str,
+    *,
+    logical_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Emergency reset — builder selections and stale analysis only."""
+    clear_builder_widgets(session, scope_key)
+    session.pop(pending_builder_key(scope_key), None)
+    session.pop(proposal_confirm_key(scope_key), None)
+    session.pop(LINEUP_TRADE_IDEAS_RESULTS_KEY, None)
+    session.pop(LINEUP_TRADE_IDEAS_DIAG_KEY, None)
+    clear_legacy_lineup_trade_keys(session)
+
+    state = dict(logical_state or {})
+    for field in (
+        "give_players",
+        "get_players",
+        "other_team",
+        "trade_partner",
+        "source_idea_id",
+        "auto_analyze",
+        "analysis",
+        "verdict",
+        "mode",
+    ):
+        state.pop(field, None)
+    state["trade_partner"] = ANY_TRADE_PARTNER
+    session[f"{scope_key}|{BUILDER_FLASH_SUFFIX}"] = "Trade builder reset. Offers and history were preserved."
+    return state
+
+
 def apply_pending_to_logical_state(
     session: dict[str, Any],
     scope_key: str,
@@ -84,19 +198,22 @@ def apply_pending_to_logical_state(
     my_players: list[str],
     receive_options: list[str],
     other_teams: list[str],
-) -> tuple[dict[str, Any], bool]:
-    """Merge pending builder update into scoped logical state; validate selections."""
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Merge one-time pending builder update into scoped logical state."""
     state = dict(logical_state or {})
     pending = consume_pending_builder_update(session, scope_key)
     if not pending:
-        return state, False
+        return state, None
 
-    if pending.get("clear"):
+    action = str(pending.get("action") or "").strip().lower()
+    if pending.get("clear") or action == "clear":
         session.pop(LINEUP_TRADE_IDEAS_RESULTS_KEY, None)
         session.pop(LINEUP_TRADE_IDEAS_DIAG_KEY, None)
+        session.pop(proposal_confirm_key(scope_key), None)
         clear_builder_widgets(session, scope_key)
         session.pop(f"{scope_key}|{BUILDER_FLASH_SUFFIX}", None)
-        return {}, True
+        clear_legacy_lineup_trade_keys(session)
+        return {}, pending
 
     give = _filter_valid(_normalize_names(pending.get("give_players")), my_players)
     receive = _filter_valid(_normalize_names(pending.get("get_players")), receive_options)
@@ -112,24 +229,46 @@ def apply_pending_to_logical_state(
             "trade_partner": other if other else ANY_TRADE_PARTNER,
         }
     )
-    for field in ("source_idea_id", "source_offer_id", "auto_analyze", "analysis"):
+    for field in ("source_idea_id", "source_offer_id", "analysis"):
         if field in pending:
             state[field] = pending[field]
+
+    if action in ("analyze", "analyze_offer") or pending.get("auto_analyze"):
+        state["auto_analyze"] = True
+    elif "auto_analyze" in pending:
+        state["auto_analyze"] = bool(pending.get("auto_analyze"))
+
+    if action == "propose" or pending.get("await_proposal_confirm"):
+        session[proposal_confirm_key(scope_key)] = {
+            "give_players": give,
+            "get_players": receive,
+            "trade_partner": other if other else ANY_TRADE_PARTNER,
+            "other_team": other,
+            "source_idea_id": str(pending.get("source_idea_id") or ""),
+            "source_offer_id": str(pending.get("source_offer_id") or ""),
+        }
+
     flash = str(pending.get("flash_message") or "").strip()
     if flash:
         session[f"{scope_key}|{BUILDER_FLASH_SUFFIX}"] = flash
-    elif not pending.get("clear"):
+    elif action == "analyze" or action == "analyze_offer":
+        session[f"{scope_key}|{BUILDER_FLASH_SUFFIX}"] = "Trade loaded for analysis."
+    elif action == "propose":
+        session[f"{scope_key}|{BUILDER_FLASH_SUFFIX}"] = "Trade loaded. Review and confirm the proposal below."
+    elif action in ("use", ""):
         session[f"{scope_key}|{BUILDER_FLASH_SUFFIX}"] = (
-            "Trade idea loaded. Review, edit, analyze, or propose it below."
+            "Trade idea loaded. Review, edit, analyze, or propose it."
         )
-    return state, True
+    return state, pending
 
 
-def scope_fingerprint_changed(session: dict[str, Any], scope_key: str, scope_fingerprint: str) -> bool:
+def scope_fingerprint_changed(session: dict[str, Any], scope_key: str, scope_fingerprint: str) -> tuple[bool, str | None]:
     stamp_key = builder_scope_stamp_key(scope_key)
     previous = session.get(stamp_key)
     session[stamp_key] = scope_fingerprint
-    return previous is not None and previous != scope_fingerprint
+    if previous is not None and previous != scope_fingerprint:
+        return True, str(previous)
+    return False, str(previous) if previous is not None else None
 
 
 def prepare_builder_widget_state(
@@ -141,39 +280,70 @@ def prepare_builder_widget_state(
     receive_options: list[str],
     partner_options: list[str],
     force: bool = False,
-) -> None:
+    force_reason: str = "none",
+) -> dict[str, Any]:
     """Initialize widget keys only when required; preserve valid user selections otherwise."""
     keys = builder_widget_keys(scope_key)
+    before = _widget_snapshot(session, scope_key)
+    resolved_reason = force_reason if force_reason in FORCE_REASONS else "none"
+
     logical_give = _filter_valid(_normalize_names(logical_state.get("give_players")), my_players)
     logical_receive = _filter_valid(_normalize_names(logical_state.get("get_players")), receive_options)
     logical_partner = _logical_partner(logical_state, partner_options)
 
-    if force or keys["partner"] not in session:
+    if force:
         session[keys["partner"]] = logical_partner
-    else:
-        current_partner = str(session.get(keys["partner"]) or "").strip()
-        if current_partner not in partner_options:
-            session[keys["partner"]] = logical_partner
-
-    if force or keys["give"] not in session:
         session[keys["give"]] = logical_give
-    else:
-        current_give = _normalize_names(session.get(keys["give"]))
-        valid_give = _filter_valid(current_give, my_players)
-        if force:
-            session[keys["give"]] = logical_give
-        elif len(valid_give) != len(current_give):
-            session[keys["give"]] = valid_give
-
-    if force or keys["receive"] not in session:
         session[keys["receive"]] = logical_receive
     else:
-        current_receive = _normalize_names(session.get(keys["receive"]))
-        valid_receive = _filter_valid(current_receive, receive_options)
-        if force:
-            session[keys["receive"]] = logical_receive
-        elif len(valid_receive) != len(current_receive):
-            session[keys["receive"]] = valid_receive
+        resolved_reason = "none"
+        if keys["partner"] not in session:
+            session[keys["partner"]] = ANY_TRADE_PARTNER
+            resolved_reason = "missing_widget"
+        else:
+            current_partner = str(session.get(keys["partner"]) or "").strip()
+            if current_partner not in partner_options:
+                session[keys["partner"]] = ANY_TRADE_PARTNER
+                resolved_reason = "invalid_widget"
+
+        if keys["give"] not in session:
+            session[keys["give"]] = []
+            if resolved_reason == "none":
+                resolved_reason = "missing_widget"
+        else:
+            current_give = _normalize_names(session.get(keys["give"]))
+            valid_give = _filter_valid(current_give, my_players)
+            if len(valid_give) != len(current_give):
+                session[keys["give"]] = valid_give
+                if resolved_reason == "none":
+                    resolved_reason = "invalid_widget"
+
+        if keys["receive"] not in session:
+            session[keys["receive"]] = []
+            if resolved_reason == "none":
+                resolved_reason = "missing_widget"
+        else:
+            current_receive = _normalize_names(session.get(keys["receive"]))
+            valid_receive = _filter_valid(current_receive, receive_options)
+            if len(valid_receive) != len(current_receive):
+                session[keys["receive"]] = valid_receive
+                if resolved_reason == "none":
+                    resolved_reason = "invalid_widget"
+
+    after = _widget_snapshot(session, scope_key)
+    return {
+        "force_widgets": force or resolved_reason in ("missing_widget", "invalid_widget"),
+        "force_reason": force_reason if force else resolved_reason,
+        "partner_widget_before": before["partner"],
+        "partner_widget_after": after["partner"],
+        "give_widget_before": before["give"],
+        "give_widget_after": after["give"],
+        "receive_widget_before": before["receive"],
+        "receive_widget_after": after["receive"],
+        "logical_partner": logical_partner,
+        "logical_give": logical_give,
+        "logical_receive": logical_receive,
+    }
 
 
 def prune_invalid_receive_for_partner(
@@ -217,34 +387,47 @@ def save_logical_state_from_widgets(
     state["get_players"] = list(receive_players or [])
     state["trade_partner"] = trade_partner
     state["other_team"] = other_team if other_team and other_team != ANY_TRADE_PARTNER else ""
+    state.pop("auto_analyze", None)
     return state
 
 
-def sync_builder_widgets_from_logical(
-    session: dict[str, Any],
-    scope_key: str,
-    logical_state: dict[str, Any],
+def build_builder_diagnostics(
     *,
-    my_players: list[str],
-    receive_options: list[str],
-    partner_options: list[str],
-    force: bool = True,
-) -> dict[str, list[str] | str]:
-    """Backward-compatible alias that forces widget initialization."""
-    prepare_builder_widget_state(
-        session,
-        scope_key,
-        logical_state,
-        my_players=my_players,
-        receive_options=receive_options,
-        partner_options=partner_options,
-        force=force,
-    )
-    keys = builder_widget_keys(scope_key)
+    deployed_feature_sha: str,
+    scope_key: str,
+    scope_fingerprint: str,
+    previous_scope_stamp: str | None,
+    scope_changed: bool,
+    pending_update: dict[str, Any] | None,
+    prepare_diag: dict[str, Any],
+    handoff_present: bool,
+    handoff_consumed: bool,
+    schema_migrated: bool,
+) -> dict[str, Any]:
+    pending = pending_update or {}
     return {
-        "give_players": list(session.get(keys["give"]) or []),
-        "get_players": list(session.get(keys["receive"]) or []),
-        "other_team": str(session.get(keys["partner"]) or ANY_TRADE_PARTNER),
+        "deployed_feature_sha": deployed_feature_sha,
+        "scope_key": scope_key,
+        "scope_fingerprint": scope_fingerprint,
+        "previous_scope_stamp": previous_scope_stamp,
+        "scope_changed": scope_changed,
+        "schema_migrated": schema_migrated,
+        "pending_update_found": bool(pending),
+        "pending_action": str(pending.get("action") or ""),
+        "pending_source": str(pending.get("source_idea_id") or pending.get("source_offer_id") or ""),
+        "force_widgets": bool(prepare_diag.get("force_widgets")),
+        "force_reason": str(prepare_diag.get("force_reason") or "none"),
+        "partner_widget_before": prepare_diag.get("partner_widget_before"),
+        "partner_widget_after": prepare_diag.get("partner_widget_after"),
+        "give_widget_before": prepare_diag.get("give_widget_before"),
+        "give_widget_after": prepare_diag.get("give_widget_after"),
+        "receive_widget_before": prepare_diag.get("receive_widget_before"),
+        "receive_widget_after": prepare_diag.get("receive_widget_after"),
+        "logical_partner": prepare_diag.get("logical_partner"),
+        "logical_give": prepare_diag.get("logical_give"),
+        "logical_receive": prepare_diag.get("logical_receive"),
+        "handoff_present": handoff_present,
+        "handoff_consumed": handoff_consumed,
     }
 
 
@@ -259,21 +442,9 @@ def migrate_legacy_builder_keys(
     scope_key: str,
     logical_state: dict[str, Any],
 ) -> dict[str, Any]:
-    """One-time migration from global lineup_trade_* keys into scoped logical state."""
-    state = dict(logical_state or {})
-    legacy_give = session.pop("lineup_trade_give_players", None)
-    legacy_get = session.pop("lineup_trade_get_players", None)
-    legacy_other = session.pop("lineup_trade_other_team", None)
-    if legacy_give is not None and not state.get("give_players"):
-        state["give_players"] = list(legacy_give or [])
-    if legacy_get is not None and not state.get("get_players"):
-        state["get_players"] = list(legacy_get or [])
-    if legacy_other and not state.get("other_team"):
-        state["other_team"] = str(legacy_other)
-        state["trade_partner"] = str(legacy_other)
-    if legacy_give is not None or legacy_get is not None or legacy_other:
-        session.pop(pending_builder_key(scope_key), None)
-    return state
+    """Discard legacy global lineup_trade_* keys — Trade Center owns builder state now."""
+    clear_legacy_lineup_trade_keys(session)
+    return dict(logical_state or {})
 
 
 def receive_options_for_partner(

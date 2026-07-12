@@ -104,7 +104,7 @@ def _simulate_rerun(
         partner=ANY_TRADE_PARTNER,
         all_other_players=all_other,
     )
-    logical, _ = apply_pending_to_logical_state(
+    logical, pending = apply_pending_to_logical_state(
         session,
         SCOPE,
         logical,
@@ -120,7 +120,8 @@ def _simulate_rerun(
         my_players=my_players,
         receive_options=receive_pool,
         partner_options=[ANY_TRADE_PARTNER, *other_teams],
-        force=force,
+        force=force or bool(pending),
+        force_reason="pending_update" if pending else "none",
     )
     return logical
 
@@ -307,7 +308,7 @@ class TradeBuilderRerunTests(unittest.TestCase):
         line = format_player_stat_line(rosters, "José Ramírez")
         self.assertIn("HR 18", line)
         empty = pd.DataFrame([{"Team": "Daniel", "Player": "Ghost"}])
-        self.assertIn("Unavailable", format_player_stat_line(empty, "Ghost"))
+        self.assertIn("Stats unavailable", format_player_stat_line(empty, "Ghost"))
 
     def test_analysis_persists_for_same_selection(self) -> None:
         rosters = _rosters()

@@ -98,7 +98,7 @@ class TradeBuilderStateTests(unittest.TestCase):
             partner=ANY_TRADE_PARTNER,
             all_other_players=["Aaron Judge", "Gunnar Henderson"],
         )
-        logical, had_pending = apply_pending_to_logical_state(
+        logical, pending = apply_pending_to_logical_state(
             session,
             SCOPE,
             {},
@@ -106,7 +106,7 @@ class TradeBuilderStateTests(unittest.TestCase):
             receive_options=receive_pool,
             other_teams=["Team 2", "Team 3"],
         )
-        self.assertTrue(had_pending)
+        self.assertIsNotNone(pending)
         self.assertEqual(logical["give_players"], ["José Ramírez"])
         self.assertEqual(logical["get_players"], ["Aaron Judge"])
         self.assertTrue(logical["auto_analyze"])
@@ -117,7 +117,8 @@ class TradeBuilderStateTests(unittest.TestCase):
             my_players=my_players,
             receive_options=receive_pool,
             partner_options=[ANY_TRADE_PARTNER, "Team 2", "Team 3"],
-            force=had_pending,
+            force=True,
+            force_reason="pending_update",
         )
         keys = builder_widget_keys(SCOPE)
         self.assertEqual(session[keys["give"]], ["José Ramírez"])
@@ -151,15 +152,14 @@ class TradeBuilderStateTests(unittest.TestCase):
         )
         self.assertEqual(team2_only, ["Aaron Judge"])
 
-    def test_legacy_handoff_migrates_before_widgets(self) -> None:
+    def test_legacy_keys_are_discarded_not_migrated(self) -> None:
         session: dict = {
             "lineup_trade_give_players": ["José Ramírez"],
             "lineup_trade_get_players": ["Aaron Judge"],
             "lineup_trade_other_team": "Team 2",
         }
-        logical = migrate_legacy_builder_keys(session, SCOPE, {})
-        self.assertEqual(logical["give_players"], ["José Ramírez"])
-        self.assertEqual(logical["get_players"], ["Aaron Judge"])
+        logical = migrate_legacy_builder_keys(session, SCOPE, {"give_players": ["Mookie Betts"]})
+        self.assertEqual(logical["give_players"], ["Mookie Betts"])
         self.assertNotIn("lineup_trade_give_players", session)
 
     def test_idea_card_does_not_assign_legacy_widget_keys(self) -> None:
@@ -222,12 +222,12 @@ class TradeBuilderStateTests(unittest.TestCase):
             receive_list=["Aaron Judge"],
             other="Team 2",
             idea_id="idea_0",
-            auto_analyze=True,
+            action="analyze",
         )
         self.assertEqual(session[TRADE_CENTER_INTERNAL_TAB_KEY], "Build & Analyze")
         keys = builder_widget_keys(SCOPE)
         session[keys["give"]] = []
-        logical, had_pending = apply_pending_to_logical_state(
+        logical, _ = apply_pending_to_logical_state(
             session,
             SCOPE,
             {},
@@ -242,7 +242,8 @@ class TradeBuilderStateTests(unittest.TestCase):
             my_players=["José Ramírez"],
             receive_options=["Aaron Judge", "Gunnar Henderson"],
             partner_options=[ANY_TRADE_PARTNER, "Team 2", "Team 3"],
-            force=had_pending,
+            force=True,
+            force_reason="pending_update",
         )
         self.assertEqual(session[keys["give"]], ["José Ramírez"])
         self.assertEqual(session[keys["receive"]], ["Aaron Judge"])

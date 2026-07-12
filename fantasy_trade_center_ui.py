@@ -11,13 +11,18 @@ from fantasy_trade_analysis import analysis_matches_selection, build_trade_analy
 from fantasy_trade_builder_state import (
     ANY_TRADE_PARTNER,
     apply_pending_to_logical_state,
+    build_builder_diagnostics,
     build_search_summary,
+    builder_diag_key,
     builder_widget_keys,
+    maybe_migrate_builder_schema,
     migrate_legacy_builder_keys,
     prepare_builder_widget_state,
+    proposal_confirm_key,
     prune_invalid_receive_for_partner,
     queue_pending_builder_update,
     receive_options_for_partner,
+    reset_trade_builder,
     resolve_effective_partner,
     save_logical_state_from_widgets,
     scope_fingerprint_changed,
@@ -337,17 +342,20 @@ def _queue_idea_builder_update(
     receive_list: list[str],
     other: str,
     idea_id: str,
-    auto_analyze: bool,
+    action: str,
 ) -> None:
     queue_pending_builder_update(
         session,
         scope_key,
         {
+            "action": action,
             "give_players": give_list,
             "get_players": receive_list,
+            "trade_partner": other,
             "other_team": other,
             "source_idea_id": idea_id,
-            "auto_analyze": auto_analyze,
+            "auto_analyze": action in ("analyze", "analyze_offer"),
+            "await_proposal_confirm": action == "propose",
         },
     )
     session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
@@ -398,7 +406,7 @@ def _render_idea_card(
                 receive_list=receive_names,
                 other=other,
                 idea_id=f"idea_{idx}",
-                auto_analyze=False,
+                action="use",
             )
             st.rerun()
         if c2.button("Analyze", key=f"tc_analyze_{idx}"):
@@ -409,7 +417,7 @@ def _render_idea_card(
                 receive_list=receive_names,
                 other=other,
                 idea_id=f"idea_{idx}",
-                auto_analyze=True,
+                action="analyze",
             )
             st.rerun()
         if c3.button("Propose", key=f"tc_propose_{idx}", disabled=not (give_names and receive_names and other)):
@@ -420,7 +428,7 @@ def _render_idea_card(
                 receive_list=receive_names,
                 other=other,
                 idea_id=f"idea_{idx}",
-                auto_analyze=False,
+                action="propose",
             )
             st.rerun()
 
@@ -454,8 +462,16 @@ def _render_build_analyze(
 
     widget_keys = builder_widget_keys(scope_key)
     flash_key = f"{scope_key}|builder_flash"
+    deployed_sha = ""
+    try:
+        from suite_deploy_marker import resolve_git_commit_short
+
+        deployed_sha = str(resolve_git_commit_short() or "")
+    except Exception:
+        deployed_sha = "unknown"
 
     shared = migrate_legacy_builder_keys(session, scope_key, _load_shared_trade_state(session, scope_key))
+    shared, schema_migrated = maybe_migrate_builder_schema(session, scope_key, shared)
     partner_options = [ANY_TRADE_PARTNER, *other_teams]
     receive_pool = receive_options_for_partner(
         roster_stats,
@@ -463,7 +479,7 @@ def _render_build_analyze(
         partner=ANY_TRADE_PARTNER,
         all_other_players=all_other_players,
     )
-    shared, had_pending = apply_pending_to_logical_state(
+    shared, pending_update = apply_pending_to_logical_state(
         session,
         scope_key,
         shared,
@@ -471,8 +487,17 @@ def _render_build_analyze(
         receive_options=receive_pool,
         other_teams=other_teams,
     )
-    force_widgets = had_pending or scope_fingerprint_changed(session, scope_key, scope_fingerprint)
-    prepare_builder_widget_state(
+    scope_changed, previous_scope_stamp = scope_fingerprint_changed(session, scope_key, scope_fingerprint)
+    force_widgets = bool(pending_update) or scope_changed or schema_migrated
+    force_reason = "none"
+    if pending_update:
+        force_reason = "pending_update"
+    elif scope_changed:
+        force_reason = "scope_change"
+    elif schema_migrated:
+        force_reason = "scope_change"
+
+    prepare_diag = prepare_builder_widget_state(
         session,
         scope_key,
         shared,
@@ -480,7 +505,21 @@ def _render_build_analyze(
         receive_options=receive_pool,
         partner_options=partner_options,
         force=force_widgets,
+        force_reason=force_reason,
     )
+    builder_diag = build_builder_diagnostics(
+        deployed_feature_sha=deployed_sha,
+        scope_key=scope_key,
+        scope_fingerprint=scope_fingerprint,
+        previous_scope_stamp=previous_scope_stamp,
+        scope_changed=scope_changed,
+        pending_update=pending_update,
+        prepare_diag=prepare_diag,
+        handoff_present=bool((session.pop(f"{scope_key}|builder_handoff_meta", {}) or {}).get("present")),
+        handoff_consumed=bool(pending_update),
+        schema_migrated=schema_migrated,
+    )
+    session[builder_diag_key(scope_key)] = builder_diag
 
     flash = str(session.pop(flash_key, "") or "").strip()
     if flash:
@@ -566,7 +605,41 @@ def _render_build_analyze(
             owner = next(iter(owners))
             st.caption(f"{receive_players[0]} is owned by {owner}. Ideas will search {owner}.")
 
-    c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+    auto_analyze = bool(shared.pop("auto_analyze", False))
+    analyze_btn = False
+    find_ideas_btn = False
+    propose_btn = False
+    persisted_analysis = shared.get("analysis") if isinstance(shared.get("analysis"), dict) else None
+    verdict = str((persisted_analysis or {}).get("verdict") or "")
+    analysis_rendered = False
+    if auto_analyze and give_players and receive_players:
+        package = build_trade_analysis_package(
+            give_players=give_players,
+            receive_players=receive_players,
+            roster_stats=roster_stats,
+            standings=standings,
+            my_team=my_team,
+            evaluate_trade_fn=evaluate_trade_fn,
+            build_trade_verdict_text_fn=build_trade_verdict_text_fn,
+            summarize_team_category_needs_fn=summarize_team_category_needs_fn,
+            source_offer_id=str(shared.get("source_offer_id") or ""),
+            source_idea_id=str(shared.get("source_idea_id") or ""),
+        )
+        _render_analysis_panel(st, package, roster_stats)
+        st.success("Analysis complete.")
+        shared["analysis"] = package
+        verdict = str(package.get("verdict") or "")
+        analysis_rendered = True
+        session[LINEUP_TRADE_IDEAS_DIAG_KEY] = {
+            "button_action": "analyze",
+            "source_offer_id": shared.get("source_offer_id"),
+        }
+    elif analysis_matches_selection(persisted_analysis, give=give_players, receive=receive_players):
+        _render_analysis_panel(st, persisted_analysis, roster_stats)
+        verdict = str(persisted_analysis.get("verdict") or "")
+        analysis_rendered = True
+
+    c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 1, 1])
     find_ideas_btn = c1.button("Find Trade Ideas", key="tc_find_ideas", type="primary")
     analyze_btn = c2.button(
         "Analyze Exact Trade",
@@ -579,16 +652,14 @@ def _render_build_analyze(
         disabled=not (give_players and receive_players and other_team and other_team != ANY_TRADE_PARTNER),
     )
     if c4.button("Clear", key="tc_clear_trade"):
-        queue_pending_builder_update(session, scope_key, {"clear": True})
+        queue_pending_builder_update(session, scope_key, {"action": "clear", "clear": True})
+        st.rerun()
+    if c5.button("Reset Trade Builder", key="tc_reset_builder"):
+        shared = reset_trade_builder(session, scope_key, logical_state=shared)
         st.rerun()
 
-    auto_analyze = bool(shared.pop("auto_analyze", False))
-    analyze = analyze_btn or auto_analyze
+    analyze = analyze_btn
     find_ideas = find_ideas_btn
-    persisted_analysis = shared.get("analysis") if isinstance(shared.get("analysis"), dict) else None
-
-    verdict = str((persisted_analysis or {}).get("verdict") or "")
-    analysis_rendered = False
     if analyze and give_players and receive_players:
         package = build_trade_analysis_package(
             give_players=give_players,
@@ -603,6 +674,7 @@ def _render_build_analyze(
             source_idea_id=str(shared.get("source_idea_id") or ""),
         )
         _render_analysis_panel(st, package, roster_stats)
+        st.success("Analysis complete.")
         shared["analysis"] = package
         verdict = str(package.get("verdict") or "")
         analysis_rendered = True
@@ -610,10 +682,6 @@ def _render_build_analyze(
             "button_action": "analyze",
             "source_offer_id": shared.get("source_offer_id"),
         }
-    elif analysis_matches_selection(persisted_analysis, give=give_players, receive=receive_players):
-        _render_analysis_panel(st, persisted_analysis, roster_stats)
-        verdict = str(persisted_analysis.get("verdict") or "")
-        analysis_rendered = True
 
     collapse_ideas = analysis_rendered and bool(persisted_analysis or shared.get("analysis"))
     if find_ideas:
@@ -680,29 +748,56 @@ def _render_build_analyze(
     saved["my_team"] = my_team
     _save_shared_trade_state(session, scope_key, saved)
 
-    if propose_btn and give_players and receive_players and other_team:
-        try:
-            from fantasy_trade_proposals_ui import submit_trade_proposal_from_analyzer
-
-            submit_trade_proposal_from_analyzer(
-                st,
-                session,
-                my_team=my_team,
-                other_team=other_team,
-                give_players=give_players,
-                get_players=receive_players,
-                verdict=verdict,
-                persist_fn=_persist_trade_plan,
-                key_prefix="tc_send",
+    confirm = session.get(proposal_confirm_key(scope_key))
+    if isinstance(confirm, dict) and confirm:
+        with st.container(border=True):
+            st.markdown("**Confirm trade proposal**")
+            st.markdown(
+                f"Send to **{html_lib.escape(str(confirm.get('other_team') or other_team or ''))}** · "
+                f"You give **{html_lib.escape(', '.join(confirm.get('give_players') or give_players))}** · "
+                f"You receive **{html_lib.escape(', '.join(confirm.get('get_players') or receive_players))}**"
             )
-        except ImportError:
-            st.info("Trade proposal submission is not available in this build.")
+            cc1, cc2 = st.columns(2)
+            if cc1.button("Confirm and send proposal", key="tc_confirm_propose", type="primary"):
+                try:
+                    from fantasy_trade_proposals_ui import submit_trade_proposal_from_analyzer
+
+                    submit_trade_proposal_from_analyzer(
+                        st,
+                        session,
+                        my_team=my_team,
+                        other_team=str(confirm.get("other_team") or other_team),
+                        give_players=list(confirm.get("give_players") or give_players),
+                        get_players=list(confirm.get("get_players") or receive_players),
+                        verdict=verdict,
+                        persist_fn=_persist_trade_plan,
+                        key_prefix="tc_confirm_send",
+                    )
+                    session.pop(proposal_confirm_key(scope_key), None)
+                    st.success("Proposal sent. Check Offers & Activity.")
+                except ImportError:
+                    st.info("Trade proposal submission is not available in this build.")
+            if cc2.button("Cancel proposal", key="tc_cancel_propose"):
+                session.pop(proposal_confirm_key(scope_key), None)
+                st.rerun()
+
+    if propose_btn and give_players and receive_players and other_team:
+        session[proposal_confirm_key(scope_key)] = {
+            "give_players": list(give_players),
+            "get_players": list(receive_players),
+            "trade_partner": trade_partner,
+            "other_team": other_team,
+            "source_idea_id": str(shared.get("source_idea_id") or ""),
+            "source_offer_id": str(shared.get("source_offer_id") or ""),
+        }
+        st.rerun()
 
     if developer_mode_enabled_fn():
         with st.expander("Trade Center diagnostics (Developer Mode)", expanded=False):
             st.json(
                 {
                     **diag,
+                    **builder_diag,
                     "my_team": my_team,
                     "other_teams": ws.get("other_teams"),
                     "roster_counts_by_team": diag.get("roster_counts_by_team")
@@ -712,8 +807,6 @@ def _render_build_analyze(
                     },
                     "give_selections": give_players,
                     "receive_selections": receive_players,
-                    "force_widgets_last_run": force_widgets,
-                    "had_pending_last_run": had_pending,
                 }
             )
 
@@ -763,13 +856,16 @@ def render_trade_center_tab(
             session,
             scope_key,
             {
+                "action": str(handoff.get("action") or "analyze_offer"),
                 "give_players": list(handoff.get("give_players") or []),
-                "get_players": list(handoff.get("receive_players") or []),
-                "other_team": str(handoff.get("other_team") or ""),
+                "get_players": list(handoff.get("receive_players") or handoff.get("get_players") or []),
+                "trade_partner": str(handoff.get("other_team") or handoff.get("trade_partner") or ""),
+                "other_team": str(handoff.get("other_team") or handoff.get("trade_partner") or ""),
                 "source_offer_id": str(handoff.get("source_offer_id") or handoff.get("proposal_id") or ""),
-                "auto_analyze": bool(handoff.get("auto_analyze")),
+                "auto_analyze": bool(handoff.get("auto_analyze", True)),
             },
         )
+        session[f"{scope_key}|builder_handoff_meta"] = {"present": True, "consumed": True}
         session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
 
     if ws["roster_stats"] is None or ws["roster_stats"].empty:
@@ -962,8 +1058,10 @@ def _load_offer_into_state(session: dict[str, Any], scope_key: str, offer: dict[
         session,
         scope_key,
         {
+            "action": "analyze_offer",
             "give_players": [g for g in give if g],
             "get_players": [g for g in receive if g],
+            "trade_partner": other,
             "other_team": other,
             "source_offer_id": pid,
             "auto_analyze": True,

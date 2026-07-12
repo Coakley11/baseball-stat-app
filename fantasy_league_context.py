@@ -601,15 +601,25 @@ def consume_trade_acquire_handoff(session: dict[str, Any]) -> dict[str, Any] | N
         return None
     owner_team = str(handoff.get("owner_team") or "").strip()
     mode = str(handoff.get("mode") or "").strip()
-    if owner_team and mode == TRADE_MODE_ACQUIRE:
-        session["lineup_trade_other_team"] = owner_team
     player_name = str(handoff.get("player_name") or "").strip()
-    if player_name:
-        if mode == TRADE_MODE_TRADE_AWAY:
-            session["lineup_trade_give_players"] = [player_name]
-        elif mode == TRADE_MODE_ACQUIRE:
-            session["lineup_trade_get_players"] = [player_name]
-    session["_lineup_focus_trade_center"] = True
+    give_players: list[str] = []
+    receive_players: list[str] = []
+    other_team = ""
+    if mode == TRADE_MODE_TRADE_AWAY and player_name:
+        give_players = [player_name]
+    elif mode == TRADE_MODE_ACQUIRE and player_name:
+        receive_players = [player_name]
+        other_team = owner_team
+    if give_players or receive_players:
+        session["_lineup_focus_trade_center"] = True
+        session["_trade_center_handoff"] = {
+            "action": "use",
+            "give_players": give_players,
+            "receive_players": receive_players,
+            "other_team": other_team,
+            "trade_partner": other_team or "Any team",
+            "auto_analyze": False,
+        }
     return handoff
 
 

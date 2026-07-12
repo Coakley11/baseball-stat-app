@@ -24,7 +24,7 @@ def player_row(roster_stats: pd.DataFrame | None, player_name: str) -> pd.Series
 def format_position_label(roster_stats: pd.DataFrame | None, player_name: str) -> str:
     row = player_row(roster_stats, player_name)
     if row is None:
-        return "—"
+        return "Position unavailable"
     try:
         from fantasy_weekly_lineup import hitter_position_tokens
 
@@ -37,7 +37,7 @@ def format_position_label(roster_stats: pd.DataFrame | None, player_name: str) -
                 tokens = [part.strip().upper() for part in raw.replace("/", ",").split(",") if part.strip()]
                 break
     if not tokens:
-        return "—"
+        return "Position unavailable"
     if len(tokens) == 1:
         return tokens[0]
     return "/".join(tokens[:3])
@@ -68,22 +68,29 @@ def _format_rate(value: Any) -> str:
 def format_player_stat_line(roster_stats: pd.DataFrame | None, player_name: str) -> str:
     row = player_row(roster_stats, player_name)
     if row is None:
-        return "Unavailable"
+        return "Stats unavailable"
     parts: list[str] = []
+    any_stat = False
     for cat in HITTER_STAT_CATEGORIES:
         val = row.get(cat)
         num = pd.to_numeric(val, errors="coerce")
         if pd.isna(num):
             parts.append(f"{cat} Unavailable")
         elif cat == "BA":
+            any_stat = True
             parts.append(f"AVG {_format_rate(num)}")
         else:
+            any_stat = True
             parts.append(f"{cat} {_format_rate(num)}")
     pa = pd.to_numeric(row.get("PA"), errors="coerce")
     if pd.notna(pa):
+        any_stat = True
         parts.append(f"PA {int(pa)}")
     elif pd.notna(pd.to_numeric(row.get("G"), errors="coerce")):
+        any_stat = True
         parts.append(f"G {int(pd.to_numeric(row.get('G'), errors='coerce'))}")
+    if not any_stat:
+        return "Stats unavailable"
     return " · ".join(parts)
 
 

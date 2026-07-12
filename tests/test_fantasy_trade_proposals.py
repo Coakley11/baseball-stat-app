@@ -264,9 +264,10 @@ class TradeProposalInboxTests(_TradeTestCase):
         set_trade_proposal_handoff(self.session, proposal_id=pid, view_as_team="Team 2")
         view = consume_trade_proposal_handoff(self.session)
         assert view is not None
-        self.assertEqual(self.session["lineup_trade_other_team"], "Donny")
-        self.assertEqual(self.session["lineup_trade_give_players"], ["Player B"])
-        self.assertEqual(self.session["lineup_trade_get_players"], ["Player A"])
+        handoff = self.session.get("_trade_center_handoff") or {}
+        self.assertEqual(handoff.get("other_team"), "Donny")
+        self.assertEqual(handoff.get("give_players"), ["Player B"])
+        self.assertEqual(handoff.get("receive_players"), ["Player A"])
 
 
 class TradeProposalAcceptDeclineTests(_TradeTestCase):
@@ -480,8 +481,9 @@ class TradeProposalPhase2Tests(_TradeTestCase):
         self.assertEqual(session["_navigate_to_page"], LINEUP_ASSISTANT_PAGE)
         view = consume_trade_proposal_handoff(session)
         assert view is not None
-        self.assertEqual(session["lineup_trade_give_players"], ["Player B"])
-        self.assertEqual(session["lineup_trade_get_players"], ["Player A"])
+        handoff = session.get("_trade_center_handoff") or {}
+        self.assertEqual(handoff.get("give_players"), ["Player B"])
+        self.assertEqual(handoff.get("receive_players"), ["Player A"])
 
     def test_proposer_deep_link_shows_outgoing_perspective(self) -> None:
         session: dict = {}
