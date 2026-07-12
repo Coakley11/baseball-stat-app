@@ -10,6 +10,7 @@ import pandas as pd
 from fantasy_league_context import (
     CONTEXT_TYPE_MOCK_DRAFT_SIMULATION,
     CONTEXT_TYPE_REAL_LEAGUE,
+    PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY,
     activate_league_context,
     apply_pending_league_context_activation,
     consume_trade_acquire_handoff,
@@ -18,6 +19,7 @@ from fantasy_league_context import (
     save_simulator_league_context,
     upsert_league_context,
 )
+from fantasy_league_identity import resolve_canonical_league_id
 from fantasy_league_team_ownership import assign_team_owner_to_context
 from fantasy_trade_builder_state import (
     ANY_TRADE_PARTNER,
@@ -32,9 +34,13 @@ from fantasy_trade_builder_state import (
 from player_trade_constants import TRADE_ACTION_ACQUIRE, TRADE_ACTION_TRADE_AWAY
 from player_trade_handoff import (
     TRADE_CENTER_HANDOFF_KEY,
+    VALIDATION_STALE,
+    VALIDATION_TRANSIENT,
     consume_trade_center_handoff_into_pending,
+    handoff_diag_key,
     queue_player_action_trade_handoff,
     resolve_active_league_player_trade_eligibility,
+    validate_trade_center_handoff,
 )
 from player_trade_context import start_player_trade_action
 
@@ -90,6 +96,25 @@ def _seed_shared_league(session: dict, *, my_team: str = "Daniel", user_id: str 
     context = upsert_league_context(session, loaded)
     activate_league_context(session, league_context_id)
     session["_suite_auth_user_id"] = user_id
+    return context
+
+
+def _seed_shared_league_with_split_ids(
+    session: dict,
+    *,
+    league_context_id: str = "archive:3ce50b4f2e8b",
+    canonical_league_id: str = "league_upload_test_demo_abc123",
+    user_id: str = "user:daniel",
+) -> dict:
+    context = _seed_shared_league(session, user_id=user_id)
+    loaded = get_active_league_context(session) or context
+    loaded["league_context_id"] = league_context_id
+    meta = dict(loaded.get("metadata") or {})
+    meta["league_id"] = canonical_league_id
+    loaded["metadata"] = meta
+    loaded["league_id"] = canonical_league_id
+    context = upsert_league_context(session, loaded)
+    activate_league_context(session, league_context_id)
     return context
 
 
@@ -212,6 +237,13 @@ class PlayerActionTradeHandoffTests(unittest.TestCase):
 
 
 class PlayerActionTradeCenterRerunTests(unittest.TestCase):
+    def _active_scope_ids(self, session: dict) -> tuple[str, str]:
+        active = get_active_league_context(session) or {}
+        return (
+            str(active.get("league_context_id") or "").strip(),
+            str(resolve_canonical_league_id(active) or "").strip(),
+        )
+
     def _simulate_trade_center_render(self, session: dict, *, schema_version: int = TRADE_BUILDER_STATE_SCHEMA_VERSION) -> dict:
         roster_stats = _roster_stats()
         my_team = "Daniel"
@@ -224,15 +256,15 @@ class PlayerActionTradeCenterRerunTests(unittest.TestCase):
 
         logical: dict = {}
         logical, schema_migrated = maybe_migrate_builder_schema(session, SCOPE, logical)
-        active = get_active_league_context(session) or {}
-        league_id = str(active.get("league_context_id") or "")
+        active_context_id, active_canonical_league_id = self._active_scope_ids(session)
         consume_trade_center_handoff_into_pending(
             session,
             SCOPE,
             roster_stats=roster_stats,
             my_team=my_team,
             other_teams=other_teams,
-            league_context_id=league_id,
+            active_context_id=active_context_id,
+            active_canonical_league_id=active_canonical_league_id,
         )
         pool = all_other
         logical, pending_update = apply_pending_to_logical_state(
@@ -323,6 +355,119 @@ class PlayerActionTradeCenterRerunTests(unittest.TestCase):
         self.assertIn("Opening Fantasy Lineup Assistant", msg)
         self.assertEqual(session["_navigate_to_page"], "Fantasy Lineup Assistant")
         self.assertIn(TRADE_CENTER_HANDOFF_KEY, session)
+
+    @patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:daniel")
+    def test_trade_away_live_rerun_populates_give(self, _uid: object) -> None:
+        session: dict = {}
+        _seed_shared_league(session)
+        queue_player_action_trade_handoff(session, player_name="Mookie Betts", mode=TRADE_ACTION_TRADE_AWAY)
+        result = self._simulate_trade_center_render(session)
+        self.assertEqual(result["give"], ["Mookie Betts"])
+        self.assertEqual(result["receive"], [])
+        self.assertEqual(result["partner"], ANY_TRADE_PARTNER)
+
+    @patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:daniel")
+    def test_split_context_and_canonical_ids_do_not_reject_valid_handoff(self, _uid: object) -> None:
+        session: dict = {}
+        context = _seed_shared_league_with_split_ids(session)
+        active_context_id = str(context.get("league_context_id") or "")
+        active_canonical_id = str(resolve_canonical_league_id(context) or "")
+        self.assertNotEqual(active_context_id, active_canonical_id)
+        queue_player_action_trade_handoff(session, player_name="Aaron Judge", mode=TRADE_ACTION_ACQUIRE)
+        handoff = session[TRADE_CENTER_HANDOFF_KEY]
+        self.assertEqual(handoff["league_context_id"], active_context_id)
+        self.assertEqual(handoff["canonical_league_id"], active_canonical_id)
+        result = self._simulate_trade_center_render(session)
+        self.assertEqual(result["receive"], ["Aaron Judge"])
+        self.assertEqual(result["partner"], "Team 2")
+        self.assertEqual(result["give"], [])
+
+    @patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:daniel")
+    def test_old_namespace_mix_rejects_handoff_with_diagnostics(self, _uid: object) -> None:
+        session: dict = {}
+        context = _seed_shared_league_with_split_ids(session)
+        handoff = {
+            "action": "use",
+            "source": "player_action_acquire",
+            "league_context_id": str(context.get("league_context_id") or ""),
+            "canonical_league_id": str(resolve_canonical_league_id(context) or ""),
+            "give_players": [],
+            "receive_players": ["Aaron Judge"],
+            "trade_partner": "Team 2",
+            "other_team": "Team 2",
+        }
+        session[TRADE_CENTER_HANDOFF_KEY] = handoff
+        consume_trade_center_handoff_into_pending(
+            session,
+            SCOPE,
+            roster_stats=_roster_stats(),
+            my_team="Daniel",
+            other_teams=["Team 2", "Team 3", "Team 4"],
+            active_context_id=str(resolve_canonical_league_id(context) or ""),
+            active_canonical_league_id=str(resolve_canonical_league_id(context) or ""),
+        )
+        self.assertNotIn(TRADE_CENTER_HANDOFF_KEY, session)
+        diag = session.get(handoff_diag_key(SCOPE)) or {}
+        self.assertEqual(diag.get("validation_result"), VALIDATION_STALE)
+
+    @patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:daniel")
+    def test_canonical_id_mismatch_rejects_stale_handoff(self, _uid: object) -> None:
+        session: dict = {}
+        context = _seed_shared_league_with_split_ids(session)
+        handoff = {
+            "action": "use",
+            "source": "player_action_acquire",
+            "league_context_id": str(context.get("league_context_id") or ""),
+            "canonical_league_id": "league_stale_other",
+            "give_players": [],
+            "receive_players": ["Aaron Judge"],
+            "trade_partner": "Team 2",
+        }
+        validated, err, status = validate_trade_center_handoff(
+            handoff,
+            session,
+            roster_stats=_roster_stats(),
+            my_team="Daniel",
+            other_teams=["Team 2", "Team 3", "Team 4"],
+            active_context_id=str(context.get("league_context_id") or ""),
+            active_canonical_league_id=str(resolve_canonical_league_id(context) or ""),
+        )
+        self.assertIsNone(validated)
+        self.assertEqual(status, VALIDATION_STALE)
+        self.assertIn("canonical", err.lower())
+
+    @patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:daniel")
+    def test_transient_context_not_ready_preserves_handoff(self, _uid: object) -> None:
+        session: dict = {}
+        _seed_shared_league_with_split_ids(session)
+        queue_player_action_trade_handoff(session, player_name="Aaron Judge", mode=TRADE_ACTION_ACQUIRE)
+        session[PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY] = session[TRADE_CENTER_HANDOFF_KEY]["league_context_id"]
+        state = session.get("fantasy_league_context_state") or {}
+        state["active_league_context_id"] = ""
+        session["fantasy_league_context_state"] = state
+        consume_trade_center_handoff_into_pending(
+            session,
+            SCOPE,
+            roster_stats=_roster_stats(),
+            my_team="Daniel",
+            other_teams=["Team 2", "Team 3", "Team 4"],
+            active_context_id="",
+            active_canonical_league_id="",
+        )
+        self.assertIn(TRADE_CENTER_HANDOFF_KEY, session)
+        diag = session.get(handoff_diag_key(SCOPE)) or {}
+        self.assertEqual(diag.get("validation_result"), VALIDATION_TRANSIENT)
+
+    @patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:daniel")
+    def test_handoff_removed_only_after_successful_queue(self, _uid: object) -> None:
+        session: dict = {}
+        _seed_shared_league(session)
+        queue_player_action_trade_handoff(session, player_name="Aaron Judge", mode=TRADE_ACTION_ACQUIRE)
+        self._simulate_trade_center_render(session)
+        self.assertNotIn(TRADE_CENTER_HANDOFF_KEY, session)
+        diag = session.get(handoff_diag_key(SCOPE)) or {}
+        self.assertTrue(diag.get("pending_update_queued"))
+        self.assertEqual(diag.get("pending_get_players"), ["Aaron Judge"])
 
 
 if __name__ == "__main__":

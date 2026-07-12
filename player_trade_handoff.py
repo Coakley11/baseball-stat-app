@@ -9,8 +9,31 @@ import pandas as pd
 from fantasy_trade_builder_state import ANY_TRADE_PARTNER, queue_pending_builder_update
 from player_trade_constants import TRADE_ACTION_ACQUIRE, TRADE_ACTION_TRADE_AWAY
 
+TRADE_CENTER_HANDOFF_KEY = "_trade_center_HANDOFF_KEY".replace("_HANDOFF_KEY", "_handoff")  # keep stable key below
 TRADE_CENTER_HANDOFF_KEY = "_trade_center_handoff"
+HANDOFF_DIAG_SUFFIX = "builder_handoff_diag"
 
+VALIDATION_OK = "ok"
+VALIDATION_STALE = "stale"
+VALIDATION_TRANSIENT = "transient"
+
+
+def handoff_diag_key(scope_key: str) -> str:
+    return f"{scope_key}|{HANDOFF_DIAG_SUFFIX}"
+
+
+def _resolve_active_league_ids(session: dict[str, Any]) -> tuple[str, str]:
+    """Return (league_context_id, canonical_league_id) for the active shared league."""
+    try:
+        from fantasy_league_context import get_active_league_context
+        from fantasy_league_identity import resolve_canonical_league_id
+    except ImportError:
+        return "", ""
+
+    active = get_active_league_context(session) or {}
+    context_id = str(active.get("league_context_id") or "").strip()
+    canonical_id = str(resolve_canonical_league_id(active) or "").strip()
+    return context_id, canonical_id
 
 def _display_base(name: str) -> str:
     return str(name or "").split(" (")[0].strip()
@@ -124,6 +147,7 @@ def build_trade_center_handoff_payload(
     mode: str,
     player_name: str,
     league_context_id: str,
+    canonical_league_id: str = "",
     my_team: str,
     owner_team: str,
 ) -> dict[str, Any]:
@@ -155,6 +179,7 @@ def build_trade_center_handoff_payload(
         "action": "use",
         "source": source,
         "league_context_id": str(league_context_id or "").strip(),
+        "canonical_league_id": str(canonical_league_id or "").strip(),
         "give_players": give_players,
         "receive_players": receive_players,
         "other_team": other_team,
@@ -193,10 +218,13 @@ def queue_player_action_trade_handoff(
         except ImportError:
             pass
 
+    _, canonical_league_id = _resolve_active_league_ids(session)
+
     handoff = build_trade_center_handoff_payload(
         mode=mode_norm,
         player_name=display,
         league_context_id=league_context_id,
+        canonical_league_id=canonical_league_id,
         my_team=str(eligibility.get("my_team") or ""),
         owner_team=str(eligibility.get("owner_team") or ""),
     )
@@ -224,6 +252,44 @@ def queue_player_action_trade_handoff(
     return True, f"{action_label} for {display} in {label}. Opening Fantasy Lineup Assistant → Trade Center."
 
 
+def _validate_league_identity(
+    handoff: dict[str, Any],
+    session: dict[str, Any],
+    *,
+    active_context_id: str,
+    active_canonical_league_id: str,
+) -> tuple[bool, str, str]:
+    """Compare context IDs to context IDs and canonical IDs to canonical IDs only."""
+    handoff_context_id = str(handoff.get("league_context_id") or "").strip()
+    handoff_canonical_id = str(handoff.get("canonical_league_id") or "").strip()
+    pending_context_id = ""
+    try:
+        from fantasy_league_context import PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY
+
+        pending_context_id = str(session.get(PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY) or "").strip()
+    except ImportError:
+        pending_context_id = ""
+
+    if handoff_context_id and not active_context_id:
+        if pending_context_id == handoff_context_id:
+            return False, "Active league context activation is pending.", VALIDATION_TRANSIENT
+        return False, "Active league context is not ready yet.", VALIDATION_TRANSIENT
+
+    if handoff_context_id and active_context_id and handoff_context_id != active_context_id:
+        if pending_context_id == handoff_context_id:
+            return False, "Active league context activation is pending.", VALIDATION_TRANSIENT
+        return False, "Trade target league no longer matches the active shared league.", VALIDATION_STALE
+
+    if (
+        handoff_canonical_id
+        and active_canonical_league_id
+        and handoff_canonical_id != active_canonical_league_id
+    ):
+        return False, "Trade target canonical league no longer matches the active shared league.", VALIDATION_STALE
+
+    return True, "", VALIDATION_OK
+
+
 def validate_trade_center_handoff(
     handoff: dict[str, Any],
     session: dict[str, Any],
@@ -231,23 +297,34 @@ def validate_trade_center_handoff(
     roster_stats: pd.DataFrame | None,
     my_team: str,
     other_teams: list[str],
-) -> tuple[dict[str, Any] | None, str]:
+    active_context_id: str = "",
+    active_canonical_league_id: str = "",
+) -> tuple[dict[str, Any] | None, str, str]:
     """Reject stale or cross-league handoffs before builder population."""
     try:
         from fantasy_league_context import get_active_league_context, normalize_player_key
         from fantasy_league_team_ownership import owned_team_for_user
     except ImportError:
-        return None, "Trade Center handoff validation unavailable."
+        return None, "Trade Center handoff validation unavailable.", VALIDATION_STALE
+
+    if not active_context_id or not active_canonical_league_id:
+        resolved_context_id, resolved_canonical_id = _resolve_active_league_ids(session)
+        active_context_id = active_context_id or resolved_context_id
+        active_canonical_league_id = active_canonical_league_id or resolved_canonical_id
+
+    ok, err, status = _validate_league_identity(
+        handoff,
+        session,
+        active_context_id=active_context_id,
+        active_canonical_league_id=active_canonical_league_id,
+    )
+    if not ok:
+        return None, err, status
 
     active = get_active_league_context(session) or {}
-    active_id = str(active.get("league_context_id") or "").strip()
-    handoff_id = str(handoff.get("league_context_id") or "").strip()
-    if handoff_id and active_id and handoff_id != active_id:
-        return None, "Trade target league no longer matches the active shared league."
-
     owned_team = owned_team_for_user(active) or str(active.get("my_team_name") or "").strip()
     if my_team and owned_team and my_team != owned_team:
-        return None, "Trade target could not be loaded because your owned team changed."
+        return None, "Trade target could not be loaded because your owned team changed.", VALIDATION_STALE
 
     give = [str(p).strip() for p in handoff.get("give_players") or [] if str(p).strip()]
     receive = [str(p).strip() for p in handoff.get("receive_players") or [] if str(p).strip()]
@@ -260,7 +337,11 @@ def validate_trade_center_handoff(
         owner = (ownership.get(key) or {}).get("owner_team") if isinstance(ownership, dict) else None
         owner_team = str(owner or "").strip()
         if owner_team != owned_team:
-            return None, f"{name} is no longer on {owned_team} in the active league. The trade candidate was not loaded."
+            return (
+                None,
+                f"{name} is no longer on {owned_team} in the active league. The trade candidate was not loaded.",
+                VALIDATION_STALE,
+            )
         validated_give.append(canonical)
 
     validated_receive: list[str] = []
@@ -271,13 +352,19 @@ def validate_trade_center_handoff(
         owner = (ownership.get(key) or {}).get("owner_team") if isinstance(ownership, dict) else None
         owner_team = str(owner or "").strip()
         if not owner_team or owner_team == owned_team:
-            return None, f"{name} is no longer rostered by another team in the active league. The trade target was not loaded."
+            return (
+                None,
+                f"{name} is no longer rostered by another team in the active league. The trade target was not loaded.",
+                VALIDATION_STALE,
+            )
         if partner and partner != ANY_TRADE_PARTNER and owner_team != partner:
-            return None, (
-                f"{name} is no longer rostered by {partner} in the active league. The trade target was not loaded."
+            return (
+                None,
+                f"{name} is no longer rostered by {partner} in the active league. The trade target was not loaded.",
+                VALIDATION_STALE,
             )
         if owner_team not in other_teams and owner_team != ANY_TRADE_PARTNER:
-            return None, f"{name} is no longer rostered by an opponent in the active league."
+            return None, f"{name} is no longer rostered by an opponent in the active league.", VALIDATION_STALE
         validated_receive.append(canonical)
         if not partner or partner == ANY_TRADE_PARTNER:
             partner = owner_team
@@ -288,7 +375,40 @@ def validate_trade_center_handoff(
     payload["get_players"] = validated_receive
     payload["other_team"] = partner if partner != ANY_TRADE_PARTNER else ""
     payload["trade_partner"] = partner or ANY_TRADE_PARTNER
-    return payload, ""
+    return payload, "", VALIDATION_OK
+
+
+def _record_handoff_diag(
+    session: dict[str, Any],
+    scope_key: str,
+    *,
+    handoff: dict[str, Any] | None,
+    active_context_id: str,
+    active_canonical_league_id: str,
+    validation_result: str,
+    rejection_reason: str = "",
+    pending_update_queued: bool = False,
+    pending_get_players: list[str] | None = None,
+    pending_give_players: list[str] | None = None,
+    receive_widget_after: list[str] | None = None,
+    partner_widget_after: str = "",
+    give_widget_after: list[str] | None = None,
+) -> None:
+    session[handoff_diag_key(scope_key)] = {
+        "handoff_present": isinstance(handoff, dict),
+        "handoff_context_id": str((handoff or {}).get("league_context_id") or ""),
+        "handoff_canonical_league_id": str((handoff or {}).get("canonical_league_id") or ""),
+        "active_context_id": str(active_context_id or ""),
+        "active_canonical_league_id": str(active_canonical_league_id or ""),
+        "validation_result": str(validation_result or ""),
+        "rejection_reason": str(rejection_reason or ""),
+        "pending_update_queued": bool(pending_update_queued),
+        "pending_get_players": list(pending_get_players or []),
+        "pending_give_players": list(pending_give_players or []),
+        "receive_widget_after": list(receive_widget_after or []),
+        "partner_widget_after": str(partner_widget_after or ""),
+        "give_widget_after": list(give_widget_after or []),
+    }
 
 
 def consume_trade_center_handoff_into_pending(
@@ -298,36 +418,74 @@ def consume_trade_center_handoff_into_pending(
     roster_stats: pd.DataFrame | None,
     my_team: str,
     other_teams: list[str],
-    league_context_id: str = "",
+    active_context_id: str = "",
+    active_canonical_league_id: str = "",
 ) -> bool:
     """Consume `_trade_center_handoff` exactly once after scope/schema are ready."""
-    handoff = session.pop(TRADE_CENTER_HANDOFF_KEY, None)
+    handoff = session.get(TRADE_CENTER_HANDOFF_KEY)
     if not isinstance(handoff, dict):
+        _record_handoff_diag(
+            session,
+            scope_key,
+            handoff=None,
+            active_context_id=active_context_id,
+            active_canonical_league_id=active_canonical_league_id,
+            validation_result="absent",
+        )
         return False
 
-    validated, err = validate_trade_center_handoff(
+    if not active_context_id or not active_canonical_league_id:
+        resolved_context_id, resolved_canonical_id = _resolve_active_league_ids(session)
+        active_context_id = active_context_id or resolved_context_id
+        active_canonical_league_id = active_canonical_league_id or resolved_canonical_id
+
+    validated, err, status = validate_trade_center_handoff(
         handoff,
         session,
         roster_stats=roster_stats,
         my_team=my_team,
         other_teams=other_teams,
+        active_context_id=active_context_id,
+        active_canonical_league_id=active_canonical_league_id,
     )
     if validated is None:
+        _record_handoff_diag(
+            session,
+            scope_key,
+            handoff=handoff,
+            active_context_id=active_context_id,
+            active_canonical_league_id=active_canonical_league_id,
+            validation_result=status,
+            rejection_reason=err or "Trade target could not be loaded.",
+        )
         session[f"{scope_key}|builder_flash"] = err or "Trade target could not be loaded."
-        session[f"{scope_key}|builder_handoff_meta"] = {"present": True, "consumed": False, "rejected": True}
+        session[f"{scope_key}|builder_handoff_meta"] = {
+            "present": True,
+            "consumed": False,
+            "rejected": status == VALIDATION_STALE,
+            "transient": status == VALIDATION_TRANSIENT,
+        }
+        if status == VALIDATION_STALE:
+            session.pop(TRADE_CENTER_HANDOFF_KEY, None)
         return False
 
-    if league_context_id:
-        handoff_id = str(validated.get("league_context_id") or "").strip()
-        if handoff_id and handoff_id != league_context_id:
-            session[f"{scope_key}|builder_flash"] = (
-                "Trade target league no longer matches the active shared league."
-            )
-            session[f"{scope_key}|builder_handoff_meta"] = {"present": True, "consumed": False, "rejected": True}
-            return False
-
     queue_pending_builder_update(session, scope_key, validated)
+    session.pop(TRADE_CENTER_HANDOFF_KEY, None)
     session[f"{scope_key}|builder_handoff_meta"] = {"present": True, "consumed": True}
+    _record_handoff_diag(
+        session,
+        scope_key,
+        handoff=validated,
+        active_context_id=active_context_id,
+        active_canonical_league_id=active_canonical_league_id,
+        validation_result=VALIDATION_OK,
+        pending_update_queued=True,
+        pending_get_players=list(validated.get("get_players") or validated.get("receive_players") or []),
+        pending_give_players=list(validated.get("give_players") or []),
+    )
+    flash_message = str(validated.get("flash_message") or "").strip()
+    if flash_message:
+        session[f"{scope_key}|builder_flash"] = flash_message
     try:
         from fantasy_trade_ideas import TRADE_CENTER_INTERNAL_TAB_KEY, TRADE_CENTER_INTERNAL_WIDGET_KEY
 

@@ -65,19 +65,31 @@ def _trade_scope_state_key(scope_fingerprint: str) -> str:
     return f"trade_center_state|{scope_fingerprint}"
 
 
-def _resolve_trade_scope(session: dict[str, Any], *, page_lineup_team: str) -> tuple[str, str, str]:
+def _resolve_trade_scope(session: dict[str, Any], *, page_lineup_team: str) -> dict[str, str]:
     try:
         from fantasy_league_context import get_active_league_context
+        from fantasy_league_identity import resolve_canonical_league_id
         from fantasy_lineup_scope import resolve_canonical_lineup_team, resolve_lineup_scope
 
         context = get_active_league_context(session) or {}
         scope = resolve_lineup_scope(session, context, week=1, page_lineup_team=page_lineup_team)
         my_team = resolve_canonical_lineup_team(session, context, page_lineup_team=page_lineup_team)
-        league_id = str(scope.league_id if scope else "") or str(context.get("league_context_id") or "")
-        fingerprint = str(scope.fingerprint if scope else f"trade|{my_team}|{league_id}")
-        return my_team, league_id, fingerprint
+        league_context_id = str(context.get("league_context_id") or "").strip()
+        canonical_league_id = str(scope.league_id if scope else "") or str(resolve_canonical_league_id(context) or "").strip()
+        fingerprint = str(scope.fingerprint if scope else f"trade|{my_team}|{canonical_league_id}")
+        return {
+            "my_team": my_team,
+            "league_context_id": league_context_id,
+            "canonical_league_id": canonical_league_id,
+            "scope_fingerprint": fingerprint,
+        }
     except ImportError:
-        return str(page_lineup_team or "").strip(), "", f"trade|{page_lineup_team}"
+        return {
+            "my_team": str(page_lineup_team or "").strip(),
+            "league_context_id": "",
+            "canonical_league_id": "",
+            "scope_fingerprint": f"trade|{page_lineup_team}",
+        }
 
 
 def _trade_workspace(
@@ -440,7 +452,7 @@ def _render_build_analyze(
     session: dict[str, Any],
     *,
     ws: dict[str, Any],
-    league_id: str,
+    trade_scope: dict[str, str],
     scope_key: str,
     scope_fingerprint: str,
     ensure_select_in_options: Callable[..., Any],
@@ -451,6 +463,8 @@ def _render_build_analyze(
     developer_mode_enabled_fn: Callable[[], bool],
 ) -> None:
     del ensure_select_in_options, ensure_multiselect_state
+    league_context_id = str(trade_scope.get("league_context_id") or "").strip()
+    canonical_league_id = str(trade_scope.get("canonical_league_id") or "").strip()
     roster_stats = ws["roster_stats"]
     standings = ws["standings"]
     my_team = ws["my_team"]
@@ -475,7 +489,7 @@ def _render_build_analyze(
     shared = migrate_legacy_builder_keys(session, scope_key, _load_shared_trade_state(session, scope_key))
     shared, schema_migrated = maybe_migrate_builder_schema(session, scope_key, shared)
     try:
-        from player_trade_handoff import consume_trade_center_handoff_into_pending
+        from player_trade_handoff import consume_trade_center_handoff_into_pending, handoff_diag_key
 
         consume_trade_center_handoff_into_pending(
             session,
@@ -483,7 +497,8 @@ def _render_build_analyze(
             roster_stats=roster_stats,
             my_team=my_team,
             other_teams=other_teams,
-            league_context_id=league_id,
+            active_context_id=league_context_id,
+            active_canonical_league_id=canonical_league_id,
         )
     except ImportError:
         handoff = session.pop("_trade_center_handoff", None)
@@ -623,6 +638,33 @@ def _render_build_analyze(
         )
     st.markdown("</div>", unsafe_allow_html=True)
 
+    try:
+        from player_trade_handoff import handoff_diag_key
+
+        diag = dict(session.get(handoff_diag_key(scope_key)) or {})
+        diag.update(
+            {
+                "receive_widget_after": list(session.get(widget_keys["receive"]) or []),
+                "partner_widget_after": str(session.get(widget_keys["partner"]) or ""),
+                "give_widget_after": list(session.get(widget_keys["give"]) or []),
+            }
+        )
+        session[handoff_diag_key(scope_key)] = diag
+    except ImportError:
+        pass
+
+    if developer_mode_enabled_fn():
+        try:
+            from player_trade_handoff import handoff_diag_key as _handoff_diag_key
+
+            diag = session.get(_handoff_diag_key(scope_key))
+        except ImportError:
+            diag = session.get(f"{scope_key}|builder_handoff_diag")
+        if isinstance(diag, dict) and diag:
+            with st.expander("Trade handoff diagnostics", expanded=False):
+                for key, value in diag.items():
+                    st.text(f"{key}: {value}")
+
     other_team = resolve_effective_partner(trade_partner, receive_players, roster_stats, my_team=my_team)
     if receive_players and other_team != ANY_TRADE_PARTNER:
         owners = {
@@ -726,7 +768,7 @@ def _render_build_analyze(
             target_team=target if not owner_map else None,
             target_owner_teams=owner_map,
             summarize_team_category_needs_fn=summarize_team_category_needs_fn,
-            league_context_id=league_id,
+            league_context_id=league_context_id,
         )
         session[LINEUP_TRADE_IDEAS_RESULTS_KEY] = suggestions.to_dict(orient="records") if not suggestions.empty else []
         session[LINEUP_TRADE_IDEAS_DIAG_KEY] = diag
@@ -774,7 +816,7 @@ def _render_build_analyze(
         saved.pop("auto_analyze", None)
     saved["mode"] = "analyze" if analysis_rendered else "ideas"
     saved["verdict"] = verdict
-    saved["league_id"] = league_id
+    saved["league_id"] = canonical_league_id
     saved["my_team"] = my_team
     _save_shared_trade_state(session, scope_key, saved)
 
@@ -876,7 +918,11 @@ def render_trade_center_tab(
     del render_output_table_fn, format_trade_eval_table_fn, format_fantasy_table_fn, clean_ui_columns_fn
 
     _inject_trade_center_styles(st)
-    my_team, league_id, scope_fingerprint = _resolve_trade_scope(session, page_lineup_team=lineup_team)
+    trade_scope = _resolve_trade_scope(session, page_lineup_team=lineup_team)
+    my_team = trade_scope["my_team"]
+    canonical_league_id = trade_scope["canonical_league_id"]
+    league_context_id = trade_scope["league_context_id"]
+    scope_fingerprint = trade_scope["scope_fingerprint"]
     scope_key = _trade_scope_state_key(scope_fingerprint)
     ws = _trade_workspace(session, my_team=my_team)
 
@@ -919,12 +965,12 @@ def render_trade_center_tab(
     except ImportError:
         pass
 
-    league_name = league_id
+    league_name = canonical_league_id or league_context_id
     try:
         from fantasy_league_context import get_active_league_context
 
         ctx = get_active_league_context(session) or {}
-        league_name = str(ctx.get("display_name") or ctx.get("league_name") or league_id)
+        league_name = str(ctx.get("display_name") or ctx.get("league_name") or league_name)
     except ImportError:
         pass
 
@@ -955,7 +1001,7 @@ def render_trade_center_tab(
             st,
             session,
             ws=ws,
-            league_id=league_id,
+            trade_scope=trade_scope,
             scope_key=scope_key,
             scope_fingerprint=scope_fingerprint,
             ensure_select_in_options=ensure_select_in_options,
@@ -966,7 +1012,7 @@ def render_trade_center_tab(
             developer_mode_enabled_fn=developer_mode_enabled_fn,
         )
     elif internal_tab == "Offers & Activity":
-        _render_offers_activity_section(st, session, ws=ws, scope_key=scope_key, league_id=league_id)
+        _render_offers_activity_section(st, session, ws=ws, scope_key=scope_key, league_id=canonical_league_id)
 
 
 def _render_offers_activity_section(
