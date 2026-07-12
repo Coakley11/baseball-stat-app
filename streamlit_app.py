@@ -29,17 +29,49 @@ import workflow_sidebar as wf_sb
 import page_transfers as pg_xfer
 import app_tutorial
 import player_actions as plr_act
-from player_trade_bridge import (
+from player_trade_constants import (
     TRADE_ACTION_ACQUIRE,
     TRADE_ACTION_TRADE_AWAY,
     TRADE_FLOW_SESSION_KEY,
+)
+import player_trade_bridge
+from player_trade_bridge import (
     complete_trade_acquire_flow,
     format_roster_context_label,
     player_trade_shortcut_eligible,
-    start_player_trade_action,
     start_trade_acquire_flow,
-    resolve_active_league_player_trade_eligibility,
 )
+
+
+def _resolve_player_trade_eligibility(session, player_name: str) -> dict:
+    """Resolve Trade Away / Acquire eligibility without startup-blocking bridge exports."""
+    fn = getattr(player_trade_bridge, "resolve_active_league_player_trade_eligibility", None)
+    if callable(fn):
+        return fn(session, player_name)
+    display = str(player_name or "").strip()
+    ok, msg = player_trade_shortcut_eligible(session, display)
+    return {
+        "player_name": display,
+        "eligible_league": ok,
+        "trade_away_enabled": ok,
+        "acquire_enabled": ok,
+        "waiver_enabled": False,
+        "is_unrostered": False,
+        "block_message": msg or "Trade actions require an active shared league with multiple claimed owners.",
+        "trade_away_help": msg or "",
+        "acquire_help": msg or "",
+        "waiver_message": "",
+    }
+
+
+def _start_player_trade_action(session, *, player_name: str, mode: str) -> str:
+    fn = getattr(player_trade_bridge, "start_player_trade_action", None)
+    if callable(fn):
+        return fn(session, player_name=player_name, mode=mode)
+    return (
+        "Trade action unavailable: player_trade_bridge is missing start_player_trade_action. "
+        f"{player_trade_bridge.trade_import_error_message()}".strip()
+    )
 
 import projection_calibration as proj_cal
 import projection_validation as proj_val
@@ -10743,7 +10775,7 @@ def _on_player_acquire_click(*, player_raw: str):
         )
         st.rerun()
         return
-    msg = start_player_trade_action(
+    msg = _start_player_trade_action(
         st.session_state,
         player_name=display,
         mode=TRADE_ACTION_ACQUIRE,
@@ -10766,7 +10798,7 @@ def _on_player_trade_away_click(*, player_raw: str):
         )
         st.rerun()
         return
-    msg = start_player_trade_action(
+    msg = _start_player_trade_action(
         st.session_state,
         player_name=display,
         mode=TRADE_ACTION_TRADE_AWAY,
@@ -10967,7 +10999,7 @@ def _render_player_action_button_row(
     }
     display = fullname_base_from_label(str(player_raw or "").strip()) or str(player_raw or "").strip()
     if trade_eligibility is None and is_active_current_player(display):
-        trade_eligibility = resolve_active_league_player_trade_eligibility(st.session_state, display)
+        trade_eligibility = _resolve_player_trade_eligibility(st.session_state, display)
     elif trade_eligibility is None:
         trade_eligibility = {}
 
@@ -11469,7 +11501,7 @@ def player_quick_actions_popover(
         can_draft = active_current and _player_draft_action_available() and draft_ok
         trade_ok, trade_block = player_trade_shortcut_eligible(st.session_state, pick)
         trade_elig = (
-            resolve_active_league_player_trade_eligibility(st.session_state, pick)
+            _resolve_player_trade_eligibility(st.session_state, pick)
             if active_current
             else {}
         )
@@ -11565,7 +11597,7 @@ def render_contextual_player_actions(
     active_available = active_current and not already_drafted
     trade_ok, trade_block = player_trade_shortcut_eligible(st.session_state, player_name)
     trade_elig = (
-        resolve_active_league_player_trade_eligibility(st.session_state, player_name)
+        _resolve_player_trade_eligibility(st.session_state, player_name)
         if active_current
         else {}
     )
