@@ -1110,12 +1110,47 @@ def schedule_saved_draft_library_navigation(
     session: dict[str, Any],
     *,
     return_page: str = "",
+    focus_draft_id: str = "",
 ) -> None:
     """Navigate to Saved Draft Library; remember source page for return."""
     source = str(return_page or session.get("active_page") or "").strip()
     if source and source != SAVED_DRAFT_LIBRARY_PAGE:
         session[SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY] = source
+    focus = str(focus_draft_id or "").strip()
+    if focus:
+        session["_saved_draft_library_focus_draft_id"] = focus
     schedule_page_navigation(session, SAVED_DRAFT_LIBRARY_PAGE)
+
+
+def _on_click_open_saved_draft_library_focus(
+    draft_id: str = "",
+    return_page: str = "",
+    button_key: str = "",
+    button: str = "",
+) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    did = str(draft_id or "").strip()
+    if did:
+        try:
+            from draft_archive_state import set_active_draft_archive
+
+            set_active_draft_archive(session, did)
+        except ImportError:
+            pass
+    _record_library_nav_diag(
+        session,
+        button=button or "open_saved_draft_library_focus",
+        button_key=button_key,
+        target_page=SAVED_DRAFT_LIBRARY_PAGE,
+        extra={"focus_draft_id": did},
+    )
+    schedule_saved_draft_library_navigation(
+        session,
+        return_page=return_page or str(session.get("active_page") or ""),
+        focus_draft_id=did,
+    )
 
 
 def schedule_return_from_saved_draft_library(session: dict[str, Any]) -> bool:
@@ -1994,20 +2029,228 @@ def _render_shared_league_confirm_diagnostics(st: Any, session: dict[str, Any]) 
             st.text(f"{key}: {value if value not in (None, '') else '—'}")
 
 
-def _verify_shared_league_persistence(
+def _clear_shared_league_tombstones(session: dict[str, Any], *, draft_id: str, context_id: str) -> None:
+    draft_id = str(draft_id or "").strip()
+    context_id = str(context_id or "").strip()
+    if draft_id:
+        deleted = [
+            str(item).strip()
+            for item in (session.get("deleted_draft_archive_ids") or session.get("_deleted_draft_archive_ids") or [])
+            if str(item).strip() and str(item).strip() != draft_id
+        ]
+        session["deleted_draft_archive_ids"] = deleted
+        session["_deleted_draft_archive_ids"] = deleted
+    if context_id:
+        try:
+            from fantasy_league_context import ensure_fantasy_league_context_state
+
+            store = ensure_fantasy_league_context_state(session)
+            ctx_deleted = [
+                str(item).strip()
+                for item in (store.get("deleted_context_ids") or [])
+                if str(item).strip() and str(item).strip() != context_id
+            ]
+            store["deleted_context_ids"] = ctx_deleted
+        except ImportError:
+            pass
+
+
+def _find_shared_league_context_by_identity(
+    session: dict[str, Any],
+    *,
+    draft_id: str = "",
+    context_id: str = "",
+    canonical_league_id: str = "",
+) -> dict[str, Any] | None:
+    draft_id = str(draft_id or "").strip()
+    context_id = str(context_id or "").strip()
+    canonical = str(canonical_league_id or "").strip()
+    try:
+        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, get_league_context, list_league_contexts
+    except ImportError:
+        return None
+    if context_id:
+        ctx = get_league_context(session, context_id)
+        if isinstance(ctx, dict):
+            return ctx
+    for ctx in list_league_contexts(session):
+        if str(ctx.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+            continue
+        meta = dict(ctx.get("metadata") or {})
+        ctx_canonical = str(ctx.get("league_id") or meta.get("league_id") or "").strip()
+        source_draft = str(meta.get("source_draft_id") or ctx.get("source_draft_id") or "").strip()
+        if canonical and ctx_canonical == canonical:
+            return ctx
+        if draft_id and source_draft == draft_id:
+            return ctx
+    return None
+
+
+def _ensure_shared_league_library_identity(
+    session: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    my_team: str,
+) -> dict[str, Any]:
+    from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, upsert_league_context
+    from fantasy_league_invites import repair_commissioner_identity
+    from fantasy_league_team_ownership import account_user_ids_match, assign_team_owner_to_context, get_team_ownership
+    from live_draft_shared_league import CREATED_FROM_LIVE_DRAFT
+
+    context, _ = repair_commissioner_identity(context, session)
+    if str(context.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+        return context
+    uid = ""
+    try:
+        from draft_archive_visibility import _resolve_session_user_id
+
+        uid = str(_resolve_session_user_id(session) or "").strip()
+    except ImportError:
+        pass
+    meta = dict(context.get("metadata") or {})
+    team = str(my_team or context.get("my_team_name") or "").strip()
+    if str(meta.get("created_from") or "") == CREATED_FROM_LIVE_DRAFT and uid:
+        meta["commissioner_user_id"] = uid
+        context["metadata"] = meta
+        ownership = get_team_ownership(context)
+        record = dict(ownership.get(team) or {})
+        if team and not account_user_ids_match(str(record.get("user_id") or ""), uid):
+            context = assign_team_owner_to_context(context, team, user_id=uid)
+        context["my_team_name"] = team or str(context.get("my_team_name") or "")
+        context = upsert_league_context(session, context)
+    return context
+
+
+def _shared_league_visibility_diag(
+    session: dict[str, Any],
+    entry: dict[str, Any] | None,
+    context: dict[str, Any] | None,
+    *,
+    my_team: str,
+) -> dict[str, Any]:
+    from draft_archive_visibility import _resolve_session_user_id, is_saved_draft_visible_to_session
+    from fantasy_league_invites import get_commissioner_user_id, is_league_commissioner
+    from fantasy_league_team_ownership import account_user_ids_match, get_team_ownership, owned_team_for_user
+
+    uid = str(_resolve_session_user_id(session) or "").strip()
+    commissioner = str(get_commissioner_user_id(context) or "").strip()
+    ownership = get_team_ownership(context) if isinstance(context, dict) else {}
+    team_record = dict(ownership.get(my_team) or {}) if my_team else {}
+    team_owner = str(team_record.get("user_id") or "").strip()
+    visible = bool(entry and is_saved_draft_visible_to_session(session, entry, context=context))
+    reason = "visible" if visible else "membership_filter"
+    if not entry:
+        reason = "archive_missing"
+    elif not uid:
+        reason = "no_auth_user"
+    elif isinstance(context, dict) and not is_league_commissioner(context, uid):
+        if not owned_team_for_user(context, uid):
+            reason = "not_commissioner_or_member"
+    return {
+        "current_user_id": uid,
+        "commissioner_user_id": commissioner,
+        "donny_owner_user_id": team_owner,
+        "commissioner_recognized": bool(isinstance(context, dict) and uid and is_league_commissioner(context, uid)),
+        "donny_ownership_recognized": bool(
+            my_team
+            and uid
+            and account_user_ids_match(team_owner, uid)
+            and owned_team_for_user(context, uid) == my_team
+        ),
+        "visible_archive_found": visible,
+        "visibility_decision": reason,
+    }
+
+
+def _persist_shared_league_library_entry(
+    st: Any,
+    session: dict[str, Any],
+    entry: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    my_team: str,
+) -> tuple[bool, dict[str, Any]]:
+    draft_id = str(entry.get("draft_id") or "").strip()
+    context_id = str(context.get("league_context_id") or entry.get("league_context_id") or "").strip()
+    context = _ensure_shared_league_library_identity(session, context, my_team=my_team)
+    _clear_shared_league_tombstones(session, draft_id=draft_id, context_id=context_id)
+    try:
+        from fantasy_league_context import repair_missing_draft_archives_from_contexts
+
+        repair_missing_draft_archives_from_contexts(session, require_visibility=False)
+    except ImportError:
+        pass
+    entry = get_draft_archive(session, draft_id) or entry
+    if draft_id:
+        try:
+            from draft_archive_state import set_active_draft_archive
+
+            set_active_draft_archive(session, draft_id)
+        except ImportError:
+            session["active_draft_archive_id"] = draft_id
+    _clear_fantasy_caches_on_archive_change(session)
+    persist_ok = _persist_archive(session, st, reason="live_draft_league_context_saved", entry=entry)
+    readback = dict(session.get("_suite_last_draft_save_readback") or {})
+    return persist_ok, readback
+
+
+def _repair_shared_league_library_entry(
+    st: Any,
     session: dict[str, Any],
     *,
     draft_id: str,
     context_id: str,
+    canonical_league_id: str,
+    my_team: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any], bool, dict[str, Any]]:
+    context = _find_shared_league_context_by_identity(
+        session,
+        draft_id=draft_id,
+        context_id=context_id,
+        canonical_league_id=canonical_league_id,
+    )
+    if not isinstance(context, dict):
+        return None, {}, False, {"repair_error": "context_not_found"}
+    context = _ensure_shared_league_library_identity(session, context, my_team=my_team)
+    draft_id = str(draft_id or (context.get("metadata") or {}).get("source_draft_id") or "").strip()
+    context_id = str(context_id or context.get("league_context_id") or "").strip()
+    _clear_shared_league_tombstones(session, draft_id=draft_id, context_id=context_id)
+    try:
+        from fantasy_league_context import repair_missing_draft_archives_from_contexts
+
+        repair_missing_draft_archives_from_contexts(session, require_visibility=False)
+    except ImportError:
+        pass
+    entry = get_draft_archive(session, draft_id) if draft_id else None
+    if not isinstance(entry, dict):
+        return context, {}, False, {"repair_error": "archive_missing_after_repair"}
+    persist_ok, disk_readback = _persist_shared_league_library_entry(
+        st,
+        session,
+        entry,
+        context,
+        my_team=my_team,
+    )
+    return entry, context, persist_ok, {"disk_readback": disk_readback}
+
+
+def _verify_shared_league_persistence(
+    session: dict[str, Any],
+    *,
+    st: Any | None = None,
+    draft_id: str,
+    context_id: str,
     my_team: str,
     expected_counts: dict[str, int],
+    entry: dict[str, Any] | None = None,
 ) -> tuple[bool, list[str], dict[str, Any]]:
     errors: list[str] = []
     readback: dict[str, Any] = {}
     draft_id = str(draft_id or "").strip()
     context_id = str(context_id or "").strip()
     try:
-        from draft_archive_state import get_draft_archive
+        from draft_archive_state import get_draft_archive, list_draft_archives
+        from draft_archive_visibility import list_visible_draft_archives
         from fantasy_league_context import (
             CONTEXT_TYPE_REAL_LEAGUE,
             get_active_league_context,
@@ -2016,10 +2259,27 @@ def _verify_shared_league_persistence(
     except ImportError as exc:
         return False, [f"Persistence verification unavailable: {exc}"], readback
 
+    raw_count = len(list_draft_archives(session))
+    visible_archives = list_visible_draft_archives(session)
+    visible_count = len(visible_archives)
+    readback["raw_archive_count"] = raw_count
+    readback["visible_archive_count"] = visible_count
+
     archive = get_draft_archive(session, draft_id) if draft_id else None
-    readback["draft_library_found"] = bool(archive)
+    if entry is None and isinstance(archive, dict):
+        entry = archive
+    readback["raw_archive_found"] = bool(archive)
     if not archive:
         errors.append("Shared league creation did not persist to the Draft Library.")
+
+    visible_entry = next(
+        (item for item in visible_archives if str(item.get("draft_id") or "").strip() == draft_id),
+        None,
+    )
+    readback["visible_archive_found"] = bool(visible_entry)
+    readback["archive_draft_id_matches"] = bool(
+        archive and str(archive.get("draft_id") or "").strip() == draft_id
+    )
 
     context = get_league_context(session, context_id) if context_id else None
     readback["league_context_found"] = bool(context)
@@ -2030,10 +2290,22 @@ def _verify_shared_league_persistence(
             f"League context type is {context.get('context_type')!r}, expected {CONTEXT_TYPE_REAL_LEAGUE!r}."
         )
 
+    vis = _shared_league_visibility_diag(session, archive, context, my_team=my_team)
+    readback.update(vis)
+    if archive and not vis.get("visible_archive_found"):
+        errors.append(
+            "Shared league was created, but its Draft Library card is not visible. "
+            f"Visibility decision: {vis.get('visibility_decision') or 'unknown'}."
+        )
+    if context and not vis.get("commissioner_recognized"):
+        errors.append("Commissioner is not recognized for this shared league.")
+    if my_team and context and not vis.get("donny_ownership_recognized"):
+        errors.append(f"Team {my_team!r} ownership is not recognized for the current account.")
+
     rosters = dict((context or {}).get("league_rosters") or {})
     roster_counts = {
-        str(team): len(list((entry or {}).get("players") or []))
-        for team, entry in rosters.items()
+        str(team): len(list((entry_row or {}).get("players") or []))
+        for team, entry_row in rosters.items()
     }
     readback["roster_counts"] = roster_counts
     for team, expected in expected_counts.items():
@@ -2041,9 +2313,10 @@ def _verify_shared_league_persistence(
         if actual != int(expected):
             errors.append(f"Team {team!r} roster count is {actual}, expected {expected}.")
 
-    active = get_active_league_context(session) or {}
+    active = get_active_league_context(session, respect_source_priority=False) or {}
     active_id = str(active.get("league_context_id") or "").strip()
     readback["active_context_id"] = active_id
+    readback["active_context_matches"] = bool(context_id and active_id == context_id)
     if context_id and active_id != context_id:
         errors.append(
             f"Active league context is {active_id or 'unset'}, expected {context_id}."
@@ -2055,8 +2328,93 @@ def _verify_shared_league_persistence(
         or ""
     ).strip()
     readback["canonical_league_id"] = canonical_id
+    readback["canonical_league_id_found"] = bool(canonical_id)
     if context and not canonical_id:
         errors.append("Canonical league ID is missing from saved league context.")
+
+    disk_readback = dict(session.get("_suite_last_draft_save_readback") or {})
+    readback["disk_readback"] = disk_readback
+    readback["disk_readback_found"] = bool(disk_readback.get("draft_ids") and draft_id in (disk_readback.get("draft_ids") or []))
+    if st is not None and draft_id:
+        try:
+            from workflow_persist_guard import hydrate_session_workflow_from_disk
+
+            hydrated = hydrate_session_workflow_from_disk(session, draft_id=draft_id)
+            readback["disk_hydrate_found"] = bool(hydrated and get_draft_archive(session, draft_id))
+        except ImportError:
+            readback["disk_hydrate_found"] = None
+    try:
+        from suite_storage_config import cloud_storage_enabled
+
+        cloud_enabled = bool(cloud_storage_enabled())
+    except ImportError:
+        cloud_enabled = False
+    readback["cloud_enabled"] = cloud_enabled
+    cloud_readback = session.get("_suite_persist_last_save_cloud")
+    if isinstance(cloud_readback, bool):
+        cloud_readback = {"ok": cloud_readback}
+    elif not isinstance(cloud_readback, dict):
+        cloud_readback = {}
+    readback["cloud_readback"] = dict(cloud_readback)
+    cloud_blocked = str(session.get("_suite_autosave_cloud_blocked_reason") or "").strip()
+    cloud_error = str(
+        cloud_readback.get("error")
+        or cloud_readback.get("cloud_write_error")
+        or cloud_readback.get("cloud_readback_error")
+        or ""
+    ).strip()
+    cloud_draft_confirmed = bool(
+        draft_id
+        and (
+            draft_id in (disk_readback.get("draft_ids") or [])
+            or draft_id in (cloud_readback.get("draft_ids") or [])
+        )
+    )
+    if not cloud_enabled:
+        readback["cloud_readback_found"] = None
+        readback["cloud_readback_skipped"] = True
+    elif cloud_draft_confirmed:
+        readback["cloud_readback_found"] = True
+    elif cloud_blocked or cloud_error:
+        readback["cloud_readback_found"] = False
+        readback["cloud_unavailable"] = True
+        readback["cloud_verification_warning"] = cloud_blocked or cloud_error
+    else:
+        readback["cloud_readback_found"] = False
+        errors.append("Cloud persistence readback did not confirm the saved draft.")
+
+    prune_probe = dict(session)
+    prune_removed = False
+    try:
+        from draft_archive_visibility import list_visible_draft_archives as _visible_probe, prune_invisible_shared_league_state
+
+        before_visible = _visible_probe(prune_probe)
+        before_has = any(str(item.get("draft_id") or "").strip() == draft_id for item in before_visible)
+        removed = prune_invisible_shared_league_state(prune_probe)
+        after_visible = _visible_probe(prune_probe)
+        after_has = any(str(item.get("draft_id") or "").strip() == draft_id for item in after_visible)
+        prune_removed = bool(before_has and not after_has)
+        readback["prune_archives_removed"] = int(removed.get("archives_removed") or 0)
+        readback["prune_contexts_removed"] = int(removed.get("contexts_removed") or 0)
+        readback["prune_removed_entry"] = prune_removed
+        readback["library_navigation_readback_found"] = after_has
+    except ImportError:
+        try:
+            from draft_archive_visibility import list_visible_draft_archives as _visible_probe
+
+            nav_visible = _visible_probe(prune_probe)
+            readback["library_navigation_readback_found"] = any(
+                str(item.get("draft_id") or "").strip() == draft_id for item in nav_visible
+            )
+        except ImportError:
+            readback["library_navigation_readback_found"] = readback.get("visible_archive_found")
+
+    if not readback.get("library_navigation_readback_found"):
+        errors.append("Saved Draft Library navigation readback did not find the archive card.")
+    if prune_removed:
+        errors.append(
+            "Visibility prune would remove this shared league; commissioner/ownership identity must be repaired."
+        )
 
     readback["my_team_name"] = str((context or {}).get("my_team_name") or my_team or "")
     return not errors, errors, readback
@@ -2165,12 +2523,270 @@ def on_confirm_live_draft_shared_league(
     )
 
 
+def _on_click_open_trade_center(
+    draft_id: str = "",
+    button_key: str = "",
+) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    session["_lineup_focus_trade_center"] = True
+    _on_click_fantasy_nav(
+        target_page=FANTASY_LINEUP_PAGE,
+        draft_id=str(draft_id or ""),
+        button_key=str(button_key or ""),
+    )
+
+
+def _render_shared_league_success_navigation(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    draft_id: str,
+    key_prefix: str = "live_draft_complete",
+) -> None:
+    draft_id = str(draft_id or "").strip()
+    if not draft_id:
+        return
+    nav1, nav2, nav3 = st.columns(3)
+    with nav1:
+        st.button(
+            "Open Saved Draft Library",
+            key=f"{key_prefix}_open_library_{draft_id[:8]}",
+            type="primary",
+            use_container_width=True,
+            on_click=_on_click_open_saved_draft_library_focus,
+            kwargs={
+                "draft_id": draft_id,
+                "return_page": str(session.get("active_page") or LIVE_DRAFT_PAGE),
+                "button_key": f"{key_prefix}_open_library_{draft_id[:8]}",
+                "button": "open_saved_draft_library_focus",
+            },
+        )
+    with nav2:
+        st.button(
+            "Open Lineup",
+            key=f"{key_prefix}_open_lineup_{draft_id[:8]}",
+            use_container_width=True,
+            on_click=_on_click_fantasy_nav,
+            kwargs={
+                "target_page": FANTASY_LINEUP_PAGE,
+                "draft_id": draft_id,
+                "button_key": f"{key_prefix}_open_lineup_{draft_id[:8]}",
+            },
+        )
+    with nav3:
+        st.button(
+            "Open Trade Center",
+            key=f"{key_prefix}_open_trade_{draft_id[:8]}",
+            use_container_width=True,
+            on_click=_on_click_open_trade_center,
+            kwargs={
+                "draft_id": draft_id,
+                "button_key": f"{key_prefix}_open_trade_{draft_id[:8]}",
+            },
+        )
+
+
+def _on_click_fantasy_nav(
+    target_page: str = "",
+    draft_id: str = "",
+    button_key: str = "",
+) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    did = str(draft_id or "").strip()
+    if did:
+        try:
+            from draft_archive_state import set_active_draft_archive
+
+            set_active_draft_archive(session, did)
+        except ImportError:
+            session["active_draft_archive_id"] = did
+    schedule_fantasy_analysis_navigation(session, str(target_page or FANTASY_LINEUP_PAGE).strip())
+
+
+def _shared_league_success_message(
+    *,
+    league_label: str,
+    canonical_id: str,
+    draft_id: str,
+    context_id: str,
+    my_team: str,
+    count_text: str,
+    readback: dict[str, Any],
+) -> str:
+    return (
+        f"Shared league created successfully. "
+        f"League name: {league_label}. "
+        f"Canonical league ID: {canonical_id or '—'}. "
+        f"Saved draft ID: {draft_id or '—'}. "
+        f"League context ID: {context_id or '—'}. "
+        f"Active team: {my_team}. "
+        f"Roster counts: {count_text}. "
+        f"Raw archive found: {bool(readback.get('raw_archive_found'))}. "
+        f"Visible archive found: {bool(readback.get('visible_archive_found'))}. "
+        f"Disk readback found: {bool(readback.get('disk_readback_found'))}. "
+        f"{_shared_league_cloud_status_line(readback)}"
+    )
+
+
+def _shared_league_cloud_status_line(readback: dict[str, Any]) -> str:
+    if readback.get("cloud_readback_skipped"):
+        return "Cloud readback: not required (cloud persistence disabled)."
+    if readback.get("cloud_readback_found"):
+        return "Cloud readback found: true."
+    if readback.get("cloud_unavailable"):
+        detail = str(readback.get("cloud_verification_warning") or "Cloud temporarily unavailable").strip()
+        return f"Cloud readback: not verified ({detail})."
+    return "Cloud readback found: false."
+
+
+def _finalize_shared_league_creation_success(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    request_id: str,
+    draft_id: str,
+    context_id: str,
+    canonical_id: str,
+    my_team: str,
+    preview: dict[str, Any],
+    entry: dict[str, Any],
+    readback: dict[str, Any],
+    save_call_count: int,
+    shared_push_ok: bool,
+    key_prefix: str = "live_draft_complete",
+) -> None:
+    completed = dict(session.get(SHARED_LEAGUE_CREATE_COMPLETED_KEY) or {})
+    completed[request_id] = {
+        "request_id": request_id,
+        "draft_id": draft_id,
+        "context_id": context_id,
+        "canonical_league_id": canonical_id,
+        "my_team_name": my_team,
+    }
+    session[SHARED_LEAGUE_CREATE_COMPLETED_KEY] = completed
+    session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
+    session.pop(SHARED_CONFIRM_OPEN_KEY, None)
+    session.pop(SHARED_LEAGUE_CONFIRM_REQUEST_KEY, None)
+
+    counts = preview.get("roster_count_by_team") or {}
+    count_text = ", ".join(f"{team} {n}" for team, n in sorted(counts.items()))
+    league_label = str(
+        preview.get("league_name")
+        or entry.get("draft_name")
+        or readback.get("league_name")
+        or ""
+    ).strip()
+    success_msg = _shared_league_success_message(
+        league_label=league_label,
+        canonical_id=canonical_id,
+        draft_id=draft_id,
+        context_id=context_id,
+        my_team=my_team,
+        count_text=count_text,
+        readback=readback,
+    )
+    session["_live_draft_shared_league_flash"] = {"level": "success", "message": success_msg}
+    session["_live_draft_shared_league_success_actions"] = {
+        "draft_id": draft_id,
+        "context_id": context_id,
+        "key_prefix": key_prefix,
+    }
+    if not shared_push_ok:
+        st.warning("Shared backend push did not confirm success; local league context is active.")
+    if readback.get("cloud_enabled") and readback.get("cloud_unavailable") and not readback.get("cloud_readback_found"):
+        st.warning(
+            "Cloud persistence could not be verified right now: "
+            f"{readback.get('cloud_verification_warning') or 'Cloud temporarily unavailable'}. "
+            "Local disk save succeeded; retry sign-out/sign-in later to confirm cloud durability."
+        )
+    _merge_shared_league_diag(
+        session,
+        create_request_status="completed",
+        created_draft_id=draft_id,
+        created_context_id=context_id,
+        created_canonical_league_id=canonical_id,
+        confirmation_closed_after_success=True,
+        save_call_count=save_call_count,
+        persistence_readback=readback,
+        create_error="",
+    )
+
+
+def _post_save_shared_league_library(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    entry: dict[str, Any],
+    context: dict[str, Any],
+    my_team: str,
+    draft_id: str,
+    context_id: str,
+    canonical_id: str,
+    expected_counts: dict[str, int],
+) -> tuple[bool, list[str], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    context = _ensure_shared_league_library_identity(session, context, my_team=my_team)
+    persist_ok, _disk = _persist_shared_league_library_entry(
+        st,
+        session,
+        entry,
+        context,
+        my_team=my_team,
+    )
+    ok, verify_errors, readback = _verify_shared_league_persistence(
+        session,
+        st=st,
+        draft_id=draft_id,
+        context_id=context_id,
+        my_team=my_team,
+        expected_counts=expected_counts,
+        entry=entry,
+    )
+    if not persist_ok:
+        verify_errors = list(verify_errors) + ["Draft Library disk/cloud persistence did not complete."]
+        ok = False
+    if ok:
+        return ok, verify_errors, readback, entry, context
+
+    st.warning(
+        "Shared league was created, but its Draft Library card is not visible. "
+        "Repairing account ownership and persistence…"
+    )
+    entry, context, repair_persist_ok, _repair_meta = _repair_shared_league_library_entry(
+        st,
+        session,
+        draft_id=draft_id,
+        context_id=context_id,
+        canonical_league_id=canonical_id,
+        my_team=my_team,
+    )
+    if not isinstance(entry, dict) or not isinstance(context, dict):
+        return False, verify_errors, readback, entry or {}, context or {}
+    ok, verify_errors, readback = _verify_shared_league_persistence(
+        session,
+        st=st,
+        draft_id=draft_id,
+        context_id=context_id,
+        my_team=my_team,
+        expected_counts=expected_counts,
+        entry=entry,
+    )
+    if not repair_persist_ok:
+        verify_errors = list(verify_errors) + ["Library repair persistence did not complete."]
+        ok = False
+    return ok, verify_errors, readback, entry, context
+
+
 def _find_existing_live_draft_shared_league(
     session: dict[str, Any],
     *,
     request_id: str,
     draft_id: str,
     draft_fingerprint: str,
+    canonical_league_id: str = "",
 ) -> dict[str, Any] | None:
     completed = session.get(SHARED_LEAGUE_CREATE_COMPLETED_KEY)
     if isinstance(completed, dict):
@@ -2179,6 +2795,26 @@ def _find_existing_live_draft_shared_league(
             return hit
 
     draft_id = str(draft_id or "").strip()
+    canonical = str(canonical_league_id or "").strip()
+    ctx = _find_shared_league_context_by_identity(
+        session,
+        draft_id=draft_id,
+        canonical_league_id=canonical,
+    )
+    if isinstance(ctx, dict):
+        meta = dict(ctx.get("metadata") or {})
+        context_id = str(ctx.get("league_context_id") or "").strip()
+        source_draft = str(meta.get("source_draft_id") or ctx.get("source_draft_id") or draft_id).strip()
+        canonical_id = str(ctx.get("league_id") or meta.get("league_id") or canonical).strip()
+        if context_id:
+            return {
+                "request_id": request_id,
+                "draft_id": source_draft or draft_id,
+                "context_id": context_id,
+                "canonical_league_id": canonical_id,
+                "context": ctx,
+            }
+
     if not draft_id:
         return None
     try:
@@ -2230,16 +2866,22 @@ def _finalize_existing_shared_league(
     req_draft_id: str,
     cur_id: str,
     save_call_count: int,
+    key_prefix: str = "live_draft_complete",
+    shared_push_ok: bool = True,
 ) -> None:
+    draft_id = str(existing.get("draft_id") or req_draft_id or cur_id).strip()
     context_id = str(existing.get("context_id") or "").strip()
     canonical_id = str(existing.get("canonical_league_id") or "").strip()
-    activation_ok = False
+    request_id = str(existing.get("request_id") or "").strip()
+    expected_counts = {
+        str(team): int(count)
+        for team, count in dict(preview.get("roster_count_by_team") or {}).items()
+    }
     try:
-        from fantasy_league_context import activate_league_context
+        from fantasy_league_context import activate_league_context, get_league_context
 
         _merge_shared_league_diag(session, activation_attempted=True)
         activate_league_context(session, context_id)
-        activation_ok = True
         _merge_shared_league_diag(session, activation_ok=True)
     except ImportError:
         _merge_shared_league_diag(session, activation_attempted=False, activation_ok=False)
@@ -2253,26 +2895,59 @@ def _finalize_existing_shared_league(
         st.error(f"Could not activate existing shared league: {type(exc).__name__}: {exc}")
         return
 
-    session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
-    session.pop(SHARED_CONFIRM_OPEN_KEY, None)
-    session.pop(SHARED_LEAGUE_CONFIRM_REQUEST_KEY, None)
-    counts = preview.get("roster_count_by_team") or {}
-    count_text = ", ".join(f"{team} {n}" for team, n in sorted(counts.items()))
-    already_msg = (
-        f"This completed draft has already been converted to shared league `{canonical_id or context_id}`. "
-        f"Active team: {my_team}. Roster counts: {count_text}."
+    context = get_league_context(session, context_id) if context_id else None
+    if not isinstance(context, dict):
+        context = dict(existing.get("context") or {})
+    entry = get_draft_archive(session, draft_id) if draft_id else None
+    if not isinstance(entry, dict):
+        entry = {"draft_id": draft_id, "league_context_id": context_id}
+
+    ok, verify_errors, readback, entry, context = _post_save_shared_league_library(
+        st,
+        session,
+        entry=entry,
+        context=context,
+        my_team=my_team,
+        draft_id=draft_id,
+        context_id=context_id,
+        canonical_id=canonical_id,
+        expected_counts=expected_counts,
     )
-    session["_live_draft_shared_league_flash"] = {"level": "info", "message": already_msg}
-    st.info(already_msg)
+    _merge_shared_league_diag(session, persistence_readback=readback)
+    if ok:
+        _finalize_shared_league_creation_success(
+            st,
+            session,
+            request_id=request_id or _shared_league_create_request_id(draft_id=draft_id),
+            draft_id=draft_id,
+            context_id=context_id,
+            canonical_id=canonical_id or str(readback.get("canonical_league_id") or ""),
+            my_team=my_team,
+            preview=preview,
+            entry=entry,
+            readback=readback,
+            save_call_count=save_call_count,
+            shared_push_ok=shared_push_ok,
+            key_prefix=key_prefix,
+        )
+        st.info(
+            f"This completed draft was already converted to shared league "
+            f"`{canonical_id or context_id}`; library card restored and verified."
+        )
+        return
+
+    err = "; ".join(verify_errors)
+    session["_live_draft_shared_league_flash"] = {"level": "error", "message": err}
+    st.error(err)
     _merge_shared_league_diag(
         session,
-        create_request_status="already_exists",
-        created_draft_id=str(existing.get("draft_id") or req_draft_id or cur_id),
+        create_request_status="repair_failed",
+        created_draft_id=draft_id,
         created_context_id=context_id,
         created_canonical_league_id=canonical_id,
-        confirmation_closed_after_success=True,
+        confirmation_closed_after_success=False,
         save_call_count=save_call_count,
-        create_error="",
+        create_error=err,
     )
 
 
@@ -2533,11 +3208,15 @@ def _process_live_draft_shared_league_create_request(
             str(team): int(count)
             for team, count in dict(preview.get("roster_count_by_team") or {}).items()
         }
-        ok, verify_errors, readback = _verify_shared_league_persistence(
+        ok, verify_errors, readback, entry, context = _post_save_shared_league_library(
+            st,
             session,
+            entry=entry,
+            context=context,
+            my_team=my_team,
             draft_id=draft_id,
             context_id=context_id,
-            my_team=my_team,
+            canonical_id=canonical_id,
             expected_counts=expected_counts,
         )
         _merge_shared_league_diag(session, persistence_readback=readback)
@@ -2559,44 +3238,19 @@ def _process_live_draft_shared_league_create_request(
                 st.warning("Shared backend push did not confirm success; local league context was saved.")
             return
 
-        completed = dict(session.get(SHARED_LEAGUE_CREATE_COMPLETED_KEY) or {})
-        completed[request_id] = {
-            "request_id": request_id,
-            "draft_id": draft_id,
-            "context_id": context_id,
-            "canonical_league_id": canonical_id,
-            "my_team_name": my_team,
-        }
-        session[SHARED_LEAGUE_CREATE_COMPLETED_KEY] = completed
-        session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
-        session.pop(SHARED_CONFIRM_OPEN_KEY, None)
-        session.pop(SHARED_LEAGUE_CONFIRM_REQUEST_KEY, None)
-
-        counts = preview.get("roster_count_by_team") or {}
-        count_text = ", ".join(f"{team} {n}" for team, n in sorted(counts.items()))
-        league_label = str(league_name or preview.get("league_name") or entry.get("draft_name") or "").strip()
-        success_msg = (
-            f"Shared league created successfully. "
-            f"League name: {league_label}. "
-            f"Canonical league ID: {canonical_id or '—'}. "
-            f"Saved draft ID: {draft_id or '—'}. "
-            f"League context ID: {context_id or '—'}. "
-            f"Active team: {my_team}. "
-            f"Roster counts: {count_text}."
-        )
-        session["_live_draft_shared_league_flash"] = {"level": "success", "message": success_msg}
-        st.success(success_msg)
-        if not shared_push_ok:
-            st.warning("Shared backend push did not confirm success; local league context is active.")
-        _merge_shared_league_diag(
+        _finalize_shared_league_creation_success(
+            st,
             session,
-            create_request_status="completed",
-            created_draft_id=draft_id,
-            created_context_id=context_id,
-            created_canonical_league_id=canonical_id,
-            confirmation_closed_after_success=True,
+            request_id=request_id,
+            draft_id=draft_id,
+            context_id=context_id,
+            canonical_id=canonical_id or str(readback.get("canonical_league_id") or ""),
+            my_team=my_team,
+            preview=preview,
+            entry=entry,
+            readback=readback,
             save_call_count=save_call_count,
-            create_error="",
+            shared_push_ok=shared_push_ok,
         )
     finally:
         _clear_create_processing_lock(session, request_id=request_id)
@@ -2673,13 +3327,6 @@ def render_live_draft_completion_panel(
             st.error(str(analyze_flash["message"]))
         else:
             st.info(str(analyze_flash["message"]))
-
-    shared_flash = session.pop("_live_draft_shared_league_flash", None)
-    if isinstance(shared_flash, dict) and shared_flash.get("message"):
-        if shared_flash.get("level") == "error":
-            st.error(str(shared_flash["message"]))
-        else:
-            st.success(str(shared_flash["message"]))
 
     default_name = f"{cfg.get('league_name', 'Live Draft')} — {' vs '.join(str(t) for t in (room.get('teams') or [])[:4] if str(t).strip()) or save_team}"
     draft_name = st.text_input(
@@ -2775,6 +3422,28 @@ def render_live_draft_completion_panel(
             key_prefix=key_prefix,
         )
         _process_live_draft_shared_league_create_request(st, session, room)
+
+    shared_flash = session.pop("_live_draft_shared_league_flash", None)
+    if isinstance(shared_flash, dict) and shared_flash.get("message"):
+        level = str(shared_flash.get("level") or "info")
+        message = str(shared_flash["message"])
+        if level == "error":
+            st.error(message)
+        elif level == "warning":
+            st.warning(message)
+        elif level == "success":
+            st.success(message)
+        else:
+            st.info(message)
+
+    success_actions = session.pop("_live_draft_shared_league_success_actions", None)
+    if isinstance(success_actions, dict) and success_actions.get("draft_id"):
+        _render_shared_league_success_navigation(
+            st,
+            session,
+            draft_id=str(success_actions.get("draft_id") or ""),
+            key_prefix=str(success_actions.get("key_prefix") or key_prefix),
+        )
 
     if export_clicked:
         session[f"{key_prefix}_export_open"] = True
@@ -3508,19 +4177,32 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         pass
 
     archives = list_visible_draft_archives(session)
-    active = get_active_draft_archive(session)
-    if active and not is_saved_draft_visible_to_session(session, active):
-        clear_active_draft_archive(session)
+    focus_draft_id = str(session.pop("_saved_draft_library_focus_draft_id", None) or "").strip()
+    if focus_draft_id:
         try:
-            from fantasy_league_context import clear_active_league_context
+            from draft_archive_state import set_active_draft_archive
 
-            clear_active_league_context(session)
+            set_active_draft_archive(session, focus_draft_id)
         except ImportError:
-            pass
-        active = None
-    active_context = get_active_league_context(session)
-    active_id = str((active or {}).get("draft_id") or "")
-    active_context_id = str((active_context or {}).get("league_context_id") or "")
+            session["active_draft_archive_id"] = focus_draft_id
+        active = get_active_draft_archive(session)
+        active_context = get_active_league_context(session)
+        active_id = str((active or {}).get("draft_id") or "")
+        active_context_id = str((active_context or {}).get("league_context_id") or "")
+    else:
+        active = get_active_draft_archive(session)
+        if active and not is_saved_draft_visible_to_session(session, active):
+            clear_active_draft_archive(session)
+            try:
+                from fantasy_league_context import clear_active_league_context
+
+                clear_active_league_context(session)
+            except ImportError:
+                pass
+            active = None
+        active_context = get_active_league_context(session)
+        active_id = str((active or {}).get("draft_id") or "")
+        active_context_id = str((active_context or {}).get("league_context_id") or "")
 
     st.caption(
         "Only **intentionally saved drafts** appear here. "
@@ -3656,6 +4338,7 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         is_active = draft_id == active_id and (
             not active_context_id or not league_context_id or league_context_id == active_context_id
         )
+        is_focus = bool(focus_draft_id and draft_id == focus_draft_id)
         player_n = archive_card_player_count(entry)
         team_n = archive_card_team_count(entry)
         display_team = ""
@@ -3668,14 +4351,16 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         st.markdown(
             _saved_draft_card_html(
                 entry,
-                is_active=is_active,
+                is_active=is_active or is_focus,
                 player_n=player_n,
                 team_n=team_n,
                 display_team=display_team,
             ),
             unsafe_allow_html=True,
         )
-        if is_active:
+        if is_focus and not is_active:
+            st.caption(f"Focused draft `{draft_id}` — use **Set Active** to manage this league.")
+        elif is_active:
             st.caption("Active draft — use **Manage this draft** in the **Active Draft** section above.")
         else:
             _render_archive_actions(

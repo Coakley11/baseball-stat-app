@@ -226,15 +226,30 @@ def _repair_invitee_identities(session: dict[str, Any]) -> None:
 def _repair_league_context_identities(session: dict[str, Any]) -> None:
     """Backfill commissioner/ownership ids before visibility prune (local vs cloud uuid drift)."""
     try:
-        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, list_league_contexts
+        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, list_league_contexts, upsert_league_context
         from fantasy_league_invites import repair_commissioner_identity
+        from fantasy_league_team_ownership import account_user_ids_match, assign_team_owner_to_context, get_team_ownership
+        from live_draft_shared_league import CREATED_FROM_LIVE_DRAFT
     except ImportError:
         return
     _repair_invitee_identities(session)
+    uid = _resolve_session_user_id(session)
     for ctx in list_league_contexts(session):
         if str(ctx.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
             continue
-        repair_commissioner_identity(ctx, session)
+        ctx, _ = repair_commissioner_identity(ctx, session)
+        meta = dict(ctx.get("metadata") or {})
+        if str(meta.get("created_from") or "") == CREATED_FROM_LIVE_DRAFT and uid:
+            if not str(meta.get("commissioner_user_id") or "").strip():
+                meta["commissioner_user_id"] = uid
+                ctx["metadata"] = meta
+            my_team = str(ctx.get("my_team_name") or "").strip()
+            if my_team:
+                ownership = get_team_ownership(ctx)
+                record = dict(ownership.get(my_team) or {})
+                if not account_user_ids_match(str(record.get("user_id") or ""), uid):
+                    ctx = assign_team_owner_to_context(ctx, my_team, user_id=uid)
+            ctx = upsert_league_context(session, ctx)
 
 
 def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, int]:

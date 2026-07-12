@@ -48,6 +48,38 @@ class _RerunSignal(Exception):
     pass
 
 
+def _post_save_success_readback(**overrides: object) -> dict[str, object]:
+    base = {
+        "raw_archive_found": True,
+        "visible_archive_found": True,
+        "archive_draft_id_matches": True,
+        "league_context_found": True,
+        "canonical_league_id": "league:test",
+        "active_context_matches": True,
+        "disk_readback_found": True,
+        "cloud_readback_found": True,
+        "library_navigation_readback_found": True,
+        "commissioner_recognized": True,
+        "donny_ownership_recognized": True,
+        "roster_counts": {"Daniel": 2, "Team 2": 2},
+    }
+    base.update(overrides)
+    return base
+
+
+def _post_save_success_tuple(**overrides: object):
+    readback = _post_save_success_readback(**overrides)
+    entry = {
+        "draft_name": "Completed Live Draft",
+        "canonical_league_id": readback.get("canonical_league_id") or "league:test",
+        "draft_id": "live-two-team-test",
+        "league_context_id": "ctx:test",
+        "shared_league_created": True,
+    }
+    context = {"league_id": readback.get("canonical_league_id") or "league:test", "league_context_id": "ctx:test"}
+    return True, [], readback, entry, context
+
+
 class _FakeStreamlit:
     def __init__(self, *, clicked: set[str] | None = None, selected_team: str = "Daniel") -> None:
         self.clicked = set(clicked or set())
@@ -260,9 +292,10 @@ class LiveDraftCompletionPanelLifecycleTests(unittest.TestCase):
             patch("live_draft_shared_league.preview_shared_league_creation", return_value=self.preview),
             patch("live_draft_shared_league.save_live_draft_shared_league_context", save_mock),
             patch(
-                "draft_archive_ui._verify_shared_league_persistence",
-                return_value=(True, [], {"draft_library_found": True, "league_context_found": True}),
+                "draft_archive_ui._post_save_shared_league_library",
+                return_value=_post_save_success_tuple(),
             ),
+            patch("draft_archive_ui._persist_archive", return_value=True),
         ):
             render_live_draft_completion_panel(
                 st,
@@ -403,21 +436,9 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
             ),
         )
         verify_patch = patch(
-            "draft_archive_ui._verify_shared_league_persistence",
+            "draft_archive_ui._post_save_shared_league_library",
             verify_mock
-            or Mock(
-                return_value=(
-                    True,
-                    [],
-                    {
-                        "draft_library_found": True,
-                        "league_context_found": True,
-                        "canonical_league_id": "league:test",
-                        "active_context_id": "ctx:test",
-                        "roster_counts": {"Daniel": 2, "Team 2": 2},
-                    },
-                )
-            ),
+            or Mock(return_value=_post_save_success_tuple()),
         )
         return at, preview_patch, save_patch, verify_patch
 
@@ -549,7 +570,7 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
             at.button(key="live_draft_complete_confirm_shared_league").click().run()
         save_mock.assert_not_called()
         blob = "\n".join(str(m.value) for m in at.info) + "\n".join(str(m.value) for m in at.success)
-        self.assertIn("already been converted to shared league", blob, blob)
+        self.assertIn("already converted to shared league", blob, blob)
         self.assertNotIn("_live_draft_shared_league_confirm_open", at.session_state)
 
     def test_preview_exception_shows_visible_error(self) -> None:
@@ -610,8 +631,8 @@ class LiveDraftSharedLeagueCreateRecoveryAppTest(unittest.TestCase):
         with (
             patch("live_draft_shared_league.save_live_draft_shared_league_context", save_mock),
             patch(
-                "draft_archive_ui._verify_shared_league_persistence",
-                return_value=(True, [], {"draft_library_found": True, "league_context_found": True}),
+                "draft_archive_ui._post_save_shared_league_library",
+                return_value=_post_save_success_tuple(),
             ),
         ):
             at.run()
@@ -645,11 +666,13 @@ class LiveDraftSharedLeagueCreateRecoveryAppTest(unittest.TestCase):
         with (
             patch("live_draft_shared_league.save_live_draft_shared_league_context", save_mock),
             patch(
-                "draft_archive_ui._verify_shared_league_persistence",
+                "draft_archive_ui._post_save_shared_league_library",
                 return_value=(
                     False,
                     ["Shared league creation did not persist to the Draft Library."],
-                    {"draft_library_found": False},
+                    {"raw_archive_found": False, "visible_archive_found": False},
+                    {},
+                    {},
                 ),
             ),
         ):
@@ -706,17 +729,10 @@ class LiveDraftRobinsFantasyConfirmAppTest(unittest.TestCase):
             save_mock,
         )
         verify_patch = patch(
-            "draft_archive_ui._verify_shared_league_persistence",
-            return_value=(
-                True,
-                [],
-                {
-                    "draft_library_found": True,
-                    "league_context_found": True,
-                    "canonical_league_id": "league:robins",
-                    "active_context_id": "ctx:robins",
-                    "roster_counts": {"Donny": 10, "Team B": 10},
-                },
+            "draft_archive_ui._post_save_shared_league_library",
+            return_value=_post_save_success_tuple(
+                canonical_league_id="league:robins",
+                roster_counts={"Donny": 10, "Team B": 10},
             ),
         )
         with save_patch, verify_patch:
@@ -907,6 +923,154 @@ class LiveDraftSharedLeagueTests(unittest.TestCase):
         preview = preview_shared_league_creation(room, my_team_name="Daniel")
         self.assertTrue(preview.get("ready"))
         self.assertIsNone(get_league_context(self.session, str(preview.get("canonical_league_id") or "")))
+
+
+class LiveDraftSharedLeagueLibraryPersistenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        set_shared_league_store(LocalFileSharedLeagueStore(root=Path(self._tmpdir.name)))
+        self.session: dict = {}
+
+    def tearDown(self) -> None:
+        set_shared_league_store(None)
+        self._tmpdir.cleanup()
+
+    def test_commissioner_archive_visible_after_persist_and_prune(self) -> None:
+        from draft_archive_ui import _persist_shared_league_library_entry, _verify_shared_league_persistence
+        from draft_archive_state import get_draft_archive, list_draft_archives
+        from draft_archive_visibility import list_visible_draft_archives, prune_invisible_shared_league_state
+        from tests.test_live_draft_team_identity import _live_robins_fantasy_room
+
+        room = _live_robins_fantasy_room()
+        apply_live_draft_completion(room, self.session)
+        with _as_user("user:daniel"):
+            entry, context = save_live_draft_shared_league_context(
+                self.session,
+                room,
+                my_team_name="Donny",
+                league_name="Robins Fantasy",
+                draft_name="Robins Fantasy Completed Draft",
+                assign_team=True,
+                preassign_owners={
+                    "Donny": {"user_id": "user:daniel", "email": "daniel@test", "display_name": "Daniel"},
+                },
+            )
+            draft_id = str(entry.get("draft_id") or "")
+            context_id = str(context.get("league_context_id") or "")
+            canonical_id = str(entry.get("canonical_league_id") or context.get("league_id") or "")
+            with patch("draft_archive_ui._persist_archive", return_value=True):
+                persist_ok, _readback = _persist_shared_league_library_entry(
+                    SimpleNamespace(session_state=self.session),
+                    self.session,
+                    entry,
+                    context,
+                    my_team="Donny",
+                )
+            from fantasy_league_context import activate_league_context
+
+            activate_league_context(self.session, context_id)
+            self.assertTrue(persist_ok)
+            ok, errors, verify = _verify_shared_league_persistence(
+                self.session,
+                draft_id=draft_id,
+                context_id=context_id,
+                my_team="Donny",
+                expected_counts={"Donny": 10, "Team B": 10},
+                entry=entry,
+            )
+            self.assertTrue(ok, errors)
+            self.assertEqual(len(list_draft_archives(self.session)), 1)
+            visible = list_visible_draft_archives(self.session)
+            self.assertEqual(len(visible), 1)
+            self.assertEqual(str(visible[0].get("draft_id") or ""), draft_id)
+            removed = prune_invisible_shared_league_state(dict(self.session))
+            self.assertEqual(int(removed.get("archives_removed") or 0), 0)
+            self.assertEqual(len(list_visible_draft_archives(self.session)), 1)
+            self.assertTrue(verify.get("commissioner_recognized"))
+            self.assertTrue(verify.get("donny_ownership_recognized"))
+            self.assertEqual(str(verify.get("canonical_league_id") or ""), canonical_id)
+
+    def test_existing_league_recovery_does_not_duplicate(self) -> None:
+        from draft_archive_ui import _find_existing_live_draft_shared_league, _repair_shared_league_library_entry
+        from draft_archive_state import list_draft_archives
+        from tests.test_live_draft_team_identity import _live_robins_fantasy_room
+
+        room = _live_robins_fantasy_room()
+        apply_live_draft_completion(room, self.session)
+        with _as_user("user:daniel"):
+            entry, context = save_live_draft_shared_league_context(
+                self.session,
+                room,
+                my_team_name="Donny",
+                league_name="Robins Fantasy",
+                assign_team=True,
+                preassign_owners={"Donny": {"user_id": "user:daniel", "email": "daniel@test", "display_name": "Daniel"}},
+            )
+            draft_id = str(entry.get("draft_id") or "")
+            canonical_id = str(entry.get("canonical_league_id") or "")
+            context_id = str(context.get("league_context_id") or "")
+            record = room.get(COMPLETION_RECORD_KEY) or {}
+            fp = str(record.get("draft_fingerprint") or "")
+            existing = _find_existing_live_draft_shared_league(
+                self.session,
+                request_id="rid",
+                draft_id=draft_id,
+                draft_fingerprint=fp,
+                canonical_league_id=canonical_id,
+            )
+            self.assertIsNotNone(existing, msg=f"draft_id={draft_id!r} canonical={canonical_id!r}")
+            with patch("draft_archive_ui._persist_archive", return_value=True):
+                _entry2, _ctx2, repair_ok, _meta = _repair_shared_league_library_entry(
+                    SimpleNamespace(session_state=self.session),
+                    self.session,
+                    draft_id=draft_id,
+                    context_id=context_id,
+                    canonical_league_id=canonical_id,
+                    my_team="Donny",
+                )
+            self.assertTrue(repair_ok)
+            self.assertEqual(len(list_draft_archives(self.session)), 1)
+
+    def test_invitee_sees_league_only_with_valid_membership(self) -> None:
+        from draft_archive_visibility import list_visible_draft_archives
+        from fantasy_league_context import upsert_league_context
+        from tests.test_live_draft_team_identity import _live_robins_fantasy_room
+
+        room = _live_robins_fantasy_room()
+        apply_live_draft_completion(room, self.session)
+        with _as_user("user:daniel"):
+            _entry, context = save_live_draft_shared_league_context(
+                self.session,
+                room,
+                my_team_name="Donny",
+                league_name="Robins Fantasy",
+                assign_team=True,
+                preassign_owners={
+                    "Donny": {"user_id": "user:daniel", "email": "daniel@test", "display_name": "Daniel"},
+                    "Team B": {"user_id": "user:teamb", "email": "teamb@test", "display_name": "Team B Owner"},
+                },
+            )
+        coakley = dict(self.session)
+        coakley["_suite_cloud_user_id"] = "user:coakley"
+        coakley["_suite_auth_user_id"] = "user:coakley"
+        with _as_user("user:coakley"):
+            self.assertEqual(len(list_visible_draft_archives(coakley)), 0)
+        loaded = get_league_context(self.session, str(context.get("league_context_id") or "")) or context
+        loaded = assign_team_owner_to_context(
+            loaded,
+            "Team B",
+            user_id="user:coakley",
+            email="coakley@test",
+            display_name="Coakley",
+        )
+        meta = dict(loaded.get("metadata") or {})
+        meta["joined_via_invite"] = True
+        loaded["metadata"] = meta
+        upsert_league_context(self.session, loaded)
+        coakley["draft_archive_teams"] = list(self.session.get("draft_archive_teams") or [])
+        coakley["fantasy_league_context_state"] = dict(self.session.get("fantasy_league_context_state") or {})
+        with _as_user("user:coakley"):
+            self.assertEqual(len(list_visible_draft_archives(coakley)), 1)
 
 
 if __name__ == "__main__":
