@@ -247,11 +247,21 @@ def live_draft_make_pick(
             pick_source=source_label,
             gaps=gaps,
         )
+    try:
+        from live_draft_team_identity import stamp_team_id_on_pick_record
+
+        stamp_team_id_on_pick_record(room, pick_record, team)
+    except ImportError:
+        pick_record.update(
+            {
+                "Team": team,
+                "Fantasy Team": team,
+            }
+        )
     pick_record.update(
         {
             "Round": slot["Round"],
             "Pick": slot["Pick"],
-            "Fantasy Team": team,
             "Pick Verdict": verdict,
             "pick_source": source_label,
             "decision_score_at_pick": snap.get("Decision Score"),

@@ -44,8 +44,106 @@ def _team_name(row: dict[str, Any]) -> str:
     return ""
 
 
+def get_roster_transfer_diagnostics(room: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from live_draft_team_identity import build_board_team_resolution
+
+        return build_board_team_resolution(room)
+    except ImportError:
+        teams = [str(t).strip() for t in (room.get("teams") or []) if str(t).strip()]
+        return {
+            "room_teams": teams,
+            "room_roster_keys": sorted(str(k) for k in dict(room.get("rosters") or {}).keys()),
+            "draft_board_row_count": len(room.get("draft_board") or []),
+            "draft_board_distinct_team_values": [],
+            "draft_results_count": 0,
+            "draft_results_distinct_team_values": [],
+            "configured_team_names": teams,
+            "team_rename_map": {},
+            "resolved_board_team_map": {},
+            "unmapped_board_teams": [],
+            "ambiguous_board_teams": [],
+        }
+
+
 def extract_draft_results_from_room(room: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build pick records from the live draft board only."""
+    """Build pick records from the live draft board with canonical team resolution."""
+    try:
+        from live_draft_team_identity import (
+            build_board_team_resolution,
+            build_team_rename_map,
+            list_room_display_teams,
+            resolve_board_team_label,
+            _roster_player_indexes,
+        )
+    except ImportError:
+        return _extract_draft_results_legacy(room)
+
+    teams = list_room_display_teams(room)
+    resolution = build_board_team_resolution(room)
+    rename_map, _unmapped, ambiguous = build_team_rename_map(room)
+    roster_by_id, roster_by_name = _roster_player_indexes(room)
+    results: list[dict[str, Any]] = []
+    unresolved: list[str] = []
+
+    for row in room.get("draft_board") or []:
+        if not isinstance(row, dict):
+            continue
+        player_name = _player_name(row)
+        if not player_name:
+            continue
+        resolved, raw, team_id, source = resolve_board_team_label(
+            room,
+            row,
+            rename_map=rename_map,
+            roster_by_id=roster_by_id,
+            roster_by_name=roster_by_name,
+            teams=teams,
+        )
+        if not resolved:
+            pick_no = row.get("pick") or row.get("Pick") or "?"
+            unresolved.append(
+                f"Pick {pick_no} ({player_name!r}) uses unresolved team label {raw!r}."
+            )
+            continue
+        pick_number = int(row.get("pick") or row.get("Pick") or len(results) + 1)
+        round_number = int(row.get("round") or row.get("Round") or 1)
+        source_row = dict(row)
+        source_row["Team"] = resolved
+        source_row["Fantasy Team"] = resolved
+        if team_id:
+            source_row["team_id"] = team_id
+        results.append(
+            {
+                "pick_number": pick_number,
+                "round": round_number,
+                "team": resolved,
+                "team_id": team_id,
+                "raw_team": raw,
+                "team_resolution_source": source,
+                "player_id": _player_id(row),
+                "player_name": player_name,
+                "position": _position(row),
+                "drafted_at": str(row.get("drafted_at") or row.get("timestamp") or "").strip() or None,
+                "source_row": source_row,
+            }
+        )
+
+    if ambiguous:
+        room["_live_draft_roster_transfer_errors"] = [
+            f"Ambiguous team label mapping for {label!r}." for label in ambiguous
+        ] + unresolved
+    elif unresolved:
+        room["_live_draft_roster_transfer_errors"] = unresolved
+    else:
+        room.pop("_live_draft_roster_transfer_errors", None)
+
+    room["_live_draft_roster_transfer_diag"] = resolution
+    results.sort(key=lambda r: (int(r.get("pick_number") or 0), str(r.get("team") or "")))
+    return results
+
+
+def _extract_draft_results_legacy(room: dict[str, Any]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for row in room.get("draft_board") or []:
         if not isinstance(row, dict):
@@ -61,6 +159,7 @@ def extract_draft_results_from_room(room: dict[str, Any]) -> list[dict[str, Any]
                 "pick_number": pick_number,
                 "round": round_number,
                 "team": team,
+                "raw_team": team,
                 "player_id": _player_id(row),
                 "player_name": player_name,
                 "position": _position(row),
@@ -99,6 +198,8 @@ def build_league_rosters_from_draft_results(
         source.setdefault("Pick", result.get("pick_number"))
         source.setdefault("Round", result.get("round"))
         source.setdefault("Team", team)
+        if result.get("team_id"):
+            source.setdefault("team_id", result.get("team_id"))
         by_team[team].append(source)
 
     league_rosters: dict[str, dict[str, Any]] = {}
@@ -115,11 +216,27 @@ def validate_roster_transfer(
 ) -> tuple[bool, list[str]]:
     """Validate draft board → league_rosters consistency."""
     errors: list[str] = []
+    transfer_errors = room.get("_live_draft_roster_transfer_errors")
+    if isinstance(transfer_errors, list):
+        errors.extend(str(e) for e in transfer_errors if str(e).strip())
+
     if not draft_results:
         errors.append("No draft results found on the final board.")
         return False, errors
 
     teams = [str(t).strip() for t in (room.get("teams") or []) if str(t).strip()]
+    result_teams = {str(r.get("team") or "").strip() for r in draft_results if str(r.get("team") or "").strip()}
+    missing_team_labels = sorted(set(teams) - result_teams)
+    extra_team_labels = sorted(result_teams - set(teams))
+    if missing_team_labels:
+        errors.append(
+            "Draft results missing current room teams: " + ", ".join(missing_team_labels) + "."
+        )
+    if extra_team_labels:
+        errors.append(
+            "Draft results include teams not in the room: " + ", ".join(extra_team_labels) + "."
+        )
+
     player_to_team: dict[str, str] = {}
     player_id_to_team: dict[str, str] = {}
     for result in draft_results:
@@ -183,6 +300,12 @@ def validate_roster_transfer(
                         f"Room roster for {team_name!r} contains {name!r}, which is not in draft results."
                     )
 
+    diag = room.get("_live_draft_roster_transfer_diag")
+    if isinstance(diag, dict):
+        for note in diag.get("resolution_notes") or []:
+            if note and note not in errors:
+                pass  # informational only; keep in diagnostics
+
     return not errors, errors
 
 
@@ -192,7 +315,12 @@ def build_authoritative_live_draft_rosters(
     my_team_name: str,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], list[str]]:
     """Extract draft results and validated league rosters from the live board."""
-    teams = [str(t).strip() for t in (room.get("teams") or []) if str(t).strip()]
+    try:
+        from live_draft_team_identity import list_room_display_teams
+
+        teams = list_room_display_teams(room)
+    except ImportError:
+        teams = [str(t).strip() for t in (room.get("teams") or []) if str(t).strip()]
     draft_results = extract_draft_results_from_room(room)
     league_rosters = build_league_rosters_from_draft_results(
         draft_results,

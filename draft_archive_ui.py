@@ -2150,12 +2150,56 @@ def _render_live_draft_shared_league_confirmation(
         return
 
     validation_errors = [str(e) for e in (preview.get("validation_errors") or []) if str(e).strip()]
+    roster_diag = preview.get("roster_transfer_diagnostics") or {}
     _merge_shared_league_diag(
         session,
         preview_call_completed=True,
         preview_validation_errors=validation_errors,
         preview_exception="",
+        roster_transfer_diagnostics=roster_diag,
     )
+    resolution_notes = [str(n) for n in (roster_diag.get("resolution_notes") or []) if str(n).strip()]
+    if resolution_notes:
+        with st.expander("Board team label resolution", expanded=False):
+            for note in resolution_notes:
+                st.caption(note)
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        dev_mode = bool(developer_mode_checkbox_enabled(st=st))
+    except ImportError:
+        dev_mode = False
+    if dev_mode and roster_diag:
+        with st.expander("Roster transfer diagnostics (Developer Mode)", expanded=False):
+            st.json(
+                {
+                    k: roster_diag.get(k)
+                    for k in (
+                        "room_teams",
+                        "room_roster_keys",
+                        "draft_board_row_count",
+                        "draft_board_distinct_team_values",
+                        "draft_results_count",
+                        "draft_results_distinct_team_values",
+                        "configured_team_names",
+                        "team_rename_map",
+                        "resolved_board_team_map",
+                        "unmapped_board_teams",
+                        "ambiguous_board_teams",
+                    )
+                }
+            )
+            board_rows = roster_diag.get("board_row_details") or []
+            if board_rows:
+                st.markdown("**Board row resolution**")
+                for entry in board_rows:
+                    st.text(
+                        f"Pick {entry.get('pick_number')} | "
+                        f"{entry.get('player_name') or entry.get('player_id')} | "
+                        f"raw={entry.get('raw_board_team')!r} | "
+                        f"team_id={entry.get('team_id') or '—'} | "
+                        f"resolved={entry.get('resolved_display_team')!r}"
+                    )
     with st.expander("Create Shared League — confirmation", expanded=True):
         if validation_errors:
             for err in validation_errors:

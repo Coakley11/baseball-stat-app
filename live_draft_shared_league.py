@@ -17,7 +17,7 @@ from fantasy_league_context import (
     upsert_league_context,
 )
 from live_draft_completion import apply_live_draft_completion, is_live_draft_explicitly_complete
-from live_draft_roster_transfer import build_authoritative_live_draft_rosters
+from live_draft_roster_transfer import build_authoritative_live_draft_rosters, get_roster_transfer_diagnostics
 
 CREATED_FROM_LIVE_DRAFT = "live_draft"
 SHARED_LEAGUE_CONFIRM_KEY = "_live_draft_shared_league_confirm"
@@ -118,6 +118,7 @@ def preview_shared_league_creation(
         "scoring_settings": preview_context["scoring_settings"],
         "trade_eligibility_status": trade_message or ("enabled" if trade_enabled else "disabled"),
         "draft_results": draft_results,
+        "roster_transfer_diagnostics": get_roster_transfer_diagnostics(room),
         "validation_errors": errors,
         "ready": not errors and is_live_draft_explicitly_complete(room),
     }

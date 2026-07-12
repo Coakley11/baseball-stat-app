@@ -10023,7 +10023,7 @@ def live_draft_init_room(config, pool_df):
     meta = build_live_draft_room_metadata(config, host_team=host_team)
     room_id = str(uuid.uuid4())[:8].upper()
     meta["draft_room_id"] = room_id
-    return {
+    room = {
         "draft_room_id": room_id,
         "config": config,
         "status": "not_started",
@@ -10040,6 +10040,13 @@ def live_draft_init_room(config, pool_df):
         "paused_remaining_seconds": None,
         "meta": meta,
     }
+    try:
+        from live_draft_team_identity import ensure_room_team_slots
+
+        ensure_room_team_slots(room)
+    except ImportError:
+        pass
+    return room
 
 
 def live_draft_start(room):
@@ -22006,10 +22013,15 @@ if active_page == "Live Draft Room":
                                     )
                                 )
                             if st.button("Save setup changes", key="live_draft_lobby_save_setup"):
-                                room["teams"] = updated
-                                cfg_patch = dict(room.get("config") or {})
-                                cfg_patch["teams"] = updated
-                                room["config"] = cfg_patch
+                                try:
+                                    from live_draft_team_identity import sync_room_team_display_names
+
+                                    sync_room_team_display_names(room, updated)
+                                except ImportError:
+                                    room["teams"] = updated
+                                    cfg_patch = dict(room.get("config") or {})
+                                    cfg_patch["teams"] = updated
+                                    room["config"] = cfg_patch
                                 st.session_state["live_draft_room"] = room
                                 try:
                                     from draft_room_context import commit_shared_room_state, is_multiplayer_draft_active
