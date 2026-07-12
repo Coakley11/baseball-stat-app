@@ -23477,17 +23477,24 @@ if active_page == "Fantasy Lineup Assistant":
                 f"Teams available: {', '.join(lineup_teams[:6])}{'…' if len(lineup_teams) > 6 else ''}."
             )
 
-        from fantasy_trade_ideas import LINEUP_ASSISTANT_TAB_OPTIONS, resolve_lineup_assistant_tab
+        from fantasy_trade_ideas import (
+            LINEUP_ASSISTANT_TAB_OPTIONS,
+            LINEUP_ASSISTANT_TAB_WIDGET_KEY,
+            apply_lineup_assistant_tab_selection,
+            resolve_lineup_assistant_tab,
+            sync_lineup_assistant_tab_widget,
+        )
 
-        _assistant_tab = resolve_lineup_assistant_tab(st.session_state)
-        ensure_select_in_options("lineup_assistant_tab", list(LINEUP_ASSISTANT_TAB_OPTIONS), _assistant_tab)
+        requested_tab = resolve_lineup_assistant_tab(st.session_state)
+        sync_lineup_assistant_tab_widget(st.session_state, requested_tab=requested_tab)
         _assistant_tab = st.radio(
             "Fantasy Lineup Assistant section",
             list(LINEUP_ASSISTANT_TAB_OPTIONS),
             horizontal=True,
-            key="lineup_assistant_tab",
+            key=LINEUP_ASSISTANT_TAB_WIDGET_KEY,
             label_visibility="collapsed",
         )
+        _assistant_tab = apply_lineup_assistant_tab_selection(st.session_state, _assistant_tab)
 
         if _assistant_tab == "Trade Center":
             try:

@@ -13,11 +13,14 @@ from fantasy_trade_ideas import (
     LINEUP_TRADE_IDEAS_RESULTS_KEY,
     TRADE_CENTER_INTERNAL_TAB_KEY,
     TRADE_CENTER_INTERNAL_TABS,
+    TRADE_CENTER_INTERNAL_WIDGET_KEY,
+    apply_trade_center_internal_selection,
     empty_trade_ideas_message,
     generate_trade_ideas,
     resolve_player_owner_team,
     resolve_receive_target_teams,
     resolve_trade_center_internal_tab,
+    sync_trade_center_internal_widget,
 )
 
 
@@ -260,6 +263,7 @@ def _render_idea_card(st: Any, idea: dict[str, Any], idx: int, session: dict[str
         session["lineup_trade_get_players"] = receive_list
         session["lineup_trade_other_team"] = other
         session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
+        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Build & Analyze"
         st.rerun()
 
 
@@ -526,6 +530,7 @@ def render_trade_center_tab(
         session["lineup_trade_get_players"] = list(handoff.get("receive_players") or [])
         session["lineup_trade_other_team"] = str(handoff.get("other_team") or "")
         session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
+        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Build & Analyze"
 
     if ws["roster_stats"] is None or ws["roster_stats"].empty:
         missing_team = ""
@@ -578,27 +583,24 @@ def render_trade_center_tab(
     pending = _count_pending_offers(session, ws["my_team"])
     _render_trade_center_hero(st, league_name=league_name, my_team=ws["my_team"], pending_offers=pending)
 
-    internal_tab = resolve_trade_center_internal_tab(session)
-    offers_badge = f" ({pending})" if pending else ""
-    tab_labels = [
-        TRADE_CENTER_INTERNAL_TABS[0],
-        f"{TRADE_CENTER_INTERNAL_TABS[1]}{offers_badge}",
-        TRADE_CENTER_INTERNAL_TABS[2],
-    ]
-    selected = st.radio(
-        "Trade Center section",
-        tab_labels,
-        horizontal=True,
-        key=TRADE_CENTER_INTERNAL_TAB_KEY,
-        label_visibility="collapsed",
-    )
-    if selected.startswith("Offers"):
-        internal_tab = "Offers"
-    elif selected.startswith("History"):
-        internal_tab = "History"
-    else:
-        internal_tab = "Build & Analyze"
-    session[TRADE_CENTER_INTERNAL_TAB_KEY] = internal_tab
+    requested_tab = resolve_trade_center_internal_tab(session)
+    valid_tabs = list(TRADE_CENTER_INTERNAL_TABS)
+    sync_trade_center_internal_widget(session, requested_tab=requested_tab)
+
+    nav_left, nav_right = st.columns([5, 2])
+    with nav_left:
+        selected = st.radio(
+            "Trade Center section",
+            valid_tabs,
+            horizontal=True,
+            key=TRADE_CENTER_INTERNAL_WIDGET_KEY,
+            label_visibility="collapsed",
+        )
+    with nav_right:
+        if pending:
+            st.caption(f"Offers · {pending} pending")
+
+    internal_tab = apply_trade_center_internal_selection(session, selected)
 
     if internal_tab == "Build & Analyze":
         _render_build_analyze(
@@ -697,6 +699,7 @@ def _load_offer_into_state(session: dict[str, Any], scope_key: str, offer: dict[
     session["lineup_trade_get_players"] = state["get_players"]
     session["lineup_trade_other_team"] = other
     session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
+    session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Build & Analyze"
 
 
 def _clear_offer_from_inbox(session: dict[str, Any], offer: dict[str, Any], *, league_id: str) -> None:

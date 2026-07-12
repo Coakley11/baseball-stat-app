@@ -68,6 +68,8 @@ LINEUP_FILTER_KEYS = (
     "lineup_trade_ideas_forced_give",
     "lineup_trade_ideas_forced_get",
     "lineup_assistant_tab",
+    "lineup_assistant_tab_widget",
+    "trade_center_internal_tab_widget",
     "lineup_pts_r",
     "lineup_pts_rbi",
     "lineup_pts_hr",

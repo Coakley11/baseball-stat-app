@@ -11,11 +11,13 @@ TRADE_IDEA_CATEGORIES: tuple[str, ...] = ("HR", "RBI", "R", "SB", "BA", "OPS")
 LINEUP_TRADE_IDEAS_RESULTS_KEY = "_lineup_trade_ideas_results"
 LINEUP_TRADE_IDEAS_DIAG_KEY = "_lineup_trade_ideas_diag"
 LINEUP_ASSISTANT_TAB_KEY = "lineup_assistant_tab"
+LINEUP_ASSISTANT_TAB_WIDGET_KEY = "lineup_assistant_tab_widget"
 LINEUP_ASSISTANT_TAB_OPTIONS: tuple[str, ...] = (
     "Lineup Management",
     "Trade Center",
 )
 TRADE_CENTER_INTERNAL_TAB_KEY = "trade_center_internal_tab"
+TRADE_CENTER_INTERNAL_WIDGET_KEY = "trade_center_internal_tab_widget"
 TRADE_CENTER_INTERNAL_TABS: tuple[str, ...] = (
     "Build & Analyze",
     "Offers",
@@ -588,16 +590,27 @@ def empty_trade_ideas_message(diag: dict[str, Any] | None = None) -> str:
 
 
 def resolve_lineup_assistant_tab(session: dict[str, Any]) -> str:
-    """Return active tab, honoring trade handoff focus flags."""
+    """Return active top-level tab, honoring trade handoff focus flags."""
     if session.pop("_lineup_focus_trade_center", False) or session.pop("_lineup_focus_trade_analyzer", False):
         session[LINEUP_ASSISTANT_TAB_KEY] = "Trade Center"
+        session[LINEUP_ASSISTANT_TAB_WIDGET_KEY] = "Trade Center"
         session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
+        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Build & Analyze"
     if session.pop("_lineup_focus_trade_ideas", False):
         session[LINEUP_ASSISTANT_TAB_KEY] = "Trade Center"
+        session[LINEUP_ASSISTANT_TAB_WIDGET_KEY] = "Trade Center"
         session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
+        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Build & Analyze"
     if session.pop("_lineup_focus_trade_offers", False):
         session[LINEUP_ASSISTANT_TAB_KEY] = "Trade Center"
+        session[LINEUP_ASSISTANT_TAB_WIDGET_KEY] = "Trade Center"
         session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Offers"
+        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Offers"
+    if session.pop("_lineup_focus_trade_history", False):
+        session[LINEUP_ASSISTANT_TAB_KEY] = "Trade Center"
+        session[LINEUP_ASSISTANT_TAB_WIDGET_KEY] = "Trade Center"
+        session[TRADE_CENTER_INTERNAL_TAB_KEY] = "History"
+        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "History"
     tab = str(session.get(LINEUP_ASSISTANT_TAB_KEY) or LINEUP_ASSISTANT_TAB_OPTIONS[0]).strip()
     if tab == "Offers & Activity":
         tab = "Trade Center"
@@ -610,8 +623,47 @@ def resolve_lineup_assistant_tab(session: dict[str, Any]) -> str:
     return tab
 
 
+def sync_lineup_assistant_tab_widget(session: dict[str, Any], *, requested_tab: str | None = None) -> str:
+    """Initialize the top-level tab radio widget from the logical destination."""
+    tab = str(requested_tab or session.get(LINEUP_ASSISTANT_TAB_KEY) or LINEUP_ASSISTANT_TAB_OPTIONS[0]).strip()
+    if tab not in LINEUP_ASSISTANT_TAB_OPTIONS:
+        tab = LINEUP_ASSISTANT_TAB_OPTIONS[0]
+    if session.get(LINEUP_ASSISTANT_TAB_WIDGET_KEY) not in LINEUP_ASSISTANT_TAB_OPTIONS:
+        session[LINEUP_ASSISTANT_TAB_WIDGET_KEY] = tab
+    return tab
+
+
+def apply_lineup_assistant_tab_selection(session: dict[str, Any], selected: str) -> str:
+    """Persist the selected top-level tab to the logical key only."""
+    tab = str(selected or "").strip()
+    if tab not in LINEUP_ASSISTANT_TAB_OPTIONS:
+        tab = LINEUP_ASSISTANT_TAB_OPTIONS[0]
+    session[LINEUP_ASSISTANT_TAB_KEY] = tab
+    return tab
+
+
 def resolve_trade_center_internal_tab(session: dict[str, Any]) -> str:
+    """Return the requested Trade Center internal section from the logical key."""
     tab = str(session.get(TRADE_CENTER_INTERNAL_TAB_KEY) or TRADE_CENTER_INTERNAL_TABS[0]).strip()
+    if tab not in TRADE_CENTER_INTERNAL_TABS:
+        tab = TRADE_CENTER_INTERNAL_TABS[0]
+    session[TRADE_CENTER_INTERNAL_TAB_KEY] = tab
+    return tab
+
+
+def sync_trade_center_internal_widget(session: dict[str, Any], *, requested_tab: str | None = None) -> str:
+    """Initialize the internal Trade Center radio widget from the logical destination."""
+    tab = str(requested_tab or session.get(TRADE_CENTER_INTERNAL_TAB_KEY) or TRADE_CENTER_INTERNAL_TABS[0]).strip()
+    if tab not in TRADE_CENTER_INTERNAL_TABS:
+        tab = TRADE_CENTER_INTERNAL_TABS[0]
+    if session.get(TRADE_CENTER_INTERNAL_WIDGET_KEY) not in TRADE_CENTER_INTERNAL_TABS:
+        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = tab
+    return tab
+
+
+def apply_trade_center_internal_selection(session: dict[str, Any], selected: str) -> str:
+    """Persist the selected internal Trade Center tab to the logical key only."""
+    tab = str(selected or "").strip()
     if tab not in TRADE_CENTER_INTERNAL_TABS:
         tab = TRADE_CENTER_INTERNAL_TABS[0]
     session[TRADE_CENTER_INTERNAL_TAB_KEY] = tab
