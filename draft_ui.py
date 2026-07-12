@@ -1309,16 +1309,32 @@ def on_prepare_shared_draft_room() -> None:
     st.session_state.pop("_simulator_to_live_show_confirm", None)
 
 
-def on_join_shared_draft_from_setup() -> None:
+def on_join_shared_draft_from_setup(
+    *,
+    requested_code: str = "",
+    requested_team: str = "",
+    selectbox_return_value: str = "",
+) -> None:
     """Pre-draft guest join — must use on_click so pending runs before the join handler."""
     import streamlit as st
 
     session = st.session_state
-    code = str(session.get("live_draft_join_code_input") or "").strip().upper()
-    requested_team = str(session.get("live_draft_join_team_pick") or "").strip()
+    code = str(
+        requested_code
+        or session.get("live_draft_join_code_input")
+        or ""
+    ).strip().upper()
+    team = str(
+        requested_team
+        or selectbox_return_value
+        or session.get("live_draft_join_team_pick")
+        or ""
+    ).strip()
     session["_join_shared_draft_from_setup"] = True
-    session["_join_requested_team"] = requested_team
     session["_join_requested_code"] = code
+    session["_join_requested_team"] = team
+    session["_join_selectbox_return_value"] = str(selectbox_return_value or requested_team or "").strip()
+    session["_join_session_team_widget_value"] = str(session.get("live_draft_join_team_pick") or "").strip()
     callback_count = int(session.get("_join_button_callback_count") or 0) + 1
     session["_join_button_callback_count"] = callback_count
     try:
@@ -1329,7 +1345,10 @@ def on_join_shared_draft_from_setup() -> None:
             join_button_callback_count=callback_count,
             join_attempted=True,
             join_code=code,
-            requested_team=requested_team,
+            requested_team=team,
+            selectbox_return_value=str(selectbox_return_value or requested_team or "").strip(),
+            session_team_widget_value=str(session.get("live_draft_join_team_pick") or "").strip(),
+            captured_requested_team=team,
         )
     except ImportError:
         pass

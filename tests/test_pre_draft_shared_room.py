@@ -81,10 +81,14 @@ class PrepareSharedCallbackTests(unittest.TestCase):
 
         session: dict = {
             "live_draft_join_code_input": "abc123",
-            "live_draft_join_team_pick": "Team 2",
+            "live_draft_join_team_pick": "",
         }
         with mock.patch.object(st, "session_state", session):
-            on_join_shared_draft_from_setup()
+            on_join_shared_draft_from_setup(
+                requested_code="abc123",
+                requested_team="Team 2",
+                selectbox_return_value="Team 2",
+            )
         self.assertTrue(session.get("_join_shared_draft_from_setup"))
         self.assertEqual(session.get("_join_requested_code"), "ABC123")
         self.assertEqual(session.get("_join_requested_team"), "Team 2")
@@ -92,6 +96,8 @@ class PrepareSharedCallbackTests(unittest.TestCase):
         join_diag = session.get("_draft_room_join_diag") or {}
         self.assertTrue(join_diag.get("join_attempted"))
         self.assertEqual(join_diag.get("join_code"), "ABC123")
+        self.assertEqual(join_diag.get("selectbox_return_value"), "Team 2")
+        self.assertEqual(join_diag.get("session_team_widget_value"), "")
 
 
 class PreDraftSharedRoomCreateTests(unittest.TestCase):
@@ -284,10 +290,10 @@ class PreDraftSharedRoomAppTestLifecycle(unittest.TestCase):
         self.assertEqual(len(code), 6, combined)
         self.assertIn(code, combined)
 
-    def _seed_host_room(self) -> tuple[str, dict]:
+    def _seed_host_room(self, *, guest_team: str = "Team 2") -> tuple[str, dict]:
         host = {"draft_room_participant_id": "daniel-user", AUTH_USER_ID_KEY: "daniel-user"}
         set_live_draft_setup_mode(host, SETUP_MODE_SHARED)
-        room = _sample_room()
+        room = apptest_build_not_started_room(["Daniel", guest_team], host_team="Daniel")
         code, err = finalize_shared_room_create(host, room, host_team="Daniel", store=self.store)
         self.assertFalse(err, err)
         assert code
@@ -323,6 +329,84 @@ class PreDraftSharedRoomAppTestLifecycle(unittest.TestCase):
         host_room_id = (host.get(LIVE_DRAFT_ROOM_KEY) or {}).get("draft_room_id")
         guest_room_id = (at.session_state["live_draft_room"] or {}).get("draft_room_id")
         self.assertEqual(host_room_id, guest_room_id)
+
+    def test_guest_join_single_option_team_b_without_manual_toggle(self) -> None:
+        """Reproduce live HS75UK case: one open team visible, widget session key still blank."""
+        code, host = self._seed_host_room(guest_team="Team B")
+        fixture = Path(__file__).resolve().parent / "fixtures" / "pre_draft_guest_join_apptest.py"
+        at = self.AppTest.from_file(str(fixture), default_timeout=120)
+        at.session_state["draft_room_participant_id"] = "coakley-user"
+        at.session_state[AUTH_USER_ID_KEY] = "coakley-user"
+        at.session_state["live_draft_join_code_input"] = code
+        at.run()
+        team_pick = at.selectbox(key="live_draft_join_team_pick")
+        self.assertIsNotNone(team_pick, "Team B selectbox should render for valid code")
+        self.assertEqual(list(team_pick.options), ["Team B"])
+        at.button(key="live_draft_join_from_setup_btn").click().run()
+        blob = "\n".join(
+            str(m.value)
+            for group in (at.markdown, at.success, at.error)
+            for m in group
+        )
+        self.assertIn("Joined room", blob, blob)
+        self.assertIn(code, blob, blob)
+        self.assertIn("GUEST_TEAM:Team B", blob, blob)
+        self.assertEqual(str(at.session_state["active_shared_draft_room_code"] or "").upper(), code)
+        host_room_id = (host.get(LIVE_DRAFT_ROOM_KEY) or {}).get("draft_room_id")
+        guest_room_id = (at.session_state["live_draft_room"] or {}).get("draft_room_id")
+        self.assertEqual(host_room_id, guest_room_id)
+        join_diag = dict(at.session_state["_draft_room_join_diag"]) if "_draft_room_join_diag" in at.session_state else {}
+        self.assertEqual(str(join_diag.get("selectbox_return_value") or ""), "Team B")
+        self.assertTrue(join_diag.get("room_lookup_attempted"))
+        self.assertTrue(join_diag.get("claim_attempted"))
+        self.assertTrue(join_diag.get("claim_ok"))
+
+    def test_join_processor_rejects_multiple_open_teams_without_capture(self) -> None:
+        import streamlit as st
+
+        from live_draft_setup_ui import render_guest_join_from_setup
+
+        host = {"draft_room_participant_id": "daniel-user", AUTH_USER_ID_KEY: "daniel-user"}
+        set_live_draft_setup_mode(host, SETUP_MODE_SHARED)
+        room = apptest_build_not_started_room(["Daniel", "Team B", "Team C"], host_team="Daniel")
+        code, err = finalize_shared_room_create(host, room, host_team="Daniel", store=self.store)
+        self.assertFalse(err, err)
+        assert code
+        session: dict = {
+            "draft_room_participant_id": "coakley-user",
+            AUTH_USER_ID_KEY: "coakley-user",
+            "_join_shared_draft_from_setup": True,
+            "_join_requested_code": code,
+            "_join_requested_team": "",
+            "_join_selectbox_return_value": "",
+            "_join_session_team_widget_value": "",
+        }
+        with mock.patch.object(st, "session_state", session):
+            joined = render_guest_join_from_setup(st, session)
+        self.assertFalse(joined)
+        self.assertEqual(session.get("_draft_join_error"), "Choose a team before joining.")
+        join_diag = session.get("_draft_room_join_diag") or {}
+        self.assertFalse(join_diag.get("claim_attempted"))
+        self.assertTrue(join_diag.get("room_lookup_attempted"))
+
+    def test_guest_join_multiple_open_teams_with_explicit_selection(self) -> None:
+        host = {"draft_room_participant_id": "daniel-user", AUTH_USER_ID_KEY: "daniel-user"}
+        set_live_draft_setup_mode(host, SETUP_MODE_SHARED)
+        room = apptest_build_not_started_room(["Daniel", "Team B", "Team C"], host_team="Daniel")
+        code, err = finalize_shared_room_create(host, room, host_team="Daniel", store=self.store)
+        self.assertFalse(err, err)
+        assert code
+        fixture = Path(__file__).resolve().parent / "fixtures" / "pre_draft_guest_join_apptest.py"
+        at = self.AppTest.from_file(str(fixture), default_timeout=120)
+        at.session_state["draft_room_participant_id"] = "coakley-user"
+        at.session_state[AUTH_USER_ID_KEY] = "coakley-user"
+        at.session_state["live_draft_join_code_input"] = code
+        at.run()
+        at.selectbox(key="live_draft_join_team_pick").set_value("Team C").run()
+        at.button(key="live_draft_join_from_setup_btn").click().run()
+        blob = "\n".join(str(m.value) for group in (at.markdown, at.success) for m in group)
+        self.assertIn("Joined room", blob, blob)
+        self.assertIn("GUEST_TEAM:Team C", blob, blob)
 
     def test_guest_join_invalid_code_shows_error(self) -> None:
         fixture = Path(__file__).resolve().parent / "fixtures" / "pre_draft_guest_join_apptest.py"
@@ -360,6 +444,33 @@ class PreDraftSharedRoomAppTestLifecycle(unittest.TestCase):
                 joined = render_guest_join_from_setup(st, session)
         self.assertFalse(joined)
         self.assertEqual(session.get("_draft_join_error"), "That team has already been claimed.")
+        join_diag = session.get("_draft_room_join_diag") or {}
+        self.assertTrue(join_diag.get("claim_attempted"))
+
+    def test_join_processor_single_team_fallback_when_capture_blank(self) -> None:
+        import streamlit as st
+
+        from live_draft_setup_ui import render_guest_join_from_setup
+
+        code, _host = self._seed_host_room(guest_team="Team B")
+        session: dict = {
+            "draft_room_participant_id": "coakley-user",
+            AUTH_USER_ID_KEY: "coakley-user",
+            "_join_shared_draft_from_setup": True,
+            "_join_requested_code": code,
+            "_join_requested_team": "",
+            "_join_selectbox_return_value": "",
+            "_join_session_team_widget_value": "",
+        }
+        with mock.patch.object(st, "session_state", session):
+            joined = render_guest_join_from_setup(st, session)
+        self.assertTrue(joined)
+        self.assertEqual(str(session.get("_draft_join_flash") or ""), f"Joined room {code} as Team B.")
+        join_diag = session.get("_draft_room_join_diag") or {}
+        self.assertTrue(join_diag.get("team_fallback_used"))
+        self.assertTrue(join_diag.get("room_lookup_attempted"))
+        self.assertTrue(join_diag.get("claim_attempted"))
+        self.assertTrue(join_diag.get("claim_ok"))
 
 
 if __name__ == "__main__":

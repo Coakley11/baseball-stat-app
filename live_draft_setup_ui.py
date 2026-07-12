@@ -197,6 +197,11 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
             key="live_draft_join_from_setup_btn",
             type="primary",
             on_click=on_join_shared_draft_from_setup,
+            kwargs={
+                "requested_code": code,
+                "requested_team": str(picked_team or "").strip(),
+                "selectbox_return_value": str(picked_team or "").strip(),
+            },
         )
 
 
@@ -226,6 +231,51 @@ def _format_join_user_message(*, ok: bool, code: str, team: str, backend_msg: st
     return f"Could not join room: {raw}"
 
 
+def _resolve_requested_team_for_join(
+    session: dict[str, Any],
+    code: str,
+    requested_team: str,
+) -> tuple[str, bool, bool, str]:
+    """Resolve team for join; single open team is a safe fallback. Returns (team, fallback_used, lookup_attempted, lookup_error)."""
+    team = str(requested_team or "").strip()
+    if team:
+        return team, False, False, ""
+    if not code:
+        return "", False, False, ""
+    open_teams, lookup_err = lookup_open_teams_for_code(code)
+    if len(open_teams) == 1:
+        return open_teams[0], True, True, str(lookup_err or "")
+    return "", False, True, str(lookup_err or "")
+
+
+def _record_join_validation_failure(
+    session: dict[str, Any],
+    *,
+    code: str,
+    requested_team: str,
+    msg: str,
+    room_lookup_attempted: bool = False,
+    room_lookup_ok: bool = False,
+    room_lookup_error: str = "",
+) -> None:
+    try:
+        from draft_room_diagnostics import merge_join_flow_diagnostics
+
+        merge_join_flow_diagnostics(
+            session,
+            join_code=code,
+            captured_requested_team=requested_team,
+            room_lookup_attempted=room_lookup_attempted,
+            room_lookup_ok=room_lookup_ok,
+            room_lookup_error=room_lookup_error,
+            claim_attempted=False,
+            claim_ok=False,
+            claim_error=msg,
+        )
+    except ImportError:
+        pass
+
+
 def _record_join_flow_outcome(
     session: dict[str, Any],
     *,
@@ -234,6 +284,8 @@ def _record_join_flow_outcome(
     ok: bool,
     msg: str,
     doc: dict[str, Any] | None,
+    team_fallback_used: bool = False,
+    room_lookup_attempted: bool = True,
 ) -> None:
     try:
         from draft_room_diagnostics import merge_join_flow_diagnostics
@@ -265,9 +317,10 @@ def _record_join_flow_outcome(
             participant_readback_ok = participant_write_ok
     merge_join_flow_diagnostics(
         session,
-        join_attempted=True,
         join_code=code,
-        requested_team=requested_team,
+        captured_requested_team=requested_team,
+        team_fallback_used=team_fallback_used,
+        room_lookup_attempted=room_lookup_attempted,
         room_lookup_ok=room_lookup_ok,
         room_lookup_error=room_lookup_error,
         claim_attempted=True,
@@ -299,11 +352,21 @@ def render_guest_join_from_setup(st: Any, session: dict[str, Any]) -> bool:
         or session.get("live_draft_join_code_input")
         or ""
     ).strip().upper()
-    requested_team = str(
-        session.pop("_join_requested_team", "")
+    captured_team = str(session.pop("_join_requested_team", "") or "").strip()
+    selectbox_return = str(session.pop("_join_selectbox_return_value", "") or "").strip()
+    session_widget = str(
+        session.pop("_join_session_team_widget_value", "")
         or session.get("live_draft_join_team_pick")
         or ""
     ).strip()
+    requested_team = str(captured_team or selectbox_return or session_widget or "").strip()
+    team_fallback_used = False
+    fallback_lookup_attempted = False
+    fallback_lookup_error = ""
+    if not requested_team and code:
+        requested_team, team_fallback_used, fallback_lookup_attempted, fallback_lookup_error = (
+            _resolve_requested_team_for_join(session, code, requested_team)
+        )
     try:
         from draft_room_diagnostics import merge_join_flow_diagnostics
 
@@ -311,7 +374,11 @@ def render_guest_join_from_setup(st: Any, session: dict[str, Any]) -> bool:
             session,
             join_attempted=True,
             join_code=code,
-            requested_team=requested_team,
+            requested_team=captured_team,
+            selectbox_return_value=selectbox_return,
+            session_team_widget_value=session_widget,
+            captured_requested_team=requested_team,
+            team_fallback_used=team_fallback_used,
             join_button_callback_count=int(session.get("_join_button_callback_count") or 0),
         )
     except ImportError:
@@ -319,12 +386,20 @@ def render_guest_join_from_setup(st: Any, session: dict[str, Any]) -> bool:
     if not code:
         msg = "Enter a 6-character draft room code."
         session["_draft_join_error"] = msg
-        _record_join_flow_outcome(session, code=code, requested_team=requested_team, ok=False, msg=msg, doc=None)
+        _record_join_validation_failure(session, code=code, requested_team=requested_team, msg=msg)
         return False
     if not requested_team:
         msg = "Choose a team before joining."
         session["_draft_join_error"] = msg
-        _record_join_flow_outcome(session, code=code, requested_team=requested_team, ok=False, msg=msg, doc=None)
+        _record_join_validation_failure(
+            session,
+            code=code,
+            requested_team=requested_team,
+            msg=msg,
+            room_lookup_attempted=fallback_lookup_attempted,
+            room_lookup_ok=False,
+            room_lookup_error=fallback_lookup_error,
+        )
         return False
     try:
         from draft_room_context import join_shared_draft_room
@@ -333,10 +408,28 @@ def render_guest_join_from_setup(st: Any, session: dict[str, Any]) -> bool:
     except ImportError:
         msg = "Join is unavailable."
         session["_draft_join_error"] = msg
-        _record_join_flow_outcome(session, code=code, requested_team=requested_team, ok=False, msg=msg, doc=None)
+        _record_join_flow_outcome(
+            session,
+            code=code,
+            requested_team=requested_team,
+            ok=False,
+            msg=msg,
+            doc=None,
+            team_fallback_used=team_fallback_used,
+            room_lookup_attempted=True,
+        )
         return False
     display = _format_join_user_message(ok=ok, code=code, team=requested_team, backend_msg=msg)
-    _record_join_flow_outcome(session, code=code, requested_team=requested_team, ok=ok, msg=display, doc=doc)
+    _record_join_flow_outcome(
+        session,
+        code=code,
+        requested_team=requested_team,
+        ok=ok,
+        msg=display,
+        doc=doc,
+        team_fallback_used=team_fallback_used,
+        room_lookup_attempted=True,
+    )
     if ok:
         set_live_draft_setup_mode(session, SETUP_MODE_SHARED)
         session["_draft_join_flash"] = display
