@@ -576,6 +576,20 @@ def render_waiver_wire_page(
         )
         return
 
+    try:
+        from fantasy_league_identity import resolve_canonical_league_id
+        from player_waiver_handoff import consume_waiver_wire_handoff_into_planner
+
+        active_context_id = str(context.get("league_context_id") or "").strip()
+        active_canonical_league_id = str(resolve_canonical_league_id(context) or "").strip()
+        consume_waiver_wire_handoff_into_planner(
+            session,
+            active_context_id=active_context_id,
+            active_canonical_league_id=active_canonical_league_id,
+        )
+    except ImportError:
+        pass
+
     purge_waiver_action_widget_keys(session)
 
     flash = pop_waiver_tx_flash(session)

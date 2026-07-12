@@ -8,6 +8,8 @@ from player_trade_constants import (
     TRADE_ACTION_ACQUIRE,
     TRADE_ACTION_TRADE_AWAY,
     TRADE_FLOW_SESSION_KEY,
+    WAIVER_ACTION_PLAN_ADD,
+    WAIVER_ACTION_PLAN_DROP,
 )
 
 _MODULE: Any = None
@@ -108,15 +110,30 @@ def start_trade_acquire_flow(
         return f"Trade / Acquire unavailable: {type(exc).__name__}: {exc}"
 
 
+def start_player_waiver_action(
+    session: dict[str, Any],
+    *,
+    player_name: str,
+    mode: str,
+) -> str:
+    try:
+        return _load().start_player_waiver_action(session, player_name=player_name, mode=mode)
+    except Exception as exc:
+        return f"Waiver action unavailable: {type(exc).__name__}: {exc}"
+
+
 __all__ = (
     "TRADE_ACTION_ACQUIRE",
     "TRADE_ACTION_TRADE_AWAY",
+    "WAIVER_ACTION_PLAN_ADD",
+    "WAIVER_ACTION_PLAN_DROP",
     "TRADE_FLOW_SESSION_KEY",
     "complete_trade_acquire_flow",
     "format_roster_context_label",
     "player_trade_shortcut_eligible",
     "resolve_active_league_player_trade_eligibility",
     "start_player_trade_action",
+    "start_player_waiver_action",
     "start_trade_acquire_flow",
     "trade_import_error_message",
 )

@@ -56,10 +56,14 @@ def _resolve_player_trade_eligibility(session, player_name: str) -> dict:
         "trade_away_enabled": ok,
         "acquire_enabled": ok,
         "waiver_enabled": False,
+        "plan_add_enabled": False,
+        "plan_drop_enabled": False,
         "is_unrostered": False,
         "block_message": msg or "Trade actions require an active shared league with multiple claimed owners.",
         "trade_away_help": msg or "",
         "acquire_help": msg or "",
+        "plan_add_help": msg or "",
+        "plan_drop_help": msg or "",
         "waiver_message": "",
     }
 
@@ -70,6 +74,17 @@ def _start_player_trade_action(session, *, player_name: str, mode: str) -> str:
         return fn(session, player_name=player_name, mode=mode)
     return (
         "Trade action unavailable: player_trade_bridge is missing start_player_trade_action. "
+        f"{player_trade_bridge.trade_import_error_message()}".strip()
+    )
+
+
+
+def _start_player_waiver_action(session, *, player_name: str, mode: str) -> str:
+    fn = getattr(player_trade_bridge, "start_player_waiver_action", None)
+    if callable(fn):
+        return fn(session, player_name=player_name, mode=mode)
+    return (
+        "Waiver action unavailable: player_trade_bridge is missing start_player_waiver_action. "
         f"{player_trade_bridge.trade_import_error_message()}".strip()
     )
 
@@ -10837,6 +10852,53 @@ def _on_trade_acquire_flow_click(*, player_raw: str, key_prefix: str):
     st.rerun()
 
 
+
+
+def _on_player_plan_add_click(*, player_raw: str):
+    display = fullname_base_from_label(str(player_raw or "").strip()) or str(player_raw or "").strip()
+    if not is_active_current_player(display):
+        st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = (
+            f"{display} is historical/inactive and cannot be added to a current waiver workflow."
+        )
+        st.rerun()
+        return
+    msg = _start_player_waiver_action(
+        st.session_state,
+        player_name=display,
+        mode="plan_add",
+    )
+    st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="player_action_plan_add_handoff")
+    except Exception:
+        pass
+    st.rerun()
+
+
+def _on_player_plan_drop_click(*, player_raw: str):
+    display = fullname_base_from_label(str(player_raw or "").strip()) or str(player_raw or "").strip()
+    if not is_active_current_player(display):
+        st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = (
+            f"{display} is historical/inactive and cannot be added to a current waiver workflow."
+        )
+        st.rerun()
+        return
+    msg = _start_player_waiver_action(
+        st.session_state,
+        player_name=display,
+        mode="plan_drop",
+    )
+    st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="player_action_plan_drop_handoff")
+    except Exception:
+        pass
+    st.rerun()
+
 def _schedule_player_action_page_nav(target_page: str) -> None:
     """Same navigation path as sidebar, but skip restoring stale page snapshot."""
     tgt = get_sidebar_page_value(target_page)
@@ -11049,15 +11111,22 @@ def _render_player_action_button_row(
                 "acquire",
             )
         )
-        if trade_eligibility.get("waiver_enabled"):
-            trade_actions.append(
-                (
-                    page_option_label("Waiver Wire / Add-Drop Center"),
-                    True,
-                    str(trade_eligibility.get("waiver_message") or trade_eligibility.get("block_message") or ""),
-                    "waiver",
-                )
+        trade_actions.append(
+            (
+                "Plan Add",
+                bool(trade_eligibility.get("plan_add_enabled")),
+                str(trade_eligibility.get("plan_add_help") or trade_eligibility.get("waiver_message") or ""),
+                "plan_add",
             )
+        )
+        trade_actions.append(
+            (
+                "Plan Drop",
+                bool(trade_eligibility.get("plan_drop_enabled")),
+                str(trade_eligibility.get("plan_drop_help") or ""),
+                "plan_drop",
+            )
+        )
 
     if secondary:
         cols = st.columns(len(secondary))
@@ -11075,14 +11144,23 @@ def _render_player_action_button_row(
         cols_trade = st.columns(len(trade_actions))
         for col, (label, enabled, help_text, slug) in zip(cols_trade, trade_actions):
             with col:
-                if slug == "waiver":
+                if slug == "plan_add":
                     st.button(
                         label,
                         key=f"plr_act_{act_suffix}_{slug}_button",
                         use_container_width=True,
                         disabled=not enabled,
-                        on_click=_on_player_action_click,
-                        kwargs={**kwargs_base, "action": "Open Waiver Wire"},
+                        on_click=_on_player_plan_add_click,
+                        kwargs={"player_raw": player_raw},
+                    )
+                elif slug == "plan_drop":
+                    st.button(
+                        label,
+                        key=f"plr_act_{act_suffix}_{slug}_button",
+                        use_container_width=True,
+                        disabled=not enabled,
+                        on_click=_on_player_plan_drop_click,
+                        kwargs={"player_raw": player_raw},
                     )
                 elif slug == "trade_away":
                     st.button(

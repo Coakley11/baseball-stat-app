@@ -474,6 +474,22 @@ def start_player_trade_action(
         return start_trade_acquire_flow(session, player_name=player_name, key_prefix="direct")
 
 
+def start_player_waiver_action(
+    session: dict[str, Any],
+    *,
+    player_name: str,
+    mode: str,
+) -> str:
+    """Start Plan Add or Plan Drop for the active real shared league only."""
+    try:
+        from player_waiver_handoff import queue_player_action_waiver_handoff
+
+        ok, msg = queue_player_action_waiver_handoff(session, player_name=player_name, mode=mode)
+        return msg if ok else (msg or "Waiver action unavailable.")
+    except ImportError:
+        return "Waiver Wire handoff unavailable."
+
+
 def start_trade_acquire_flow(
     session: dict[str, Any],
     *,

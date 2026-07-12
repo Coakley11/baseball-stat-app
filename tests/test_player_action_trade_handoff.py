@@ -126,6 +126,8 @@ class PlayerActionTradeEligibilityTests(unittest.TestCase):
         elig = resolve_active_league_player_trade_eligibility(session, "Aaron Judge")
         self.assertTrue(elig["acquire_enabled"])
         self.assertFalse(elig["trade_away_enabled"])
+        self.assertFalse(elig["plan_add_enabled"])
+        self.assertFalse(elig["plan_drop_enabled"])
         self.assertEqual(elig["owner_team"], "Team 2")
 
     @patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:daniel")
@@ -135,6 +137,8 @@ class PlayerActionTradeEligibilityTests(unittest.TestCase):
         elig = resolve_active_league_player_trade_eligibility(session, "Mookie Betts")
         self.assertTrue(elig["trade_away_enabled"])
         self.assertFalse(elig["acquire_enabled"])
+        self.assertTrue(elig["plan_drop_enabled"])
+        self.assertFalse(elig["plan_add_enabled"])
 
     @patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:daniel")
     def test_unrostered_mark_vientos_disables_trade_actions(self, _uid: object) -> None:
@@ -145,6 +149,8 @@ class PlayerActionTradeEligibilityTests(unittest.TestCase):
         self.assertFalse(elig["trade_away_enabled"])
         self.assertFalse(elig["acquire_enabled"])
         self.assertTrue(elig["waiver_enabled"])
+        self.assertTrue(elig["plan_add_enabled"])
+        self.assertFalse(elig["plan_drop_enabled"])
         self.assertIn("Waiver Wire", elig["block_message"])
 
     @patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:daniel")
@@ -190,6 +196,8 @@ class PlayerActionTradeEligibilityTests(unittest.TestCase):
         activate_league_context(session, str(ctx_a.get("league_context_id") or ""))
         elig_a = resolve_active_league_player_trade_eligibility(session, "Gunnar Henderson")
         self.assertTrue(elig_a["acquire_enabled"])
+        self.assertFalse(elig_a["plan_add_enabled"])
+        self.assertFalse(elig_a["plan_drop_enabled"])
         activate_league_context(session, str(ctx_b.get("league_context_id") or ""))
         elig_b = resolve_active_league_player_trade_eligibility(session, "Gunnar Henderson")
         self.assertTrue(elig_b["is_unrostered"])
@@ -468,6 +476,127 @@ class PlayerActionTradeCenterRerunTests(unittest.TestCase):
         diag = session.get(handoff_diag_key(SCOPE)) or {}
         self.assertTrue(diag.get("pending_update_queued"))
         self.assertEqual(diag.get("pending_get_players"), ["Aaron Judge"])
+
+
+class LockedWidgetSession(dict):
+    locked_keys: set[str] = set()
+
+    def __setitem__(self, key, value):
+        if key in self.locked_keys:
+            raise RuntimeError(f"widget key mutated after instantiation: {key}")
+        super().__setitem__(key, value)
+
+
+class TradeCenterLockedWidgetTests(unittest.TestCase):
+    def _consume_acquire_with_locked_radio(self, session: dict) -> dict:
+        from fantasy_trade_ideas import TRADE_CENTER_INTERNAL_WIDGET_KEY
+
+        roster_stats = _roster_stats()
+        my_team = "Daniel"
+        other_teams = ["Team 2", "Team 3", "Team 4"]
+        keys = builder_widget_keys(SCOPE)
+        session[builder_schema_key(SCOPE)] = TRADE_BUILDER_STATE_SCHEMA_VERSION
+        scope_fingerprint_changed(session, SCOPE, FINGERPRINT)
+        LockedWidgetSession.locked_keys = {TRADE_CENTER_INTERNAL_WIDGET_KEY}
+        session_locked = LockedWidgetSession(session)
+
+        logical: dict = {}
+        logical, _ = maybe_migrate_builder_schema(session_locked, SCOPE, logical)
+        active = get_active_league_context(session_locked) or {}
+        active_context_id = str(active.get("league_context_id") or "")
+        active_canonical_id = str(resolve_canonical_league_id(active) or "")
+        consume_trade_center_handoff_into_pending(
+            session_locked,
+            SCOPE,
+            roster_stats=roster_stats,
+            my_team=my_team,
+            other_teams=other_teams,
+            active_context_id=active_context_id,
+            active_canonical_league_id=active_canonical_id,
+        )
+        pool = ["Aaron Judge", "Gunnar Henderson", "Bobby Witt Jr."]
+        logical, pending_update = apply_pending_to_logical_state(
+            session_locked,
+            SCOPE,
+            logical,
+            my_players=["Mookie Betts"],
+            receive_options=pool,
+            other_teams=other_teams,
+        )
+        prepare_builder_widget_state(
+            session_locked,
+            SCOPE,
+            logical,
+            my_players=["Mookie Betts"],
+            receive_options=pool,
+            partner_options=[ANY_TRADE_PARTNER, *other_teams],
+            force=bool(pending_update),
+            force_reason="pending_update",
+        )
+        return {
+            "give": list(session_locked.get(keys["give"]) or []),
+            "receive": list(session_locked.get(keys["receive"]) or []),
+            "partner": str(session_locked.get(keys["partner"]) or ""),
+        }
+
+    @patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:daniel")
+    def test_acquire_handoff_does_not_mutate_locked_trade_center_radio(self, _uid: object) -> None:
+        session: dict = {}
+        _seed_shared_league(session)
+        queue_player_action_trade_handoff(session, player_name="Aaron Judge", mode=TRADE_ACTION_ACQUIRE)
+        widgets = self._consume_acquire_with_locked_radio(session)
+        self.assertEqual(widgets["receive"], ["Aaron Judge"])
+        self.assertEqual(widgets["partner"], "Team 2")
+        self.assertEqual(widgets["give"], [])
+
+    @patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:daniel")
+    def test_trade_away_handoff_does_not_mutate_locked_trade_center_radio(self, _uid: object) -> None:
+        from fantasy_trade_ideas import TRADE_CENTER_INTERNAL_WIDGET_KEY
+
+        session: dict = {}
+        _seed_shared_league(session)
+        queue_player_action_trade_handoff(session, player_name="Mookie Betts", mode=TRADE_ACTION_TRADE_AWAY)
+        LockedWidgetSession.locked_keys = {TRADE_CENTER_INTERNAL_WIDGET_KEY}
+        session_locked = LockedWidgetSession(session)
+        roster_stats = _roster_stats()
+        other_teams = ["Team 2", "Team 3", "Team 4"]
+        keys = builder_widget_keys(SCOPE)
+        session[builder_schema_key(SCOPE)] = TRADE_BUILDER_STATE_SCHEMA_VERSION
+        scope_fingerprint_changed(session, SCOPE, FINGERPRINT)
+        logical: dict = {}
+        logical, _ = maybe_migrate_builder_schema(session_locked, SCOPE, logical)
+        active = get_active_league_context(session_locked) or {}
+        consume_trade_center_handoff_into_pending(
+            session_locked,
+            SCOPE,
+            roster_stats=roster_stats,
+            my_team="Daniel",
+            other_teams=other_teams,
+            active_context_id=str(active.get("league_context_id") or ""),
+            active_canonical_league_id=str(resolve_canonical_league_id(active) or ""),
+        )
+        pool = ["Aaron Judge", "Gunnar Henderson", "Bobby Witt Jr."]
+        logical, pending_update = apply_pending_to_logical_state(
+            session_locked,
+            SCOPE,
+            logical,
+            my_players=["Mookie Betts"],
+            receive_options=pool,
+            other_teams=other_teams,
+        )
+        prepare_builder_widget_state(
+            session_locked,
+            SCOPE,
+            logical,
+            my_players=["Mookie Betts"],
+            receive_options=pool,
+            partner_options=[ANY_TRADE_PARTNER, *other_teams],
+            force=bool(pending_update),
+            force_reason="pending_update",
+        )
+        self.assertEqual(list(session_locked.get(keys["give"]) or []), ["Mookie Betts"])
+        self.assertEqual(list(session_locked.get(keys["receive"]) or []), [])
+        self.assertEqual(str(session_locked.get(keys["partner"]) or ""), ANY_TRADE_PARTNER)
 
 
 if __name__ == "__main__":

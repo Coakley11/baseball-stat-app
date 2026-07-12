@@ -67,6 +67,8 @@ def resolve_active_league_player_trade_eligibility(
         "trade_away_enabled": False,
         "acquire_enabled": False,
         "waiver_enabled": False,
+        "plan_add_enabled": False,
+        "plan_drop_enabled": False,
         "is_unrostered": False,
         "is_my_player": False,
         "is_opponent_player": False,
@@ -76,6 +78,8 @@ def resolve_active_league_player_trade_eligibility(
         "league_context_id": "",
         "trade_away_help": "",
         "acquire_help": "",
+        "plan_add_help": "",
+        "plan_drop_help": "",
         "block_message": "",
         "waiver_message": "",
     }
@@ -118,12 +122,15 @@ def resolve_active_league_player_trade_eligibility(
     if not isinstance(owner_rec, dict):
         out["is_unrostered"] = True
         out["waiver_enabled"] = True
+        out["plan_add_enabled"] = True
         out["block_message"] = (
             f"{display} is not rostered in the active shared league. Use Waiver Wire/Add-Drop instead."
         )
         out["waiver_message"] = f"This player is not currently rostered in {league_label}."
+        out["plan_add_help"] = f"Plan Add for {display} in {league_label}."
         out["trade_away_help"] = out["block_message"]
-        out["acquire_help"] = out["block_message"]
+        out["acquire_help"] = f"{display} is not rostered in {league_label}. Use Plan Add in Waiver Wire."
+        out["plan_drop_help"] = f"{display} is not on your roster. Plan Drop is unavailable."
         return out
 
     owner_team = str(owner_rec.get("owner_team") or "").strip()
@@ -131,14 +138,19 @@ def resolve_active_league_player_trade_eligibility(
     if owner_team == my_team:
         out["is_my_player"] = True
         out["trade_away_enabled"] = True
+        out["plan_drop_enabled"] = True
         out["trade_away_help"] = f"This player is on {my_team}, your team in {league_label}."
         out["acquire_help"] = f"{display} is on your roster. Use Trade Away instead."
+        out["plan_add_help"] = f"{display} is already on {my_team}. Plan Add is unavailable."
+        out["plan_drop_help"] = f"Plan Drop for {display} from {my_team} in {league_label}."
         return out
 
     out["is_opponent_player"] = True
     out["acquire_enabled"] = True
     out["acquire_help"] = f"This player is on {owner_team} in {league_label}."
     out["trade_away_help"] = f"{display} belongs to {owner_team}. Use Acquire instead."
+    out["plan_add_help"] = f"{display} is rostered by {owner_team}. Use Acquire in Trade Center instead."
+    out["plan_drop_help"] = f"{display} is rostered by {owner_team}. Plan Drop is unavailable."
     return out
 
 
@@ -486,11 +498,4 @@ def consume_trade_center_handoff_into_pending(
     flash_message = str(validated.get("flash_message") or "").strip()
     if flash_message:
         session[f"{scope_key}|builder_flash"] = flash_message
-    try:
-        from fantasy_trade_ideas import TRADE_CENTER_INTERNAL_TAB_KEY, TRADE_CENTER_INTERNAL_WIDGET_KEY
-
-        session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
-        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Build & Analyze"
-    except ImportError:
-        pass
     return True
