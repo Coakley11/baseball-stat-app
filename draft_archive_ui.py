@@ -48,6 +48,7 @@ FANTASY_WAIVER_PAGE = "Waiver Wire / Add-Drop Center"
 LIVE_DRAFT_PAGE = "Live Draft Room"
 DRAFT_LAB_PAGE = "Draft Lab / Simulation"
 DRAFT_SIMULATOR_PAGE = "Draft Room Simulator"
+SHARED_CONFIRM_OPEN_KEY = "_live_draft_shared_league_confirm_open"
 SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY = "_saved_draft_library_return_page"
 _DELETE_CONFIRM_PREFIX = "_draft_archive_delete_confirm_"
 _RENAME_CONFIRM_PREFIX = "_draft_archive_rename_confirm_"
@@ -1825,6 +1826,7 @@ def render_live_draft_completion_panel(
     export_frames_fn=None,
     csv_export_fn=None,
     excel_export_fn=None,
+    board_df_fn=None,
 ) -> None:
     """Post-final-pick Draft Complete hub."""
     try:
@@ -1915,40 +1917,24 @@ def render_live_draft_completion_panel(
     if review_open:
         session[f"{key_prefix}_review_open"] = True
     if shared_league_clicked:
-        session["_live_draft_shared_league_confirm"] = True
+        session[SHARED_CONFIRM_OPEN_KEY] = True
 
     if session.pop(f"{key_prefix}_review_open", False) or review_open:
         with st.expander("Review Draft Results", expanded=True):
-            try:
-                from streamlit_app import live_draft_build_board_df
-            except ImportError:
-                try:
-                    from Streamlit_app import live_draft_build_board_df  # type: ignore[no-redef]
-                except ImportError:
-                    live_draft_build_board_df = None  # type: ignore[assignment]
-            if callable(live_draft_build_board_df):
-                board_df = live_draft_build_board_df(room)
+            if callable(board_df_fn):
+                board_df = board_df_fn(room)
                 if board_df.empty:
                     st.caption("No picks recorded.")
                 else:
-                    try:
-                        from streamlit_app import clean_ui_columns, format_fantasy_table
-                    except ImportError:
-                        from Streamlit_app import clean_ui_columns, format_fantasy_table  # type: ignore[no-redef]
-                    from draft_ui import render_output_table
-
-                    render_output_table(
-                        format_fantasy_table(clean_ui_columns(board_df)),
-                        key=f"{key_prefix}_review_board",
-                        file_name="live_draft_final_board.csv",
-                        display_rows=80,
-                    )
+                    st.dataframe(board_df, use_container_width=True, hide_index=True)
+            else:
+                st.caption("Final board preview unavailable.")
             for team in sorted(room.get("teams") or []):
                 roster_rows = list((room.get("rosters") or {}).get(team) or [])
                 if roster_rows:
                     st.markdown(f"**{team}** — {len(roster_rows)} players")
 
-    if session.pop("_live_draft_shared_league_confirm", False) or shared_league_clicked:
+    if session.get(SHARED_CONFIRM_OPEN_KEY):
         _render_live_draft_shared_league_confirmation(
             st,
             session,
@@ -2054,7 +2040,24 @@ def _render_live_draft_shared_league_confirmation(
             index=max(0, list(preview.get("teams") or [save_team]).index(save_team) if save_team in (preview.get("teams") or []) else 0),
             key=f"{key_prefix}_shared_my_team",
         )
-        if st.button("Confirm Create Shared League", key=f"{key_prefix}_confirm_shared_league", type="primary"):
+        confirm_col, cancel_col = st.columns(2)
+        with confirm_col:
+            confirm_clicked = st.button(
+                "Confirm Create Shared League",
+                key=f"{key_prefix}_confirm_shared_league",
+                type="primary",
+                use_container_width=True,
+            )
+        with cancel_col:
+            cancel_clicked = st.button(
+                "Cancel",
+                key=f"{key_prefix}_cancel_shared_league",
+                use_container_width=True,
+            )
+        if cancel_clicked:
+            session.pop(SHARED_CONFIRM_OPEN_KEY, None)
+            st.rerun()
+        if confirm_clicked:
             try:
                 entry, context = save_live_draft_shared_league_context(
                     session,
@@ -2072,6 +2075,7 @@ def _render_live_draft_shared_league_confirmation(
                         f"Canonical ID: {entry.get('canonical_league_id') or context.get('league_id') or '—'}."
                     ),
                 }
+                session.pop(SHARED_CONFIRM_OPEN_KEY, None)
                 st.rerun()
             except Exception as exc:
                 session["_live_draft_shared_league_flash"] = {

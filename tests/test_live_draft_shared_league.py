@@ -5,7 +5,15 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
+import pandas as pd
+
+from draft_archive_ui import (
+    SHARED_CONFIRM_OPEN_KEY,
+    render_live_draft_completion_panel,
+)
 from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, get_league_context
 from fantasy_league_identity import resolve_canonical_league_id
 from fantasy_league_team_ownership import (
@@ -26,6 +34,67 @@ from live_draft_roster_transfer import (
 )
 from live_draft_shared_league import preview_shared_league_creation, save_live_draft_shared_league_context
 from tests.test_imported_shared_league import _as_user
+
+
+class _RerunSignal(Exception):
+    pass
+
+
+class _FakeStreamlit:
+    def __init__(self, *, clicked: set[str] | None = None, selected_team: str = "Daniel") -> None:
+        self.clicked = set(clicked or set())
+        self.selected_team = selected_team
+        self.markdowns: list[str] = []
+        self.dataframes: list[pd.DataFrame] = []
+        self.errors: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def columns(self, count):
+        return [self for _ in range(int(count))]
+
+    def expander(self, *_args, **_kwargs):
+        return self
+
+    def button(self, label, **_kwargs):
+        return label in self.clicked
+
+    def text_input(self, _label, *, value="", **_kwargs):
+        return value
+
+    def selectbox(self, _label, options, **_kwargs):
+        return self.selected_team if self.selected_team in options else options[0]
+
+    def markdown(self, value, **_kwargs):
+        self.markdowns.append(str(value))
+
+    def dataframe(self, value, **_kwargs):
+        self.dataframes.append(value)
+
+    def error(self, value):
+        self.errors.append(str(value))
+
+    def warning(self, _value):
+        pass
+
+    def info(self, _value):
+        pass
+
+    def success(self, _value):
+        pass
+
+    def caption(self, _value):
+        pass
+
+    def download_button(self, *_args, **_kwargs):
+        return False
+
+    def rerun(self):
+        raise _RerunSignal()
 
 
 def _completed_two_team_room() -> dict:
@@ -114,6 +183,114 @@ class LiveDraftCompletionTests(unittest.TestCase):
         self.assertIn("Create Shared League", DRAFT_COMPLETE_HUB_ACTIONS)
         self.assertIn("Review Draft Results", DRAFT_COMPLETE_HUB_ACTIONS)
         self.assertNotIn("Set Active Draft", DRAFT_COMPLETE_HUB_ACTIONS)
+
+    def test_repeated_completion_preserves_record_identity_and_timestamp(self) -> None:
+        room = _completed_two_team_room()
+        apply_live_draft_completion(room, {})
+        first = dict(room.get(COMPLETION_RECORD_KEY) or {})
+        apply_live_draft_completion(room, {})
+        second = dict(room.get(COMPLETION_RECORD_KEY) or {})
+        for field in (
+            "completed_at",
+            "draft_id",
+            "draft_fingerprint",
+            "final_pick_number",
+            "final_board_locked",
+        ):
+            self.assertEqual(first.get(field), second.get(field), field)
+
+
+class LiveDraftCompletionPanelLifecycleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.room = _completed_two_team_room()
+        self.session: dict = {}
+        self.preview = {
+            "ready": True,
+            "validation_errors": [],
+            "league_name": "Two Team Live Draft",
+            "canonical_league_id": "league:test",
+            "draft_id": "live-two-team-test",
+            "draft_fingerprint": "fingerprint",
+            "teams": ["Daniel", "Team 2"],
+            "trade_eligibility_status": "disabled",
+            "roster_count_by_team": {"Daniel": 2, "Team 2": 2},
+            "final_rosters": {
+                "Daniel": {"players": [{"player_name": "Juan Soto"}, {"player_name": "Mookie Betts"}]},
+                "Team 2": {"players": [{"player_name": "Aaron Judge"}, {"player_name": "Gunnar Henderson"}]},
+            },
+            "roster_slots": {"OF": 2},
+            "scoring_settings": {"scoring_type": "Roto (5x5)"},
+        }
+        self.trace_module = SimpleNamespace(render_save_trace_inline=lambda *_args, **_kwargs: None)
+
+    def _render(self, st: _FakeStreamlit, save_mock: Mock | None = None) -> None:
+        save_mock = save_mock or Mock(
+            return_value=(
+                {"draft_name": "Completed Live Draft", "canonical_league_id": "league:test"},
+                {"league_id": "league:test"},
+            )
+        )
+        with (
+            patch.dict("sys.modules", {"draft_library_save_trace": self.trace_module}),
+            patch("live_draft_shared_league.preview_shared_league_creation", return_value=self.preview),
+            patch("live_draft_shared_league.save_live_draft_shared_league_context", save_mock),
+        ):
+            render_live_draft_completion_panel(
+                st,
+                self.session,
+                self.room,
+                team_name="Daniel",
+                board_df_fn=lambda room: pd.DataFrame(room["draft_board"]),
+            )
+
+    def test_create_confirmation_persists_across_reruns_and_closes_after_success(self) -> None:
+        self._render(_FakeStreamlit(clicked={"Create Shared League"}))
+        self.assertTrue(self.session.get(SHARED_CONFIRM_OPEN_KEY))
+
+        self._render(_FakeStreamlit(selected_team="Team 2"))
+        self.assertTrue(self.session.get(SHARED_CONFIRM_OPEN_KEY))
+
+        save_mock = Mock(
+            return_value=(
+                {"draft_name": "Completed Live Draft", "canonical_league_id": "league:test"},
+                {"league_id": "league:test"},
+            )
+        )
+        with self.assertRaises(_RerunSignal):
+            self._render(
+                _FakeStreamlit(
+                    clicked={"Confirm Create Shared League"},
+                    selected_team="Team 2",
+                ),
+                save_mock,
+            )
+        save_mock.assert_called_once()
+        self.assertNotIn(SHARED_CONFIRM_OPEN_KEY, self.session)
+
+    def test_cancel_closes_confirmation(self) -> None:
+        self.session[SHARED_CONFIRM_OPEN_KEY] = True
+        with self.assertRaises(_RerunSignal):
+            self._render(_FakeStreamlit(clicked={"Cancel"}))
+        self.assertNotIn(SHARED_CONFIRM_OPEN_KEY, self.session)
+
+    def test_review_renders_board_and_roster_counts_without_importing_entrypoint(self) -> None:
+        st = _FakeStreamlit(clicked={"Review Draft Results"})
+        real_import = __import__
+        imported_entrypoint = []
+
+        def guarded_import(name, *args, **kwargs):
+            if name.lower() == "streamlit_app":
+                imported_entrypoint.append(name)
+                raise AssertionError("draft_archive_ui must not import streamlit_app")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=guarded_import):
+            self._render(st)
+
+        self.assertEqual(imported_entrypoint, [])
+        self.assertEqual(len(st.dataframes), 1)
+        self.assertTrue(any("**Daniel** — 2 players" in line for line in st.markdowns))
+        self.assertTrue(any("**Team 2** — 2 players" in line for line in st.markdowns))
 
 
 class LiveDraftSharedLeagueTests(unittest.TestCase):

@@ -85,11 +85,15 @@ def apply_live_draft_completion(room: dict[str, Any], session: dict[str, Any] | 
         room["timer_deadline"] = None
         board = room.get("draft_board") or []
         room["current_pick_index"] = len(board) if isinstance(board, list) else int(room.get("current_pick_index") or 0)
+        existing = get_completion_record(room)
         record = build_completion_record(room)
         record["draft_status"] = "complete"
         record["final_board_locked"] = True
-        if not record.get("completed_at"):
-            record["completed_at"] = _utc_now_iso()
+        record["completed_at"] = (
+            existing.get("completed_at")
+            or record.get("completed_at")
+            or _utc_now_iso()
+        )
         room[COMPLETION_RECORD_KEY] = record
         if isinstance(session, dict):
             try:

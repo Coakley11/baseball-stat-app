@@ -22854,6 +22854,7 @@ if active_page == "Live Draft Room":
                     export_frames_fn=live_draft_export_frames,
                     csv_export_fn=draft_lab_csv_export,
                     excel_export_fn=draft_lab_excel_export,
+                    board_df_fn=live_draft_build_board_df,
                 )
             except ImportError:
                 if _save_team and _save_team != "—":
