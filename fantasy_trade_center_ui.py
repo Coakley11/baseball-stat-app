@@ -56,14 +56,30 @@ def _trade_workspace(
 ) -> dict[str, Any]:
     roster_stats = session.get("fantasy_current_roster_stats", pd.DataFrame())
     standings = session.get("fantasy_current_standings", pd.DataFrame())
-    if roster_stats is None or roster_stats.empty:
+    load_error = ""
+    if roster_stats is None or getattr(roster_stats, "empty", True):
+        try:
+            from fantasy_league_context import get_active_league_context
+            from fantasy_lineup_stats_loader import ensure_lineup_page_hitter_stats
+
+            context = get_active_league_context(session)
+            loaded = ensure_lineup_page_hitter_stats(session, context)
+            load_error = str(loaded.get("error") or "").strip()
+            built = loaded.get("roster_stats")
+            if isinstance(built, pd.DataFrame) and not built.empty:
+                roster_stats = built
+        except Exception as exc:
+            load_error = f"{type(exc).__name__}: {exc}"
+
+    if roster_stats is None or getattr(roster_stats, "empty", True):
         return {
-            "roster_stats": roster_stats,
+            "roster_stats": roster_stats if isinstance(roster_stats, pd.DataFrame) else pd.DataFrame(),
             "standings": standings,
             "my_team": my_team,
             "other_teams": [],
             "my_players": [],
             "all_other_players": [],
+            "load_error": load_error,
         }
 
     trade_teams = sorted(roster_stats["Team"].dropna().astype(str).unique().tolist())
@@ -90,7 +106,12 @@ def _trade_workspace(
         "other_teams": other_teams,
         "my_players": my_players,
         "all_other_players": all_other_players,
+        "load_error": load_error,
     }
+
+
+def _split_player_names(text: str) -> list[str]:
+    return [part.strip() for part in str(text or "").split(",") if part.strip()]
 
 
 def _inject_trade_center_styles(st: Any) -> None:
@@ -205,34 +226,38 @@ def _render_idea_card(st: Any, idea: dict[str, Any], idx: int, session: dict[str
     )
     c1, c2, c3 = st.columns(3)
     if c1.button("Use This Idea", key=f"tc_use_{idx}"):
+        give_list = _split_player_names(give)
+        receive_list = _split_player_names(receive)
         _save_shared_trade_state(
             session,
             scope_key,
             {
-                "give_players": [give] if give else [],
-                "get_players": [receive] if receive else [],
+                "give_players": give_list,
+                "get_players": receive_list,
                 "other_team": other,
                 "source_idea_id": f"idea_{idx}",
             },
         )
-        session["lineup_trade_give_players"] = [give] if give else []
-        session["lineup_trade_get_players"] = [receive] if receive else []
+        session["lineup_trade_give_players"] = give_list
+        session["lineup_trade_get_players"] = receive_list
         session["lineup_trade_other_team"] = other
         st.rerun()
     if c2.button("Analyze", key=f"tc_analyze_{idx}"):
+        give_list = _split_player_names(give)
+        receive_list = _split_player_names(receive)
         _save_shared_trade_state(
             session,
             scope_key,
             {
-                "give_players": [give] if give else [],
-                "get_players": [receive] if receive else [],
+                "give_players": give_list,
+                "get_players": receive_list,
                 "other_team": other,
                 "source_idea_id": f"idea_{idx}",
                 "auto_analyze": True,
             },
         )
-        session["lineup_trade_give_players"] = [give] if give else []
-        session["lineup_trade_get_players"] = [receive] if receive else []
+        session["lineup_trade_give_players"] = give_list
+        session["lineup_trade_get_players"] = receive_list
         session["lineup_trade_other_team"] = other
         session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
         st.rerun()
@@ -279,12 +304,24 @@ def _render_build_analyze(
     left, mid, right = st.columns([5, 1, 5])
     with left:
         st.markdown(f'<div class="tc-side"><h4>MY TEAM — {html_lib.escape(my_team)}</h4></div>', unsafe_allow_html=True)
-        give_players = st.multiselect("Players I Give", my_players, key="lineup_trade_give_players", label_visibility="collapsed")
+        give_players = st.multiselect(
+            "Players I Give",
+            my_players,
+            key="lineup_trade_give_players",
+            label_visibility="collapsed",
+            max_selections=3,
+        )
     with mid:
         st.markdown('<div class="tc-exchange">⇄</div>', unsafe_allow_html=True)
     with right:
-        st.markdown('<div class="tc-side"><h4>OTHER TEAM</h4></div>', unsafe_allow_html=True)
-        receive_players = st.multiselect("Players I Receive", all_other_players, key="lineup_trade_get_players", label_visibility="collapsed")
+        st.markdown('<div class="tc-side"><h4>PLAYERS I RECEIVE</h4></div>', unsafe_allow_html=True)
+        receive_players = st.multiselect(
+            "Players I Receive",
+            all_other_players,
+            key="lineup_trade_get_players",
+            label_visibility="collapsed",
+            max_selections=3,
+        )
     st.markdown("</div>", unsafe_allow_html=True)
 
     other_team = ""
@@ -304,22 +341,32 @@ def _render_build_analyze(
         ensure_select_in_options("lineup_trade_other_team", other_teams, other_default)
         other_team = st.selectbox("Opposing team", other_teams, key="lineup_trade_other_team", label_visibility="collapsed")
 
-    primary_label = "Analyze This Trade" if (give_players and receive_players) else "Find Trade Ideas"
-    c1, c2, c3 = st.columns([2, 2, 1])
-    primary = c1.button(primary_label, key="tc_primary_action", type="primary")
-    send_offer = c2.button("Send Offer", key="tc_send_offer", disabled=not (give_players and receive_players and other_team))
-    if c3.button("Clear", key="tc_clear_trade"):
+    c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+    find_ideas_btn = c1.button("Find Trade Ideas", key="tc_find_ideas", type="primary")
+    analyze_btn = c2.button(
+        "Analyze This Trade",
+        key="tc_analyze_trade",
+        disabled=not (give_players and receive_players),
+    )
+    propose_btn = c3.button(
+        "Propose Trade",
+        key="tc_propose_trade",
+        disabled=not (give_players and receive_players and other_team),
+    )
+    if c4.button("Clear", key="tc_clear_trade"):
         session.pop("lineup_trade_give_players", None)
         session.pop("lineup_trade_get_players", None)
+        session.pop(LINEUP_TRADE_IDEAS_RESULTS_KEY, None)
+        session.pop(LINEUP_TRADE_IDEAS_DIAG_KEY, None)
         _save_shared_trade_state(session, scope_key, {})
         st.rerun()
 
     auto_analyze = bool(shared.pop("auto_analyze", False))
-    analyze = primary and give_players and receive_players
-    find_ideas = primary and not (give_players and receive_players)
+    analyze = analyze_btn or auto_analyze
+    find_ideas = find_ideas_btn
 
     verdict = ""
-    if analyze or auto_analyze:
+    if analyze and give_players and receive_players:
         trade_eval, verdict, weighted_gain = evaluate_trade_fn(
             give_players,
             receive_players,
@@ -335,8 +382,12 @@ def _render_build_analyze(
 </div>""",
             unsafe_allow_html=True,
         )
+        session[LINEUP_TRADE_IDEAS_DIAG_KEY] = {
+            "button_action": "analyze",
+            "source_offer_id": shared.get("source_offer_id"),
+        }
 
-    if find_ideas or (primary and give_players and not receive_players):
+    if find_ideas:
         owner_map = resolve_receive_target_teams(receive_players, roster_stats, my_team=my_team)
         suggestions, diag = generate_trade_ideas(
             my_team,
@@ -351,8 +402,6 @@ def _render_build_analyze(
         )
         session[LINEUP_TRADE_IDEAS_RESULTS_KEY] = suggestions.to_dict(orient="records") if not suggestions.empty else []
         session[LINEUP_TRADE_IDEAS_DIAG_KEY] = diag
-    elif analyze:
-        session[LINEUP_TRADE_IDEAS_DIAG_KEY] = {"button_action": "analyze"}
 
     stored_rows = session.get(LINEUP_TRADE_IDEAS_RESULTS_KEY) or []
     diag = session.get(LINEUP_TRADE_IDEAS_DIAG_KEY) or {}
@@ -363,7 +412,7 @@ def _render_build_analyze(
         if len(stored_rows) > 5 and st.button("Show more ideas", key="tc_show_more_ideas"):
             for idx, row in enumerate(stored_rows[5:10], start=5):
                 _render_idea_card(st, row if isinstance(row, dict) else {}, idx, session, scope_key)
-    elif find_ideas:
+    elif find_ideas or session.get(LINEUP_TRADE_IDEAS_DIAG_KEY):
         st.markdown(
             f'<div class="tc-empty">{html_lib.escape(empty_trade_ideas_message(diag))}</div>',
             unsafe_allow_html=True,
@@ -385,7 +434,7 @@ def _render_build_analyze(
         },
     )
 
-    if send_offer and give_players and receive_players and other_team:
+    if propose_btn and give_players and receive_players and other_team:
         try:
             from fantasy_trade_proposals_ui import submit_trade_proposal_from_analyzer
 
@@ -396,6 +445,7 @@ def _render_build_analyze(
                 other_team=other_team,
                 give_players=give_players,
                 get_players=receive_players,
+                verdict=verdict,
                 persist_fn=_persist_trade_plan,
                 key_prefix="tc_send",
             )
@@ -404,7 +454,20 @@ def _render_build_analyze(
 
     if developer_mode_enabled_fn():
         with st.expander("Trade Center diagnostics (Developer Mode)", expanded=False):
-            st.json(diag)
+            st.json(
+                {
+                    **diag,
+                    "my_team": my_team,
+                    "other_teams": ws.get("other_teams"),
+                    "roster_counts_by_team": diag.get("roster_counts_by_team")
+                    or {
+                        team: int(len(roster_stats[roster_stats["Team"].astype(str) == team]))
+                        for team in sorted(roster_stats["Team"].dropna().astype(str).unique().tolist())
+                    },
+                    "give_selections": give_players,
+                    "receive_selections": receive_players,
+                }
+            )
 
 
 def _count_pending_offers(session: dict[str, Any], my_team: str) -> int:
@@ -446,8 +509,46 @@ def render_trade_center_tab(
     scope_key = _trade_scope_state_key(scope_fingerprint)
     ws = _trade_workspace(session, my_team=my_team)
 
+    handoff = session.pop("_trade_center_handoff", None)
+    if isinstance(handoff, dict):
+        _save_shared_trade_state(
+            session,
+            scope_key,
+            {
+                "give_players": list(handoff.get("give_players") or []),
+                "get_players": list(handoff.get("receive_players") or []),
+                "other_team": str(handoff.get("other_team") or ""),
+                "source_offer_id": str(handoff.get("source_offer_id") or handoff.get("proposal_id") or ""),
+                "auto_analyze": bool(handoff.get("auto_analyze")),
+            },
+        )
+        session["lineup_trade_give_players"] = list(handoff.get("give_players") or [])
+        session["lineup_trade_get_players"] = list(handoff.get("receive_players") or [])
+        session["lineup_trade_other_team"] = str(handoff.get("other_team") or "")
+        session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
+
     if ws["roster_stats"] is None or ws["roster_stats"].empty:
-        st.markdown('<div class="tc-empty">Load league rosters and stats to open Trade Center.</div>', unsafe_allow_html=True)
+        missing_team = ""
+        try:
+            from fantasy_league_context import get_active_league_context
+
+            ctx = get_active_league_context(session) or {}
+            teams = sorted((ctx.get("league_rosters") or {}).keys())
+            my = ws.get("my_team") or ""
+            others = [t for t in teams if str(t) != str(my)]
+            if others:
+                missing_team = str(others[0])
+        except ImportError:
+            pass
+        if missing_team:
+            st.markdown(
+                f'<div class="tc-empty">{html_lib.escape(missing_team)}\'s roster could not be loaded, so trade ideas cannot be generated yet.</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            err = str(ws.get("load_error") or "").strip()
+            msg = err or "Load league rosters and stats to open Trade Center."
+            st.markdown(f'<div class="tc-empty">{html_lib.escape(msg)}</div>', unsafe_allow_html=True)
         return
     if not ws["my_team"]:
         st.markdown('<div class="tc-empty">Claim your team to use Trade Center.</div>', unsafe_allow_html=True)
@@ -514,12 +615,12 @@ def render_trade_center_tab(
             developer_mode_enabled_fn=developer_mode_enabled_fn,
         )
     elif internal_tab == "Offers":
-        _render_offers_section(st, session, ws=ws, scope_key=scope_key)
+        _render_offers_section(st, session, ws=ws, scope_key=scope_key, league_id=league_id)
     else:
         _render_history_section(st, session, ws=ws)
 
 
-def _render_offers_section(st: Any, session: dict[str, Any], *, ws: dict[str, Any], scope_key: str) -> None:
+def _render_offers_section(st: Any, session: dict[str, Any], *, ws: dict[str, Any], scope_key: str, league_id: str) -> None:
     shared = _load_shared_trade_state(session, scope_key)
     try:
         from fantasy_trade_proposals_ui import render_trade_proposals_section, render_trade_response_ui_v2_marker
@@ -535,7 +636,9 @@ def _render_offers_section(st: Any, session: dict[str, Any], *, ws: dict[str, An
             verdict=str(shared.get("verdict") or ""),
             persist_fn=_persist_trade_plan,
             key_prefix="tc_offers",
+            hide_propose_form=True,
             on_analyze_offer=lambda offer: _load_offer_into_state(session, scope_key, offer, ws["my_team"]),
+            on_clear_offer=lambda offer: _clear_offer_from_inbox(session, offer, league_id=league_id),
         )
     except TypeError:
         from fantasy_trade_proposals_ui import render_trade_proposals_section, render_trade_response_ui_v2_marker
@@ -551,41 +654,76 @@ def _render_offers_section(st: Any, session: dict[str, Any], *, ws: dict[str, An
             verdict=str(shared.get("verdict") or ""),
             persist_fn=_persist_trade_plan,
             key_prefix="tc_offers",
+            hide_propose_form=True,
         )
     except ImportError as exc:
         st.markdown(f'<div class="tc-empty">Offers unavailable: {html_lib.escape(str(exc))}</div>', unsafe_allow_html=True)
 
 
 def _load_offer_into_state(session: dict[str, Any], scope_key: str, offer: dict[str, Any], my_team: str) -> None:
-    from_team = str(offer.get("from_team") or "").strip()
-    to_team = str(offer.get("to_team") or "").strip()
-    if to_team == my_team:
-        give = list(offer.get("requested_players") or offer.get("give_players") or [])
-        receive = list(offer.get("offered_players") or offer.get("get_players") or [])
-        other = from_team
-    else:
-        give = list(offer.get("offered_players") or offer.get("give_players") or [])
-        receive = list(offer.get("requested_players") or offer.get("get_players") or [])
-        other = to_team
+    try:
+        from fantasy_trade_proposals import recipient_view, proposer_view
+
+        pid = str(offer.get("proposal_id") or offer.get("id") or "").strip()
+        recipient = str(offer.get("recipient_team") or offer.get("to_team") or "").strip()
+        if recipient == my_team:
+            view = recipient_view(offer)
+        else:
+            view = proposer_view(offer)
+        give = list(view.get("give_players") or [])
+        receive = list(view.get("receive_players") or [])
+        other = str(view.get("other_team") or "").strip()
+    except ImportError:
+        from_team = str(offer.get("from_team") or offer.get("proposer_team") or "").strip()
+        to_team = str(offer.get("to_team") or offer.get("recipient_team") or "").strip()
+        pid = str(offer.get("proposal_id") or offer.get("id") or "").strip()
+        if to_team == my_team:
+            give = [str(p.get("player_name") or p) for p in (offer.get("proposer_receives") or offer.get("requested_players") or [])]
+            receive = [str(p.get("player_name") or p) for p in (offer.get("proposer_gives") or offer.get("offered_players") or [])]
+            other = from_team
+        else:
+            give = [str(p.get("player_name") or p) for p in (offer.get("proposer_gives") or offer.get("offered_players") or [])]
+            receive = [str(p.get("player_name") or p) for p in (offer.get("proposer_receives") or offer.get("requested_players") or [])]
+            other = to_team
     state = {
-        "give_players": give,
-        "get_players": receive,
+        "give_players": [g for g in give if g],
+        "get_players": [g for g in receive if g],
         "other_team": other,
-        "source_offer_id": str(offer.get("proposal_id") or offer.get("id") or ""),
+        "source_offer_id": pid,
         "auto_analyze": True,
     }
     _save_shared_trade_state(session, scope_key, state)
-    session["lineup_trade_give_players"] = give
-    session["lineup_trade_get_players"] = receive
+    session["lineup_trade_give_players"] = state["give_players"]
+    session["lineup_trade_get_players"] = state["get_players"]
     session["lineup_trade_other_team"] = other
     session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
 
 
+def _clear_offer_from_inbox(session: dict[str, Any], offer: dict[str, Any], *, league_id: str) -> None:
+    try:
+        from fantasy_trade_proposals import archive_offer_from_inbox
+
+        archive_offer_from_inbox(
+            session,
+            str(offer.get("proposal_id") or offer.get("id") or ""),
+            league_id=league_id,
+        )
+    except ImportError:
+        pass
+
+
 def _render_history_section(st: Any, session: dict[str, Any], *, ws: dict[str, Any]) -> None:
     try:
-        from fantasy_trade_proposals import get_trade_proposals
+        from fantasy_league_context import get_active_league_context
+        from fantasy_trade_proposals import get_trade_history
 
-        proposals = get_trade_proposals(session) or []
+        context = get_active_league_context(session) or {}
+        history = get_trade_history(context)
+        proposals = (
+            (history.get("accepted") or [])
+            + (history.get("declined") or [])
+            + (history.get("pending") or [])
+        )
     except ImportError:
         proposals = []
 
@@ -599,22 +737,35 @@ def _render_history_section(st: Any, session: dict[str, Any], *, ws: dict[str, A
         key="tc_history_filter",
     )
     shown = 0
-    for idx, proposal in enumerate(reversed(proposals)):
+    seen_accepted: set[str] = set()
+    for proposal in reversed(proposals):
         if not isinstance(proposal, dict):
             continue
         status = str(proposal.get("status") or "unknown").strip()
+        pid = str(proposal.get("proposal_id") or proposal.get("trade_id") or "").strip()
         if filter_status != "All" and status.lower() != filter_status.lower():
             continue
+        if status.lower() == "accepted":
+            if pid and pid in seen_accepted:
+                continue
+            if pid:
+                seen_accepted.add(pid)
         shown += 1
-        from_team = str(proposal.get("from_team") or "")
-        to_team = str(proposal.get("to_team") or "")
-        give = proposal.get("offered_players") or proposal.get("give_players") or []
-        get = proposal.get("requested_players") or proposal.get("get_players") or []
+        from_team = str(proposal.get("proposer_team") or proposal.get("from_team") or "")
+        to_team = str(proposal.get("recipient_team") or proposal.get("to_team") or "")
+        give = proposal.get("proposer_gives") or proposal.get("offered_players") or proposal.get("give_players") or []
+        get = proposal.get("proposer_receives") or proposal.get("requested_players") or proposal.get("get_players") or []
+        give_names = ", ".join(
+            str(p.get("player_name") if isinstance(p, dict) else p) for p in give
+        )
+        get_names = ", ".join(
+            str(p.get("player_name") if isinstance(p, dict) else p) for p in get
+        )
         st.markdown(
             f"""<div class="tc-idea-card">
 <span class="tc-badge">{html_lib.escape(status.title())}</span>
 <b>{html_lib.escape(from_team)} → {html_lib.escape(to_team)}</b><br/>
-<span style="font-size:0.82rem;">Give {html_lib.escape(', '.join(map(str, give)))} · Receive {html_lib.escape(', '.join(map(str, get)))}</span>
+<span style="font-size:0.82rem;">Give {html_lib.escape(give_names)} · Receive {html_lib.escape(get_names)}</span>
 </div>""",
             unsafe_allow_html=True,
         )

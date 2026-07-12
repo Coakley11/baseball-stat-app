@@ -12,7 +12,7 @@ LINEUP_TRADE_IDEAS_RESULTS_KEY = "_lineup_trade_ideas_results"
 LINEUP_TRADE_IDEAS_DIAG_KEY = "_lineup_trade_ideas_diag"
 LINEUP_ASSISTANT_TAB_KEY = "lineup_assistant_tab"
 LINEUP_ASSISTANT_TAB_OPTIONS: tuple[str, ...] = (
-    "Lineup & Weekly Stats",
+    "Lineup Management",
     "Trade Center",
 )
 TRADE_CENTER_INTERNAL_TAB_KEY = "trade_center_internal_tab"
@@ -208,6 +208,95 @@ def _score_one_for_one(
     }
 
 
+def _score_trade_package(
+    give_rows: pd.DataFrame,
+    receive_rows: pd.DataFrame,
+    *,
+    target_team: str,
+    needs: dict[str, bool],
+) -> dict[str, Any] | None:
+    if give_rows.empty or receive_rows.empty:
+        return None
+    mine_val = sum(_player_value(row) for _, row in give_rows.iterrows())
+    theirs_val = sum(_player_value(row) for _, row in receive_rows.iterrows())
+    fairness_gap = theirs_val - mine_val
+    if abs(fairness_gap) > FAIRNESS_MAX_GAP:
+        return None
+
+    helps: list[str] = []
+    hurts: list[str] = []
+    neutral: list[str] = []
+    need_gain = 0.0
+    for cat in TRADE_IDEA_CATEGORIES:
+        mine_total = 0.0
+        theirs_total = 0.0
+        mine_count = 0
+        theirs_count = 0
+        for _, row in give_rows.iterrows():
+            val = pd.to_numeric(row.get(cat), errors="coerce")
+            if pd.notna(val):
+                mine_total += float(val)
+                mine_count += 1
+        for _, row in receive_rows.iterrows():
+            val = pd.to_numeric(row.get(cat), errors="coerce")
+            if pd.notna(val):
+                theirs_total += float(val)
+                theirs_count += 1
+        if mine_count == 0 and theirs_count == 0:
+            continue
+        mine_avg = mine_total / max(1, mine_count)
+        theirs_avg = theirs_total / max(1, theirs_count)
+        diff = theirs_avg - mine_avg
+        rate_weight = 12.0 if cat in {"BA", "OPS"} else 1.0
+        if diff > 0:
+            if needs.get(cat):
+                need_gain += diff * rate_weight
+                helps.append(cat)
+            else:
+                neutral.append(cat)
+        elif diff < 0:
+            hurts.append(cat)
+
+    fairness_score = max(0.0, 100.0 - abs(fairness_gap) * 4.5)
+    if fairness_score < 35:
+        return None
+    overall = fairness_score * 0.55 + max(0.0, need_gain) * 0.25 + max(-5.0, min(5.0, fairness_gap)) * 2.0
+
+    give_names = ", ".join(str(r.get("Player") or "") for _, r in give_rows.iterrows())
+    receive_names = ", ".join(str(r.get("Player") or "") for _, r in receive_rows.iterrows())
+    if fairness_gap > 2:
+        fairness_note = "slight advantage to you"
+    elif fairness_gap < -2:
+        fairness_note = "slight advantage to them"
+    else:
+        fairness_note = "balanced value"
+
+    explanation_parts: list[str] = []
+    if helps:
+        explanation_parts.append(f"helps {', '.join(helps[:3])}")
+    if hurts:
+        explanation_parts.append(f"may weaken {', '.join(hurts[:3])}")
+    if not helps and not hurts:
+        explanation_parts.append("fair value with limited category movement")
+
+    risk = f"May weaken {hurts[0]}" if hurts else "Moderate roster churn"
+    return {
+        "Give": give_names,
+        "Receive": receive_names,
+        "Other Team": target_team,
+        "Trade Fit Score": round(need_gain, 2),
+        "Fairness Score": round(fairness_score, 1),
+        "Overall Score": round(overall, 2),
+        "Fairness Gap": round(fairness_gap, 2),
+        "Why It Helps": ", ".join(explanation_parts[:4]),
+        "Value Explanation": fairness_note,
+        "Category Gains": ", ".join(helps[:4]) if helps else "—",
+        "Category Losses": ", ".join(hurts[:4]) if hurts else "—",
+        "Main Risk": risk,
+        "Recommendation": "Fair" if fairness_score >= 70 else "Slight risk",
+    }
+
+
 def suggest_trade_targets_for_team(
     my_team: str,
     target_team: str,
@@ -217,6 +306,7 @@ def suggest_trade_targets_for_team(
     max_suggestions: int = 40,
     forced_give: list[str] | None = None,
     forced_get: list[str] | None = None,
+    rejection_counts: dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """Suggest one-for-one trades against a single opposing team."""
     my_team = _normalize_team(my_team)
@@ -236,12 +326,62 @@ def suggest_trade_targets_for_team(
     if get_filter:
         other_players = other_players[other_players["Player"].astype(str).isin(get_filter)]
 
+    rejections = rejection_counts if rejection_counts is not None else {}
+
+    def _bump(key: str) -> None:
+        rejections[key] = int(rejections.get(key, 0)) + 1
+
     suggestions: list[dict[str, Any]] = []
     for _, mine in my_players.iterrows():
         for _, theirs in other_players.iterrows():
             row = _score_one_for_one(mine, theirs, target_team=target_team, needs=needs)
             if row:
                 suggestions.append(row)
+            else:
+                gap = _player_value(theirs) - _player_value(mine)
+                if abs(gap) > FAIRNESS_MAX_GAP:
+                    _bump("rejected_fairness")
+                else:
+                    _bump("rejected_value")
+
+    # Multi-player packages when one side is pinned.
+    if len(give_filter) == 1 and my_players.shape[0] == 1:
+        anchor = my_players.iloc[0:1]
+        extras = all_rosters[
+            (all_rosters["Team"].astype(str) == my_team)
+            & (~all_rosters["Player"].astype(str).isin(give_filter))
+        ]
+        for _, extra in extras.head(8).iterrows():
+            give_pkg = pd.concat([anchor, extra.to_frame().T], ignore_index=True)
+            for _, theirs in other_players.iterrows():
+                row = _score_trade_package(
+                    give_pkg,
+                    theirs.to_frame().T,
+                    target_team=target_team,
+                    needs=needs,
+                )
+                if row:
+                    suggestions.append(row)
+    if len(get_filter) == 1 and other_players.shape[0] == 1:
+        anchor = other_players.iloc[0:1]
+        for _, mine in my_players.iterrows():
+            row = _score_trade_package(
+                mine.to_frame().T,
+                anchor,
+                target_team=target_team,
+                needs=needs,
+            )
+            if row:
+                suggestions.append(row)
+            extras = all_rosters[
+                (all_rosters["Team"].astype(str) == my_team)
+                & (~all_rosters["Player"].astype(str).isin([mine.get("Player")]))
+            ]
+            for _, extra in extras.head(4).iterrows():
+                give_pkg = pd.concat([mine.to_frame().T, extra.to_frame().T], ignore_index=True)
+                row = _score_trade_package(give_pkg, anchor, target_team=target_team, needs=needs)
+                if row:
+                    suggestions.append(row)
 
     out = pd.DataFrame(suggestions)
     if out.empty:
@@ -297,6 +437,7 @@ def generate_trade_ideas(
         "user_team": my_team or None,
         "target_owner_teams": dict(target_owner_teams or {}),
         "opposing_teams_searched": [],
+        "roster_counts_by_team": {},
         "candidate_count_raw": 0,
         "candidate_count_after_fairness": 0,
         "candidate_count_after_filters": 0,
@@ -313,6 +454,10 @@ def generate_trade_ideas(
         return pd.DataFrame(), diag
 
     teams = sorted(all_rosters["Team"].dropna().astype(str).unique().tolist())
+    diag["roster_counts_by_team"] = {
+        team: int(len(all_rosters[all_rosters["Team"].astype(str) == team]))
+        for team in teams
+    }
     if my_team not in teams:
         diag["failure_reason"] = "user_team_not_in_rosters"
         return pd.DataFrame(), diag
@@ -325,8 +470,21 @@ def generate_trade_ideas(
             diag["missing_give_players"] = missing
             return pd.DataFrame(), diag
 
+    if get_list:
+        for player in get_list:
+            owner = resolve_player_owner_team(player, all_rosters, my_team=my_team)
+            if not owner:
+                diag["failure_reason"] = "selected_receive_player_not_found"
+                diag["missing_get_players"] = [player]
+                return pd.DataFrame(), diag
+
     opposing = [t for t in teams if t != my_team]
     owner_map = dict(target_owner_teams or {})
+    for player in get_list:
+        owner = resolve_player_owner_team(player, all_rosters, my_team=my_team)
+        if owner:
+            owner_map[str(player)] = owner
+    diag["target_owner_teams"] = owner_map
     if get_list and owner_map:
         opposing = sorted(set(owner_map.values()) - {my_team})
     elif target_team:
@@ -337,6 +495,13 @@ def generate_trade_ideas(
     if not opposing:
         diag["failure_reason"] = "no_opposing_teams"
         return pd.DataFrame(), diag
+
+    for other_team in opposing:
+        opp_count = diag["roster_counts_by_team"].get(other_team, 0)
+        if opp_count <= 0:
+            diag["failure_reason"] = "opposing_roster_empty"
+            diag["missing_team"] = other_team
+            return pd.DataFrame(), diag
 
     needs = derive_category_needs(
         standings,
@@ -349,6 +514,7 @@ def generate_trade_ideas(
     raw_count = 0
     fair_count = 0
     chunks: list[pd.DataFrame] = []
+    rejection_counts: dict[str, int] = {}
     for other_team in opposing:
         chunk = suggest_trade_targets_for_team(
             my_team,
@@ -357,6 +523,7 @@ def generate_trade_ideas(
             needs,
             forced_give=give_list or None,
             forced_get=get_list or None,
+            rejection_counts=rejection_counts,
         )
         opp_my = all_rosters[all_rosters["Team"].astype(str) == my_team]
         opp_other = all_rosters[all_rosters["Team"].astype(str) == other_team]
@@ -368,6 +535,8 @@ def generate_trade_ideas(
     diag["candidate_count_raw"] = raw_count
     diag["candidate_count_after_fairness"] = fair_count
     diag["candidate_count_before_filters"] = fair_count
+    diag["rejection_counts"] = rejection_counts
+    diag["candidates_generated"] = fair_count
 
     if not chunks:
         if give_list and not get_list:
@@ -398,12 +567,23 @@ def generate_trade_ideas(
 
 def empty_trade_ideas_message(diag: dict[str, Any] | None = None) -> str:
     reason = str((diag or {}).get("failure_reason") or "").strip()
+    missing_team = str((diag or {}).get("missing_team") or "").strip()
+    if reason == "opposing_roster_empty" and missing_team:
+        return f"{missing_team}'s roster could not be loaded, so trade ideas cannot be generated yet."
     if reason == "selected_player_not_on_roster":
         return "Selected player was not found on your roster."
+    if reason == "selected_receive_player_not_found":
+        return "Selected receive player was not found on an opposing roster."
     if reason == "roster_stats_empty":
-        return "No opposing roster loaded. Load league stats first."
+        return "League rosters are not loaded yet. Trade ideas will appear once stats sync."
     if reason == "no_opposing_teams":
         return "No other claimed team is available for trades."
+    if reason == "all_candidates_exceeded_fairness_threshold":
+        return "No fair trade ideas matched the selected players within the fairness range."
+    if reason == "no_fair_candidates":
+        return "No fair trade candidates were found for the current rosters."
+    if reason == "filtered_out_by_selected_players":
+        return "No ideas matched the exact players selected on both sides."
     return _EMPTY_SUGGESTIONS_MESSAGE
 
 
@@ -422,6 +602,8 @@ def resolve_lineup_assistant_tab(session: dict[str, Any]) -> str:
     if tab == "Offers & Activity":
         tab = "Trade Center"
         session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Offers"
+    elif tab == "Lineup & Weekly Stats":
+        tab = "Lineup Management"
     if tab not in LINEUP_ASSISTANT_TAB_OPTIONS:
         tab = LINEUP_ASSISTANT_TAB_OPTIONS[0]
     session[LINEUP_ASSISTANT_TAB_KEY] = tab

@@ -349,6 +349,85 @@ def _status_badge(status: str) -> str:
     return labels.get(status, status or "Pending")
 
 
+def submit_trade_proposal_from_analyzer(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    my_team: str,
+    other_team: str,
+    give_players: list[str],
+    get_players: list[str],
+    verdict: str = "",
+    persist_fn: Callable[..., None] | None = None,
+    key_prefix: str = "trade_analyzer",
+    expires_at: str = "",
+) -> None:
+    """Create a pending trade proposal from Trade Center builder state."""
+    shape_error = _validate_ui_trade_shape(give_players, get_players)
+    context = get_active_league_context(session)
+    proposer_team = resolve_trade_team_for_session(context, session) if context else str(my_team or "").strip()
+    owned_team = owned_team_for_user(context) if context else ""
+    if owned_team:
+        proposer_team = owned_team
+    if shape_error:
+        session["_last_trade_proposal_submit_error"] = shape_error
+        st.error(shape_error)
+        return
+    if not other_team:
+        msg = "Select a valid opposing team before proposing."
+        session["_last_trade_proposal_submit_error"] = msg
+        st.error(msg)
+        return
+
+    pending_before = count_pending_trade_proposals(context)
+    outgoing_before = len(get_outgoing_trade_proposals(session, proposer_team or my_team))
+    record_trade_submit_trace(
+        session,
+        button_clicked=True,
+        proposer_team=proposer_team or my_team,
+        recipient_team=other_team,
+        give_players=list(give_players),
+        receive_players=list(get_players),
+        pending_trade_count_before=pending_before,
+        outgoing_count_before=outgoing_before,
+        propose_trade_called=True,
+    )
+    proposal, err = create_trade_proposal(
+        session,
+        proposer_team=proposer_team or my_team,
+        recipient_team=other_team,
+        proposer_gives=give_players,
+        proposer_receives=get_players,
+        verdict=verdict,
+        expires_at=expires_at,
+    )
+    refreshed_ctx = get_active_league_context(session)
+    record_trade_submit_trace(
+        session,
+        pending_trade_count_after=count_pending_trade_proposals(refreshed_ctx),
+        outgoing_count_after=len(get_outgoing_trade_proposals(session, proposer_team or my_team)),
+    )
+    if err:
+        session["_last_trade_proposal_submit_error"] = err
+        session.pop("_last_trade_proposal_submit_ok", None)
+        st.error(err)
+        return
+    if proposal:
+        session.pop("_last_trade_proposal_submit_error", None)
+        session["_last_trade_proposal_submit_ok"] = {
+            "trade_id": str(proposal.get("trade_id") or proposal.get("proposal_id") or ""),
+            "recipient_team": other_team,
+        }
+        if persist_fn:
+            persist_fn(session, st, reason="trade_proposal_created")
+        st.success(f"Trade proposed to **{other_team}**.")
+        st.rerun()
+    else:
+        msg = "Propose trade returned no proposal and no error."
+        session["_last_trade_proposal_submit_error"] = msg
+        st.error(msg)
+
+
 def _render_proposal_card(
     st: Any,
     session: dict[str, Any],
@@ -364,6 +443,8 @@ def _render_proposal_card(
     verdict: str,
     expires_at: str,
     skip_accept_button: bool = False,
+    on_analyze_offer: Callable[[dict[str, Any]], None] | None = None,
+    on_clear_offer: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     pid = str(proposal.get("proposal_id") or "")
     display_status = get_display_status(context, proposal)
@@ -410,8 +491,12 @@ def _render_proposal_card(
             btn_analyze, btn_counter, btn_accept, btn_decline = st.columns(4)
         with btn_analyze:
             if st.button("Analyze This Trade", key=f"{key_prefix}_analyze_in_{pid}"):
-                navigate_to_trade_proposal(session, proposal_id=pid, view_as_team=my_team_name)
-                st.rerun()
+                if on_analyze_offer:
+                    on_analyze_offer(proposal)
+                    st.rerun()
+                else:
+                    navigate_to_trade_proposal(session, proposal_id=pid, view_as_team=my_team_name)
+                    st.rerun()
         if not TRADE_PHASE1_SIMPLE:
             with btn_counter:
                 counter_shape_error = _validate_ui_trade_shape(current_give_players, current_get_players)
@@ -469,7 +554,16 @@ def _render_proposal_card(
                     st.rerun()
     elif direction == "outgoing":
         if st.button("Analyze This Trade", key=f"{key_prefix}_analyze_out_done_{pid}"):
-            navigate_to_trade_proposal(session, proposal_id=pid, view_as_team=my_team_name)
+            if on_analyze_offer:
+                on_analyze_offer(proposal)
+                st.rerun()
+            else:
+                navigate_to_trade_proposal(session, proposal_id=pid, view_as_team=my_team_name)
+                st.rerun()
+
+    if display_status != TRADE_PROPOSAL_STATUS_PENDING and on_clear_offer:
+        if st.button("Clear from Offers", key=f"{key_prefix}_clear_{pid}"):
+            on_clear_offer(proposal)
             st.rerun()
 
 
@@ -518,6 +612,9 @@ def render_trade_proposals_section(
     verdict: str = "",
     persist_fn: Callable[..., None] | None = None,
     key_prefix: str = "trade_proposals",
+    on_analyze_offer: Callable[[dict[str, Any]], None] | None = None,
+    on_clear_offer: Callable[[dict[str, Any]], None] | None = None,
+    hide_propose_form: bool = False,
 ) -> None:
     """Incoming/outgoing inbox plus Propose Trade action."""
     render_trade_response_ui_v2_marker(
@@ -597,87 +694,98 @@ def render_trade_proposals_section(
         expires_at = _deadline_for_choice(expiry_choice)
 
     st.markdown("##### Propose Trade")
-    st.caption("Supports 1-for-1, 2-for-1, 2-for-2, and 3-for-2 style offers. The analyzer evaluates; accepting the proposal is what mutates rosters.")
-    shape_error = _validate_ui_trade_shape(give_players, get_players)
-    if give_players or get_players:
-        st.caption(f"Current deal shape: **{_trade_shape(give_players, get_players)}**")
-    if shape_error and (give_players or get_players):
-        st.warning(shape_error)
-
-    can_propose = bool(give_players and get_players and other_team)
-    if not can_propose:
-        st.caption("Select players you give up and receive above, then click **Propose this trade**.")
+    if hide_propose_form:
+        st.caption("Use **Propose Trade** in Build & Analyze to send offers from the trade builder.")
     else:
-        with st.form(f"{key_prefix}_propose_form", clear_on_submit=False):
-            st.caption(
-                f"Propose from **{proposer_team or my_team_name}** to **{other_team}**: "
-                f"{', '.join(give_players)} → {', '.join(get_players)}"
-            )
-            submitted = st.form_submit_button(
-                "Propose this trade",
-                type="primary",
-                disabled=bool(shape_error),
-            )
+        st.caption("Supports 1-for-1, 2-for-1, 2-for-2, and 3-for-2 style offers. The analyzer evaluates; accepting the proposal is what mutates rosters.")
+        shape_error = _validate_ui_trade_shape(give_players, get_players)
+        if give_players or get_players:
+            st.caption(f"Current deal shape: **{_trade_shape(give_players, get_players)}**")
+        if shape_error and (give_players or get_players):
+            st.warning(shape_error)
 
-        if submitted:
-            active_ctx = get_active_league_context(session)
-            pending_before = count_pending_trade_proposals(active_ctx)
-            outgoing_before = len(get_outgoing_trade_proposals(session, my_team_name))
-            record_trade_submit_trace(
-                session,
-                button_clicked=True,
-                proposer_team=proposer_team or my_team_name,
-                recipient_team=other_team,
-                give_players=list(give_players),
-                receive_players=list(get_players),
-                pending_trade_count_before=pending_before,
-                outgoing_count_before=outgoing_before,
-                propose_trade_called=False,
-                validation_error=shape_error or None,
-                create_error=None,
-                trade_id=None,
-            )
-            if shape_error:
-                session["_last_trade_proposal_submit_error"] = shape_error
-                record_trade_submit_trace(session, validation_error=shape_error, create_error=shape_error)
-            else:
-                proposal, err = create_trade_proposal(
-                    session,
-                    proposer_team=proposer_team or my_team_name,
-                    recipient_team=other_team,
-                    proposer_gives=give_players,
-                    proposer_receives=get_players,
-                    verdict=verdict,
-                    expires_at=expires_at,
+        can_propose = bool(give_players and get_players and other_team)
+        if not can_propose:
+            st.caption("Select players you give up and receive above, then click **Propose this trade**.")
+        else:
+            with st.form(f"{key_prefix}_propose_form", clear_on_submit=False):
+                st.caption(
+                    f"Propose from **{proposer_team or my_team_name}** to **{other_team}**: "
+                    f"{', '.join(give_players)} → {', '.join(get_players)}"
                 )
-                refreshed_ctx = get_active_league_context(session)
-                pending_after = count_pending_trade_proposals(refreshed_ctx)
-                outgoing_after = len(get_outgoing_trade_proposals(session, my_team_name))
+                submitted = st.form_submit_button(
+                    "Propose this trade",
+                    type="primary",
+                    disabled=bool(shape_error),
+                )
+
+            if submitted:
+                active_ctx = get_active_league_context(session)
+                pending_before = count_pending_trade_proposals(active_ctx)
+                outgoing_before = len(get_outgoing_trade_proposals(session, my_team_name))
                 record_trade_submit_trace(
                     session,
-                    pending_trade_count_after=pending_after,
-                    outgoing_count_after=outgoing_after,
+                    button_clicked=True,
+                    proposer_team=proposer_team or my_team_name,
+                    recipient_team=other_team,
+                    give_players=list(give_players),
+                    receive_players=list(get_players),
+                    pending_trade_count_before=pending_before,
+                    outgoing_count_before=outgoing_before,
+                    propose_trade_called=False,
+                    validation_error=shape_error or None,
+                    create_error=None,
+                    trade_id=None,
                 )
-                if err:
-                    session["_last_trade_proposal_submit_error"] = err
-                    session.pop("_last_trade_proposal_submit_ok", None)
-                    st.error(err)
-                elif proposal:
-                    session.pop("_last_trade_proposal_submit_error", None)
-                    session["_last_trade_proposal_submit_ok"] = {
-                        "trade_id": str(proposal.get("trade_id") or proposal.get("proposal_id") or ""),
-                        "recipient_team": other_team,
-                    }
-                    if persist_fn:
-                        persist_fn(session, st, reason="trade_proposal_created")
-                    st.success(f"Trade proposed to **{other_team}**.")
+                if shape_error:
+                    session["_last_trade_proposal_submit_error"] = shape_error
+                    record_trade_submit_trace(session, validation_error=shape_error, create_error=shape_error)
                 else:
-                    msg = "Propose trade returned no proposal and no error."
-                    session["_last_trade_proposal_submit_error"] = msg
-                    record_trade_submit_trace(session, create_error=msg)
-                    st.error(msg)
+                    proposal, err = create_trade_proposal(
+                        session,
+                        proposer_team=proposer_team or my_team_name,
+                        recipient_team=other_team,
+                        proposer_gives=give_players,
+                        proposer_receives=get_players,
+                        verdict=verdict,
+                        expires_at=expires_at,
+                    )
+                    refreshed_ctx = get_active_league_context(session)
+                    pending_after = count_pending_trade_proposals(refreshed_ctx)
+                    outgoing_after = len(get_outgoing_trade_proposals(session, my_team_name))
+                    record_trade_submit_trace(
+                        session,
+                        pending_trade_count_after=pending_after,
+                        outgoing_count_after=outgoing_after,
+                    )
+                    if err:
+                        session["_last_trade_proposal_submit_error"] = err
+                        session.pop("_last_trade_proposal_submit_ok", None)
+                        st.error(err)
+                    elif proposal:
+                        session.pop("_last_trade_proposal_submit_error", None)
+                        session["_last_trade_proposal_submit_ok"] = {
+                            "trade_id": str(proposal.get("trade_id") or proposal.get("proposal_id") or ""),
+                            "recipient_team": other_team,
+                        }
+                        if persist_fn:
+                            persist_fn(session, st, reason="trade_proposal_created")
+                        st.success(f"Trade proposed to **{other_team}**.")
+                    else:
+                        msg = "Propose trade returned no proposal and no error."
+                        session["_last_trade_proposal_submit_error"] = msg
+                        record_trade_submit_trace(session, create_error=msg)
+                        st.error(msg)
 
     context = get_active_league_context(session) or context
+    league_id = str(resolve_canonical_league_id(context) or "").strip()
+    archived = set()
+    try:
+        from fantasy_trade_proposals import archived_offer_ids
+
+        archived = archived_offer_ids(session, league_id)
+    except ImportError:
+        pass
     incoming_preview = get_incoming_trade_proposals(session, my_team_name)
     pending_actionable = [
         p
@@ -716,6 +824,9 @@ def render_trade_proposals_section(
         if not incoming:
             st.caption("No incoming offers yet.")
         for proposal in incoming:
+            pid = str(proposal.get("proposal_id") or "").strip()
+            if pid and pid in archived:
+                continue
             _render_proposal_card(
                 st,
                 session,
@@ -730,6 +841,8 @@ def render_trade_proposals_section(
                 verdict=verdict,
                 expires_at=expires_at,
                 skip_accept_button=True,
+                on_analyze_offer=on_analyze_offer,
+                on_clear_offer=on_clear_offer,
             )
 
     with col_out:
@@ -737,6 +850,9 @@ def render_trade_proposals_section(
         if not outgoing:
             st.caption("No outgoing offers yet.")
         for proposal in outgoing:
+            pid = str(proposal.get("proposal_id") or "").strip()
+            if pid and pid in archived:
+                continue
             _render_proposal_card(
                 st,
                 session,
@@ -750,6 +866,8 @@ def render_trade_proposals_section(
                 current_get_players=get_players,
                 verdict=verdict,
                 expires_at=expires_at,
+                on_analyze_offer=on_analyze_offer,
+                on_clear_offer=on_clear_offer,
             )
 
     _render_trade_history(st, context, key_prefix=key_prefix)

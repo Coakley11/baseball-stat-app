@@ -34,8 +34,9 @@ TRADE_PROPOSAL_STATUS_COUNTERED = "countered"
 TRADE_PROPOSAL_STATUS_EXPIRED = "expired"
 TRADE_PROPOSAL_STATUS_STALE = "stale"
 TRADE_HANDOFF_SESSION_KEY = "_fantasy_trade_proposal_handoff"
+ARCHIVED_OFFERS_SESSION_PREFIX = "archived_trade_offers|"
 LINEUP_ASSISTANT_PAGE = "Fantasy Lineup Assistant"
-TRADE_PHASE1_SIMPLE = True
+TRADE_PHASE1_SIMPLE = False
 STALE_TRADE_MESSAGE = (
     "Trade can no longer be completed because one or more players are no longer on the expected roster."
 )
@@ -1269,6 +1270,30 @@ def navigate_to_trade_proposal(
         mark_trade_notification_seen(session, team_name=view_as_team, alert_key=alert_key)
 
 
+def archived_offer_ids(session: dict[str, Any], league_id: str) -> set[str]:
+    key = f"{ARCHIVED_OFFERS_SESSION_PREFIX}{str(league_id or '').strip()}"
+    raw = session.get(key) or []
+    if not isinstance(raw, list):
+        return set()
+    return {str(x).strip() for x in raw if str(x).strip()}
+
+
+def archive_offer_from_inbox(session: dict[str, Any], proposal_id: str, *, league_id: str) -> None:
+    pid = str(proposal_id or "").strip()
+    lid = str(league_id or "").strip()
+    if not pid or not lid:
+        return
+    key = f"{ARCHIVED_OFFERS_SESSION_PREFIX}{lid}"
+    current = list(archived_offer_ids(session, lid))
+    if pid not in current:
+        current.append(pid)
+    session[key] = current
+
+
+def is_offer_archived(session: dict[str, Any], proposal_id: str, *, league_id: str) -> bool:
+    return str(proposal_id or "").strip() in archived_offer_ids(session, league_id)
+
+
 def consume_trade_proposal_handoff(session: dict[str, Any]) -> dict[str, Any] | None:
     handoff = session.pop(TRADE_HANDOFF_SESSION_KEY, None)
     if not isinstance(handoff, dict):
@@ -1295,4 +1320,12 @@ def consume_trade_proposal_handoff(session: dict[str, Any]) -> dict[str, Any] | 
     if receive_players:
         session["lineup_trade_get_players"] = receive_players
     session["_lineup_focus_trade_center"] = True
+    session["_trade_center_handoff"] = {
+        "proposal_id": proposal_id,
+        "give_players": give_players,
+        "receive_players": receive_players,
+        "other_team": other_team,
+        "source_offer_id": proposal_id,
+        "auto_analyze": True,
+    }
     return view

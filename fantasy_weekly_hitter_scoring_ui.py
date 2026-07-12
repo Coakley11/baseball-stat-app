@@ -15,7 +15,6 @@ from fantasy_weekly_hitter_scoring import (
     get_weekly_scoring_record,
     is_legacy_locked_lineup,
     is_week_finalized_for_league,
-    preview_finalize_week,
     refresh_weekly_scoring,
     resolve_hitter_scoring_profile,
     should_start_week_empty,
@@ -397,27 +396,57 @@ def render_finalize_week_section(
     if not is_lineup_format_commissioner(session, context):
         return
     if is_week_finalized_for_league(context, week):
-        st.success(f"{week_label(week)} finalized and added to standings.")
+        st.success(f"{week_label(week)} is complete and permanently locked.")
         return
 
-    st.subheader("Finalize week")
-    preview = preview_finalize_week(context, week=week, roster_by_team=roster_by_team)
-    if preview.get("unlocked_teams"):
-        st.warning(f"Teams without locked lineups: {', '.join(preview['unlocked_teams'])}")
-    if preview.get("missing_data"):
-        st.warning(f"Missing required data: {', '.join(preview['missing_data'])}")
-    for row in preview.get("teams_preview") or []:
-        st.caption(f"{row.get('team')}: {row.get('totals')}")
+    from fantasy_weekly_hitter_scoring import build_finalize_week_checklist
 
-    confirm_key = f"{prefix}_finalize_confirm_{int(week)}"
-    if st.checkbox(f"I confirm finalizing {week_label(week)}", key=confirm_key):
-        if st.button(f"Finalize {week_label(week)}", key=f"{prefix}_finalize_btn_{int(week)}", type="primary"):
-            result = finalize_week_for_league(session, context, week=week, roster_by_team=roster_by_team)
-            if result.get("ok"):
-                session[f"{prefix}_finalize_flash"] = f"{week_label(week)} finalized."
-                st.rerun()
-            else:
-                st.error("; ".join(result.get("errors") or ["Finalize failed."]))
+    checklist = build_finalize_week_checklist(
+        context,
+        week=week,
+        roster_by_team=roster_by_team,
+        session=session,
+    )
+    confirm_open_key = f"{prefix}_finalize_confirm_open_{int(week)}"
+
+    if not checklist.get("can_finalize"):
+        st.subheader("Finalize week")
+        summary = str(checklist.get("summary") or "").strip()
+        if summary:
+            st.warning(summary)
+        st.markdown("**Finalization checklist**")
+        for item in checklist.get("items") or []:
+            if isinstance(item, dict):
+                st.markdown(f"- {item.get('label')}: **{item.get('status')}**")
+        for row in (checklist.get("preview") or {}).get("teams_preview") or []:
+            st.caption(f"{row.get('team')}: {row.get('totals')}")
+        return
+
+    if not session.get(confirm_open_key):
+        if st.button(f"Finalize {week_label(week)}", key=f"{prefix}_finalize_open_{int(week)}", type="primary"):
+            session[confirm_open_key] = True
+            st.rerun()
+        return
+
+    st.subheader("Confirm finalization")
+    st.warning(
+        f"Finalizing {week_label(week)} permanently locks all Week {int(week)} lineups, "
+        f"writes the results to standings, and opens Week {int(week) + 1}. Continue?"
+    )
+    cancel_col, confirm_col = st.columns(2)
+    if cancel_col.button("Cancel", key=f"{prefix}_finalize_cancel_{int(week)}"):
+        session.pop(confirm_open_key, None)
+        st.rerun()
+    if confirm_col.button(f"Finalize {week_label(week)}", key=f"{prefix}_finalize_btn_{int(week)}", type="primary"):
+        result = finalize_week_for_league(session, context, week=week, roster_by_team=roster_by_team)
+        if result.get("ok"):
+            session.pop(confirm_open_key, None)
+            session[f"{prefix}_finalize_flash"] = (
+                f"{week_label(week)} finalized. Week {int(week) + 1} is now active."
+            )
+            st.rerun()
+        else:
+            st.error("; ".join(result.get("errors") or ["Finalize failed."]))
 
     flash = session.pop(f"{prefix}_finalize_flash", None)
     if flash:

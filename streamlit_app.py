@@ -23477,39 +23477,74 @@ if active_page == "Fantasy Lineup Assistant":
                 f"Teams available: {', '.join(lineup_teams[:6])}{'…' if len(lineup_teams) > 6 else ''}."
             )
 
-        _weekly_team_roster = (
-            roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)].copy()
-            if lineup_team
-            else pd.DataFrame()
-        )
-        if not _weekly_team_roster.empty:
-            _weekly_team_roster = enrich_lineup_roster_positions(_weekly_team_roster)
-            _lineup_fmt_resolved = resolve_lineup_scoring_format(st.session_state)
-            st.session_state["lineup_format"] = _lineup_fmt_resolved
-            _lineup_scored_for_weekly = None
-            try:
-                _lineup_scored_for_weekly = build_lineup_assistant_scores(
-                    _weekly_team_roster, _lineup_fmt_resolved, None
-                )
-            except Exception:
-                _lineup_scored_for_weekly = None
-            try:
-                from fantasy_weekly_lineup_ui import render_weekly_lineup_section
+        from fantasy_trade_ideas import LINEUP_ASSISTANT_TAB_OPTIONS, resolve_lineup_assistant_tab
 
-                render_weekly_lineup_section(
+        _assistant_tab = resolve_lineup_assistant_tab(st.session_state)
+        ensure_select_in_options("lineup_assistant_tab", list(LINEUP_ASSISTANT_TAB_OPTIONS), _assistant_tab)
+        _assistant_tab = st.radio(
+            "Fantasy Lineup Assistant section",
+            list(LINEUP_ASSISTANT_TAB_OPTIONS),
+            horizontal=True,
+            key="lineup_assistant_tab",
+            label_visibility="collapsed",
+        )
+
+        if _assistant_tab == "Trade Center":
+            try:
+                from fantasy_trade_center_ui import render_trade_center_tab
+
+                render_trade_center_tab(
                     st,
                     st.session_state,
-                    team_roster=_weekly_team_roster,
                     lineup_team=str(lineup_team or ""),
-                    on_open_waiver_wire=open_waiver_wire_from_lineup_slot,
-                    scored_roster=_lineup_scored_for_weekly,
+                    ensure_select_in_options=ensure_select_in_options,
+                    ensure_multiselect_state=ensure_multiselect_state,
+                    evaluate_trade_fn=evaluate_trade,
+                    build_trade_verdict_text_fn=build_trade_verdict_text,
+                    render_output_table_fn=render_output_table,
+                    format_trade_eval_table_fn=format_trade_eval_table,
+                    format_fantasy_table_fn=format_fantasy_table,
+                    clean_ui_columns_fn=clean_ui_columns,
+                    summarize_team_category_needs_fn=summarize_team_category_needs,
+                    developer_mode_enabled_fn=developer_mode_enabled,
                 )
-            except ImportError:
-                pass
+            except ImportError as _tc_err:
+                st.error(f"Trade Center unavailable: {_tc_err}")
 
-        with st.expander("Start-Sit recommendations", expanded=False):
-            _lineup_format_options = ["5x5 Roto", "Points League", "Head-to-Head Categories"]
-        l2, l3 = st.columns(2)
+        if _assistant_tab == "Lineup Management":
+            _weekly_team_roster = (
+                roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)].copy()
+                if lineup_team
+                else pd.DataFrame()
+            )
+            if not _weekly_team_roster.empty:
+                _weekly_team_roster = enrich_lineup_roster_positions(_weekly_team_roster)
+                _lineup_fmt_resolved = resolve_lineup_scoring_format(st.session_state)
+                st.session_state["lineup_format"] = _lineup_fmt_resolved
+                _lineup_scored_for_weekly = None
+                try:
+                    _lineup_scored_for_weekly = build_lineup_assistant_scores(
+                        _weekly_team_roster, _lineup_fmt_resolved, None
+                    )
+                except Exception:
+                    _lineup_scored_for_weekly = None
+                try:
+                    from fantasy_weekly_lineup_ui import render_weekly_lineup_section
+
+                    render_weekly_lineup_section(
+                        st,
+                        st.session_state,
+                        team_roster=_weekly_team_roster,
+                        lineup_team=str(lineup_team or ""),
+                        on_open_waiver_wire=open_waiver_wire_from_lineup_slot,
+                        scored_roster=_lineup_scored_for_weekly,
+                    )
+                except ImportError:
+                    pass
+
+            with st.expander("Start-Sit recommendations", expanded=False):
+                _lineup_format_options = ["5x5 Roto", "Points League", "Head-to-Head Categories"]
+            l2, l3 = st.columns(2)
         with l2:
             _lineup_fmt_resolved = resolve_lineup_scoring_format(st.session_state)
             st.session_state["lineup_format"] = _lineup_fmt_resolved

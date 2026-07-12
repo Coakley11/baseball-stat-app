@@ -139,6 +139,7 @@ class ActiveWeekLifecycleTests(unittest.TestCase):
         context = _shared_context()
         self.assertEqual(get_active_scoring_week(context), 1)
         self.assertEqual(week_editability_message(context, 1)[0], "active")
+        self.assertIn("active week", week_editability_message(context, 1)[1].lower())
         self.assertEqual(week_editability_message(context, 2)[0], "future")
         self.assertIn("not open yet", week_editability_message(context, 3)[1])
 

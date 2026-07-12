@@ -888,6 +888,7 @@ def preview_finalize_week(
     *,
     week: int,
     roster_by_team: dict[str, pd.DataFrame],
+    session: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Preview all teams before commissioner finalizes."""
     league_id = resolve_canonical_league_id(context)
@@ -899,14 +900,22 @@ def preview_finalize_week(
     if profile.blocked:
         return {"ok": False, "errors": [profile.block_message]}
 
+    try:
+        from fantasy_weekly_lineup import is_lineup_locked
+    except ImportError:
+        is_lineup_locked = lambda *_a, **_k: False  # type: ignore
+
     teams_preview: list[dict[str, Any]] = []
-    unlocked: list[str] = []
+    unlocked_lineups: list[str] = []
+    stats_not_ready: list[str] = []
     missing_data: list[str] = []
 
     for team in list_teams_in_league(context):
+        if not is_lineup_locked(context, week, team=team, session=session):
+            unlocked_lineups.append(team)
         record = get_weekly_scoring_record(context, week=week, team=team, league_id=league_id)
         if not isinstance(record, dict) or not record.get("baseline_created_at"):
-            unlocked.append(team)
+            stats_not_ready.append(team)
             continue
         roster_df = roster_by_team.get(team)
         if roster_df is None or getattr(roster_df, "empty", True):
@@ -927,12 +936,108 @@ def preview_finalize_week(
         )
 
     return {
-        "ok": not unlocked and not missing_data,
+        "ok": not unlocked_lineups and not stats_not_ready and not missing_data,
         "teams_preview": teams_preview,
-        "unlocked_teams": unlocked,
+        "unlocked_teams": unlocked_lineups,
+        "stats_not_ready": stats_not_ready,
         "missing_data": missing_data,
         "finalize_id": fin_id,
     }
+
+
+def build_finalize_week_checklist(
+    context: dict[str, Any],
+    *,
+    week: int,
+    roster_by_team: dict[str, pd.DataFrame],
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Structured commissioner checklist for blocked or ready finalization."""
+    preview = preview_finalize_week(
+        context,
+        week=week,
+        roster_by_team=roster_by_team,
+        session=session,
+    )
+    items: list[dict[str, str]] = []
+    for team in list_teams_in_league(context):
+        locked = team not in (preview.get("unlocked_teams") or [])
+        items.append(
+            {
+                "key": f"{team}_lineup",
+                "label": f"{team} lineup",
+                "status": "Locked" if locked else "Not locked",
+                "ready": locked,
+            }
+        )
+    for team in list_teams_in_league(context):
+        stats_ready = team not in (preview.get("stats_not_ready") or [])
+        items.append(
+            {
+                "key": f"{team}_stats",
+                "label": f"{team} stats",
+                "status": "Ready" if stats_ready else "Missing",
+                "ready": stats_ready,
+            }
+        )
+    standings_ready = not preview.get("already_finalized")
+    items.append(
+        {
+            "key": "standings_write",
+            "label": "Standings write",
+            "status": "Ready" if standings_ready else "Done",
+            "ready": standings_ready,
+        }
+    )
+    blockers: list[str] = []
+    for team in preview.get("unlocked_teams") or []:
+        blockers.append(f"{team} has not locked its lineup")
+    for team in preview.get("stats_not_ready") or []:
+        blockers.append(f"{team} weekly stats are not ready")
+    for entry in preview.get("missing_data") or []:
+        blockers.append(f"missing data for {entry}")
+    summary = ""
+    if blockers:
+        summary = f"Week {int(week)} cannot be finalized because {blockers[0]}."
+    return {
+        "can_finalize": bool(preview.get("ok")),
+        "items": items,
+        "blockers": blockers,
+        "summary": summary,
+        "preview": preview,
+    }
+
+
+def verify_finalize_week_persisted(
+    session: dict[str, Any],
+    *,
+    week: int,
+    finalize_id: str,
+    expected_active_week: int,
+) -> tuple[bool, str]:
+    """Read canonical league context back and verify finalize side effects."""
+    try:
+        from fantasy_league_context import get_active_league_context
+    except ImportError:
+        return False, "Could not reload league context."
+
+    reloaded = get_active_league_context(session) or {}
+    if not is_week_finalized_for_league(reloaded, week):
+        return False, f"Week {int(week)} is not finalized in shared storage."
+    if get_active_scoring_week(reloaded) != int(expected_active_week):
+        return (
+            False,
+            f"Active week is {get_active_scoring_week(reloaded)}, expected {int(expected_active_week)}.",
+        )
+    cum = (reloaded.get("workflow") or {}).get(WORKFLOW_KEY_HITTER_STANDINGS_CUMULATIVE) or {}
+    weeks = [
+        w
+        for w in (cum.get("weeks") or [])
+        if isinstance(w, dict) and str(w.get("finalize_id") or "") == str(finalize_id)
+    ]
+    if len(weeks) != 1:
+        return False, f"Expected exactly one standings write for {finalize_id}, found {len(weeks)}."
+    return True, ""
 
 
 def finalize_week_for_league(
@@ -969,13 +1074,20 @@ def _finalize_week_for_league_inner(
     roster_by_team: dict[str, pd.DataFrame],
 ) -> dict[str, Any]:
     result: dict[str, Any] = {"ok": False, "errors": []}
-    preview = preview_finalize_week(context, week=week, roster_by_team=roster_by_team)
+    preview = preview_finalize_week(
+        context,
+        week=week,
+        roster_by_team=roster_by_team,
+        session=session,
+    )
     if preview.get("already_finalized"):
         result["ok"] = True
         result["skipped"] = True
         return result
     if preview.get("unlocked_teams"):
-        result["errors"].append(f"Unlocked teams: {', '.join(preview['unlocked_teams'])}")
+        result["errors"].append(f"Unlocked lineups: {', '.join(preview['unlocked_teams'])}")
+    if preview.get("stats_not_ready"):
+        result["errors"].append(f"Stats not ready: {', '.join(preview['stats_not_ready'])}")
     if preview.get("missing_data"):
         result["errors"].append(f"Missing data: {', '.join(preview['missing_data'])}")
     if result["errors"]:
@@ -1012,9 +1124,28 @@ def _finalize_week_for_league_inner(
     if next_week <= MAX_SCORING_WEEKS:
         set_active_scoring_week(context, next_week)
     upsert_league_context(session, context)
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        st_obj = session if hasattr(session, "session_state") else type("_St", (), {"session_state": session})()
+        force_save_baseball_state(st_obj, reason=f"finalize_week_{int(week)}")
+    except Exception:
+        pass
+    expected_active = next_week if next_week <= MAX_SCORING_WEEKS else get_active_scoring_week(context)
+    verified, verify_err = verify_finalize_week_persisted(
+        session,
+        week=week,
+        finalize_id=fin_id,
+        expected_active_week=expected_active,
+    )
+    if not verified:
+        result["errors"].append(verify_err or "Finalization did not persist.")
+        return result
     result["ok"] = True
     result["finalize_id"] = fin_id
     result["standings_write_id"] = standings_write_id
+    result["active_week"] = expected_active
+    result["verified"] = True
     return result
 
 
@@ -1134,7 +1265,7 @@ def week_editability_message(context: dict[str, Any], week: int) -> tuple[str, s
         )
     if w < active:
         return ("past", f"Week {w} is complete and permanently locked.")
-    return ("active", "")
+    return ("active", f"Week {w} is the active week. Set your lineup.")
 
 
 def is_legacy_locked_lineup(saved_lineup: dict[str, Any] | None, scoring_record: dict[str, Any] | None) -> bool:

@@ -11,11 +11,13 @@ from fantasy_league_context import save_imported_league_context, upsert_league_c
 from fantasy_weekly_hitter_scoring import (
     STANDARD_ROTO_5X5,
     apply_finalized_week_to_standings,
+    build_finalize_week_checklist,
     compute_player_weekly_results,
     compute_team_weekly_totals,
     create_weekly_baseline_on_lock,
     extract_cumulative_snapshot,
     finalize_week_for_league,
+    get_active_scoring_week,
     get_weekly_scoring_record,
     is_legacy_locked_lineup,
     is_week_finalized_for_league,
@@ -24,6 +26,8 @@ from fantasy_weekly_hitter_scoring import (
     refresh_weekly_scoring,
     resolve_hitter_scoring_profile,
     should_start_week_empty,
+    verify_finalize_week_persisted,
+    week_editability_message,
     weekly_finalize_id,
     resolve_canonical_league_id,
 )
@@ -255,7 +259,87 @@ class BaselineAndDeltaTests(unittest.TestCase):
 
 
 class FinalizeAndStandingsTests(unittest.TestCase):
-    def _lock_both_teams(self, ctx: dict, roster: pd.DataFrame) -> None:
+    def _lock_both_teams(self, session: dict, ctx: dict, roster: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+        save_weekly_lineup(
+            session,
+            week=1,
+            slots=["1B", "2B"],
+            assignments={"1B": "Corner Bat", "2B": "Middle Man"},
+            my_team="Donny",
+            roster_df=roster,
+        )
+        team2_roster = pd.DataFrame(
+            [{"Player": "Other Guy", "Primary Position": "SS", "R": 10, "HR": 3, "RBI": 8, "SB": 1, "H": 30, "AB": 100, "BA": 0.250}]
+        )
+        save_weekly_lineup(
+            session,
+            week=1,
+            slots=["SS"],
+            assignments={"SS": "Other Guy"},
+            my_team="Team 2",
+            roster_df=team2_roster,
+        )
+        from fantasy_league_context import get_active_league_context
+
+        refreshed = get_active_league_context(session) or ctx
+        return refreshed, team2_roster
+
+    def test_opening_confirmation_does_not_finalize(self) -> None:
+        session: dict = {}
+        ctx = _league_context(session)
+        roster = _roster()
+        ctx, team2_roster = self._lock_both_teams(session, ctx, roster)
+        checklist = build_finalize_week_checklist(
+            ctx,
+            week=1,
+            roster_by_team={"Donny": roster, "Team 2": team2_roster},
+            session=session,
+        )
+        self.assertTrue(checklist.get("can_finalize"))
+        session["_finalize_confirm_open_1"] = True
+        self.assertFalse(is_week_finalized_for_league(ctx, 1))
+        self.assertEqual(get_active_scoring_week(ctx), 1)
+
+    def test_finalize_persists_and_advances_active_week(self) -> None:
+        session: dict = {}
+        ctx = _league_context(session)
+        roster = _roster()
+        ctx, team2_roster = self._lock_both_teams(session, ctx, roster)
+        result = finalize_week_for_league(
+            session,
+            ctx,
+            week=1,
+            roster_by_team={"Donny": roster, "Team 2": team2_roster},
+        )
+        self.assertTrue(result.get("ok"), result.get("errors"))
+        self.assertTrue(result.get("verified"))
+        self.assertEqual(result.get("active_week"), 2)
+        self.assertTrue(is_week_finalized_for_league(ctx, 1))
+        self.assertEqual(get_active_scoring_week(ctx), 2)
+        self.assertIn("active week", week_editability_message(ctx, 2)[1].lower())
+
+    def test_finalize_idempotent(self) -> None:
+        session: dict = {}
+        ctx = _league_context(session)
+        roster = _roster()
+        ctx, team2_roster = self._lock_both_teams(session, ctx, roster)
+        roster_by_team = {"Donny": roster, "Team 2": team2_roster}
+        r1 = finalize_week_for_league(session, ctx, week=1, roster_by_team=roster_by_team)
+        self.assertTrue(r1["ok"])
+        r2 = finalize_week_for_league(session, ctx, week=1, roster_by_team=roster_by_team)
+        self.assertTrue(r2.get("skipped"))
+        self.assertTrue(is_week_finalized_for_league(ctx, 1))
+        self.assertEqual(r1.get("finalize_id"), r2.get("finalize_id") or r1.get("finalize_id"))
+        donny = get_weekly_scoring_record(ctx, week=1, team="Donny")
+        assert donny is not None
+        self.assertEqual(donny.get("final_result_id"), donny.get("standings_write_id"))
+        cum_weeks = (ctx.get("workflow") or {}).get("hitter_weekly_standings_cumulative", {}).get("weeks") or []
+        self.assertEqual(len(cum_weeks), 1)
+
+    def test_blocked_finalize_reports_unlocked_lineup(self) -> None:
+        session: dict = {}
+        ctx = _league_context(session)
+        roster = _roster()
         profile = resolve_hitter_scoring_profile(ctx)
         create_weekly_baseline_on_lock(
             ctx,
@@ -268,36 +352,14 @@ class FinalizeAndStandingsTests(unittest.TestCase):
         team2_roster = pd.DataFrame(
             [{"Player": "Other Guy", "Primary Position": "SS", "R": 10, "HR": 3, "RBI": 8, "SB": 1, "H": 30, "AB": 100, "BA": 0.250}]
         )
-        create_weekly_baseline_on_lock(
+        checklist = build_finalize_week_checklist(
             ctx,
             week=1,
-            team="Team 2",
-            assignments={"SS": "Other Guy"},
-            roster_df=team2_roster,
-            profile=profile,
+            roster_by_team={"Donny": roster, "Team 2": team2_roster},
+            session=session,
         )
-        refresh_weekly_scoring(ctx, week=1, team="Donny", roster_df=roster, profile=profile)
-        refresh_weekly_scoring(ctx, week=1, team="Team 2", roster_df=team2_roster, profile=profile)
-
-    def test_finalize_idempotent(self) -> None:
-        session: dict = {}
-        ctx = _league_context(session)
-        roster = _roster()
-        self._lock_both_teams(ctx, roster)
-        team2_roster = pd.DataFrame(
-            [{"Player": "Other Guy", "Primary Position": "SS", "R": 10, "HR": 3, "RBI": 8, "SB": 1, "H": 30, "AB": 100, "BA": 0.250}]
-        )
-        upsert_league_context(session, ctx)
-        roster_by_team = {"Donny": roster, "Team 2": team2_roster}
-        r1 = finalize_week_for_league(session, ctx, week=1, roster_by_team=roster_by_team)
-        self.assertTrue(r1["ok"])
-        r2 = finalize_week_for_league(session, ctx, week=1, roster_by_team=roster_by_team)
-        self.assertTrue(r2.get("skipped"))
-        self.assertTrue(is_week_finalized_for_league(ctx, 1))
-        self.assertEqual(r1.get("finalize_id"), r2.get("finalize_id") or r1.get("finalize_id"))
-        donny = get_weekly_scoring_record(ctx, week=1, team="Donny")
-        assert donny is not None
-        self.assertEqual(donny.get("final_result_id"), donny.get("standings_write_id"))
+        self.assertFalse(checklist.get("can_finalize"))
+        self.assertTrue(any("lineup" in str(item.get("label") or "").lower() for item in checklist.get("items") or []))
 
     def test_standings_no_duplicate_week(self) -> None:
         session: dict = {}
