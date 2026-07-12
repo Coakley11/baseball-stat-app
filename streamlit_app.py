@@ -10100,72 +10100,10 @@ def live_draft_build_board_df(room):
 
 
 def live_draft_recommendations(room, top_n=8, team=None, session=None):
-    slot = live_draft_current_slot(room)
-    if slot is None:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    available = live_draft_get_available(room)
-    if available.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    target_team = str(team or slot.get("Team") or "").strip()
-    if not target_team:
-        target_team = str(slot["Team"])
-    roster_df = pd.DataFrame(room["rosters"].get(target_team, []))
-    cfg = dict(room.get("config", {}))
-    try:
-        from live_draft_roster_slots import normalize_draft_slot_config
+    import importlib
 
-        cfg = normalize_draft_slot_config(cfg)
-    except ImportError:
-        pass
-    cfg["current_pick"] = int(slot.get("Pick", 1))
-    cfg["next_user_pick"] = live_draft_next_pick_for_team(room, target_team)
-    cfg["num_teams"] = int(cfg.get("num_teams", len(room.get("teams", [])) or 12))
-    target_counts = _live_draft_target_counts(cfg)
-    fantasy_format = str(cfg.get("fantasy_format") or "5x5 Roto")
-    try:
-        from live_draft_safe_mode import is_draft_truly_complete
-
-        draft_complete = bool(is_draft_truly_complete(room))
-    except ImportError:
-        draft_complete = str(room.get("status") or "").strip() == "complete"
-    try:
-        from draft_needs import infer_draft_team_needs
-
-        need_pos, cat_needs = infer_draft_team_needs(
-            roster_df,
-            available,
-            config=cfg,
-            fantasy_format=fantasy_format,
-            draft_complete=draft_complete,
-        )
-        cfg["needed_positions"] = need_pos
-        cfg["category_needs"] = cat_needs
-    except ImportError:
-        pass
-    try:
-        from contextlib import nullcontext
-
-        from page_perf_phases import session_perf_phase
-
-        score_ctx = (
-            session_perf_phase(session, "live_draft_score_available")
-            if isinstance(session, dict)
-            else nullcontext()
-        )
-    except ImportError:
-        from contextlib import nullcontext
-
-        score_ctx = nullcontext()
-    with score_ctx:
-        balanced, gaps = _live_draft_score_available(available, roster_df, "balanced recommendation", target_counts, config=cfg, room=room)
-    top_recommended = balanced.head(top_n)
-    best_available = balanced.sort_values(["Decision Score", "Expected Fantasy Value"], ascending=[False, False]).head(top_n)
-    positional = balanced[balanced["Primary Position"].isin(gaps)].sort_values(
-        ["Positional Fit", "Draft Fit Score"], ascending=[False, False]
-    ).head(top_n) if gaps else pd.DataFrame()
-    sleepers = balanced.sort_values(["Sleeper Score", "Draft Fit Score"], ascending=[False, False]).head(top_n)
-    return top_recommended, best_available, positional, sleepers
-
+    _mod = importlib.import_module("live_draft_recommendations")
+    return _mod.live_draft_recommendations(room, top_n=top_n, team=team, session=session)
 
 def cached_live_draft_recommendations(session, room, top_n=8, team=None):
     """Reuse recommendation tables within the same pick when the board has not changed."""
@@ -22453,7 +22391,7 @@ if active_page == "Live Draft Room":
                 except ImportError:
                     remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
                     _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
-                _rec_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip() or None
+                _rec_team = str(on_clock_team or slot.get("Team") or "").strip() or None
                 _LIVE_REC_TOP_N = 10
                 _defer_recs = False
                 try:

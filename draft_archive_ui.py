@@ -1826,7 +1826,14 @@ def render_live_draft_completion_panel(
     csv_export_fn=None,
     excel_export_fn=None,
 ) -> None:
-    """Post-final-pick workflow: Draft Name, Save, Analyze, Set Active, Export."""
+    """Post-final-pick Draft Complete hub."""
+    try:
+        from live_draft_completion import apply_live_draft_completion
+
+        room = apply_live_draft_completion(room, session)
+    except ImportError:
+        pass
+
     cfg = dict(room.get("config") or {})
     save_team = _resolve_live_draft_save_team_name(room, team_name)
     if not save_team:
@@ -1846,17 +1853,35 @@ def render_live_draft_completion_panel(
             st.error(str(analyze_flash["message"]))
         else:
             st.info(str(analyze_flash["message"]))
+
+    shared_flash = session.pop("_live_draft_shared_league_flash", None)
+    if isinstance(shared_flash, dict) and shared_flash.get("message"):
+        if shared_flash.get("level") == "error":
+            st.error(str(shared_flash["message"]))
+        else:
+            st.success(str(shared_flash["message"]))
+
     default_name = f"{cfg.get('league_name', 'Live Draft')} — {' vs '.join(str(t) for t in (room.get('teams') or [])[:4] if str(t).strip()) or save_team}"
     draft_name = st.text_input(
         "Draft Name",
         value=default_name.strip(" —"),
         key=f"{key_prefix}_name_input",
     )
-    st.caption(
-        "Save the full draft board, all team rosters, settings, and player grades to **Saved Drafts**."
+    league_name = st.text_input(
+        "League name (shared league)",
+        value=str(cfg.get("league_name") or default_name).strip(" —"),
+        key=f"{key_prefix}_league_name_input",
     )
 
-    save_col, analyze_col, active_col, export_col = st.columns(4)
+    st.markdown("#### Draft Complete")
+    st.caption("Review the final board, save the completed draft, analyze results, or create a shared league.")
+    review_col, save_col, analyze_col, league_col, export_col = st.columns(5)
+    with review_col:
+        review_open = st.button(
+            "Review Draft Results",
+            key=f"{key_prefix}_review_btn",
+            use_container_width=True,
+        )
     with save_col:
         st.button(
             "Save Draft",
@@ -1878,20 +1903,61 @@ def render_live_draft_completion_panel(
             on_click=_on_analyze_draft_click,
             kwargs={"key_prefix": key_prefix},
         )
-    with active_col:
-        st.button(
-            "Set Active Draft",
-            key=f"{key_prefix}_active_btn",
+    with league_col:
+        shared_league_clicked = st.button(
+            "Create Shared League",
+            key=f"{key_prefix}_shared_league_btn",
             use_container_width=True,
-            on_click=_on_live_draft_save_click,
-            kwargs={
-                "team_name": save_team,
-                "key_prefix": key_prefix,
-                "defer_activation": False,
-            },
         )
     with export_col:
         export_clicked = st.button("Export Draft", key=f"{key_prefix}_export_btn", use_container_width=True)
+
+    if review_open:
+        session[f"{key_prefix}_review_open"] = True
+    if shared_league_clicked:
+        session["_live_draft_shared_league_confirm"] = True
+
+    if session.pop(f"{key_prefix}_review_open", False) or review_open:
+        with st.expander("Review Draft Results", expanded=True):
+            try:
+                from streamlit_app import live_draft_build_board_df
+            except ImportError:
+                try:
+                    from Streamlit_app import live_draft_build_board_df  # type: ignore[no-redef]
+                except ImportError:
+                    live_draft_build_board_df = None  # type: ignore[assignment]
+            if callable(live_draft_build_board_df):
+                board_df = live_draft_build_board_df(room)
+                if board_df.empty:
+                    st.caption("No picks recorded.")
+                else:
+                    try:
+                        from streamlit_app import clean_ui_columns, format_fantasy_table
+                    except ImportError:
+                        from Streamlit_app import clean_ui_columns, format_fantasy_table  # type: ignore[no-redef]
+                    from draft_ui import render_output_table
+
+                    render_output_table(
+                        format_fantasy_table(clean_ui_columns(board_df)),
+                        key=f"{key_prefix}_review_board",
+                        file_name="live_draft_final_board.csv",
+                        display_rows=80,
+                    )
+            for team in sorted(room.get("teams") or []):
+                roster_rows = list((room.get("rosters") or {}).get(team) or [])
+                if roster_rows:
+                    st.markdown(f"**{team}** — {len(roster_rows)} players")
+
+    if session.pop("_live_draft_shared_league_confirm", False) or shared_league_clicked:
+        _render_live_draft_shared_league_confirmation(
+            st,
+            session,
+            room,
+            save_team=save_team,
+            league_name=league_name,
+            draft_name=draft_name,
+            key_prefix=key_prefix,
+        )
 
     if export_clicked:
         session[f"{key_prefix}_export_open"] = True
@@ -1931,6 +1997,88 @@ def render_live_draft_completion_panel(
             render_save_trace_inline(st, session, source="Live Draft Room")
         except ImportError:
             pass
+
+
+def _render_live_draft_shared_league_confirmation(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    save_team: str,
+    league_name: str,
+    draft_name: str,
+    key_prefix: str,
+) -> None:
+    try:
+        from live_draft_shared_league import preview_shared_league_creation, save_live_draft_shared_league_context
+    except ImportError:
+        st.error("Shared league module unavailable.")
+        return
+
+    preview = preview_shared_league_creation(
+        room,
+        my_team_name=save_team,
+        league_name=str(league_name or "").strip(),
+    )
+    with st.expander("Create Shared League — confirmation", expanded=True):
+        if preview.get("validation_errors"):
+            for err in preview["validation_errors"]:
+                st.error(str(err))
+            return
+        st.markdown(f"**League name:** {preview.get('league_name')}")
+        st.markdown(f"**Canonical league ID:** `{preview.get('canonical_league_id') or 'pending'}`")
+        st.markdown(f"**Draft ID:** `{preview.get('draft_id') or '—'}`")
+        st.markdown(f"**Draft fingerprint:** `{preview.get('draft_fingerprint') or '—'}`")
+        st.markdown(f"**Teams:** {', '.join(preview.get('teams') or [])}")
+        st.markdown(f"**Trade eligibility:** {preview.get('trade_eligibility_status')}")
+        counts = preview.get("roster_count_by_team") or {}
+        if counts:
+            st.markdown("**Roster counts:** " + ", ".join(f"{team}: {n}" for team, n in counts.items()))
+        final_rosters = preview.get("final_rosters") or {}
+        for team in sorted(final_rosters.keys()):
+            players = [
+                str(p.get("player_name") or "").strip()
+                for p in (final_rosters.get(team) or {}).get("players") or []
+                if str(p.get("player_name") or "").strip()
+            ]
+            st.markdown(f"**Final roster — {team}:** {', '.join(players) if players else '(empty)'}")
+        roster_slots = preview.get("roster_slots") or {}
+        if roster_slots:
+            st.markdown("**Roster slots:** " + ", ".join(f"{pos}×{n}" for pos, n in roster_slots.items() if int(n or 0) > 0))
+        scoring = preview.get("scoring_settings") or {}
+        if scoring:
+            st.markdown(f"**Scoring:** {scoring.get('scoring_type') or scoring.get('fantasy_format') or '—'}")
+        my_team = st.selectbox(
+            "Which team is yours?",
+            list(preview.get("teams") or [save_team]),
+            index=max(0, list(preview.get("teams") or [save_team]).index(save_team) if save_team in (preview.get("teams") or []) else 0),
+            key=f"{key_prefix}_shared_my_team",
+        )
+        if st.button("Confirm Create Shared League", key=f"{key_prefix}_confirm_shared_league", type="primary"):
+            try:
+                entry, context = save_live_draft_shared_league_context(
+                    session,
+                    room,
+                    my_team_name=my_team,
+                    league_name=str(league_name or preview.get("league_name") or "").strip(),
+                    draft_name=str(draft_name or "").strip(),
+                    defer_activation=False,
+                    assign_team=True,
+                )
+                session["_live_draft_shared_league_flash"] = {
+                    "level": "success",
+                    "message": (
+                        f"Shared league created: {entry.get('draft_name') or league_name}. "
+                        f"Canonical ID: {entry.get('canonical_league_id') or context.get('league_id') or '—'}."
+                    ),
+                }
+                st.rerun()
+            except Exception as exc:
+                session["_live_draft_shared_league_flash"] = {
+                    "level": "error",
+                    "message": f"Could not create shared league: {exc}",
+                }
+                st.rerun()
 
 
 def render_save_live_draft_team(

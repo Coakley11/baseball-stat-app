@@ -45,15 +45,17 @@ def _sample_room() -> dict:
             "picks_per_team": 5,
             "scoring_type": "Roto (5x5)",
             "fantasy_format": "5x5 Roto",
-            "slot_c": 1,
-            "slot_1b": 1,
-            "slot_2b": 1,
-            "slot_3b": 1,
-            "slot_ss": 1,
-            "slot_of": 3,
-            "slot_dh": 1,
-            "slot_p": 5,
-            "slot_bench": 3,
+            "slots": {
+                "C": 1,
+                "1B": 1,
+                "2B": 1,
+                "3B": 1,
+                "SS": 1,
+                "OF": 3,
+                "DH": 1,
+                "P": 5,
+                "BN": 3,
+            },
         },
         "teams": ["Team 1", "Team 2"],
         "pick_order": [
@@ -102,13 +104,12 @@ class LiveDraftRecommendationsTeamScopeTests(unittest.TestCase):
                 captured.append([])
             return _scored_df(available, ["OF"]), ["OF"]
 
-        module = live_draft_recommendations.__module__
-        with patch(f"{module}._live_draft_score_available", side_effect=_fake_score):
+        with patch("live_draft_recommendations._score_available", side_effect=_fake_score):
             live_draft_recommendations(room, top_n=2)
         self.assertEqual(captured[0], ["SP"])
 
-    def test_team_override_uses_participant_roster(self) -> None:
-        live_draft_recommendations, _ = _import_live_draft_recommendations()
+    def test_team_override_uses_on_clock_not_participant_roster(self) -> None:
+        live_draft_recommendations_fn, _ = _import_live_draft_recommendations()
         room = _sample_room()
         captured: list[list[str]] = []
 
@@ -131,18 +132,17 @@ class LiveDraftRecommendationsTeamScopeTests(unittest.TestCase):
                 if not roster_df.empty and "Primary Position" in roster_df.columns
                 else []
             )
-            gaps = ["SP"] if captured[-1] == ["OF"] else ["OF"]
-            return _scored_df(available), gaps
+            return _scored_df(available), ["OF"]
 
-        module = live_draft_recommendations.__module__
-        with patch(f"{module}._live_draft_score_available", side_effect=_fake_score):
-            live_draft_recommendations(room, top_n=2, team="Team 2")
-        self.assertEqual(captured[0], ["OF"])
+        with patch("live_draft_recommendations._score_available", side_effect=_fake_score):
+            live_draft_recommendations_fn(room, top_n=2, team="Team 2")
+        self.assertEqual(captured[0], ["SP"])
 
-    def test_different_teams_produce_different_positional_gaps(self) -> None:
-        live_draft_recommendations, _ = _import_live_draft_recommendations()
-        room = _sample_room()
-        module = live_draft_recommendations.__module__
+    def test_different_on_clock_teams_produce_different_positional_gaps(self) -> None:
+        live_draft_recommendations_fn, _ = _import_live_draft_recommendations()
+        room_team1 = _sample_room()
+        room_team2 = _sample_room()
+        room_team2["current_pick_index"] = 1
 
         def _scored_df(available: pd.DataFrame) -> pd.DataFrame:
             out = available.copy()
@@ -157,7 +157,7 @@ class LiveDraftRecommendationsTeamScopeTests(unittest.TestCase):
                     out[col] = 0.5
             return out
 
-        def _gaps_for_team(team: str):
+        def _gaps_for_room(room: dict) -> str:
             captured: list[str] = []
 
             def _fake_score(available, roster_df, rule, target_counts, config=None, room=None):
@@ -169,19 +169,14 @@ class LiveDraftRecommendationsTeamScopeTests(unittest.TestCase):
                 captured.append(pos)
                 return _scored_df(available), (["OF"] if pos == "SP" else ["SP"])
 
-            with patch(f"{module}._live_draft_score_available", side_effect=_fake_score):
-                _top, _best, pos_fit, _sleep = live_draft_recommendations(room, top_n=2, team=team)
-            return captured[0], pos_fit
+            with patch("live_draft_recommendations._score_available", side_effect=_fake_score):
+                live_draft_recommendations_fn(room, top_n=2)
+            return captured[0]
 
-        pos1, fit1 = _gaps_for_team("Team 1")
-        pos2, fit2 = _gaps_for_team("Team 2")
+        pos1 = _gaps_for_room(room_team1)
+        pos2 = _gaps_for_room(room_team2)
         self.assertEqual(pos1, "SP")
         self.assertEqual(pos2, "OF")
-        if not fit1.empty and not fit2.empty:
-            self.assertNotEqual(
-                fit1["Primary Position"].astype(str).tolist(),
-                fit2["Primary Position"].astype(str).tolist(),
-            )
 
     def test_compact_pool_runs_recommendations_with_real_rank_values(self) -> None:
         """Compact round-trip pool must produce real Model/Market/Edge in recommendations."""
@@ -191,7 +186,7 @@ class LiveDraftRecommendationsTeamScopeTests(unittest.TestCase):
         pool = pd.DataFrame(
             [
                 {
-                    "playerID": "p1",
+                    "playerID": "pool_p1",
                     "fullName": "Compact Star",
                     "Primary Position": "OF",
                     "Expected Fantasy Value": 0.92,
@@ -210,7 +205,7 @@ class LiveDraftRecommendationsTeamScopeTests(unittest.TestCase):
                     "proj_OPS": 0.900,
                 },
                 {
-                    "playerID": "p2",
+                    "playerID": "pool_p2",
                     "fullName": "Compact Ace",
                     "Primary Position": "SP",
                     "Expected Fantasy Value": 0.88,

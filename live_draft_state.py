@@ -541,6 +541,31 @@ def repair_stale_live_draft_progress(room: dict[str, Any]) -> dict[str, Any]:
     return room
 
 
+def reconcile_drafted_player_ids(room: dict[str, Any] | None) -> set[str]:
+    """Rebuild drafted_player_ids from the active draft board when IDs are stale."""
+    if not isinstance(room, dict):
+        return set()
+    ids: set[str] = set()
+    for row in room.get("draft_board") or []:
+        if not isinstance(row, dict):
+            continue
+        pid = str(row.get("playerID") or row.get("player_id") or "").strip()
+        if pid:
+            ids.add(pid)
+    for _team, players in (room.get("rosters") or {}).items():
+        if not isinstance(players, list):
+            continue
+        for row in players:
+            if not isinstance(row, dict):
+                continue
+            pid = str(row.get("playerID") or row.get("player_id") or "").strip()
+            if pid:
+                ids.add(pid)
+    if ids:
+        room["drafted_player_ids"] = sorted(ids)
+    return ids
+
+
 def live_draft_get_available(room: dict[str, Any] | None) -> pd.DataFrame:
     """Return undrafted pool rows for manual draft UI."""
     if not isinstance(room, dict):
@@ -564,13 +589,22 @@ def live_draft_get_available(room: dict[str, Any] | None) -> pd.DataFrame:
             "deduped": True,
         }
         pool = pool.loc[:, ~pool.columns.duplicated()].copy()
-    drafted = set(room.get("drafted_player_ids", []) or [])
+    drafted = set(reconcile_drafted_player_ids(room) or room.get("drafted_player_ids", []) or [])
     if not drafted:
         out = pool.copy()
     elif "playerID" in pool.columns:
         out = pool[~pool["playerID"].astype(str).isin({str(x) for x in drafted})].copy()
     else:
-        out = pool.copy()
+        drafted_names = {
+            str(row.get("fullName") or row.get("Player") or "").strip().lower()
+            for row in (room.get("draft_board") or [])
+            if isinstance(row, dict) and str(row.get("fullName") or row.get("Player") or "").strip()
+        }
+        name_col = "fullName" if "fullName" in pool.columns else ("Player" if "Player" in pool.columns else None)
+        if name_col and drafted_names:
+            out = pool[~pool[name_col].astype(str).str.strip().str.lower().isin(drafted_names)].copy()
+        else:
+            out = pool.copy()
     if isinstance(out, pd.DataFrame) and out.columns.duplicated().any():
         dupes = [str(c) for c in out.columns[out.columns.duplicated()].tolist()]
         room["_live_draft_pool_column_diag"] = {

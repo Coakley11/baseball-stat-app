@@ -187,13 +187,14 @@ class LiveDraftRosterSlotsTests(unittest.TestCase):
         ui_text = (_REPO / "draft_archive_ui.py").read_text(encoding="utf-8")
         self.assertIn('"Save Draft"', ui_text)
         self.assertIn('"Analyze Draft"', ui_text)
-        self.assertIn('"Set Active Draft"', ui_text)
+        self.assertIn('"Create Shared League"', ui_text)
+        self.assertIn('"Review Draft Results"', ui_text)
         self.assertIn("on_click=_on_live_draft_save_click", ui_text)
         self.assertIn("on_click=_on_analyze_draft_click", ui_text)
         self.assertIn("record_save_button_click", ui_text)
         app_text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
         self.assertIn("format_fantasy_table(clean_ui_columns(board_df))", app_text)
-        self.assertIn("_rec_team = str(user_team", app_text)
+        self.assertIn("_rec_team = str(on_clock_team", app_text)
 
     def test_rec_table_drops_redundant_score_columns(self) -> None:
         text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")

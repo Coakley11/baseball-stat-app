@@ -149,6 +149,38 @@ def enrich_player_survival_metrics(scored, *, current_pick, next_user_pick, num_
             + normalize_series(out["Survival Urgency"]) * 0.04
         ).clip(lower=0)
     return out
+def _apply_scarcity_value_guardrails(scored: pd.DataFrame) -> pd.DataFrame:
+    """Cap scarcity influence when raw value gaps are large (scarcity is a tiebreaker, not an override)."""
+    if scored.empty or "Expected Fantasy Value" not in scored.columns:
+        return scored
+    out = scored.copy()
+    value_norm = normalize_series(pd.to_numeric(out["Expected Fantasy Value"], errors="coerce").fillna(0))
+    top_value = float(value_norm.max() or 0)
+    value_gap = (top_value - value_norm).clip(lower=0)
+    large_gap_mask = value_gap > 0.12
+    if not large_gap_mask.any():
+        return out
+    fit_columns = ("Decision Scarcity Component", "Decision Roster Component")
+    for col in fit_columns:
+        if col not in out.columns:
+            continue
+        component = pd.to_numeric(out[col], errors="coerce").fillna(0)
+        capped = component.copy()
+        capped.loc[large_gap_mask] = component.loc[large_gap_mask].clip(upper=0.04)
+        out[col] = capped
+    out["Scarcity Guardrail Applied"] = large_gap_mask
+    out["Decision Score"] = (
+        pd.to_numeric(out["Decision Value Component"], errors="coerce").fillna(0)
+        + pd.to_numeric(out["Decision Rank Component"], errors="coerce").fillna(0)
+        + pd.to_numeric(out.get("Decision Roster Component"), errors="coerce").fillna(0)
+        + pd.to_numeric(out.get("Decision Scarcity Component"), errors="coerce").fillna(0)
+        + pd.to_numeric(out["Decision Trend Component"], errors="coerce").fillna(0)
+        + pd.to_numeric(out["Decision Sleeper Component"], errors="coerce").fillna(0)
+        + pd.to_numeric(out["Decision Market Component"], errors="coerce").fillna(0)
+    ).clip(lower=0)
+    return out
+
+
 def _live_draft_target_counts(config):
     try:
         from live_draft_roster_slots import live_draft_target_counts as _canonical
@@ -443,6 +475,7 @@ def apply_draft_pick_scoring(
         + scored["Decision Sleeper Component"]
         + scored["Decision Market Component"]
     ).clip(lower=0)
+    scored = _apply_scarcity_value_guardrails(scored)
     scored["Draft Fit Rank"] = scored["Draft Fit Score"].rank(ascending=False, method="min")
     if recommendation_mode == "draft_fit":
         scored["Recommendation Score"] = scored["Draft Fit Score"]
