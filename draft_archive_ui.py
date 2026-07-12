@@ -49,6 +49,9 @@ LIVE_DRAFT_PAGE = "Live Draft Room"
 DRAFT_LAB_PAGE = "Draft Lab / Simulation"
 DRAFT_SIMULATOR_PAGE = "Draft Room Simulator"
 SHARED_CONFIRM_OPEN_KEY = "_live_draft_shared_league_confirm_open"
+SHARED_LEAGUE_CONFIRM_REQUEST_KEY = "_live_draft_shared_league_confirm_request"
+SHARED_LEAGUE_DIAG_KEY = "_live_draft_shared_league_diag"
+SHARED_LEAGUE_OPEN_CALLBACK_COUNT_KEY = "_live_draft_shared_league_open_callback_count"
 SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY = "_saved_draft_library_return_page"
 _DELETE_CONFIRM_PREFIX = "_draft_archive_delete_confirm_"
 _RENAME_CONFIRM_PREFIX = "_draft_archive_rename_confirm_"
@@ -1799,6 +1802,74 @@ def _execute_live_draft_save_click(
         _set_draft_save_ui_flash(session, level="error", message=f"Could not save draft: {exc}")
 
 
+def _merge_shared_league_diag(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    raw = session.get(SHARED_LEAGUE_DIAG_KEY)
+    diag = dict(raw) if isinstance(raw, dict) else {}
+    for key, value in fields.items():
+        if value is not None:
+            diag[key] = value
+    session[SHARED_LEAGUE_DIAG_KEY] = diag
+    return diag
+
+
+def _resolve_live_draft_shared_league_identity(room: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from live_draft_completion import build_completion_record, get_completion_record
+
+        record = get_completion_record(room)
+        if not record:
+            record = build_completion_record(room)
+    except ImportError:
+        record = {}
+    draft_id = str(
+        record.get("draft_id")
+        or room.get("draft_room_id")
+        or room.get("draft_id")
+        or (room.get("config") or {}).get("draft_id")
+        or ""
+    ).strip()
+    draft_fingerprint = str(record.get("draft_fingerprint") or room.get("draft_fingerprint") or "").strip()
+    if not draft_fingerprint:
+        try:
+            from live_draft_completion import build_completion_record
+
+            draft_fingerprint = str(build_completion_record(room).get("draft_fingerprint") or "").strip()
+        except ImportError:
+            pass
+    return {
+        "draft_id": draft_id,
+        "draft_fingerprint": draft_fingerprint,
+        "room_status": str(room.get("status") or "").strip(),
+        "final_board_locked": bool(record.get("final_board_locked")),
+    }
+
+
+def on_open_live_draft_shared_league_confirmation(
+    *,
+    key_prefix: str = "",
+    draft_id: str = "",
+    draft_fingerprint: str = "",
+) -> None:
+    """Open post-draft shared league confirmation — must use on_click before page body."""
+    import streamlit as st
+
+    session = st.session_state
+    session[SHARED_CONFIRM_OPEN_KEY] = True
+    session[SHARED_LEAGUE_CONFIRM_REQUEST_KEY] = {
+        "key_prefix": str(key_prefix or ""),
+        "draft_id": str(draft_id or ""),
+        "draft_fingerprint": str(draft_fingerprint or ""),
+    }
+    callback_count = int(session.get(SHARED_LEAGUE_OPEN_CALLBACK_COUNT_KEY) or 0) + 1
+    session[SHARED_LEAGUE_OPEN_CALLBACK_COUNT_KEY] = callback_count
+    _merge_shared_league_diag(
+        session,
+        shared_button_callback_count=callback_count,
+        shared_button_clicked_return=True,
+        shared_confirm_open_after_button=True,
+    )
+
+
 def _on_live_draft_save_click(
     team_name: str = "",
     key_prefix: str = "live_draft_complete",
@@ -1841,6 +1912,20 @@ def render_live_draft_completion_panel(
     if not save_team:
         st.warning("Could not determine your fantasy team for saving this draft.")
         return
+
+    identity = _resolve_live_draft_shared_league_identity(room)
+    confirm_open_before = bool(session.get(SHARED_CONFIRM_OPEN_KEY))
+    _merge_shared_league_diag(
+        session,
+        shared_confirm_open_before_buttons=confirm_open_before,
+        completion_panel_rendered=True,
+        completed_room_present=isinstance(room, dict) and bool(room),
+        room_status=identity.get("room_status") or "",
+        final_board_locked=bool(identity.get("final_board_locked")),
+        draft_id=str(identity.get("draft_id") or ""),
+        draft_fingerprint=str(identity.get("draft_fingerprint") or ""),
+        shared_button_callback_count=int(session.get(SHARED_LEAGUE_OPEN_CALLBACK_COUNT_KEY) or 0),
+    )
 
     expand_save = bool(session.pop("_draft_save_trace_expand", False))
     flash = _pop_draft_save_ui_flash(session)
@@ -1906,18 +1991,28 @@ def render_live_draft_completion_panel(
             kwargs={"key_prefix": key_prefix},
         )
     with league_col:
-        shared_league_clicked = st.button(
+        st.button(
             "Create Shared League",
             key=f"{key_prefix}_shared_league_btn",
             use_container_width=True,
+            on_click=on_open_live_draft_shared_league_confirmation,
+            kwargs={
+                "key_prefix": key_prefix,
+                "draft_id": str(identity.get("draft_id") or ""),
+                "draft_fingerprint": str(identity.get("draft_fingerprint") or ""),
+            },
         )
     with export_col:
         export_clicked = st.button("Export Draft", key=f"{key_prefix}_export_btn", use_container_width=True)
 
+    _merge_shared_league_diag(
+        session,
+        shared_confirm_open_after_button=bool(session.get(SHARED_CONFIRM_OPEN_KEY)),
+        shared_button_callback_count=int(session.get(SHARED_LEAGUE_OPEN_CALLBACK_COUNT_KEY) or 0),
+    )
+
     if review_open:
         session[f"{key_prefix}_review_open"] = True
-    if shared_league_clicked:
-        session[SHARED_CONFIRM_OPEN_KEY] = True
 
     if session.pop(f"{key_prefix}_review_open", False) or review_open:
         with st.expander("Review Draft Results", expanded=True):
@@ -1995,20 +2090,75 @@ def _render_live_draft_shared_league_confirmation(
     draft_name: str,
     key_prefix: str,
 ) -> None:
+    _merge_shared_league_diag(session, confirmation_render_entered=True)
+    st.info("Shared league confirmation opened.")
+
+    identity = _resolve_live_draft_shared_league_identity(room)
+    request = session.get(SHARED_LEAGUE_CONFIRM_REQUEST_KEY)
+    if isinstance(request, dict):
+        mismatches: list[str] = []
+        req_id = str(request.get("draft_id") or "").strip()
+        req_fp = str(request.get("draft_fingerprint") or "").strip()
+        cur_id = str(identity.get("draft_id") or "").strip()
+        cur_fp = str(identity.get("draft_fingerprint") or "").strip()
+        if req_id and cur_id and req_id != cur_id:
+            mismatches.append(f"Draft ID mismatch: requested `{req_id}`, current `{cur_id}`.")
+        if req_fp and cur_fp and req_fp != cur_fp:
+            mismatches.append(f"Draft fingerprint mismatch: requested `{req_fp}`, current `{cur_fp}`.")
+        if str(identity.get("room_status") or "") != "complete":
+            mismatches.append(
+                f"Completed room unavailable: status is `{identity.get('room_status') or 'unknown'}`."
+            )
+        if not identity.get("final_board_locked"):
+            mismatches.append("Final board is not locked for this completed draft.")
+        if mismatches:
+            for msg in mismatches:
+                st.error(msg)
+            _merge_shared_league_diag(
+                session,
+                preview_call_started=False,
+                preview_call_completed=False,
+                claim_attempted=False,
+                preview_validation_errors=mismatches,
+            )
+            return
+
     try:
         from live_draft_shared_league import preview_shared_league_creation, save_live_draft_shared_league_context
     except ImportError:
         st.error("Shared league module unavailable.")
         return
 
-    preview = preview_shared_league_creation(
-        room,
-        my_team_name=save_team,
-        league_name=str(league_name or "").strip(),
+    _merge_shared_league_diag(session, preview_call_started=True)
+    try:
+        preview = preview_shared_league_creation(
+            room,
+            my_team_name=save_team,
+            league_name=str(league_name or "").strip(),
+        )
+    except Exception as exc:
+        err = f"{type(exc).__name__}: {exc}"
+        session["_live_draft_shared_league_preview_error"] = err
+        st.error(f"Could not prepare shared league confirmation: {err}")
+        _merge_shared_league_diag(
+            session,
+            preview_call_completed=False,
+            preview_exception=err,
+            preview_validation_errors=[],
+            claim_attempted=False,
+        )
+        return
+
+    validation_errors = [str(e) for e in (preview.get("validation_errors") or []) if str(e).strip()]
+    _merge_shared_league_diag(
+        session,
+        preview_call_completed=True,
+        preview_validation_errors=validation_errors,
+        preview_exception="",
     )
     with st.expander("Create Shared League — confirmation", expanded=True):
-        if preview.get("validation_errors"):
-            for err in preview["validation_errors"]:
+        if validation_errors:
+            for err in validation_errors:
                 st.error(str(err))
             return
         st.markdown(f"**League name:** {preview.get('league_name')}")
@@ -2056,8 +2206,10 @@ def _render_live_draft_shared_league_confirmation(
             )
         if cancel_clicked:
             session.pop(SHARED_CONFIRM_OPEN_KEY, None)
+            session.pop(SHARED_LEAGUE_CONFIRM_REQUEST_KEY, None)
             st.rerun()
         if confirm_clicked:
+            _merge_shared_league_diag(session, claim_attempted=True)
             try:
                 entry, context = save_live_draft_shared_league_context(
                     session,
@@ -2076,12 +2228,19 @@ def _render_live_draft_shared_league_confirmation(
                     ),
                 }
                 session.pop(SHARED_CONFIRM_OPEN_KEY, None)
+                session.pop(SHARED_LEAGUE_CONFIRM_REQUEST_KEY, None)
+                _merge_shared_league_diag(session, claim_ok=True, claim_error="")
                 st.rerun()
             except Exception as exc:
                 session["_live_draft_shared_league_flash"] = {
                     "level": "error",
                     "message": f"Could not create shared league: {exc}",
                 }
+                _merge_shared_league_diag(
+                    session,
+                    claim_ok=False,
+                    claim_error=f"{type(exc).__name__}: {exc}",
+                )
                 st.rerun()
 
 
