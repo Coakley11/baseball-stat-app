@@ -48,6 +48,11 @@ if isinstance(diag, dict):
     if diag.get("confirmation_closed_after_success"):
         st.markdown("SHARED_LEAGUE_CONFIRM_CLOSED:yes")
 
+    if diag.get("deploy_commit"):
+        st.markdown(f"SHARED_LEAGUE_DEPLOY_COMMIT:{diag.get('deploy_commit')}")
+    if diag.get("processing_lock_present"):
+        st.markdown("SHARED_LEAGUE_LOCK_PRESENT:yes")
+
 create_req = st.session_state.get("_live_draft_shared_league_create_request")
 if isinstance(create_req, dict):
     st.markdown(f"SHARED_LEAGUE_CREATE_REQUEST:{create_req.get('status')}")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from draft_archive_state import (
@@ -56,6 +57,7 @@ SHARED_LEAGUE_CREATE_PROCESSING_KEY = "_live_draft_shared_league_create_processi
 SHARED_LEAGUE_DIAG_KEY = "_live_draft_shared_league_diag"
 SHARED_LEAGUE_OPEN_CALLBACK_COUNT_KEY = "_live_draft_shared_league_open_callback_count"
 SHARED_LEAGUE_CONFIRM_CALLBACK_COUNT_KEY = "_live_draft_shared_league_confirm_callback_count"
+SHARED_LEAGUE_CREATE_LOCK_STALE_SECONDS = 120
 SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY = "_saved_draft_library_return_page"
 _DELETE_CONFIRM_PREFIX = "_draft_archive_delete_confirm_"
 _RENAME_CONFIRM_PREFIX = "_draft_archive_rename_confirm_"
@@ -1889,6 +1891,238 @@ def _shared_league_create_request_id(
     )
 
 
+def _normalize_create_processing_lock(raw: Any) -> dict[str, Any] | None:
+    if isinstance(raw, dict):
+        request_id = str(raw.get("request_id") or "").strip()
+        if request_id:
+            return {
+                "request_id": request_id,
+                "started_at": float(raw.get("started_at") or 0),
+            }
+    if raw is True:
+        return {"request_id": "", "started_at": 0.0, "legacy_boolean": True}
+    return None
+
+
+def _processing_lock_age_seconds(lock: dict[str, Any]) -> float:
+    if lock.get("legacy_boolean"):
+        return float(SHARED_LEAGUE_CREATE_LOCK_STALE_SECONDS + 1)
+    started = float(lock.get("started_at") or 0)
+    if started <= 0:
+        return float(SHARED_LEAGUE_CREATE_LOCK_STALE_SECONDS + 1)
+    return max(0.0, time.time() - started)
+
+
+def _clear_create_processing_lock(session: dict[str, Any], *, request_id: str = "") -> None:
+    lock = _normalize_create_processing_lock(session.get(SHARED_LEAGUE_CREATE_PROCESSING_KEY))
+    if not lock:
+        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
+        return
+    rid = str(request_id or "").strip()
+    lock_rid = str(lock.get("request_id") or "").strip()
+    if not rid or not lock_rid or rid == lock_rid or lock.get("legacy_boolean"):
+        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
+
+
+def _set_create_processing_lock(session: dict[str, Any], request_id: str) -> None:
+    session[SHARED_LEAGUE_CREATE_PROCESSING_KEY] = {
+        "request_id": str(request_id or "").strip(),
+        "started_at": time.time(),
+    }
+
+
+def _sync_shared_league_create_diag_from_session(session: dict[str, Any]) -> dict[str, Any]:
+    raw_req = session.get(SHARED_LEAGUE_CREATE_REQUEST_KEY)
+    req = dict(raw_req) if isinstance(raw_req, dict) else {}
+    lock = _normalize_create_processing_lock(session.get(SHARED_LEAGUE_CREATE_PROCESSING_KEY))
+    lock_age = _processing_lock_age_seconds(lock) if lock else None
+    try:
+        from suite_deploy_marker import format_build_label, resolve_git_commit_short
+
+        deploy_footer = format_build_label()
+        deploy_commit = resolve_git_commit_short()
+    except ImportError:
+        deploy_footer = "unknown"
+        deploy_commit = "unknown"
+    return _merge_shared_league_diag(
+        session,
+        create_request_present=bool(req),
+        create_request_id=str(req.get("request_id") or ""),
+        create_request_status=str(req.get("status") or ""),
+        processing_lock_present=bool(lock),
+        processing_lock_request_id=str((lock or {}).get("request_id") or ""),
+        processing_lock_age_seconds=round(float(lock_age), 2) if lock_age is not None else None,
+        deploy_footer=deploy_footer,
+        deploy_commit=deploy_commit,
+    )
+
+
+def _render_shared_league_confirm_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    diag = _sync_shared_league_create_diag_from_session(session)
+    with st.expander("Shared league creation diagnostics", expanded=True):
+        lines = [
+            ("confirm_button_rendered", diag.get("confirm_button_rendered")),
+            ("confirm_button_callback_count", diag.get("confirm_button_callback_count")),
+            ("confirm_requested_team", diag.get("confirm_requested_team")),
+            ("confirm_requested_draft_id", diag.get("confirm_requested_draft_id")),
+            ("confirm_requested_fingerprint", diag.get("confirm_requested_fingerprint")),
+            ("create_request_present", diag.get("create_request_present")),
+            ("create_request_id", diag.get("create_request_id")),
+            ("create_request_status", diag.get("create_request_status")),
+            ("create_processor_entered", diag.get("create_processor_entered")),
+            ("processing_lock_present", diag.get("processing_lock_present")),
+            ("processing_lock_request_id", diag.get("processing_lock_request_id")),
+            ("processing_lock_age_seconds", diag.get("processing_lock_age_seconds")),
+            ("identity_validation_ok", diag.get("identity_validation_ok")),
+            ("preview_validation_ok", diag.get("preview_validation_ok")),
+            ("save_call_started", diag.get("save_call_started")),
+            ("save_call_completed", diag.get("save_call_completed")),
+            ("save_call_count", diag.get("save_call_count")),
+            ("created_draft_id", diag.get("created_draft_id")),
+            ("created_context_id", diag.get("created_context_id")),
+            ("created_canonical_league_id", diag.get("created_canonical_league_id")),
+            ("shared_push_attempted", diag.get("shared_push_attempted")),
+            ("shared_push_ok", diag.get("shared_push_ok")),
+            ("activation_attempted", diag.get("activation_attempted")),
+            ("activation_ok", diag.get("activation_ok")),
+            ("create_error", diag.get("create_error")),
+            ("confirmation_closed_after_success", diag.get("confirmation_closed_after_success")),
+            ("deploy_footer", diag.get("deploy_footer")),
+            ("deploy_commit", diag.get("deploy_commit")),
+        ]
+        for key, value in lines:
+            st.text(f"{key}: {value if value not in (None, '') else '—'}")
+
+
+def _verify_shared_league_persistence(
+    session: dict[str, Any],
+    *,
+    draft_id: str,
+    context_id: str,
+    my_team: str,
+    expected_counts: dict[str, int],
+) -> tuple[bool, list[str], dict[str, Any]]:
+    errors: list[str] = []
+    readback: dict[str, Any] = {}
+    draft_id = str(draft_id or "").strip()
+    context_id = str(context_id or "").strip()
+    try:
+        from draft_archive_state import get_draft_archive
+        from fantasy_league_context import (
+            CONTEXT_TYPE_REAL_LEAGUE,
+            get_active_league_context,
+            get_league_context,
+        )
+    except ImportError as exc:
+        return False, [f"Persistence verification unavailable: {exc}"], readback
+
+    archive = get_draft_archive(session, draft_id) if draft_id else None
+    readback["draft_library_found"] = bool(archive)
+    if not archive:
+        errors.append("Shared league creation did not persist to the Draft Library.")
+
+    context = get_league_context(session, context_id) if context_id else None
+    readback["league_context_found"] = bool(context)
+    if not context:
+        errors.append(f"League context {context_id!r} was not found after save.")
+    elif str(context.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+        errors.append(
+            f"League context type is {context.get('context_type')!r}, expected {CONTEXT_TYPE_REAL_LEAGUE!r}."
+        )
+
+    rosters = dict((context or {}).get("league_rosters") or {})
+    roster_counts = {
+        str(team): len(list((entry or {}).get("players") or []))
+        for team, entry in rosters.items()
+    }
+    readback["roster_counts"] = roster_counts
+    for team, expected in expected_counts.items():
+        actual = int(roster_counts.get(team) or 0)
+        if actual != int(expected):
+            errors.append(f"Team {team!r} roster count is {actual}, expected {expected}.")
+
+    active = get_active_league_context(session) or {}
+    active_id = str(active.get("league_context_id") or "").strip()
+    readback["active_context_id"] = active_id
+    if context_id and active_id != context_id:
+        errors.append(
+            f"Active league context is {active_id or 'unset'}, expected {context_id}."
+        )
+
+    canonical_id = str(
+        (context or {}).get("league_id")
+        or ((context or {}).get("metadata") or {}).get("league_id")
+        or ""
+    ).strip()
+    readback["canonical_league_id"] = canonical_id
+    if context and not canonical_id:
+        errors.append("Canonical league ID is missing from saved league context.")
+
+    readback["my_team_name"] = str((context or {}).get("my_team_name") or my_team or "")
+    return not errors, errors, readback
+
+
+def on_retry_live_draft_shared_league_creation(
+    *,
+    my_team_name: str = "",
+    league_name: str = "",
+    draft_name: str = "",
+    draft_id: str = "",
+    draft_fingerprint: str = "",
+    key_prefix: str = "",
+) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    request_id = _shared_league_create_request_id(
+        draft_id=draft_id,
+        draft_fingerprint=draft_fingerprint,
+        my_team_name=my_team_name,
+    )
+    _clear_create_processing_lock(session, request_id=request_id)
+    session[SHARED_LEAGUE_CREATE_REQUEST_KEY] = {
+        "request_id": request_id,
+        "my_team_name": str(my_team_name or "").strip(),
+        "league_name": str(league_name or "").strip(),
+        "draft_name": str(draft_name or "").strip(),
+        "draft_id": str(draft_id or "").strip(),
+        "draft_fingerprint": str(draft_fingerprint or "").strip(),
+        "key_prefix": str(key_prefix or ""),
+        "status": "pending",
+        "retry": True,
+    }
+    _merge_shared_league_diag(
+        session,
+        create_request_id=request_id,
+        create_request_status="pending",
+        create_error="",
+    )
+
+
+def on_check_live_draft_shared_league_already_created(
+    *,
+    my_team_name: str = "",
+    draft_id: str = "",
+    draft_fingerprint: str = "",
+) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    request_id = _shared_league_create_request_id(
+        draft_id=draft_id,
+        draft_fingerprint=draft_fingerprint,
+        my_team_name=my_team_name,
+    )
+    session[SHARED_LEAGUE_CREATE_REQUEST_KEY] = {
+        "request_id": request_id,
+        "my_team_name": str(my_team_name or "").strip(),
+        "draft_id": str(draft_id or "").strip(),
+        "draft_fingerprint": str(draft_fingerprint or "").strip(),
+        "status": "check_existing",
+    }
+    _clear_create_processing_lock(session, request_id=request_id)
+
+
 def on_confirm_live_draft_shared_league(
     *,
     my_team_name: str = "",
@@ -1978,18 +2212,83 @@ def _find_existing_live_draft_shared_league(
     return None
 
 
+def _mark_create_request_status(session: dict[str, Any], raw: dict[str, Any], *, status: str, error: str = "") -> None:
+    updated = dict(raw)
+    updated["status"] = str(status or "").strip()
+    if error:
+        updated["last_error"] = str(error)
+    session[SHARED_LEAGUE_CREATE_REQUEST_KEY] = updated
+
+
+def _finalize_existing_shared_league(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    existing: dict[str, Any],
+    my_team: str,
+    preview: dict[str, Any],
+    req_draft_id: str,
+    cur_id: str,
+    save_call_count: int,
+) -> None:
+    context_id = str(existing.get("context_id") or "").strip()
+    canonical_id = str(existing.get("canonical_league_id") or "").strip()
+    activation_ok = False
+    try:
+        from fantasy_league_context import activate_league_context
+
+        _merge_shared_league_diag(session, activation_attempted=True)
+        activate_league_context(session, context_id)
+        activation_ok = True
+        _merge_shared_league_diag(session, activation_ok=True)
+    except ImportError:
+        _merge_shared_league_diag(session, activation_attempted=False, activation_ok=False)
+    except Exception as exc:
+        _merge_shared_league_diag(
+            session,
+            activation_attempted=True,
+            activation_ok=False,
+            create_error=f"{type(exc).__name__}: {exc}",
+        )
+        st.error(f"Could not activate existing shared league: {type(exc).__name__}: {exc}")
+        return
+
+    session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
+    session.pop(SHARED_CONFIRM_OPEN_KEY, None)
+    session.pop(SHARED_LEAGUE_CONFIRM_REQUEST_KEY, None)
+    counts = preview.get("roster_count_by_team") or {}
+    count_text = ", ".join(f"{team} {n}" for team, n in sorted(counts.items()))
+    already_msg = (
+        f"This completed draft has already been converted to shared league `{canonical_id or context_id}`. "
+        f"Active team: {my_team}. Roster counts: {count_text}."
+    )
+    session["_live_draft_shared_league_flash"] = {"level": "info", "message": already_msg}
+    st.info(already_msg)
+    _merge_shared_league_diag(
+        session,
+        create_request_status="already_exists",
+        created_draft_id=str(existing.get("draft_id") or req_draft_id or cur_id),
+        created_context_id=context_id,
+        created_canonical_league_id=canonical_id,
+        confirmation_closed_after_success=True,
+        save_call_count=save_call_count,
+        create_error="",
+    )
+
+
 def _process_live_draft_shared_league_create_request(
     st: Any,
     session: dict[str, Any],
     room: dict[str, Any],
 ) -> None:
-    """Process staged Create Shared League confirm before idle confirmation UI."""
+    """Process staged Create Shared League confirm/check/retry requests."""
+    _sync_shared_league_create_diag_from_session(session)
     raw = session.get(SHARED_LEAGUE_CREATE_REQUEST_KEY)
     if not isinstance(raw, dict):
         return
-    if str(raw.get("status") or "") != "pending":
-        return
-    if session.get(SHARED_LEAGUE_CREATE_PROCESSING_KEY):
+
+    status = str(raw.get("status") or "")
+    if status not in {"pending", "check_existing"}:
         return
 
     request_id = str(raw.get("request_id") or "").strip()
@@ -1998,8 +2297,39 @@ def _process_live_draft_shared_league_create_request(
     draft_name = str(raw.get("draft_name") or "").strip()
     req_draft_id = str(raw.get("draft_id") or "").strip()
     req_fingerprint = str(raw.get("draft_fingerprint") or "").strip()
+    if not request_id:
+        request_id = _shared_league_create_request_id(
+            draft_id=req_draft_id,
+            draft_fingerprint=req_fingerprint,
+            my_team_name=my_team,
+        )
 
-    session[SHARED_LEAGUE_CREATE_PROCESSING_KEY] = True
+    lock = _normalize_create_processing_lock(session.get(SHARED_LEAGUE_CREATE_PROCESSING_KEY))
+    if lock:
+        lock_rid = str(lock.get("request_id") or "").strip()
+        lock_age = _processing_lock_age_seconds(lock)
+        _merge_shared_league_diag(
+            session,
+            processing_lock_present=True,
+            processing_lock_request_id=lock_rid,
+            processing_lock_age_seconds=round(lock_age, 2),
+        )
+        if lock_rid == request_id and lock_age <= SHARED_LEAGUE_CREATE_LOCK_STALE_SECONDS:
+            st.info("Shared league creation is already processing.")
+            _merge_shared_league_diag(
+                session,
+                create_processor_entered=False,
+                create_error="processing_lock_active",
+            )
+            return
+        if lock.get("legacy_boolean") or lock_age > SHARED_LEAGUE_CREATE_LOCK_STALE_SECONDS:
+            st.warning("A previous creation attempt was interrupted. Resuming the request now.")
+            _clear_create_processing_lock(session, request_id=lock_rid or request_id)
+        elif lock_rid and lock_rid != request_id:
+            st.warning(f"Clearing stale processing lock for request {lock_rid!r}.")
+            _clear_create_processing_lock(session, request_id=lock_rid)
+
+    _set_create_processing_lock(session, request_id)
     save_call_count = int((session.get(SHARED_LEAGUE_DIAG_KEY) or {}).get("save_call_count") or 0)
     _merge_shared_league_diag(
         session,
@@ -2007,235 +2337,270 @@ def _process_live_draft_shared_league_create_request(
         create_request_id=request_id,
         create_request_status="processing",
         save_call_count=save_call_count,
+        create_error="",
     )
 
     try:
-        from live_draft_shared_league import preview_shared_league_creation, save_live_draft_shared_league_context
-    except ImportError as exc:
-        session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
-        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
-        err = f"ImportError: {exc}"
-        session["_live_draft_shared_league_flash"] = {
-            "level": "error",
-            "message": f"Could not create shared league: {err}",
-        }
-        st.error(f"Could not create shared league: {err}")
-        _merge_shared_league_diag(session, create_error=err, create_request_status="failed")
-        return
-
-    identity = _resolve_live_draft_shared_league_identity(room)
-    identity_errors: list[str] = []
-    cur_id = str(identity.get("draft_id") or "").strip()
-    cur_fp = str(identity.get("draft_fingerprint") or "").strip()
-    if req_draft_id and cur_id and req_draft_id != cur_id:
-        identity_errors.append(f"Draft ID mismatch: requested `{req_draft_id}`, current `{cur_id}`.")
-    if req_fingerprint and cur_fp and req_fingerprint != cur_fp:
-        identity_errors.append(f"Draft fingerprint mismatch: requested `{req_fingerprint}`, current `{cur_fp}`.")
-    if str(identity.get("room_status") or "") != "complete":
-        identity_errors.append(
-            f"Completed room unavailable: status is `{identity.get('room_status') or 'unknown'}`."
-        )
-    if not identity.get("final_board_locked"):
-        identity_errors.append("Final board is not locked for this completed draft.")
-
-    teams = [str(t).strip() for t in (room.get("teams") or []) if str(t).strip()]
-    if my_team not in teams:
-        identity_errors.append(f"Team {my_team!r} is not part of this draft.")
-
-    identity_ok = not identity_errors
-    _merge_shared_league_diag(session, identity_validation_ok=identity_ok)
-    if identity_errors:
-        session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
-        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
-        err = "; ".join(identity_errors)
-        session["_live_draft_shared_league_flash"] = {
-            "level": "error",
-            "message": f"Could not create shared league: {err}",
-        }
-        st.error(f"Could not create shared league: {err}")
-        _merge_shared_league_diag(
-            session,
-            preview_validation_ok=False,
-            create_error=err,
-            create_request_status="failed",
-        )
-        return
-
-    st.info("Creating shared league…")
-    preview: dict[str, Any] = {}
-    try:
-        preview = preview_shared_league_creation(
-            room,
-            my_team_name=my_team,
-            league_name=league_name,
-        )
-    except Exception as exc:
-        session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
-        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
-        err = f"{type(exc).__name__}: {exc}"
-        session["_live_draft_shared_league_flash"] = {
-            "level": "error",
-            "message": f"Could not create shared league: {err}",
-        }
-        st.error(f"Could not create shared league: {err}")
-        _merge_shared_league_diag(
-            session,
-            preview_validation_ok=False,
-            create_error=err,
-            create_request_status="failed",
-        )
-        return
-
-    validation_errors = [str(e) for e in (preview.get("validation_errors") or []) if str(e).strip()]
-    preview_ok = not validation_errors and bool(preview.get("ready"))
-    _merge_shared_league_diag(session, preview_validation_ok=preview_ok)
-    if not preview_ok:
-        session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
-        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
-        err = "; ".join(validation_errors) if validation_errors else "Shared league preview is not ready."
-        session["_live_draft_shared_league_flash"] = {
-            "level": "error",
-            "message": f"Could not create shared league: {err}",
-        }
-        st.error(f"Could not create shared league: {err}")
-        _merge_shared_league_diag(
-            session,
-            create_error=err,
-            create_request_status="failed",
-        )
-        return
-
-    existing = _find_existing_live_draft_shared_league(
-        session,
-        request_id=request_id,
-        draft_id=req_draft_id or cur_id,
-        draft_fingerprint=req_fingerprint or cur_fp,
-    )
-    if existing:
-        context_id = str(existing.get("context_id") or "").strip()
-        canonical_id = str(existing.get("canonical_league_id") or "").strip()
         try:
-            from fantasy_league_context import activate_league_context
+            from live_draft_shared_league import preview_shared_league_creation, save_live_draft_shared_league_context
+        except ImportError as exc:
+            err = f"ImportError: {exc}"
+            _mark_create_request_status(session, raw, status="failed", error=err)
+            session["_live_draft_shared_league_flash"] = {
+                "level": "error",
+                "message": f"Could not create shared league: {err}",
+            }
+            st.error(f"Could not create shared league: {err}")
+            _merge_shared_league_diag(session, create_error=err, create_request_status="failed")
+            return
 
-            _merge_shared_league_diag(session, activation_attempted=True)
-            activate_league_context(session, context_id)
-            _merge_shared_league_diag(session, activation_ok=True)
-        except ImportError:
-            _merge_shared_league_diag(session, activation_attempted=False, activation_ok=False)
+        identity = _resolve_live_draft_shared_league_identity(room)
+        cur_id = str(identity.get("draft_id") or "").strip()
+        cur_fp = str(identity.get("draft_fingerprint") or "").strip()
+
+        if status == "check_existing":
+            preview = preview_shared_league_creation(
+                room,
+                my_team_name=my_team or str((room.get("teams") or [""])[0]),
+                league_name=league_name,
+            )
+            existing = _find_existing_live_draft_shared_league(
+                session,
+                request_id=request_id,
+                draft_id=req_draft_id or cur_id,
+                draft_fingerprint=req_fingerprint or cur_fp,
+            )
+            if not existing:
+                st.warning("No existing shared league was found for this completed draft.")
+                _mark_create_request_status(session, raw, status="failed", error="existing_league_not_found")
+                return
+            _finalize_existing_shared_league(
+                st,
+                session,
+                existing=existing,
+                my_team=my_team,
+                preview=preview,
+                req_draft_id=req_draft_id,
+                cur_id=cur_id,
+                save_call_count=save_call_count,
+            )
+            return
+
+        identity_errors: list[str] = []
+        if req_draft_id and cur_id and req_draft_id != cur_id:
+            identity_errors.append(f"Draft ID mismatch: requested `{req_draft_id}`, current `{cur_id}`.")
+        if req_fingerprint and cur_fp and req_fingerprint != cur_fp:
+            identity_errors.append(f"Draft fingerprint mismatch: requested `{req_fingerprint}`, current `{cur_fp}`.")
+        if str(identity.get("room_status") or "") != "complete":
+            identity_errors.append(
+                f"Completed room unavailable: status is `{identity.get('room_status') or 'unknown'}`."
+            )
+        if not identity.get("final_board_locked"):
+            identity_errors.append("Final board is not locked for this completed draft.")
+        teams = [str(t).strip() for t in (room.get("teams") or []) if str(t).strip()]
+        if my_team not in teams:
+            identity_errors.append(f"Team {my_team!r} is not part of this draft.")
+
+        identity_ok = not identity_errors
+        _merge_shared_league_diag(session, identity_validation_ok=identity_ok)
+        if identity_errors:
+            err = "; ".join(identity_errors)
+            _mark_create_request_status(session, raw, status="failed", error=err)
+            session["_live_draft_shared_league_flash"] = {
+                "level": "error",
+                "message": f"Could not create shared league: {err}",
+            }
+            st.error(f"Could not create shared league: {err}")
+            _merge_shared_league_diag(
+                session,
+                preview_validation_ok=False,
+                create_error=err,
+                create_request_status="failed",
+            )
+            return
+
+        st.info("Creating shared league…")
+        try:
+            preview = preview_shared_league_creation(
+                room,
+                my_team_name=my_team,
+                league_name=league_name,
+            )
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            _mark_create_request_status(session, raw, status="failed", error=err)
+            session["_live_draft_shared_league_flash"] = {
+                "level": "error",
+                "message": f"Could not create shared league: {err}",
+            }
+            st.error(f"Could not create shared league: {err}")
+            _merge_shared_league_diag(
+                session,
+                preview_validation_ok=False,
+                create_error=err,
+                create_request_status="failed",
+            )
+            return
+
+        validation_errors = [str(e) for e in (preview.get("validation_errors") or []) if str(e).strip()]
+        preview_ok = not validation_errors and bool(preview.get("ready"))
+        _merge_shared_league_diag(session, preview_validation_ok=preview_ok)
+        if not preview_ok:
+            err = "; ".join(validation_errors) if validation_errors else "Shared league preview is not ready."
+            _mark_create_request_status(session, raw, status="failed", error=err)
+            session["_live_draft_shared_league_flash"] = {
+                "level": "error",
+                "message": f"Could not create shared league: {err}",
+            }
+            st.error(f"Could not create shared league: {err}")
+            _merge_shared_league_diag(
+                session,
+                create_error=err,
+                create_request_status="failed",
+            )
+            return
+
+        existing = _find_existing_live_draft_shared_league(
+            session,
+            request_id=request_id,
+            draft_id=req_draft_id or cur_id,
+            draft_fingerprint=req_fingerprint or cur_fp,
+        )
+        if existing:
+            _finalize_existing_shared_league(
+                st,
+                session,
+                existing=existing,
+                my_team=my_team,
+                preview=preview,
+                req_draft_id=req_draft_id,
+                cur_id=cur_id,
+                save_call_count=save_call_count,
+            )
+            return
+
+        _merge_shared_league_diag(session, save_call_started=True)
+        entry: dict[str, Any] = {}
+        context: dict[str, Any] = {}
+        shared_push_ok = False
+        try:
+            entry, context = save_live_draft_shared_league_context(
+                session,
+                room,
+                my_team_name=my_team,
+                league_name=str(league_name or preview.get("league_name") or "").strip(),
+                draft_name=draft_name,
+                defer_activation=False,
+                assign_team=True,
+            )
+            save_call_count += 1
+            shared_push_ok = bool(entry.get("shared_league_created"))
+            _merge_shared_league_diag(
+                session,
+                save_call_completed=True,
+                save_call_count=save_call_count,
+                shared_push_attempted=True,
+                shared_push_ok=shared_push_ok,
+                activation_attempted=True,
+                activation_ok=True,
+            )
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            _mark_create_request_status(session, raw, status="failed", error=err)
+            session["_live_draft_shared_league_flash"] = {
+                "level": "error",
+                "message": f"Could not create shared league: {err}",
+            }
+            st.error(f"Could not create shared league: {err}")
+            _merge_shared_league_diag(
+                session,
+                save_call_completed=False,
+                save_call_count=save_call_count,
+                create_error=err,
+                create_request_status="failed",
+            )
+            return
+
+        draft_id = str(entry.get("draft_id") or context.get("source_draft_id") or req_draft_id or cur_id).strip()
+        context_id = str(context.get("league_context_id") or entry.get("league_context_id") or "").strip()
+        canonical_id = str(
+            entry.get("canonical_league_id")
+            or context.get("league_id")
+            or (context.get("metadata") or {}).get("league_id")
+            or ""
+        ).strip()
+        expected_counts = {
+            str(team): int(count)
+            for team, count in dict(preview.get("roster_count_by_team") or {}).items()
+        }
+        ok, verify_errors, readback = _verify_shared_league_persistence(
+            session,
+            draft_id=draft_id,
+            context_id=context_id,
+            my_team=my_team,
+            expected_counts=expected_counts,
+        )
+        _merge_shared_league_diag(session, persistence_readback=readback)
+        if not ok:
+            err = "; ".join(verify_errors)
+            _mark_create_request_status(session, raw, status="failed", error=err)
+            session["_live_draft_shared_league_flash"] = {
+                "level": "error",
+                "message": err,
+            }
+            st.error(err)
+            _merge_shared_league_diag(
+                session,
+                create_error=err,
+                create_request_status="failed",
+                confirmation_closed_after_success=False,
+            )
+            if not shared_push_ok:
+                st.warning("Shared backend push did not confirm success; local league context was saved.")
+            return
+
+        completed = dict(session.get(SHARED_LEAGUE_CREATE_COMPLETED_KEY) or {})
+        completed[request_id] = {
+            "request_id": request_id,
+            "draft_id": draft_id,
+            "context_id": context_id,
+            "canonical_league_id": canonical_id,
+            "my_team_name": my_team,
+        }
+        session[SHARED_LEAGUE_CREATE_COMPLETED_KEY] = completed
         session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
-        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
         session.pop(SHARED_CONFIRM_OPEN_KEY, None)
         session.pop(SHARED_LEAGUE_CONFIRM_REQUEST_KEY, None)
+
         counts = preview.get("roster_count_by_team") or {}
         count_text = ", ".join(f"{team} {n}" for team, n in sorted(counts.items()))
-        already_msg = (
-            f"This completed draft has already been converted to shared league `{canonical_id or context_id}`. "
-            f"Active team: {my_team}. Roster counts: {count_text}."
+        league_label = str(league_name or preview.get("league_name") or entry.get("draft_name") or "").strip()
+        success_msg = (
+            f"Shared league created successfully. "
+            f"League name: {league_label}. "
+            f"Canonical league ID: {canonical_id or '—'}. "
+            f"Saved draft ID: {draft_id or '—'}. "
+            f"League context ID: {context_id or '—'}. "
+            f"Active team: {my_team}. "
+            f"Roster counts: {count_text}."
         )
-        session["_live_draft_shared_league_flash"] = {
-            "level": "info",
-            "message": already_msg,
-        }
-        st.info(already_msg)
+        session["_live_draft_shared_league_flash"] = {"level": "success", "message": success_msg}
+        st.success(success_msg)
+        if not shared_push_ok:
+            st.warning("Shared backend push did not confirm success; local league context is active.")
         _merge_shared_league_diag(
             session,
-            create_request_status="already_exists",
-            created_draft_id=str(existing.get("draft_id") or req_draft_id or cur_id),
+            create_request_status="completed",
+            created_draft_id=draft_id,
             created_context_id=context_id,
             created_canonical_league_id=canonical_id,
             confirmation_closed_after_success=True,
             save_call_count=save_call_count,
+            create_error="",
         )
-        return
-
-    _merge_shared_league_diag(session, save_call_started=True)
-    try:
-        entry, context = save_live_draft_shared_league_context(
-            session,
-            room,
-            my_team_name=my_team,
-            league_name=str(league_name or preview.get("league_name") or "").strip(),
-            draft_name=draft_name,
-            defer_activation=False,
-            assign_team=True,
-        )
-        save_call_count += 1
-        _merge_shared_league_diag(
-            session,
-            save_call_completed=True,
-            save_call_count=save_call_count,
-            shared_push_attempted=True,
-            shared_push_ok=True,
-            activation_attempted=True,
-            activation_ok=True,
-        )
-    except Exception as exc:
-        session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
-        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
-        err = f"{type(exc).__name__}: {exc}"
-        session["_live_draft_shared_league_flash"] = {
-            "level": "error",
-            "message": f"Could not create shared league: {err}",
-        }
-        st.error(f"Could not create shared league: {err}")
-        _merge_shared_league_diag(
-            session,
-            save_call_completed=False,
-            save_call_count=save_call_count,
-            create_error=err,
-            create_request_status="failed",
-        )
-        return
-
-    draft_id = str(entry.get("draft_id") or context.get("source_draft_id") or req_draft_id or cur_id).strip()
-    context_id = str(context.get("league_context_id") or entry.get("league_context_id") or "").strip()
-    canonical_id = str(
-        entry.get("canonical_league_id")
-        or context.get("league_id")
-        or (context.get("metadata") or {}).get("league_id")
-        or ""
-    ).strip()
-    completed = dict(session.get(SHARED_LEAGUE_CREATE_COMPLETED_KEY) or {})
-    completed[request_id] = {
-        "request_id": request_id,
-        "draft_id": draft_id,
-        "context_id": context_id,
-        "canonical_league_id": canonical_id,
-        "my_team_name": my_team,
-    }
-    session[SHARED_LEAGUE_CREATE_COMPLETED_KEY] = completed
-    session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
-    session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
-    session.pop(SHARED_CONFIRM_OPEN_KEY, None)
-    session.pop(SHARED_LEAGUE_CONFIRM_REQUEST_KEY, None)
-
-    counts = preview.get("roster_count_by_team") or {}
-    count_text = ", ".join(f"{team} {n}" for team, n in sorted(counts.items()))
-    league_label = str(league_name or preview.get("league_name") or entry.get("draft_name") or "").strip()
-    success_msg = (
-        f"Shared league created successfully. "
-        f"League name: {league_label}. "
-        f"Canonical league ID: {canonical_id or '—'}. "
-        f"Saved draft ID: {draft_id or '—'}. "
-        f"League context ID: {context_id or '—'}. "
-        f"Active team: {my_team}. "
-        f"Roster counts: {count_text}."
-    )
-    session["_live_draft_shared_league_flash"] = {
-        "level": "success",
-        "message": success_msg,
-    }
-    st.success(success_msg)
-    _merge_shared_league_diag(
-        session,
-        create_request_status="completed",
-        created_draft_id=draft_id,
-        created_context_id=context_id,
-        created_canonical_league_id=canonical_id,
-        confirmation_closed_after_success=True,
-        save_call_count=save_call_count,
-        create_error="",
-    )
+    finally:
+        _clear_create_processing_lock(session, request_id=request_id)
+        _sync_shared_league_create_diag_from_session(session)
 
 
 def _on_live_draft_save_click(
@@ -2639,7 +3004,45 @@ def _render_live_draft_shared_league_confirmation(
             session.pop(SHARED_CONFIRM_OPEN_KEY, None)
             session.pop(SHARED_LEAGUE_CONFIRM_REQUEST_KEY, None)
             session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
+            _clear_create_processing_lock(session)
             st.rerun()
+
+        create_req = session.get(SHARED_LEAGUE_CREATE_REQUEST_KEY)
+        create_status = str((create_req or {}).get("status") or "") if isinstance(create_req, dict) else ""
+        recovery_col, check_col = st.columns(2)
+        with recovery_col:
+            st.button(
+                "Retry Shared League Creation",
+                key=f"{key_prefix}_retry_shared_league",
+                use_container_width=True,
+                disabled=create_status not in {"failed", "pending", ""},
+                on_click=on_retry_live_draft_shared_league_creation,
+                kwargs={
+                    "my_team_name": my_team,
+                    "league_name": str(league_name or preview.get("league_name") or "").strip(),
+                    "draft_name": str(draft_name or "").strip(),
+                    "draft_id": str(identity.get("draft_id") or preview.get("draft_id") or "").strip(),
+                    "draft_fingerprint": str(
+                        identity.get("draft_fingerprint") or preview.get("draft_fingerprint") or ""
+                    ).strip(),
+                    "key_prefix": key_prefix,
+                },
+            )
+        with check_col:
+            st.button(
+                "Check Whether League Was Already Created",
+                key=f"{key_prefix}_check_shared_league",
+                use_container_width=True,
+                on_click=on_check_live_draft_shared_league_already_created,
+                kwargs={
+                    "my_team_name": my_team,
+                    "draft_id": str(identity.get("draft_id") or preview.get("draft_id") or "").strip(),
+                    "draft_fingerprint": str(
+                        identity.get("draft_fingerprint") or preview.get("draft_fingerprint") or ""
+                    ).strip(),
+                },
+            )
+        _render_shared_league_confirm_diagnostics(st, session)
 
 
 def render_save_live_draft_team(

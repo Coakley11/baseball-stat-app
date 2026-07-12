@@ -14,6 +14,7 @@ from draft_archive_ui import (
     SHARED_CONFIRM_OPEN_KEY,
     SHARED_LEAGUE_CONFIRM_CALLBACK_COUNT_KEY,
     SHARED_LEAGUE_CREATE_COMPLETED_KEY,
+    SHARED_LEAGUE_CREATE_PROCESSING_KEY,
     SHARED_LEAGUE_CREATE_REQUEST_KEY,
     SHARED_LEAGUE_DIAG_KEY,
     SHARED_LEAGUE_OPEN_CALLBACK_COUNT_KEY,
@@ -100,6 +101,12 @@ class _FakeStreamlit:
 
     def caption(self, _value):
         pass
+
+    def text(self, value):
+        self.markdowns.append(str(value))
+
+    def warning(self, value):
+        self.markdowns.append(str(value))
 
     def download_button(self, *_args, **_kwargs):
         return False
@@ -238,14 +245,24 @@ class LiveDraftCompletionPanelLifecycleTests(unittest.TestCase):
     def _render(self, st: _FakeStreamlit, save_mock: Mock | None = None) -> None:
         save_mock = save_mock or Mock(
             return_value=(
-                {"draft_name": "Completed Live Draft", "canonical_league_id": "league:test"},
-                {"league_id": "league:test"},
+                {
+                    "draft_name": "Completed Live Draft",
+                    "canonical_league_id": "league:test",
+                    "draft_id": "live-two-team-test",
+                    "league_context_id": "ctx:test",
+                    "shared_league_created": True,
+                },
+                {"league_id": "league:test", "league_context_id": "ctx:test"},
             )
         )
         with (
             patch.dict("sys.modules", {"draft_library_save_trace": self.trace_module}),
             patch("live_draft_shared_league.preview_shared_league_creation", return_value=self.preview),
             patch("live_draft_shared_league.save_live_draft_shared_league_context", save_mock),
+            patch(
+                "draft_archive_ui._verify_shared_league_persistence",
+                return_value=(True, [], {"draft_library_found": True, "league_context_found": True}),
+            ),
         ):
             render_live_draft_completion_panel(
                 st,
@@ -359,7 +376,7 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
         set_shared_league_store(None)
         self._tmpdir.cleanup()
 
-    def _run_fixture(self, *, preview=None, save_mock=None, room=None, team="Daniel", use_robins=False):
+    def _run_fixture(self, *, preview=None, save_mock=None, room=None, team="Daniel", use_robins=False, verify_mock=None):
         fixture = Path(__file__).resolve().parent / "fixtures" / "live_draft_shared_league_confirm_apptest.py"
         at = self.AppTest.from_file(str(fixture), default_timeout=120)
         at.session_state["live_draft_test_room"] = room if room is not None else self.room
@@ -379,16 +396,34 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
                         "canonical_league_id": "league:test",
                         "draft_id": "live-two-team-test",
                         "league_context_id": "ctx:test",
+                        "shared_league_created": True,
                     },
                     {"league_id": "league:test", "league_context_id": "ctx:test"},
                 )
             ),
         )
-        return at, preview_patch, save_patch
+        verify_patch = patch(
+            "draft_archive_ui._verify_shared_league_persistence",
+            verify_mock
+            or Mock(
+                return_value=(
+                    True,
+                    [],
+                    {
+                        "draft_library_found": True,
+                        "league_context_found": True,
+                        "canonical_league_id": "league:test",
+                        "active_context_id": "ctx:test",
+                        "roster_counts": {"Daniel": 2, "Team 2": 2},
+                    },
+                )
+            ),
+        )
+        return at, preview_patch, save_patch, verify_patch
 
     def test_one_click_opens_confirmation_with_rosters(self) -> None:
-        at, preview_patch, save_patch = self._run_fixture()
-        with preview_patch, save_patch:
+        at, preview_patch, save_patch, verify_patch = self._run_fixture()
+        with preview_patch, save_patch, verify_patch:
             at.run()
             at.button(key="live_draft_complete_shared_league_btn").click().run()
         blob = "\n".join(str(m.value) for m in at.markdown) + "\n".join(str(m.value) for m in at.info)
@@ -404,8 +439,8 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
         self.assertTrue(diag.get("preview_call_completed"))
 
     def test_team_selector_rerun_keeps_confirmation_open(self) -> None:
-        at, preview_patch, save_patch = self._run_fixture()
-        with preview_patch, save_patch:
+        at, preview_patch, save_patch, verify_patch = self._run_fixture()
+        with preview_patch, save_patch, verify_patch:
             at.run()
             at.button(key="live_draft_complete_shared_league_btn").click().run()
             at.selectbox(key="live_draft_complete_shared_my_team").set_value("Team 2").run()
@@ -414,8 +449,8 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
         self.assertIn("SHARED_LEAGUE_CONFIRM_OPEN:yes", blob, blob)
 
     def test_cancel_closes_confirmation(self) -> None:
-        at, preview_patch, save_patch = self._run_fixture()
-        with preview_patch, save_patch:
+        at, preview_patch, save_patch, verify_patch = self._run_fixture()
+        with preview_patch, save_patch, verify_patch:
             at.run()
             at.button(key="live_draft_complete_shared_league_btn").click().run()
             at.button(key="live_draft_complete_cancel_shared_league").click().run()
@@ -433,8 +468,8 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
                 {"league_id": "league:test", "league_context_id": "ctx:test"},
             )
         )
-        at, preview_patch, save_patch = self._run_fixture(save_mock=save_mock)
-        with preview_patch, save_patch:
+        at, preview_patch, save_patch, verify_patch = self._run_fixture(save_mock=save_mock)
+        with preview_patch, save_patch, verify_patch:
             at.run()
             at.button(key="live_draft_complete_shared_league_btn").click().run()
             at.button(key="live_draft_complete_confirm_shared_league").click().run()
@@ -459,8 +494,8 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
                 {"league_id": "league:test", "league_context_id": "ctx:test"},
             )
         )
-        at, preview_patch, save_patch = self._run_fixture(save_mock=save_mock)
-        with preview_patch, save_patch:
+        at, preview_patch, save_patch, verify_patch = self._run_fixture(save_mock=save_mock)
+        with preview_patch, save_patch, verify_patch:
             at.run()
             at.button(key="live_draft_complete_shared_league_btn").click().run()
             at.button(key="live_draft_complete_confirm_shared_league").click().run()
@@ -469,8 +504,8 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
 
     def test_confirm_save_exception_stays_open_and_allows_retry(self) -> None:
         save_mock = Mock(side_effect=RuntimeError("save failed"))
-        at, preview_patch, save_patch = self._run_fixture(save_mock=save_mock)
-        with preview_patch, save_patch:
+        at, preview_patch, save_patch, verify_patch = self._run_fixture(save_mock=save_mock)
+        with preview_patch, save_patch, verify_patch:
             at.run()
             at.button(key="live_draft_complete_shared_league_btn").click().run()
             at.button(key="live_draft_complete_confirm_shared_league").click().run()
@@ -488,18 +523,18 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
             },
             {"league_id": "league:test", "league_context_id": "ctx:test"},
         )
-        with preview_patch, save_patch:
+        with preview_patch, save_patch, verify_patch:
             at.button(key="live_draft_complete_confirm_shared_league").click().run()
         save_mock.assert_called_once()
 
     def test_confirm_recognizes_existing_canonical_league(self) -> None:
         save_mock = Mock()
-        at, preview_patch, save_patch = self._run_fixture(save_mock=save_mock)
+        at, preview_patch, save_patch, verify_patch = self._run_fixture(save_mock=save_mock)
         record = self.room.get(COMPLETION_RECORD_KEY) or {}
         draft_id = str(record.get("draft_id") or self.room.get("draft_room_id") or "")
         draft_fp = str(record.get("draft_fingerprint") or "")
         request_id = "|".join([draft_id, draft_fp, "Daniel"])
-        with preview_patch, save_patch:
+        with preview_patch, save_patch, verify_patch:
             at.run()
             at.button(key="live_draft_complete_shared_league_btn").click().run()
             at.session_state[SHARED_LEAGUE_CREATE_COMPLETED_KEY] = {
@@ -518,12 +553,12 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
         self.assertNotIn("_live_draft_shared_league_confirm_open", at.session_state)
 
     def test_preview_exception_shows_visible_error(self) -> None:
-        at, preview_patch, save_patch = self._run_fixture()
+        at, preview_patch, save_patch, verify_patch = self._run_fixture()
 
         def _boom(*_args, **_kwargs):
             raise RuntimeError("preview failed")
 
-        with patch("live_draft_shared_league.preview_shared_league_creation", side_effect=_boom), save_patch:
+        with patch("live_draft_shared_league.preview_shared_league_creation", side_effect=_boom), save_patch, verify_patch:
             at.run()
             at.button(key="live_draft_complete_shared_league_btn").click().run()
         blob = "\n".join(str(m.value) for m in at.error) + "\n".join(str(m.value) for m in at.info)
@@ -534,6 +569,99 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
         self.assertTrue(diag.get("preview_call_started"))
         self.assertFalse(diag.get("preview_call_completed"))
         self.assertFalse(diag.get("create_processor_entered"))
+
+
+class LiveDraftSharedLeagueCreateRecoveryAppTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        try:
+            from streamlit.testing.v1 import AppTest
+        except ImportError as exc:
+            raise unittest.SkipTest(f"streamlit.testing.v1.AppTest unavailable: {exc}") from exc
+        cls.AppTest = AppTest
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        set_shared_league_store(LocalFileSharedLeagueStore(root=Path(self._tmpdir.name)))
+        self.room = _completed_two_team_room()
+        apply_live_draft_completion(self.room, {})
+
+    def tearDown(self) -> None:
+        set_shared_league_store(None)
+        self._tmpdir.cleanup()
+
+    def test_stale_boolean_lock_self_recovers_and_saves_once(self) -> None:
+        save_mock = Mock(
+            return_value=(
+                {
+                    "draft_name": "Completed Live Draft",
+                    "canonical_league_id": "league:test",
+                    "draft_id": "live-two-team-test",
+                    "league_context_id": "ctx:test",
+                    "shared_league_created": True,
+                },
+                {"league_id": "league:test", "league_context_id": "ctx:test"},
+            )
+        )
+        fixture = Path(__file__).resolve().parent / "fixtures" / "live_draft_shared_league_confirm_apptest.py"
+        at = self.AppTest.from_file(str(fixture), default_timeout=120)
+        at.session_state["live_draft_test_room"] = self.room
+        at.session_state["live_draft_test_team"] = "Daniel"
+        with (
+            patch("live_draft_shared_league.save_live_draft_shared_league_context", save_mock),
+            patch(
+                "draft_archive_ui._verify_shared_league_persistence",
+                return_value=(True, [], {"draft_library_found": True, "league_context_found": True}),
+            ),
+        ):
+            at.run()
+            at.button(key="live_draft_complete_shared_league_btn").click().run()
+            at.session_state[SHARED_LEAGUE_CREATE_PROCESSING_KEY] = True
+            at.button(key="live_draft_complete_confirm_shared_league").click().run()
+        save_mock.assert_called_once()
+        blob = "\n".join(str(m.value) for m in at.warning) + "\n".join(str(m.value) for m in at.success)
+        self.assertIn("interrupted", blob.lower(), blob)
+        diag = dict(at.session_state[SHARED_LEAGUE_DIAG_KEY])
+        self.assertFalse(diag.get("processing_lock_present"))
+        self.assertEqual(int(diag.get("save_call_count") or 0), 1)
+
+    def test_persistence_readback_failure_keeps_confirmation_open(self) -> None:
+        save_mock = Mock(
+            return_value=(
+                {
+                    "draft_name": "Completed Live Draft",
+                    "canonical_league_id": "league:test",
+                    "draft_id": "live-two-team-test",
+                    "league_context_id": "ctx:test",
+                    "shared_league_created": True,
+                },
+                {"league_id": "league:test", "league_context_id": "ctx:test"},
+            )
+        )
+        fixture = Path(__file__).resolve().parent / "fixtures" / "live_draft_shared_league_confirm_apptest.py"
+        at = self.AppTest.from_file(str(fixture), default_timeout=120)
+        at.session_state["live_draft_test_room"] = self.room
+        at.session_state["live_draft_test_team"] = "Daniel"
+        with (
+            patch("live_draft_shared_league.save_live_draft_shared_league_context", save_mock),
+            patch(
+                "draft_archive_ui._verify_shared_league_persistence",
+                return_value=(
+                    False,
+                    ["Shared league creation did not persist to the Draft Library."],
+                    {"draft_library_found": False},
+                ),
+            ),
+        ):
+            at.run()
+            at.button(key="live_draft_complete_shared_league_btn").click().run()
+            at.button(key="live_draft_complete_confirm_shared_league").click().run()
+        save_mock.assert_called_once()
+        blob = "\n".join(str(m.value) for m in at.error)
+        self.assertIn("did not persist to the Draft Library", blob, blob)
+        self.assertTrue("_live_draft_shared_league_confirm_open" in at.session_state)
+        req = at.session_state[SHARED_LEAGUE_CREATE_REQUEST_KEY]
+        self.assertEqual(str((req or {}).get("status") or ""), "failed")
 
 
 class LiveDraftRobinsFantasyConfirmAppTest(unittest.TestCase):
@@ -577,7 +705,21 @@ class LiveDraftRobinsFantasyConfirmAppTest(unittest.TestCase):
             "live_draft_shared_league.save_live_draft_shared_league_context",
             save_mock,
         )
-        with save_patch:
+        verify_patch = patch(
+            "draft_archive_ui._verify_shared_league_persistence",
+            return_value=(
+                True,
+                [],
+                {
+                    "draft_library_found": True,
+                    "league_context_found": True,
+                    "canonical_league_id": "league:robins",
+                    "active_context_id": "ctx:robins",
+                    "roster_counts": {"Donny": 10, "Team B": 10},
+                },
+            ),
+        )
+        with save_patch, verify_patch:
             at.run()
             at.button(key="live_draft_complete_shared_league_btn").click().run()
             at.button(key="live_draft_complete_confirm_shared_league").click().run()
