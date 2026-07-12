@@ -7,6 +7,8 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from fantasy_trade_category_values import format_trade_category_value
+
 from fantasy_trade_analysis import analysis_matches_selection, build_trade_analysis_package
 from fantasy_trade_builder_state import (
     ANY_TRADE_PARTNER,
@@ -308,9 +310,9 @@ def _render_analysis_panel(st: Any, analysis: dict[str, Any], roster_stats: pd.D
             give_val = row.get("give")
             recv_val = row.get("receive")
             change = row.get("change")
-            give_txt = f"{float(give_val):.3f}" if cat == "BA" and pd.notna(give_val) else str(int(give_val)) if pd.notna(give_val) else "—"
-            recv_txt = f"{float(recv_val):.3f}" if cat == "BA" and pd.notna(recv_val) else str(int(recv_val)) if pd.notna(recv_val) else "—"
-            chg_txt = f"{float(change):+.3f}" if cat == "BA" and pd.notna(change) else f"{int(change):+d}" if pd.notna(change) else "—"
+            give_txt = format_trade_category_value(cat, give_val)
+            recv_txt = format_trade_category_value(cat, recv_val)
+            chg_txt = format_trade_category_value(cat, change, is_change=True)
             lines.append(f"| {cat} | {give_txt} | {recv_txt} | {chg_txt} |")
         st.markdown("\n".join(lines))
     helps = analysis.get("helps") or []

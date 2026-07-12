@@ -22,6 +22,10 @@ class LineupAssistantRenderStructureTests(unittest.TestCase):
         source = (REPO_ROOT / "streamlit_app.py").read_text(encoding="utf-8")
         ast.parse(source)
 
+    def test_lineup_management_module_parses(self) -> None:
+        source = (REPO_ROOT / "fantasy_lineup_management_ui.py").read_text(encoding="utf-8")
+        ast.parse(source)
+
     def test_no_unresolved_l1_or_orphan_l2_in_assistant_block(self) -> None:
         block = _lineup_assistant_source_block()
         self.assertNotIn("with l1:", block)
@@ -30,22 +34,10 @@ class LineupAssistantRenderStructureTests(unittest.TestCase):
         self.assertNotIn("lineup_tabs", block)
         self.assertNotIn("trade_tabs", block)
 
-        lines = block.splitlines()
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith(("with l2:", "with l3:", "l2, l3")):
-                indent = len(line) - len(line.lstrip(" "))
-                self.assertGreaterEqual(
-                    indent,
-                    12,
-                    f"{stripped} at relative line {i} has indent {indent}; must sit under Lineup Management",
-                )
-
     def test_exclusive_top_level_branches(self) -> None:
         block = _lineup_assistant_source_block()
         self.assertIn('if _assistant_tab == "Trade Center":', block)
         self.assertIn('elif _assistant_tab == "Lineup Management":', block)
-        # Trade Center must not be followed by a second independent Lineup if
         trade_idx = block.index('if _assistant_tab == "Trade Center":')
         lineup_idx = block.index('elif _assistant_tab == "Lineup Management":')
         self.assertLess(trade_idx, lineup_idx)
@@ -53,14 +45,19 @@ class LineupAssistantRenderStructureTests(unittest.TestCase):
         self.assertIn("render_trade_center_tab(", between)
         self.assertNotIn('if _assistant_tab == "Lineup Management":', between)
 
-    def test_lineup_management_owns_start_sit_columns(self) -> None:
+    def test_lineup_management_delegates_to_extracted_renderer(self) -> None:
         block = _lineup_assistant_source_block()
         lineup_idx = block.index('elif _assistant_tab == "Lineup Management":')
         after = block[lineup_idx:]
-        self.assertIn("l2, l3 = st.columns(2)", after)
-        self.assertIn("with l2:", after)
-        self.assertIn("with l3:", after)
-        self.assertIn("render_weekly_lineup_section(", after)
+        self.assertIn("render_lineup_management_page(", after)
+        self.assertNotIn("if lineup_format == \"Points League\":", block)
+
+    def test_lineup_module_owns_start_sit_columns(self) -> None:
+        module = (REPO_ROOT / "fantasy_lineup_management_ui.py").read_text(encoding="utf-8")
+        self.assertIn("l2, l3 = st.columns(2)", module)
+        self.assertIn("with l2:", module)
+        self.assertIn("with l3:", module)
+        self.assertIn("render_weekly_lineup_section(", module)
 
     def test_trade_center_branch_does_not_reference_l2(self) -> None:
         block = _lineup_assistant_source_block()
@@ -72,22 +69,14 @@ class LineupAssistantRenderStructureTests(unittest.TestCase):
         self.assertNotIn("l2, l3", trade_branch)
 
     def test_lineup_management_has_no_legacy_trade_analyzer(self) -> None:
-        block = _lineup_assistant_source_block()
-        lineup_idx = block.index('elif _assistant_tab == "Lineup Management":')
-        after = block[lineup_idx:]
-        self.assertNotIn("Trade Analyzer / Roster Move Assistant", after)
-        self.assertNotIn("lineup_trade_give_players", after)
-        self.assertNotIn("lineup_trade_get_players", after)
-        self.assertNotIn("render_trade_proposals_section(", after)
-        self.assertNotIn("Suggest Trades For My Team", after)
-
-        block = _lineup_assistant_source_block()
-        assign_idx = block.index("l2, l3 = st.columns(2)")
-        with_idx = block.index("with l2:")
-        self.assertLess(assign_idx, with_idx)
+        module = (REPO_ROOT / "fantasy_lineup_management_ui.py").read_text(encoding="utf-8")
+        self.assertNotIn("Trade Analyzer / Roster Move Assistant", module)
+        self.assertNotIn("lineup_trade_give_players", module)
+        self.assertNotIn("lineup_trade_get_players", module)
+        self.assertNotIn("render_trade_proposals_section(", module)
+        self.assertNotIn("Suggest Trades For My Team", module)
 
     def test_trade_center_internal_nav_helpers_still_imported(self) -> None:
-        """Smoke: Trade Center module still exposes internal tab helpers used at render time."""
         from fantasy_trade_center_ui import render_trade_center_tab
         from fantasy_trade_ideas import (
             TRADE_CENTER_INTERNAL_TAB_KEY,
