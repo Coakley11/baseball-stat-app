@@ -71,7 +71,7 @@ class DraftRoomCreateVerifyTests(unittest.TestCase):
         guest: dict = {ACTIVE_PARTICIPANT_ID_KEY: "guest-user"}
         ok, msg, _ = join_shared_draft_room(guest, "ZZZZZZ", store=self.store)
         self.assertFalse(ok)
-        self.assertIn("not found", msg.lower())
+        self.assertIn("no active shared draft room was found", msg.lower())
         self.assertEqual(guest["_draft_room_join_load_diag"]["reason"], "not_found")
 
 

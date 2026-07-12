@@ -73,10 +73,12 @@ class SetupModeTests(unittest.TestCase):
             "live_draft_setup_mode": SETUP_MODE_SHARED,
             ACTIVE_SHARED_ROOM_CODE_KEY: "ABC123",
             "live_draft_room": _sample_room(),
+            "draft_room_participant_id": "host-only",
         }
         self.assertTrue(shared_room_ready_for_start(session))
-        ok, _ = can_start_live_draft(session)
-        self.assertTrue(ok)
+        ok, reason = can_start_live_draft(session)
+        self.assertFalse(ok)
+        self.assertIn("participant", reason.lower())
 
 
 class SharedRoomCreateTests(unittest.TestCase):

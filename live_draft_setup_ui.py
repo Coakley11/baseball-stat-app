@@ -19,9 +19,12 @@ from live_draft_setup_mode import (
 )
 from live_draft_team_ownership import (
     count_joined_teams,
+    distinct_claimed_owner_count,
+    format_team_claim_status,
     format_team_ownership_line,
     lookup_open_teams_for_code,
     team_claim_rows,
+    waiting_participant_count,
 )
 
 
@@ -65,6 +68,20 @@ def render_live_draft_mode_selector(st: Any, session: dict[str, Any], *, disable
     return mode
 
 
+def _shared_create_blocked(session: dict[str, Any]) -> tuple[bool, str]:
+    """Return (disabled, help) when auth or an existing code blocks create."""
+    try:
+        from draft_room_membership import ensure_authenticated_for_shared_room, shared_room_requires_auth
+
+        if shared_room_requires_auth():
+            ok, msg = ensure_authenticated_for_shared_room(session, for_create=True)
+            if not ok:
+                return True, msg
+    except ImportError:
+        pass
+    return False, ""
+
+
 def render_shared_multiplayer_setup(
     st: Any,
     session: dict[str, Any],
@@ -77,26 +94,37 @@ def render_shared_multiplayer_setup(
         return
 
     code = shared_room_code(session)
+    auth_blocked, auth_help = _shared_create_blocked(session)
     with st.container(border=True):
         st.markdown("#### Shared Multiplayer Draft Room")
         if code:
-            st.success(f"Invite players with this room code: **{code}**")
+            st.success("**Shared Draft Room created**")
+            st.markdown(f"**Join code:** `{code}`")
             try:
                 st.code(code, language=None)
             except TypeError:
                 st.code(code)
-            st.caption("Share this 6-character code. Each player joins and claims their team before picking.")
+            waiting = 0
+            room = session.get("live_draft_room")
+            if isinstance(room, dict):
+                waiting = waiting_participant_count(session, room)
+            if waiting > 0:
+                st.info(f"Waiting for **{waiting}** more participant{'s' if waiting != 1 else ''}")
+            for row in team_claim_rows(session, room if isinstance(room, dict) else {"teams": team_names}):
+                st.markdown(f"- {format_team_claim_status(session, row)}")
             assigned = str(session.get("room_your_team") or "").strip()
             if assigned:
-                st.markdown(f"**Your team (host):** {assigned}")
+                st.caption(f"Commissioner team: **{assigned}**")
         else:
             st.warning(
                 "Create the shared draft room before starting. Other managers need the room code to join."
             )
+            if auth_blocked and auth_help:
+                st.error(auth_help)
 
         host_team = str(session.get("live_draft_host_team_pick") or "").strip()
         valid_teams = [str(t).strip() for t in team_names if str(t).strip()]
-        if valid_teams:
+        if valid_teams and not code:
             default_idx = valid_teams.index(host_team) if host_team in valid_teams else 0
             picked_team = st.selectbox(
                 "I control",
@@ -107,16 +135,19 @@ def render_shared_multiplayer_setup(
             )
             session["room_your_team"] = picked_team
 
-        create_disabled = bool(code) or str(room_status or "") == "in_progress"
-        if st.button(
+        create_disabled = bool(code) or str(room_status or "") == "in_progress" or auth_blocked
+        try:
+            from draft_ui import on_prepare_shared_draft_room
+        except ImportError:
+            on_prepare_shared_draft_room = None  # type: ignore[assignment,misc]
+        st.button(
             "Create Shared Draft Room",
             type="primary",
             key="live_draft_prepare_shared_btn",
             disabled=create_disabled,
-            help="Builds the draft room and generates a 6-character join code (draft has not started yet).",
-        ):
-            session["_start_live_draft_mode"] = "prepare_shared"
-            session["_start_live_draft_pending"] = True
+            help=auth_help or "Builds the draft room and generates a 6-character join code (draft has not started yet).",
+            on_click=on_prepare_shared_draft_room,
+        )
 
         st.markdown("---")
         render_guest_join_with_team_claim(st, session)
@@ -124,11 +155,11 @@ def render_shared_multiplayer_setup(
 
 def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
     """Join flow: room code lookup, explicit team claim, then join."""
-    st.markdown("**Already have a code?** Join an existing shared draft room:")
+    st.markdown("**Join Shared Draft Room**")
     join_col1, join_col2 = st.columns([2, 1])
     with join_col1:
         code_input = st.text_input(
-            "Draft Room Code",
+            "Enter code",
             key="live_draft_join_code_input",
             placeholder="ABC123",
             help="Enter the 6-character code from the host.",
@@ -219,6 +250,7 @@ def render_draft_information_panel(
     is_host = _is_room_host(session)
     host_team = str((room.get("config") or {}).get("your_team") or session.get("room_your_team") or "").strip()
     joined, total = count_joined_teams(session, room)
+    waiting = max(0, total - joined)
     status_txt = _room_status_label(room)
     mode = "Shared Multiplayer" if is_shared_multiplayer_intent(session, room=room) else "Solo Draft"
 
@@ -226,11 +258,14 @@ def render_draft_information_panel(
         st.markdown("#### Draft Information")
         st.markdown(f"**Mode:** {mode}")
         if code:
-            st.markdown(f"**Room Code:** `{code}`")
+            st.markdown("**Shared Draft Room created**")
+            st.markdown(f"**Join code:** `{code}`")
+            if waiting > 0:
+                st.info(f"Waiting for **{waiting}** more participant{'s' if waiting != 1 else ''}")
         if is_host:
-            st.markdown(f"**Host:** {host_team or 'You'}")
+            st.markdown(f"**Commissioner:** {host_team or 'You'}")
         elif host_team:
-            st.markdown(f"**Host team:** {host_team}")
+            st.markdown(f"**Commissioner team:** {host_team}")
         st.markdown(f"**Teams joined:** {joined} of {total}")
         st.markdown(f"**Status:** {status_txt}")
         if pick_label:
@@ -240,11 +275,15 @@ def render_draft_information_panel(
 
         st.markdown("**Team ownership**")
         for row in team_claim_rows(session, room):
-            st.markdown(f"- {format_team_ownership_line(row)}")
+            st.markdown(f"- {format_team_claim_status(session, row)}")
 
-        action_col1, action_col2 = st.columns(2)
+        action_col1, action_col2, action_col3 = st.columns(3)
         with action_col1:
-            if st.button("Refresh room", key="live_draft_lobby_refresh_btn", use_container_width=True):
+            if code and st.button("Copy Join Code", key="live_draft_lobby_copy_code_btn", use_container_width=True):
+                session["_live_draft_join_code_copied"] = code
+                st.success(f"Join code **{code}** — select the code above to copy.")
+        with action_col2:
+            if st.button("Refresh Lobby", key="live_draft_lobby_refresh_btn", use_container_width=True):
                 try:
                     from draft_room_context import sync_shared_draft_room
 
@@ -252,15 +291,18 @@ def render_draft_information_panel(
                 except ImportError:
                     pass
                 session["_live_draft_lobby_refresh"] = True
-        with action_col2:
-            if st.button("Leave room", key="live_draft_lobby_leave_btn", use_container_width=True):
+        with action_col3:
+            if is_host and st.button("Cancel Shared Room", key="live_draft_lobby_cancel_btn", use_container_width=True):
                 try:
                     from draft_room_context import leave_shared_draft_room
 
                     leave_shared_draft_room(session)
+                    session.pop("live_draft_room", None)
                     session["_live_draft_lobby_left"] = True
                 except ImportError:
                     pass
+        if session.pop("_live_draft_join_code_copied", None):
+            pass
 
 
 def render_shared_draft_ready_card(
@@ -284,12 +326,17 @@ def render_shared_draft_ready_card(
     with st.container(border=True):
         st.markdown("### Shared Draft Room Ready")
         if code:
-            st.markdown(f"**Room Code:** `{code}`")
+            st.markdown(f"**Join code:** `{code}`")
         st.markdown(f"**Teams joined:** {joined} of {total}")
+        distinct = distinct_claimed_owner_count(session, room)
+        if is_host and distinct < 2 and total >= 2:
+            st.caption(
+                f"**{distinct}** distinct owner(s) — need **2** before starting (Phase 1)."
+            )
 
         if is_host:
             st.info(
-                "Press **Start Live Draft** when all participants have joined and you are ready to begin."
+                "Press **Start Live Draft** when all participants have joined and claimed their teams."
             )
             st.button(
                 "Start Live Draft",
@@ -301,7 +348,7 @@ def render_shared_draft_ready_card(
                 use_container_width=True,
             )
         else:
-            st.warning("Waiting for host to start the draft.")
+            st.warning("Waiting for commissioner to start the draft.")
 
 
 def render_edit_setup_expander(

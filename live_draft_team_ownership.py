@@ -121,6 +121,54 @@ def count_joined_teams(session: dict[str, Any], room: dict[str, Any]) -> tuple[i
     return joined, total
 
 
+def claimed_team_count(session: dict[str, Any], room: dict[str, Any]) -> int:
+    joined, _total = count_joined_teams(session, room)
+    return joined
+
+
+def distinct_claimed_owner_count(session: dict[str, Any], room: dict[str, Any] | None = None) -> int:
+    """Distinct participant IDs with a claimed team (Phase 1 anti-solo-both-teams gate)."""
+    live = room if isinstance(room, dict) else session.get("live_draft_room")
+    if not isinstance(live, dict):
+        return 0
+    owners: set[str] = set()
+    for row in team_claim_rows(session, live):
+        if not row.get("claimed"):
+            continue
+        pid = str(row.get("participant_id") or "").strip()
+        if pid:
+            owners.add(pid)
+    return len(owners)
+
+
+def waiting_participant_count(session: dict[str, Any], room: dict[str, Any]) -> int:
+    joined, total = count_joined_teams(session, room)
+    return max(0, int(total) - int(joined))
+
+
+def format_team_claim_status(session: dict[str, Any], row: dict[str, Any]) -> str:
+    """User-facing team line: ``Daniel — claimed by you`` or ``Team 2 — open``."""
+    team = str(row.get("team") or "").strip()
+    if not row.get("claimed"):
+        return f"{team} — open"
+    try:
+        from draft_room_participant_state import resolve_participant_id
+
+        my_pid = str(resolve_participant_id(session) or "").strip()
+        owner_pid = str(row.get("participant_id") or "").strip()
+        if my_pid and owner_pid and my_pid == owner_pid:
+            return f"{team} — claimed by you"
+    except ImportError:
+        pass
+    owner = str(row.get("owner_label") or "Guest").strip()
+    if row.get("is_host"):
+        return f"{team} — claimed by {owner} (commissioner)"
+    return f"{team} — claimed by {owner}"
+
+
+ROOM_NOT_FOUND_MSG = "No active shared draft room was found for that code."
+
+
 def format_team_ownership_line(row: dict[str, Any]) -> str:
     team = str(row.get("team") or "")
     if row.get("claimed"):
@@ -165,7 +213,7 @@ def lookup_open_teams_for_code(room_code: str, *, store: Any = None) -> tuple[li
             reason = str(load_result.get("reason") or "not_found")
             if reason == "query_error":
                 return [], str(load_result.get("query_error") or "Could not look up room.")
-            return [], f"Room code **{code}** not found."
+            return [], ROOM_NOT_FOUND_MSG
         if str(document.get("status") or "").lower() == "closed":
             return [], "This draft room has been closed."
         open_teams = open_teams_for_join(document)

@@ -605,7 +605,7 @@ def create_and_host_shared_room(
     try:
         saved = backend.save(document)
     except SharedRoomSupabaseError as exc:
-        merge_create_flow_diagnostics(session, supabase_save_success=False)
+        merge_create_flow_diagnostics(session, supabase_save_success=False, cloud_write_ok=False, room_create_error=str(exc))
         if record_shared_room_supabase_error is not None:
             record_shared_room_supabase_error(session, exc)
         else:
@@ -639,7 +639,7 @@ def create_and_host_shared_room(
         return "", {}
 
     saved_code = normalize_room_code(saved.get("room_code"))
-    merge_create_flow_diagnostics(session, supabase_save_success=True)
+    merge_create_flow_diagnostics(session, supabase_save_success=True, cloud_write_ok=True)
     verified, verify_msg, verify_diag = verify_shared_room_persisted(
         backend,
         saved_code,
@@ -647,7 +647,13 @@ def create_and_host_shared_room(
     )
     merge_create_flow_diagnostics(session, **verify_diag)
     if not verified:
-        merge_create_flow_diagnostics(session, shared_room_code_displayed_to_user=False)
+        merge_create_flow_diagnostics(
+            session,
+            shared_room_code_displayed_to_user=False,
+            cloud_readback_ok=False,
+            room_create_ok=False,
+            room_create_error=verify_msg,
+        )
         session["_draft_room_last_error"] = verify_msg
         abort_shared_room_create(session, backup_room=backup_room, backup_room_code=backup_room_code)
         return "", {}
@@ -687,6 +693,10 @@ def create_and_host_shared_room(
         session,
         shared_room_code_displayed_to_user=True,
         valid_runtime_room=True,
+        cloud_readback_ok=True,
+        room_create_ok=True,
+        join_code=saved_code,
+        join_code_present=True,
     )
     try:
         from baseball_draft_activity import log_live_draft_room_created
@@ -791,11 +801,12 @@ def join_shared_draft_room(
         if reason == "query_error":
             detail = str(load_result.get("query_error") or "Supabase query failed")
             return False, f"Could not look up room **{code}** ({backend_name}): {detail}", None
-        return False, (
-            f"Share code **{code}** not found in {backend_name}. "
-            "Ask the host for the **6-character share code** shown after Create Shared Draft Room — "
-            "not the 8-character internal session ID."
-        ), None
+        try:
+            from live_draft_team_ownership import ROOM_NOT_FOUND_MSG
+
+            return False, ROOM_NOT_FOUND_MSG, None
+        except ImportError:
+            return False, "No active shared draft room was found for that code.", None
 
     ok_doc, doc_err = validate_shared_room_document(document)
     if not ok_doc:

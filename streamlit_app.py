@@ -21480,10 +21480,17 @@ if active_page == "Live Draft Room":
                         else:
                             st.session_state["live_draft_room"] = new_room
                             st.session_state["_live_draft_start_feedback"] = (
-                                f"Shared draft room ready. Invite players with this room code: **{code}**"
+                                f"Shared draft room ready. **Join code: {code}** — "
+                                f"share this code so co-managers can join and claim their teams."
                             )
                             st.success(st.session_state["_live_draft_start_feedback"])
                             _start_handler_ok = True
+                            try:
+                                from baseball_persistent_state import force_save_baseball_state
+
+                                force_save_baseball_state(st, reason="shared_draft_room_create")
+                            except ImportError:
+                                pass
                     else:
                         set_live_draft_setup_mode(st.session_state, SETUP_MODE_SOLO)
                         live_draft_start(new_room)
@@ -21817,6 +21824,15 @@ if active_page == "Live Draft Room":
                     room_status=_prep_status,
                 )
                 _start_disabled, _start_help = start_button_disabled(st.session_state)
+                if developer_mode_enabled():
+                    try:
+                        from draft_room_diagnostics import render_pre_draft_shared_room_diagnostics
+
+                        render_pre_draft_shared_room_diagnostics(
+                            st, st.session_state, developer_mode=True
+                        )
+                    except ImportError:
+                        pass
             except ImportError:
                 _start_disabled, _start_help = False, ""
 
@@ -21963,6 +21979,15 @@ if active_page == "Live Draft Room":
                         on_clock_team=_lobby_on_clock,
                         pick_label=_lobby_pick,
                     )
+                    if developer_mode_enabled():
+                        try:
+                            from draft_room_diagnostics import render_pre_draft_shared_room_diagnostics
+
+                            render_pre_draft_shared_room_diagnostics(
+                                st, st.session_state, developer_mode=True
+                            )
+                        except ImportError:
+                            pass
                     if _is_room_host(st.session_state) and not setup_is_read_only(room):
                         with st.expander("Edit Draft Setup (host only)", expanded=False):
                             st.caption(

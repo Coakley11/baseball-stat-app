@@ -77,8 +77,37 @@ def can_start_live_draft(session: dict[str, Any]) -> tuple[bool, str]:
                 "Create the shared draft room first — a 6-character room code is required before starting.",
             )
         room = session.get("live_draft_room")
-        if isinstance(room, dict) and str(room.get("status") or "") not in ("not_started", "in_progress", "paused"):
+        if not isinstance(room, dict):
             return False, "Draft room is not ready to start."
+        if str(room.get("status") or "") not in ("not_started", "in_progress", "paused"):
+            return False, "Draft room is not ready to start."
+        try:
+            from live_draft_team_ownership import (
+                claimed_team_count,
+                count_joined_teams,
+                distinct_claimed_owner_count,
+                list_room_teams,
+            )
+
+            teams = list_room_teams(room)
+            joined, total = count_joined_teams(session, room)
+            if joined < total:
+                waiting = max(0, total - joined)
+                return (
+                    False,
+                    f"Waiting for {waiting} more participant(s) to claim a team before starting.",
+                )
+            distinct = distinct_claimed_owner_count(session, room)
+            if len(teams) >= 2 and distinct < 2:
+                return (
+                    False,
+                    "Two distinct authenticated managers must claim teams before starting "
+                    "(one user cannot control both teams in Phase 1).",
+                )
+            if claimed_team_count(session, room) < 2 and len(teams) >= 2:
+                return False, "All teams must be claimed before starting the draft."
+        except ImportError:
+            pass
         return True, ""
     return True, ""
 
@@ -188,6 +217,17 @@ def finalize_shared_room_create(
     session["live_draft_room"] = room
     session["room_your_team"] = host_team
     try:
+        from draft_room_create_verify import merge_create_flow_diagnostics
+
+        merge_create_flow_diagnostics(
+            session,
+            room_create_attempted=True,
+            shared_draft_room_id=str(room.get("draft_room_id") or "").strip(),
+            room_status=str(room.get("status") or "not_started"),
+        )
+    except ImportError:
+        pass
+    try:
         from draft_room_context import create_and_host_shared_room
 
         code, _doc = create_and_host_shared_room(session, room, host_team=host_team, store=store)
@@ -195,5 +235,41 @@ def finalize_shared_room_create(
         return "", str(exc)
     if not code:
         err = str(session.pop("_draft_room_last_error", "") or "").strip()
-        return "", err or "Could not create shared room. This draft cannot be joined by others."
+        err = err or "Could not create shared room. This draft cannot be joined by others."
+        try:
+            from draft_room_create_verify import merge_create_flow_diagnostics
+
+            merge_create_flow_diagnostics(session, room_create_ok=False, room_create_error=err)
+        except ImportError:
+            pass
+        return "", err
+    try:
+        from draft_room_create_verify import merge_create_flow_diagnostics
+        from live_draft_team_ownership import claimed_team_count, distinct_claimed_owner_count, load_shared_participants
+
+        merge_create_flow_diagnostics(
+            session,
+            room_create_ok=True,
+            room_create_error="",
+            join_code=code,
+            join_code_present=True,
+            cloud_write_ok=True,
+            cloud_readback_ok=True,
+            shared_draft_room_id=str(room.get("draft_room_id") or "").strip(),
+            room_status=str(room.get("status") or "not_started"),
+            participant_count=len(load_shared_participants(session)),
+            claimed_team_count=claimed_team_count(session, room),
+            distinct_owner_count=distinct_claimed_owner_count(session, room),
+        )
+    except ImportError:
+        pass
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(
+            type("S", (), {"session_state": session})(),
+            reason="shared_draft_room_create",
+        )
+    except (ImportError, Exception):
+        pass
     return code, ""

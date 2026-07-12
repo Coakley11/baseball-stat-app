@@ -1270,6 +1270,45 @@ def on_start_new_live_draft() -> None:
     st.session_state.pop("_simulator_to_live_show_confirm", None)
 
 
+def on_prepare_shared_draft_room() -> None:
+    """Pre-draft shared room create — must use on_click so pending runs before the handler."""
+    import streamlit as st
+
+    try:
+        from live_draft_setup_persist import flush_live_draft_setup_persist
+
+        flush_live_draft_setup_persist(st, st.session_state, reason="live_draft_start")
+    except ImportError:
+        pass
+    try:
+        from live_draft_setup_mode import SETUP_MODE_SHARED, set_live_draft_setup_mode
+
+        set_live_draft_setup_mode(st.session_state, SETUP_MODE_SHARED)
+    except ImportError:
+        pass
+    try:
+        from draft_room_create_verify import init_create_flow_diagnostics
+
+        diag = init_create_flow_diagnostics(st.session_state, clicked=True)
+        diag["create_button_callback_count"] = int(diag.get("create_button_callback_count") or 0) + 1
+        st.session_state["_draft_room_create_diag"] = diag
+    except ImportError:
+        raw = dict(st.session_state.get("_draft_room_create_diag") or {})
+        raw["create_button_clicked"] = True
+        raw["create_button_callback_count"] = int(raw.get("create_button_callback_count") or 0) + 1
+        st.session_state["_draft_room_create_diag"] = raw
+    mark_start_live_draft_clicked(st.session_state)
+    record_start_live_draft_diagnostics(
+        st.session_state,
+        start_live_draft_clicked=True,
+        start_live_draft_mode="prepare_shared",
+        room_create_attempted=True,
+    )
+    st.session_state["_start_live_draft_mode"] = "prepare_shared"
+    st.session_state["_start_live_draft_pending"] = True
+    st.session_state.pop("_simulator_to_live_show_confirm", None)
+
+
 _LIVE_DRAFT_UI_DIAG_KEY = "_live_draft_ui_diag"
 
 

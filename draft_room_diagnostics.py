@@ -313,6 +313,65 @@ def render_join_assignment_diagnostics(st: Any, session: dict[str, Any], *, deve
             )
 
 
+def get_pre_draft_shared_room_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
+    """Compact Developer Mode snapshot for pre-draft shared room create/join."""
+    raw = session.get("_draft_room_create_diag")
+    diag = dict(raw) if isinstance(raw, dict) else {}
+    code = ""
+    try:
+        from live_draft_setup_mode import shared_room_code
+
+        code = str(shared_room_code(session) or "").strip().upper()
+    except ImportError:
+        code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+    room = session.get("live_draft_room")
+    claimed = 0
+    distinct = 0
+    participants = 0
+    room_status = ""
+    shared_room_id = ""
+    if isinstance(room, dict):
+        room_status = str(room.get("status") or "")
+        shared_room_id = str(room.get("draft_room_id") or "")
+        try:
+            from live_draft_team_ownership import claimed_team_count, distinct_claimed_owner_count
+
+            claimed = claimed_team_count(session, room)
+            distinct = distinct_claimed_owner_count(session, room)
+        except ImportError:
+            pass
+        try:
+            from live_draft_team_ownership import load_shared_participants
+
+            participants = len(load_shared_participants(session))
+        except ImportError:
+            pass
+    return {
+        "create_button_callback_count": diag.get("create_button_callback_count", 0),
+        "room_create_attempted": bool(diag.get("room_create_attempted") or diag.get("create_button_clicked")),
+        "room_create_ok": bool(diag.get("room_create_ok") or diag.get("shared_room_code_displayed_to_user")),
+        "room_create_error": str(diag.get("room_create_error") or session.get("_draft_room_last_error") or ""),
+        "shared_draft_room_id": str(diag.get("shared_draft_room_id") or shared_room_id or ""),
+        "join_code_present": bool(code),
+        "join_code": code or "",
+        "cloud_write_ok": bool(diag.get("cloud_write_ok") or diag.get("supabase_save_success")),
+        "cloud_readback_ok": bool(diag.get("cloud_readback_ok") or diag.get("immediate_load_success")),
+        "room_status": str(diag.get("room_status") or room_status or ""),
+        "participant_count": int(diag.get("participant_count") or participants or 0),
+        "claimed_team_count": int(diag.get("claimed_team_count") or claimed or 0),
+        "distinct_owner_count": int(diag.get("distinct_owner_count") or distinct or 0),
+    }
+
+
+def render_pre_draft_shared_room_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
+    if not developer_mode:
+        return
+    snapshot = get_pre_draft_shared_room_diagnostics(session)
+    with st.expander("Pre-draft shared room (dev)", expanded=not snapshot.get("join_code_present")):
+        for key, value in snapshot.items():
+            st.text(f"{key}: {value}")
+
+
 def render_shared_room_create_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
     """Show post-create verification snapshot (always after create attempt)."""
     if not developer_mode:
