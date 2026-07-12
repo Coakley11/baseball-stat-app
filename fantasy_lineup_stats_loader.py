@@ -104,6 +104,14 @@ def ensure_lineup_page_hitter_stats(
             )
             if isinstance(built, pd.DataFrame) and not built.empty:
                 session["fantasy_current_roster_stats"] = built.copy()
+                try:
+                    from fantasy_lineup_scope import resolve_lineup_scope, stamp_roster_stats_cache_scope
+
+                    scope = resolve_lineup_scope(session, context, week=1)
+                    if scope:
+                        stamp_roster_stats_cache_scope(session, scope)
+                except ImportError:
+                    pass
                 result["roster_stats"] = built.copy()
                 try:
                     from fantasy_in_season_state import sync_fantasy_in_season_state

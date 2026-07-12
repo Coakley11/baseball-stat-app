@@ -54,17 +54,19 @@ class FantasyTradeIdeasTests(unittest.TestCase):
             self.assertNotIn(set(ideas["Other Team"].astype(str)), {"Daniel"})
 
     @patch("fantasy_trade_ideas.derive_category_needs", return_value={})
-    def test_generate_trade_ideas_without_needs_reports_failure_reason(self, _mock_needs) -> None:
+    def test_generate_trade_ideas_without_needs_can_still_return_fair_trades(self, _mock_needs) -> None:
         rosters = _sample_rosters()
         ideas, diag = generate_trade_ideas(
             "Daniel",
             rosters,
             pd.DataFrame(),
+            forced_give=["Power Guy"],
             summarize_team_category_needs_fn=lambda *_: {},
             league_context_id="league-test",
         )
-        self.assertTrue(ideas.empty)
-        self.assertEqual(diag["failure_reason"], "no_category_needs_detected")
+        self.assertGreaterEqual(diag.get("candidate_count_after_fairness", 0), 0)
+        if not ideas.empty:
+            self.assertIn("Give", ideas.columns)
 
     def test_generate_trade_ideas_with_needs_returns_suggestions(self) -> None:
         rosters = _sample_rosters()

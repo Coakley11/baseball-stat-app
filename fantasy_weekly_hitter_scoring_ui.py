@@ -173,46 +173,8 @@ def render_locked_weekly_dashboard(
     results = scoring_record.get("player_results") or {}
     cats = tuple(profile.display_categories)
 
+    bench_count = len(bench or {})
     st.markdown('<div class="fl-weekly-scoring">', unsafe_allow_html=True)
-    st.markdown("<h4>Starters — weekly scoring</h4>", unsafe_allow_html=True)
-    cards: list[str] = []
-    for pkey, meta in starters.items():
-        if not isinstance(meta, dict):
-            continue
-        pres = results.get(pkey) or {}
-        display = pres.get("display") or {}
-        if not display and isinstance(scoring_record.get("baselines"), dict):
-            display = {cat: 0 for cat in cats if cat not in ("AVG", "OBP", "OPS")}
-            if "AVG" in cats:
-                display["AVG"] = None
-        cards.append(
-            f"<div class='fl-wk-card'><div class='fl-wk-name'>{html_lib.escape(str(meta.get('player_name') or ''))}</div>"
-            f"<div class='fl-wk-role'>{html_lib.escape(str(meta.get('slot') or 'Starter'))}</div>"
-            f"{_stat_line_html(cats, display, points=pres.get('points_total'))}</div>"
-        )
-    if cards:
-        st.markdown(f"<div class='fl-wk-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
-    else:
-        st.caption("No starters in weekly scoring record.")
-
-    if bench:
-        st.markdown("<h4>Bench — does not count toward team score</h4>", unsafe_allow_html=True)
-        bench_cards: list[str] = []
-        for pkey, meta in bench.items():
-            if not isinstance(meta, dict):
-                continue
-            pres = results.get(pkey) or {}
-            display = pres.get("display") or {}
-            if not display:
-                display = {cat: 0 for cat in cats if cat not in ("AVG", "OBP", "OPS")}
-                if "AVG" in cats:
-                    display["AVG"] = None
-            bench_cards.append(
-                f"<div class='fl-wk-card bench'><div class='fl-wk-name'>{html_lib.escape(str(meta.get('player_name') or ''))}</div>"
-                f"<div class='fl-wk-role'>Bench (non-scoring)</div>"
-                f"{_stat_line_html(cats, display, points=pres.get('points_total'))}</div>"
-            )
-        st.markdown(f"<div class='fl-wk-grid'>{''.join(bench_cards)}</div>", unsafe_allow_html=True)
 
     team_totals = (scoring_record.get("team_totals") or {}).get("totals")
     if not isinstance(team_totals, dict):
@@ -220,18 +182,79 @@ def render_locked_weekly_dashboard(
         if "AVG" in cats:
             team_totals["AVG"] = None
     st.markdown(
-        f"<div class='fl-wk-team-totals'><b>Team weekly totals</b> "
+        f"<div class='fl-wk-team-totals'><b>Team Weekly Totals</b> "
         f"{_stat_line_html(cats, team_totals, points=team_totals.get('POINTS'))}</div>",
         unsafe_allow_html=True,
     )
+    if bench_count:
+        st.caption(f"Bench: {bench_count} player{'s' if bench_count != 1 else ''} (non-scoring)")
+
+    selected_name = ""
+    if session is not None:
+        try:
+            from fantasy_lineup_scope import resolve_lineup_scope
+
+            scope = resolve_lineup_scope(session, context, week=int(week))
+            if scope:
+                selected_name = str(session.get(f"{scope.fingerprint}|selected_player") or "").strip()
+        except ImportError:
+            selected_name = str(session.get("weekly_lineup_selected_player") or "").strip()
+
+    if selected_name:
+        render_player_detail_panel(
+            st,
+            player_name=selected_name,
+            scoring_record=scoring_record,
+            profile=profile,
+        )
+
+    with st.expander("View all weekly player stats", expanded=False):
+        st.markdown("<h4>Starters — weekly scoring</h4>", unsafe_allow_html=True)
+        cards: list[str] = []
+        for pkey, meta in starters.items():
+            if not isinstance(meta, dict):
+                continue
+            pres = results.get(pkey) or {}
+            display = pres.get("display") or {}
+            if not display and isinstance(scoring_record.get("baselines"), dict):
+                display = {cat: 0 for cat in cats if cat not in ("AVG", "OBP", "OPS")}
+                if "AVG" in cats:
+                    display["AVG"] = None
+            cards.append(
+                f"<div class='fl-wk-card'><div class='fl-wk-name'>{html_lib.escape(str(meta.get('player_name') or ''))}</div>"
+                f"<div class='fl-wk-role'>{html_lib.escape(str(meta.get('slot') or 'Starter'))}</div>"
+                f"{_stat_line_html(cats, display, points=pres.get('points_total'))}</div>"
+            )
+        if cards:
+            st.markdown(f"<div class='fl-wk-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
+        else:
+            st.caption("No starters in weekly scoring record.")
+
+        if bench:
+            st.markdown("<h4>Bench — does not count toward team score</h4>", unsafe_allow_html=True)
+            bench_cards: list[str] = []
+            for pkey, meta in bench.items():
+                if not isinstance(meta, dict):
+                    continue
+                pres = results.get(pkey) or {}
+                display = pres.get("display") or {}
+                if not display:
+                    display = {cat: 0 for cat in cats if cat not in ("AVG", "OBP", "OPS")}
+                    if "AVG" in cats:
+                        display["AVG"] = None
+                bench_cards.append(
+                    f"<div class='fl-wk-card bench'><div class='fl-wk-name'>{html_lib.escape(str(meta.get('player_name') or ''))}</div>"
+                    f"<div class='fl-wk-role'>Bench (non-scoring)</div>"
+                    f"{_stat_line_html(cats, display, points=pres.get('points_total'))}</div>"
+                )
+            st.markdown(f"<div class='fl-wk-grid'>{''.join(bench_cards)}</div>", unsafe_allow_html=True)
+
     st.markdown(
-        '<p class="fl-wk-muted">Bench statistics are shown for reference only and do not count toward your team score. '
-        "Zero values mean no change since the baseline was captured.</p>",
+        '<p class="fl-wk-muted">Tap a player face on the lineup board for individual stats. '
+        "Bench players do not count toward team totals.</p>",
         unsafe_allow_html=True,
     )
     st.markdown("</div>", unsafe_allow_html=True)
-
-    _render_player_details(st, scoring_record=scoring_record, profile=profile)
 
     try:
         from suite_workspace import can_show_developer_tools

@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Callable
 
 import pandas as pd
 
-from fantasy_league_context import get_active_league_context
 from fantasy_lineup_interactive_board import (
     apply_drop_event,
     build_interactive_board_payload,
     parse_board_drop_result,
     parse_board_player_select,
     render_interactive_lineup_board,
+)
+from fantasy_lineup_scope import (
+    LINEUP_IDENTITY_SYNC_ERROR,
+    assert_lineup_write_identity,
+    apply_lineup_scope_change,
+    render_lineup_identity_diagnostics_from_session,
+    resolve_canonical_lineup_team,
+    resolve_lineup_scope,
 )
 from fantasy_lineup_ui import (
     SlotKeyLabel,
@@ -25,7 +31,6 @@ from fantasy_lineup_ui import (
     slot_key_labels_as_tuples,
 )
 from fantasy_league_lineup_format import (
-    hydrate_lineup_format_from_shared,
     is_lineup_format_commissioner,
     resolve_lineup_page_context,
 )
@@ -36,10 +41,10 @@ from fantasy_league_lineup_format_ui import (
 from fantasy_weekly_hitter_scoring import (
     ensure_weekly_scoring_populated,
     get_weekly_scoring_record,
-    mark_legacy_lineup_scoring,
     maybe_mark_legacy_lineup_scoring,
     resolve_hitter_scoring_profile,
     should_start_week_empty,
+    week_editability_message,
 )
 from fantasy_weekly_hitter_scoring_ui import (
     render_finalize_week_section,
@@ -49,6 +54,7 @@ from fantasy_weekly_hitter_scoring_ui import (
     render_week_transition_notice,
 )
 from fantasy_weekly_lineup import (
+    assignments_to_slot_player_map,
     get_saved_weekly_lineup,
     is_lineup_locked,
     list_week_options,
@@ -61,8 +67,10 @@ from fantasy_weekly_lineup import (
 )
 
 
-def canonical_week_key(prefix: str, week: int) -> str:
-    """Session key holding the single canonical assignment dict for a week."""
+def canonical_week_key(prefix: str, week: int, *, scope_key: str = "") -> str:
+    """Session key holding the canonical assignment dict for a scoped week."""
+    if scope_key:
+        return f"{scope_key}|assignments"
     return f"{prefix}_canon_{int(week)}"
 
 
@@ -70,7 +78,6 @@ def assignment_signature(
     assignments: dict[str, str],
     slot_keys: list[tuple[str, str]],
 ) -> tuple[tuple[str, str], ...]:
-    """Order-independent, normalized signature used to detect real changes."""
     return tuple(
         (key, str((assignments or {}).get(key) or "").strip()) for key, _label in slot_keys
     )
@@ -89,20 +96,22 @@ def ensure_canonical_assignments(
     canon_key: str,
     slot_keys: list[tuple[str, str]],
     saved_assignments: dict[str, str],
+    scope_changed: bool = False,
 ) -> dict[str, str]:
-    """Return the canonical per-week assignments, hydrating from saved on first use."""
+    """Return canonical per-scope assignments; hydrate from persisted when scope changes."""
     saved_norm = _normalize_assignments(saved_assignments, slot_keys)
+    if scope_changed:
+        session[canon_key] = dict(saved_norm)
+        return dict(session[canon_key])
+
     current = session.get(canon_key)
     if not isinstance(current, dict):
         session[canon_key] = dict(saved_norm)
     else:
         current_norm = _normalize_assignments(current, slot_keys)
-        if any(saved_norm.values()) and not any(current_norm.values()):
-            session[canon_key] = dict(saved_norm)
-        else:
-            for key, _label in slot_keys:
-                current_norm.setdefault(key, "")
-            session[canon_key] = current_norm
+        for key, _label in slot_keys:
+            current_norm.setdefault(key, "")
+        session[canon_key] = current_norm
     return dict(session[canon_key])
 
 
@@ -113,7 +122,6 @@ def reconcile_editor_assignments(
     slot_keys: list[tuple[str, str]],
     new_assignments: dict[str, str],
 ) -> bool:
-    """Persist editor output to canonical state. Return True when it changed."""
     current = session.get(canon_key) or {}
     if assignment_signature(new_assignments, slot_keys) != assignment_signature(current, slot_keys):
         session[canon_key] = _normalize_assignments(new_assignments, slot_keys)
@@ -122,7 +130,6 @@ def reconcile_editor_assignments(
 
 
 def _waiver_slot_label_for_open_prompt(slot_label: SlotKeyLabel) -> str:
-    """Display label passed to Waiver Wire position filter."""
     if slot_label.base_slot == "OF":
         return "Outfield"
     return slot_display_name(slot_label.base_slot)
@@ -132,12 +139,7 @@ def build_open_slot_prompts(
     slot_labels: list[SlotKeyLabel],
     assignments: dict[str, str],
 ) -> list[dict[str, str]]:
-    """Compact open-slot rows from current canonical assignments only."""
-    open_slots = [
-        label
-        for label in slot_labels
-        if not str(assignments.get(label.key) or "").strip()
-    ]
+    open_slots = [label for label in slot_labels if not str(assignments.get(label.key) or "").strip()]
     if not open_slots:
         return []
 
@@ -192,7 +194,6 @@ def _render_open_slots_and_validation(
 ) -> dict[str, Any]:
     validation = validate_weekly_lineup(slots, assignments, team_roster)
 
-    # Show only non-empty-slot issues from validate (duplicate, ineligible, roster).
     for message in validation.get("messages") or []:
         lower = str(message).lower()
         if " is empty" in lower:
@@ -240,10 +241,15 @@ def render_weekly_lineup_section(
         st.info("Set an **Active Draft** to manage your weekly lineup.")
         return
 
-    my_team = str(context.get("my_team_name") or "").strip()
-    active_team = str(lineup_team or my_team or "").strip()
-    if my_team and active_team and my_team != active_team:
-        st.info(f"Weekly lineups are available for your team (**{my_team}**) only.")
+    page_team = str(lineup_team or "").strip()
+    active_team = resolve_canonical_lineup_team(session, context, page_lineup_team=page_team)
+    if not active_team:
+        active_team = str(context.get("my_team_name") or page_team or "").strip()
+    if page_team and active_team and page_team != active_team:
+        st.warning(LINEUP_IDENTITY_SYNC_ERROR)
+
+    if not active_team:
+        st.info("Claim your team in this league before managing weekly lineups.")
         return
 
     if team_roster is None or team_roster.empty:
@@ -252,10 +258,9 @@ def render_weekly_lineup_section(
 
             loaded = ensure_lineup_page_hitter_stats(session, context)
             if isinstance(loaded.get("roster_stats"), pd.DataFrame) and not loaded["roster_stats"].empty:
-                team_name = str(lineup_team or context.get("my_team_name") or "").strip()
-                if team_name and "Team" in loaded["roster_stats"].columns:
+                if "Team" in loaded["roster_stats"].columns:
                     team_roster = loaded["roster_stats"][
-                        loaded["roster_stats"]["Team"].astype(str) == team_name
+                        loaded["roster_stats"]["Team"].astype(str) == active_team
                     ].copy()
                 else:
                     team_roster = loaded["roster_stats"].copy()
@@ -273,15 +278,13 @@ def render_weekly_lineup_section(
     if session.pop("lineup_format_saved_flash", None) and is_lineup_format_commissioner(session, context):
         st.success("League lineup format saved.")
 
-    editing_format = bool(session.get("lineup_format_editing"))
-    if editing_format:
+    if bool(session.get("lineup_format_editing")):
         render_lineup_format_setup(st, session, team_roster=team_roster, editing=True)
         return
     if not render_lineup_format_setup(st, session, team_roster=team_roster):
         return
 
     render_edit_lineup_format_action(st, session)
-
     inject_lineup_board_styles(st)
 
     slots = resolve_weekly_lineup_slots(context)
@@ -293,8 +296,11 @@ def render_weekly_lineup_section(
     week_options = list_week_options()
     prefix = "weekly_lineup"
 
-    save_flash = session.pop("weekly_lineup_save_flash", None)
-    if isinstance(save_flash, dict):
+    drop_flash = session.pop("weekly_lineup_drop_flash", None)
+    if drop_flash:
+        st.success(str(drop_flash))
+
+    if session.pop("weekly_lineup_save_flash", None):
         st.success("Lineup saved.")
 
     if f"{prefix}_selected_week" not in session:
@@ -309,11 +315,20 @@ def render_weekly_lineup_section(
             key=f"{prefix}_selected_week",
         )
 
+    scope = resolve_lineup_scope(session, context, week=int(selected_week), page_lineup_team=page_team)
+    scope_changed = bool(scope and apply_lineup_scope_change(session, scope))
+
     saved = get_saved_weekly_lineup(context, int(selected_week), team=active_team, session=session)
     saved_assignments = dict((saved or {}).get("assignments") or {})
-    lineup_locked = is_lineup_locked(context, int(selected_week), team=active_team, session=session)
-    scoring_profile = resolve_hitter_scoring_profile(context, session=session)
 
+    edit_state, edit_message = week_editability_message(context, int(selected_week))
+    lineup_locked = is_lineup_locked(context, int(selected_week), team=active_team, session=session)
+    if edit_state in ("future", "past"):
+        lineup_locked = True
+    if edit_message:
+        st.info(edit_message)
+
+    scoring_profile = resolve_hitter_scoring_profile(context, session=session)
     context = maybe_mark_legacy_lineup_scoring(
         session,
         context,
@@ -321,10 +336,9 @@ def render_weekly_lineup_section(
         team=active_team,
         saved_lineup=saved,
     )
-
     render_week_transition_notice(st, context=context, week=int(selected_week))
 
-    canon_key = canonical_week_key(prefix, int(selected_week))
+    canon_key = scope.assignments_key if scope else canonical_week_key(prefix, int(selected_week))
     if should_start_week_empty(context, int(selected_week)) and not lineup_locked and not saved_assignments:
         session[canon_key] = {key: "" for key, _ in slot_keys}
         saved_assignments = dict(session[canon_key])
@@ -334,7 +348,17 @@ def render_weekly_lineup_section(
         canon_key=canon_key,
         slot_keys=slot_keys,
         saved_assignments=saved_assignments,
+        scope_changed=scope_changed,
     )
+
+    try:
+        from suite_workspace import can_show_developer_tools
+
+        if can_show_developer_tools(st=st):
+            with st.expander("Lineup identity diagnostics (Developer Mode)", expanded=False):
+                render_lineup_identity_diagnostics_from_session(st, session, scope)
+    except ImportError:
+        pass
 
     header_model = build_team_header_model(
         context=context,
@@ -402,17 +426,24 @@ def render_weekly_lineup_section(
         editable=not lineup_locked,
         session=session,
     )
-    board_nonce_key = f"{prefix}_board_nonce_{int(selected_week)}"
+    board_nonce_key = scope.board_nonce_key if scope else f"{prefix}_board_nonce_{int(selected_week)}"
     board_nonce = int(session.get(board_nonce_key, 0))
-    component_key = f"{prefix}_circle_board_{int(selected_week)}_{board_nonce}"
+    component_key = (
+        f"{scope.component_key_base}_{board_nonce}"
+        if scope
+        else f"{prefix}_circle_board_{int(selected_week)}_{board_nonce}"
+    )
     board_result = render_interactive_lineup_board(
         st,
         payload=board_payload,
         component_key=component_key,
     )
+
+    selected_player_key = f"{scope.fingerprint}|selected_player" if scope else f"{prefix}_selected_player"
     drop_event = parse_board_drop_result(board_result)
     selected_player = parse_board_player_select(board_result) if lineup_locked else ""
     if selected_player and lineup_locked:
+        session[selected_player_key] = selected_player
         scoring_record = get_weekly_scoring_record(context, week=int(selected_week), team=active_team)
         if isinstance(scoring_record, dict) and scoring_record.get("baseline_created_at"):
             render_player_detail_panel(
@@ -421,37 +452,77 @@ def render_weekly_lineup_section(
                 scoring_record=scoring_record,
                 profile=scoring_profile,
             )
+    elif lineup_locked and session.get(selected_player_key):
+        scoring_record = get_weekly_scoring_record(context, week=int(selected_week), team=active_team)
+        if isinstance(scoring_record, dict) and scoring_record.get("baseline_created_at"):
+            render_player_detail_panel(
+                st,
+                player_name=str(session.get(selected_player_key) or ""),
+                scoring_record=scoring_record,
+                profile=scoring_profile,
+            )
+
     if drop_event and not lineup_locked:
-        new_assignments = apply_drop_event(
-            assignments,
-            slot_keys,
-            drop_event,
-            roster_df=team_roster,
-        )
-        if new_assignments is not None and reconcile_editor_assignments(
-            session,
-            canon_key=canon_key,
-            slot_keys=slot_keys,
-            new_assignments=new_assignments,
-        ):
-            persist_weekly_lineup_draft(
-                session,
-                week=int(selected_week),
-                slots=slots,
-                assignments=new_assignments,
-                my_team=active_team,
+        write_ok, write_err = assert_lineup_write_identity(scope)
+        if not write_ok:
+            st.error(write_err)
+        else:
+            prior_assignments = dict(assignments)
+            new_assignments = apply_drop_event(
+                assignments,
+                slot_keys,
+                drop_event,
                 roster_df=team_roster,
             )
-            try:
-                from fantasy_lineup_perf import invalidate_lineup_page_caches
+            if new_assignments is not None and reconcile_editor_assignments(
+                session,
+                canon_key=canon_key,
+                slot_keys=slot_keys,
+                new_assignments=new_assignments,
+            ):
+                save_result = persist_weekly_lineup_draft(
+                    session,
+                    week=int(selected_week),
+                    slots=slots,
+                    assignments=new_assignments,
+                    my_team=active_team,
+                    roster_df=team_roster,
+                )
+                if not save_result.get("ok"):
+                    session[canon_key] = _normalize_assignments(prior_assignments, slot_keys)
+                    st.error("; ".join(save_result.get("errors") or ["Could not save lineup draft."]))
+                else:
+                    slot_map = assignments_to_slot_player_map(slots, new_assignments)
+                    readback = get_saved_weekly_lineup(
+                        context,
+                        int(selected_week),
+                        team=active_team,
+                        session=session,
+                    )
+                    readback_map = dict((readback or {}).get("assignments") or {})
+                    if readback_map != slot_map:
+                        session[canon_key] = _normalize_assignments(prior_assignments, slot_keys)
+                        st.error("Draft save did not read back correctly. Restored prior lineup.")
+                    else:
+                        player = str(drop_event.get("player") or "").strip()
+                        target = str(drop_event.get("target") or "").strip()
+                        slot_label = "Bench"
+                        if target and target != "__bench__":
+                            for key, label in slot_keys:
+                                if key == target:
+                                    slot_label = label
+                                    break
+                        session["weekly_lineup_drop_flash"] = f"{player} saved to {slot_label}"
+                        try:
+                            from fantasy_lineup_perf import invalidate_lineup_page_caches
 
-                invalidate_lineup_page_caches(session)
-            except ImportError:
-                pass
-            session[board_nonce_key] = board_nonce + 1
-            st.rerun()
-        elif new_assignments is not None:
-            assignments = new_assignments
+                            invalidate_lineup_page_caches(session)
+                        except ImportError:
+                            pass
+                        session[board_nonce_key] = board_nonce + 1
+                        st.rerun()
+            elif new_assignments is not None:
+                assignments = new_assignments
 
     validation = _render_open_slots_and_validation(
         st,
@@ -487,32 +558,33 @@ def render_weekly_lineup_section(
         )
         return
 
+    save_key = f"{scope.fingerprint}|save_btn" if scope else f"{prefix}_save_btn"
+    reset_key = f"{scope.fingerprint}|reset_btn" if scope else f"{prefix}_reset_btn"
     save_col, _reset_col = st.columns(2)
     with save_col:
         save_disabled = not validation.get("ok")
-        if st.button(
-            "Save Lineup",
-            key=f"{prefix}_save_btn",
-            type="primary",
-            disabled=bool(save_disabled),
-        ):
-            save_result = save_weekly_lineup(
-                session,
-                week=int(selected_week),
-                slots=slots,
-                assignments=assignments,
-                my_team=active_team,
-                roster_df=team_roster,
-            )
-            if save_result.get("ok"):
-                session["weekly_lineup_save_flash"] = {"team": active_team, "week": int(selected_week)}
-                st.rerun()
+        if st.button("Save Lineup", key=save_key, type="primary", disabled=bool(save_disabled)):
+            write_ok, write_err = assert_lineup_write_identity(scope)
+            if not write_ok:
+                st.error(write_err)
             else:
-                st.error("Couldn't save changes. Try again.")
+                save_result = save_weekly_lineup(
+                    session,
+                    week=int(selected_week),
+                    slots=slots,
+                    assignments=assignments,
+                    my_team=active_team,
+                    roster_df=team_roster,
+                )
+                if save_result.get("ok"):
+                    session["weekly_lineup_save_flash"] = True
+                    st.rerun()
+                else:
+                    st.error("Couldn't save changes. Try again.")
         elif save_disabled:
             st.caption("Complete your lineup before saving.")
     with _reset_col:
-        if st.button("Reset", key=f"{prefix}_reset_btn"):
+        if st.button("Reset", key=reset_key):
             session[canon_key] = _normalize_assignments(saved_assignments, slot_keys)
             session[board_nonce_key] = board_nonce + 1
             st.rerun()

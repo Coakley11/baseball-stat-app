@@ -263,6 +263,29 @@ def is_lineup_locked(
     return isinstance(record, dict) and str(record.get("status") or "") == LINEUP_STATUS_LOCKED
 
 
+def _assert_lineup_team_write(session: dict[str, Any], context: dict[str, Any], my_team: str) -> str | None:
+    uid = str(session.get("_suite_auth_user_id") or session.get("_suite_cloud_user_id") or "").strip()
+    if not uid:
+        return None
+    try:
+        from fantasy_league_identity import resolve_canonical_league_id
+        from fantasy_lineup_scope import assert_lineup_write_identity, resolve_lineup_scope
+
+        league_id = str(resolve_canonical_league_id(context) or "").strip()
+        ownership = context.get("team_ownership") or {}
+        if not league_id and not ownership:
+            return None
+        scope = resolve_lineup_scope(session, context, week=1, page_lineup_team=my_team)
+        ok, err = assert_lineup_write_identity(scope)
+        if not ok:
+            return err
+        if scope and scope.owned_team and str(my_team or "").strip() != scope.owned_team:
+            return err or "Team identity mismatch."
+    except ImportError:
+        pass
+    return None
+
+
 def persist_weekly_lineup_draft(
     session: dict[str, Any],
     *,
@@ -280,6 +303,10 @@ def persist_weekly_lineup_draft(
         result["errors"].append("No active league context.")
         return result
     team = str(my_team or context.get("my_team_name") or "").strip()
+    identity_err = _assert_lineup_team_write(session, context, team)
+    if identity_err:
+        result["errors"].append(identity_err)
+        return result
     if is_lineup_locked(context, week, team=team, session=session):
         result["errors"].append("Lineup is locked for this week.")
         return result
@@ -553,6 +580,12 @@ def save_weekly_lineup(
     context = _lineup_storage_context(session)
     if not context:
         result["errors"].append("No active league context.")
+        return result
+
+    team_name = str(my_team or context.get("my_team_name") or "").strip()
+    identity_err = _assert_lineup_team_write(session, context, team_name)
+    if identity_err:
+        result["errors"].append(identity_err)
         return result
 
     validation = validate_weekly_lineup(slots, assignments, roster_df)

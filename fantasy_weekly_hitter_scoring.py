@@ -14,6 +14,7 @@ from fantasy_league_context import normalize_player_key, upsert_league_context
 
 WORKFLOW_KEY_WEEKLY_HITTER_SCORING = "weekly_hitter_scoring"
 WORKFLOW_KEY_HITTER_STANDINGS_CUMULATIVE = "hitter_weekly_standings_cumulative"
+MAX_SCORING_WEEKS = 26
 
 WEEK_SCORING_LOCKED = "locked"
 WEEK_SCORING_FINALIZED = "finalized"
@@ -1007,6 +1008,9 @@ def _finalize_week_for_league_inner(
         "teams": preview.get("teams_preview") or [],
     }
     apply_finalized_week_to_standings(context, week=week, finalize_id=fin_id)
+    next_week = int(week) + 1
+    if next_week <= MAX_SCORING_WEEKS:
+        set_active_scoring_week(context, next_week)
     upsert_league_context(session, context)
     result["ok"] = True
     result["finalize_id"] = fin_id
@@ -1099,6 +1103,38 @@ def should_start_week_empty(context: dict[str, Any], week: int) -> bool:
     if int(week) <= 1:
         return False
     return is_week_finalized_for_league(context, int(week) - 1)
+
+
+def get_active_scoring_week(context: dict[str, Any]) -> int:
+    """Shared league-wide active editable week (commissioner-advanced)."""
+    root = _scoring_root(context)
+    active = root.get("active_week")
+    try:
+        week = int(active)
+        if 1 <= week <= MAX_SCORING_WEEKS:
+            return week
+    except (TypeError, ValueError):
+        pass
+    return 1
+
+
+def set_active_scoring_week(context: dict[str, Any], week: int) -> None:
+    root = _scoring_root(context)
+    root["active_week"] = max(1, min(MAX_SCORING_WEEKS, int(week)))
+
+
+def week_editability_message(context: dict[str, Any], week: int) -> tuple[str, str]:
+    """Return (state, message) where state is active|future|past."""
+    active = get_active_scoring_week(context)
+    w = int(week)
+    if w > active:
+        return (
+            "future",
+            f"Week {w} is not open yet. It will become available after Week {w - 1} is finalized.",
+        )
+    if w < active:
+        return ("past", f"Week {w} is complete and permanently locked.")
+    return ("active", "")
 
 
 def is_legacy_locked_lineup(saved_lineup: dict[str, Any] | None, scoring_record: dict[str, Any] | None) -> bool:
