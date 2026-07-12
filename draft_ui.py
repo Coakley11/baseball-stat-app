@@ -1309,6 +1309,32 @@ def on_prepare_shared_draft_room() -> None:
     st.session_state.pop("_simulator_to_live_show_confirm", None)
 
 
+def on_join_shared_draft_from_setup() -> None:
+    """Pre-draft guest join — must use on_click so pending runs before the join handler."""
+    import streamlit as st
+
+    session = st.session_state
+    code = str(session.get("live_draft_join_code_input") or "").strip().upper()
+    requested_team = str(session.get("live_draft_join_team_pick") or "").strip()
+    session["_join_shared_draft_from_setup"] = True
+    session["_join_requested_team"] = requested_team
+    session["_join_requested_code"] = code
+    callback_count = int(session.get("_join_button_callback_count") or 0) + 1
+    session["_join_button_callback_count"] = callback_count
+    try:
+        from draft_room_diagnostics import merge_join_flow_diagnostics
+
+        merge_join_flow_diagnostics(
+            session,
+            join_button_callback_count=callback_count,
+            join_attempted=True,
+            join_code=code,
+            requested_team=requested_team,
+        )
+    except ImportError:
+        pass
+
+
 _LIVE_DRAFT_UI_DIAG_KEY = "_live_draft_ui_diag"
 
 

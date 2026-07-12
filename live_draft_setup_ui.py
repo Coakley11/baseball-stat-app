@@ -188,35 +188,160 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
         st.caption("Enter a valid 6-character code to see available teams.")
     with join_col2:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if st.button("Join Room", key="live_draft_join_from_setup_btn", type="primary"):
-            session["_join_shared_draft_from_setup"] = True
-            session["_join_requested_team"] = str(picked_team or session.get("live_draft_join_team_pick") or "").strip()
+        try:
+            from draft_ui import on_join_shared_draft_from_setup
+        except ImportError:
+            on_join_shared_draft_from_setup = None  # type: ignore[assignment,misc]
+        st.button(
+            "Join Room",
+            key="live_draft_join_from_setup_btn",
+            type="primary",
+            on_click=on_join_shared_draft_from_setup,
+        )
+
+
+def _format_join_user_message(*, ok: bool, code: str, team: str, backend_msg: str) -> str:
+    if ok:
+        return f"Joined room {code} as {team}."
+    raw = str(backend_msg or "").strip()
+    if not raw:
+        return "Could not join room: unknown error."
+    try:
+        from draft_room_membership import ERR_TEAM_ALREADY_ASSIGNED
+        from live_draft_team_ownership import ROOM_NOT_FOUND_MSG
+
+        if raw == ROOM_NOT_FOUND_MSG:
+            return ROOM_NOT_FOUND_MSG
+        if raw == ERR_TEAM_ALREADY_ASSIGNED:
+            return "That team has already been claimed."
+    except ImportError:
+        pass
+    if raw in {
+        "Choose a team before joining.",
+        "Choose a team before joining — teams are never assigned automatically.",
+    }:
+        return "Choose a team before joining."
+    if raw.startswith("Could not join room:"):
+        return raw
+    return f"Could not join room: {raw}"
+
+
+def _record_join_flow_outcome(
+    session: dict[str, Any],
+    *,
+    code: str,
+    requested_team: str,
+    ok: bool,
+    msg: str,
+    doc: dict[str, Any] | None,
+) -> None:
+    try:
+        from draft_room_diagnostics import merge_join_flow_diagnostics
+    except ImportError:
+        return
+    load_diag = session.get("_draft_room_join_load_diag")
+    room_lookup_ok = False
+    room_lookup_error = ""
+    if isinstance(load_diag, dict):
+        room_lookup_ok = bool(load_diag.get("found"))
+        room_lookup_error = str(load_diag.get("reason") or load_diag.get("query_error") or "")
+    joined_room_id = ""
+    participant_write_ok = False
+    participant_readback_ok = False
+    if isinstance(doc, dict):
+        room_blob = doc.get("room") if isinstance(doc.get("room"), dict) else {}
+        joined_room_id = str(room_blob.get("draft_room_id") or doc.get("draft_room_id") or "")
+        participant_write_ok = bool(doc.get("participants"))
+        try:
+            from draft_room_shared_state import get_shared_room_store
+
+            reloaded = get_shared_room_store().load(code)
+            if isinstance(reloaded, dict):
+                participant_readback_ok = bool(reloaded.get("participants"))
+                if not joined_room_id:
+                    rb = reloaded.get("room") if isinstance(reloaded.get("room"), dict) else {}
+                    joined_room_id = str(rb.get("draft_room_id") or reloaded.get("draft_room_id") or "")
+        except ImportError:
+            participant_readback_ok = participant_write_ok
+    merge_join_flow_diagnostics(
+        session,
+        join_attempted=True,
+        join_code=code,
+        requested_team=requested_team,
+        room_lookup_ok=room_lookup_ok,
+        room_lookup_error=room_lookup_error,
+        claim_attempted=True,
+        claim_ok=ok,
+        claim_error="" if ok else msg,
+        joined_room_id=joined_room_id,
+        joined_as_team=requested_team if ok else "",
+        participant_write_ok=participant_write_ok,
+        participant_readback_ok=participant_readback_ok,
+    )
+
+
+def render_join_attempt_feedback(st: Any, session: dict[str, Any]) -> None:
+    """Show join success/error in pre-draft setup (never silent)."""
+    flash = session.pop("_draft_join_flash", None)
+    if flash:
+        st.success(str(flash))
+    err = session.pop("_draft_join_error", None)
+    if err:
+        st.error(str(err))
 
 
 def render_guest_join_from_setup(st: Any, session: dict[str, Any]) -> bool:
     """Process join-from-setup button. Returns True if rerun needed."""
     if not session.pop("_join_shared_draft_from_setup", None):
         return False
-    code = str(session.get("live_draft_join_code_input") or "").strip().upper()
-    requested_team = str(session.pop("_join_requested_team", "") or session.get("live_draft_join_team_pick") or "").strip()
+    code = str(
+        session.pop("_join_requested_code", "")
+        or session.get("live_draft_join_code_input")
+        or ""
+    ).strip().upper()
+    requested_team = str(
+        session.pop("_join_requested_team", "")
+        or session.get("live_draft_join_team_pick")
+        or ""
+    ).strip()
+    try:
+        from draft_room_diagnostics import merge_join_flow_diagnostics
+
+        merge_join_flow_diagnostics(
+            session,
+            join_attempted=True,
+            join_code=code,
+            requested_team=requested_team,
+            join_button_callback_count=int(session.get("_join_button_callback_count") or 0),
+        )
+    except ImportError:
+        pass
     if not code:
-        st.error("Enter a 6-character draft room code.")
+        msg = "Enter a 6-character draft room code."
+        session["_draft_join_error"] = msg
+        _record_join_flow_outcome(session, code=code, requested_team=requested_team, ok=False, msg=msg, doc=None)
         return False
     if not requested_team:
-        st.error("Choose a team before joining.")
+        msg = "Choose a team before joining."
+        session["_draft_join_error"] = msg
+        _record_join_flow_outcome(session, code=code, requested_team=requested_team, ok=False, msg=msg, doc=None)
         return False
     try:
         from draft_room_context import join_shared_draft_room
 
-        ok, msg, _doc = join_shared_draft_room(session, code, requested_team=requested_team)
+        ok, msg, doc = join_shared_draft_room(session, code, requested_team=requested_team)
     except ImportError:
-        st.error("Join is unavailable.")
+        msg = "Join is unavailable."
+        session["_draft_join_error"] = msg
+        _record_join_flow_outcome(session, code=code, requested_team=requested_team, ok=False, msg=msg, doc=None)
         return False
+    display = _format_join_user_message(ok=ok, code=code, team=requested_team, backend_msg=msg)
+    _record_join_flow_outcome(session, code=code, requested_team=requested_team, ok=ok, msg=display, doc=doc)
     if ok:
         set_live_draft_setup_mode(session, SETUP_MODE_SHARED)
-        session["_draft_join_flash"] = msg or f"Joined room {code} as **{requested_team}**."
+        session["_draft_join_flash"] = display
         return True
-    session["_draft_join_error"] = msg or "Could not join room."
+    session["_draft_join_error"] = display
     return False
 
 

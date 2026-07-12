@@ -12,7 +12,7 @@ import pandas as pd
 from draft_room_context import join_shared_draft_room, resolve_shared_room_code
 from draft_room_create_verify import is_plausible_share_code, load_shared_room_with_diagnostics
 from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY, LIVE_DRAFT_ROOM_KEY, LocalFileSharedRoomStore
-from draft_ui import on_prepare_shared_draft_room
+from draft_ui import on_join_shared_draft_from_setup, on_prepare_shared_draft_room
 from live_draft_setup_mode import (
     SETUP_MODE_SHARED,
     SETUP_MODE_SOLO,
@@ -75,6 +75,23 @@ class PrepareSharedCallbackTests(unittest.TestCase):
         diag = session.get("_draft_room_create_diag") or {}
         self.assertGreaterEqual(int(diag.get("create_button_callback_count") or 0), 1)
         self.assertTrue(diag.get("room_create_attempted"))
+
+    def test_join_on_click_sets_pending_before_handler(self) -> None:
+        import streamlit as st
+
+        session: dict = {
+            "live_draft_join_code_input": "abc123",
+            "live_draft_join_team_pick": "Team 2",
+        }
+        with mock.patch.object(st, "session_state", session):
+            on_join_shared_draft_from_setup()
+        self.assertTrue(session.get("_join_shared_draft_from_setup"))
+        self.assertEqual(session.get("_join_requested_code"), "ABC123")
+        self.assertEqual(session.get("_join_requested_team"), "Team 2")
+        self.assertGreaterEqual(int(session.get("_join_button_callback_count") or 0), 1)
+        join_diag = session.get("_draft_room_join_diag") or {}
+        self.assertTrue(join_diag.get("join_attempted"))
+        self.assertEqual(join_diag.get("join_code"), "ABC123")
 
 
 class PreDraftSharedRoomCreateTests(unittest.TestCase):
@@ -232,12 +249,15 @@ class PreDraftSharedRoomAppTestLifecycle(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.store = LocalFileSharedRoomStore(root=Path(self._tmpdir.name))
         self._patch = mock.patch("draft_room_shared_state.get_shared_room_store", return_value=self.store)
+        self._patch_ctx = mock.patch("draft_room_context.get_shared_room_store", return_value=self.store)
         self._auth = mock.patch("draft_room_membership.shared_room_requires_auth", return_value=False)
         self._patch.start()
+        self._patch_ctx.start()
         self._auth.start()
 
     def tearDown(self) -> None:
         self._auth.stop()
+        self._patch_ctx.stop()
         self._patch.stop()
         self._tmpdir.cleanup()
 
@@ -263,6 +283,83 @@ class PreDraftSharedRoomAppTestLifecycle(unittest.TestCase):
             code = str(at.session_state["active_shared_draft_room_code"] or "").upper()
         self.assertEqual(len(code), 6, combined)
         self.assertIn(code, combined)
+
+    def _seed_host_room(self) -> tuple[str, dict]:
+        host = {"draft_room_participant_id": "daniel-user", AUTH_USER_ID_KEY: "daniel-user"}
+        set_live_draft_setup_mode(host, SETUP_MODE_SHARED)
+        room = _sample_room()
+        code, err = finalize_shared_room_create(host, room, host_team="Daniel", store=self.store)
+        self.assertFalse(err, err)
+        assert code
+        return code, host
+
+    def test_seeded_room_exposes_team_2_in_join_lookup(self) -> None:
+        code, _host = self._seed_host_room()
+        teams, err = lookup_open_teams_for_code(code, store=self.store)
+        self.assertEqual(err, "")
+        self.assertEqual(teams, ["Team 2"])
+
+    def test_guest_join_one_click_shows_success_and_same_room(self) -> None:
+        code, host = self._seed_host_room()
+        fixture = Path(__file__).resolve().parent / "fixtures" / "pre_draft_guest_join_apptest.py"
+        at = self.AppTest.from_file(str(fixture), default_timeout=120)
+        at.session_state["draft_room_participant_id"] = "coakley-user"
+        at.session_state[AUTH_USER_ID_KEY] = "coakley-user"
+        at.session_state["live_draft_join_code_input"] = code
+        at.run()
+        team_pick = at.selectbox(key="live_draft_join_team_pick")
+        self.assertIsNotNone(team_pick, "Team 2 should appear after valid code entry")
+        team_pick.set_value("Team 2").run()
+        at.button(key="live_draft_join_from_setup_btn").click().run()
+        blob = "\n".join(
+            str(m.value)
+            for group in (at.markdown, at.success, at.error)
+            for m in group
+        )
+        self.assertIn("Joined room", blob, blob)
+        self.assertIn(code, blob, blob)
+        self.assertEqual(str(at.session_state["active_shared_draft_room_code"] or "").upper(), code)
+        self.assertIn("GUEST_TEAM:Team 2", blob, blob)
+        host_room_id = (host.get(LIVE_DRAFT_ROOM_KEY) or {}).get("draft_room_id")
+        guest_room_id = (at.session_state["live_draft_room"] or {}).get("draft_room_id")
+        self.assertEqual(host_room_id, guest_room_id)
+
+    def test_guest_join_invalid_code_shows_error(self) -> None:
+        fixture = Path(__file__).resolve().parent / "fixtures" / "pre_draft_guest_join_apptest.py"
+        at = self.AppTest.from_file(str(fixture), default_timeout=120)
+        at.session_state["draft_room_participant_id"] = "coakley-user"
+        at.session_state[AUTH_USER_ID_KEY] = "coakley-user"
+        at.run()
+        at.text_input(key="live_draft_join_code_input").set_value("ZZZZZZ").run()
+        at.session_state["live_draft_join_team_pick"] = "Team 2"
+        at.button(key="live_draft_join_from_setup_btn").click().run()
+        blob = "\n".join(str(m.value) for m in at.error)
+        self.assertIn(ROOM_NOT_FOUND_MSG, blob, blob)
+
+    def test_join_handler_surfaces_already_claimed_error(self) -> None:
+        import streamlit as st
+
+        from draft_room_membership import ERR_TEAM_ALREADY_ASSIGNED
+        from live_draft_setup_ui import render_guest_join_from_setup
+
+        code, _host = self._seed_host_room()
+        session: dict = {
+            "draft_room_participant_id": "other-user",
+            AUTH_USER_ID_KEY: "other-user",
+            "_join_shared_draft_from_setup": True,
+            "_join_requested_code": code,
+            "_join_requested_team": "Team 2",
+            "live_draft_join_code_input": code,
+            "live_draft_join_team_pick": "Team 2",
+        }
+        with mock.patch(
+            "draft_room_context.join_shared_draft_room",
+            return_value=(False, ERR_TEAM_ALREADY_ASSIGNED, None),
+        ):
+            with mock.patch.object(st, "session_state", session):
+                joined = render_guest_join_from_setup(st, session)
+        self.assertFalse(joined)
+        self.assertEqual(session.get("_draft_join_error"), "That team has already been claimed.")
 
 
 if __name__ == "__main__":

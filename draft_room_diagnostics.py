@@ -313,10 +313,43 @@ def render_join_assignment_diagnostics(st: Any, session: dict[str, Any], *, deve
             )
 
 
+def init_join_flow_diagnostics(session: dict[str, Any], *, clicked: bool = False) -> dict[str, Any]:
+    """Reset/create the guest join-flow diagnostic blob."""
+    diag: dict[str, Any] = {
+        "join_button_callback_count": 0,
+        "join_attempted": bool(clicked),
+        "join_code": "",
+        "requested_team": "",
+        "room_lookup_ok": False,
+        "room_lookup_error": "",
+        "claim_attempted": bool(clicked),
+        "claim_ok": False,
+        "claim_error": "",
+        "joined_room_id": "",
+        "joined_as_team": "",
+        "participant_write_ok": False,
+        "participant_readback_ok": False,
+    }
+    session["_draft_room_join_diag"] = diag
+    return diag
+
+
+def merge_join_flow_diagnostics(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    raw = session.get("_draft_room_join_diag")
+    diag = dict(raw) if isinstance(raw, dict) else init_join_flow_diagnostics(session)
+    for key, value in fields.items():
+        if value is not None:
+            diag[key] = value
+    session["_draft_room_join_diag"] = diag
+    return diag
+
+
 def get_pre_draft_shared_room_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     """Compact Developer Mode snapshot for pre-draft shared room create/join."""
     raw = session.get("_draft_room_create_diag")
     diag = dict(raw) if isinstance(raw, dict) else {}
+    join_raw = session.get("_draft_room_join_diag")
+    join_diag = dict(join_raw) if isinstance(join_raw, dict) else {}
     code = ""
     try:
         from live_draft_setup_mode import shared_room_code
@@ -360,6 +393,19 @@ def get_pre_draft_shared_room_diagnostics(session: dict[str, Any]) -> dict[str, 
         "participant_count": int(diag.get("participant_count") or participants or 0),
         "claimed_team_count": int(diag.get("claimed_team_count") or claimed or 0),
         "distinct_owner_count": int(diag.get("distinct_owner_count") or distinct or 0),
+        "join_button_callback_count": int(join_diag.get("join_button_callback_count") or 0),
+        "join_attempted": bool(join_diag.get("join_attempted")),
+        "join_code_entered": str(join_diag.get("join_code") or ""),
+        "requested_team": str(join_diag.get("requested_team") or ""),
+        "room_lookup_ok": bool(join_diag.get("room_lookup_ok")),
+        "room_lookup_error": str(join_diag.get("room_lookup_error") or ""),
+        "claim_attempted": bool(join_diag.get("claim_attempted")),
+        "claim_ok": bool(join_diag.get("claim_ok")),
+        "claim_error": str(join_diag.get("claim_error") or ""),
+        "joined_room_id": str(join_diag.get("joined_room_id") or shared_room_id or ""),
+        "joined_as_team": str(join_diag.get("joined_as_team") or ""),
+        "participant_write_ok": bool(join_diag.get("participant_write_ok")),
+        "participant_readback_ok": bool(join_diag.get("participant_readback_ok")),
     }
 
 

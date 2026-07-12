@@ -21699,6 +21699,7 @@ if active_page == "Live Draft Room":
             try:
                 from live_draft_setup_ui import (
                     render_guest_join_from_setup,
+                    render_join_attempt_feedback,
                     render_live_draft_mode_selector,
                     render_shared_multiplayer_setup,
                     start_button_disabled,
@@ -21707,6 +21708,7 @@ if active_page == "Live Draft Room":
                 _setup_mode = render_live_draft_mode_selector(st, st.session_state)
                 if render_guest_join_from_setup(st, st.session_state):
                     st.rerun()
+                render_join_attempt_feedback(st, st.session_state)
             except ImportError:
                 _setup_mode = "solo"
             st.subheader("League & Draft Settings")
