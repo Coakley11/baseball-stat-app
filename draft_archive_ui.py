@@ -50,8 +50,12 @@ DRAFT_LAB_PAGE = "Draft Lab / Simulation"
 DRAFT_SIMULATOR_PAGE = "Draft Room Simulator"
 SHARED_CONFIRM_OPEN_KEY = "_live_draft_shared_league_confirm_open"
 SHARED_LEAGUE_CONFIRM_REQUEST_KEY = "_live_draft_shared_league_confirm_request"
+SHARED_LEAGUE_CREATE_REQUEST_KEY = "_live_draft_shared_league_create_request"
+SHARED_LEAGUE_CREATE_COMPLETED_KEY = "_live_draft_shared_league_create_completed"
+SHARED_LEAGUE_CREATE_PROCESSING_KEY = "_live_draft_shared_league_create_processing"
 SHARED_LEAGUE_DIAG_KEY = "_live_draft_shared_league_diag"
 SHARED_LEAGUE_OPEN_CALLBACK_COUNT_KEY = "_live_draft_shared_league_open_callback_count"
+SHARED_LEAGUE_CONFIRM_CALLBACK_COUNT_KEY = "_live_draft_shared_league_confirm_callback_count"
 SAVED_DRAFT_LIBRARY_RETURN_PAGE_KEY = "_saved_draft_library_return_page"
 _DELETE_CONFIRM_PREFIX = "_draft_archive_delete_confirm_"
 _RENAME_CONFIRM_PREFIX = "_draft_archive_rename_confirm_"
@@ -1870,6 +1874,370 @@ def on_open_live_draft_shared_league_confirmation(
     )
 
 
+def _shared_league_create_request_id(
+    *,
+    draft_id: str = "",
+    draft_fingerprint: str = "",
+    my_team_name: str = "",
+) -> str:
+    return "|".join(
+        [
+            str(draft_id or "").strip(),
+            str(draft_fingerprint or "").strip(),
+            str(my_team_name or "").strip(),
+        ]
+    )
+
+
+def on_confirm_live_draft_shared_league(
+    *,
+    my_team_name: str = "",
+    league_name: str = "",
+    draft_name: str = "",
+    draft_id: str = "",
+    draft_fingerprint: str = "",
+    key_prefix: str = "",
+) -> None:
+    """Stage Create Shared League confirm — must use on_click before page body."""
+    import streamlit as st
+
+    session = st.session_state
+    callback_count = int(session.get(SHARED_LEAGUE_CONFIRM_CALLBACK_COUNT_KEY) or 0) + 1
+    session[SHARED_LEAGUE_CONFIRM_CALLBACK_COUNT_KEY] = callback_count
+    request_id = _shared_league_create_request_id(
+        draft_id=draft_id,
+        draft_fingerprint=draft_fingerprint,
+        my_team_name=my_team_name,
+    )
+    session[SHARED_LEAGUE_CREATE_REQUEST_KEY] = {
+        "request_id": request_id,
+        "my_team_name": str(my_team_name or "").strip(),
+        "league_name": str(league_name or "").strip(),
+        "draft_name": str(draft_name or "").strip(),
+        "draft_id": str(draft_id or "").strip(),
+        "draft_fingerprint": str(draft_fingerprint or "").strip(),
+        "key_prefix": str(key_prefix or ""),
+        "status": "pending",
+    }
+    _merge_shared_league_diag(
+        session,
+        confirm_button_callback_count=callback_count,
+        confirm_requested_team=str(my_team_name or "").strip(),
+        confirm_selectbox_return_value=str(my_team_name or "").strip(),
+        confirm_requested_draft_id=str(draft_id or "").strip(),
+        confirm_requested_fingerprint=str(draft_fingerprint or "").strip(),
+        create_request_id=request_id,
+        create_request_status="pending",
+    )
+
+
+def _find_existing_live_draft_shared_league(
+    session: dict[str, Any],
+    *,
+    request_id: str,
+    draft_id: str,
+    draft_fingerprint: str,
+) -> dict[str, Any] | None:
+    completed = session.get(SHARED_LEAGUE_CREATE_COMPLETED_KEY)
+    if isinstance(completed, dict):
+        hit = completed.get(request_id)
+        if isinstance(hit, dict) and hit.get("context_id"):
+            return hit
+
+    draft_id = str(draft_id or "").strip()
+    if not draft_id:
+        return None
+    try:
+        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, list_league_contexts
+        from live_draft_shared_league import CREATED_FROM_LIVE_DRAFT
+    except ImportError:
+        return None
+
+    for ctx in list_league_contexts(session):
+        if str(ctx.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+            continue
+        meta = dict(ctx.get("metadata") or {})
+        if str(meta.get("created_from") or "") != CREATED_FROM_LIVE_DRAFT:
+            continue
+        if str(meta.get("source_draft_id") or "").strip() != draft_id:
+            continue
+        fp = str(meta.get("draft_fingerprint") or ctx.get("draft_fingerprint") or "").strip()
+        if draft_fingerprint and fp and fp != draft_fingerprint:
+            continue
+        context_id = str(ctx.get("league_context_id") or "").strip()
+        canonical_id = str(ctx.get("league_id") or meta.get("league_id") or "").strip()
+        if not context_id:
+            continue
+        return {
+            "request_id": request_id,
+            "draft_id": draft_id,
+            "context_id": context_id,
+            "canonical_league_id": canonical_id,
+            "context": ctx,
+        }
+    return None
+
+
+def _process_live_draft_shared_league_create_request(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+) -> None:
+    """Process staged Create Shared League confirm before idle confirmation UI."""
+    raw = session.get(SHARED_LEAGUE_CREATE_REQUEST_KEY)
+    if not isinstance(raw, dict):
+        return
+    if str(raw.get("status") or "") != "pending":
+        return
+    if session.get(SHARED_LEAGUE_CREATE_PROCESSING_KEY):
+        return
+
+    request_id = str(raw.get("request_id") or "").strip()
+    my_team = str(raw.get("my_team_name") or "").strip()
+    league_name = str(raw.get("league_name") or "").strip()
+    draft_name = str(raw.get("draft_name") or "").strip()
+    req_draft_id = str(raw.get("draft_id") or "").strip()
+    req_fingerprint = str(raw.get("draft_fingerprint") or "").strip()
+
+    session[SHARED_LEAGUE_CREATE_PROCESSING_KEY] = True
+    save_call_count = int((session.get(SHARED_LEAGUE_DIAG_KEY) or {}).get("save_call_count") or 0)
+    _merge_shared_league_diag(
+        session,
+        create_processor_entered=True,
+        create_request_id=request_id,
+        create_request_status="processing",
+        save_call_count=save_call_count,
+    )
+
+    try:
+        from live_draft_shared_league import preview_shared_league_creation, save_live_draft_shared_league_context
+    except ImportError as exc:
+        session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
+        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
+        err = f"ImportError: {exc}"
+        session["_live_draft_shared_league_flash"] = {
+            "level": "error",
+            "message": f"Could not create shared league: {err}",
+        }
+        st.error(f"Could not create shared league: {err}")
+        _merge_shared_league_diag(session, create_error=err, create_request_status="failed")
+        return
+
+    identity = _resolve_live_draft_shared_league_identity(room)
+    identity_errors: list[str] = []
+    cur_id = str(identity.get("draft_id") or "").strip()
+    cur_fp = str(identity.get("draft_fingerprint") or "").strip()
+    if req_draft_id and cur_id and req_draft_id != cur_id:
+        identity_errors.append(f"Draft ID mismatch: requested `{req_draft_id}`, current `{cur_id}`.")
+    if req_fingerprint and cur_fp and req_fingerprint != cur_fp:
+        identity_errors.append(f"Draft fingerprint mismatch: requested `{req_fingerprint}`, current `{cur_fp}`.")
+    if str(identity.get("room_status") or "") != "complete":
+        identity_errors.append(
+            f"Completed room unavailable: status is `{identity.get('room_status') or 'unknown'}`."
+        )
+    if not identity.get("final_board_locked"):
+        identity_errors.append("Final board is not locked for this completed draft.")
+
+    teams = [str(t).strip() for t in (room.get("teams") or []) if str(t).strip()]
+    if my_team not in teams:
+        identity_errors.append(f"Team {my_team!r} is not part of this draft.")
+
+    identity_ok = not identity_errors
+    _merge_shared_league_diag(session, identity_validation_ok=identity_ok)
+    if identity_errors:
+        session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
+        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
+        err = "; ".join(identity_errors)
+        session["_live_draft_shared_league_flash"] = {
+            "level": "error",
+            "message": f"Could not create shared league: {err}",
+        }
+        st.error(f"Could not create shared league: {err}")
+        _merge_shared_league_diag(
+            session,
+            preview_validation_ok=False,
+            create_error=err,
+            create_request_status="failed",
+        )
+        return
+
+    st.info("Creating shared league…")
+    preview: dict[str, Any] = {}
+    try:
+        preview = preview_shared_league_creation(
+            room,
+            my_team_name=my_team,
+            league_name=league_name,
+        )
+    except Exception as exc:
+        session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
+        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
+        err = f"{type(exc).__name__}: {exc}"
+        session["_live_draft_shared_league_flash"] = {
+            "level": "error",
+            "message": f"Could not create shared league: {err}",
+        }
+        st.error(f"Could not create shared league: {err}")
+        _merge_shared_league_diag(
+            session,
+            preview_validation_ok=False,
+            create_error=err,
+            create_request_status="failed",
+        )
+        return
+
+    validation_errors = [str(e) for e in (preview.get("validation_errors") or []) if str(e).strip()]
+    preview_ok = not validation_errors and bool(preview.get("ready"))
+    _merge_shared_league_diag(session, preview_validation_ok=preview_ok)
+    if not preview_ok:
+        session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
+        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
+        err = "; ".join(validation_errors) if validation_errors else "Shared league preview is not ready."
+        session["_live_draft_shared_league_flash"] = {
+            "level": "error",
+            "message": f"Could not create shared league: {err}",
+        }
+        st.error(f"Could not create shared league: {err}")
+        _merge_shared_league_diag(
+            session,
+            create_error=err,
+            create_request_status="failed",
+        )
+        return
+
+    existing = _find_existing_live_draft_shared_league(
+        session,
+        request_id=request_id,
+        draft_id=req_draft_id or cur_id,
+        draft_fingerprint=req_fingerprint or cur_fp,
+    )
+    if existing:
+        context_id = str(existing.get("context_id") or "").strip()
+        canonical_id = str(existing.get("canonical_league_id") or "").strip()
+        try:
+            from fantasy_league_context import activate_league_context
+
+            _merge_shared_league_diag(session, activation_attempted=True)
+            activate_league_context(session, context_id)
+            _merge_shared_league_diag(session, activation_ok=True)
+        except ImportError:
+            _merge_shared_league_diag(session, activation_attempted=False, activation_ok=False)
+        session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
+        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
+        session.pop(SHARED_CONFIRM_OPEN_KEY, None)
+        session.pop(SHARED_LEAGUE_CONFIRM_REQUEST_KEY, None)
+        counts = preview.get("roster_count_by_team") or {}
+        count_text = ", ".join(f"{team} {n}" for team, n in sorted(counts.items()))
+        already_msg = (
+            f"This completed draft has already been converted to shared league `{canonical_id or context_id}`. "
+            f"Active team: {my_team}. Roster counts: {count_text}."
+        )
+        session["_live_draft_shared_league_flash"] = {
+            "level": "info",
+            "message": already_msg,
+        }
+        st.info(already_msg)
+        _merge_shared_league_diag(
+            session,
+            create_request_status="already_exists",
+            created_draft_id=str(existing.get("draft_id") or req_draft_id or cur_id),
+            created_context_id=context_id,
+            created_canonical_league_id=canonical_id,
+            confirmation_closed_after_success=True,
+            save_call_count=save_call_count,
+        )
+        return
+
+    _merge_shared_league_diag(session, save_call_started=True)
+    try:
+        entry, context = save_live_draft_shared_league_context(
+            session,
+            room,
+            my_team_name=my_team,
+            league_name=str(league_name or preview.get("league_name") or "").strip(),
+            draft_name=draft_name,
+            defer_activation=False,
+            assign_team=True,
+        )
+        save_call_count += 1
+        _merge_shared_league_diag(
+            session,
+            save_call_completed=True,
+            save_call_count=save_call_count,
+            shared_push_attempted=True,
+            shared_push_ok=True,
+            activation_attempted=True,
+            activation_ok=True,
+        )
+    except Exception as exc:
+        session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
+        session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
+        err = f"{type(exc).__name__}: {exc}"
+        session["_live_draft_shared_league_flash"] = {
+            "level": "error",
+            "message": f"Could not create shared league: {err}",
+        }
+        st.error(f"Could not create shared league: {err}")
+        _merge_shared_league_diag(
+            session,
+            save_call_completed=False,
+            save_call_count=save_call_count,
+            create_error=err,
+            create_request_status="failed",
+        )
+        return
+
+    draft_id = str(entry.get("draft_id") or context.get("source_draft_id") or req_draft_id or cur_id).strip()
+    context_id = str(context.get("league_context_id") or entry.get("league_context_id") or "").strip()
+    canonical_id = str(
+        entry.get("canonical_league_id")
+        or context.get("league_id")
+        or (context.get("metadata") or {}).get("league_id")
+        or ""
+    ).strip()
+    completed = dict(session.get(SHARED_LEAGUE_CREATE_COMPLETED_KEY) or {})
+    completed[request_id] = {
+        "request_id": request_id,
+        "draft_id": draft_id,
+        "context_id": context_id,
+        "canonical_league_id": canonical_id,
+        "my_team_name": my_team,
+    }
+    session[SHARED_LEAGUE_CREATE_COMPLETED_KEY] = completed
+    session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
+    session.pop(SHARED_LEAGUE_CREATE_PROCESSING_KEY, None)
+    session.pop(SHARED_CONFIRM_OPEN_KEY, None)
+    session.pop(SHARED_LEAGUE_CONFIRM_REQUEST_KEY, None)
+
+    counts = preview.get("roster_count_by_team") or {}
+    count_text = ", ".join(f"{team} {n}" for team, n in sorted(counts.items()))
+    league_label = str(league_name or preview.get("league_name") or entry.get("draft_name") or "").strip()
+    success_msg = (
+        f"Shared league created successfully. "
+        f"League name: {league_label}. "
+        f"Canonical league ID: {canonical_id or '—'}. "
+        f"Saved draft ID: {draft_id or '—'}. "
+        f"League context ID: {context_id or '—'}. "
+        f"Active team: {my_team}. "
+        f"Roster counts: {count_text}."
+    )
+    session["_live_draft_shared_league_flash"] = {
+        "level": "success",
+        "message": success_msg,
+    }
+    st.success(success_msg)
+    _merge_shared_league_diag(
+        session,
+        create_request_status="completed",
+        created_draft_id=draft_id,
+        created_context_id=context_id,
+        created_canonical_league_id=canonical_id,
+        confirmation_closed_after_success=True,
+        save_call_count=save_call_count,
+        create_error="",
+    )
+
+
 def _on_live_draft_save_click(
     team_name: str = "",
     key_prefix: str = "live_draft_complete",
@@ -2029,6 +2397,8 @@ def render_live_draft_completion_panel(
                 if roster_rows:
                     st.markdown(f"**{team}** — {len(roster_rows)} players")
 
+    _process_live_draft_shared_league_create_request(st, session, room)
+
     if session.get(SHARED_CONFIRM_OPEN_KEY):
         _render_live_draft_shared_league_confirmation(
             st,
@@ -2039,6 +2409,7 @@ def render_live_draft_completion_panel(
             draft_name=draft_name,
             key_prefix=key_prefix,
         )
+        _process_live_draft_shared_league_create_request(st, session, room)
 
     if export_clicked:
         session[f"{key_prefix}_export_open"] = True
@@ -2124,7 +2495,7 @@ def _render_live_draft_shared_league_confirmation(
             return
 
     try:
-        from live_draft_shared_league import preview_shared_league_creation, save_live_draft_shared_league_context
+        from live_draft_shared_league import preview_shared_league_creation
     except ImportError:
         st.error("Shared league module unavailable.")
         return
@@ -2234,13 +2605,29 @@ def _render_live_draft_shared_league_confirmation(
             index=max(0, list(preview.get("teams") or [save_team]).index(save_team) if save_team in (preview.get("teams") or []) else 0),
             key=f"{key_prefix}_shared_my_team",
         )
+        _merge_shared_league_diag(
+            session,
+            confirm_button_rendered=True,
+            confirm_selectbox_return_value=str(my_team or "").strip(),
+        )
         confirm_col, cancel_col = st.columns(2)
         with confirm_col:
-            confirm_clicked = st.button(
+            st.button(
                 "Confirm Create Shared League",
                 key=f"{key_prefix}_confirm_shared_league",
                 type="primary",
                 use_container_width=True,
+                on_click=on_confirm_live_draft_shared_league,
+                kwargs={
+                    "my_team_name": my_team,
+                    "league_name": str(league_name or preview.get("league_name") or "").strip(),
+                    "draft_name": str(draft_name or "").strip(),
+                    "draft_id": str(identity.get("draft_id") or preview.get("draft_id") or "").strip(),
+                    "draft_fingerprint": str(
+                        identity.get("draft_fingerprint") or preview.get("draft_fingerprint") or ""
+                    ).strip(),
+                    "key_prefix": key_prefix,
+                },
             )
         with cancel_col:
             cancel_clicked = st.button(
@@ -2251,41 +2638,8 @@ def _render_live_draft_shared_league_confirmation(
         if cancel_clicked:
             session.pop(SHARED_CONFIRM_OPEN_KEY, None)
             session.pop(SHARED_LEAGUE_CONFIRM_REQUEST_KEY, None)
+            session.pop(SHARED_LEAGUE_CREATE_REQUEST_KEY, None)
             st.rerun()
-        if confirm_clicked:
-            _merge_shared_league_diag(session, claim_attempted=True)
-            try:
-                entry, context = save_live_draft_shared_league_context(
-                    session,
-                    room,
-                    my_team_name=my_team,
-                    league_name=str(league_name or preview.get("league_name") or "").strip(),
-                    draft_name=str(draft_name or "").strip(),
-                    defer_activation=False,
-                    assign_team=True,
-                )
-                session["_live_draft_shared_league_flash"] = {
-                    "level": "success",
-                    "message": (
-                        f"Shared league created: {entry.get('draft_name') or league_name}. "
-                        f"Canonical ID: {entry.get('canonical_league_id') or context.get('league_id') or '—'}."
-                    ),
-                }
-                session.pop(SHARED_CONFIRM_OPEN_KEY, None)
-                session.pop(SHARED_LEAGUE_CONFIRM_REQUEST_KEY, None)
-                _merge_shared_league_diag(session, claim_ok=True, claim_error="")
-                st.rerun()
-            except Exception as exc:
-                session["_live_draft_shared_league_flash"] = {
-                    "level": "error",
-                    "message": f"Could not create shared league: {exc}",
-                }
-                _merge_shared_league_diag(
-                    session,
-                    claim_ok=False,
-                    claim_error=f"{type(exc).__name__}: {exc}",
-                )
-                st.rerun()
 
 
 def render_save_live_draft_team(

@@ -10,7 +10,13 @@ from draft_archive_ui import render_live_draft_completion_panel
 from live_draft_completion import apply_live_draft_completion
 
 
-room = st.session_state.get("live_draft_test_room")
+if st.session_state.get("live_draft_use_robins_fixture"):
+    from tests.test_live_draft_team_identity import _live_robins_fantasy_room
+
+    room = _live_robins_fantasy_room()
+else:
+    room = st.session_state.get("live_draft_test_room")
+
 if not isinstance(room, dict):
     st.error("Missing test room")
     st.stop()
@@ -30,7 +36,19 @@ if st.session_state.get("_live_draft_shared_league_confirm_open"):
 diag = st.session_state.get("_live_draft_shared_league_diag") or {}
 if isinstance(diag, dict):
     st.markdown(f"SHARED_LEAGUE_DIAG_CALLBACK:{diag.get('shared_button_callback_count')}")
+    st.markdown(f"SHARED_LEAGUE_CONFIRM_CALLBACK:{diag.get('confirm_button_callback_count')}")
     if diag.get("confirmation_render_entered"):
         st.markdown("SHARED_LEAGUE_CONFIRM_RENDERED:yes")
     if diag.get("preview_call_completed"):
         st.markdown("SHARED_LEAGUE_PREVIEW_OK:yes")
+    if diag.get("create_processor_entered"):
+        st.markdown("SHARED_LEAGUE_CREATE_PROCESSOR:yes")
+    if diag.get("save_call_count") is not None:
+        st.markdown(f"SHARED_LEAGUE_SAVE_CALL_COUNT:{diag.get('save_call_count')}")
+    if diag.get("confirmation_closed_after_success"):
+        st.markdown("SHARED_LEAGUE_CONFIRM_CLOSED:yes")
+
+create_req = st.session_state.get("_live_draft_shared_league_create_request")
+if isinstance(create_req, dict):
+    st.markdown(f"SHARED_LEAGUE_CREATE_REQUEST:{create_req.get('status')}")
+    st.markdown(f"SHARED_LEAGUE_CREATE_TEAM:{create_req.get('my_team_name')}")
