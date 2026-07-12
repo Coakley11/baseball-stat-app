@@ -51,7 +51,7 @@ def ensure_lineup_page_hitter_stats(
     else:
         season = int(session.get("standings_api_season") or datetime.now().year)
         try:
-            from streamlit_app import fetch_mlb_api_hitter_stats
+            from mlb_hitter_stats import fetch_mlb_api_hitter_stats
 
             fetched = fetch_mlb_api_hitter_stats(season)
             if isinstance(fetched, pd.DataFrame) and not fetched.empty:
@@ -94,7 +94,7 @@ def ensure_lineup_page_hitter_stats(
         if has_full_league_rosters(context):
             norm = normalize_name_fn
             if norm is None:
-                from streamlit_app import normalize_player_name_for_merge
+                from player_name_normalization import normalize_player_name_for_merge
 
                 norm = normalize_player_name_for_merge
             built = build_roster_stats_from_league_context(

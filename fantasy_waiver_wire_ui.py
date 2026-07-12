@@ -255,7 +255,7 @@ def _on_planner_pick_changed(*_args, **_kwargs) -> None:
 
 def _resolve_normalize_name_fn():
     try:
-        from streamlit_app import normalize_player_name_for_merge
+        from player_name_normalization import normalize_player_name_for_merge
 
         return normalize_player_name_for_merge
     except ImportError:
