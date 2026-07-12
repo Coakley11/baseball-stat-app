@@ -160,6 +160,7 @@ _WORKFLOW_KEYS = (
     "_last_trade_proposal_submit_ok",
     "_last_trade_response_submit_error",
     "_last_trade_response_submit_ok",
+    "trade_offer_inbox_dismissals",
 )
 
 _DEVICE_ID_FILE = DATA_DIR / f"{APP_ID}_device_id.txt"

@@ -34,7 +34,7 @@ TRADE_PROPOSAL_STATUS_COUNTERED = "countered"
 TRADE_PROPOSAL_STATUS_EXPIRED = "expired"
 TRADE_PROPOSAL_STATUS_STALE = "stale"
 TRADE_HANDOFF_SESSION_KEY = "_fantasy_trade_proposal_handoff"
-ARCHIVED_OFFERS_SESSION_PREFIX = "archived_trade_offers|"
+TRADE_OFFER_INBOX_DISMISSALS_KEY = "trade_offer_inbox_dismissals"
 LINEUP_ASSISTANT_PAGE = "Fantasy Lineup Assistant"
 TRADE_PHASE1_SIMPLE = False
 STALE_TRADE_MESSAGE = (
@@ -1271,27 +1271,142 @@ def navigate_to_trade_proposal(
 
 
 def archived_offer_ids(session: dict[str, Any], league_id: str) -> set[str]:
-    key = f"{ARCHIVED_OFFERS_SESSION_PREFIX}{str(league_id or '').strip()}"
-    raw = session.get(key) or []
-    if not isinstance(raw, list):
+    """Return proposal IDs cleared from this user's active Offers inbox."""
+    scope = _resolve_offer_dismissal_scope(session, league_id=league_id)
+    if not scope.get("league_id"):
         return set()
-    return {str(x).strip() for x in raw if str(x).strip()}
+    store = _ensure_offer_dismissal_store(session)
+    records = store.get("records") if isinstance(store.get("records"), dict) else {}
+    out: set[str] = set()
+    for rec in records.values():
+        if not isinstance(rec, dict):
+            continue
+        if not _offer_dismissal_record_matches_scope(rec, scope):
+            continue
+        pid = str(rec.get("proposal_id") or "").strip()
+        if pid:
+            out.add(pid)
+    return out
 
 
 def archive_offer_from_inbox(session: dict[str, Any], proposal_id: str, *, league_id: str) -> None:
+    """Persistently hide a completed offer from this account's Offers inbox."""
     pid = str(proposal_id or "").strip()
-    lid = str(league_id or "").strip()
+    scope = _resolve_offer_dismissal_scope(session, league_id=league_id)
+    lid = str(scope.get("league_id") or "").strip()
     if not pid or not lid:
         return
-    key = f"{ARCHIVED_OFFERS_SESSION_PREFIX}{lid}"
-    current = list(archived_offer_ids(session, lid))
-    if pid not in current:
-        current.append(pid)
-    session[key] = current
+    store = _ensure_offer_dismissal_store(session)
+    records = store.setdefault("records", {})
+    if not isinstance(records, dict):
+        records = {}
+        store["records"] = records
+    key = _offer_dismissal_record_key(scope, pid)
+    records[key] = {
+        "user_id": scope.get("user_id") or "",
+        "workspace_id": scope.get("workspace_id") or "",
+        "league_id": lid,
+        "proposal_id": pid,
+        "dismissed_at": _utc_now_iso(),
+    }
+    session[TRADE_OFFER_INBOX_DISMISSALS_KEY] = store
+    _persist_trade_inbox_dismissals(session)
 
 
 def is_offer_archived(session: dict[str, Any], proposal_id: str, *, league_id: str) -> bool:
     return str(proposal_id or "").strip() in archived_offer_ids(session, league_id)
+
+
+def _session_state_stub(session: dict[str, Any]) -> Any:
+    return type("_SessionStateStub", (), {"session_state": session})()
+
+
+def _resolve_offer_dismissal_scope(session: dict[str, Any], *, league_id: str = "") -> dict[str, str]:
+    user_id = str(
+        session.get("_suite_auth_user_id")
+        or session.get("_suite_cloud_user_id")
+        or ""
+    ).strip()
+    if not user_id:
+        try:
+            from fantasy_league_team_ownership import _resolve_user_id
+
+            user_id = str(_resolve_user_id() or "").strip()
+        except ImportError:
+            pass
+    workspace_id = ""
+    try:
+        from suite_workspace import get_active_workspace_id
+
+        workspace_id = str(get_active_workspace_id(_session_state_stub(session)) or "").strip()
+    except ImportError:
+        workspace_id = str(
+            session.get("_suite_owned_workspace_id")
+            or session.get("_suite_active_workspace_id")
+            or ""
+        ).strip()
+    lid = str(league_id or "").strip()
+    if not lid:
+        try:
+            from fantasy_league_identity import resolve_canonical_league_id
+
+            context = get_active_league_context(session)
+            lid = str(resolve_canonical_league_id(context) or "").strip()
+        except ImportError:
+            pass
+    return {
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+        "league_id": lid,
+    }
+
+
+def _offer_dismissal_record_key(scope: dict[str, str], proposal_id: str) -> str:
+    return "|".join(
+        [
+            str(scope.get("user_id") or "").strip(),
+            str(scope.get("workspace_id") or "").strip(),
+            str(scope.get("league_id") or "").strip(),
+            str(proposal_id or "").strip(),
+        ]
+    )
+
+
+def _offer_dismissal_record_matches_scope(record: dict[str, Any], scope: dict[str, str]) -> bool:
+    if str(record.get("league_id") or "").strip() != str(scope.get("league_id") or "").strip():
+        return False
+    rec_user = str(record.get("user_id") or "").strip()
+    rec_ws = str(record.get("workspace_id") or "").strip()
+    scope_user = str(scope.get("user_id") or "").strip()
+    scope_ws = str(scope.get("workspace_id") or "").strip()
+    if scope_user and rec_user and rec_user != scope_user:
+        return False
+    if scope_ws and rec_ws and rec_ws != scope_ws:
+        return False
+    return True
+
+
+def _ensure_offer_dismissal_store(session: dict[str, Any]) -> dict[str, Any]:
+    raw = session.get(TRADE_OFFER_INBOX_DISMISSALS_KEY)
+    if isinstance(raw, dict):
+        store = dict(raw)
+    else:
+        store = {"records": {}}
+    records = store.get("records")
+    if not isinstance(records, dict):
+        store["records"] = {}
+    return store
+
+
+def _persist_trade_inbox_dismissals(session: dict[str, Any]) -> None:
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+    except ImportError:
+        return
+    try:
+        force_save_baseball_state(_session_state_stub(session), reason="trade_offer_inbox_dismissal")
+    except Exception:
+        pass
 
 
 def consume_trade_proposal_handoff(session: dict[str, Any]) -> dict[str, Any] | None:
