@@ -29,6 +29,7 @@ from fantasy_league_context import (
     archive_card_team_count,
     clear_active_league_context,
     get_active_league_context,
+    get_league_context,
     get_league_context_for_archive,
     league_context_coverage_badge,
     league_context_type_badge,
@@ -46,6 +47,7 @@ SAVED_DRAFT_LIBRARY_PAGE = "Saved Draft Library"
 FANTASY_STANDINGS_PAGE = "Fantasy Standings Tracker"
 FANTASY_LINEUP_PAGE = "Fantasy Lineup Assistant"
 FANTASY_WAIVER_PAGE = "Waiver Wire / Add-Drop Center"
+TRADE_CENTER_PAGE = "Trade Center"
 LIVE_DRAFT_PAGE = "Live Draft Room"
 DRAFT_LAB_PAGE = "Draft Lab / Simulation"
 DRAFT_SIMULATOR_PAGE = "Draft Room Simulator"
@@ -69,6 +71,7 @@ _PAGE_ICONS: dict[str, str] = {
     FANTASY_STANDINGS_PAGE: "📊",
     FANTASY_LINEUP_PAGE: "🧠",
     FANTASY_WAIVER_PAGE: "🔄",
+    TRADE_CENTER_PAGE: "🔁",
     LIVE_DRAFT_PAGE: "📡",
     DRAFT_LAB_PAGE: "🧪",
     DRAFT_SIMULATOR_PAGE: "🧾",
@@ -735,7 +738,34 @@ def _page_icon(page_key: str, page_label_fn=None) -> str:
 
 def _nav_label(page_key: str, text: str, page_label_fn=None) -> str:
     icon = _page_icon(page_key, page_label_fn)
-    return f"{icon} {text}".strip()
+    return f"{icon} {text}".strip() if icon else text
+
+
+def _saved_archive_is_active(
+    session: dict[str, Any],
+    *,
+    draft_id: str,
+    context_id: str = "",
+) -> bool:
+    draft_id = str(draft_id or "").strip()
+    context_id = str(context_id or "").strip()
+    active = get_active_draft_archive(session)
+    if not active or str(active.get("draft_id") or "").strip() != draft_id:
+        return False
+    if not context_id:
+        return True
+    active_context = get_active_league_context(session, respect_source_priority=False) or {}
+    active_context_id = str(active_context.get("league_context_id") or "").strip()
+    return not active_context_id or active_context_id == context_id
+
+
+def _archive_card_is_real_league(entry: dict[str, Any], context: dict[str, Any] | None) -> bool:
+    try:
+        from fantasy_context_terminology import is_league_context
+
+        return bool(is_league_context(context, entry))
+    except ImportError:
+        return str((context or {}).get("context_type") or "") == "real_league"
 
 
 def _fantasy_nav_button_label(page_key: str, page_label_fn=None) -> str:
@@ -1132,13 +1162,6 @@ def _on_click_open_saved_draft_library_focus(
 
     session = st.session_state
     did = str(draft_id or "").strip()
-    if did:
-        try:
-            from draft_archive_state import set_active_draft_archive
-
-            set_active_draft_archive(session, did)
-        except ImportError:
-            pass
     _record_library_nav_diag(
         session,
         button=button or "open_saved_draft_library_focus",
@@ -1376,7 +1399,12 @@ def _clear_fantasy_caches_on_archive_change(session: dict[str, Any]) -> None:
 
 def _draft_type_badge_html(entry: dict[str, Any]) -> str:
     label = draft_type_display(entry)
-    css = "ld-archive-badge-live" if label == "Live Draft" else "ld-archive-badge-sim"
+    if label == "Live Draft":
+        css = "ld-archive-badge-live"
+    elif label == "Imported League":
+        css = "ld-archive-badge-imported"
+    else:
+        css = "ld-archive-badge-sim"
     return f'<span class="ld-archive-badge {css}">{label}</span>'
 
 
@@ -2181,13 +2209,12 @@ def _persist_shared_league_library_entry(
     except ImportError:
         pass
     entry = get_draft_archive(session, draft_id) or entry
-    if draft_id:
-        try:
-            from draft_archive_state import set_active_draft_archive
+    try:
+        from fantasy_league_context import repair_archive_draft_type_for_entry
 
-            set_active_draft_archive(session, draft_id)
-        except ImportError:
-            session["active_draft_archive_id"] = draft_id
+        entry = repair_archive_draft_type_for_entry(session, entry, context=context)
+    except ImportError:
+        pass
     _clear_fantasy_caches_on_archive_change(session)
     persist_ok = _persist_archive(session, st, reason="live_draft_league_context_saved", entry=entry)
     readback = dict(session.get("_suite_last_draft_save_readback") or {})
@@ -2317,10 +2344,7 @@ def _verify_shared_league_persistence(
     active_id = str(active.get("league_context_id") or "").strip()
     readback["active_context_id"] = active_id
     readback["active_context_matches"] = bool(context_id and active_id == context_id)
-    if context_id and active_id != context_id:
-        errors.append(
-            f"Active league context is {active_id or 'unset'}, expected {context_id}."
-        )
+    readback["active_context_required"] = False
 
     canonical_id = str(
         (context or {}).get("league_id")
@@ -2523,19 +2547,58 @@ def on_confirm_live_draft_shared_league(
     )
 
 
-def _on_click_open_trade_center(
+def _on_click_set_active_league(
     draft_id: str = "",
+    context_id: str = "",
+    league_label: str = "",
     button_key: str = "",
 ) -> None:
     import streamlit as st
 
     session = st.session_state
-    session["_lineup_focus_trade_center"] = True
-    _on_click_fantasy_nav(
-        target_page=FANTASY_LINEUP_PAGE,
-        draft_id=str(draft_id or ""),
-        button_key=str(button_key or ""),
+    did = str(draft_id or "").strip()
+    if not did:
+        return
+    loaded_entry, loaded_context = activate_archive_league_context(
+        session,
+        did,
+        defer_activation=False,
     )
+    if not loaded_entry:
+        return
+    _clear_fantasy_caches_on_archive_change(session)
+    _persist_archive(session, st, reason="league_context_activated", entry=loaded_entry)
+    label = str(
+        league_label
+        or (loaded_context or {}).get("display_name")
+        or loaded_entry.get("draft_name")
+        or "League"
+    ).strip()
+    session["_league_context_activation_toast"] = f"✅ {label} is now your Active League."
+    session["_live_draft_shared_league_flash"] = {
+        "level": "success",
+        "message": f"✅ {label} is now your Active League.",
+    }
+
+
+def _on_click_fantasy_nav(
+    target_page: str = "",
+    draft_id: str = "",
+    context_id: str = "",
+    button_key: str = "",
+) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    did = str(draft_id or "").strip()
+    if did and not _saved_archive_is_active(session, draft_id=did, context_id=str(context_id or "")):
+        label = str(session.get("_shared_league_pending_nav_league_label") or "This league").strip()
+        session["_live_draft_shared_league_flash"] = {
+            "level": "warning",
+            "message": f"Set {label} as your Active League to use this page.",
+        }
+        return
+    schedule_fantasy_analysis_navigation(session, str(target_page or FANTASY_LINEUP_PAGE).strip())
 
 
 def _render_shared_league_success_navigation(
@@ -2543,17 +2606,39 @@ def _render_shared_league_success_navigation(
     session: dict[str, Any],
     *,
     draft_id: str,
+    context_id: str = "",
+    league_label: str = "",
     key_prefix: str = "live_draft_complete",
 ) -> None:
     draft_id = str(draft_id or "").strip()
+    context_id = str(context_id or "").strip()
+    league_label = str(league_label or "").strip()
     if not draft_id:
         return
-    nav1, nav2, nav3 = st.columns(3)
+    session["_shared_league_pending_nav_league_label"] = league_label or "Robins Fantasy"
+    is_active = _saved_archive_is_active(session, draft_id=draft_id, context_id=context_id)
+    if is_active:
+        st.success(f"✅ {league_label or 'This league'} is your Active League.")
+    else:
+        st.button(
+            "⭐ Set Active League",
+            key=f"{key_prefix}_set_active_league_{draft_id[:8]}",
+            type="primary",
+            use_container_width=True,
+            on_click=_on_click_set_active_league,
+            kwargs={
+                "draft_id": draft_id,
+                "context_id": context_id,
+                "league_label": league_label,
+                "button_key": f"{key_prefix}_set_active_league_{draft_id[:8]}",
+            },
+        )
+
+    nav1, nav2 = st.columns(2)
     with nav1:
         st.button(
-            "Open Saved Draft Library",
+            _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "Open Saved Draft Library"),
             key=f"{key_prefix}_open_library_{draft_id[:8]}",
-            type="primary",
             use_container_width=True,
             on_click=_on_click_open_saved_draft_library_focus,
             kwargs={
@@ -2565,46 +2650,82 @@ def _render_shared_league_success_navigation(
         )
     with nav2:
         st.button(
-            "Open Lineup",
+            _nav_label(FANTASY_STANDINGS_PAGE, "Open Fantasy Standings"),
+            key=f"{key_prefix}_open_standings_{draft_id[:8]}",
+            use_container_width=True,
+            disabled=not is_active,
+            on_click=_on_click_fantasy_nav,
+            kwargs={
+                "target_page": FANTASY_STANDINGS_PAGE,
+                "draft_id": draft_id,
+                "context_id": context_id,
+                "button_key": f"{key_prefix}_open_standings_{draft_id[:8]}",
+            },
+        )
+    nav3, nav4, nav5 = st.columns(3)
+    with nav3:
+        st.button(
+            _nav_label(FANTASY_LINEUP_PAGE, "Open Lineup Assistant"),
             key=f"{key_prefix}_open_lineup_{draft_id[:8]}",
             use_container_width=True,
+            disabled=not is_active,
             on_click=_on_click_fantasy_nav,
             kwargs={
                 "target_page": FANTASY_LINEUP_PAGE,
                 "draft_id": draft_id,
+                "context_id": context_id,
                 "button_key": f"{key_prefix}_open_lineup_{draft_id[:8]}",
             },
         )
-    with nav3:
+    with nav4:
         st.button(
-            "Open Trade Center",
+            _nav_label(TRADE_CENTER_PAGE, "Open Trade Center"),
             key=f"{key_prefix}_open_trade_{draft_id[:8]}",
             use_container_width=True,
+            disabled=not is_active,
             on_click=_on_click_open_trade_center,
             kwargs={
                 "draft_id": draft_id,
+                "context_id": context_id,
                 "button_key": f"{key_prefix}_open_trade_{draft_id[:8]}",
             },
         )
+    with nav5:
+        st.button(
+            _nav_label(FANTASY_WAIVER_PAGE, "Open Waiver Wire"),
+            key=f"{key_prefix}_open_waiver_{draft_id[:8]}",
+            use_container_width=True,
+            disabled=not is_active,
+            on_click=_on_click_fantasy_nav,
+            kwargs={
+                "target_page": FANTASY_WAIVER_PAGE,
+                "draft_id": draft_id,
+                "context_id": context_id,
+                "button_key": f"{key_prefix}_open_waiver_{draft_id[:8]}",
+            },
+        )
+    if not is_active:
+        st.caption(f"Set {league_label or 'this league'} as your Active League to use Lineup, Trade Center, Standings, or Waiver Wire.")
 
 
-def _on_click_fantasy_nav(
-    target_page: str = "",
+def _on_click_open_trade_center(
     draft_id: str = "",
+    context_id: str = "",
     button_key: str = "",
 ) -> None:
     import streamlit as st
 
     session = st.session_state
     did = str(draft_id or "").strip()
-    if did:
-        try:
-            from draft_archive_state import set_active_draft_archive
-
-            set_active_draft_archive(session, did)
-        except ImportError:
-            session["active_draft_archive_id"] = did
-    schedule_fantasy_analysis_navigation(session, str(target_page or FANTASY_LINEUP_PAGE).strip())
+    if did and not _saved_archive_is_active(session, draft_id=did, context_id=str(context_id or "")):
+        label = str(session.get("_shared_league_pending_nav_league_label") or "This league").strip()
+        session["_live_draft_shared_league_flash"] = {
+            "level": "warning",
+            "message": f"Set {label} as your Active League to use this page.",
+        }
+        return
+    session["_lineup_focus_trade_center"] = True
+    schedule_fantasy_analysis_navigation(session, FANTASY_LINEUP_PAGE)
 
 
 def _shared_league_success_message(
@@ -2618,8 +2739,8 @@ def _shared_league_success_message(
     readback: dict[str, Any],
 ) -> str:
     return (
-        f"Shared league created successfully. "
-        f"League name: {league_label}. "
+        f"Shared League Saved. "
+        f"{league_label} was saved successfully. "
         f"Canonical league ID: {canonical_id or '—'}. "
         f"Saved draft ID: {draft_id or '—'}. "
         f"League context ID: {context_id or '—'}. "
@@ -2693,6 +2814,7 @@ def _finalize_shared_league_creation_success(
     session["_live_draft_shared_league_success_actions"] = {
         "draft_id": draft_id,
         "context_id": context_id,
+        "league_label": league_label,
         "key_prefix": key_prefix,
     }
     if not shared_push_ok:
@@ -2877,24 +2999,6 @@ def _finalize_existing_shared_league(
         str(team): int(count)
         for team, count in dict(preview.get("roster_count_by_team") or {}).items()
     }
-    try:
-        from fantasy_league_context import activate_league_context, get_league_context
-
-        _merge_shared_league_diag(session, activation_attempted=True)
-        activate_league_context(session, context_id)
-        _merge_shared_league_diag(session, activation_ok=True)
-    except ImportError:
-        _merge_shared_league_diag(session, activation_attempted=False, activation_ok=False)
-    except Exception as exc:
-        _merge_shared_league_diag(
-            session,
-            activation_attempted=True,
-            activation_ok=False,
-            create_error=f"{type(exc).__name__}: {exc}",
-        )
-        st.error(f"Could not activate existing shared league: {type(exc).__name__}: {exc}")
-        return
-
     context = get_league_context(session, context_id) if context_id else None
     if not isinstance(context, dict):
         context = dict(existing.get("context") or {})
@@ -3165,7 +3269,7 @@ def _process_live_draft_shared_league_create_request(
                 my_team_name=my_team,
                 league_name=str(league_name or preview.get("league_name") or "").strip(),
                 draft_name=draft_name,
-                defer_activation=False,
+                defer_activation=True,
                 assign_team=True,
             )
             save_call_count += 1
@@ -3176,8 +3280,8 @@ def _process_live_draft_shared_league_create_request(
                 save_call_count=save_call_count,
                 shared_push_attempted=True,
                 shared_push_ok=shared_push_ok,
-                activation_attempted=True,
-                activation_ok=True,
+                activation_attempted=False,
+                activation_ok=False,
             )
         except Exception as exc:
             err = f"{type(exc).__name__}: {exc}"
@@ -3442,6 +3546,8 @@ def render_live_draft_completion_panel(
             st,
             session,
             draft_id=str(success_actions.get("draft_id") or ""),
+            context_id=str(success_actions.get("context_id") or ""),
+            league_label=str(success_actions.get("league_label") or ""),
             key_prefix=str(success_actions.get("key_prefix") or key_prefix),
         )
 
@@ -3788,6 +3894,8 @@ def _saved_draft_card_html(
     entry: dict[str, Any],
     *,
     is_active: bool,
+    is_focused: bool = False,
+    is_real_league: bool = False,
     player_n: int,
     team_n: int,
     display_team: str = "",
@@ -3795,15 +3903,20 @@ def _saved_draft_card_html(
     title = str(entry.get("draft_name") or "Saved Draft")
     team = str(display_team or entry.get("team_name") or "—")
     modified = format_archive_modified(entry)
-    card_class = "ld-archive-card ld-archive-active" if is_active else "ld-archive-card"
+    card_class = "ld-archive-card"
+    if is_active:
+        card_class = "ld-archive-card ld-archive-active"
+    elif is_focused:
+        card_class = "ld-archive-card ld-archive-focus"
+    active_label = "ACTIVE LEAGUE" if is_real_league else "ACTIVE"
     active_badge = (
-        '<span class="ld-archive-badge ld-archive-badge-active">ACTIVE</span> '
+        f'<span class="ld-archive-badge ld-archive-badge-active">{active_label}</span> '
         if is_active
         else ""
     )
     type_badge = _draft_type_badge_html(entry)
     return (
-        f'<div class="{card_class}">{active_badge}{type_badge}'
+        f'<div class="{card_class}">{active_badge}{type_badge} '
         f"<strong>{title}</strong><br>"
         f"<span style='opacity:0.9'>{team}</span><br>"
         f"<span style='opacity:0.85'>{team_n} team{'s' if team_n != 1 else ''} · "
@@ -3844,8 +3957,14 @@ def _activate_archive_entry(st: Any, session: dict[str, Any], draft_id: str) -> 
     except ImportError:
         pass
     if loaded_context:
+        try:
+            from fantasy_context_terminology import is_league_context
+
+            noun = "League" if is_league_context(loaded_context, loaded_entry) else "Draft"
+        except ImportError:
+            noun = "Draft"
         st.session_state["_league_context_activation_toast"] = (
-            f"Active draft: {loaded_context.get('display_name', loaded_entry.get('draft_name'))}"
+            f"✅ {loaded_context.get('display_name', loaded_entry.get('draft_name'))} is now your Active {noun}."
         )
     st.rerun()
 
@@ -3975,13 +4094,26 @@ def _render_archive_manage_actions(
     *,
     draft_id: str,
     is_active: bool,
+    context: dict[str, Any] | None = None,
     widget_key_prefix: str = "archive",
 ) -> None:
+    context = context or get_league_context_for_archive(session, entry)
+    is_league = _archive_card_is_real_league(entry, context)
+    set_active_label = "⭐ Set Active League" if is_league else "⭐ Set Active Draft"
+    rename_label = "Rename League" if is_league else "Rename Draft"
+    delete_label = "Delete League" if is_league else "Delete Draft"
+    league_title = str(entry.get("draft_name") or "League").strip()
     if is_active:
+        st.button(
+            "✅ Active League" if is_league else "✅ Active Draft",
+            key=f"{widget_key_prefix}_active_{draft_id}",
+            disabled=True,
+            use_container_width=True,
+        )
         btn1, btn2 = st.columns(2)
         with btn1:
             if st.button(
-                "Rename Draft",
+                rename_label,
                 key=f"{widget_key_prefix}_rename_{draft_id}",
                 use_container_width=True,
             ):
@@ -3989,7 +4121,7 @@ def _render_archive_manage_actions(
                 st.rerun()
         with btn2:
             st.button(
-                "Delete",
+                delete_label,
                 key=f"{widget_key_prefix}_del_{draft_id}",
                 use_container_width=True,
                 on_click=_on_click_request_delete_draft,
@@ -3999,7 +4131,7 @@ def _render_archive_manage_actions(
         btn1, btn2, btn3 = st.columns(3)
         with btn1:
             if st.button(
-                "Set Active",
+                set_active_label,
                 key=f"{widget_key_prefix}_set_active_{draft_id}",
                 type="primary",
                 use_container_width=True,
@@ -4007,7 +4139,7 @@ def _render_archive_manage_actions(
                 _activate_archive_entry(st, session, draft_id)
         with btn2:
             if st.button(
-                "Rename Draft",
+                rename_label,
                 key=f"{widget_key_prefix}_rename_{draft_id}",
                 use_container_width=True,
             ):
@@ -4015,7 +4147,7 @@ def _render_archive_manage_actions(
                 st.rerun()
         with btn3:
             st.button(
-                "Delete",
+                delete_label,
                 key=f"{widget_key_prefix}_del_{draft_id}",
                 use_container_width=True,
                 on_click=_on_click_request_delete_draft,
@@ -4064,6 +4196,7 @@ def _render_archive_actions(
         entry,
         draft_id=draft_id,
         is_active=is_active,
+        context=context,
         widget_key_prefix=f"archive_list_{draft_id[:12]}",
     )
 
@@ -4129,8 +4262,10 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
             margin-right: 0.35rem;
         }
         .ld-archive-badge-live { background: #1f4e79; color: #fff; }
+        .ld-archive-badge-imported { background: #5c4d7d; color: #fff; }
         .ld-archive-badge-sim { background: #3d5a3d; color: #fff; }
         .ld-archive-badge-active { background: #2ecc71; color: #1a1a1a; }
+        .ld-archive-badge { margin-right: 0.45rem; }
         .ld-archive-card {
             border: 1px solid rgba(128,128,128,0.25);
             border-radius: 0.65rem;
@@ -4140,6 +4275,10 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         .ld-archive-active {
             border-color: #2ecc71;
             box-shadow: 0 0 0 1px rgba(46,204,113,0.35);
+        }
+        .ld-archive-focus {
+            border-color: #5dade2;
+            box-shadow: 0 0 0 1px rgba(93,173,226,0.35);
         }
         </style>
         """,
@@ -4157,6 +4296,13 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         migrate_legacy_archives_to_contexts(session)
         if repair_misclassified_imported_league_archives(session):
             prune_invisible_shared_league_state(session)
+        try:
+            from fantasy_league_context import repair_archive_draft_types_from_contexts
+
+            if repair_archive_draft_types_from_contexts(session):
+                prune_invisible_shared_league_state(session)
+        except ImportError:
+            pass
         if repair_missing_draft_archives_from_contexts(session):
             prune_invisible_shared_league_state(session)
         try:
@@ -4177,32 +4323,22 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         pass
 
     archives = list_visible_draft_archives(session)
-    focus_draft_id = str(session.pop("_saved_draft_library_focus_draft_id", None) or "").strip()
+    focus_draft_id = str(session.get("_saved_draft_library_focus_draft_id") or "").strip()
     if focus_draft_id:
+        session.pop("_saved_draft_library_focus_draft_id", None)
+    active = get_active_draft_archive(session)
+    if active and not is_saved_draft_visible_to_session(session, active):
+        clear_active_draft_archive(session)
         try:
-            from draft_archive_state import set_active_draft_archive
+            from fantasy_league_context import clear_active_league_context
 
-            set_active_draft_archive(session, focus_draft_id)
+            clear_active_league_context(session)
         except ImportError:
-            session["active_draft_archive_id"] = focus_draft_id
-        active = get_active_draft_archive(session)
-        active_context = get_active_league_context(session)
-        active_id = str((active or {}).get("draft_id") or "")
-        active_context_id = str((active_context or {}).get("league_context_id") or "")
-    else:
-        active = get_active_draft_archive(session)
-        if active and not is_saved_draft_visible_to_session(session, active):
-            clear_active_draft_archive(session)
-            try:
-                from fantasy_league_context import clear_active_league_context
-
-                clear_active_league_context(session)
-            except ImportError:
-                pass
-            active = None
-        active_context = get_active_league_context(session)
-        active_id = str((active or {}).get("draft_id") or "")
-        active_context_id = str((active_context or {}).get("league_context_id") or "")
+            pass
+        active = None
+    active_context = get_active_league_context(session)
+    active_id = str((active or {}).get("draft_id") or "")
+    active_context_id = str((active_context or {}).get("league_context_id") or "")
 
     st.caption(
         "Only **intentionally saved drafts** appear here. "
@@ -4338,9 +4474,10 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         is_active = draft_id == active_id and (
             not active_context_id or not league_context_id or league_context_id == active_context_id
         )
-        is_focus = bool(focus_draft_id and draft_id == focus_draft_id)
+        is_focus = bool(focus_draft_id and draft_id == focus_draft_id and not is_active)
         player_n = archive_card_player_count(entry)
         team_n = archive_card_team_count(entry)
+        is_real_league = _archive_card_is_real_league(entry, context)
         display_team = ""
         try:
             from fantasy_workspace_team_identity import resolve_archive_display_team
@@ -4351,17 +4488,23 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         st.markdown(
             _saved_draft_card_html(
                 entry,
-                is_active=is_active or is_focus,
+                is_active=is_active,
+                is_focused=is_focus,
+                is_real_league=is_real_league,
                 player_n=player_n,
                 team_n=team_n,
                 display_team=display_team,
             ),
             unsafe_allow_html=True,
         )
-        if is_focus and not is_active:
-            st.caption(f"Focused draft `{draft_id}` — use **Set Active** to manage this league.")
+        if is_focus:
+            st.caption(f"Focused league `{draft_id}` — use **⭐ Set Active League** to manage this league.")
         elif is_active:
-            st.caption("Active draft — use **Manage this draft** in the **Active Draft** section above.")
+            st.caption(
+                "Active league — use **Manage this draft** in the **Active Draft** section above."
+                if is_real_league
+                else "Active draft — use **Manage this draft** in the **Active Draft** section above."
+            )
         else:
             _render_archive_actions(
                 st,

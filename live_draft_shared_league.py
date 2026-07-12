@@ -244,6 +244,7 @@ def save_live_draft_shared_league_context(
     )
     meta = dict(context.get("metadata") or {})
     meta["created_from"] = CREATED_FROM_LIVE_DRAFT
+    meta["source_draft_type"] = "live_draft_room"
     meta["draft_results"] = draft_results
     meta["teams"] = teams
     try:
@@ -320,6 +321,7 @@ def save_live_draft_shared_league_context(
     context = get_league_context(session, league_context_id) or context
     meta = dict(context.get("metadata") or {})
     meta["created_from"] = CREATED_FROM_LIVE_DRAFT
+    meta["source_draft_type"] = "live_draft_room"
     meta["draft_results"] = draft_results
     context["metadata"] = meta
     context["draft_results"] = draft_results

@@ -496,7 +496,7 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
             at.button(key="live_draft_complete_confirm_shared_league").click().run()
         save_mock.assert_called_once()
         blob = "\n".join(str(m.value) for m in at.success) + "\n".join(str(m.value) for m in at.info) + "\n".join(str(m.value) for m in at.markdown)
-        self.assertIn("Shared league created successfully", blob, blob)
+        self.assertIn("Shared League Saved", blob, blob)
         self.assertNotIn("_live_draft_shared_league_confirm_open", at.session_state)
         diag = dict(at.session_state[SHARED_LEAGUE_DIAG_KEY])
         self.assertEqual(int(diag.get("save_call_count") or 0), 1)
@@ -746,7 +746,7 @@ class LiveDraftRobinsFantasyConfirmAppTest(unittest.TestCase):
         self.assertIn("SHARED_LEAGUE_CREATE_PROCESSOR:yes", blob, blob)
         self.assertIn("SHARED_LEAGUE_SAVE_CALL_COUNT:1", blob, blob)
         self.assertIn("SHARED_LEAGUE_CONFIRM_CLOSED:yes", blob, blob)
-        self.assertIn("Shared league created successfully", blob, blob)
+        self.assertIn("Shared League Saved", blob, blob)
         self.assertIn("Donny 10", blob, blob)
         self.assertIn("Team B 10", blob, blob)
         self.assertNotIn("_live_draft_shared_league_confirm_open", at.session_state)
@@ -966,6 +966,9 @@ class LiveDraftSharedLeagueLibraryPersistenceTests(unittest.TestCase):
                     context,
                     my_team="Donny",
                 )
+            from draft_archive_state import set_active_draft_archive
+
+            set_active_draft_archive(self.session, draft_id)
             from fantasy_league_context import activate_league_context
 
             activate_league_context(self.session, context_id)

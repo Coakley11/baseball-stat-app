@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import unittest
 
-from draft_archive_state import DRAFT_TYPE_IMPORTED, DRAFT_TYPE_SIMULATOR
+from draft_archive_state import DRAFT_TYPE_IMPORTED, DRAFT_TYPE_LIVE, DRAFT_TYPE_SIMULATOR
 from fantasy_context_terminology import (
     BADGE_ACTIVE_DRAFT,
     BADGE_ACTIVE_LEAGUE,
+    BADGE_LIVE_DRAFT,
     BADGE_MOCK_DRAFT,
     BADGE_SHARED_LEAGUE,
     BADGE_SIMULATOR_DRAFT,
@@ -36,6 +37,19 @@ class FantasyContextTerminologyTests(unittest.TestCase):
         self.assertEqual(classified["saved_badge"], BADGE_SIMULATOR_DRAFT)
         self.assertFalse(is_league_context(context, archive))
         self.assertEqual(active_context_label(context, archive), "Active Draft")
+
+    def test_live_promoted_real_league_badge_is_live_draft(self) -> None:
+        from fantasy_league_context import SOURCE_LIVE_DRAFT_ROOM
+
+        context = {
+            "context_type": CONTEXT_TYPE_REAL_LEAGUE,
+            "source": SOURCE_LIVE_DRAFT_ROOM,
+            "metadata": {"created_from": "live_draft"},
+        }
+        archive = {"draft_type": DRAFT_TYPE_LIVE}
+        self.assertTrue(is_league_context(context, archive))
+        self.assertEqual(saved_context_type_badge(context, archive), BADGE_LIVE_DRAFT)
+        self.assertEqual(active_context_label(context, archive), "Active League")
 
     def test_imported_real_league_is_uploaded_league(self) -> None:
         context = {

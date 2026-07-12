@@ -11,6 +11,7 @@ from fantasy_league_context import (
     CONTEXT_TYPE_REAL_LEAGUE,
     SOURCE_DRAFT_SIMULATOR,
     SOURCE_IMPORTED_DRAFT,
+    SOURCE_LIVE_DRAFT_ROOM,
 )
 
 TERM_KIND_DRAFT = "draft"
@@ -94,6 +95,14 @@ def classify_fantasy_context(
         return {"kind": TERM_KIND_DRAFT, "noun": "Draft", "saved_badge": badge}
 
     if context_type == CONTEXT_TYPE_REAL_LEAGUE or archive_type == DRAFT_TYPE_IMPORTED:
+        created_from = str(_metadata(context).get("created_from") or "").strip()
+        if (
+            source == SOURCE_LIVE_DRAFT_ROOM
+            or created_from == "live_draft"
+            or archive_type == DRAFT_TYPE_LIVE
+        ):
+            badge = BADGE_LIVE_DRAFT
+            return {"kind": TERM_KIND_LEAGUE, "noun": "League", "saved_badge": badge}
         if source == SOURCE_IMPORTED_DRAFT or archive_type == DRAFT_TYPE_IMPORTED:
             badge = BADGE_SHARED_LEAGUE if _is_shared_league(context) else BADGE_UPLOADED_LEAGUE
         else:

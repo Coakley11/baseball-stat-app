@@ -1953,6 +1953,104 @@ def repair_misclassified_imported_league_archives(session: dict[str, Any]) -> in
     return repaired
 
 
+def resolve_archive_draft_type_from_context(context: dict[str, Any] | None) -> str:
+    """Map league context origin metadata to saved-draft library draft_type."""
+    if not isinstance(context, dict):
+        return DRAFT_TYPE_SIMULATOR
+    meta = dict(context.get("metadata") or {})
+    context_type = str(context.get("context_type") or "").strip()
+    source = str(context.get("source") or meta.get("source") or "").strip()
+    created_from = str(meta.get("created_from") or "").strip()
+    source_draft_type = str(meta.get("source_draft_type") or "").strip()
+    try:
+        from live_draft_shared_league import CREATED_FROM_LIVE_DRAFT
+    except ImportError:
+        CREATED_FROM_LIVE_DRAFT = "live_draft"
+
+    if (
+        source == SOURCE_LIVE_DRAFT_ROOM
+        or created_from == CREATED_FROM_LIVE_DRAFT
+        or source_draft_type == DRAFT_TYPE_LIVE
+        or context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT
+    ):
+        return DRAFT_TYPE_LIVE
+    if source == SOURCE_IMPORTED_DRAFT or source_draft_type == DRAFT_TYPE_IMPORTED:
+        return DRAFT_TYPE_IMPORTED
+    if (
+        context_type == CONTEXT_TYPE_MOCK_DRAFT_SIMULATION
+        or source == SOURCE_DRAFT_SIMULATOR
+        or source_draft_type == DRAFT_TYPE_SIMULATOR
+    ):
+        return DRAFT_TYPE_SIMULATOR
+    if context_type == CONTEXT_TYPE_REAL_LEAGUE:
+        return DRAFT_TYPE_IMPORTED
+    return DRAFT_TYPE_SIMULATOR
+
+
+def repair_archive_draft_type_for_entry(
+    session: dict[str, Any],
+    entry: dict[str, Any],
+    *,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Repair archive origin label in place from linked league context metadata."""
+    if not isinstance(entry, dict):
+        return entry
+    draft_id = str(entry.get("draft_id") or "").strip()
+    if not draft_id:
+        return entry
+    ctx = context
+    if ctx is None:
+        linked_id = str(entry.get("league_context_id") or "").strip()
+        ctx = get_league_context(session, linked_id) if linked_id else None
+        if not isinstance(ctx, dict):
+            ctx = get_league_context(session, context_id_for_archive(draft_id))
+    expected = resolve_archive_draft_type_from_context(ctx if isinstance(ctx, dict) else None)
+    current = str(entry.get("draft_type") or "").strip()
+    if current == expected:
+        return entry
+    repaired = dict(entry)
+    repaired["draft_type"] = expected
+    entries = session.get(DRAFT_ARCHIVE_KEY)
+    if isinstance(entries, list):
+        session[DRAFT_ARCHIVE_KEY] = [
+            repaired if str(row.get("draft_id") or "").strip() == draft_id else row
+            for row in entries
+            if isinstance(row, dict)
+        ]
+    return repaired
+
+
+def repair_archive_draft_types_from_contexts(session: dict[str, Any]) -> int:
+    """Backfill misclassified archive draft_type values from league context origin."""
+    from draft_archive_state import list_draft_archives
+
+    repaired = 0
+    for entry in list_draft_archives(session):
+        if not isinstance(entry, dict):
+            continue
+        draft_id = str(entry.get("draft_id") or "").strip()
+        if not draft_id:
+            continue
+        linked_id = str(entry.get("league_context_id") or "").strip()
+        ctx = get_league_context(session, linked_id) if linked_id else None
+        if not isinstance(ctx, dict):
+            ctx = get_league_context(session, context_id_for_archive(draft_id))
+        expected = resolve_archive_draft_type_from_context(ctx if isinstance(ctx, dict) else None)
+        if str(entry.get("draft_type") or "").strip() == expected:
+            continue
+        repair_archive_draft_type_for_entry(session, entry, context=ctx if isinstance(ctx, dict) else None)
+        repaired += 1
+    if repaired:
+        try:
+            from workflow_persist_guard import mark_workflow_persist_authoritative
+
+            mark_workflow_persist_authoritative(session)
+        except ImportError:
+            pass
+    return repaired
+
+
 def _archive_stub_from_league_context(context: dict[str, Any]) -> dict[str, Any] | None:
     """Rebuild a minimal saved-draft row when league context survived but archive row did not."""
     meta = context.get("metadata") or {}
@@ -1969,19 +2067,7 @@ def _archive_stub_from_league_context(context: dict[str, Any]) -> dict[str, Any]
             for player in team_entry.get("players") or []:
                 if isinstance(player, dict):
                     players.append(dict(player))
-    context_type = str(context.get("context_type") or "")
-    try:
-        from draft_archive_state import DRAFT_TYPE_IMPORTED
-        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, SOURCE_IMPORTED_DRAFT
-
-        if context_type == CONTEXT_TYPE_REAL_LEAGUE or str(context.get("source") or "") == SOURCE_IMPORTED_DRAFT:
-            draft_type = DRAFT_TYPE_IMPORTED
-        elif context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT:
-            draft_type = "live_draft_room"
-        else:
-            draft_type = "simulator"
-    except ImportError:
-        draft_type = "live_draft_room" if context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT else "simulator"
+    draft_type = resolve_archive_draft_type_from_context(context)
     now = str(meta.get("updated_at") or meta.get("created_at") or _utc_now_iso())
     return {
         "draft_id": draft_id,
