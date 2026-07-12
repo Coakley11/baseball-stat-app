@@ -93,8 +93,8 @@ class LineupAssistantRenderStructureTests(unittest.TestCase):
         self.assertEqual(resolve_trade_center_internal_tab(session), "Build & Analyze")
         sync_trade_center_internal_widget(session)
         self.assertEqual(session[TRADE_CENTER_INTERNAL_WIDGET_KEY], "Build & Analyze")
-        apply_trade_center_internal_selection(session, "Offers")
-        self.assertEqual(session[TRADE_CENTER_INTERNAL_TAB_KEY], "Offers")
+        apply_trade_center_internal_selection(session, "Offers & Activity")
+        self.assertEqual(session[TRADE_CENTER_INTERNAL_TAB_KEY], "Offers & Activity")
 
 
 if __name__ == "__main__":

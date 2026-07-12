@@ -7,6 +7,18 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from fantasy_trade_builder_state import (
+    ANY_TRADE_PARTNER,
+    apply_pending_to_logical_state,
+    build_search_summary,
+    builder_widget_keys,
+    clear_builder_widgets,
+    migrate_legacy_builder_keys,
+    queue_pending_builder_update,
+    receive_options_for_partner,
+    resolve_effective_partner,
+    sync_builder_widgets_from_logical,
+)
 from fantasy_trade_ideas import (
     LINEUP_TRADE_CENTER_STATE_KEY,
     LINEUP_TRADE_IDEAS_DIAG_KEY,
@@ -211,59 +223,96 @@ def _player_chip(name: str) -> str:
     return f'<span class="tc-chip">{html_lib.escape(name)}</span>'
 
 
+OFFERS_ACTIVITY_TABS: tuple[str, ...] = ("Active Offers", "Trade History")
+OFFERS_ACTIVITY_TAB_KEY_SUFFIX = "offers_activity_tab"
+OFFERS_ACTIVITY_WIDGET_KEY_SUFFIX = "offers_activity_widget"
+
+
+def _offers_activity_tab_key(scope_key: str) -> str:
+    return f"{scope_key}|{OFFERS_ACTIVITY_TAB_KEY_SUFFIX}"
+
+
+def _offers_activity_widget_key(scope_key: str) -> str:
+    return f"{scope_key}|{OFFERS_ACTIVITY_WIDGET_KEY_SUFFIX}"
+
+
+def _format_idea_badges(idea: dict[str, Any]) -> tuple[str, str, str]:
+    recommendation = str(idea.get("Recommendation") or "Fair")
+    fit_raw = pd.to_numeric(idea.get("Trade Fit Score"), errors="coerce")
+    fair_raw = pd.to_numeric(idea.get("Fairness Score") or idea.get("Fairness Gap"), errors="coerce")
+    fit = f"{int(round(float(fit_raw)))}/100" if pd.notna(fit_raw) else "—"
+    value_match = f"{int(round(float(fair_raw)))}/100" if pd.notna(fair_raw) else "—"
+    return recommendation, fit, value_match
+
+
+def _queue_idea_builder_update(
+    session: dict[str, Any],
+    scope_key: str,
+    *,
+    give_list: list[str],
+    receive_list: list[str],
+    other: str,
+    idea_id: str,
+    auto_analyze: bool,
+) -> None:
+    queue_pending_builder_update(
+        session,
+        scope_key,
+        {
+            "give_players": give_list,
+            "get_players": receive_list,
+            "other_team": other,
+            "source_idea_id": idea_id,
+            "auto_analyze": auto_analyze,
+        },
+    )
+    session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
+
+
 def _render_idea_card(st: Any, idea: dict[str, Any], idx: int, session: dict[str, Any], scope_key: str) -> None:
     give = str(idea.get("Give") or "")
     receive = str(idea.get("Receive") or "")
     other = str(idea.get("Other Team") or "")
-    fairness = str(idea.get("Fairness Score") or idea.get("Fairness Gap") or "—")
+    recommendation, fit, value_match = _format_idea_badges(idea)
+    give_chips = " ".join(_player_chip(name) for name in _split_player_names(give))
+    receive_chips = " ".join(_player_chip(name) for name in _split_player_names(receive))
     st.markdown(
         f"""<div class="tc-idea-card">
-<span class="tc-badge">{html_lib.escape(str(idea.get('Recommendation') or 'Idea'))}</span>
-<span class="tc-badge">Fit {html_lib.escape(str(idea.get('Trade Fit Score') or '—'))}</span>
-<span class="tc-badge">Fair {html_lib.escape(fairness)}</span>
-<p><b>{html_lib.escape(other)}</b> — give {_player_chip(give)} receive {_player_chip(receive)}</p>
-<p style="font-size:0.82rem;margin:4px 0;">{html_lib.escape(str(idea.get('Why It Helps') or ''))}</p>
+<p style="margin:0 0 6px;"><b>Trade with {html_lib.escape(other)}</b></p>
+<span class="tc-badge">Recommendation: {html_lib.escape(recommendation)}</span>
+<span class="tc-badge">Team Fit: {html_lib.escape(fit)}</span>
+<span class="tc-badge">Value Match: {html_lib.escape(value_match)}</span>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0;">
+  <div><div style="font-size:0.72rem;font-weight:700;color:#0b3d6e;">YOU GIVE</div>{give_chips or "—"}</div>
+  <div><div style="font-size:0.72rem;font-weight:700;color:#0b3d6e;">YOU RECEIVE</div>{receive_chips or "—"}</div>
+</div>
+<p style="font-size:0.82rem;margin:4px 0;">Helps: {html_lib.escape(str(idea.get('Category Gains') or idea.get('Why It Helps') or '—'))}</p>
 <p style="font-size:0.76rem;color:#64748b;">Risk: {html_lib.escape(str(idea.get('Main Risk') or '—'))}</p>
 </div>""",
         unsafe_allow_html=True,
     )
     c1, c2, c3 = st.columns(3)
     if c1.button("Use This Idea", key=f"tc_use_{idx}"):
-        give_list = _split_player_names(give)
-        receive_list = _split_player_names(receive)
-        _save_shared_trade_state(
+        _queue_idea_builder_update(
             session,
             scope_key,
-            {
-                "give_players": give_list,
-                "get_players": receive_list,
-                "other_team": other,
-                "source_idea_id": f"idea_{idx}",
-            },
+            give_list=_split_player_names(give),
+            receive_list=_split_player_names(receive),
+            other=other,
+            idea_id=f"idea_{idx}",
+            auto_analyze=False,
         )
-        session["lineup_trade_give_players"] = give_list
-        session["lineup_trade_get_players"] = receive_list
-        session["lineup_trade_other_team"] = other
         st.rerun()
     if c2.button("Analyze", key=f"tc_analyze_{idx}"):
-        give_list = _split_player_names(give)
-        receive_list = _split_player_names(receive)
-        _save_shared_trade_state(
+        _queue_idea_builder_update(
             session,
             scope_key,
-            {
-                "give_players": give_list,
-                "get_players": receive_list,
-                "other_team": other,
-                "source_idea_id": f"idea_{idx}",
-                "auto_analyze": True,
-            },
+            give_list=_split_player_names(give),
+            receive_list=_split_player_names(receive),
+            other=other,
+            idea_id=f"idea_{idx}",
+            auto_analyze=True,
         )
-        session["lineup_trade_give_players"] = give_list
-        session["lineup_trade_get_players"] = receive_list
-        session["lineup_trade_other_team"] = other
-        session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
-        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Build & Analyze"
         st.rerun()
 
 
@@ -287,22 +336,71 @@ def _render_build_analyze(
     other_teams = ws["other_teams"]
     my_players = ws["my_players"]
     all_other_players = ws["all_other_players"]
-    shared = _load_shared_trade_state(session, scope_key)
 
     if not my_players:
         st.markdown('<div class="tc-empty">No players on your roster yet.</div>', unsafe_allow_html=True)
         return
 
-    pending_give = list(shared.get("give_players") or session.get("lineup_trade_give_players") or [])
-    pending_get = list(shared.get("get_players") or session.get("lineup_trade_get_players") or [])
-    ensure_multiselect_state("lineup_trade_give_players", my_players, [p for p in pending_give if p in my_players])
-    ensure_multiselect_state(
-        "lineup_trade_get_players",
-        all_other_players,
-        [p for p in pending_get if p in all_other_players],
+    widget_keys = builder_widget_keys(scope_key)
+
+    shared = migrate_legacy_builder_keys(session, scope_key, _load_shared_trade_state(session, scope_key))
+    partner_options = [ANY_TRADE_PARTNER, *other_teams]
+    receive_pool = receive_options_for_partner(
+        roster_stats,
+        my_team=my_team,
+        partner=ANY_TRADE_PARTNER,
+        all_other_players=all_other_players,
+    )
+    shared = apply_pending_to_logical_state(
+        session,
+        scope_key,
+        shared,
+        my_players=my_players,
+        receive_options=receive_pool,
+        other_teams=other_teams,
     )
 
-    other_default = str(shared.get("other_team") or session.get("lineup_trade_other_team") or (other_teams[0] if other_teams else ""))
+    synced = sync_builder_widgets_from_logical(
+        session,
+        scope_key,
+        shared,
+        my_players=my_players,
+        receive_options=receive_pool,
+        partner_options=partner_options,
+    )
+    trade_partner = str(synced.get("other_team") or ANY_TRADE_PARTNER)
+    receive_options = receive_options_for_partner(
+        roster_stats,
+        my_team=my_team,
+        partner=trade_partner,
+        all_other_players=all_other_players,
+    )
+    session[widget_keys["receive"]] = [
+        p for p in (session.get(widget_keys["receive"]) or []) if p in receive_options
+    ]
+
+    st.caption(build_search_summary(
+        my_team=my_team,
+        partner=trade_partner,
+        give_players=list(session.get(widget_keys["give"]) or []),
+        receive_players=list(session.get(widget_keys["receive"]) or []),
+    ))
+
+    st.selectbox(
+        "Trade partner to search",
+        partner_options,
+        key=widget_keys["partner"],
+        help="Choose a specific team to search only that roster, or choose Any team to search the entire league.",
+    )
+    trade_partner = str(session.get(widget_keys["partner"]) or ANY_TRADE_PARTNER)
+    receive_options = receive_options_for_partner(
+        roster_stats,
+        my_team=my_team,
+        partner=trade_partner,
+        all_other_players=all_other_players,
+    )
+    if trade_partner != ANY_TRADE_PARTNER:
+        st.caption(f"{len(receive_options)} players on {trade_partner}")
 
     st.markdown('<div class="tc-builder">', unsafe_allow_html=True)
     left, mid, right = st.columns([5, 1, 5])
@@ -311,7 +409,7 @@ def _render_build_analyze(
         give_players = st.multiselect(
             "Players I Give",
             my_players,
-            key="lineup_trade_give_players",
+            key=widget_keys["give"],
             label_visibility="collapsed",
             max_selections=3,
         )
@@ -319,50 +417,58 @@ def _render_build_analyze(
         st.markdown('<div class="tc-exchange">⇄</div>', unsafe_allow_html=True)
     with right:
         st.markdown('<div class="tc-side"><h4>PLAYERS I RECEIVE</h4></div>', unsafe_allow_html=True)
-        receive_players = st.multiselect(
+        receive_label_map: dict[str, str] = {player: player for player in receive_options}
+        receive_display = list(receive_options)
+        if trade_partner == ANY_TRADE_PARTNER:
+            receive_display = []
+            for player in receive_options:
+                owner = resolve_player_owner_team(player, roster_stats, my_team=my_team) or "Unknown"
+                label = f"{player} — {owner}"
+                receive_display.append(label)
+                receive_label_map[label] = player
+            current_receive = [
+                label
+                for label, player in receive_label_map.items()
+                if player in (session.get(widget_keys["receive"]) or [])
+            ]
+            session[widget_keys["receive"]] = [label for label in current_receive if label in receive_display]
+        receive_players_raw = st.multiselect(
             "Players I Receive",
-            all_other_players,
-            key="lineup_trade_get_players",
+            receive_display,
+            key=widget_keys["receive"],
             label_visibility="collapsed",
             max_selections=3,
         )
+        receive_players = [receive_label_map.get(item, item) for item in receive_players_raw]
+        receive_players = [p for p in receive_players if p in receive_options]
     st.markdown("</div>", unsafe_allow_html=True)
 
-    other_team = ""
-    if receive_players:
-        owners = sorted(
-            {
-                owner
-                for player in receive_players
-                if (owner := resolve_player_owner_team(player, roster_stats, my_team=my_team))
-            }
-        )
-        if len(owners) == 1:
-            other_team = owners[0]
-        elif len(owners) > 1:
-            st.caption(f"Receive targets span: {', '.join(owners)}")
-    elif other_teams:
-        ensure_select_in_options("lineup_trade_other_team", other_teams, other_default)
-        other_team = st.selectbox("Opposing team", other_teams, key="lineup_trade_other_team", label_visibility="collapsed")
+    other_team = resolve_effective_partner(trade_partner, receive_players, roster_stats, my_team=my_team)
+    if receive_players and other_team != ANY_TRADE_PARTNER:
+        owners = {
+            resolve_player_owner_team(player, roster_stats, my_team=my_team) for player in receive_players
+        }
+        owners.discard(None)
+        if len(owners) > 1:
+            st.warning("Receive players must belong to the same team in one trade.")
+        elif trade_partner == ANY_TRADE_PARTNER and owners:
+            owner = next(iter(owners))
+            st.caption(f"{receive_players[0]} is owned by {owner}. Ideas will search {owner}.")
 
     c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
     find_ideas_btn = c1.button("Find Trade Ideas", key="tc_find_ideas", type="primary")
     analyze_btn = c2.button(
-        "Analyze This Trade",
+        "Analyze Exact Trade",
         key="tc_analyze_trade",
         disabled=not (give_players and receive_players),
     )
     propose_btn = c3.button(
         "Propose Trade",
         key="tc_propose_trade",
-        disabled=not (give_players and receive_players and other_team),
+        disabled=not (give_players and receive_players and other_team and other_team != ANY_TRADE_PARTNER),
     )
     if c4.button("Clear", key="tc_clear_trade"):
-        session.pop("lineup_trade_give_players", None)
-        session.pop("lineup_trade_get_players", None)
-        session.pop(LINEUP_TRADE_IDEAS_RESULTS_KEY, None)
-        session.pop(LINEUP_TRADE_IDEAS_DIAG_KEY, None)
-        _save_shared_trade_state(session, scope_key, {})
+        queue_pending_builder_update(session, scope_key, {"clear": True})
         st.rerun()
 
     auto_analyze = bool(shared.pop("auto_analyze", False))
@@ -393,13 +499,14 @@ def _render_build_analyze(
 
     if find_ideas:
         owner_map = resolve_receive_target_teams(receive_players, roster_stats, my_team=my_team)
+        target = other_team if other_team and other_team != ANY_TRADE_PARTNER else None
         suggestions, diag = generate_trade_ideas(
             my_team,
             roster_stats,
             standings,
             forced_give=give_players or None,
             forced_get=receive_players or None,
-            target_team=other_team if receive_players and not owner_map else None,
+            target_team=target if not owner_map else None,
             target_owner_teams=owner_map,
             summarize_team_category_needs_fn=summarize_team_category_needs_fn,
             league_context_id=league_id,
@@ -428,7 +535,8 @@ def _render_build_analyze(
         {
             "league_id": league_id,
             "my_team": my_team,
-            "other_team": other_team,
+            "other_team": other_team if other_team != ANY_TRADE_PARTNER else "",
+            "trade_partner": trade_partner,
             "give_players": list(give_players or []),
             "get_players": list(receive_players or []),
             "source_offer_id": shared.get("source_offer_id"),
@@ -515,7 +623,7 @@ def render_trade_center_tab(
 
     handoff = session.pop("_trade_center_handoff", None)
     if isinstance(handoff, dict):
-        _save_shared_trade_state(
+        queue_pending_builder_update(
             session,
             scope_key,
             {
@@ -526,11 +634,7 @@ def render_trade_center_tab(
                 "auto_analyze": bool(handoff.get("auto_analyze")),
             },
         )
-        session["lineup_trade_give_players"] = list(handoff.get("give_players") or [])
-        session["lineup_trade_get_players"] = list(handoff.get("receive_players") or [])
-        session["lineup_trade_other_team"] = str(handoff.get("other_team") or "")
         session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
-        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Build & Analyze"
 
     if ws["roster_stats"] is None or ws["roster_stats"].empty:
         missing_team = ""
@@ -598,7 +702,7 @@ def render_trade_center_tab(
         )
     with nav_right:
         if pending:
-            st.caption(f"Offers · {pending} pending")
+            st.caption(f"Offers & Activity · {pending} pending")
 
     internal_tab = apply_trade_center_internal_selection(session, selected)
 
@@ -616,7 +720,37 @@ def render_trade_center_tab(
             summarize_team_category_needs_fn=summarize_team_category_needs_fn,
             developer_mode_enabled_fn=developer_mode_enabled_fn,
         )
-    elif internal_tab == "Offers":
+    elif internal_tab == "Offers & Activity":
+        _render_offers_activity_section(st, session, ws=ws, scope_key=scope_key, league_id=league_id)
+
+
+def _render_offers_activity_section(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    ws: dict[str, Any],
+    scope_key: str,
+    league_id: str,
+) -> None:
+    tab_key = _offers_activity_tab_key(scope_key)
+    widget_key = _offers_activity_widget_key(scope_key)
+    requested = str(session.get(tab_key) or OFFERS_ACTIVITY_TABS[0])
+    if requested not in OFFERS_ACTIVITY_TABS:
+        requested = OFFERS_ACTIVITY_TABS[0]
+    if session.get(widget_key) not in OFFERS_ACTIVITY_TABS:
+        session[widget_key] = requested
+    pending = _count_pending_offers(session, ws["my_team"])
+    selected = st.radio(
+        "Offers and activity section",
+        list(OFFERS_ACTIVITY_TABS),
+        horizontal=True,
+        key=widget_key,
+        label_visibility="collapsed",
+    )
+    if pending:
+        st.caption(f"Active Offers · {pending} pending")
+    session[tab_key] = selected
+    if selected == "Active Offers":
         _render_offers_section(st, session, ws=ws, scope_key=scope_key, league_id=league_id)
     else:
         _render_history_section(st, session, ws=ws)
@@ -687,19 +821,18 @@ def _load_offer_into_state(session: dict[str, Any], scope_key: str, offer: dict[
             give = [str(p.get("player_name") or p) for p in (offer.get("proposer_gives") or offer.get("offered_players") or [])]
             receive = [str(p.get("player_name") or p) for p in (offer.get("proposer_receives") or offer.get("requested_players") or [])]
             other = to_team
-    state = {
-        "give_players": [g for g in give if g],
-        "get_players": [g for g in receive if g],
-        "other_team": other,
-        "source_offer_id": pid,
-        "auto_analyze": True,
-    }
-    _save_shared_trade_state(session, scope_key, state)
-    session["lineup_trade_give_players"] = state["give_players"]
-    session["lineup_trade_get_players"] = state["get_players"]
-    session["lineup_trade_other_team"] = other
+    queue_pending_builder_update(
+        session,
+        scope_key,
+        {
+            "give_players": [g for g in give if g],
+            "get_players": [g for g in receive if g],
+            "other_team": other,
+            "source_offer_id": pid,
+            "auto_analyze": True,
+        },
+    )
     session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
-    session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Build & Analyze"
 
 
 def _clear_offer_from_inbox(session: dict[str, Any], offer: dict[str, Any], *, league_id: str) -> None:

@@ -20,8 +20,7 @@ TRADE_CENTER_INTERNAL_TAB_KEY = "trade_center_internal_tab"
 TRADE_CENTER_INTERNAL_WIDGET_KEY = "trade_center_internal_tab_widget"
 TRADE_CENTER_INTERNAL_TABS: tuple[str, ...] = (
     "Build & Analyze",
-    "Offers",
-    "History",
+    "Offers & Activity",
 )
 LINEUP_TRADE_CENTER_STATE_KEY = "_lineup_trade_center_state"
 FAIRNESS_MAX_GAP = 18.0
@@ -411,6 +410,82 @@ def filter_trade_suggestions_by_requested_players(
     return out
 
 
+def _player_names_from_field(value: Any) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def trade_idea_signature(
+    *,
+    league_id: str,
+    my_team: str,
+    opposing_team: str,
+    give_value: Any,
+    receive_value: Any,
+) -> tuple[str, str, str, tuple[str, ...], tuple[str, ...]]:
+    """Canonical signature for deduplicating generated trade packages."""
+    give_names = tuple(sorted(name.lower() for name in _player_names_from_field(give_value)))
+    receive_names = tuple(sorted(name.lower() for name in _player_names_from_field(receive_value)))
+    return (
+        str(league_id or "").strip(),
+        _normalize_team(my_team),
+        _normalize_team(opposing_team),
+        give_names,
+        receive_names,
+    )
+
+
+def _idea_score_strength(row: dict[str, Any]) -> float:
+    overall = pd.to_numeric(row.get("Overall Score"), errors="coerce")
+    if pd.notna(overall):
+        return float(overall)
+    fit = pd.to_numeric(row.get("Trade Fit Score"), errors="coerce")
+    fair = pd.to_numeric(row.get("Fairness Score"), errors="coerce")
+    parts = [float(x) for x in (fit, fair) if pd.notna(x)]
+    return sum(parts) if parts else 0.0
+
+
+def deduplicate_trade_ideas(
+    ideas: pd.DataFrame,
+    *,
+    league_id: str,
+    my_team: str,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Remove duplicate packages regardless of generation path or player order."""
+    if ideas is None or ideas.empty:
+        return pd.DataFrame(), {"raw_candidates": 0, "unique_candidates": 0, "duplicates_removed": 0}
+
+    raw = len(ideas)
+    best_by_sig: dict[tuple[str, str, str, tuple[str, ...], tuple[str, ...]], dict[str, Any]] = {}
+    for row in ideas.to_dict(orient="records"):
+        if not isinstance(row, dict):
+            continue
+        sig = trade_idea_signature(
+            league_id=league_id,
+            my_team=my_team,
+            opposing_team=str(row.get("Other Team") or ""),
+            give_value=row.get("Give"),
+            receive_value=row.get("Receive"),
+        )
+        current = best_by_sig.get(sig)
+        if current is None or _idea_score_strength(row) > _idea_score_strength(current):
+            best_by_sig[sig] = row
+
+    unique_rows = list(best_by_sig.values())
+    sort_col = "Overall Score" if unique_rows and "Overall Score" in unique_rows[0] else "Trade Fit Score"
+    out = pd.DataFrame(unique_rows)
+    if not out.empty and sort_col in out.columns:
+        out = out.sort_values(sort_col, ascending=False)
+    stats = {
+        "raw_candidates": raw,
+        "unique_candidates": len(out),
+        "duplicates_removed": max(0, raw - len(out)),
+    }
+    return out.reset_index(drop=True), stats
+
+
 def generate_trade_ideas(
     my_team: str,
     all_rosters: pd.DataFrame,
@@ -562,8 +637,19 @@ def generate_trade_ideas(
         diag["failure_reason"] = "filtered_out_by_selected_players"
         return pd.DataFrame(), diag
 
-    final = filtered.head(10).reset_index(drop=True)
+    deduped, dedup_stats = deduplicate_trade_ideas(filtered, league_id=str(league_context_id or ""), my_team=my_team)
+    diag["raw_candidates_generated"] = dedup_stats["raw_candidates"]
+    diag["unique_candidates"] = dedup_stats["unique_candidates"]
+    diag["duplicates_removed"] = dedup_stats["duplicates_removed"]
+    diag["candidate_count_after_dedup"] = dedup_stats["unique_candidates"]
+
+    if deduped.empty:
+        diag["failure_reason"] = "filtered_out_by_selected_players"
+        return pd.DataFrame(), diag
+
+    final = deduped.head(10).reset_index(drop=True)
     diag["final_idea_count"] = len(final)
+    diag["final_displayed_count"] = len(final)
     return final, diag
 
 
@@ -604,17 +690,17 @@ def resolve_lineup_assistant_tab(session: dict[str, Any]) -> str:
     if session.pop("_lineup_focus_trade_offers", False):
         session[LINEUP_ASSISTANT_TAB_KEY] = "Trade Center"
         session[LINEUP_ASSISTANT_TAB_WIDGET_KEY] = "Trade Center"
-        session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Offers"
-        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Offers"
+        session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Offers & Activity"
+        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Offers & Activity"
     if session.pop("_lineup_focus_trade_history", False):
         session[LINEUP_ASSISTANT_TAB_KEY] = "Trade Center"
         session[LINEUP_ASSISTANT_TAB_WIDGET_KEY] = "Trade Center"
-        session[TRADE_CENTER_INTERNAL_TAB_KEY] = "History"
-        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "History"
+        session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Offers & Activity"
+        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Offers & Activity"
     tab = str(session.get(LINEUP_ASSISTANT_TAB_KEY) or LINEUP_ASSISTANT_TAB_OPTIONS[0]).strip()
     if tab == "Offers & Activity":
         tab = "Trade Center"
-        session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Offers"
+        session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Offers & Activity"
     elif tab == "Lineup & Weekly Stats":
         tab = "Lineup Management"
     if tab not in LINEUP_ASSISTANT_TAB_OPTIONS:
@@ -645,6 +731,8 @@ def apply_lineup_assistant_tab_selection(session: dict[str, Any], selected: str)
 def resolve_trade_center_internal_tab(session: dict[str, Any]) -> str:
     """Return the requested Trade Center internal section from the logical key."""
     tab = str(session.get(TRADE_CENTER_INTERNAL_TAB_KEY) or TRADE_CENTER_INTERNAL_TABS[0]).strip()
+    if tab in {"Offers", "History"}:
+        tab = "Offers & Activity"
     if tab not in TRADE_CENTER_INTERNAL_TABS:
         tab = TRADE_CENTER_INTERNAL_TABS[0]
     session[TRADE_CENTER_INTERNAL_TAB_KEY] = tab

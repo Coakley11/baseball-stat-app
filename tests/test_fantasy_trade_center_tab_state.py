@@ -86,16 +86,19 @@ class TradeCenterTabStateTests(unittest.TestCase):
         self.assertEqual(session[TRADE_CENTER_INTERNAL_TAB_KEY], "Build & Analyze")
 
     def test_offers_selection_persists_to_logical_key(self) -> None:
-        session: dict = {TRADE_CENTER_INTERNAL_WIDGET_KEY: "Offers"}
-        tab = apply_trade_center_internal_selection(session, "Offers")
-        self.assertEqual(tab, "Offers")
-        self.assertEqual(session[TRADE_CENTER_INTERNAL_TAB_KEY], "Offers")
+        session: dict = {TRADE_CENTER_INTERNAL_WIDGET_KEY: "Offers & Activity"}
+        tab = apply_trade_center_internal_selection(session, "Offers & Activity")
+        self.assertEqual(tab, "Offers & Activity")
+        self.assertEqual(session[TRADE_CENTER_INTERNAL_TAB_KEY], "Offers & Activity")
 
     def test_pending_count_change_does_not_invalidate_widget_state(self) -> None:
-        session: dict = {TRADE_CENTER_INTERNAL_WIDGET_KEY: "Offers", TRADE_CENTER_INTERNAL_TAB_KEY: "Offers"}
+        session: dict = {
+            TRADE_CENTER_INTERNAL_WIDGET_KEY: "Offers & Activity",
+            TRADE_CENTER_INTERNAL_TAB_KEY: "Offers & Activity",
+        }
         for pending in (0, 1, 2):
             sync_trade_center_internal_widget(session, requested_tab=resolve_trade_center_internal_tab(session))
-            self.assertEqual(session[TRADE_CENTER_INTERNAL_WIDGET_KEY], "Offers", f"pending={pending}")
+            self.assertEqual(session[TRADE_CENTER_INTERNAL_WIDGET_KEY], "Offers & Activity", f"pending={pending}")
             self.assertIn(session[TRADE_CENTER_INTERNAL_WIDGET_KEY], TRADE_CENTER_INTERNAL_TABS)
 
     def test_player_action_handoff_opens_build_analyze(self) -> None:
@@ -109,35 +112,37 @@ class TradeCenterTabStateTests(unittest.TestCase):
         session: dict = {"_lineup_focus_trade_offers": True}
         tab = resolve_lineup_assistant_tab(session)
         self.assertEqual(tab, "Trade Center")
-        self.assertEqual(session[TRADE_CENTER_INTERNAL_TAB_KEY], "Offers")
-        self.assertEqual(session[TRADE_CENTER_INTERNAL_WIDGET_KEY], "Offers")
+        self.assertEqual(session[TRADE_CENTER_INTERNAL_TAB_KEY], "Offers & Activity")
+        self.assertEqual(session[TRADE_CENTER_INTERNAL_WIDGET_KEY], "Offers & Activity")
 
     def test_analyze_offer_handoff_opens_build_analyze(self) -> None:
         session: dict = {
-            TRADE_CENTER_INTERNAL_TAB_KEY: "Offers",
-            TRADE_CENTER_INTERNAL_WIDGET_KEY: "Offers",
+            TRADE_CENTER_INTERNAL_TAB_KEY: "Offers & Activity",
+            TRADE_CENTER_INTERNAL_WIDGET_KEY: "Offers & Activity",
         }
         session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
-        session[TRADE_CENTER_INTERNAL_WIDGET_KEY] = "Build & Analyze"
         self.assertEqual(resolve_trade_center_internal_tab(session), "Build & Analyze")
 
-    def test_history_handoff_opens_history(self) -> None:
+    def test_history_handoff_opens_offers_activity(self) -> None:
         session: dict = {"_lineup_focus_trade_history": True}
         tab = resolve_lineup_assistant_tab(session)
         self.assertEqual(tab, "Trade Center")
-        self.assertEqual(session[TRADE_CENTER_INTERNAL_TAB_KEY], "History")
-        self.assertEqual(session[TRADE_CENTER_INTERNAL_WIDGET_KEY], "History")
+        self.assertEqual(session[TRADE_CENTER_INTERNAL_TAB_KEY], "Offers & Activity")
+        self.assertEqual(session[TRADE_CENTER_INTERNAL_WIDGET_KEY], "Offers & Activity")
 
     def test_sync_initializes_invalid_widget_to_logical_tab(self) -> None:
-        session: dict = {TRADE_CENTER_INTERNAL_TAB_KEY: "History", TRADE_CENTER_INTERNAL_WIDGET_KEY: "Offers (2)"}
+        session: dict = {
+            TRADE_CENTER_INTERNAL_TAB_KEY: "Offers & Activity",
+            TRADE_CENTER_INTERNAL_WIDGET_KEY: "Offers (2)",
+        }
         sync_trade_center_internal_widget(session)
-        self.assertEqual(session[TRADE_CENTER_INTERNAL_WIDGET_KEY], "History")
+        self.assertEqual(session[TRADE_CENTER_INTERNAL_WIDGET_KEY], "Offers & Activity")
 
     def test_apply_never_writes_widget_key(self) -> None:
-        session: dict = {TRADE_CENTER_INTERNAL_WIDGET_KEY: "Offers"}
-        apply_trade_center_internal_selection(session, "History")
-        self.assertEqual(session[TRADE_CENTER_INTERNAL_TAB_KEY], "History")
-        self.assertEqual(session[TRADE_CENTER_INTERNAL_WIDGET_KEY], "Offers")
+        session: dict = {TRADE_CENTER_INTERNAL_WIDGET_KEY: "Offers & Activity"}
+        apply_trade_center_internal_selection(session, "Build & Analyze")
+        self.assertEqual(session[TRADE_CENTER_INTERNAL_TAB_KEY], "Build & Analyze")
+        self.assertEqual(session[TRADE_CENTER_INTERNAL_WIDGET_KEY], "Offers & Activity")
 
     def test_top_level_tab_selection_uses_logical_key_only(self) -> None:
         session: dict = {LINEUP_ASSISTANT_TAB_WIDGET_KEY: "Trade Center"}
