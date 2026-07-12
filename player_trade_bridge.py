@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
 
 from player_trade_constants import (
     TRADE_ACTION_ACQUIRE,
@@ -60,6 +60,38 @@ def player_trade_shortcut_eligible(session: dict[str, Any], player_name: str) ->
         return False, f"Trade shortcuts unavailable: {type(exc).__name__}: {exc}"
 
 
+def resolve_active_league_player_trade_eligibility(
+    session: dict[str, Any],
+    player_name: str,
+) -> dict[str, Any]:
+    try:
+        from player_trade_handoff import resolve_active_league_player_trade_eligibility as _resolve
+
+        return _resolve(session, player_name)
+    except ImportError:
+        ok, msg = player_trade_shortcut_eligible(session, player_name)
+        return {
+            "player_name": str(player_name or "").strip(),
+            "eligible_league": ok,
+            "trade_away_enabled": ok,
+            "acquire_enabled": ok,
+            "waiver_enabled": False,
+            "block_message": msg,
+        }
+
+
+def start_player_trade_action(
+    session: dict[str, Any],
+    *,
+    player_name: str,
+    mode: str,
+) -> str:
+    try:
+        return _load().start_player_trade_action(session, player_name=player_name, mode=mode)
+    except Exception as exc:
+        return f"Trade action unavailable: {type(exc).__name__}: {exc}"
+
+
 def start_trade_acquire_flow(
     session: dict[str, Any],
     *,
@@ -83,6 +115,8 @@ __all__ = (
     "complete_trade_acquire_flow",
     "format_roster_context_label",
     "player_trade_shortcut_eligible",
+    "resolve_active_league_player_trade_eligibility",
+    "start_player_trade_action",
     "start_trade_acquire_flow",
     "trade_import_error_message",
 )

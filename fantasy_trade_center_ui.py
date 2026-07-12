@@ -474,6 +474,34 @@ def _render_build_analyze(
 
     shared = migrate_legacy_builder_keys(session, scope_key, _load_shared_trade_state(session, scope_key))
     shared, schema_migrated = maybe_migrate_builder_schema(session, scope_key, shared)
+    try:
+        from player_trade_handoff import consume_trade_center_handoff_into_pending
+
+        consume_trade_center_handoff_into_pending(
+            session,
+            scope_key,
+            roster_stats=roster_stats,
+            my_team=my_team,
+            other_teams=other_teams,
+            league_context_id=league_id,
+        )
+    except ImportError:
+        handoff = session.pop("_trade_center_handoff", None)
+        if isinstance(handoff, dict):
+            queue_pending_builder_update(
+                session,
+                scope_key,
+                {
+                    "action": str(handoff.get("action") or "use"),
+                    "give_players": list(handoff.get("give_players") or []),
+                    "get_players": list(handoff.get("receive_players") or handoff.get("get_players") or []),
+                    "trade_partner": str(handoff.get("trade_partner") or handoff.get("other_team") or ""),
+                    "other_team": str(handoff.get("other_team") or handoff.get("trade_partner") or ""),
+                    "auto_analyze": bool(handoff.get("auto_analyze", False)),
+                    "flash_message": str(handoff.get("flash_message") or ""),
+                },
+            )
+            session[f"{scope_key}|builder_handoff_meta"] = {"present": True, "consumed": True}
     partner_options = [ANY_TRADE_PARTNER, *other_teams]
     receive_pool = receive_options_for_partner(
         roster_stats,
@@ -851,24 +879,6 @@ def render_trade_center_tab(
     my_team, league_id, scope_fingerprint = _resolve_trade_scope(session, page_lineup_team=lineup_team)
     scope_key = _trade_scope_state_key(scope_fingerprint)
     ws = _trade_workspace(session, my_team=my_team)
-
-    handoff = session.pop("_trade_center_handoff", None)
-    if isinstance(handoff, dict):
-        queue_pending_builder_update(
-            session,
-            scope_key,
-            {
-                "action": str(handoff.get("action") or "analyze_offer"),
-                "give_players": list(handoff.get("give_players") or []),
-                "get_players": list(handoff.get("receive_players") or handoff.get("get_players") or []),
-                "trade_partner": str(handoff.get("other_team") or handoff.get("trade_partner") or ""),
-                "other_team": str(handoff.get("other_team") or handoff.get("trade_partner") or ""),
-                "source_offer_id": str(handoff.get("source_offer_id") or handoff.get("proposal_id") or ""),
-                "auto_analyze": bool(handoff.get("auto_analyze", True)),
-            },
-        )
-        session[f"{scope_key}|builder_handoff_meta"] = {"present": True, "consumed": True}
-        session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
 
     if ws["roster_stats"] is None or ws["roster_stats"].empty:
         missing_team = ""

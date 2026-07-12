@@ -602,24 +602,51 @@ def consume_trade_acquire_handoff(session: dict[str, Any]) -> dict[str, Any] | N
     owner_team = str(handoff.get("owner_team") or "").strip()
     mode = str(handoff.get("mode") or "").strip()
     player_name = str(handoff.get("player_name") or "").strip()
-    give_players: list[str] = []
-    receive_players: list[str] = []
-    other_team = ""
-    if mode == TRADE_MODE_TRADE_AWAY and player_name:
-        give_players = [player_name]
-    elif mode == TRADE_MODE_ACQUIRE and player_name:
-        receive_players = [player_name]
-        other_team = owner_team
-    if give_players or receive_players:
-        session["_lineup_focus_trade_center"] = True
-        session["_trade_center_handoff"] = {
-            "action": "use",
-            "give_players": give_players,
-            "receive_players": receive_players,
-            "other_team": other_team,
-            "trade_partner": other_team or "Any team",
-            "auto_analyze": False,
-        }
+    league_context_id = str(handoff.get("league_context_id") or "").strip()
+    my_team = ""
+    try:
+        from fantasy_league_context import get_active_league_context
+        from fantasy_league_team_ownership import owned_team_for_user
+
+        active = get_active_league_context(session) or {}
+        my_team = owned_team_for_user(active) or str(active.get("my_team_name") or "").strip()
+        if not league_context_id:
+            league_context_id = str(active.get("league_context_id") or "").strip()
+    except ImportError:
+        active = {}
+
+    try:
+        from player_trade_handoff import TRADE_CENTER_HANDOFF_KEY, build_trade_center_handoff_payload
+
+        payload = build_trade_center_handoff_payload(
+            mode=mode,
+            player_name=player_name,
+            league_context_id=league_context_id,
+            my_team=my_team,
+            owner_team=owner_team,
+        )
+        if payload.get("give_players") or payload.get("receive_players"):
+            session["_lineup_focus_trade_center"] = True
+            session[TRADE_CENTER_HANDOFF_KEY] = payload
+    except ImportError:
+        give_players: list[str] = []
+        receive_players: list[str] = []
+        other_team = ""
+        if mode == TRADE_MODE_TRADE_AWAY and player_name:
+            give_players = [player_name]
+        elif mode == TRADE_MODE_ACQUIRE and player_name:
+            receive_players = [player_name]
+            other_team = owner_team
+        if give_players or receive_players:
+            session["_lineup_focus_trade_center"] = True
+            session["_trade_center_handoff"] = {
+                "action": "use",
+                "give_players": give_players,
+                "receive_players": receive_players,
+                "other_team": other_team,
+                "trade_partner": other_team or "Any team",
+                "auto_analyze": False,
+            }
     return handoff
 
 

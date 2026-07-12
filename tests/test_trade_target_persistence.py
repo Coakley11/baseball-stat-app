@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -21,12 +21,14 @@ from fantasy_league_context import (
     get_workflow_targets,
     migrate_global_pending_trade_targets,
     remove_workflow_target,
+    save_imported_league_context,
     set_trade_acquire_handoff,
+    upsert_league_context,
     workflow_target_player_names,
 )
+from fantasy_league_team_ownership import assign_team_owner_to_context
 from player_trade_context import (
     TRADE_ACTION_ACQUIRE,
-    complete_trade_acquire_flow,
     start_trade_acquire_flow,
 )
 
@@ -54,6 +56,53 @@ def _seed_league_context(session: dict, room: dict, *, my_team: str, context_id:
         display_name=display_name or context_id,
     )
     activate_league_context(session, context_id)
+
+
+_SHARED_CFG = {
+    "fantasy_format": "5x5 Roto",
+    "scoring_type": "Roto (5x5)",
+    "slots": {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1, "OF": 3, "UTIL": 1},
+    "slot_instances": [],
+}
+
+
+def _seed_shared_league(
+    session: dict,
+    *,
+    my_team: str = "Daniel",
+    user_id: str = "user:daniel",
+    board_rows: list[dict] | None = None,
+    draft_name: str = "UPLOAD TEST DEMO",
+) -> dict:
+    rows = board_rows or [
+        {"Team": "Daniel", "Player": "Mike Trout", "Pick": 1},
+        {"Team": "Rivals", "Player": "Juan Soto", "Pick": 2},
+    ]
+    session["draft_shared_settings"] = dict(_SHARED_CFG)
+    _, context = save_imported_league_context(
+        session,
+        pd.DataFrame(rows),
+        my_team_name=my_team,
+        draft_name=draft_name,
+        league_name=draft_name,
+        config=_SHARED_CFG,
+        assign_team=False,
+    )
+    league_context_id = str(context.get("league_context_id") or "").strip()
+    loaded = get_active_league_context(session) or context
+    teams = sorted({str(row.get("Team") or "").strip() for row in rows if str(row.get("Team") or "").strip()})
+    for idx, team in enumerate(teams):
+        owner_id = user_id if team == my_team else f"user:team{idx}"
+        loaded = assign_team_owner_to_context(
+            loaded,
+            team,
+            user_id=owner_id,
+            email=f"{team.lower().replace(' ', '')}@test",
+        )
+    context = upsert_league_context(session, loaded)
+    activate_league_context(session, league_context_id)
+    session["_suite_auth_user_id"] = user_id
+    return context
 
 
 class WorkflowTargetPersistenceTests(unittest.TestCase):
@@ -151,16 +200,17 @@ class WorkflowTargetPersistenceTests(unittest.TestCase):
         handoff = consume_trade_acquire_handoff(session)
         assert handoff is not None
         self.assertEqual(handoff["player_name"], "Juan Soto")
-        self.assertEqual(session["lineup_trade_other_team"], "Rivals")
-        self.assertEqual(session["lineup_trade_get_players"], ["Juan Soto"])
+        trade_handoff = session.get("_trade_center_handoff") or {}
+        self.assertEqual(trade_handoff.get("receive_players"), ["Juan Soto"])
+        self.assertEqual(trade_handoff.get("trade_partner"), "Rivals")
+        self.assertEqual(trade_handoff.get("give_players"), [])
 
 
 class TradeAcquireFlowPersistenceTests(unittest.TestCase):
-    def test_start_trade_acquire_flow_persists_and_handoffs(self) -> None:
+    @patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:daniel")
+    def test_start_trade_acquire_flow_persists_and_handoffs(self, _uid: object) -> None:
         session: dict = {}
-        room = _league_room("Daniel", "Rivals", "Mike Trout", "Juan Soto")
-        _seed_league_context(session, room, my_team="Daniel", context_id="live:flow01")
-        session["live_draft_room"] = {**room, "config": {**room["config"], "your_team": "Daniel"}}
+        _seed_shared_league(session)
         msg = start_trade_acquire_flow(session, player_name="Juan Soto", key_prefix="test")
         self.assertIsNotNone(msg)
         assert msg is not None
@@ -169,51 +219,59 @@ class TradeAcquireFlowPersistenceTests(unittest.TestCase):
         ctx = get_active_league_context(session)
         assert ctx is not None
         self.assertEqual(workflow_target_player_names(ctx, TRADE_MODE_ACQUIRE), ["Juan Soto"])
+        trade_handoff = session.get("_trade_center_handoff") or {}
+        self.assertEqual(trade_handoff.get("receive_players"), ["Juan Soto"])
+        self.assertEqual(trade_handoff.get("trade_partner"), "Rivals")
 
-    def test_complete_trade_acquire_flow_multi_context_isolation(self) -> None:
+    @patch("fantasy_league_team_ownership._resolve_user_id", return_value="user:daniel")
+    def test_start_trade_acquire_flow_uses_active_league_only(self, _uid: object) -> None:
         session: dict = {}
-        _seed_league_context(
+        ctx_a = _seed_shared_league(
             session,
-            _league_room("Daniel", "Rivals", "Mike Trout", "Mookie Betts"),
-            my_team="Daniel",
-            context_id="live:ctx_a",
-            display_name="League A",
+            board_rows=[
+                {"Team": "Daniel", "Player": "Mike Trout", "Pick": 1},
+                {"Team": "Rivals", "Player": "Mookie Betts", "Pick": 2},
+            ],
+            draft_name="League A",
         )
-        _seed_league_context(
+        _, ctx_b = save_imported_league_context(
             session,
-            _league_room("Daniel", "East", "Mike Trout", "Mookie Betts"),
-            my_team="Daniel",
-            context_id="live:ctx_b",
-            display_name="League B",
+            pd.DataFrame(
+                [
+                    {"Team": "Daniel", "Player": "Mike Trout", "Pick": 1},
+                    {"Team": "East", "Player": "Mookie Betts", "Pick": 2},
+                ]
+            ),
+            my_team_name="Daniel",
+            draft_name="League B",
+            league_name="League B",
+            config=_SHARED_CFG,
+            assign_team=False,
         )
+        loaded_b = get_active_league_context(session) or ctx_b
+        loaded_b = assign_team_owner_to_context(loaded_b, "Daniel", user_id="user:daniel")
+        loaded_b = assign_team_owner_to_context(loaded_b, "East", user_id="user:east")
+        upsert_league_context(session, loaded_b)
+        activate_league_context(session, str(ctx_a.get("league_context_id") or ""))
         session["live_draft_room"] = {
             "config": {"league_name": "Live", "your_team": "Daniel"},
             "draft_board": [{"Player": "Mookie Betts", "Team": "Rivals"}],
         }
         session["draft_room_table"] = pd.DataFrame(columns=["Round", "Pick", "Team", "Player"])
-        msg = start_trade_acquire_flow(session, player_name="Mookie Betts", key_prefix="pick")
-        self.assertIsNone(msg)
-        flow = session.get("_player_trade_acquire_flow") or {}
-        self.assertEqual(flow.get("step"), "choose_context")
-        candidates = flow.get("candidates") or []
-        ctx_ids = {str(c.get("league_context_id") or "") for c in candidates}
-        self.assertIn("live:ctx_a", ctx_ids)
-        self.assertIn("live:ctx_b", ctx_ids)
 
-        msg_a = complete_trade_acquire_flow(
-            session,
-            mode=TRADE_ACTION_ACQUIRE,
-            context_id=str(candidates[0].get("context_id")),
-        )
-        self.assertIn("Opening Fantasy Lineup Assistant", msg_a)
-        ctx_a = get_league_context(session, "live:ctx_a")
-        ctx_b = get_league_context(session, "live:ctx_b")
-        assert ctx_a is not None and ctx_b is not None
-        total_acquire = (
-            workflow_target_player_names(ctx_a, TRADE_MODE_ACQUIRE)
-            + workflow_target_player_names(ctx_b, TRADE_MODE_ACQUIRE)
-        )
-        self.assertEqual(total_acquire.count("Mookie Betts"), 1)
+        msg = start_trade_acquire_flow(session, player_name="Mookie Betts", key_prefix="pick")
+        self.assertIsNotNone(msg)
+        assert msg is not None
+        self.assertIn("Opening Fantasy Lineup Assistant", msg)
+        self.assertNotIn("_player_trade_acquire_flow", session)
+        ctx_a_loaded = get_league_context(session, str(ctx_a.get("league_context_id") or ""))
+        ctx_b_loaded = get_league_context(session, str(ctx_b.get("league_context_id") or ""))
+        assert ctx_a_loaded is not None and ctx_b_loaded is not None
+        self.assertEqual(workflow_target_player_names(ctx_a_loaded, TRADE_MODE_ACQUIRE), ["Mookie Betts"])
+        self.assertEqual(workflow_target_player_names(ctx_b_loaded, TRADE_MODE_ACQUIRE), [])
+        trade_handoff = session.get("_trade_center_handoff") or {}
+        self.assertEqual(trade_handoff.get("receive_players"), ["Mookie Betts"])
+        self.assertEqual(trade_handoff.get("trade_partner"), "Rivals")
 
 
 if __name__ == "__main__":

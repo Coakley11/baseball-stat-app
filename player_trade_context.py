@@ -248,7 +248,7 @@ def collect_player_roster_contexts(session: dict[str, Any], player_name: str) ->
             found = False
             for prow in players:
                 pname = _player_name_from_mapping(prow)
-                if pname and _player_names_match(pname, target):
+                if pname and player_names_match(pname, target):
                     found = True
                     break
             if not found:
@@ -376,6 +376,48 @@ def _finalize_trade_acquire(
     mode: str,
     roster_ctx: dict[str, Any],
 ) -> str:
+    try:
+        from player_trade_handoff import queue_player_action_trade_handoff
+
+        ok, msg = queue_player_action_trade_handoff(session, player_name=player, mode=mode)
+        if ok:
+            league_context_id = ""
+            try:
+                from fantasy_league_context import get_active_league_context
+
+                active = get_active_league_context(session) or {}
+                league_context_id = str(active.get("league_context_id") or "").strip()
+            except ImportError:
+                pass
+            if league_context_id:
+                try:
+                    from fantasy_league_context import add_workflow_target
+
+                    owner_team = ""
+                    if mode == TRADE_ACTION_ACQUIRE:
+                        try:
+                            from player_trade_handoff import resolve_active_league_player_trade_eligibility
+
+                            elig = resolve_active_league_player_trade_eligibility(session, player)
+                            owner_team = str(elig.get("owner_team") or "")
+                        except ImportError:
+                            pass
+                    add_workflow_target(
+                        session,
+                        league_context_id,
+                        mode,
+                        player,
+                        owner_team=owner_team or str(roster_ctx.get("team_name") or ""),
+                    )
+                except ImportError:
+                    pass
+            session.pop(TRADE_FLOW_SESSION_KEY, None)
+            return msg
+        session.pop(TRADE_FLOW_SESSION_KEY, None)
+        return msg or f"Could not start trade workflow for {player}."
+    except ImportError:
+        pass
+
     apply_roster_context(session, roster_ctx)
     league_context_id = add_trade_flow_target(session, player, mode, roster_ctx=roster_ctx)
     label = "trade candidate" if mode == TRADE_ACTION_TRADE_AWAY else "acquire target"
@@ -405,6 +447,31 @@ def _flow_candidates(trade_contexts: list[dict[str, Any]], acquire_contexts: lis
     if mode == TRADE_ACTION_TRADE_AWAY:
         return list(trade_contexts)
     return list(acquire_contexts)
+
+
+def resolve_active_league_player_trade_eligibility(
+    session: dict[str, Any],
+    player_name: str,
+) -> dict[str, Any]:
+    from player_trade_handoff import resolve_active_league_player_trade_eligibility as _resolve
+
+    return _resolve(session, player_name)
+
+
+def start_player_trade_action(
+    session: dict[str, Any],
+    *,
+    player_name: str,
+    mode: str,
+) -> str:
+    """Start Trade Away or Acquire for the active shared league only."""
+    try:
+        from player_trade_handoff import queue_player_action_trade_handoff
+
+        ok, msg = queue_player_action_trade_handoff(session, player_name=player_name, mode=mode)
+        return msg if ok else (msg or "Trade action unavailable.")
+    except ImportError:
+        return start_trade_acquire_flow(session, player_name=player_name, key_prefix="direct")
 
 
 def start_trade_acquire_flow(

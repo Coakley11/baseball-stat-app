@@ -36,7 +36,9 @@ from player_trade_bridge import (
     complete_trade_acquire_flow,
     format_roster_context_label,
     player_trade_shortcut_eligible,
+    start_player_trade_action,
     start_trade_acquire_flow,
+    resolve_active_league_player_trade_eligibility,
 )
 
 import projection_calibration as proj_cal
@@ -7843,16 +7845,16 @@ def format_trade_eval_table(df):
 
 def evaluate_trade(my_give, my_get, my_roster, all_rosters, standings, my_team):
     """Evaluate a proposed fantasy trade from the user's perspective."""
+    from fantasy_trade_category_values import aggregate_trade_package_value
+
     give_df = all_rosters[all_rosters["Player"].isin(my_give)].copy()
     get_df = all_rosters[all_rosters["Player"].isin(my_get)].copy()
 
     cats = ["HR", "RBI", "R", "SB", "BA", "OPS"]
     rows = []
     for cat in cats:
-        give_series = safe_numeric_series(give_df, cat, np.nan)
-        get_series = safe_numeric_series(get_df, cat, np.nan)
-        give_val = give_series.mean() if cat in ["BA", "OPS"] else give_series.sum()
-        get_val = get_series.mean() if cat in ["BA", "OPS"] else get_series.sum()
+        give_val = aggregate_trade_package_value(give_df, cat)
+        get_val = aggregate_trade_package_value(get_df, cat)
         rows.append({"Category": cat, "Give Away": give_val, "Receive": get_val, "Net Gain": get_val - give_val})
 
     trade_df = pd.DataFrame(rows)
@@ -10733,6 +10735,52 @@ def _render_trade_acquire_flow_ui(*, key_prefix: str) -> None:
         st.rerun()
 
 
+def _on_player_acquire_click(*, player_raw: str):
+    display = fullname_base_from_label(str(player_raw or "").strip()) or str(player_raw or "").strip()
+    if not is_active_current_player(display):
+        st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = (
+            f"{display} is historical/inactive and cannot be added to a current trade workflow."
+        )
+        st.rerun()
+        return
+    msg = start_player_trade_action(
+        st.session_state,
+        player_name=display,
+        mode=TRADE_ACTION_ACQUIRE,
+    )
+    st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="player_action_acquire_handoff")
+    except Exception:
+        pass
+    st.rerun()
+
+
+def _on_player_trade_away_click(*, player_raw: str):
+    display = fullname_base_from_label(str(player_raw or "").strip()) or str(player_raw or "").strip()
+    if not is_active_current_player(display):
+        st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = (
+            f"{display} is historical/inactive and cannot be added to a current trade workflow."
+        )
+        st.rerun()
+        return
+    msg = start_player_trade_action(
+        st.session_state,
+        player_name=display,
+        mode=TRADE_ACTION_TRADE_AWAY,
+    )
+    st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="player_action_trade_away_handoff")
+    except Exception:
+        pass
+    st.rerun()
+
+
 def _on_trade_acquire_flow_click(*, player_raw: str, key_prefix: str):
     display = fullname_base_from_label(str(player_raw or "").strip()) or str(player_raw or "").strip()
     if not is_active_current_player(display):
@@ -10908,6 +10956,7 @@ def _render_player_action_button_row(
     show_draft=False,
     show_trade_acquire=False,
     can_draft=False,
+    trade_eligibility: dict | None = None,
 ):
     """One-click player actions with stable button keys and shared dispatch."""
     act_suffix = _qa_key_suffix(f"{key_prefix}|{player_raw}")
@@ -10916,6 +10965,11 @@ def _render_player_action_button_row(
         "team_name": team_name,
         "user_draft_team": user_draft_team,
     }
+    display = fullname_base_from_label(str(player_raw or "").strip()) or str(player_raw or "").strip()
+    if trade_eligibility is None and is_active_current_player(display):
+        trade_eligibility = resolve_active_league_player_trade_eligibility(st.session_state, display)
+    elif trade_eligibility is None:
+        trade_eligibility = {}
 
     on_comparison_page = normalize_page_key(st.session_state.get("active_page") or "") == "Comparison Tool"
 
@@ -10942,31 +10996,85 @@ def _render_player_action_button_row(
     secondary = []
     if show_watchlist:
         secondary.append(("Add to Watchlist", "Add to Watchlist", "add_watchlist"))
-    if show_trade_acquire:
-        secondary.append(("Trade / Acquire", "Trade / Acquire", "trade_acquire_flow"))
     if show_draft and can_draft:
         secondary.append(("Draft this player", "Draft player to next pick", "draft_player"))
 
+    trade_actions = []
+    if show_trade_acquire or trade_eligibility.get("eligible_league") or trade_eligibility.get("is_unrostered"):
+        trade_actions.append(
+            (
+                "Trade Away",
+                bool(trade_eligibility.get("trade_away_enabled")),
+                str(trade_eligibility.get("trade_away_help") or ""),
+                "trade_away",
+            )
+        )
+        trade_actions.append(
+            (
+                "Acquire",
+                bool(trade_eligibility.get("acquire_enabled")),
+                str(trade_eligibility.get("acquire_help") or ""),
+                "acquire",
+            )
+        )
+        if trade_eligibility.get("waiver_enabled"):
+            trade_actions.append(
+                (
+                    page_option_label("Waiver Wire / Add-Drop Center"),
+                    True,
+                    str(trade_eligibility.get("waiver_message") or trade_eligibility.get("block_message") or ""),
+                    "waiver",
+                )
+            )
+
     if secondary:
-        cols2 = st.columns(len(secondary))
-        for col, (label, action, slug) in zip(cols2, secondary):
+        cols = st.columns(len(secondary))
+        for col, (label, action, slug) in zip(cols, secondary):
             with col:
-                if action == "Trade / Acquire":
+                st.button(
+                    label,
+                    key=f"plr_act_{act_suffix}_{slug}_button",
+                    use_container_width=True,
+                    on_click=_on_player_action_click,
+                    kwargs={**kwargs_base, "action": action},
+                )
+
+    if trade_actions:
+        cols_trade = st.columns(len(trade_actions))
+        for col, (label, enabled, help_text, slug) in zip(cols_trade, trade_actions):
+            with col:
+                if slug == "waiver":
                     st.button(
                         label,
                         key=f"plr_act_{act_suffix}_{slug}_button",
                         use_container_width=True,
-                        on_click=_on_trade_acquire_flow_click,
-                        kwargs={"player_raw": player_raw, "key_prefix": key_prefix},
+                        disabled=not enabled,
+                        on_click=_on_player_action_click,
+                        kwargs={**kwargs_base, "action": "Open Waiver Wire"},
+                    )
+                elif slug == "trade_away":
+                    st.button(
+                        label,
+                        key=f"plr_act_{act_suffix}_{slug}_button",
+                        use_container_width=True,
+                        disabled=not enabled,
+                        on_click=_on_player_trade_away_click,
+                        kwargs={"player_raw": player_raw},
                     )
                 else:
                     st.button(
                         label,
                         key=f"plr_act_{act_suffix}_{slug}_button",
                         use_container_width=True,
-                        on_click=_on_player_action_click,
-                        kwargs={**kwargs_base, "action": action},
+                        disabled=not enabled,
+                        on_click=_on_player_acquire_click,
+                        kwargs={"player_raw": player_raw},
                     )
+                if help_text:
+                    st.caption(help_text)
+        block_msg = str(trade_eligibility.get("block_message") or "").strip()
+        if block_msg and not any(t[1] for t in trade_actions):
+            st.caption(block_msg)
 
 
 def player_action_menu(
@@ -11360,7 +11468,16 @@ def player_quick_actions_popover(
             draft_ok = False
         can_draft = active_current and _player_draft_action_available() and draft_ok
         trade_ok, trade_block = player_trade_shortcut_eligible(st.session_state, pick)
-        show_trade_acquire = active_current and trade_ok
+        trade_elig = (
+            resolve_active_league_player_trade_eligibility(st.session_state, pick)
+            if active_current
+            else {}
+        )
+        show_trade_acquire = active_current and (
+            bool(trade_elig.get("eligible_league"))
+            or bool(trade_elig.get("is_unrostered"))
+            or trade_ok
+        )
         flow_key_prefix = f"{key}_qa_{sfx}"
 
         _render_player_action_button_row(
@@ -11376,13 +11493,14 @@ def player_quick_actions_popover(
             show_draft=active_current,
             show_trade_acquire=show_trade_acquire,
             can_draft=can_draft,
+            trade_eligibility=trade_elig,
         )
         if not active_current:
             st.caption("Current fantasy actions are hidden for historical/inactive players. Compare, Trends, and historical analytics remain available.")
         elif already_drafted:
             st.caption("Draft queue is hidden because this player is already drafted.")
         elif active_current and not show_trade_acquire:
-            st.caption("Trade / Acquire is hidden because this player is not on an active or saved team roster.")
+            st.caption(trade_block or "Trade actions require an active shared league with multiple claimed owners.")
 
         _render_trade_acquire_flow_ui(key_prefix=flow_key_prefix)
 
@@ -11446,7 +11564,16 @@ def render_contextual_player_actions(
     already_drafted = player_name in _drafted_player_names_from_room()
     active_available = active_current and not already_drafted
     trade_ok, trade_block = player_trade_shortcut_eligible(st.session_state, player_name)
-    show_trade_acquire = active_current and trade_ok
+    trade_elig = (
+        resolve_active_league_player_trade_eligibility(st.session_state, player_name)
+        if active_current
+        else {}
+    )
+    show_trade_acquire = active_current and (
+        bool(trade_elig.get("eligible_league"))
+        or bool(trade_elig.get("is_unrostered"))
+        or trade_ok
+    )
     label_map = label_map or get_clean_player_label_map_yearly(source_df)
     try:
         from draft_actions import can_draft_player
@@ -11471,6 +11598,7 @@ def render_contextual_player_actions(
             show_draft=active_available and draft_ok,
             show_trade_acquire=show_trade_acquire,
             can_draft=active_available and draft_ok,
+            trade_eligibility=trade_elig,
         )
 
         if not active_current:
@@ -11480,7 +11608,7 @@ def render_contextual_player_actions(
         elif active_current and not show_trade_acquire:
             st.caption(
                 trade_block
-                or "Trade / Acquire is available only for players rostered in your active eligible shared league."
+                or "Trade actions require an active shared league with multiple claimed owners."
             )
 
         _render_trade_acquire_flow_ui(key_prefix=flow_key_prefix)
@@ -23310,8 +23438,9 @@ if active_page == "Fantasy Lineup Assistant":
         pass
 
     try:
-        from fantasy_league_context import consume_trade_acquire_handoff
+        from fantasy_league_context import apply_pending_league_context_activation, consume_trade_acquire_handoff
 
+        apply_pending_league_context_activation(st.session_state)
         consume_trade_acquire_handoff(st.session_state)
     except ImportError:
         pass
@@ -23519,38 +23648,640 @@ if active_page == "Fantasy Lineup Assistant":
                 st.error(f"Trade Center unavailable: {_tc_err}")
 
         elif _assistant_tab == "Lineup Management":
-            from fantasy_lineup_management_ui import LineupManagementDeps, render_lineup_management_page
+            _weekly_team_roster = (
+                roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)].copy()
+                if lineup_team
+                else pd.DataFrame()
+            )
+            if not _weekly_team_roster.empty:
+                _weekly_team_roster = enrich_lineup_roster_positions(_weekly_team_roster)
+                _lineup_fmt_resolved = resolve_lineup_scoring_format(st.session_state)
+                st.session_state["lineup_format"] = _lineup_fmt_resolved
+                _lineup_scored_for_weekly = None
+                try:
+                    _lineup_scored_for_weekly = build_lineup_assistant_scores(
+                        _weekly_team_roster, _lineup_fmt_resolved, None
+                    )
+                except Exception:
+                    _lineup_scored_for_weekly = None
+                try:
+                    from fantasy_weekly_lineup_ui import render_weekly_lineup_section
 
-            _lineup_deps = LineupManagementDeps(
-                build_lineup_assistant_scores=build_lineup_assistant_scores,
-                enrich_lineup_roster_positions=enrich_lineup_roster_positions,
-                parse_custom_lineup_slots=_parse_custom_lineup_slots,
-                build_position_aware_lineup=build_position_aware_lineup,
-                roster_position_slot_list=_roster_position_slot_list,
-                lineup_diagnosis_report=lineup_diagnosis_report,
-                open_waiver_wire_from_lineup_slot=open_waiver_wire_from_lineup_slot,
-                fantasy_filter_changed=fantasy_filter_changed,
-                ensure_select_in_options=ensure_select_in_options,
-                ensure_widget_state=ensure_widget_state,
-                render_output_table=render_output_table,
-                format_lineup_assistant_table=format_lineup_assistant_table,
-                clean_ui_columns=clean_ui_columns,
-                render_contextual_page_nav=render_contextual_page_nav,
-                developer_mode_enabled=developer_mode_enabled,
-                navigate_to_page=navigate_to_page,
-                page_option_label=page_option_label,
-                safe_collection_len=safe_collection_len,
-                lineup_default_hitting_slots=LINEUP_DEFAULT_HITTING_SLOTS,
-                resolve_lineup_scoring_format=resolve_lineup_scoring_format,
+                    render_weekly_lineup_section(
+                        st,
+                        st.session_state,
+                        team_roster=_weekly_team_roster,
+                        lineup_team=str(lineup_team or ""),
+                        on_open_waiver_wire=open_waiver_wire_from_lineup_slot,
+                        scored_roster=_lineup_scored_for_weekly,
+                    )
+                except ImportError:
+                    pass
+
+            _lineup_format_options = ["5x5 Roto", "Points League", "Head-to-Head Categories"]
+            with st.expander("Start-Sit recommendations", expanded=False):
+                l2, l3 = st.columns(2)
+                with l2:
+                    _lineup_fmt_resolved = resolve_lineup_scoring_format(st.session_state)
+                    st.session_state["lineup_format"] = _lineup_fmt_resolved
+                    ensure_select_in_options("lineup_format", _lineup_format_options, _lineup_fmt_resolved)
+                    lineup_format = st.selectbox(
+                        "Lineup Scoring Mode",
+                        _lineup_format_options,
+                        key="lineup_format",
+                        on_change=fantasy_filter_changed,
+                        help="Roto and Points League follow your global fantasy format (Draft Room / Standings). Head-to-Head is lineup-only.",
+                    )
+                with l3:
+                    _context_bench_default = 12
+                    try:
+                        from fantasy_league_context import get_active_league_context, resolve_context_bench_slot_count
+
+                        _lineup_bench_ctx = get_active_league_context(st.session_state)
+                        _ctx_bench = resolve_context_bench_slot_count(_lineup_bench_ctx)
+                        if _ctx_bench is not None:
+                            _context_bench_default = max(3, min(25, int(_ctx_bench) or 3))
+                    except ImportError:
+                        pass
+                    ensure_widget_state("lineup_bench_rows", _context_bench_default)
+                    bench_rows_to_show = st.slider(
+                        "Bench rows to show",
+                        min_value=3,
+                        max_value=25,
+                        value=int(st.session_state["lineup_bench_rows"]),
+                        key="lineup_bench_rows",
+                        on_change=fantasy_filter_changed,
+                    )
+            if developer_mode_enabled():
+                with st.sidebar.expander("Lineup data trace", expanded=False):
+                    _lu_diag = {
+                        "roster_rows": len(roster_stats),
+                        "stats_loaded_at": st.session_state.get("_fantasy_standings_stats_loaded_at"),
+                        "stats_source": st.session_state.get("_fantasy_standings_stats_source"),
+                        "lineup_team": lineup_team,
+                        "lineup_team_in_options": lineup_team in lineup_teams,
+                        "all_teams": lineup_teams,
+                        "lineup_format": st.session_state.get("lineup_format"),
+                        "room_format": st.session_state.get("room_format"),
+                        "standings_scoring_format": st.session_state.get("standings_scoring_format"),
+                        "room_your_team": st.session_state.get("room_your_team"),
+                        "draft_room_pick_count": safe_collection_len(st.session_state.get("draft_room_table")),
+                        "cloud_restore_source": st.session_state.get("_fantasy_restore_source"),
+                    }
+                    for _k, _v in _lu_diag.items():
+                        st.text(f"{_k}: {_v}")
+
+            _context_lineup_slots = None
+            _lineup_active_context = None
+            _context_has_slots = False
+            use_util = True
+            custom_slots_text = ""
+            try:
+                from fantasy_league_context import (
+                    context_has_roster_slots,
+                    get_active_league_context,
+                    resolve_context_lineup_slots,
+                )
+
+                _lineup_active_context = get_active_league_context(st.session_state)
+                _context_has_slots = context_has_roster_slots(_lineup_active_context)
+                if _context_has_slots:
+                    _context_lineup_slots = resolve_context_lineup_slots(_lineup_active_context)
+            except ImportError:
+                pass
+
+            # A saved context with no roster-slot rules (e.g. a mock-draft simulation)
+            # must not be filled with a default 15-player lineup. Suppress positional
+            # completion checks and analyze category/value/balance only.
+            _context_no_slot_config = bool(_lineup_active_context) and not _context_has_slots
+
+            if _context_lineup_slots:
+                st.caption(
+                    f"**Active league context slots ({len(_context_lineup_slots)}):** "
+                    f"{', '.join(_context_lineup_slots)}. "
+                    "Lineup needs and recommendations use this format — not the default 15-player template."
+                )
+            elif _context_no_slot_config:
+                st.info(
+                    "This mock draft was saved without roster-slot settings, so analysis focuses "
+                    "on player value, category balance, and team strengths rather than missing "
+                    "lineup positions."
+                )
+            else:
+                with st.expander("Starting lineup slots (optional)"):
+                    ensure_widget_state("lineup_include_util", True)
+                    use_util = st.checkbox(
+                        "Include UTIL slot",
+                        key="lineup_include_util",
+                        help="Uncheck if your league has no UTIL. A custom slot list below replaces defaults when provided.",
+                        on_change=fantasy_filter_changed,
+                    )
+                    custom_slots_text = st.text_input(
+                        "Custom slot order (comma-separated)",
+                        placeholder="e.g. C, 1B, 2B, 3B, SS, OF, OF, OF, UTIL",
+                        key="lineup_custom_slots",
+                        help="Valid tokens: C, 1B, 2B, 3B, SS, OF, LF, CF, RF, UTIL. Leave blank for default order.",
+                        on_change=fantasy_filter_changed,
+                    )
+
+            custom_weights = None
+            if lineup_format == "Points League":
+                with st.expander("Custom Points Scoring"):
+                    pw1, pw2, pw3, pw4 = st.columns(4)
+                    with pw1:
+                        w_r = st.number_input("Run Pts", value=1.0, step=0.5, key="lineup_pts_r")
+                        w_rbi = st.number_input("RBI Pts", value=1.0, step=0.5, key="lineup_pts_rbi")
+                    with pw2:
+                        w_hr = st.number_input("HR Pts", value=4.0, step=0.5, key="lineup_pts_hr")
+                        w_sb = st.number_input("SB Pts", value=2.0, step=0.5, key="lineup_pts_sb")
+                    with pw3:
+                        w_h = st.number_input("Hit Pts", value=1.0, step=0.5, key="lineup_pts_h")
+                        w_bb = st.number_input("Walk Pts", value=1.0, step=0.5, key="lineup_pts_bb")
+                    with pw4:
+                        w_ops = st.number_input("OPS Weight", value=10.0, step=1.0, key="lineup_pts_ops")
+                    custom_weights = {"R": w_r, "RBI": w_rbi, "HR": w_hr, "SB": w_sb, "H": w_h, "BB": w_bb, "OPS": w_ops}
+
+            team_roster = roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)].copy()
+            if team_roster.empty:
+                st.warning("No players found for the selected team.")
+            else:
+            team_roster = enrich_lineup_roster_positions(team_roster)
+            lineup_scored_for_weekly = None
+            try:
+                lineup_scored_for_weekly = build_lineup_assistant_scores(
+                    team_roster, lineup_format, custom_weights
+                )
+            except Exception:
+                lineup_scored_for_weekly = None
+            try:
+                from fantasy_perf_cache import (
+                    _df_sig,
+                    get_cached_lineup_scores,
+                    lineup_scores_cache_key,
+                    store_lineup_scores,
+                )
+                from page_perf_phases import session_perf_phase
+
+                if _context_lineup_slots:
+                    _slot_list_preview = list(_context_lineup_slots)
+                elif _context_no_slot_config:
+                    _slot_list_preview = _roster_position_slot_list(team_roster)
+                else:
+                    _slot_list_preview = _parse_custom_lineup_slots(custom_slots_text)
+                    if _slot_list_preview is None:
+                        _slot_list_preview = list(LINEUP_DEFAULT_HITTING_SLOTS)
+                        if not use_util:
+                            _slot_list_preview = [s for s in _slot_list_preview if s != "UTIL"]
+                _lineup_cache_key = lineup_scores_cache_key(
+                    team=str(lineup_team),
+                    lineup_format=str(lineup_format),
+                    roster_sig=_df_sig(team_roster, extra="lineup"),
+                    custom_weights=custom_weights,
+                    slot_sig=",".join(_slot_list_preview),
+                )
+                scored = get_cached_lineup_scores(st.session_state, _lineup_cache_key)
+                if scored is None:
+                    with session_perf_phase(st.session_state, "lineup_assistant_scores"):
+                        scored = build_lineup_assistant_scores(team_roster, lineup_format, custom_weights)
+                    store_lineup_scores(st.session_state, _lineup_cache_key, scored)
+            except ImportError:
+                scored = build_lineup_assistant_scores(team_roster, lineup_format, custom_weights)
+            scored = scored.sort_values("Lineup Confidence", ascending=False)
+
+            if _context_lineup_slots:
+                slot_list = list(_context_lineup_slots)
+            elif _context_no_slot_config:
+                # No saved roster-slot rules: derive slots from the players actually
+                # on the roster so no fake missing positions are generated.
+                slot_list = _roster_position_slot_list(team_roster)
+            else:
+                slot_list = _parse_custom_lineup_slots(custom_slots_text)
+                if slot_list is None:
+                    slot_list = list(LINEUP_DEFAULT_HITTING_SLOTS)
+                    if not use_util:
+                        slot_list = [s for s in slot_list if s != "UTIL"]
+                elif not use_util:
+                    slot_list = [s for s in slot_list if s != "UTIL"]
+
+            lineup_pkg = build_position_aware_lineup(scored, slots=slot_list)
+            starters = lineup_pkg["lineup_df"]
+
+            # Mock drafts without slot rules must not surface positional-completion
+            # warnings or invented roster needs.
+            if _context_no_slot_config:
+                lineup_pkg["slot_warnings"] = []
+                lineup_pkg["missing_slots"] = []
+
+            for w in lineup_pkg["slot_warnings"]:
+                st.warning(w)
+
+            st.subheader("Recommended Starters")
+            st.caption(
+                "Position-aware starters for your active team. **Start/Sit Recommendation** shows the call; "
+                "**Lineup Reason** explains confidence and why."
             )
-            render_lineup_management_page(
-                st,
-                st.session_state,
-                roster_stats=roster_stats,
-                lineup_team=str(lineup_team or ""),
-                lineup_teams=lineup_teams,
-                deps=_lineup_deps,
+            if not starters.empty:
+                try:
+                    from player_photos import get_player_photo_info, inject_player_photo_styles, render_rec_card_photo_html
+
+                    inject_player_photo_styles(st)
+                    photo_cells: list[str] = []
+                    for _, srow in starters.head(9).iterrows():
+                        pname = str(srow.get("Player") or srow.get("fullName") or "")
+                        slot_lbl = str(srow.get("Fantasy slot") or "")
+                        photo_info = get_player_photo_info(full_name=pname, row=srow, use_api=True)
+                        photo_html = render_rec_card_photo_html(photo_info, alt=pname)
+                        photo_cells.append(
+                            f'<div style="text-align:center;min-width:64px;">{photo_html}'
+                            f'<div style="font-size:0.7rem;font-weight:600;">{slot_lbl}</div>'
+                            f'<div style="font-size:0.68rem;color:#64748b;">{pname.split()[-1] if pname else ""}</div></div>'
+                        )
+                    if photo_cells:
+                        st.markdown(
+                            f'<div style="display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 12px;">{"".join(photo_cells)}</div>',
+                            unsafe_allow_html=True,
+                        )
+                except ImportError:
+                    pass
+            starter_cols = [
+                "Fantasy slot",
+                "Player",
+                "Primary Position",
+                "MLB Team",
+                "Start/Sit Recommendation",
+                "Lineup Confidence",
+                "Momentum Score",
+                "Consistency Score",
+                "Volatility Meter",
+                "HR",
+                "RBI",
+                "R",
+                "SB",
+                "BA",
+                "OPS",
+                "Lineup Reason",
+            ]
+            if starters.empty:
+                st.info("No eligible players matched every required hitting slot — check warnings above and your roster’s Primary Position values.")
+            starter_disp_rows = max(1, min(15, len(starters))) if not starters.empty else 1
+            render_output_table(
+                format_lineup_assistant_table(clean_ui_columns(starters[[c for c in starter_cols if c in starters.columns]])),
+                key="lineup_recommended_starters",
+                file_name="lineup_recommended_starters.csv",
+                display_rows=starter_disp_rows,
             )
+            render_contextual_page_nav(
+                "Fantasy Lineup Assistant",
+                "after_lineup",
+                label="Analyze this roster in…",
+                extra_context={"team": lineup_team},
+            )
+
+            st.subheader("Lineup Diagnosis / How to Improve This Team")
+            st.caption(
+                "Uses **Standings Tracker current-season stats** merged with your Draft Room roster. "
+                "**Lineup** = the **position-aware recommended starters** above; **team** = full drafted team on this page. "
+                "Shares and ranks compare starter totals to the whole team — not projected rest-of-season."
+            )
+            if lineup_format == "5x5 Roto":
+                ensure_select_in_options("lineup_diagnosis_rate_col", ["BA", "OBP"], "BA")
+                diag_rate_choice = st.radio(
+                    "Roto rate category",
+                    ["BA", "OBP"],
+                    horizontal=True,
+                    key="lineup_diagnosis_rate_col",
+                    help="OBP requires an OBP column in your loaded stats.",
+                )
+            else:
+                diag_rate_choice = "BA"
+                st.caption("For non-roto modes, the table still uses raw HR/R/RBI/SB/BA from loaded stats.")
+
+            rate_for_diag = str(diag_rate_choice).upper() if lineup_format == "5x5 Roto" else "BA"
+            if rate_for_diag == "OBP" and "OBP" not in starters.columns:
+                rate_for_diag = "BA"
+                st.caption("OBP not found in roster stats — using **BA** for the rate row.")
+
+            diag = lineup_diagnosis_report(
+                starters,
+                scored,
+                lineup_format,
+                rate_col=rate_for_diag,
+                missing_slots=lineup_pkg["missing_slots"],
+                slot_warnings=lineup_pkg["slot_warnings"],
+                league_roster_df=roster_stats,
+            )
+
+            _outlook_line = ""
+            _strength_cats: list[str] = []
+            _weakness_cats: list[str] = []
+            _cat_ranks: dict[str, int] = {}
+            _cat_values: dict[str, float] = {}
+            _n_teams = 0
+            _needs: dict = {}
+            _waiver_pool = pd.DataFrame()
+            _ctx = None
+            try:
+                from fantasy_league_context import get_active_league_context
+
+                _ctx = get_active_league_context(st.session_state)
+                _ctx_id = str((_ctx or {}).get("league_context_id") or "")
+                _roster_sig = ""
+                try:
+                    from fantasy_perf_cache import _df_sig
+
+                    _roster_sig = _df_sig(roster_stats, extra=str(lineup_team or ""))
+                except ImportError:
+                    _roster_sig = str(len(roster_stats))
+                _stats_sig = str(st.session_state.get("_fantasy_current_hitter_stats_sig") or "")
+                _diag_cache_key = None
+                try:
+                    from fantasy_perf_cache import (
+                        get_cached_lineup_diagnosis,
+                        lineup_diagnosis_cache_key,
+                        store_lineup_diagnosis,
+                    )
+
+                    _diag_cache_key = lineup_diagnosis_cache_key(
+                        context_id=_ctx_id,
+                        team=str(lineup_team or ""),
+                        roster_sig=_roster_sig,
+                        stats_sig=_stats_sig,
+                        lineup_format=str(lineup_format or ""),
+                        rate_col=str(rate_for_diag or ""),
+                        missing_slots=tuple(str(s) for s in (lineup_pkg.get("missing_slots") or [])),
+                    )
+                    _cached_diag = get_cached_lineup_diagnosis(st.session_state, _diag_cache_key)
+                except ImportError:
+                    _cached_diag = None
+                    _diag_cache_key = None
+
+                if isinstance(_cached_diag, dict):
+                    _needs = dict(_cached_diag.get("needs") or {})
+                    _cat_ranks = dict(_cached_diag.get("category_ranks") or {})
+                    _cat_values = dict(_cached_diag.get("category_values") or {})
+                    _n_teams = int(_cached_diag.get("n_teams") or 0)
+                    _strength_cats = list(_cached_diag.get("strength_cats") or [])
+                    _weakness_cats = list(_cached_diag.get("weakness_cats") or [])
+                    _outlook_line = str(_cached_diag.get("outlook_line") or "")
+                    _pool_df = _cached_diag.get("waiver_pool")
+                    if isinstance(_pool_df, pd.DataFrame):
+                        _waiver_pool = _pool_df.copy()
+                else:
+                    try:
+                        from page_perf_phases import session_perf_phase
+
+                        _diag_phase = session_perf_phase(st.session_state, "lineup_diagnosis_bundle")
+                    except ImportError:
+                        from contextlib import nullcontext
+
+                        _diag_phase = nullcontext()
+                    with _diag_phase:
+                        from fantasy_waiver_wire import analyze_current_team_needs, build_waiver_pool, merge_current_season_stats
+
+                        _my_team_df = (
+                            roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)]
+                            if "Team" in roster_stats.columns
+                            else roster_stats
+                        )
+                        if not _my_team_df.empty:
+                            _needs = analyze_current_team_needs(_my_team_df, roster_stats)
+                            _cat_ranks = dict(_needs.get("category_ranks") or {})
+                            _cat_values = dict(_needs.get("category_values") or {})
+                            _n_teams = int(_needs.get("n_teams") or 0)
+                        _hit = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
+                        _pit = st.session_state.get("_fantasy_current_pitcher_stats", pd.DataFrame())
+                        _pool = merge_current_season_stats(_hit, _pit)
+                        _waiver_pool = build_waiver_pool(_pool, _ctx) if not _pool.empty else pd.DataFrame()
+                        from fantasy_actionable_recommendations import (
+                            league_strength_categories,
+                            league_weakness_categories,
+                            team_outlook_summary,
+                        )
+
+                        _strength_cats = league_strength_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
+                        _weakness_cats = league_weakness_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
+                        if _needs.get("strengths"):
+                            _strength_cats = list(_needs.get("strengths") or _strength_cats)[:2]
+                        if _needs.get("weaknesses"):
+                            _weakness_cats = list(_needs.get("weaknesses") or _weakness_cats)[:2]
+                        _outlook, _confidence, _stars = team_outlook_summary(
+                            strong_cats=_strength_cats,
+                            weak_cats=_weakness_cats,
+                            category_ranks=_cat_ranks,
+                            n_teams=_n_teams,
+                        )
+                        _outlook_line = f"**Team Outlook:** {_outlook} · **Confidence:** {_confidence} · {_stars}"
+                    if _diag_cache_key is not None:
+                        try:
+                            from fantasy_perf_cache import store_lineup_diagnosis
+
+                            store_lineup_diagnosis(
+                                st.session_state,
+                                _diag_cache_key,
+                                {
+                                    "needs": _needs,
+                                    "category_ranks": _cat_ranks,
+                                    "category_values": _cat_values,
+                                    "n_teams": _n_teams,
+                                    "strength_cats": _strength_cats,
+                                    "weakness_cats": _weakness_cats,
+                                    "outlook_line": _outlook_line,
+                                    "waiver_pool": _waiver_pool.copy() if not _waiver_pool.empty else pd.DataFrame(),
+                                },
+                            )
+                        except ImportError:
+                            pass
+            except Exception:
+                pass
+
+            if diag.get("slot_gaps"):
+                st.warning(str(diag["slot_gaps"]))
+                if lineup_pkg.get("missing_slots"):
+                    if st.button(
+                        "View Waiver Options For Open Positions",
+                        key="lineup_open_waiver_for_open_slots_btn",
+                        use_container_width=False,
+                    ):
+                        navigate_to_page("Waiver Wire / Add-Drop Center")
+            elif diag.get("weakest_pos"):
+                with st.container(border=True):
+                    try:
+                        from fantasy_actionable_recommendations import build_actionable_position_weakness_note
+
+                        grp_col = (
+                            "Fantasy slot"
+                            if "Fantasy slot" in starters.columns
+                            else "Primary Position"
+                            if "Primary Position" in starters.columns
+                            else None
+                        )
+                        worst_starters = (
+                            starters[starters[grp_col].astype(str) == str(diag["weakest_pos"])]
+                            if grp_col
+                            else pd.DataFrame()
+                        )
+                        st.markdown(
+                            build_actionable_position_weakness_note(
+                                worst_pos=str(diag["weakest_pos"]),
+                                worst_val=float(diag.get("weakest_pos_val") or 0),
+                                starter_df=worst_starters,
+                                waiver_pool=_waiver_pool,
+                                needs=_needs,
+                                benchmark=diag.get("weakest_pos_benchmark"),
+                            )
+                        )
+                    except ImportError:
+                        if diag.get("position_note"):
+                            st.markdown(str(diag["position_note"]))
+            if _outlook_line:
+                st.caption(_outlook_line.replace("**Team Outlook:**", "Team Outlook:"))
+
+            _team_summary: dict = {}
+            try:
+                from fantasy_actionable_recommendations import (
+                    build_condensed_team_summary,
+                    render_condensed_team_summary,
+                )
+
+                _team_summary = build_condensed_team_summary(
+                    strong_cats=_strength_cats,
+                    weak_cats=_weakness_cats,
+                    needs=_needs,
+                    waiver_pool=_waiver_pool,
+                    league_context=_ctx if isinstance(_ctx, dict) else None,
+                )
+                with st.container(border=True):
+                    render_condensed_team_summary(st, _team_summary)
+            except ImportError:
+                _team_summary = {}
+
+            if _needs:
+                try:
+                    from fantasy_waiver_wire import build_category_action_table, style_category_action_table
+
+                    _cat_action = build_category_action_table(_needs)
+                    if not _cat_action.empty:
+                        st.markdown("##### Category standings vs league")
+                        st.dataframe(
+                            style_category_action_table(_cat_action),
+                            width="stretch",
+                            hide_index=True,
+                        )
+                except ImportError:
+                    pass
+            elif not diag["hitting_table"].empty:
+                ht_disp = diag["hitting_table"].copy()
+                if "Rel. strength (0–100)" in ht_disp.columns:
+                    rel_vals = pd.to_numeric(ht_disp["Rel. strength (0–100)"], errors="coerce")
+                    if rel_vals.isna().all() or rel_vals.nunique(dropna=True) <= 1:
+                        ht_disp = ht_disp.drop(columns=["Rel. strength (0–100)"])
+                mask_rate = ht_disp["Category"].isin(["AVG", "OBP"])
+                ht_disp.loc[mask_rate, "Lineup total"] = pd.to_numeric(ht_disp.loc[mask_rate, "Lineup total"], errors="coerce").round(3)
+                ht_disp.loc[~mask_rate, "Lineup total"] = pd.to_numeric(ht_disp.loc[~mask_rate, "Lineup total"], errors="coerce").round(0).astype("Int64")
+                ht_disp["% of team"] = pd.to_numeric(ht_disp["% of team"], errors="coerce").round(1)
+                st.markdown("##### Category strength (starters)")
+                st.dataframe(ht_disp, width="stretch", hide_index=True)
+
+            if diag.get("pitching_table") is not None and not diag["pitching_table"].empty:
+                st.markdown("##### Pitching snapshot (full roster — if columns exist)")
+                st.dataframe(diag["pitching_table"], width="stretch", hide_index=True)
+
+
+            try:
+                from fantasy_actionable_recommendations import build_team_actionable_summary, render_waiver_strategy_cards
+
+                _action_lines = build_team_actionable_summary(
+                    strong_cats=_strength_cats,
+                    weak_cats=_weakness_cats,
+                    position_note=str(diag.get("position_note") or ""),
+                    needs=_needs,
+                    waiver_pool=_waiver_pool,
+                    league_rosters=roster_stats,
+                    my_team=str(lineup_team or ""),
+                    league_context=_ctx if isinstance(_ctx, dict) else None,
+                )
+                _waiver_cards = list((_team_summary or {}).get("waiver_targets") or [])
+                if _waiver_cards:
+                    render_waiver_strategy_cards(st, _waiver_cards)
+                for _action_line in _action_lines:
+                    if _action_line == "__WAIVER_CARDS__":
+                        continue
+                    st.markdown(_action_line)
+                if _action_lines or _waiver_cards:
+                    act_w, act_s = st.columns(2)
+                    with act_w:
+                        if st.button(
+                            page_option_label("Waiver Wire / Add-Drop Center"),
+                            key="lineup_open_waiver_wire_btn",
+                            use_container_width=True,
+                        ):
+                            navigate_to_page("Waiver Wire / Add-Drop Center")
+                    with act_s:
+                        if st.button(
+                            page_option_label("Fantasy Standings Tracker"),
+                            key="lineup_open_standings_btn",
+                            use_container_width=True,
+                        ):
+                            navigate_to_page("Fantasy Standings Tracker")
+            except Exception as exc:
+                if developer_mode_enabled():
+                    st.caption(f"Action summary unavailable: {type(exc).__name__}: {exc}")
+            if diag.get("balance_label"):
+                st.caption(diag["balance_label"])
+
+            rec_df = pd.DataFrame(diag.get("recommendations") or [])
+            if not rec_df.empty and not _waiver_pool.empty and _needs:
+                try:
+                    from fantasy_actionable_recommendations import enrich_recommendations_with_waiver_targets
+
+                    enriched = enrich_recommendations_with_waiver_targets(
+                        rec_df.to_dict(orient="records"),
+                        _waiver_pool,
+                        needs=_needs,
+                    )
+                    rec_df = pd.DataFrame(enriched)
+                except ImportError:
+                    pass
+            elif not rec_df.empty:
+                try:
+                    from fantasy_waiver_wire import analyze_current_team_needs, build_waiver_pool, merge_current_season_stats
+                    from fantasy_actionable_recommendations import enrich_recommendations_with_waiver_targets
+
+                    _hit = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
+                    _pit = st.session_state.get("_fantasy_current_pitcher_stats", pd.DataFrame())
+                    _pool = merge_current_season_stats(_hit, _pit)
+                    from fantasy_league_context import get_active_league_context
+
+                    _ctx = get_active_league_context(st.session_state)
+                    _waiver_pool = build_waiver_pool(_pool, _ctx) if not _pool.empty else pd.DataFrame()
+                    _my_roster = scored[scored["Team"].astype(str) == str(lineup_team)] if "Team" in scored.columns else scored
+                    _needs = analyze_current_team_needs(_my_roster, roster_stats) if not _my_roster.empty else {}
+                    enriched = enrich_recommendations_with_waiver_targets(
+                        rec_df.to_dict(orient="records"),
+                        _waiver_pool,
+                        needs=_needs,
+                    )
+                    rec_df = pd.DataFrame(enriched)
+                except ImportError:
+                    pass
+                st.subheader("Actionable Recommendations")
+                st.caption("Concrete next steps — trades, adds, and category repairs for your weakest areas.")
+                st.dataframe(rec_df, width="stretch", hide_index=True)
+
+            st.subheader("Bench / Sit / Watch List")
+            st.caption("Borderline options not in the recommended lineup — compare **Lineup Reason** vs your starters.")
+            assigned_ix = set(starters.index) if not starters.empty else set()
+            bench_pool = scored.drop(index=list(assigned_ix), errors="ignore") if assigned_ix else scored
+            bench = bench_pool.sort_values("Lineup Confidence", ascending=False).head(bench_rows_to_show).copy()
+            render_output_table(
+                format_lineup_assistant_table(clean_ui_columns(bench[[c for c in starter_cols if c in bench.columns]])),
+                key="lineup_bench_watch",
+                file_name="lineup_bench_watch.csv",
+                display_rows=bench_rows_to_show,
+            )
+
+            st.divider()
+
     save_page_state(active_page)
     flush_fantasy_section_edits(st.session_state, "lineup", st, reason="fantasy_lineup_page_save")
     _page_perf_end(active_page)
