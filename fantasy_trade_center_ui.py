@@ -7,17 +7,26 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from fantasy_trade_analysis import analysis_matches_selection, build_trade_analysis_package
 from fantasy_trade_builder_state import (
     ANY_TRADE_PARTNER,
     apply_pending_to_logical_state,
     build_search_summary,
     builder_widget_keys,
-    clear_builder_widgets,
     migrate_legacy_builder_keys,
+    prepare_builder_widget_state,
+    prune_invalid_receive_for_partner,
     queue_pending_builder_update,
     receive_options_for_partner,
     resolve_effective_partner,
-    sync_builder_widgets_from_logical,
+    save_logical_state_from_widgets,
+    scope_fingerprint_changed,
+)
+from fantasy_trade_player_index import (
+    format_player_option_label,
+    format_player_stat_line,
+    format_position_label,
+    stats_updated_caption,
 )
 from fantasy_trade_ideas import (
     LINEUP_TRADE_CENTER_STATE_KEY,
@@ -219,10 +228,6 @@ def _save_shared_trade_state(session: dict[str, Any], scope_key: str, state: dic
     session[LINEUP_TRADE_CENTER_STATE_KEY] = dict(state)
 
 
-def _player_chip(name: str) -> str:
-    return f'<span class="tc-chip">{html_lib.escape(name)}</span>'
-
-
 OFFERS_ACTIVITY_TABS: tuple[str, ...] = ("Active Offers", "Trade History")
 OFFERS_ACTIVITY_TAB_KEY_SUFFIX = "offers_activity_tab"
 OFFERS_ACTIVITY_WIDGET_KEY_SUFFIX = "offers_activity_widget"
@@ -236,13 +241,92 @@ def _offers_activity_widget_key(scope_key: str) -> str:
     return f"{scope_key}|{OFFERS_ACTIVITY_WIDGET_KEY_SUFFIX}"
 
 
-def _format_idea_badges(idea: dict[str, Any]) -> tuple[str, str, str]:
+def _format_idea_badges(idea: dict[str, Any]) -> tuple[str, str, str, str]:
     recommendation = str(idea.get("Recommendation") or "Fair")
     fit_raw = pd.to_numeric(idea.get("Trade Fit Score"), errors="coerce")
     fair_raw = pd.to_numeric(idea.get("Fairness Score") or idea.get("Fairness Gap"), errors="coerce")
     fit = f"{int(round(float(fit_raw)))}/100" if pd.notna(fit_raw) else "—"
     value_match = f"{int(round(float(fair_raw)))}/100" if pd.notna(fair_raw) else "—"
-    return recommendation, fit, value_match
+    rec_lower = recommendation.lower()
+    if "decline" in rec_lower or "avoid" in rec_lower or "weak" in rec_lower:
+        tone = "red"
+    elif "fair" in rec_lower or "slight" in rec_lower:
+        tone = "amber"
+    else:
+        tone = "green"
+    return recommendation, fit, value_match, tone
+
+
+def _badge_style(tone: str) -> str:
+    if tone == "red":
+        return "background:#fee2e2;color:#991b1b;"
+    if tone == "amber":
+        return "background:#fef3c7;color:#92400e;"
+    return "background:#dcfce7;color:#166534;"
+
+
+def _render_player_lines(st: Any, roster_stats: pd.DataFrame, names: list[str], *, heading: str) -> None:
+    st.markdown(f"**{heading}**")
+    for name in names:
+        pos = format_position_label(roster_stats, name)
+        stats = format_player_stat_line(roster_stats, name)
+        st.markdown(f"{name} · {pos}")
+        st.caption(stats)
+
+
+def _render_analysis_panel(st: Any, analysis: dict[str, Any], roster_stats: pd.DataFrame) -> None:
+    title = str(analysis.get("title") or "Trade analysis")
+    st.markdown(f"### {html_lib.escape(title)}")
+    st.markdown(
+        f"""<div class="tc-analysis">
+<b>Verdict:</b> {html_lib.escape(str(analysis.get('verdict') or '—'))}<br/>
+<span style="font-size:0.84rem;">{html_lib.escape(str(analysis.get('verdict_text') or ''))}</span>
+</div>""",
+        unsafe_allow_html=True,
+    )
+    player_rows = analysis.get("player_rows") or []
+    if player_rows:
+        st.markdown("**Players in the deal**")
+        for row in player_rows:
+            st.markdown(
+                f"- {html_lib.escape(str(row.get('player') or ''))} · "
+                f"{html_lib.escape(str(row.get('position') or '—'))} · "
+                f"{html_lib.escape(str(row.get('owner') or ''))} — "
+                f"{html_lib.escape(str(row.get('stats_line') or ''))}"
+            )
+    category_rows = analysis.get("category_rows") or []
+    if category_rows:
+        st.markdown("**Current-season statistical comparison**")
+        lines = ["| Category | Give | Receive | Change |", "|---|---:|---:|---:|"]
+        for row in category_rows:
+            cat = str(row.get("category") or "")
+            give_val = row.get("give")
+            recv_val = row.get("receive")
+            change = row.get("change")
+            give_txt = f"{float(give_val):.3f}" if cat == "BA" and pd.notna(give_val) else str(int(give_val)) if pd.notna(give_val) else "—"
+            recv_txt = f"{float(recv_val):.3f}" if cat == "BA" and pd.notna(recv_val) else str(int(recv_val)) if pd.notna(recv_val) else "—"
+            chg_txt = f"{float(change):+.3f}" if cat == "BA" and pd.notna(change) else f"{int(change):+d}" if pd.notna(change) else "—"
+            lines.append(f"| {cat} | {give_txt} | {recv_txt} | {chg_txt} |")
+        st.markdown("\n".join(lines))
+    helps = analysis.get("helps") or []
+    hurts = analysis.get("hurts") or []
+    if helps or hurts:
+        st.markdown("**Projected category direction**")
+        if helps:
+            st.markdown("Helps: " + ", ".join(f"{c} +" for c in helps[:5]))
+        if hurts:
+            st.markdown("Hurts: " + ", ".join(f"{c} -" for c in hurts[:5]))
+    lost = analysis.get("positions_lost") or []
+    gained = analysis.get("positions_gained") or []
+    if lost or gained:
+        st.markdown("**Roster and position impact**")
+        if lost:
+            st.caption(f"Positions lost: {', '.join(lost)}")
+        if gained:
+            st.caption(f"Positions gained: {', '.join(gained)}")
+    interpretation = str(analysis.get("interpretation") or "").strip()
+    if interpretation:
+        st.info(interpretation)
 
 
 def _queue_idea_builder_update(
@@ -269,51 +353,76 @@ def _queue_idea_builder_update(
     session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
 
 
-def _render_idea_card(st: Any, idea: dict[str, Any], idx: int, session: dict[str, Any], scope_key: str) -> None:
-    give = str(idea.get("Give") or "")
-    receive = str(idea.get("Receive") or "")
+def _render_idea_card(
+    st: Any,
+    idea: dict[str, Any],
+    idx: int,
+    session: dict[str, Any],
+    scope_key: str,
+    *,
+    roster_stats: pd.DataFrame,
+) -> None:
+    give_names = _split_player_names(str(idea.get("Give") or ""))
+    receive_names = _split_player_names(str(idea.get("Receive") or ""))
     other = str(idea.get("Other Team") or "")
-    recommendation, fit, value_match = _format_idea_badges(idea)
-    give_chips = " ".join(_player_chip(name) for name in _split_player_names(give))
-    receive_chips = " ".join(_player_chip(name) for name in _split_player_names(receive))
-    st.markdown(
-        f"""<div class="tc-idea-card">
-<p style="margin:0 0 6px;"><b>Trade with {html_lib.escape(other)}</b></p>
-<span class="tc-badge">Recommendation: {html_lib.escape(recommendation)}</span>
-<span class="tc-badge">Team Fit: {html_lib.escape(fit)}</span>
-<span class="tc-badge">Value Match: {html_lib.escape(value_match)}</span>
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0;">
-  <div><div style="font-size:0.72rem;font-weight:700;color:#0b3d6e;">YOU GIVE</div>{give_chips or "—"}</div>
-  <div><div style="font-size:0.72rem;font-weight:700;color:#0b3d6e;">YOU RECEIVE</div>{receive_chips or "—"}</div>
-</div>
-<p style="font-size:0.82rem;margin:4px 0;">Helps: {html_lib.escape(str(idea.get('Category Gains') or idea.get('Why It Helps') or '—'))}</p>
-<p style="font-size:0.76rem;color:#64748b;">Risk: {html_lib.escape(str(idea.get('Main Risk') or '—'))}</p>
-</div>""",
-        unsafe_allow_html=True,
-    )
-    c1, c2, c3 = st.columns(3)
-    if c1.button("Use This Idea", key=f"tc_use_{idx}"):
-        _queue_idea_builder_update(
-            session,
-            scope_key,
-            give_list=_split_player_names(give),
-            receive_list=_split_player_names(receive),
-            other=other,
-            idea_id=f"idea_{idx}",
-            auto_analyze=False,
+    recommendation, fit, value_match, tone = _format_idea_badges(idea)
+    badge_style = _badge_style(tone)
+    helps = str(idea.get("Category Gains") or idea.get("Why It Helps") or "—")
+    hurts = str(idea.get("Category Losses") or idea.get("Hurts") or "—")
+    risk = str(idea.get("Main Risk") or "—")
+
+    with st.container(border=True):
+        st.markdown(f"**TRADE WITH {other.upper()}**")
+        st.markdown(
+            f'<span class="tc-badge" style="{badge_style}">{html_lib.escape(recommendation)} value</span>'
+            f' <span class="tc-badge" style="{_badge_style("amber")}">Team Fit {html_lib.escape(fit)}</span>'
+            f' <span class="tc-badge">Value Match {html_lib.escape(value_match)}</span>',
+            unsafe_allow_html=True,
         )
-        st.rerun()
-    if c2.button("Analyze", key=f"tc_analyze_{idx}"):
-        _queue_idea_builder_update(
-            session,
-            scope_key,
-            give_list=_split_player_names(give),
-            receive_list=_split_player_names(receive),
-            other=other,
-            idea_id=f"idea_{idx}",
-            auto_analyze=True,
-        )
-        st.rerun()
+        left, right = st.columns(2)
+        with left:
+            _render_player_lines(st, roster_stats, give_names, heading="YOU GIVE")
+        with right:
+            _render_player_lines(st, roster_stats, receive_names, heading="YOU RECEIVE")
+        st.caption(stats_updated_caption(session))
+        st.markdown(f"Helps: {helps}")
+        if hurts and hurts != "—":
+            st.markdown(f"Hurts: {hurts}")
+        st.markdown(f"Risk: {risk}")
+        c1, c2, c3 = st.columns(3)
+        if c1.button("Use This Idea", key=f"tc_use_{idx}"):
+            _queue_idea_builder_update(
+                session,
+                scope_key,
+                give_list=give_names,
+                receive_list=receive_names,
+                other=other,
+                idea_id=f"idea_{idx}",
+                auto_analyze=False,
+            )
+            st.rerun()
+        if c2.button("Analyze", key=f"tc_analyze_{idx}"):
+            _queue_idea_builder_update(
+                session,
+                scope_key,
+                give_list=give_names,
+                receive_list=receive_names,
+                other=other,
+                idea_id=f"idea_{idx}",
+                auto_analyze=True,
+            )
+            st.rerun()
+        if c3.button("Propose", key=f"tc_propose_{idx}", disabled=not (give_names and receive_names and other)):
+            _queue_idea_builder_update(
+                session,
+                scope_key,
+                give_list=give_names,
+                receive_list=receive_names,
+                other=other,
+                idea_id=f"idea_{idx}",
+                auto_analyze=False,
+            )
+            st.rerun()
 
 
 def _render_build_analyze(
@@ -323,6 +432,7 @@ def _render_build_analyze(
     ws: dict[str, Any],
     league_id: str,
     scope_key: str,
+    scope_fingerprint: str,
     ensure_select_in_options: Callable[..., Any],
     ensure_multiselect_state: Callable[..., Any],
     evaluate_trade_fn: Callable[..., Any],
@@ -330,6 +440,7 @@ def _render_build_analyze(
     summarize_team_category_needs_fn: Callable[..., dict[str, bool]],
     developer_mode_enabled_fn: Callable[[], bool],
 ) -> None:
+    del ensure_select_in_options, ensure_multiselect_state
     roster_stats = ws["roster_stats"]
     standings = ws["standings"]
     my_team = ws["my_team"]
@@ -342,6 +453,7 @@ def _render_build_analyze(
         return
 
     widget_keys = builder_widget_keys(scope_key)
+    flash_key = f"{scope_key}|builder_flash"
 
     shared = migrate_legacy_builder_keys(session, scope_key, _load_shared_trade_state(session, scope_key))
     partner_options = [ANY_TRADE_PARTNER, *other_teams]
@@ -351,7 +463,7 @@ def _render_build_analyze(
         partner=ANY_TRADE_PARTNER,
         all_other_players=all_other_players,
     )
-    shared = apply_pending_to_logical_state(
+    shared, had_pending = apply_pending_to_logical_state(
         session,
         scope_key,
         shared,
@@ -359,26 +471,22 @@ def _render_build_analyze(
         receive_options=receive_pool,
         other_teams=other_teams,
     )
-
-    synced = sync_builder_widgets_from_logical(
+    force_widgets = had_pending or scope_fingerprint_changed(session, scope_key, scope_fingerprint)
+    prepare_builder_widget_state(
         session,
         scope_key,
         shared,
         my_players=my_players,
         receive_options=receive_pool,
         partner_options=partner_options,
+        force=force_widgets,
     )
-    trade_partner = str(synced.get("other_team") or ANY_TRADE_PARTNER)
-    receive_options = receive_options_for_partner(
-        roster_stats,
-        my_team=my_team,
-        partner=trade_partner,
-        all_other_players=all_other_players,
-    )
-    session[widget_keys["receive"]] = [
-        p for p in (session.get(widget_keys["receive"]) or []) if p in receive_options
-    ]
 
+    flash = str(session.pop(flash_key, "") or "").strip()
+    if flash:
+        st.success(flash)
+
+    trade_partner = str(session.get(widget_keys["partner"]) or ANY_TRADE_PARTNER)
     st.caption(build_search_summary(
         my_team=my_team,
         partner=trade_partner,
@@ -399,8 +507,26 @@ def _render_build_analyze(
         partner=trade_partner,
         all_other_players=all_other_players,
     )
+    for msg in prune_invalid_receive_for_partner(
+        session,
+        scope_key,
+        receive_options=receive_options,
+        roster_stats=roster_stats,
+        my_team=my_team,
+        partner=trade_partner,
+    ):
+        st.info(msg)
     if trade_partner != ANY_TRADE_PARTNER:
         st.caption(f"{len(receive_options)} players on {trade_partner}")
+
+    def _give_label(player: str) -> str:
+        return format_player_option_label(roster_stats, player)
+
+    def _receive_label(player: str) -> str:
+        if trade_partner == ANY_TRADE_PARTNER:
+            owner = resolve_player_owner_team(player, roster_stats, my_team=my_team) or "Unknown"
+            return format_player_option_label(roster_stats, player, owner=owner, include_owner=True)
+        return format_player_option_label(roster_stats, player)
 
     st.markdown('<div class="tc-builder">', unsafe_allow_html=True)
     left, mid, right = st.columns([5, 1, 5])
@@ -410,6 +536,7 @@ def _render_build_analyze(
             "Players I Give",
             my_players,
             key=widget_keys["give"],
+            format_func=_give_label,
             label_visibility="collapsed",
             max_selections=3,
         )
@@ -417,30 +544,14 @@ def _render_build_analyze(
         st.markdown('<div class="tc-exchange">⇄</div>', unsafe_allow_html=True)
     with right:
         st.markdown('<div class="tc-side"><h4>PLAYERS I RECEIVE</h4></div>', unsafe_allow_html=True)
-        receive_label_map: dict[str, str] = {player: player for player in receive_options}
-        receive_display = list(receive_options)
-        if trade_partner == ANY_TRADE_PARTNER:
-            receive_display = []
-            for player in receive_options:
-                owner = resolve_player_owner_team(player, roster_stats, my_team=my_team) or "Unknown"
-                label = f"{player} — {owner}"
-                receive_display.append(label)
-                receive_label_map[label] = player
-            current_receive = [
-                label
-                for label, player in receive_label_map.items()
-                if player in (session.get(widget_keys["receive"]) or [])
-            ]
-            session[widget_keys["receive"]] = [label for label in current_receive if label in receive_display]
-        receive_players_raw = st.multiselect(
+        receive_players = st.multiselect(
             "Players I Receive",
-            receive_display,
+            receive_options,
             key=widget_keys["receive"],
+            format_func=_receive_label,
             label_visibility="collapsed",
             max_selections=3,
         )
-        receive_players = [receive_label_map.get(item, item) for item in receive_players_raw]
-        receive_players = [p for p in receive_players if p in receive_options]
     st.markdown("</div>", unsafe_allow_html=True)
 
     other_team = resolve_effective_partner(trade_partner, receive_players, roster_stats, my_team=my_team)
@@ -474,29 +585,37 @@ def _render_build_analyze(
     auto_analyze = bool(shared.pop("auto_analyze", False))
     analyze = analyze_btn or auto_analyze
     find_ideas = find_ideas_btn
+    persisted_analysis = shared.get("analysis") if isinstance(shared.get("analysis"), dict) else None
 
-    verdict = ""
+    verdict = str((persisted_analysis or {}).get("verdict") or "")
+    analysis_rendered = False
     if analyze and give_players and receive_players:
-        trade_eval, verdict, weighted_gain = evaluate_trade_fn(
-            give_players,
-            receive_players,
-            roster_stats,
-            roster_stats,
-            standings,
-            my_team,
+        package = build_trade_analysis_package(
+            give_players=give_players,
+            receive_players=receive_players,
+            roster_stats=roster_stats,
+            standings=standings,
+            my_team=my_team,
+            evaluate_trade_fn=evaluate_trade_fn,
+            build_trade_verdict_text_fn=build_trade_verdict_text_fn,
+            summarize_team_category_needs_fn=summarize_team_category_needs_fn,
+            source_offer_id=str(shared.get("source_offer_id") or ""),
+            source_idea_id=str(shared.get("source_idea_id") or ""),
         )
-        st.markdown(
-            f"""<div class="tc-analysis">
-<b>Verdict:</b> {html_lib.escape(str(verdict or '—'))}<br/>
-<span style="font-size:0.84rem;">{html_lib.escape(build_trade_verdict_text_fn(trade_eval, weighted_gain))}</span>
-</div>""",
-            unsafe_allow_html=True,
-        )
+        _render_analysis_panel(st, package, roster_stats)
+        shared["analysis"] = package
+        verdict = str(package.get("verdict") or "")
+        analysis_rendered = True
         session[LINEUP_TRADE_IDEAS_DIAG_KEY] = {
             "button_action": "analyze",
             "source_offer_id": shared.get("source_offer_id"),
         }
+    elif analysis_matches_selection(persisted_analysis, give=give_players, receive=receive_players):
+        _render_analysis_panel(st, persisted_analysis, roster_stats)
+        verdict = str(persisted_analysis.get("verdict") or "")
+        analysis_rendered = True
 
+    collapse_ideas = analysis_rendered and bool(persisted_analysis or shared.get("analysis"))
     if find_ideas:
         owner_map = resolve_receive_target_teams(receive_players, roster_stats, my_team=my_team)
         target = other_team if other_team and other_team != ANY_TRADE_PARTNER else None
@@ -516,35 +635,50 @@ def _render_build_analyze(
 
     stored_rows = session.get(LINEUP_TRADE_IDEAS_RESULTS_KEY) or []
     diag = session.get(LINEUP_TRADE_IDEAS_DIAG_KEY) or {}
-    if stored_rows:
+    if stored_rows and not collapse_ideas:
         st.markdown("#### Top trade ideas")
         for idx, row in enumerate(stored_rows[:5]):
-            _render_idea_card(st, row if isinstance(row, dict) else {}, idx, session, scope_key)
+            _render_idea_card(
+                st,
+                row if isinstance(row, dict) else {},
+                idx,
+                session,
+                scope_key,
+                roster_stats=roster_stats,
+            )
         if len(stored_rows) > 5 and st.button("Show more ideas", key="tc_show_more_ideas"):
             for idx, row in enumerate(stored_rows[5:10], start=5):
-                _render_idea_card(st, row if isinstance(row, dict) else {}, idx, session, scope_key)
+                _render_idea_card(
+                    st,
+                    row if isinstance(row, dict) else {},
+                    idx,
+                    session,
+                    scope_key,
+                    roster_stats=roster_stats,
+                )
     elif find_ideas or session.get(LINEUP_TRADE_IDEAS_DIAG_KEY):
-        st.markdown(
-            f'<div class="tc-empty">{html_lib.escape(empty_trade_ideas_message(diag))}</div>',
-            unsafe_allow_html=True,
-        )
+        if not collapse_ideas:
+            st.markdown(
+                f'<div class="tc-empty">{html_lib.escape(empty_trade_ideas_message(diag))}</div>',
+                unsafe_allow_html=True,
+            )
 
-    _save_shared_trade_state(
-        session,
-        scope_key,
-        {
-            "league_id": league_id,
-            "my_team": my_team,
-            "other_team": other_team if other_team != ANY_TRADE_PARTNER else "",
-            "trade_partner": trade_partner,
-            "give_players": list(give_players or []),
-            "get_players": list(receive_players or []),
-            "source_offer_id": shared.get("source_offer_id"),
-            "source_idea_id": shared.get("source_idea_id"),
-            "mode": "analyze" if analyze else "ideas",
-            "verdict": verdict,
-        },
+    saved = save_logical_state_from_widgets(
+        shared,
+        give_players=give_players,
+        receive_players=receive_players,
+        trade_partner=trade_partner,
+        other_team=other_team,
     )
+    if analysis_rendered:
+        saved["analysis"] = shared.get("analysis")
+    if auto_analyze and analysis_rendered:
+        saved.pop("auto_analyze", None)
+    saved["mode"] = "analyze" if analysis_rendered else "ideas"
+    saved["verdict"] = verdict
+    saved["league_id"] = league_id
+    saved["my_team"] = my_team
+    _save_shared_trade_state(session, scope_key, saved)
 
     if propose_btn and give_players and receive_players and other_team:
         try:
@@ -578,6 +712,8 @@ def _render_build_analyze(
                     },
                     "give_selections": give_players,
                     "receive_selections": receive_players,
+                    "force_widgets_last_run": force_widgets,
+                    "had_pending_last_run": had_pending,
                 }
             )
 
@@ -713,6 +849,7 @@ def render_trade_center_tab(
             ws=ws,
             league_id=league_id,
             scope_key=scope_key,
+            scope_fingerprint=scope_fingerprint,
             ensure_select_in_options=ensure_select_in_options,
             ensure_multiselect_state=ensure_multiselect_state,
             evaluate_trade_fn=evaluate_trade_fn,
@@ -892,10 +1029,12 @@ def _render_history_section(st: Any, session: dict[str, Any], *, ws: dict[str, A
         give = proposal.get("proposer_gives") or proposal.get("offered_players") or proposal.get("give_players") or []
         get = proposal.get("proposer_receives") or proposal.get("requested_players") or proposal.get("get_players") or []
         give_names = ", ".join(
-            str(p.get("player_name") if isinstance(p, dict) else p) for p in give
+            f"{str(p.get('player_name') if isinstance(p, dict) else p)} · {format_position_label(ws['roster_stats'], str(p.get('player_name') if isinstance(p, dict) else p))}"
+            for p in give
         )
         get_names = ", ".join(
-            str(p.get("player_name") if isinstance(p, dict) else p) for p in get
+            f"{str(p.get('player_name') if isinstance(p, dict) else p)} · {format_position_label(ws['roster_stats'], str(p.get('player_name') if isinstance(p, dict) else p))}"
+            for p in get
         )
         st.markdown(
             f"""<div class="tc-idea-card">

@@ -16,9 +16,9 @@ from fantasy_trade_builder_state import (
     clear_builder_widgets,
     migrate_legacy_builder_keys,
     pending_builder_key,
+    prepare_builder_widget_state,
     queue_pending_builder_update,
     receive_options_for_partner,
-    sync_builder_widgets_from_logical,
 )
 from fantasy_trade_ideas import TRADE_CENTER_INTERNAL_TAB_KEY
 
@@ -98,7 +98,7 @@ class TradeBuilderStateTests(unittest.TestCase):
             partner=ANY_TRADE_PARTNER,
             all_other_players=["Aaron Judge", "Gunnar Henderson"],
         )
-        logical = apply_pending_to_logical_state(
+        logical, had_pending = apply_pending_to_logical_state(
             session,
             SCOPE,
             {},
@@ -106,19 +106,22 @@ class TradeBuilderStateTests(unittest.TestCase):
             receive_options=receive_pool,
             other_teams=["Team 2", "Team 3"],
         )
+        self.assertTrue(had_pending)
         self.assertEqual(logical["give_players"], ["José Ramírez"])
         self.assertEqual(logical["get_players"], ["Aaron Judge"])
         self.assertTrue(logical["auto_analyze"])
-        synced = sync_builder_widgets_from_logical(
+        prepare_builder_widget_state(
             session,
             SCOPE,
             logical,
             my_players=my_players,
             receive_options=receive_pool,
             partner_options=[ANY_TRADE_PARTNER, "Team 2", "Team 3"],
+            force=had_pending,
         )
-        self.assertEqual(synced["give_players"], ["José Ramírez"])
-        self.assertEqual(synced["get_players"], ["Aaron Judge"])
+        keys = builder_widget_keys(SCOPE)
+        self.assertEqual(session[keys["give"]], ["José Ramírez"])
+        self.assertEqual(session[keys["receive"]], ["Aaron Judge"])
 
     def test_clear_uses_pending_not_widget_pop(self) -> None:
         session: dict = {}
@@ -126,7 +129,7 @@ class TradeBuilderStateTests(unittest.TestCase):
         session[keys["give"]] = ["José Ramírez"]
         session[keys["receive"]] = ["Aaron Judge"]
         queue_pending_builder_update(session, SCOPE, {"clear": True})
-        logical = apply_pending_to_logical_state(
+        logical, _ = apply_pending_to_logical_state(
             session,
             SCOPE,
             {"give_players": ["José Ramírez"], "get_players": ["Aaron Judge"]},
@@ -166,12 +169,47 @@ class TradeBuilderStateTests(unittest.TestCase):
         self.assertNotIn('session["lineup_trade_give_players"]', idea_fn)
         self.assertNotIn("TRADE_CENTER_INTERNAL_WIDGET_KEY", idea_fn)
 
-    def test_render_build_analyze_uses_scoped_widget_keys(self) -> None:
+    def test_render_build_analyze_preserves_widget_values(self) -> None:
         source = (REPO_ROOT / "fantasy_trade_center_ui.py").read_text(encoding="utf-8")
         fn = source.split("def _render_build_analyze", 1)[1].split("\ndef ", 1)[0]
-        self.assertIn("widget_keys = builder_widget_keys", fn)
-        self.assertNotIn('key="lineup_trade_give_players"', fn)
-        self.assertNotIn('session.pop("lineup_trade_give_players"', fn)
+        self.assertIn("prepare_builder_widget_state", fn)
+        self.assertIn("save_logical_state_from_widgets", fn)
+        self.assertNotIn("sync_builder_widgets_from_logical", fn)
+        self.assertNotIn('session[widget_keys["receive"]] = [', fn)
+
+    def test_widgets_not_overwritten_on_ordinary_rerun(self) -> None:
+        session: dict = {}
+        keys = builder_widget_keys(SCOPE)
+        logical = {
+            "give_players": ["José Ramírez"],
+            "get_players": ["Gunnar Henderson"],
+            "trade_partner": "Team 3",
+            "other_team": "Team 3",
+        }
+        prepare_builder_widget_state(
+            session,
+            SCOPE,
+            logical,
+            my_players=["José Ramírez", "Mookie Betts"],
+            receive_options=["Gunnar Henderson", "Aaron Judge"],
+            partner_options=[ANY_TRADE_PARTNER, "Team 2", "Team 3"],
+            force=True,
+        )
+        session[keys["partner"]] = ANY_TRADE_PARTNER
+        session[keys["give"]] = ["Mookie Betts"]
+        session[keys["receive"]] = ["Aaron Judge"]
+        prepare_builder_widget_state(
+            session,
+            SCOPE,
+            logical,
+            my_players=["José Ramírez", "Mookie Betts"],
+            receive_options=["Gunnar Henderson", "Aaron Judge"],
+            partner_options=[ANY_TRADE_PARTNER, "Team 2", "Team 3"],
+            force=False,
+        )
+        self.assertEqual(session[keys["partner"]], ANY_TRADE_PARTNER)
+        self.assertEqual(session[keys["give"]], ["Mookie Betts"])
+        self.assertEqual(session[keys["receive"]], ["Aaron Judge"])
 
     def test_integration_idea_click_then_rerun_applies_selection(self) -> None:
         from fantasy_trade_center_ui import _queue_idea_builder_update
@@ -189,7 +227,7 @@ class TradeBuilderStateTests(unittest.TestCase):
         self.assertEqual(session[TRADE_CENTER_INTERNAL_TAB_KEY], "Build & Analyze")
         keys = builder_widget_keys(SCOPE)
         session[keys["give"]] = []
-        logical = apply_pending_to_logical_state(
+        logical, had_pending = apply_pending_to_logical_state(
             session,
             SCOPE,
             {},
@@ -197,13 +235,14 @@ class TradeBuilderStateTests(unittest.TestCase):
             receive_options=["Aaron Judge", "Gunnar Henderson"],
             other_teams=["Team 2", "Team 3"],
         )
-        sync_builder_widgets_from_logical(
+        prepare_builder_widget_state(
             session,
             SCOPE,
             logical,
             my_players=["José Ramírez"],
             receive_options=["Aaron Judge", "Gunnar Henderson"],
             partner_options=[ANY_TRADE_PARTNER, "Team 2", "Team 3"],
+            force=had_pending,
         )
         self.assertEqual(session[keys["give"]], ["José Ramírez"])
         self.assertEqual(session[keys["receive"]], ["Aaron Judge"])
