@@ -305,6 +305,326 @@ def get_team_identity_trace(session: dict[str, Any]) -> dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
+def _load_shared_doc_for_context(context: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(context, dict):
+        return None
+    league_id = str(resolve_canonical_league_id(context) or "").strip()
+    if not league_id:
+        return None
+    try:
+        from fantasy_shared_league_store import load_shared_league
+
+        loaded = load_shared_league(league_id)
+        return loaded if isinstance(loaded, dict) else None
+    except ImportError:
+        return None
+
+
+def _team_from_live_draft_participants(
+    session: dict[str, Any],
+    room: dict[str, Any] | None,
+) -> str:
+    """Resolve team from this browser's live-draft participant membership only."""
+    try:
+        from draft_room_participant_state import active_participant_team
+
+        team = str(active_participant_team(session) or "").strip()
+        if team:
+            return team
+    except ImportError:
+        pass
+
+    if not isinstance(room, dict):
+        room = session.get("live_draft_room")
+    if not isinstance(room, dict):
+        return ""
+
+    try:
+        from live_draft_team_ownership import load_shared_participants
+
+        participants = load_shared_participants(session)
+        pid = str(session.get("draft_room_participant_id") or "").strip()
+        if pid and pid in participants:
+            meta = participants.get(pid) or {}
+            if isinstance(meta, dict):
+                team = str(meta.get("assigned_team") or "").strip()
+                if team:
+                    return team
+    except ImportError:
+        pass
+
+    membership = session.get("draft_room_participant_membership")
+    if isinstance(membership, dict):
+        pid = str(session.get("draft_room_participant_id") or "").strip()
+        if pid:
+            slot = membership.get(pid)
+            if isinstance(slot, dict):
+                team = str(slot.get("assigned_team") or "").strip()
+                if team:
+                    return team
+
+    candidate = str(session.get("draft_room_participant_team") or "").strip()
+    if candidate and _local_team_preference_allowed(session, candidate, shared_doc=None, context=None):
+        return candidate
+    return ""
+
+
+def _local_team_preference_allowed(
+    session: dict[str, Any],
+    team: str,
+    *,
+    shared_doc: dict[str, Any] | None,
+    context: dict[str, Any] | None,
+) -> bool:
+    candidate = str(team or "").strip()
+    if not candidate:
+        return False
+    uid, _, _, _, _ = session_account_identity(session)
+    if isinstance(shared_doc, dict):
+        owned = owned_team_from_shared_doc(shared_doc, session)
+        if owned and owned == candidate:
+            return True
+    if isinstance(context, dict) and uid:
+        try:
+            from fantasy_league_team_ownership import owned_team_for_user
+
+            owned_ctx = str(owned_team_for_user(context, uid) or "").strip()
+            if owned_ctx and owned_ctx == candidate:
+                return True
+        except ImportError:
+            pass
+    participant = _team_from_live_draft_participants(session, None)
+    return bool(participant and participant == candidate)
+
+
+def resolve_current_account_team_for_live_draft_and_league(
+    session: dict[str, Any],
+    *,
+    room: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+    shared_doc: dict[str, Any] | None = None,
+) -> str:
+    """
+    Canonical team for the signed-in browser — never commissioner/host/first-team fallback.
+
+    Priority: auth identity → live-draft participant → canonical team_ownership →
+    same-account local preference.
+    """
+    uid, external, workspace, _, _ = session_account_identity(session)
+    if room is None:
+        live = session.get("live_draft_room")
+        room = live if isinstance(live, dict) else None
+
+    if shared_doc is None and isinstance(context, dict):
+        shared_doc = _load_shared_doc_for_context(context)
+    if shared_doc is None:
+        try:
+            from fantasy_league_context import get_active_league_context
+
+            active_ctx = get_active_league_context(session)
+            if isinstance(active_ctx, dict):
+                shared_doc = _load_shared_doc_for_context(active_ctx)
+                if context is None:
+                    context = active_ctx
+        except ImportError:
+            pass
+
+    ownership_team = ""
+    if isinstance(shared_doc, dict):
+        ownership_team = owned_team_from_shared_doc(shared_doc, session)
+    if not ownership_team and isinstance(context, dict):
+        overlaid = overlay_workspace_team_on_context(
+            session,
+            context,
+            shared_doc=shared_doc,
+            trace_phase="resolve_current_account_team",
+            record_trace=False,
+        )
+        if isinstance(overlaid, dict):
+            ownership_team = str(overlaid.get("my_team_name") or "").strip()
+
+    participant_team = _team_from_live_draft_participants(session, room)
+    if ownership_team:
+        resolved = ownership_team
+        source = "canonical_team_ownership"
+    elif participant_team:
+        resolved = participant_team
+        source = "live_draft_participant"
+    else:
+        resolved = ""
+        source = ""
+
+    for candidate in (
+        str(session.get("draft_room_participant_team") or "").strip(),
+        str(session.get("room_your_team") or "").strip(),
+    ):
+        if not resolved and candidate and _local_team_preference_allowed(
+            session,
+            candidate,
+            shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
+            context=context if isinstance(context, dict) else None,
+        ):
+            resolved = candidate
+            source = "local_preference"
+            break
+
+    if not resolved and isinstance(context, dict) and uid:
+        try:
+            from fantasy_league_invites import is_league_commissioner
+
+            if is_league_commissioner(context, uid):
+                resolved = str(context.get("my_team_name") or "").strip()
+                source = "commissioner_context"
+        except ImportError:
+            pass
+
+    if resolved:
+        record_team_identity_trace(
+            session,
+            phase="resolve_current_account_team_for_live_draft_and_league",
+            authenticated_workspace=workspace,
+            ownership_resolved_team=ownership_team or None,
+            post_merge_team=resolved,
+            auth_user_id=uid or None,
+            auth_external_id=external or None,
+            resolution_source=source or None,
+        )
+    return resolved
+
+
+def apply_account_team_identity_to_session(
+    session: dict[str, Any],
+    *,
+    room: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+    reason: str = "",
+) -> dict[str, Any]:
+    """Sync account-local team fields after restore/hydration — never mutate canonical rosters."""
+    if room is None:
+        live = session.get("live_draft_room")
+        room = live if isinstance(live, dict) else None
+    if context is None:
+        try:
+            from fantasy_league_context import get_active_league_context
+
+            context = get_active_league_context(session)
+        except ImportError:
+            context = None
+
+    team = resolve_current_account_team_for_live_draft_and_league(
+        session,
+        room=room,
+        context=context,
+    )
+    out: dict[str, Any] = {"team": team, "applied": bool(team), "reason": str(reason or "").strip()}
+    if not team:
+        return out
+
+    session["draft_room_participant_team"] = team
+    session["room_your_team"] = team
+    session["live_draft_my_team"] = team
+
+    if isinstance(room, dict):
+        cfg = dict(room.get("config") or {})
+        cfg["user_team"] = team
+        cfg["your_team"] = team
+        room["config"] = cfg
+        session["live_draft_room"] = room
+
+    membership = session.get("draft_room_participant_membership")
+    pid = str(session.get("draft_room_participant_id") or "").strip()
+    if isinstance(membership, dict) and pid:
+        slot = dict(membership.get(pid) or {})
+        slot["participant_id"] = pid
+        slot["assigned_team"] = team
+        membership[pid] = slot
+        session["draft_room_participant_membership"] = membership
+
+    if isinstance(context, dict):
+        shared_doc = _load_shared_doc_for_context(context)
+        updated = overlay_workspace_team_on_context(
+            session,
+            context,
+            shared_doc=shared_doc,
+            trace_phase="apply_account_team_identity_to_session",
+            record_trace=True,
+        )
+        if isinstance(updated, dict) and str(updated.get("my_team_name") or "").strip():
+            try:
+                from fantasy_league_context import upsert_league_context
+
+                upsert_league_context(session, updated, mark_persist_authoritative=False)
+            except ImportError:
+                pass
+
+    try:
+        from draft_archive_state import get_active_draft_archive
+        from fantasy_league_context import get_league_context_for_archive
+
+        entry = get_active_draft_archive(session)
+        if isinstance(entry, dict):
+            ctx_for_archive = get_league_context_for_archive(session, entry)
+            if isinstance(ctx_for_archive, dict):
+                ctx_for_archive = overlay_workspace_team_on_context(
+                    session,
+                    ctx_for_archive,
+                    trace_phase="apply_account_team_identity_active_archive",
+                    record_trace=False,
+                )
+                if isinstance(ctx_for_archive, dict):
+                    from fantasy_league_context import upsert_league_context
+
+                    upsert_league_context(session, ctx_for_archive, mark_persist_authoritative=False)
+    except ImportError:
+        pass
+
+    out["applied"] = True
+    return out
+
+
+def detect_account_team_mismatch(
+    session: dict[str, Any],
+    *,
+    room: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> tuple[bool, list[str]]:
+    """True when displayed/local team disagrees with canonical account team."""
+    expected = resolve_current_account_team_for_live_draft_and_league(
+        session,
+        room=room,
+        context=context,
+    )
+    if not expected:
+        return False, []
+
+    reasons: list[str] = []
+    observed = {
+        "draft_room_participant_team": str(session.get("draft_room_participant_team") or "").strip(),
+        "room_your_team": str(session.get("room_your_team") or "").strip(),
+    }
+    live = room if isinstance(room, dict) else session.get("live_draft_room")
+    if isinstance(live, dict):
+        cfg = dict(live.get("config") or {})
+        observed["room_config_team"] = str(cfg.get("your_team") or cfg.get("user_team") or "").strip()
+
+    if isinstance(context, dict):
+        observed["context_my_team"] = str(context.get("my_team_name") or "").strip()
+    else:
+        try:
+            from fantasy_league_context import get_active_league_context
+
+            active = get_active_league_context(session)
+            if isinstance(active, dict):
+                observed["context_my_team"] = str(active.get("my_team_name") or "").strip()
+        except ImportError:
+            pass
+
+    for field, value in observed.items():
+        if value and value != expected:
+            reasons.append(f"{field}={value} expected={expected}")
+    return bool(reasons), reasons
+
+
 def resolve_archive_display_team(
     session: dict[str, Any],
     archive_entry: dict[str, Any] | None,
@@ -320,6 +640,9 @@ def resolve_archive_display_team(
             context = get_league_context_for_archive(session, archive_entry)
         except ImportError:
             context = None
+    canonical = resolve_current_account_team_for_live_draft_and_league(session, context=context)
+    if canonical:
+        return canonical
     if isinstance(context, dict):
         team = str(context.get("my_team_name") or "").strip()
         if team:
@@ -339,6 +662,9 @@ def resolve_final_fantasy_lineup_team(session: dict[str, Any]) -> str:
         context = get_active_league_context(session, respect_source_priority=True)
     except ImportError:
         context = None
+    team = resolve_current_account_team_for_live_draft_and_league(session, context=context)
+    if team:
+        return team
     if isinstance(context, dict):
         return str(context.get("my_team_name") or "").strip()
     return ""

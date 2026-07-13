@@ -172,6 +172,8 @@ def enforce_identity_after_state_apply(
     reason: str = "",
     last_mutator: str = "",
     st: Any | None = None,
+    room: dict[str, Any] | None = None,
+    league_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Restore protected browser identity after room/league/disk/cloud apply, then hard-clamp workspace.
@@ -195,6 +197,20 @@ def enforce_identity_after_state_apply(
     if after_enforce != before and mutator:
         session_state[IDENTITY_LAST_MUTATOR_KEY] = mutator
 
+    team_trace: dict[str, Any] = {}
+    try:
+        from fantasy_workspace_team_identity import apply_account_team_identity_to_session
+
+        live_room = room if isinstance(room, dict) else session_state.get("live_draft_room")
+        team_trace = apply_account_team_identity_to_session(
+            session_state,
+            room=live_room if isinstance(live_room, dict) else None,
+            context=league_context if isinstance(league_context, dict) else None,
+            reason=reason or mutator,
+        )
+    except ImportError:
+        pass
+
     trace = {
         "reason": str(reason or "").strip(),
         "last_mutator": mutator,
@@ -203,6 +219,7 @@ def enforce_identity_after_state_apply(
         "workspace_value_after_enforcement": after_enforce,
         "auth_external_id": str(session_state.get("_suite_auth_external_id") or "").strip(),
         "active_workspace_id": after_enforce,
+        "resolved_team": str(team_trace.get("team") or "").strip(),
     }
     session_state[IDENTITY_GUARD_DIAG_KEY] = trace
     return trace
@@ -267,6 +284,61 @@ def apply_state_with_identity_guard(
     )
 
 
+def detect_identity_mismatch(
+    session_state: dict[str, Any],
+    *,
+    room: dict[str, Any] | None = None,
+    league_context: dict[str, Any] | None = None,
+) -> tuple[bool, list[str]]:
+    """True when workspace or team identity is inconsistent for the signed-in account."""
+    reasons: list[str] = []
+    try:
+        from suite_auth import account_scoped_workspace_target, is_auth_enabled, is_authenticated
+
+        if is_auth_enabled() and is_authenticated(session_state):
+            target = str(account_scoped_workspace_target(session_state) or "").strip()
+            active = str(session_state.get("_suite_active_workspace_id") or "").strip()
+            owned = str(session_state.get("_suite_owned_workspace_id") or "").strip()
+            external = str(session_state.get("_suite_auth_external_id") or "").strip()
+            if target:
+                if active and active != target:
+                    reasons.append(f"active_workspace_id={active} expected={target}")
+                if owned and owned != target:
+                    reasons.append(f"owned_workspace_id={owned} expected={target}")
+                try:
+                    from suite_workspace_registry import workspace_access_allowed
+
+                    if active and not workspace_access_allowed(active, session_state=session_state):
+                        reasons.append(f"workspace_access_denied:{active}")
+                except ImportError:
+                    pass
+                if external and external != target and external not in ("daniel",):
+                    try:
+                        from suite_workspace_registry import is_admin_account
+
+                        if not is_admin_account(session_state=session_state):
+                            reasons.append(f"auth_external_id={external} workspace={active or owned}")
+                    except ImportError:
+                        pass
+    except ImportError:
+        pass
+
+    try:
+        from fantasy_workspace_team_identity import detect_account_team_mismatch
+
+        team_mismatch, team_reasons = detect_account_team_mismatch(
+            session_state,
+            room=room,
+            context=league_context,
+        )
+        if team_mismatch:
+            reasons.extend(team_reasons)
+    except ImportError:
+        pass
+
+    return bool(reasons), reasons
+
+
 def render_identity_guard_diagnostic_panel(
     st: Any,
     session_state: dict[str, Any],
@@ -276,12 +348,21 @@ def render_identity_guard_diagnostic_panel(
     room: dict[str, Any] | None = None,
     expanded: bool = False,
 ) -> None:
-    """Temporary diagnostic panel for post-draft and Saved Draft Library acceptance."""
+    """Diagnostic panel — emergency mode when mismatch detected; full detail in Developer Mode."""
+    mismatch, mismatch_reasons = detect_identity_mismatch(
+        session_state,
+        room=room,
+        league_context=league_context,
+    )
+    dev_mode = False
     try:
         from suite_workspace import developer_mode_checkbox_enabled
+
+        dev_mode = bool(developer_mode_checkbox_enabled(st=st))
     except ImportError:
-        return
-    if not developer_mode_checkbox_enabled(st=st):
+        pass
+
+    if not mismatch and not dev_mode:
         return
 
     diag = build_identity_guard_diagnostics(
@@ -303,6 +384,7 @@ def render_identity_guard_diagnostic_panel(
         ("scoped_cloud_app_key", diag.get("scoped_cloud_app_key") or "—"),
         ("live_draft_participant_id", diag.get("live_draft_participant_id") or "—"),
         ("live_draft_participant_team", diag.get("live_draft_participant_team") or "—"),
+        ("resolved_account_team", str(session_state.get("_suite_identity_guard_diag", {}).get("resolved_team") or "—")),
         ("room_host_user_id", diag.get("room_host_user_id") or "—"),
         ("league_commissioner_user_id", diag.get("league_commissioner_user_id") or "—"),
         ("workspace_value_before_restore", diag.get("workspace_value_before_restore") or "—"),
@@ -311,7 +393,16 @@ def render_identity_guard_diagnostic_panel(
         ("identity_header_source", diag.get("identity_header_source") or "—"),
         ("last_workspace_mutator", diag.get("last_workspace_mutator") or "—"),
     ]
-    with st.expander(title, expanded=expanded):
+    if mismatch_reasons:
+        rows.append(("mismatch_reasons", "; ".join(mismatch_reasons)))
+
+    panel_title = title
+    if mismatch and not dev_mode:
+        panel_title = "⚠ Account / Workspace Mismatch Diagnostic"
+    elif mismatch:
+        panel_title = f"⚠ {title}"
+
+    with st.expander(panel_title, expanded=expanded or (mismatch and not dev_mode)):
         import pandas as pd
 
         st.dataframe(

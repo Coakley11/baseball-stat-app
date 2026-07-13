@@ -160,13 +160,29 @@ def build_context_from_shared_for_workspace(
     meta["league_id"] = league_id or str(meta.get("league_id") or "").strip()
     meta["source_draft_id"] = draft_id or str(meta.get("source_draft_id") or "").strip()
     meta["commissioner_user_id"] = str(shared.get("commissioner_user_id") or meta.get("commissioner_user_id") or "").strip()
-    commissioner = str(meta.get("commissioner_user_id") or "").strip()
+    commissioner = str(meta.get("commissioner_user_id") or shared_doc.get("commissioner_user_id") or "").strip()
     if bool(existing_meta.get("joined_via_invite")) and owner_user_id and owner_user_id != commissioner:
         meta["joined_via_invite"] = True
     elif my_team and owner_user_id and owner_user_id != commissioner:
-        meta["joined_via_invite"] = True
+        created_from = str(
+            shared.get("created_from")
+            or meta.get("created_from")
+            or existing_meta.get("created_from")
+            or ""
+        ).strip()
+        source = str(shared.get("source") or merged.get("source") or "").strip()
+        if created_from == "live_draft" or "live_draft" in source.lower():
+            meta["joined_via_live_draft"] = True
+            meta["preassigned_live_draft_owner"] = True
+            meta.setdefault("created_from", "live_draft")
+            meta.setdefault("source_draft_type", "live_draft_room")
+            meta.pop("joined_via_invite", None)
+        else:
+            meta["joined_via_invite"] = True
     else:
         meta.pop("joined_via_invite", None)
+        meta.pop("joined_via_live_draft", None)
+        meta.pop("preassigned_live_draft_owner", None)
     if str(existing_meta.get("invite_id") or "").strip():
         meta["invite_id"] = str(existing_meta.get("invite_id") or "").strip()
     merged["metadata"] = meta

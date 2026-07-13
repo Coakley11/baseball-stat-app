@@ -235,6 +235,19 @@ def apply_workspace_member_identity_from_shared(
                 matched_invite = True
                 break
 
+        if not matched_invite and my_team and uid and not is_commissioner:
+            meta_doc = dict(shared_doc.get("metadata") or {})
+            created_from = str(
+                meta.get("created_from")
+                or meta_doc.get("created_from")
+                or shared_doc.get("created_from")
+                or ""
+            ).strip()
+            if created_from == "live_draft" or str(shared_doc.get("source") or "").strip():
+                meta["joined_via_live_draft"] = True
+                meta["preassigned_live_draft_owner"] = True
+                meta.pop("joined_via_invite", None)
+
     ownership = shared_doc.get("team_ownership") or {}
     if my_team and isinstance(ownership, dict):
         record = ownership.get(my_team) or {}

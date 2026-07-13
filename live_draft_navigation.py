@@ -208,6 +208,14 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
             mode_label = "Shared Multiplayer" if is_shared_multiplayer_intent(session, room=room) else "Solo Draft"
             code = shared_room_code(session) or ""
             user_team = str(session.get("draft_room_participant_team") or cfg.get("your_team") or cfg.get("user_team") or "")
+            try:
+                from fantasy_workspace_team_identity import resolve_current_account_team_for_live_draft_and_league
+
+                resolved = resolve_current_account_team_for_live_draft_and_league(session, room=room)
+                if resolved:
+                    user_team = resolved
+            except ImportError:
+                pass
             slot = progress.get("slot") or {}
             round_no = slot.get("Round") if isinstance(slot, dict) else None
             pick_no = progress.get("current_pick")

@@ -22123,6 +22123,31 @@ if active_page == "Live Draft Room":
                 room["config"]["user_team"] = user_team
                 room["config"]["your_team"] = user_team
                 st.session_state["room_your_team"] = user_team
+        try:
+            from fantasy_workspace_team_identity import (
+                apply_account_team_identity_to_session,
+                resolve_current_account_team_for_live_draft_and_league,
+            )
+
+            apply_account_team_identity_to_session(
+                st.session_state,
+                room=room,
+                reason="live_draft_room_page",
+            )
+            resolved_team = resolve_current_account_team_for_live_draft_and_league(
+                st.session_state,
+                room=room,
+            )
+            if resolved_team:
+                user_team = resolved_team
+                cfg["user_team"] = user_team
+                cfg["your_team"] = user_team
+                if isinstance(room.get("config"), dict):
+                    room["config"]["user_team"] = user_team
+                    room["config"]["your_team"] = user_team
+                st.session_state["room_your_team"] = user_team
+        except ImportError:
+            pass
         room_label = str(room.get("draft_room_id") or "")
         internal_id = room_label
         try:
@@ -22881,6 +22906,17 @@ if active_page == "Live Draft Room":
                 st.caption(picks_txt)
             _save_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
             try:
+                from fantasy_workspace_team_identity import resolve_current_account_team_for_live_draft_and_league
+
+                _resolved_save = resolve_current_account_team_for_live_draft_and_league(
+                    st.session_state,
+                    room=room,
+                )
+                if _resolved_save:
+                    _save_team = _resolved_save
+            except ImportError:
+                pass
+            try:
                 from draft_archive_ui import render_league_context_save_flash, render_live_draft_completion_panel
 
                 render_league_context_save_flash(st, st.session_state, page_label_fn=page_option_label)
@@ -22900,7 +22936,24 @@ if active_page == "Live Draft Room":
                     with st.expander("Save completed draft team", expanded=False):
                         st.caption("Draft archive module unavailable.")
             if not roster_df.empty:
-                recap_team = str(cfg.get("your_team") or st.session_state.get("room_your_team") or "").strip()
+                recap_team = str(
+                    st.session_state.get("draft_room_participant_team")
+                    or st.session_state.get("room_your_team")
+                    or user_team
+                    or cfg.get("your_team")
+                    or ""
+                ).strip()
+                try:
+                    from fantasy_workspace_team_identity import resolve_current_account_team_for_live_draft_and_league
+
+                    _resolved_recap = resolve_current_account_team_for_live_draft_and_league(
+                        st.session_state,
+                        room=room,
+                    )
+                    if _resolved_recap:
+                        recap_team = _resolved_recap
+                except ImportError:
+                    pass
                 if recap_team and "Fantasy Team" in roster_df.columns:
                     team_recap = roster_df[roster_df["Fantasy Team"].astype(str).eq(recap_team)].copy()
                     if not team_recap.empty:

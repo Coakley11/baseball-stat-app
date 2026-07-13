@@ -47,6 +47,73 @@ def _real_league_contexts_for_library(session: dict[str, Any]) -> list[dict[str,
     return contexts
 
 
+def materialize_owned_shared_leagues_for_session(session: dict[str, Any]) -> dict[str, Any]:
+    """
+    Ensure account-local library/context rows exist for canonical shared leagues this user owns.
+
+    Deduplicates by canonical league_id — never creates a second shared league document.
+    """
+    from fantasy_admin_draft_archive_repair import (
+        build_context_from_shared_for_workspace,
+        find_league_context_by_league_id,
+    )
+    from fantasy_league_context import upsert_league_context
+    from fantasy_shared_league_startup_sync import (
+        apply_workspace_member_identity_from_shared,
+        discover_shared_league_memberships_for_session,
+        finalize_repaired_archives_for_membership,
+    )
+    from fantasy_shared_league_store import load_shared_league
+    from fantasy_workspace_team_identity import session_account_identity
+
+    uid, external, workspace, _, _ = session_account_identity(session)
+    trace: dict[str, Any] = {
+        "updated_at": _utc_now_iso(),
+        "memberships_checked": 0,
+        "materialized": [],
+        "errors": [],
+    }
+    if not uid and not external and not workspace:
+        trace["reason"] = "identity_unresolved"
+        session[_LIBRARY_SYNC_TRACE_KEY] = trace
+        return trace
+
+    for row in discover_shared_league_memberships_for_session(session):
+        trace["memberships_checked"] += 1
+        league_id = str(row.get("league_id") or "").strip()
+        if not league_id:
+            continue
+        shared_doc = load_shared_league(league_id)
+        if not isinstance(shared_doc, dict):
+            trace["errors"].append(f"{league_id}:shared_doc_not_found")
+            continue
+        try:
+            existing = find_league_context_by_league_id(session, league_id)
+            context = build_context_from_shared_for_workspace(
+                shared_doc,
+                owner_user_id=uid,
+                owner_external_id=external,
+                workspace_id=workspace,
+                existing=existing,
+            )
+            context = apply_workspace_member_identity_from_shared(session, context, shared_doc)
+            upsert_league_context(session, context, mark_persist_authoritative=False)
+            finalize_trace = finalize_repaired_archives_for_membership(session, shared_doc=shared_doc)
+            trace["materialized"].append(
+                {
+                    "league_id": league_id,
+                    "draft_id": str(shared_doc.get("draft_id") or "").strip(),
+                    "owned_teams": list(row.get("owned_teams") or []),
+                    "finalize_trace": finalize_trace,
+                }
+            )
+        except Exception as exc:
+            trace["errors"].append(f"{league_id}:{type(exc).__name__}:{exc}")
+
+    session[_LIBRARY_SYNC_TRACE_KEY] = trace
+    return trace
+
+
 def sync_uploaded_league_contexts_on_library_render(session: dict[str, Any]) -> dict[str, Any]:
     """
     Pull canonical team_ownership from baseball_shared_leagues for library leagues.
@@ -54,6 +121,7 @@ def sync_uploaded_league_contexts_on_library_render(session: dict[str, Any]) -> 
     Runs once per Saved Draft Library render so commissioners see invitee claims
     without requiring Set Active first.
     """
+    materialize_owned_shared_leagues_for_session(session)
     results: list[dict[str, Any]] = []
     leagues_synced = 0
 

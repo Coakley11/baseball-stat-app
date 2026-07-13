@@ -1654,7 +1654,20 @@ def _on_analyze_draft_click(key_prefix: str = "live_draft_complete") -> None:
     session["_draft_analyze_nav_pending"] = True
 
 
-def _resolve_live_draft_save_team_name(room: dict[str, Any], team_name: str) -> str:
+def _resolve_live_draft_save_team_name(
+    room: dict[str, Any],
+    team_name: str,
+    session: dict[str, Any] | None = None,
+) -> str:
+    if isinstance(session, dict):
+        try:
+            from fantasy_workspace_team_identity import resolve_current_account_team_for_live_draft_and_league
+
+            resolved = resolve_current_account_team_for_live_draft_and_league(session, room=room)
+            if resolved:
+                return resolved
+        except ImportError:
+            pass
     cfg = dict(room.get("config") or {})
     resolved = str(team_name or "").strip()
     if not resolved or resolved == "—":
@@ -1789,7 +1802,7 @@ def _execute_live_draft_save_click(
         _set_draft_save_ui_flash(session, level="error", message="No active live draft room to save.")
         return
 
-    save_team = _resolve_live_draft_save_team_name(room, team_name)
+    save_team = _resolve_live_draft_save_team_name(room, team_name, session)
     draft_name = str(session.get(f"{key_prefix}_name_input") or "").strip()
     try:
         if record_save_button_click is not None:
@@ -3423,6 +3436,16 @@ def render_live_draft_completion_panel(
     except ImportError:
         pass
     try:
+        from fantasy_workspace_team_identity import apply_account_team_identity_to_session
+
+        apply_account_team_identity_to_session(
+            session,
+            room=room,
+            reason="render_live_draft_completion_panel",
+        )
+    except ImportError:
+        pass
+    try:
         from live_draft_completion import apply_live_draft_completion
 
         room = apply_live_draft_completion(room, session)
@@ -3430,7 +3453,7 @@ def render_live_draft_completion_panel(
         pass
 
     cfg = dict(room.get("config") or {})
-    save_team = _resolve_live_draft_save_team_name(room, team_name)
+    save_team = _resolve_live_draft_save_team_name(room, team_name, session)
     if not save_team:
         st.warning("Could not determine your fantasy team for saving this draft.")
         return
@@ -3873,7 +3896,7 @@ def render_save_live_draft_team(
     page_label_fn=None,
 ) -> None:
     """Legacy save expander — prefer render_live_draft_completion_panel on the completion screen."""
-    save_team = _resolve_live_draft_save_team_name(room, team_name)
+    save_team = _resolve_live_draft_save_team_name(room, team_name, session)
     if not save_team:
         return
     render_live_draft_completion_panel(
@@ -4274,6 +4297,18 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
             last_mutator="render_saved_draft_library_page",
             st=st,
         )
+    except ImportError:
+        pass
+    try:
+        from fantasy_shared_league_library_sync import materialize_owned_shared_leagues_for_session
+
+        materialize_owned_shared_leagues_for_session(session)
+    except ImportError:
+        pass
+    try:
+        from fantasy_workspace_team_identity import apply_account_team_identity_to_session
+
+        apply_account_team_identity_to_session(session, reason="render_saved_draft_library_page")
     except ImportError:
         pass
     delete_flash = session.pop("_draft_delete_flash", None)

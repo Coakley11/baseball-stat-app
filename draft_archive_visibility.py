@@ -100,12 +100,21 @@ def _has_shared_league_membership(
         return False
     if is_league_commissioner(context, user_id):
         return True
-    try:
-        from fantasy_league_invites import _joined_via_invite
-    except ImportError:
-        _joined_via_invite = lambda _ctx: False  # type: ignore[assignment,misc]
-    if _joined_via_invite(context) and owned_team_for_user(context, user_id):
+    owned = str(owned_team_for_user(context, user_id) or "").strip()
+    if owned:
         return True
+    try:
+        from fantasy_league_identity import resolve_canonical_league_id
+        from fantasy_shared_league_store import load_shared_league
+        from fantasy_workspace_team_identity import owned_team_from_shared_doc
+
+        league_id = str(resolve_canonical_league_id(context) or "").strip()
+        if league_id:
+            shared = load_shared_league(league_id)
+            if isinstance(shared, dict) and owned_team_from_shared_doc(shared, session):
+                return True
+    except ImportError:
+        pass
     return False
 
 
@@ -202,10 +211,11 @@ def _record_removed_context_tombstones(session: dict[str, Any], removed_context_
 
 
 def _repair_invitee_identities(session: dict[str, Any]) -> None:
-    """Backfill joined_via_invite for claimed teams before visibility prune."""
+    """Backfill membership metadata for owned teams before visibility prune."""
     try:
         from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, list_league_contexts
         from fantasy_league_team_ownership import owned_team_for_user
+        from live_draft_shared_league import CREATED_FROM_LIVE_DRAFT
     except ImportError:
         return
     uid = _resolve_session_user_id(session)
@@ -215,12 +225,18 @@ def _repair_invitee_identities(session: dict[str, Any]) -> None:
         if str(ctx.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
             continue
         meta = dict(ctx.get("metadata") or {})
-        if meta.get("joined_via_invite"):
+        if meta.get("joined_via_invite") or meta.get("joined_via_live_draft"):
             continue
         commissioner = str(meta.get("commissioner_user_id") or "").strip()
-        if owned_team_for_user(ctx, uid) and uid != commissioner:
+        owned = str(owned_team_for_user(ctx, uid) or "").strip()
+        if not owned or uid == commissioner:
+            continue
+        if str(meta.get("created_from") or "") == CREATED_FROM_LIVE_DRAFT:
+            meta["joined_via_live_draft"] = True
+            meta["preassigned_live_draft_owner"] = True
+        else:
             meta["joined_via_invite"] = True
-            ctx["metadata"] = meta
+        ctx["metadata"] = meta
 
 
 def _repair_league_context_identities(session: dict[str, Any]) -> None:
