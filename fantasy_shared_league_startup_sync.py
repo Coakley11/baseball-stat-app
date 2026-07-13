@@ -243,10 +243,56 @@ def apply_workspace_member_identity_from_shared(
                 or shared_doc.get("created_from")
                 or ""
             ).strip()
-            if created_from == "live_draft" or str(shared_doc.get("source") or "").strip():
+            source_token = str(
+                shared_doc.get("source") or meta_doc.get("source") or meta.get("source") or ""
+            ).strip()
+            try:
+                from draft_archive_state import DRAFT_TYPE_LIVE
+                from fantasy_league_context import (
+                    _accepted_invite_claims_team,
+                    _account_owns_team_in_shared,
+                    classify_origin_token,
+                    collect_origin_evidence,
+                )
+            except ImportError:
+                DRAFT_TYPE_LIVE = "live_draft_room"
+                classify_origin_token = lambda _token: None  # type: ignore[assignment,misc]
+                _accepted_invite_claims_team = lambda *_args, **_kwargs: False  # type: ignore[assignment,misc]
+                _account_owns_team_in_shared = lambda *_args, **_kwargs: False  # type: ignore[assignment,misc]
+            identity_session = {
+                "_suite_auth_user_id": uid,
+                "_suite_auth_external_id": external,
+                "_suite_active_workspace_id": workspace,
+            }
+            live_origin = (
+                created_from == "live_draft"
+                or classify_origin_token(created_from) == DRAFT_TYPE_LIVE
+                or classify_origin_token(source_token) == DRAFT_TYPE_LIVE
+            )
+            if live_origin:
                 meta["joined_via_live_draft"] = True
                 meta["preassigned_live_draft_owner"] = True
                 meta.pop("joined_via_invite", None)
+            elif _account_owns_team_in_shared(shared_doc, merged, session=identity_session) and not _accepted_invite_claims_team(
+                shared_doc,
+                my_team,
+                session=identity_session,
+            ):
+                evidence = collect_origin_evidence(
+                    shared_doc=shared_doc,
+                    context=merged,
+                    session=identity_session,
+                )
+                if (
+                    evidence.get("explicit_import_origin")
+                    and not meta.get("joined_via_live_draft")
+                    and not meta.get("preassigned_live_draft_owner")
+                ):
+                    meta.setdefault("joined_via_invite", True)
+                else:
+                    meta["joined_via_live_draft"] = True
+                    meta["preassigned_live_draft_owner"] = True
+                    meta.pop("joined_via_invite", None)
 
     ownership = shared_doc.get("team_ownership") or {}
     if my_team and isinstance(ownership, dict):

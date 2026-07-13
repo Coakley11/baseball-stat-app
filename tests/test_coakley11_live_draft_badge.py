@@ -32,6 +32,7 @@ from fantasy_league_context import (
     context_id_for_archive,
     repair_archive_draft_types_from_contexts,
     resolve_archive_draft_type_from_origin,
+    resolve_archive_draft_type_with_reason,
     upsert_league_context,
 )
 from fantasy_shared_league_library_sync import materialize_owned_shared_leagues_for_session
@@ -110,6 +111,54 @@ def _imported_shared_doc() -> dict:
     }
 
 
+def _poisoned_shared_doc() -> dict:
+    return {
+        "league_id": LEAGUE_ID,
+        "draft_id": DRAFT_ID,
+        "source": SOURCE_IMPORTED_DRAFT,
+        "source_draft_type": DRAFT_TYPE_IMPORTED,
+        "created_from": DRAFT_TYPE_IMPORTED,
+        "team_ownership": {
+            "Donny": {"user_id": "user:daniel", "external_id": "daniel"},
+            "Team B": {"user_id": "user:coakley11", "external_id": "coakley11"},
+        },
+        "league_rosters": _rosters(),
+        "league_invites": [],
+        "commissioner_user_id": "user:daniel",
+        "revision": 2,
+    }
+
+
+def _poisoned_coakley11_context() -> dict:
+    return {
+        "league_context_id": CONTEXT_ID,
+        "context_type": CONTEXT_TYPE_REAL_LEAGUE,
+        "source": SOURCE_IMPORTED_DRAFT,
+        "display_name": "Robins Fantasy — Donny vs Team B",
+        "my_team_name": "Team B",
+        "league_rosters": _rosters(),
+        "metadata": {
+            "league_id": LEAGUE_ID,
+            "source_draft_id": DRAFT_ID,
+            "source_draft_type": DRAFT_TYPE_IMPORTED,
+            "joined_via_live_draft": True,
+            "preassigned_live_draft_owner": True,
+            "commissioner_user_id": "user:daniel",
+        },
+    }
+
+
+def _poisoned_coakley11_archive() -> dict:
+    return {
+        "draft_id": DRAFT_ID,
+        "draft_type": DRAFT_TYPE_IMPORTED,
+        "team_name": "Team B",
+        "draft_name": "Robins Fantasy — Donny vs Team B",
+        "league_context_id": CONTEXT_ID,
+        "league_rosters": _rosters(),
+    }
+
+
 class Coakley11LiveDraftBadgeTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -178,37 +227,56 @@ class Coakley11LiveDraftBadgeTests(unittest.TestCase):
         self.assertEqual(entry.get("team_name"), "Donny")
         self.assertEqual(draft_type_display(entry), "Live Draft")
 
-    def test_existing_coakley11_archive_repaired_in_place(self) -> None:
+    def test_poisoned_production_state_resolves_live_draft_membership(self) -> None:
         session = _cio11_session()
-        session[DRAFT_ARCHIVE_KEY] = [
-            {
-                "draft_id": DRAFT_ID,
-                "draft_name": "Robins Fantasy — Donny vs Team B",
-                "draft_type": DRAFT_TYPE_IMPORTED,
-                "team_name": "Team B",
-                "league_context_id": CONTEXT_ID,
-                "league_rosters": _rosters(),
-            }
-        ]
+        shared_doc = _poisoned_shared_doc()
+        context = _poisoned_coakley11_context()
+        archive = _poisoned_coakley11_archive()
+        draft_type, selected_reason, _evidence = resolve_archive_draft_type_with_reason(
+            context=context,
+            shared_doc=shared_doc,
+            archive_entry=archive,
+            session=session,
+        )
+        self.assertEqual(draft_type, DRAFT_TYPE_LIVE)
+        self.assertEqual(selected_reason, "strong_live_draft_membership")
+
+    def test_poisoned_production_state_repairs_all_layers_in_place(self) -> None:
+        session = _cio11_session()
+        self.store.save(_poisoned_shared_doc())
+        session[DRAFT_ARCHIVE_KEY] = [_poisoned_coakley11_archive()]
         session[FANTASY_LEAGUE_CONTEXT_STATE_KEY] = {
             "active_league_context_id": CONTEXT_ID,
-            "contexts": {
-                CONTEXT_ID: {
-                    "league_context_id": CONTEXT_ID,
-                    "context_type": CONTEXT_TYPE_REAL_LEAGUE,
-                    "source": SOURCE_IMPORTED_DRAFT,
-                    "display_name": "Robins Fantasy — Donny vs Team B",
-                    "my_team_name": "Team B",
-                    "league_rosters": _rosters(),
-                    "metadata": {
-                        "source_draft_id": DRAFT_ID,
-                        "league_id": LEAGUE_ID,
-                        "commissioner_user_id": "user:daniel",
-                        "joined_via_invite": True,
-                    },
-                }
-            },
+            "contexts": {CONTEXT_ID: _poisoned_coakley11_context()},
         }
+        repaired = repair_archive_draft_types_from_contexts(session)
+        self.assertGreaterEqual(repaired, 1)
+        entry = get_draft_archive(session, DRAFT_ID)
+        ctx = session[FANTASY_LEAGUE_CONTEXT_STATE_KEY]["contexts"][CONTEXT_ID]
+        shared = self.store.load(LEAGUE_ID)
+        assert entry is not None
+        assert isinstance(shared, dict)
+        self.assertEqual(entry.get("draft_type"), DRAFT_TYPE_LIVE)
+        self.assertEqual(draft_type_display(entry), "Live Draft")
+        self.assertEqual(ctx.get("context_type"), CONTEXT_TYPE_REAL_LEAGUE)
+        self.assertEqual(ctx.get("source"), SOURCE_LIVE_DRAFT_ROOM)
+        self.assertEqual(ctx.get("my_team_name"), "Team B")
+        self.assertEqual(ctx["metadata"].get("created_from"), "live_draft")
+        self.assertEqual(ctx["metadata"].get("source_draft_type"), DRAFT_TYPE_LIVE)
+        self.assertEqual(shared.get("source"), SOURCE_LIVE_DRAFT_ROOM)
+        self.assertEqual(shared.get("created_from"), "live_draft")
+        self.assertEqual(len(list_draft_archives(session)), 1)
+        diag = session.get("_draft_origin_repair_diag") or {}
+        self.assertEqual(diag.get("selected_reason"), "strong_live_draft_membership")
+
+    def test_existing_coakley11_archive_repaired_in_place(self) -> None:
+        session = _cio11_session()
+        session[DRAFT_ARCHIVE_KEY] = [_poisoned_coakley11_archive()]
+        session[FANTASY_LEAGUE_CONTEXT_STATE_KEY] = {
+            "active_league_context_id": CONTEXT_ID,
+            "contexts": {CONTEXT_ID: _poisoned_coakley11_context()},
+        }
+        self.store.save(_poisoned_shared_doc())
         repaired = repair_archive_draft_types_from_contexts(session)
         self.assertEqual(repaired, 1)
         entry = get_draft_archive(session, DRAFT_ID)

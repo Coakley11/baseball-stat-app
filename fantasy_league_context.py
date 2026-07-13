@@ -1953,6 +1953,11 @@ def repair_misclassified_imported_league_archives(session: dict[str, Any]) -> in
     return repaired
 
 
+def classify_origin_token(token: str) -> str | None:
+    """Map a single origin hint to draft_type, or None if inconclusive."""
+    return _classify_origin_token(token)
+
+
 def _classify_origin_token(token: str) -> str | None:
     """Map a single origin hint to draft_type, or None if inconclusive."""
     value = str(token or "").strip().lower()
@@ -2024,41 +2029,363 @@ def _ordered_origin_tokens(
     return tokens
 
 
-def _shared_preassigned_live_draft_membership(
-    shared_doc: dict[str, Any] | None,
-    context: dict[str, Any] | None,
-) -> bool:
-    """True when a non-commissioner owns a team without invite/import origin evidence."""
-    if not isinstance(shared_doc, dict) or not isinstance(context, dict):
+def _canonical_origin_tokens(shared_doc: dict[str, Any] | None) -> list[str]:
+    """Origin hints from the canonical shared league document only."""
+    tokens: list[str] = []
+    if not isinstance(shared_doc, dict):
+        return tokens
+
+    def _push(value: Any) -> None:
+        text = str(value or "").strip()
+        if text:
+            tokens.append(text)
+
+    shared_meta = dict(shared_doc.get("metadata") or {})
+    _push(shared_doc.get("created_from"))
+    _push(shared_meta.get("created_from"))
+    _push(shared_doc.get("source_draft_type"))
+    _push(shared_meta.get("source_draft_type"))
+    _push(shared_doc.get("source"))
+    _push(shared_meta.get("source"))
+    return tokens
+
+
+def _context_explicit_live_origin(context: dict[str, Any] | None) -> bool:
+    if not isinstance(context, dict):
         return False
     meta = dict(context.get("metadata") or {})
-    if meta.get("joined_via_invite"):
-        return False
-    for token in _ordered_origin_tokens(shared_doc=shared_doc, context=context):
-        classified = _classify_origin_token(token)
-        if classified == DRAFT_TYPE_IMPORTED:
-            return False
-        if classified == DRAFT_TYPE_LIVE:
+    for value in (context.get("source"), meta.get("created_from"), meta.get("source_draft_type"), meta.get("source")):
+        if _classify_origin_token(str(value or "")) == DRAFT_TYPE_LIVE:
             return True
+    return False
+
+
+def _session_user_id(session: dict[str, Any] | None) -> str:
+    if not isinstance(session, dict):
+        return ""
+    return str(
+        session.get("_suite_auth_user_id")
+        or session.get("_suite_cloud_user_id")
+        or session.get("user_id")
+        or ""
+    ).strip()
+
+
+def _accepted_invite_claims_team(
+    shared_doc: dict[str, Any] | None,
+    team_name: str,
+    *,
+    session: dict[str, Any] | None = None,
+) -> bool:
+    if not isinstance(shared_doc, dict):
+        return False
+    team = str(team_name or "").strip()
+    if not team:
+        return False
+    uid = _session_user_id(session)
+    external = str((session or {}).get("_suite_auth_external_id") or "").strip().lower()
+    workspace = str((session or {}).get("_suite_active_workspace_id") or "").strip().lower()
     invites = shared_doc.get("league_invites") or []
-    if isinstance(invites, list):
-        for invite in invites:
-            if isinstance(invite, dict) and str(invite.get("status") or "").strip() == "accepted":
-                return False
-    ownership = shared_doc.get("team_ownership") or {}
+    if not isinstance(invites, list):
+        return False
+    for invite in invites:
+        if not isinstance(invite, dict):
+            continue
+        if str(invite.get("status") or "").strip() != "accepted":
+            continue
+        claimed = str(invite.get("claimed_team") or "").strip()
+        if claimed and claimed != team:
+            continue
+        if session is None:
+            if claimed == team:
+                return True
+            continue
+        invite_uid = str(invite.get("user_id") or invite.get("claimed_by_user_id") or "").strip()
+        invite_external = str(invite.get("external_id") or invite.get("claimed_by_external_id") or "").strip().lower()
+        invite_workspace = str(invite.get("workspace_id") or "").strip().lower()
+        if uid and invite_uid and uid == invite_uid:
+            return True
+        if external and invite_external and external == invite_external:
+            return True
+        if workspace and invite_workspace and workspace == invite_workspace:
+            return True
+        if claimed == team and (invite_uid or invite_external or invite_workspace):
+            return True
+    return False
+
+
+def _account_owns_team_in_shared(
+    shared_doc: dict[str, Any] | None,
+    context: dict[str, Any] | None,
+    *,
+    session: dict[str, Any] | None = None,
+) -> bool:
+    if not isinstance(shared_doc, dict) or not isinstance(context, dict):
+        return False
     my_team = str(context.get("my_team_name") or "").strip()
-    if not my_team or not isinstance(ownership, dict):
+    if not my_team:
+        return False
+    ownership = shared_doc.get("team_ownership") or {}
+    if not isinstance(ownership, dict):
         return False
     record = ownership.get(my_team)
-    if not isinstance(record, dict) or not str(record.get("user_id") or "").strip():
+    if not isinstance(record, dict):
         return False
-    commissioner = str(
-        shared_doc.get("commissioner_user_id") or meta.get("commissioner_user_id") or ""
-    ).strip()
     owner_uid = str(record.get("user_id") or "").strip()
-    if not commissioner or owner_uid == commissioner:
+    if not owner_uid:
         return False
-    return True
+    uid = _session_user_id(session)
+    if uid:
+        try:
+            from fantasy_league_team_ownership import account_user_ids_match
+
+            if account_user_ids_match(uid, owner_uid):
+                return True
+        except ImportError:
+            if uid == owner_uid:
+                return True
+    return bool(owner_uid)
+
+
+def collect_origin_evidence(
+    *,
+    context: dict[str, Any] | None = None,
+    shared_doc: dict[str, Any] | None = None,
+    archive_entry: dict[str, Any] | None = None,
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Collect draft-origin evidence without first-token-wins resolution."""
+    evidence: dict[str, Any] = {
+        "origin_tokens_found": _ordered_origin_tokens(
+            shared_doc=shared_doc,
+            context=context,
+            archive_entry=archive_entry,
+        ),
+        "live_evidence_found": False,
+        "import_evidence_found": False,
+        "joined_via_live_draft": False,
+        "preassigned_live_draft_owner": False,
+        "accepted_invite_found": False,
+        "canonical_team_ownership": False,
+        "existing_archive_type": "",
+        "explicit_live_origin": False,
+        "explicit_import_origin": False,
+        "context_type": "",
+    }
+    for token in _canonical_origin_tokens(shared_doc):
+        classified = _classify_origin_token(token)
+        if classified == DRAFT_TYPE_LIVE:
+            evidence["explicit_live_origin"] = True
+            evidence["live_evidence_found"] = True
+        elif classified == DRAFT_TYPE_IMPORTED:
+            evidence["explicit_import_origin"] = True
+            evidence["import_evidence_found"] = True
+
+    if isinstance(context, dict):
+        meta = dict(context.get("metadata") or {})
+        evidence["context_type"] = str(context.get("context_type") or "").strip()
+        evidence["joined_via_live_draft"] = bool(meta.get("joined_via_live_draft"))
+        evidence["preassigned_live_draft_owner"] = bool(meta.get("preassigned_live_draft_owner"))
+        my_team = str(context.get("my_team_name") or "").strip()
+        evidence["canonical_team_ownership"] = _account_owns_team_in_shared(
+            shared_doc,
+            context,
+            session=session,
+        )
+        evidence["accepted_invite_found"] = _accepted_invite_claims_team(
+            shared_doc,
+            my_team,
+            session=session,
+        )
+        for token in (
+            context.get("source"),
+            meta.get("created_from"),
+            meta.get("source_draft_type"),
+            meta.get("source"),
+        ):
+            classified = _classify_origin_token(str(token or ""))
+            if classified == DRAFT_TYPE_LIVE:
+                evidence["live_evidence_found"] = True
+            elif classified == DRAFT_TYPE_IMPORTED:
+                evidence["import_evidence_found"] = True
+
+    if isinstance(archive_entry, dict):
+        evidence["existing_archive_type"] = str(archive_entry.get("draft_type") or "").strip()
+        classified = _classify_origin_token(evidence["existing_archive_type"])
+        if classified == DRAFT_TYPE_LIVE:
+            evidence["live_evidence_found"] = True
+        elif classified == DRAFT_TYPE_IMPORTED:
+            evidence["import_evidence_found"] = True
+    return evidence
+
+
+def _strong_live_draft_membership(evidence: dict[str, Any]) -> bool:
+    return (
+        evidence.get("context_type") == CONTEXT_TYPE_REAL_LEAGUE
+        and bool(evidence.get("joined_via_live_draft"))
+        and bool(evidence.get("preassigned_live_draft_owner"))
+        and bool(evidence.get("canonical_team_ownership"))
+        and not bool(evidence.get("accepted_invite_found"))
+    )
+
+
+def resolve_archive_draft_type_with_reason(
+    *,
+    context: dict[str, Any] | None = None,
+    shared_doc: dict[str, Any] | None = None,
+    archive_entry: dict[str, Any] | None = None,
+    session: dict[str, Any] | None = None,
+) -> tuple[str, str, dict[str, Any]]:
+    """Resolve draft_type plus human-readable reason and evidence diagnostics."""
+    evidence = collect_origin_evidence(
+        context=context,
+        shared_doc=shared_doc,
+        archive_entry=archive_entry,
+        session=session,
+    )
+    context_type = str(evidence.get("context_type") or "").strip()
+    if context_type == CONTEXT_TYPE_MOCK_DRAFT_SIMULATION:
+        return DRAFT_TYPE_SIMULATOR, "mock_draft_simulation_context", evidence
+    if context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT:
+        return DRAFT_TYPE_LIVE, "live_draft_result_context", evidence
+    if _strong_live_draft_membership(evidence):
+        return DRAFT_TYPE_LIVE, "strong_live_draft_membership", evidence
+    if _context_explicit_live_origin(context):
+        return DRAFT_TYPE_LIVE, "context_explicit_live_origin", evidence
+    if evidence.get("explicit_live_origin"):
+        return DRAFT_TYPE_LIVE, "canonical_shared_live_origin", evidence
+    if (
+        evidence.get("explicit_import_origin")
+        and not evidence.get("joined_via_live_draft")
+        and not evidence.get("preassigned_live_draft_owner")
+    ):
+        return DRAFT_TYPE_IMPORTED, "canonical_shared_import_origin", evidence
+    if context_type == CONTEXT_TYPE_REAL_LEAGUE:
+        return DRAFT_TYPE_IMPORTED, "real_league_default_import", evidence
+    return DRAFT_TYPE_SIMULATOR, "simulator_fallback", evidence
+
+
+def _shared_origin_fields_are_live(shared_doc: dict[str, Any] | None) -> bool:
+    draft_type, reason, _ = resolve_archive_draft_type_with_reason(shared_doc=shared_doc)
+    return draft_type == DRAFT_TYPE_LIVE and reason in {
+        "canonical_shared_live_origin",
+        "context_explicit_live_origin",
+    }
+
+
+def repair_canonical_shared_doc_origin_in_place(
+    session: dict[str, Any],
+    *,
+    context: dict[str, Any],
+    shared_doc: dict[str, Any],
+    selected_reason: str,
+    draft_type: str,
+) -> dict[str, Any] | None:
+    """Repair canonical shared origin metadata when Live Draft evidence is confirmed."""
+    if draft_type != DRAFT_TYPE_LIVE:
+        return None
+    if selected_reason not in {
+        "strong_live_draft_membership",
+        "context_explicit_live_origin",
+        "canonical_shared_live_origin",
+    }:
+        return None
+    if _shared_origin_fields_are_live(shared_doc):
+        return shared_doc
+    try:
+        from fantasy_shared_league_store import get_shared_league_store
+    except ImportError:
+        return None
+    league_id = str((shared_doc or {}).get("league_id") or "").strip()
+    if not league_id:
+        try:
+            from fantasy_league_identity import resolve_canonical_league_id
+
+            league_id = str(resolve_canonical_league_id(context) or "").strip()
+        except ImportError:
+            league_id = ""
+    if not league_id:
+        return None
+    repaired = copy.deepcopy(shared_doc)
+    before = {
+        "created_from": str(repaired.get("created_from") or "").strip(),
+        "source_draft_type": str(repaired.get("source_draft_type") or "").strip(),
+        "source": str(repaired.get("source") or "").strip(),
+    }
+    repaired["created_from"] = "live_draft"
+    repaired["source_draft_type"] = DRAFT_TYPE_LIVE
+    repaired["source"] = SOURCE_LIVE_DRAFT_ROOM
+    repaired_meta = dict(repaired.get("metadata") or {})
+    repaired_meta["created_from"] = "live_draft"
+    repaired_meta["source_draft_type"] = DRAFT_TYPE_LIVE
+    repaired_meta["source"] = SOURCE_LIVE_DRAFT_ROOM
+    repaired["metadata"] = repaired_meta
+    backend = get_shared_league_store()
+    saved = backend.save(repaired)
+    trace = dict(session.get("_draft_origin_repair_diag") or {})
+    trace["canonical_origin_before"] = before
+    trace["canonical_origin_after"] = {
+        "created_from": "live_draft",
+        "source_draft_type": DRAFT_TYPE_LIVE,
+        "source": SOURCE_LIVE_DRAFT_ROOM,
+    }
+    session["_draft_origin_repair_diag"] = trace
+    return saved if isinstance(saved, dict) else repaired
+
+
+def ensure_live_draft_membership_metadata(
+    context: dict[str, Any],
+    shared_doc: dict[str, Any] | None,
+    *,
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Backfill live-draft membership flags when ownership proves preassigned Live Draft."""
+    if not isinstance(context, dict):
+        return context
+    out = copy.deepcopy(context)
+    meta = dict(out.get("metadata") or {})
+    if meta.get("joined_via_live_draft") and meta.get("preassigned_live_draft_owner"):
+        return out
+    if _accepted_invite_claims_team(shared_doc, str(out.get("my_team_name") or ""), session=session):
+        return out
+    evidence = collect_origin_evidence(shared_doc=shared_doc, context=out, session=session)
+    if (
+        evidence.get("explicit_import_origin")
+        and not evidence.get("joined_via_live_draft")
+        and not evidence.get("preassigned_live_draft_owner")
+    ):
+        return out
+    if not _account_owns_team_in_shared(shared_doc, out, session=session):
+        return out
+    commissioner = str(
+        meta.get("commissioner_user_id") or (shared_doc or {}).get("commissioner_user_id") or ""
+    ).strip()
+    uid = _session_user_id(session)
+    if uid and commissioner and uid == commissioner:
+        return out
+    meta["joined_via_live_draft"] = True
+    meta["preassigned_live_draft_owner"] = True
+    meta.pop("joined_via_invite", None)
+    out["metadata"] = meta
+    return out
+
+
+DRAFT_ORIGIN_REPAIR_DIAG_KEY = "_draft_origin_repair_diag"
+
+
+def render_draft_origin_repair_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    """Developer Mode panel for draft-origin repair diagnostics."""
+    try:
+        from streamlit_app import developer_mode_enabled
+    except ImportError:
+        return
+    if not developer_mode_enabled():
+        return
+    diag = session.get(DRAFT_ORIGIN_REPAIR_DIAG_KEY)
+    if not isinstance(diag, dict) or not diag:
+        return
+    with st.expander("Draft origin repair diagnostics", expanded=False):
+        st.json(diag)
 
 
 def resolve_archive_draft_type_from_origin(
@@ -2066,27 +2393,16 @@ def resolve_archive_draft_type_from_origin(
     context: dict[str, Any] | None = None,
     shared_doc: dict[str, Any] | None = None,
     archive_entry: dict[str, Any] | None = None,
+    session: dict[str, Any] | None = None,
 ) -> str:
-    """Resolve saved-draft library draft_type from canonical origin hints."""
-    for token in _ordered_origin_tokens(
-        shared_doc=shared_doc,
+    """Resolve saved-draft library draft_type from conflict-aware origin evidence."""
+    draft_type, _, _ = resolve_archive_draft_type_with_reason(
         context=context,
+        shared_doc=shared_doc,
         archive_entry=archive_entry,
-    ):
-        classified = _classify_origin_token(token)
-        if classified:
-            return classified
-    if isinstance(context, dict):
-        context_type = str(context.get("context_type") or "").strip()
-        if context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT:
-            return DRAFT_TYPE_LIVE
-        if context_type == CONTEXT_TYPE_MOCK_DRAFT_SIMULATION:
-            return DRAFT_TYPE_SIMULATOR
-        if context_type == CONTEXT_TYPE_REAL_LEAGUE:
-            if _shared_preassigned_live_draft_membership(shared_doc, context):
-                return DRAFT_TYPE_LIVE
-            return DRAFT_TYPE_IMPORTED
-    return DRAFT_TYPE_SIMULATOR
+        session=session,
+    )
+    return draft_type
 
 
 def resolve_archive_draft_type_from_context(context: dict[str, Any] | None) -> str:
@@ -2099,13 +2415,15 @@ def apply_draft_origin_to_context(
     *,
     shared_doc: dict[str, Any] | None = None,
     archive_entry: dict[str, Any] | None = None,
+    session: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Stamp context source/metadata from canonical origin resolution."""
     out = copy.deepcopy(context)
-    draft_type = resolve_archive_draft_type_from_origin(
+    draft_type, selected_reason, evidence = resolve_archive_draft_type_with_reason(
         context=out,
         shared_doc=shared_doc,
         archive_entry=archive_entry,
+        session=session,
     )
     meta = dict(out.get("metadata") or {})
     if draft_type == DRAFT_TYPE_LIVE:
@@ -2119,6 +2437,17 @@ def apply_draft_origin_to_context(
         out["source"] = SOURCE_DRAFT_SIMULATOR
         meta["source_draft_type"] = DRAFT_TYPE_SIMULATOR
     out["metadata"] = meta
+    if isinstance(session, dict):
+        session[DRAFT_ORIGIN_REPAIR_DIAG_KEY] = {
+            "origin_tokens_found": evidence.get("origin_tokens_found") or [],
+            "live_evidence_found": bool(evidence.get("live_evidence_found")),
+            "import_evidence_found": bool(evidence.get("import_evidence_found")),
+            "joined_via_live_draft": bool(evidence.get("joined_via_live_draft")),
+            "preassigned_live_draft_owner": bool(evidence.get("preassigned_live_draft_owner")),
+            "accepted_invite_found": bool(evidence.get("accepted_invite_found")),
+            "selected_draft_type": draft_type,
+            "selected_reason": selected_reason,
+        }
     return out
 
 
@@ -2155,6 +2484,7 @@ def repair_archive_draft_type_for_entry(
         context=ctx if isinstance(ctx, dict) else None,
         shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
         archive_entry=entry,
+        session=session,
     )
     current = str(entry.get("draft_type") or "").strip()
     if current == expected:
@@ -2183,6 +2513,7 @@ def repair_archive_draft_types_from_contexts(session: dict[str, Any]) -> int:
         draft_id = str(entry.get("draft_id") or "").strip()
         if not draft_id:
             continue
+        archive_type_before = str(entry.get("draft_type") or "").strip()
         linked_id = str(entry.get("league_context_id") or "").strip()
         ctx = get_league_context(session, linked_id) if linked_id else None
         if not isinstance(ctx, dict):
@@ -2198,19 +2529,49 @@ def repair_archive_draft_types_from_contexts(session: dict[str, Any]) -> int:
                 except ImportError:
                     shared_doc = None
         if isinstance(ctx, dict):
+            ctx = ensure_live_draft_membership_metadata(
+                ctx,
+                shared_doc if isinstance(shared_doc, dict) else None,
+                session=session,
+            )
             repaired_ctx = apply_draft_origin_to_context(
                 ctx,
                 shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
                 archive_entry=entry,
+                session=session,
             )
             if repaired_ctx != ctx:
                 upsert_league_context(session, repaired_ctx, mark_persist_authoritative=False)
                 ctx = repaired_ctx
-        expected = resolve_archive_draft_type_from_origin(
+        expected, selected_reason, evidence = resolve_archive_draft_type_with_reason(
             context=ctx if isinstance(ctx, dict) else None,
             shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
             archive_entry=entry,
+            session=session,
         )
+        if isinstance(shared_doc, dict) and isinstance(ctx, dict):
+            repaired_shared = repair_canonical_shared_doc_origin_in_place(
+                session,
+                context=ctx,
+                shared_doc=shared_doc,
+                selected_reason=selected_reason,
+                draft_type=expected,
+            )
+            if isinstance(repaired_shared, dict):
+                shared_doc = repaired_shared
+        session[DRAFT_ORIGIN_REPAIR_DIAG_KEY] = {
+            "origin_tokens_found": evidence.get("origin_tokens_found") or [],
+            "live_evidence_found": bool(evidence.get("live_evidence_found")),
+            "import_evidence_found": bool(evidence.get("import_evidence_found")),
+            "joined_via_live_draft": bool(evidence.get("joined_via_live_draft")),
+            "preassigned_live_draft_owner": bool(evidence.get("preassigned_live_draft_owner")),
+            "accepted_invite_found": bool(evidence.get("accepted_invite_found")),
+            "selected_draft_type": expected,
+            "selected_reason": selected_reason,
+            "archive_type_before": archive_type_before,
+            "archive_type_after": expected,
+            **dict(session.get(DRAFT_ORIGIN_REPAIR_DIAG_KEY) or {}),
+        }
         if str(entry.get("draft_type") or "").strip() == expected:
             continue
         repair_archive_draft_type_for_entry(
@@ -2218,6 +2579,7 @@ def repair_archive_draft_types_from_contexts(session: dict[str, Any]) -> int:
             entry,
             context=ctx if isinstance(ctx, dict) else None,
         )
+        session[DRAFT_ORIGIN_REPAIR_DIAG_KEY]["archive_type_after"] = expected
         repaired += 1
     if repaired:
         try:

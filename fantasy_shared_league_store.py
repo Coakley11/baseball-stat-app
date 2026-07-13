@@ -21,7 +21,13 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def shared_league_document_from_context(context: dict[str, Any], *, revision: int = 1) -> dict[str, Any]:
+def shared_league_document_from_context(
+    context: dict[str, Any],
+    *,
+    revision: int = 1,
+    existing: dict[str, Any] | None = None,
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     context = copy.deepcopy(context)
     league_id = resolve_canonical_league_id(context)
     fp = compute_draft_fingerprint(context)
@@ -40,9 +46,39 @@ def shared_league_document_from_context(context: dict[str, Any], *, revision: in
         meta = context.get("metadata") or {}
         ownership = meta.get("team_ownership") or {}
     meta = context.get("metadata") or {}
-    source = str(context.get("source") or meta.get("source") or "").strip()
-    created_from = str(meta.get("created_from") or "").strip()
-    source_draft_type = str(meta.get("source_draft_type") or source or "").strip()
+    try:
+        from draft_archive_state import DRAFT_TYPE_IMPORTED, DRAFT_TYPE_LIVE
+        from fantasy_league_context import resolve_archive_draft_type_with_reason
+
+        draft_type, _, _ = resolve_archive_draft_type_with_reason(
+            context=context,
+            shared_doc=existing if isinstance(existing, dict) else None,
+            session=session,
+        )
+        existing_type = None
+        if isinstance(existing, dict):
+            existing_type, _, _ = resolve_archive_draft_type_with_reason(
+                shared_doc=existing,
+                session=session,
+            )
+        if existing_type == DRAFT_TYPE_LIVE and draft_type == DRAFT_TYPE_IMPORTED:
+            draft_type = existing_type
+    except ImportError:
+        draft_type = str(context.get("source") or meta.get("source_draft_type") or "").strip()
+        DRAFT_TYPE_LIVE = "live_draft_room"
+        DRAFT_TYPE_IMPORTED = "imported_draft"
+    if draft_type == DRAFT_TYPE_LIVE:
+        created_from = "live_draft"
+        source = "live_draft_room"
+        source_draft_type = "live_draft_room"
+    elif draft_type == DRAFT_TYPE_IMPORTED:
+        created_from = str(meta.get("created_from") or "imported_draft").strip() or "imported_draft"
+        source = "imported_draft"
+        source_draft_type = "imported_draft"
+    else:
+        source = str(context.get("source") or meta.get("source") or "").strip()
+        created_from = str(meta.get("created_from") or "").strip()
+        source_draft_type = str(meta.get("source_draft_type") or source or "").strip()
     return {
         "schema_version": 1,
         "league_id": league_id,
@@ -609,7 +645,12 @@ def push_league_context_to_shared(
     existing = backend.load(league_id)
     base_revision = int(existing.get("revision") or 0) if isinstance(existing, dict) else 0
     revision = max(base_revision + 1, int((context.get("metadata") or {}).get("shared_revision") or 0) + 1)
-    document = shared_league_document_from_context(context, revision=revision)
+    document = shared_league_document_from_context(
+        context,
+        revision=revision,
+        existing=existing if isinstance(existing, dict) else None,
+        session=session,
+    )
     document["league_rosters"] = copy.deepcopy(context.get("league_rosters") or {})
     document["roster_settings"] = copy.deepcopy(context.get("roster_settings") or {})
     if isinstance(existing, dict):

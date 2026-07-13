@@ -114,6 +114,7 @@ def build_context_from_shared_for_workspace(
         SOURCE_LIVE_DRAFT_ROOM,
         apply_draft_origin_to_context,
         context_id_for_archive,
+        ensure_live_draft_membership_metadata,
         resolve_archive_draft_type_from_origin,
     )
     from fantasy_league_identity import ensure_league_identity
@@ -163,7 +164,17 @@ def build_context_from_shared_for_workspace(
     meta["source_draft_id"] = draft_id or str(meta.get("source_draft_id") or "").strip()
     meta["commissioner_user_id"] = str(shared.get("commissioner_user_id") or meta.get("commissioner_user_id") or "").strip()
     commissioner = str(meta.get("commissioner_user_id") or shared_doc.get("commissioner_user_id") or "").strip()
-    origin_type = resolve_archive_draft_type_from_origin(context=merged, shared_doc=shared)
+    identity_session = {
+        "_suite_auth_user_id": owner_user_id,
+        "_suite_auth_external_id": owner_external_id,
+        "_suite_active_workspace_id": workspace_id,
+    }
+    merged = ensure_live_draft_membership_metadata(merged, shared, session=identity_session)
+    origin_type = resolve_archive_draft_type_from_origin(
+        context=merged,
+        shared_doc=shared,
+        session=identity_session,
+    )
     if bool(existing_meta.get("joined_via_invite")) and owner_user_id and owner_user_id != commissioner:
         meta["joined_via_invite"] = True
     elif my_team and owner_user_id and owner_user_id != commissioner:
@@ -185,7 +196,7 @@ def build_context_from_shared_for_workspace(
     if str(existing_meta.get("invite_id") or "").strip():
         meta["invite_id"] = str(existing_meta.get("invite_id") or "").strip()
     merged["metadata"] = meta
-    merged = apply_draft_origin_to_context(merged, shared_doc=shared)
+    merged = apply_draft_origin_to_context(merged, shared_doc=shared, session=identity_session)
     return ensure_league_identity(merged)
 
 
@@ -297,6 +308,7 @@ def _normalize_repaired_archive_types(session: dict[str, Any]) -> int:
             context=ctx,
             shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
             archive_entry=entry,
+            session=session,
         )
         if str(entry.get("draft_type") or "").strip() == expected:
             continue
@@ -354,6 +366,7 @@ def _sync_archives_to_workspace_team(session: dict[str, Any], context: dict[str,
     resolved_draft_type = resolve_archive_draft_type_from_origin(
         context=context,
         shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
+        session=session,
     )
     entries = list_draft_archives(session)
     changed = 0

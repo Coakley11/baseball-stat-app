@@ -4462,6 +4462,13 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
         pass
 
     try:
+        from fantasy_league_context import render_draft_origin_repair_diagnostics
+
+        render_draft_origin_repair_diagnostics(st, session)
+    except ImportError:
+        pass
+
+    try:
         from fantasy_league_invite_ui import (
             render_commissioner_invite_diagnostics_panel,
             render_commissioner_invite_panel,
