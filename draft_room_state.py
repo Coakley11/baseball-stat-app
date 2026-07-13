@@ -1794,13 +1794,24 @@ def derive_draft_progress(
         on_clock = None
 
     status = str(room_status or "").strip().lower()
+    data_incomplete = bool(status in ("complete", "completed") and filled == 0)
     draft_complete = bool(
-        status in ("complete", "completed")
-        or (filled >= total_picks)
-        or (filled > 0 and on_clock is None and isinstance(board, pd.DataFrame) and not board.empty)
+        filled >= total_picks
+        or (
+            status in ("complete", "completed")
+            and filled == total_picks
+            and filled > 0
+        )
     )
     adj = int(pick_adjustment or 0)
-    if draft_complete:
+    if data_incomplete:
+        current_pick = 1
+        current_round = 0
+        display_status = "Draft data unavailable"
+        your_next_pick = None
+        draft_complete = False
+        rounds_complete = 0
+    elif draft_complete:
         current_pick = max(filled, total_picks)
         current_round = ((max(1, current_pick) - 1) // teams) + 1 if teams else 1
         display_status = "Complete"
@@ -1819,10 +1830,12 @@ def derive_draft_progress(
     team_s = str(owned_team or "").strip()
     draft_slot = round_one_draft_slot(names, team_s) if names else None
     total_rounds = (total_picks + teams - 1) // teams if teams else None
-    rounds_complete = total_rounds if draft_complete else max(0, current_round - 1)
+    if not data_incomplete:
+        rounds_complete = total_rounds if draft_complete else max(0, current_round - 1)
 
     return {
         "draft_complete": draft_complete,
+        "data_incomplete": data_incomplete,
         "display_status": display_status,
         "current_pick": current_pick,
         "current_round": current_round,
@@ -1835,6 +1848,7 @@ def derive_draft_progress(
         "total_rounds": total_rounds,
         "owned_team": team_s or None,
         "on_clock_team": str((on_clock or {}).get("on_clock_team") or ""),
+        "room_status": status,
         "board_row_count": len(board) if isinstance(board, pd.DataFrame) else 0,
         "unique_valid_pick_count": filled,
     }
@@ -1893,32 +1907,29 @@ def draft_board_summary_for_team(
         pick_adjustment=pick_adjustment,
     )
 
-    players_you: list[str] = []
-    players_league: list[str] = []
+    players_you_count = 0
+    players_league_count = 0
     if isinstance(table, pd.DataFrame) and not table.empty and "Player" in table.columns:
-        for _, row in table.iterrows():
-            player = str(row.get("Player") or "").strip()
-            if not player:
-                continue
-            row_team = str(row.get("Team") or "").strip()
-            if team_s and row_team == team_s:
-                players_you.append(player)
-            else:
-                players_league.append(player)
-
-    players_you = list(dict.fromkeys(players_you))
-    players_league = list(dict.fromkeys(players_league))
+        populated = table[table["Player"].astype(str).str.strip().ne("")].copy()
+        if team_s and "Team" in populated.columns:
+            team_col = populated["Team"].astype(str).str.strip()
+            players_you_count = int((team_col == team_s).sum())
+            players_league_count = int((team_col != team_s).sum())
+        elif not populated.empty:
+            players_you_count = len(populated)
+            players_league_count = 0
 
     return {
         "your_team": team_s or None,
-        "players_you_drafted": len(players_you),
-        "players_league_drafted": len(players_league),
+        "players_you_drafted": players_you_count,
+        "players_league_drafted": players_league_count,
         "current_pick": progress["current_pick"],
         "current_round": progress["current_round"],
         "draft_slot": progress["draft_slot"],
         "your_next_pick": progress["your_next_pick"],
         "num_teams": progress["num_teams"],
         "draft_complete": progress["draft_complete"],
+        "data_incomplete": progress.get("data_incomplete", False),
         "display_status": progress["display_status"],
         "filled_picks": progress["filled_picks"],
         "total_picks": progress["total_picks"],

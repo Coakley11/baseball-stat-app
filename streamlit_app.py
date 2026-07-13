@@ -18527,9 +18527,19 @@ if active_page == "Draft Assistant Simulator":
             from draft_room_state import (
                 draft_board_summary_for_team,
                 draft_handoff_diagnostics,
-                get_canonical_draft_board,
-                live_draft_handoff_pick_count,
             )
+            try:
+                from draft_assistant_board import resolve_draft_assistant_board
+            except ImportError:
+                resolve_draft_assistant_board = None  # type: ignore[assignment,misc]
+            try:
+                from draft_archive_state import get_active_draft_archive
+            except ImportError:
+                get_active_draft_archive = lambda s: None  # type: ignore[assignment,misc]
+            try:
+                from fantasy_league_context import get_active_league_context
+            except ImportError:
+                get_active_league_context = lambda s, **kw: None  # type: ignore[assignment,misc]
             try:
                 from live_draft_state import LIVE_DRAFT_ROOM_KEY
             except ImportError:
@@ -18546,14 +18556,35 @@ if active_page == "Draft Assistant Simulator":
             except ImportError:
                 _da_context_mode = "live_board"
 
-            draft_room_table_for_assistant = get_canonical_draft_board(st.session_state)
+            try:
+                from draft_room_state import live_draft_handoff_pick_count
+            except ImportError:
+                live_draft_handoff_pick_count = lambda room: 0  # type: ignore[assignment,misc]
+
+            live_room = st.session_state.get(LIVE_DRAFT_ROOM_KEY)
+            _da_effective_context = get_active_league_context(st.session_state)
+            _da_active_archive = get_active_draft_archive(st.session_state)
+            if callable(resolve_draft_assistant_board):
+                _board_resolution = resolve_draft_assistant_board(
+                    st.session_state,
+                    effective_context=_da_effective_context,
+                    active_archive=_da_active_archive,
+                    live_room=live_room if isinstance(live_room, dict) else None,
+                    context_mode=_da_context_mode,
+                )
+                draft_room_table_for_assistant = _board_resolution.get("board", pd.DataFrame())
+                _da_board_diag = dict(_board_resolution.get("diagnostics") or {})
+            else:
+                from draft_room_state import get_canonical_draft_board
+
+                draft_room_table_for_assistant = get_canonical_draft_board(st.session_state)
+                _da_board_diag = {}
             handoff_diag = draft_handoff_diagnostics(st.session_state)
             board_has_players = (
                 not draft_room_table_for_assistant.empty
                 and "Player" in draft_room_table_for_assistant.columns
                 and draft_room_table_for_assistant["Player"].astype(str).str.strip().ne("").any()
             )
-            live_room = st.session_state.get(LIVE_DRAFT_ROOM_KEY)
             live_pick_count = (
                 live_draft_handoff_pick_count(live_room) if isinstance(live_room, dict) else 0
             )
@@ -18689,10 +18720,7 @@ if active_page == "Draft Assistant Simulator":
                 if _da_context_mode in ("live_board", "research_context", "simulator_board")
                 else set()
             )
-            board_has_players_for_summary = board_has_players and _da_context_mode in (
-                "live_board",
-                "simulator_board",
-            )
+            board_has_players_for_summary = board_has_players
 
             if developer_mode_enabled():
                 with st.expander("Live draft handoff diagnostics", expanded=False):
@@ -18725,6 +18753,17 @@ if active_page == "Draft Assistant Simulator":
             _room_status = ""
             if isinstance(live_room, dict):
                 _room_status = str(live_room.get("status") or "")
+
+            if board_has_players and "Pick" in draft_room_table_for_assistant.columns:
+                _pick_series = pd.to_numeric(draft_room_table_for_assistant["Pick"], errors="coerce")
+                _max_pick = _pick_series.max()
+                if pd.notna(_max_pick):
+                    _total_picks = max(_total_picks, int(_max_pick))
+                if assistant_team_names:
+                    _room_teams = max(_room_teams, len(assistant_team_names))
+                if _room_teams > 0:
+                    _room_rounds = max(1, (_total_picks + _room_teams - 1) // _room_teams)
+
             try:
                 from draft_room_state import derive_draft_progress, round_one_team_order_from_board
 
@@ -18735,8 +18774,9 @@ if active_page == "Draft Assistant Simulator":
                     )
                     if _order_names:
                         assistant_team_names = _order_names
+                _summary_board = draft_room_table_for_assistant if board_has_players_for_summary else pd.DataFrame()
                 draft_progress = derive_draft_progress(
-                    draft_room_table_for_assistant if board_has_players_for_summary else pd.DataFrame(),
+                    _summary_board,
                     draft_order=assistant_team_names,
                     num_teams=_room_teams,
                     total_picks=_total_picks,
@@ -18745,7 +18785,7 @@ if active_page == "Draft Assistant Simulator":
                     pick_adjustment=pick_adjustment,
                 )
                 draft_summary = draft_board_summary_for_team(
-                    draft_room_table_for_assistant if board_has_players_for_summary else pd.DataFrame(),
+                    _summary_board,
                     your_team=assistant_my_team_name,
                     team_names=assistant_team_names,
                     pick_adjustment=pick_adjustment,
@@ -18763,8 +18803,21 @@ if active_page == "Draft Assistant Simulator":
                     num_teams=_room_teams,
                 )
 
+            current_pick = int(draft_progress.get("current_pick") or draft_summary.get("current_pick") or 1)
+            current_round = int(draft_progress.get("current_round") or draft_summary.get("current_round") or 1)
+            draft_complete = bool(
+                draft_progress.get("draft_complete") if draft_progress else draft_summary.get("draft_complete")
+            )
+            data_incomplete = bool(
+                draft_progress.get("data_incomplete") if draft_progress else draft_summary.get("data_incomplete")
+            )
+
             row1_a, row1_b, row1_c = st.columns(3)
-            if draft_summary.get("draft_complete") or draft_progress.get("draft_complete"):
+            if data_incomplete:
+                row1_a.metric("Draft status", "Draft data unavailable")
+                row1_b.metric("Picks", f"0 of {_total_picks}")
+                row1_c.metric("Rounds complete", "—")
+            elif draft_complete:
                 row1_a.metric("Draft status", "Complete")
                 row1_b.metric("Picks", f"{draft_summary.get('filled_picks', draft_progress.get('filled_picks', 0))} of {draft_summary.get('total_picks', _total_picks)}")
                 row1_c.metric(
@@ -18772,9 +18825,8 @@ if active_page == "Draft Assistant Simulator":
                     f"{draft_summary.get('rounds_complete', draft_progress.get('rounds_complete', '—'))} of {draft_summary.get('total_rounds', draft_progress.get('total_rounds', '—'))}",
                 )
             else:
-                current_pick = int(draft_summary["current_pick"])
                 row1_a.metric("Current pick", current_pick)
-                row1_b.metric("Current round", draft_summary["current_round"])
+                row1_b.metric("Current round", current_round)
                 slot_label = draft_summary["draft_slot"] if draft_summary["draft_slot"] is not None else "—"
                 row1_c.metric("Your draft slot", slot_label)
 
@@ -18794,17 +18846,29 @@ if active_page == "Draft Assistant Simulator":
                     st,
                     st.session_state,
                     {
-                        "selected_source": _da_context_mode,
-                        "board_row_count": draft_progress.get("board_row_count", len(draft_room_table_for_assistant)),
-                        "unique_valid_pick_count": draft_progress.get("unique_valid_pick_count"),
-                        "configured_total_picks": _total_picks,
-                        "num_teams": _room_teams,
-                        "room_status": _room_status,
-                        "derived_next_pick": draft_summary.get("your_next_pick"),
-                        "derived_round": draft_summary.get("current_round"),
+                        "selected_source_kind": _da_board_diag.get("selected_source_kind", _da_context_mode),
+                        "selected_context_id": _da_board_diag.get("selected_context_id"),
+                        "selected_archive_id": _da_board_diag.get("selected_archive_id"),
+                        "selected_league_id": _da_board_diag.get("selected_league_id"),
+                        "board_source_used": _da_board_diag.get("board_source_used"),
+                        "board_row_count_raw": _da_board_diag.get("board_row_count_raw"),
+                        "board_row_count_normalized": _da_board_diag.get("board_row_count_normalized"),
+                        "unique_valid_pick_count": _da_board_diag.get("unique_valid_pick_count"),
+                        "min_pick": _da_board_diag.get("min_pick"),
+                        "max_pick": _da_board_diag.get("max_pick"),
+                        "missing_pick_numbers": _da_board_diag.get("missing_pick_numbers"),
                         "owned_team": assistant_my_team_name,
+                        "owned_team_pick_count": draft_summary.get("players_you_drafted"),
+                        "other_team_pick_count": draft_summary.get("players_league_drafted"),
+                        "room_status": _room_status,
+                        "persisted_completion_count": live_pick_count,
+                        "total_picks": draft_summary.get("total_picks", _total_picks),
+                        "draft_complete": draft_complete,
+                        "data_incomplete": data_incomplete,
+                        "current_pick": current_pick,
+                        "current_round": current_round,
+                        "derived_next_pick": draft_summary.get("your_next_pick"),
                         "derived_draft_slot": draft_summary.get("draft_slot"),
-                        "draft_complete": draft_summary.get("draft_complete"),
                     },
                     developer_mode=developer_mode_enabled(),
                 )

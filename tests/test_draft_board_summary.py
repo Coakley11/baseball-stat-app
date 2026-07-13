@@ -75,6 +75,28 @@ class TestDraftBoardSummary(unittest.TestCase):
         self.assertEqual(summary["filled_picks"], 20)
         self.assertNotEqual(summary["current_pick"], 1)
 
+    def test_complete_status_with_empty_board_is_not_complete(self) -> None:
+        progress = derive_draft_progress(
+            pd.DataFrame(),
+            draft_order=["Donny", "Team B"],
+            num_teams=2,
+            total_picks=20,
+            owned_team="Donny",
+            room_status="complete",
+        )
+        self.assertFalse(progress["draft_complete"])
+        self.assertTrue(progress["data_incomplete"])
+        summary = draft_board_summary_for_team(
+            pd.DataFrame(),
+            your_team="Donny",
+            team_names=["Donny", "Team B"],
+            num_teams=2,
+            total_picks=20,
+            room_status="complete",
+        )
+        self.assertFalse(summary["draft_complete"])
+        self.assertEqual(summary["display_status"], "Draft data unavailable")
+
 
 if __name__ == "__main__":
     unittest.main()

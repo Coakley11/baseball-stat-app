@@ -89,21 +89,27 @@ def _infer_creation_origin_for_backfill(
     )
     if existing:
         return existing
-    tokens: list[str] = []
-    for blob in (shared_doc, context, dict((context or {}).get("metadata") or {})):
-        if not isinstance(blob, dict):
-            continue
-        for key in ("created_from", "source_draft_type", "source", "draft_type"):
-            val = str(blob.get(key) or "").strip()
-            if val:
-                tokens.append(val)
-    if isinstance(archive_entry, dict):
-        tokens.append(str(archive_entry.get("draft_type") or ""))
-    joined = " ".join(tokens).lower()
-    if any(tok in joined for tok in ("live_draft", "live_draft_room")):
-        return CREATION_ORIGIN_LIVE_DRAFT_ROOM
-    if any(tok in joined for tok in ("validated_import", "imported_draft", "imported", "import")):
+
+    evidence = collect_origin_evidence(
+        context=context,
+        shared_doc=shared_doc,
+        archive_entry=archive_entry,
+    )
+    import_creation = _verified_import_creation_event(evidence, context=context, shared_doc=shared_doc)
+    live_creation = _verified_live_creation_event(evidence, context=context, shared_doc=shared_doc)
+
+    if import_creation and not live_creation:
         return CREATION_ORIGIN_VALIDATED_IMPORT
+    if live_creation and not import_creation:
+        return CREATION_ORIGIN_LIVE_DRAFT_ROOM
+    if evidence.get("live_evidence_found") and evidence.get("import_evidence_found"):
+        return ""
+
+    if evidence.get("import_evidence_found") and not evidence.get("live_evidence_found"):
+        return CREATION_ORIGIN_VALIDATED_IMPORT
+    if evidence.get("live_evidence_found") and not evidence.get("import_evidence_found"):
+        return CREATION_ORIGIN_LIVE_DRAFT_ROOM
+
     if isinstance(context, dict) and str(context.get("source") or "") == SOURCE_IMPORTED_DRAFT:
         return CREATION_ORIGIN_VALIDATED_IMPORT
     if isinstance(context, dict) and str(context.get("source") or "") == SOURCE_LIVE_DRAFT_ROOM:
@@ -115,8 +121,52 @@ def _infer_creation_origin_for_backfill(
     return ""
 
 
+def _verified_import_creation_event(
+    evidence: dict[str, Any],
+    *,
+    context: dict[str, Any] | None = None,
+    shared_doc: dict[str, Any] | None = None,
+) -> bool:
+    if evidence.get("explicit_import_origin"):
+        return True
+    for blob in (shared_doc, context, dict((context or {}).get("metadata") or {})):
+        if not isinstance(blob, dict):
+            continue
+        for key in ("created_from", "source_draft_type", "source"):
+            val = str(blob.get(key) or "").strip().lower()
+            if val in {"validated_import", "imported_draft", "uploaded_draft", "draft_import"}:
+                return True
+    return False
+
+
+def _verified_live_creation_event(
+    evidence: dict[str, Any],
+    *,
+    context: dict[str, Any] | None = None,
+    shared_doc: dict[str, Any] | None = None,
+) -> bool:
+    if str(evidence.get("context_type") or "") == CONTEXT_TYPE_LIVE_DRAFT_RESULT:
+        return True
+    if evidence.get("explicit_live_origin"):
+        return True
+    for blob in (shared_doc, context, dict((context or {}).get("metadata") or {})):
+        if not isinstance(blob, dict):
+            continue
+        for key in ("created_from", "source_draft_type", "source"):
+            val = str(blob.get(key) or "").strip().lower()
+            if val in {SOURCE_LIVE_DRAFT_ROOM, DRAFT_TYPE_LIVE, "live_draft"}:
+                return True
+    return False
+
+
 def backfill_immutable_creation_origins(session: dict[str, Any]) -> int:
     """Backfill creation_origin on contexts and shared docs without changing active selection."""
+    try:
+        from fantasy_creation_origin_repair import repair_known_canonical_creation_origins
+
+        repair_known_canonical_creation_origins(session)
+    except ImportError:
+        pass
     updated = 0
     for ctx in list_league_contexts(session):
         if not isinstance(ctx, dict):
@@ -2145,8 +2195,6 @@ def _ordered_origin_tokens(
         _push(context_meta.get("source_draft_type"))
         _push(context.get("source"))
         _push(context_meta.get("source"))
-        if context_meta.get("joined_via_live_draft") or context_meta.get("preassigned_live_draft_owner"):
-            _push("live_draft")
     if isinstance(archive_entry, dict):
         _push(archive_entry.get("draft_type"))
     return tokens
@@ -2382,7 +2430,13 @@ def resolve_archive_draft_type_with_reason(
         return DRAFT_TYPE_IMPORTED, "immutable_creation_origin_validated_import", evidence
     if creation_origin == CREATION_ORIGIN_LIVE_DRAFT_ROOM:
         return DRAFT_TYPE_LIVE, "immutable_creation_origin_live_draft_room", evidence
-    if _strong_live_draft_membership(evidence):
+    if (
+        evidence.get("live_evidence_found")
+        and evidence.get("import_evidence_found")
+        and not creation_origin
+    ):
+        return DRAFT_TYPE_IMPORTED, "origin_conflict", evidence
+    if _strong_live_draft_membership(evidence) and not evidence.get("import_evidence_found"):
         return DRAFT_TYPE_LIVE, "strong_live_draft_membership", evidence
     if _context_explicit_live_origin(context):
         return DRAFT_TYPE_LIVE, "context_explicit_live_origin", evidence
@@ -2651,6 +2705,12 @@ def repair_archive_draft_type_for_entry(
 
 def repair_archive_draft_types_from_contexts(session: dict[str, Any]) -> int:
     """Backfill misclassified archive draft_type values from league context origin."""
+    try:
+        from fantasy_creation_origin_repair import repair_known_canonical_creation_origins
+
+        repair_known_canonical_creation_origins(session)
+    except ImportError:
+        pass
     from draft_archive_state import list_draft_archives
     from fantasy_league_identity import resolve_canonical_league_id
 

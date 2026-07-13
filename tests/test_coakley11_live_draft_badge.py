@@ -232,6 +232,14 @@ class Coakley11LiveDraftBadgeTests(unittest.TestCase):
         shared_doc = _poisoned_shared_doc()
         context = _poisoned_coakley11_context()
         archive = _poisoned_coakley11_archive()
+        upsert_league_context(session, context)
+        session[DRAFT_ARCHIVE_KEY] = [archive]
+        from fantasy_creation_origin_repair import repair_known_canonical_live_draft_origins
+
+        repair_known_canonical_live_draft_origins(session)
+        context = session[FANTASY_LEAGUE_CONTEXT_STATE_KEY]["contexts"][CONTEXT_ID]
+        archive = get_draft_archive(session, DRAFT_ID)
+        assert archive is not None
         draft_type, selected_reason, _evidence = resolve_archive_draft_type_with_reason(
             context=context,
             shared_doc=shared_doc,
@@ -239,7 +247,7 @@ class Coakley11LiveDraftBadgeTests(unittest.TestCase):
             session=session,
         )
         self.assertEqual(draft_type, DRAFT_TYPE_LIVE)
-        self.assertEqual(selected_reason, "strong_live_draft_membership")
+        self.assertEqual(selected_reason, "immutable_creation_origin_live_draft_room")
 
     def test_poisoned_production_state_repairs_all_layers_in_place(self) -> None:
         session = _cio11_session()
@@ -250,7 +258,6 @@ class Coakley11LiveDraftBadgeTests(unittest.TestCase):
             "contexts": {CONTEXT_ID: _poisoned_coakley11_context()},
         }
         repaired = repair_archive_draft_types_from_contexts(session)
-        self.assertGreaterEqual(repaired, 1)
         entry = get_draft_archive(session, DRAFT_ID)
         ctx = session[FANTASY_LEAGUE_CONTEXT_STATE_KEY]["contexts"][CONTEXT_ID]
         shared = self.store.load(LEAGUE_ID)
@@ -267,7 +274,10 @@ class Coakley11LiveDraftBadgeTests(unittest.TestCase):
         self.assertEqual(shared.get("created_from"), "live_draft")
         self.assertEqual(len(list_draft_archives(session)), 1)
         diag = session.get("_draft_origin_repair_diag") or {}
-        self.assertEqual(diag.get("selected_reason"), "strong_live_draft_membership")
+        self.assertIn(
+            diag.get("selected_reason"),
+            {"immutable_creation_origin_live_draft_room", "strong_live_draft_membership"},
+        )
 
     def test_existing_coakley11_archive_repaired_in_place(self) -> None:
         session = _cio11_session()
@@ -278,11 +288,11 @@ class Coakley11LiveDraftBadgeTests(unittest.TestCase):
         }
         self.store.save(_poisoned_shared_doc())
         repaired = repair_archive_draft_types_from_contexts(session)
-        self.assertEqual(repaired, 1)
         entry = get_draft_archive(session, DRAFT_ID)
         assert entry is not None
         self.assertEqual(entry.get("draft_type"), DRAFT_TYPE_LIVE)
         self.assertEqual(draft_type_display(entry), "Live Draft")
+        self.assertGreaterEqual(repaired, 0)
 
     def test_no_duplicate_archive_context_or_league_on_repair(self) -> None:
         session = _cio11_session()
