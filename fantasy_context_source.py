@@ -136,9 +136,25 @@ def simulator_board_context_available(session: dict[str, Any], *, ignore_live_ov
 
 
 def saved_active_draft_available(session: dict[str, Any]) -> bool:
-    """True when Saved Draft Library has an Active Draft with a user team."""
+    """True when Saved Draft Library has an Active Draft / Active League selection."""
     ctx = _get_saved_active_league_context(session)
-    return isinstance(ctx, dict) and bool(str(ctx.get("my_team_name") or "").strip())
+    if not isinstance(ctx, dict):
+        return False
+    if str(ctx.get("my_team_name") or "").strip():
+        return True
+    # Shared-league team overlay may blank my_team when ownership is unresolved;
+    # a durable context id still counts as an Active League selection.
+    if str(ctx.get("league_context_id") or "").strip():
+        return True
+    try:
+        from draft_archive_state import get_active_draft_archive
+
+        archive = get_active_draft_archive(session)
+        if isinstance(archive, dict) and str(archive.get("draft_id") or "").strip():
+            return True
+    except ImportError:
+        pass
+    return False
 
 
 def _get_saved_active_league_context(session: dict[str, Any]) -> dict[str, Any] | None:
@@ -262,7 +278,7 @@ def resolve_fantasy_context_source(session: dict[str, Any]) -> FantasyContextSou
         return override
 
     saved = _get_saved_active_league_context(session)
-    if isinstance(saved, dict) and str(saved.get("my_team_name") or "").strip():
+    if isinstance(saved, dict) and saved_active_draft_available(session):
         name = _active_draft_label(session, saved)
         heading = _active_context_heading(session, saved)
         return FantasyContextSource(
@@ -395,24 +411,50 @@ def _context_team_name(session: dict[str, Any]) -> str:
             team = str(saved.get("my_team_name") or "").strip()
             if team:
                 return team
-    if source.kind == SOURCE_LIVE_DRAFT:
-        room = _resolve_live_room(session)
-        if isinstance(room, dict):
-            cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
-            for key in ("user_team", "your_team"):
-                val = cfg.get(key)
-                if val:
-                    return str(val).strip()
-    if source.kind == SOURCE_SIMULATOR_BOARD:
-        table = _simulator_board_table(session)
-        my_team = str(session.get("room_your_team") or "").strip()
-        if my_team:
-            return my_team
-        if not table.empty and "Team" in table.columns and "Player" in table.columns:
-            filled = table[table["Player"].astype(str).str.strip().ne("")]
-            if not filled.empty:
-                return str(filled.iloc[0]["Team"]).strip()
+        try:
+            from draft_archive_state import get_active_draft_archive
+
+            archive = get_active_draft_archive(session)
+            if isinstance(archive, dict):
+                team = str(archive.get("team_name") or "").strip()
+                if team:
+                    return team
+        except ImportError:
+            pass
+        candidate = str(session.get("room_your_team") or "").strip()
+        if candidate:
+            return candidate
+    if source.kind in (SOURCE_LIVE_DRAFT, SOURCE_SIMULATOR_BOARD):
+        return _resolve_my_team_for_ephemeral(session, source=source)
     return str(session.get("room_your_team") or "").strip()
+
+
+def _restore_saved_context_team(session: dict[str, Any], context: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Fill blank my_team after shared-league overlay wipe using archive / session fallbacks."""
+    if not isinstance(context, dict):
+        return context
+    if str(context.get("my_team_name") or "").strip():
+        return context
+    team = ""
+    try:
+        from draft_archive_state import get_active_draft_archive
+
+        archive = get_active_draft_archive(session)
+        if isinstance(archive, dict):
+            team = str(archive.get("team_name") or "").strip()
+    except ImportError:
+        pass
+    if not team:
+        team = str(session.get("room_your_team") or "").strip()
+    if not team:
+        names = _workflow_team_names(context)
+        if len(names) == 1:
+            team = names[0]
+    if not team:
+        return context
+    out = dict(context)
+    out["my_team_name"] = team
+    return out
 
 
 def fantasy_context_source_badge_text(session: dict[str, Any]) -> str:
@@ -569,7 +611,60 @@ def _resolve_simulator_board(session: dict[str, Any]) -> pd.DataFrame:
     return _simulator_board_table(session)
 
 
+def _board_team_names(table: pd.DataFrame) -> list[str]:
+    if table is None or getattr(table, "empty", True):
+        return []
+    col = "Fantasy Team" if "Fantasy Team" in table.columns else ("Team" if "Team" in table.columns else "")
+    if not col:
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for raw in table[col].tolist():
+        name = str(raw or "").strip()
+        if not name or name.lower() in {"nan", "none"} or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
 def _resolve_my_team_for_ephemeral(session: dict[str, Any], *, source: FantasyContextSource) -> str:
+    """Team identity for temporary Live/Simulator boards — never Active League's saved team."""
+    if source.kind == SOURCE_SIMULATOR_BOARD:
+        frozen = session.get("_draft_simulator_resume_identity")
+        if isinstance(frozen, dict):
+            frozen_team = str(frozen.get("user_team") or "").strip()
+            if frozen_team:
+                board_teams = _board_team_names(_resolve_simulator_board(session))
+                if not board_teams or frozen_team in board_teams:
+                    return frozen_team
+        table = _resolve_simulator_board(session)
+        board_teams = _board_team_names(table)
+        candidate = str(session.get("room_your_team") or "").strip()
+        if candidate and (not board_teams or candidate in board_teams):
+            return candidate
+        if board_teams:
+            return board_teams[0]
+        return candidate
+    if source.kind == SOURCE_LIVE_DRAFT:
+        room = _resolve_live_room(session)
+        if isinstance(room, dict):
+            cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
+            for key in ("user_team", "your_team"):
+                val = str(cfg.get(key) or "").strip()
+                if val:
+                    return val
+            try:
+                from fantasy_workspace_team_identity import (
+                    resolve_current_account_team_for_live_draft_and_league,
+                )
+
+                resolved = resolve_current_account_team_for_live_draft_and_league(session, room=room)
+                if resolved:
+                    return str(resolved).strip()
+            except ImportError:
+                pass
+        return str(session.get("room_your_team") or "").strip()
     try:
         from global_fantasy_settings_state import get_active_fantasy_team
 
@@ -592,7 +687,7 @@ def get_effective_fantasy_context(
 
     source = resolve_fantasy_context_source(session)
     if source.kind == SOURCE_ACTIVE_DRAFT:
-        return _get_saved_active_league_context(session)
+        return _restore_saved_context_team(session, _get_saved_active_league_context(session))
     if source.kind == SOURCE_GENERIC:
         return None
 
@@ -699,17 +794,110 @@ def _workflow_matchup_line(my_team: str, team_names: list[str]) -> str:
     return ""
 
 
-def resolve_fantasy_workflow_source_descriptor(session: dict[str, Any]) -> dict[str, Any]:
-    """Coherent workflow source — same context identity that feeds Lineup/Standings/Waiver data."""
-    cache_fp = str(session.get("active_league_context_id") or "")
+def _workflow_descriptor_cache_fingerprint(session: dict[str, Any]) -> str:
+    """Fingerprint that invalidates when override, board, or saved active pair changes."""
+    source = resolve_fantasy_context_source(session)
+    live_ov = int(bool(live_draft_sync_enabled(session)))
+    sim_ov = int(bool(simulator_board_sync_enabled(session)))
+    sim_picks = _simulator_board_pick_count(session)
+    sim_teams = ",".join(_board_team_names(_simulator_board_table(session)))
+    sim_my = ""
+    frozen = session.get("_draft_simulator_resume_identity")
+    if isinstance(frozen, dict):
+        sim_my = str(frozen.get("user_team") or "").strip()
+    if not sim_my:
+        sim_my = str(session.get("room_your_team") or "").strip()
+
+    live_id = ""
+    live_rev = ""
+    room = _resolve_live_room(session)
+    if isinstance(room, dict):
+        live_id = str(room.get("draft_room_id") or room.get("room_id") or "").strip()
+        board = room.get("draft_board") or []
+        live_rev = str(
+            room.get("revision")
+            or room.get("updated_at")
+            or (len(board) if isinstance(board, list) else 0)
+        )
+
+    active_draft = str(session.get("active_draft_archive_id") or "").strip()
+    active_ctx = str(session.get("active_league_context_id") or "").strip()
     try:
         from fantasy_league_context import ensure_fantasy_league_context_state
 
         store = ensure_fantasy_league_context_state(session)
-        cache_fp = str(store.get("active_league_context_id") or cache_fp)
+        active_ctx = str(store.get("active_league_context_id") or active_ctx).strip()
     except ImportError:
         pass
-    cache_fp = f"{cache_fp}|{session.get('room_your_team')}|{session.get('_suite_auth_user_id')}"
+
+    auth = str(session.get("_suite_auth_user_id") or "").strip()
+    workspace = str(session.get("_suite_active_workspace_id") or "").strip()
+    return "|".join(
+        [
+            f"kind={source.kind}",
+            f"origin={source.origin}",
+            f"live_ov={live_ov}",
+            f"sim_ov={sim_ov}",
+            f"sim_picks={sim_picks}",
+            f"sim_teams={sim_teams}",
+            f"sim_my={sim_my}",
+            f"live_id={live_id}",
+            f"live_rev={live_rev}",
+            f"active_draft={active_draft}",
+            f"active_ctx={active_ctx}",
+            f"auth={auth}",
+            f"ws={workspace}",
+        ]
+    )
+
+
+def _resolve_saved_active_workflow_pair(
+    session: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Coherent saved Active League/Draft pair — never used while temporary override wins."""
+    context: dict[str, Any] | None = None
+    archive: dict[str, Any] | None = None
+    try:
+        from saved_draft_library_selection import resolve_coherent_active_library_selection
+
+        sel = resolve_coherent_active_library_selection(session)
+        linked = sel.get("linked_active_context") or sel.get("active_context")
+        if isinstance(linked, dict):
+            context = linked
+        active_archive = sel.get("active_archive")
+        if _archive_matches_context(
+            active_archive if isinstance(active_archive, dict) else None,
+            context,
+        ):
+            archive = active_archive if isinstance(active_archive, dict) else None
+    except ImportError:
+        context = None
+    if not isinstance(context, dict):
+        context = _get_saved_active_league_context(session)
+    if isinstance(context, dict) and archive is None:
+        try:
+            from draft_archive_state import get_active_draft_archive, get_draft_archive
+
+            draft_id = _context_source_draft_id(context)
+            active_archive = get_active_draft_archive(session)
+            if _archive_matches_context(active_archive, context):
+                archive = active_archive
+            elif draft_id:
+                loaded = get_draft_archive(session, draft_id)
+                if isinstance(loaded, dict):
+                    archive = loaded
+        except ImportError:
+            pass
+    return context, archive
+
+
+def resolve_fantasy_workflow_source_descriptor(session: dict[str, Any]) -> dict[str, Any]:
+    """Coherent workflow source — same context identity that feeds Lineup/Standings/Waiver data.
+
+    Priority matches ``resolve_fantasy_context_source``:
+    temporary Live/Simulator override → saved Active Draft/League → generic.
+    """
+    cache_fp = _workflow_descriptor_cache_fingerprint(session)
     if session.get("_workflow_descriptor_fp") == cache_fp:
         cached = session.get("_workflow_descriptor_cached")
         if isinstance(cached, dict):
@@ -729,50 +917,45 @@ def resolve_fantasy_workflow_source_descriptor(session: dict[str, Any]) -> dict[
         "active_heading": "",
         "subtitle": "",
         "matchup": "",
+        "board_pick_count": 0,
+        "descriptor_cache_fingerprint": cache_fp,
     }
 
+    source = resolve_fantasy_context_source(session)
     context: dict[str, Any] | None = None
     archive: dict[str, Any] | None = None
-    try:
-        from saved_draft_library_selection import resolve_coherent_active_library_selection
 
-        sel = resolve_coherent_active_library_selection(session)
-        context = sel.get("linked_active_context") or sel.get("active_context")
-        if isinstance(context, dict):
-            context = context if isinstance(context, dict) else None
-        active_archive = sel.get("active_archive")
-        if _archive_matches_context(active_archive if isinstance(active_archive, dict) else None, context):
-            archive = active_archive if isinstance(active_archive, dict) else None
-    except ImportError:
-        context = None
-
-    if not isinstance(context, dict):
+    if source.kind in (SOURCE_SIMULATOR_BOARD, SOURCE_LIVE_DRAFT):
+        # Temporary / natural board wins — never select the saved Active League for page data.
         context = get_effective_fantasy_context(session, respect_source_priority=True)
+        archive = None
+    elif source.kind == SOURCE_ACTIVE_DRAFT:
+        context, archive = _resolve_saved_active_workflow_pair(session)
+    else:
+        session["_workflow_descriptor_fp"] = cache_fp
+        session["_workflow_descriptor_cached"] = dict(empty)
+        return empty
+
     if not isinstance(context, dict):
-        context = _get_saved_active_league_context(session)
-    if not isinstance(context, dict):
+        session["_workflow_descriptor_fp"] = cache_fp
+        session["_workflow_descriptor_cached"] = dict(empty)
         return empty
 
     league_context_id = str(context.get("league_context_id") or "").strip()
     draft_id = _context_source_draft_id(context)
     is_temporary = bool(
-        league_context_id.startswith("__ephemeral_")
+        source.kind in (SOURCE_SIMULATOR_BOARD, SOURCE_LIVE_DRAFT)
+        or league_context_id.startswith("__ephemeral_")
         or is_ephemeral_league_context_id(league_context_id)
     )
-
-    if archive is None:
-        try:
-            from draft_archive_state import get_active_draft_archive, get_draft_archive
-
-            active_archive = get_active_draft_archive(session)
-            if _archive_matches_context(active_archive, context):
-                archive = active_archive
-            elif draft_id:
-                loaded = get_draft_archive(session, draft_id)
-                if isinstance(loaded, dict):
-                    archive = loaded
-        except ImportError:
-            pass
+    if is_temporary:
+        # Temporary boards must not inherit saved Upload/Robins draft or league IDs.
+        draft_id = ""
+        archive = None
+        if source.kind == SOURCE_LIVE_DRAFT and not league_context_id.startswith("__ephemeral_"):
+            league_context_id = "__ephemeral_live__"
+        if source.kind == SOURCE_SIMULATOR_BOARD and not league_context_id.startswith("__ephemeral_"):
+            league_context_id = "__ephemeral_simulator__"
 
     try:
         from fantasy_league_identity import resolve_canonical_league_id
@@ -780,8 +963,14 @@ def resolve_fantasy_workflow_source_descriptor(session: dict[str, Any]) -> dict[
         canonical_league_id = str(resolve_canonical_league_id(context) or "").strip()
     except ImportError:
         canonical_league_id = str(dict(context.get("metadata") or {}).get("league_id") or "").strip()
+    if is_temporary:
+        canonical_league_id = ""
 
     my_team_name = str(context.get("my_team_name") or "").strip()
+    if not my_team_name and isinstance(archive, dict):
+        my_team_name = str(archive.get("team_name") or "").strip()
+    if not my_team_name and source.kind in (SOURCE_SIMULATOR_BOARD, SOURCE_LIVE_DRAFT):
+        my_team_name = _resolve_my_team_for_ephemeral(session, source=source)
     if not my_team_name:
         try:
             from fantasy_workspace_team_identity import resolve_current_account_team_for_live_draft_and_league
@@ -794,43 +983,91 @@ def resolve_fantasy_workflow_source_descriptor(session: dict[str, Any]) -> dict[
             pass
 
     team_names = _workflow_team_names(context)
+    if not my_team_name and team_names:
+        candidate = str(session.get("room_your_team") or "").strip()
+        if candidate and candidate in team_names:
+            my_team_name = candidate
+        elif len(team_names) == 1:
+            my_team_name = team_names[0]
+    if is_temporary and source.kind == SOURCE_SIMULATOR_BOARD and not team_names:
+        team_names = _board_team_names(_resolve_simulator_board(session))
     display_name = _workflow_short_league_name(context) or str(context.get("display_name") or "").strip()
+    if is_temporary and source.kind == SOURCE_SIMULATOR_BOARD:
+        display_name = "Draft Room Simulator Board"
+    elif is_temporary and source.kind == SOURCE_LIVE_DRAFT:
+        display_name = display_name or "Live Draft Room"
 
     draft_type = ""
     draft_type_label = ""
-    try:
-        from fantasy_league_context import resolve_archive_draft_type_with_reason
+    if not is_temporary:
+        try:
+            from fantasy_league_context import resolve_archive_draft_type_with_reason
 
-        draft_type, _, _ = resolve_archive_draft_type_with_reason(
-            context=context,
-            archive_entry=archive if isinstance(archive, dict) else None,
-            session=session,
-        )
-        draft_type_label = draft_type_display({"draft_type": draft_type}) if draft_type else ""
-    except ImportError:
-        pass
+            draft_type, _, _ = resolve_archive_draft_type_with_reason(
+                context=context,
+                archive_entry=archive if isinstance(archive, dict) else None,
+                session=session,
+            )
+            draft_type_label = draft_type_display({"draft_type": draft_type}) if draft_type else ""
+        except ImportError:
+            pass
 
-    try:
-        from fantasy_context_terminology import active_context_label
+    if is_temporary:
+        active_heading = "Temporary Practice Board"
+    else:
+        try:
+            from fantasy_context_terminology import active_context_label
 
-        active_heading = active_context_label(context, archive if isinstance(archive, dict) else None)
-    except ImportError:
-        active_heading = "Active League" if not is_temporary else "Temporary Practice Board"
+            active_heading = active_context_label(context, archive if isinstance(archive, dict) else None)
+        except ImportError:
+            active_heading = "Active League"
 
     matchup = _workflow_matchup_line(my_team_name, team_names)
+    board_pick_count = _simulator_board_pick_count(session) if source.kind == SOURCE_SIMULATOR_BOARD else 0
+    if source.kind == SOURCE_LIVE_DRAFT:
+        room = _resolve_live_room(session)
+        if isinstance(room, dict):
+            board = room.get("draft_board") or []
+            board_pick_count = len(board) if isinstance(board, list) else 0
+
     subtitle_parts = [part for part in (draft_type_label, matchup) if part]
+    if is_temporary and board_pick_count:
+        my_count = 0
+        rosters = context.get("league_rosters") if isinstance(context.get("league_rosters"), dict) else {}
+        if my_team_name and isinstance(rosters.get(my_team_name), dict):
+            players = rosters[my_team_name].get("players") or []
+            my_count = len(players) if isinstance(players, list) else 0
+        if my_count:
+            subtitle_parts.append(f"{board_pick_count} picks / {my_count} players on {my_team_name}")
+        else:
+            subtitle_parts.append(f"{board_pick_count} picks")
     subtitle = " · ".join(subtitle_parts)
 
     if is_temporary:
         source_kind = (
             WORKFLOW_SOURCE_TEMPORARY_LIVE
-            if league_context_id == "__ephemeral_live__"
+            if source.kind == SOURCE_LIVE_DRAFT or league_context_id == "__ephemeral_live__"
             else WORKFLOW_SOURCE_TEMPORARY_SIMULATOR
         )
     elif draft_id or league_context_id:
         source_kind = WORKFLOW_SOURCE_ACTIVE
     else:
         source_kind = WORKFLOW_SOURCE_GENERIC
+
+    # Keep context id/draft fields consistent with temporary semantics even if ephemeral
+    # builder stamped blank metadata.
+    if is_temporary:
+        context = dict(context)
+        context["league_context_id"] = league_context_id
+        context["my_team_name"] = my_team_name or str(context.get("my_team_name") or "").strip()
+        meta = dict(context.get("metadata") or {})
+        meta.pop("source_draft_id", None)
+        meta.pop("draft_id", None)
+        meta.pop("league_id", None)
+        context["metadata"] = meta
+    elif my_team_name and not str(context.get("my_team_name") or "").strip():
+        context = dict(context)
+        context["my_team_name"] = my_team_name
 
     result = {
         "draft_id": draft_id,
@@ -846,12 +1083,77 @@ def resolve_fantasy_workflow_source_descriptor(session: dict[str, Any]) -> dict[
         "active_heading": active_heading,
         "subtitle": subtitle,
         "matchup": matchup,
+        "board_pick_count": board_pick_count,
+        "descriptor_cache_fingerprint": cache_fp,
         "context": context,
         "archive": archive if isinstance(archive, dict) else None,
     }
     session["_workflow_descriptor_fp"] = cache_fp
     session["_workflow_descriptor_cached"] = dict(result)
     return result
+
+
+def collect_saved_vs_effective_source_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
+    """Two-layer diagnostics: saved Active League selection vs effective workflow source."""
+    out: dict[str, Any] = {
+        "saved_active_draft_id": "",
+        "saved_active_context_id": "",
+        "saved_active_name": "",
+        "saved_active_team": "",
+        "effective_source_kind": "",
+        "effective_context_id": "",
+        "effective_team": "",
+        "effective_roster_team_names": [],
+        "effective_board_pick_count": 0,
+        "effective_context_fingerprint": "",
+        "descriptor_cache_fingerprint": "",
+        "context_coherent": True,
+    }
+    try:
+        from draft_archive_state import get_active_draft_archive
+
+        archive = get_active_draft_archive(session)
+        if isinstance(archive, dict):
+            out["saved_active_draft_id"] = str(archive.get("draft_id") or "").strip()
+            out["saved_active_name"] = str(archive.get("draft_name") or "").strip()
+            out["saved_active_team"] = str(archive.get("team_name") or "").strip()
+            out["saved_active_context_id"] = str(archive.get("league_context_id") or "").strip()
+    except ImportError:
+        pass
+    try:
+        saved = _get_saved_active_league_context(session)
+        if isinstance(saved, dict):
+            out["saved_active_context_id"] = str(
+                saved.get("league_context_id") or out["saved_active_context_id"] or ""
+            ).strip()
+            if not out["saved_active_name"]:
+                out["saved_active_name"] = str(
+                    saved.get("league_name") or saved.get("display_name") or ""
+                ).strip()
+            if not out["saved_active_team"]:
+                out["saved_active_team"] = str(saved.get("my_team_name") or "").strip()
+            if not out["saved_active_draft_id"]:
+                out["saved_active_draft_id"] = _context_source_draft_id(saved)
+    except Exception:
+        pass
+
+    desc = resolve_fantasy_workflow_source_descriptor(session)
+    out["effective_source_kind"] = str(desc.get("source_kind") or "")
+    out["effective_context_id"] = str(desc.get("league_context_id") or "")
+    out["effective_team"] = str(desc.get("my_team_name") or "")
+    out["effective_roster_team_names"] = list(desc.get("team_names") or [])
+    out["effective_board_pick_count"] = int(desc.get("board_pick_count") or 0)
+    out["descriptor_cache_fingerprint"] = str(desc.get("descriptor_cache_fingerprint") or "")
+    try:
+        from resolved_fantasy_context import RESOLVED_DIAG_KEY
+
+        raw = session.get(RESOLVED_DIAG_KEY)
+        if isinstance(raw, dict):
+            out["effective_context_fingerprint"] = str(raw.get("context_fingerprint") or "")
+            out["context_coherent"] = bool(raw.get("context_coherent", True))
+    except ImportError:
+        pass
+    return out
 
 
 def invalidate_fantasy_workflow_descriptor_cache(session: dict[str, Any]) -> None:
@@ -904,11 +1206,25 @@ def fantasy_workflow_using_html(session: dict[str, Any]) -> str:
     if kind in (WORKFLOW_SOURCE_TEMPORARY_LIVE, WORKFLOW_SOURCE_TEMPORARY_SIMULATOR):
         board = "Live Draft Room — unsaved" if kind == WORKFLOW_SOURCE_TEMPORARY_LIVE else "Draft Room Simulator — unsaved"
         board = _html_esc(board)
+        matchup = _html_esc(desc.get("matchup") or "")
+        subtitle = _html_esc(desc.get("subtitle") or "")
+        matchup_row = f'<div class="fantasy-source-sub">{matchup}</div>' if matchup else ""
+        # Prefer matchup alone under team; append pick counts from subtitle when distinct.
+        detail = ""
+        raw_sub = str(desc.get("subtitle") or "")
+        if raw_sub and matchup and matchup in raw_sub:
+            remainder = raw_sub.replace(str(desc.get("matchup") or ""), "", 1).strip(" ·")
+            if remainder:
+                detail = f'<div class="fantasy-source-sub">{_html_esc(remainder)}</div>'
+        elif subtitle and not matchup:
+            detail = f'<div class="fantasy-source-sub">{subtitle}</div>'
         return f"""
 <div class="fantasy-source-card fantasy-source-card-temporary">
   <div class="fantasy-source-kicker">Temporary Practice Board</div>
   <div class="fantasy-source-sub">{board}</div>
   {team_row}
+  {matchup_row}
+  {detail}
 </div>"""
 
     return f"""

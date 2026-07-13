@@ -1108,6 +1108,7 @@ def _apply_changed_fields_locally(session: dict[str, Any], changed_fields: dict[
         kind = str(changed_fields.get("fantasy_source_override_kind") or "none").strip().lower()
         session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = kind == "live_draft_room"
         session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = kind == "simulator_board"
+        invalidate_preference_dependent_caches(session)
     if "active_draft_id" in changed_fields:
         draft_id = str(changed_fields.get("active_draft_id") or "").strip()
         if draft_id:
@@ -1121,7 +1122,7 @@ def _apply_changed_fields_locally(session: dict[str, Any], changed_fields: dict[
                 ensure_fantasy_league_context_state(session)["active_league_context_id"] = ctx_id
             except ImportError:
                 pass
-
+        invalidate_preference_dependent_caches(session)
 
 def ensure_account_preferences_applied_before_controls(session: dict[str, Any]) -> dict[str, Any]:
     """Authoritative prefs must win before Research/Live/Simulator checkboxes render."""

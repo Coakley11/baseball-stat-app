@@ -168,10 +168,12 @@ def resolve_fantasy_context_for_page(
 
     context = desc.get("context") if isinstance(desc.get("context"), dict) else None
     archive = desc.get("archive") if isinstance(desc.get("archive"), dict) else None
-    if not isinstance(context, dict):
+    is_temporary = bool(desc.get("is_temporary_source"))
+    if not isinstance(context, dict) and not is_temporary:
         try:
             from fantasy_league_context import get_active_league_context
 
+            # Saved-library fallback only when the effective source is Active Draft.
             context = get_active_league_context(session, respect_source_priority=False)
         except ImportError:
             context = None
@@ -185,19 +187,24 @@ def resolve_fantasy_context_for_page(
     if not isinstance(league_rosters, dict):
         league_rosters = {}
     # Prefer archive league_rosters when context map empty but archive is the same draft.
-    if not league_rosters and isinstance(archive, dict):
+    # Never hydrate temporary boards from a saved Upload/Robins archive.
+    if not league_rosters and isinstance(archive, dict) and not is_temporary:
         arch_rosters = archive.get("league_rosters")
         if isinstance(arch_rosters, dict) and arch_rosters:
             league_rosters = copy.deepcopy(arch_rosters)
 
-    draft_id = _source_draft_id(context, archive)
+    draft_id = "" if is_temporary else _source_draft_id(context, archive)
     context_id = str(context.get("league_context_id") or desc.get("league_context_id") or "").strip()
     try:
         from fantasy_league_identity import resolve_canonical_league_id
 
-        league_id = str(resolve_canonical_league_id(context) or desc.get("canonical_league_id") or "").strip()
+        league_id = (
+            ""
+            if is_temporary
+            else str(resolve_canonical_league_id(context) or desc.get("canonical_league_id") or "").strip()
+        )
     except ImportError:
-        league_id = str(desc.get("canonical_league_id") or context.get("league_id") or "").strip()
+        league_id = "" if is_temporary else str(desc.get("canonical_league_id") or context.get("league_id") or "").strip()
 
     team = str(desc.get("my_team_name") or context.get("my_team_name") or "").strip()
     if not team and isinstance(archive, dict):
@@ -328,6 +335,31 @@ def invalidate_resolved_fantasy_context(session: dict[str, Any]) -> None:
 def collect_resolved_fantasy_context_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     raw = session.get(RESOLVED_DIAG_KEY)
     if isinstance(raw, dict) and raw:
-        return dict(raw)
-    resolved = resolve_fantasy_context_for_page(session, force=True)
-    return resolved.to_diag()
+        base = dict(raw)
+    else:
+        resolved = resolve_fantasy_context_for_page(session, force=True)
+        base = resolved.to_diag()
+    try:
+        from fantasy_context_source import collect_saved_vs_effective_source_diagnostics
+
+        layers = collect_saved_vs_effective_source_diagnostics(session)
+        base["saved_selection"] = {
+            "saved_active_draft_id": layers.get("saved_active_draft_id"),
+            "saved_active_context_id": layers.get("saved_active_context_id"),
+            "saved_active_name": layers.get("saved_active_name"),
+            "saved_active_team": layers.get("saved_active_team"),
+        }
+        base["effective_workflow_source"] = {
+            "effective_source_kind": layers.get("effective_source_kind"),
+            "effective_context_id": layers.get("effective_context_id"),
+            "effective_team": layers.get("effective_team"),
+            "effective_roster_team_names": layers.get("effective_roster_team_names"),
+            "effective_board_pick_count": layers.get("effective_board_pick_count"),
+            "effective_context_fingerprint": layers.get("effective_context_fingerprint")
+            or base.get("context_fingerprint"),
+            "descriptor_cache_fingerprint": layers.get("descriptor_cache_fingerprint"),
+            "context_coherent": layers.get("context_coherent", base.get("context_coherent")),
+        }
+    except ImportError:
+        pass
+    return base

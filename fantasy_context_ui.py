@@ -216,8 +216,12 @@ def apply_live_override_toggle_from_widget(session: dict[str, Any]) -> dict[str,
     if enabled:
         session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
     try:
-        from account_fantasy_preferences import update_account_fantasy_preference_fields
+        from account_fantasy_preferences import (
+            invalidate_preference_dependent_caches,
+            update_account_fantasy_preference_fields,
+        )
 
+        invalidate_preference_dependent_caches(session)
         return update_account_fantasy_preference_fields(
             session,
             changed_fields={
@@ -229,6 +233,12 @@ def apply_live_override_toggle_from_widget(session: dict[str, Any]) -> dict[str,
             reason="live_override_toggle",
         )
     except ImportError:
+        try:
+            from fantasy_context_source import invalidate_fantasy_workflow_descriptor_cache
+
+            invalidate_fantasy_workflow_descriptor_cache(session)
+        except ImportError:
+            pass
         return {"skipped": "import_error", "write_verified": False}
 
 
@@ -238,8 +248,12 @@ def apply_simulator_override_toggle_from_widget(session: dict[str, Any]) -> dict
     if enabled:
         session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
     try:
-        from account_fantasy_preferences import update_account_fantasy_preference_fields
+        from account_fantasy_preferences import (
+            invalidate_preference_dependent_caches,
+            update_account_fantasy_preference_fields,
+        )
 
+        invalidate_preference_dependent_caches(session)
         return update_account_fantasy_preference_fields(
             session,
             changed_fields={
@@ -249,6 +263,12 @@ def apply_simulator_override_toggle_from_widget(session: dict[str, Any]) -> dict
             reason="simulator_override_toggle",
         )
     except ImportError:
+        try:
+            from fantasy_context_source import invalidate_fantasy_workflow_descriptor_cache
+
+            invalidate_fantasy_workflow_descriptor_cache(session)
+        except ImportError:
+            pass
         return {"skipped": "import_error", "write_verified": False}
 
 
