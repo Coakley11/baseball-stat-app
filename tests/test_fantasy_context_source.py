@@ -151,9 +151,14 @@ class FantasyContextSourceTests(unittest.TestCase):
         self.assertEqual(ctx.get("display_name"), "Practice Draft")
 
     def test_context_toggle_keys_persist_in_workspace_blob(self) -> None:
+        """Simulator/Live overrides are account-owned — not restored from full_session blob."""
         from unittest.mock import MagicMock
 
+        from account_fantasy_preferences import ACCOUNT_OWNED_SESSION_KEYS
         from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
+
+        self.assertIn(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY, ACCOUNT_OWNED_SESSION_KEYS)
+        self.assertIn(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY, ACCOUNT_OWNED_SESSION_KEYS)
 
         session = _saved_context_session()
         session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
@@ -161,13 +166,15 @@ class FantasyContextSourceTests(unittest.TestCase):
         st = MagicMock()
         st.session_state = session
         blob = build_baseball_disk_state(st)
+        # Account-owned toggles must not ride the workspace blob (prefs doc is source of truth).
+        self.assertNotIn(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY, blob)
+        self.assertNotIn(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY, blob)
         restored: dict = {}
         st2 = MagicMock()
         st2.session_state = restored
         apply_baseball_disk_state(st2, blob)
-        self.assertFalse(restored.get(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY))
-        self.assertTrue(restored.get(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY))
-
+        # Defaults may seed False later; the blob must not have carried True across.
+        self.assertFalse(bool(restored.get(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY)))
     def test_simulator_unavailable_when_live_override_enabled(self) -> None:
         from fantasy_context_source import simulator_board_context_available
 
