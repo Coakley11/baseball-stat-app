@@ -185,6 +185,13 @@ def _timer_expired_pending(session: dict[str, Any], room: dict[str, Any]) -> boo
 def render_live_draft_timer_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
     if not developer_mode:
         return
+    try:
+        from page_diagnostics import suppress_inline_diagnostics
+
+        if suppress_inline_diagnostics(developer_mode):
+            return
+    except ImportError:
+        pass
     raw = session.get(LIVE_DRAFT_TIMER_DIAG_KEY)
     if not isinstance(raw, dict):
         return

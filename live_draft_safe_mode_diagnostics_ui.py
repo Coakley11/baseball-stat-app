@@ -9,6 +9,13 @@ def render_safe_mode_diagnostics(st: Any, session: dict[str, Any], *, developer_
     if not developer_mode:
         return
     try:
+        from page_diagnostics import suppress_inline_diagnostics
+
+        if suppress_inline_diagnostics(developer_mode):
+            return
+    except ImportError:
+        pass
+    try:
         from live_draft_safe_mode import RERUN_DIAG_KEY, SAFE_MODE_DIAG_KEY
     except ImportError:
         return

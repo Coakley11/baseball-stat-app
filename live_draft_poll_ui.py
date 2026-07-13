@@ -55,6 +55,13 @@ def record_live_poll_diagnostics(
 def render_live_poll_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
     if not developer_mode:
         return
+    try:
+        from page_diagnostics import suppress_inline_diagnostics
+
+        if suppress_inline_diagnostics(developer_mode):
+            return
+    except ImportError:
+        pass
     raw = session.get(LIVE_DRAFT_POLL_DIAG_KEY)
     if not isinstance(raw, dict):
         return

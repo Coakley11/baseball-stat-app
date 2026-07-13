@@ -4454,6 +4454,14 @@ def render_board_tab_diagnostics(st: Any) -> None:
 def render_draft_board_diagnostics(st: Any) -> None:
     if not _developer_ui_visible(st):
         return
+    try:
+        from page_diagnostics import suppress_inline_diagnostics
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        if suppress_inline_diagnostics(bool(developer_mode_checkbox_enabled(st=st))):
+            return
+    except ImportError:
+        pass
     ss = st.session_state
     board = draft_board_diagnostics(ss)
     trace = ss.get("_draft_room_last_save_trace")

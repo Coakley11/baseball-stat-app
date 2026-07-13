@@ -131,6 +131,28 @@ def repair_incoherent_active_library_selection(session: dict[str, Any]) -> dict[
 
 def prepare_saved_draft_library_active_selection(session: dict[str, Any]) -> dict[str, Any]:
     """Repair incoherent pointers, then return persisted library selection."""
+    fp_parts = []
+    try:
+        from draft_archive_state import get_active_draft_archive
+
+        active = get_active_draft_archive(session)
+        fp_parts.append(str((active or {}).get("draft_id") or ""))
+    except ImportError:
+        pass
+    try:
+        from fantasy_league_context import ensure_fantasy_league_context_state
+
+        store = ensure_fantasy_league_context_state(session)
+        fp_parts.append(str(store.get("active_league_context_id") or ""))
+    except ImportError:
+        pass
+    fp_parts.append(str(session.get("_suite_auth_user_id") or ""))
+    fp = "|".join(fp_parts)
+    if session.get("_library_selection_fp") == fp:
+        cached = session.get("_library_selection_cached")
+        if isinstance(cached, dict):
+            return dict(cached)
+
     if not session.get("_creation_origin_repair_done"):
         try:
             from fantasy_league_context import backfill_immutable_creation_origins
@@ -142,6 +164,8 @@ def prepare_saved_draft_library_active_selection(session: dict[str, Any]) -> dic
     sel = resolve_coherent_active_library_selection(session)
     if not sel.get("coherent"):
         sel = repair_incoherent_active_library_selection(session)
+    session["_library_selection_fp"] = fp
+    session["_library_selection_cached"] = dict(sel)
     return sel
 
 
@@ -168,7 +192,11 @@ def saved_draft_card_is_active(
 
 
 def render_active_library_pair_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
-    if not developer_mode:
+    try:
+        from page_diagnostics import inline_diagnostics_enabled
+    except ImportError:
+        inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+    if not developer_mode or not inline_diagnostics_enabled(developer_mode):
         return
     sel = session.get(ACTIVE_PAIR_DIAG_KEY) or resolve_coherent_active_library_selection(session)
     with st.expander("Active library pair diagnostics (Dev)", expanded=False):
@@ -193,7 +221,13 @@ def render_draft_assistant_progress_diagnostics(
     *,
     developer_mode: bool = False,
 ) -> None:
-    if not developer_mode:
+    try:
+        from page_diagnostics import inline_diagnostics_enabled
+    except ImportError:
+        inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+    if not developer_mode or not inline_diagnostics_enabled(developer_mode):
+        if developer_mode and progress:
+            session["_draft_assistant_progress_diag"] = dict(progress)
         return
     with st.expander("Draft Assistant progress diagnostics (Dev)", expanded=False):
         for key, val in progress.items():

@@ -834,6 +834,14 @@ def _flat_from_meta_for_envelope(session: dict[str, Any], section: str) -> dict[
 
 
 def render_fantasy_state_debug(st: Any, session: dict[str, Any], active_page: str) -> None:
+    try:
+        from page_diagnostics import suppress_inline_diagnostics
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        if suppress_inline_diagnostics(bool(developer_mode_checkbox_enabled(st=st))):
+            return
+    except ImportError:
+        pass
     section = section_for_page(active_page)
     if not section:
         return

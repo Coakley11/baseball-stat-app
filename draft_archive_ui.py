@@ -300,13 +300,13 @@ def _on_click_save_probe_test_draft() -> None:
         }
 
 
-def render_persistence_probe_panel(st: Any, session: dict[str, Any]) -> None:
+def render_persistence_probe_panel(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
     """Post-reboot probe: account, workspace, counts, restore verdict (Developer Mode)."""
     try:
-        from suite_workspace import can_show_developer_tools
+        from page_diagnostics import inline_diagnostics_enabled
     except ImportError:
-        return
-    if not can_show_developer_tools(st=st):
+        inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+    if not developer_mode or not inline_diagnostics_enabled(developer_mode):
         return
     try:
         from workflow_persist_guard import build_persistence_probe_panel
@@ -513,7 +513,13 @@ def render_persistence_durability_banner(st: Any, session: dict[str, Any]) -> bo
     return False
 
 
-def _render_persistence_diagnostics(st: Any, session: dict[str, Any]) -> None:
+def _render_persistence_diagnostics(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
+    try:
+        from page_diagnostics import inline_diagnostics_enabled
+    except ImportError:
+        inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+    if not developer_mode or not inline_diagnostics_enabled(developer_mode):
+        return
     try:
         from suite_workspace import can_show_developer_tools
     except ImportError:
@@ -4486,7 +4492,12 @@ def _render_saved_draft_library_page_body(
         active_id = str(selection.get("active_draft_archive_id") or "")
         active_context_id = str(selection.get("persisted_active_context_id") or "")
         if developer_mode:
-            render_active_library_pair_diagnostics(st, session, developer_mode=developer_mode)
+            try:
+                from page_diagnostics import inline_diagnostics_enabled
+            except ImportError:
+                inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+            if inline_diagnostics_enabled(developer_mode):
+                render_active_library_pair_diagnostics(st, session, developer_mode=developer_mode)
     except ImportError:
         active_context = get_active_league_context(session, respect_source_priority=False)
         active_id = str((active or {}).get("draft_id") or "")
@@ -4500,17 +4511,22 @@ def _render_saved_draft_library_page_body(
     )
 
     if developer_mode:
-        render_persistence_probe_panel(st, session)
+        render_persistence_probe_panel(st, session, developer_mode=developer_mode)
         try:
-            from suite_identity_guard import render_identity_guard_diagnostic_panel
-
-            render_identity_guard_diagnostic_panel(
-                st,
-                session,
-                title="Saved Draft Library — account / workspace identity",
-            )
+            from page_diagnostics import inline_diagnostics_enabled
         except ImportError:
-            pass
+            inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+        if inline_diagnostics_enabled(developer_mode):
+            try:
+                from suite_identity_guard import render_identity_guard_diagnostic_panel
+
+                render_identity_guard_diagnostic_panel(
+                    st,
+                    session,
+                    title="Saved Draft Library — account / workspace identity",
+                )
+            except ImportError:
+                pass
 
     try:
         from fantasy_shared_league_library_sync import (
@@ -4551,7 +4567,11 @@ def _render_saved_draft_library_page_body(
         try:
             render_pending_league_invites(st, session)
             render_commissioner_invite_panel(st, session)
-            if developer_mode:
+            try:
+                from page_diagnostics import inline_diagnostics_enabled
+            except ImportError:
+                inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+            if developer_mode and inline_diagnostics_enabled(developer_mode):
                 render_invite_flow_diagnostics_panel(st, session)
                 render_commissioner_invite_diagnostics_panel(st, session)
         except Exception as exc:
@@ -4596,7 +4616,7 @@ def _render_saved_draft_library_page_body(
     st.divider()
     _render_fantasy_sync_section(st, session)
     st.divider()
-    _render_persistence_diagnostics(st, session)
+    _render_persistence_diagnostics(st, session, developer_mode=developer_mode)
 
     st.markdown("##### Saved Drafts")
     st.metric("Saved drafts", len(archives))
@@ -4702,3 +4722,14 @@ def _render_saved_draft_library_page_body(
         page_label_fn=page_label_fn,
         key_prefix="library_bottom",
     )
+    try:
+        from page_diagnostics import render_consolidated_diagnostics
+
+        render_consolidated_diagnostics(
+            st,
+            session,
+            "Saved Draft Library",
+            developer_mode=developer_mode,
+        )
+    except ImportError:
+        pass

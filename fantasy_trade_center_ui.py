@@ -661,9 +661,17 @@ def _render_build_analyze(
         except ImportError:
             diag = session.get(f"{scope_key}|builder_handoff_diag")
         if isinstance(diag, dict) and diag:
-            with st.expander("Trade handoff diagnostics", expanded=False):
-                for key, value in diag.items():
-                    st.text(f"{key}: {value}")
+            try:
+                from page_diagnostics import suppress_inline_diagnostics
+
+                if developer_mode_enabled_fn() and not suppress_inline_diagnostics(developer_mode_enabled_fn()):
+                    with st.expander("Trade handoff diagnostics", expanded=False):
+                        for key, value in diag.items():
+                            st.text(f"{key}: {value}")
+            except ImportError:
+                with st.expander("Trade handoff diagnostics", expanded=False):
+                    for key, value in diag.items():
+                        st.text(f"{key}: {value}")
 
     other_team = resolve_effective_partner(trade_partner, receive_players, roster_stats, my_team=my_team)
     if receive_players and other_team != ANY_TRADE_PARTNER:
@@ -865,22 +873,29 @@ def _render_build_analyze(
         st.rerun()
 
     if developer_mode_enabled_fn():
-        with st.expander("Trade Center diagnostics (Developer Mode)", expanded=False):
-            st.json(
-                {
-                    **diag,
-                    **builder_diag,
-                    "my_team": my_team,
-                    "other_teams": ws.get("other_teams"),
-                    "roster_counts_by_team": diag.get("roster_counts_by_team")
-                    or {
-                        team: int(len(roster_stats[roster_stats["Team"].astype(str) == team]))
-                        for team in sorted(roster_stats["Team"].dropna().astype(str).unique().tolist())
-                    },
-                    "give_selections": give_players,
-                    "receive_selections": receive_players,
-                }
-            )
+        try:
+            from page_diagnostics import suppress_inline_diagnostics
+
+            if not suppress_inline_diagnostics(developer_mode_enabled_fn()):
+                with st.expander("Trade Center diagnostics (Developer Mode)", expanded=False):
+                    st.json(
+                        {
+                            **diag,
+                            **builder_diag,
+                            "my_team": my_team,
+                            "other_teams": ws.get("other_teams"),
+                            "roster_counts_by_team": diag.get("roster_counts_by_team")
+                            or {
+                                team: int(len(roster_stats[roster_stats["Team"].astype(str) == team]))
+                                for team in sorted(roster_stats["Team"].dropna().astype(str).unique().tolist())
+                            },
+                            "give_selections": give_players,
+                            "receive_selections": receive_players,
+                        }
+                    )
+        except ImportError:
+            with st.expander("Trade Center diagnostics (Developer Mode)", expanded=False):
+                st.json({**diag, **builder_diag, "my_team": my_team})
 
 
 def _count_pending_offers(session: dict[str, Any], my_team: str) -> int:

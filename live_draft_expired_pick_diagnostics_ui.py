@@ -9,6 +9,13 @@ def render_autopick_diagnostics(st: Any, session: dict[str, Any], *, developer_m
     if not developer_mode:
         return
     try:
+        from page_diagnostics import suppress_inline_diagnostics
+
+        if suppress_inline_diagnostics(developer_mode):
+            return
+    except ImportError:
+        pass
+    try:
         from live_draft_expired_pick import AUTOPICK_DIAG_KEY
     except ImportError:
         return

@@ -851,12 +851,25 @@ def render_waiver_wire_page(
             value_col="Expected Fantasy Value" if "Expected Fantasy Value" in stats_pool.columns else "HR",
             rank_col="Expected Fantasy Value" if "Expected Fantasy Value" in (waiver_pool.columns if not waiver_pool.empty else []) else "HR",
         )
-        with st.expander("Top player recommendation diagnostics", expanded=False):
-            st.caption(
-                "Why top raw-value players (including Ohtani) are available, ranked, or excluded from waiver adds."
-            )
-            for _diag_row in _waiver_diag_rows:
-                st.markdown(format_recommendation_diagnostic_line(_diag_row))
+        try:
+            from page_diagnostics import suppress_inline_diagnostics
+            from suite_workspace import developer_mode_checkbox_enabled
+
+            _dev = bool(developer_mode_checkbox_enabled(st=st))
+            if _dev and not suppress_inline_diagnostics(_dev):
+                with st.expander("Top player recommendation diagnostics", expanded=False):
+                    st.caption(
+                        "Why top raw-value players (including Ohtani) are available, ranked, or excluded from waiver adds."
+                    )
+                    for _diag_row in _waiver_diag_rows:
+                        st.markdown(format_recommendation_diagnostic_line(_diag_row))
+        except ImportError:
+            with st.expander("Top player recommendation diagnostics", expanded=False):
+                st.caption(
+                    "Why top raw-value players (including Ohtani) are available, ranked, or excluded from waiver adds."
+                )
+                for _diag_row in _waiver_diag_rows:
+                    st.markdown(format_recommendation_diagnostic_line(_diag_row))
     except ImportError:
         pass
 

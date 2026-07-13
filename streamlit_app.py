@@ -2168,6 +2168,20 @@ def render_page_guide(page_key):
             st.markdown(str(x), unsafe_allow_html=True)
 
 
+def _render_consolidated_page_diagnostics(page_key: str) -> None:
+    try:
+        from page_diagnostics import render_consolidated_diagnostics
+
+        render_consolidated_diagnostics(
+            st,
+            st.session_state,
+            str(page_key or ""),
+            developer_mode=developer_mode_enabled(),
+        )
+    except ImportError:
+        pass
+
+
 def top_bar_chart(df, name_col, value_col, title, top_n=10):
     if df.empty or value_col not in df.columns or name_col not in df.columns:
         return
@@ -12615,9 +12629,12 @@ def render_developer_mode_sidebar_toggle():
         pass
     if developer_mode_enabled():
         try:
-            from page_perf_diagnostics import render_page_perf_diagnostics
+            from page_diagnostics import suppress_inline_diagnostics
 
-            render_page_perf_diagnostics(st)
+            if not suppress_inline_diagnostics(True):
+                from page_perf_diagnostics import render_page_perf_diagnostics
+
+                render_page_perf_diagnostics(st)
         except ImportError:
             pass
 
@@ -12774,6 +12791,13 @@ def render_page_filters_debug(page_name: str):
     """Bottom-of-page debug: confirm filter keys survive sidebar navigation."""
     if pp.is_screenshot_mode(st) or not developer_mode_enabled():
         return
+    try:
+        from page_diagnostics import suppress_inline_diagnostics
+
+        if suppress_inline_diagnostics(developer_mode_enabled()):
+            return
+    except ImportError:
+        pass
     prefixes = PAGE_STATE_DEBUG_PREFIXES.get(normalize_page_key(page_name), ())
     rows = []
     for k in sorted(st.session_state.keys()):
@@ -18725,17 +18749,22 @@ if active_page == "Draft Assistant Simulator":
             board_has_players_for_summary = board_has_players
 
             if developer_mode_enabled():
-                with st.expander("Live draft handoff diagnostics", expanded=False):
-                    for key, val in handoff_diag.items():
-                        st.text(f"{key}: {val}")
                 try:
-                    from shared_draft_context import shared_draft_context_diagnostics
-
-                    with st.expander("Shared draft context diagnostics", expanded=False):
-                        for key, val in shared_draft_context_diagnostics(st.session_state).items():
-                            st.text(f"{key}: {val}")
+                    from page_diagnostics import inline_diagnostics_enabled
                 except ImportError:
-                    pass
+                    inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+                if inline_diagnostics_enabled(developer_mode_enabled()):
+                    with st.expander("Live draft handoff diagnostics", expanded=False):
+                        for key, val in handoff_diag.items():
+                            st.text(f"{key}: {val}")
+                    try:
+                        from shared_draft_context import shared_draft_context_diagnostics
+
+                        with st.expander("Shared draft context diagnostics", expanded=False):
+                            for key, val in shared_draft_context_diagnostics(st.session_state).items():
+                                st.text(f"{key}: {val}")
+                    except ImportError:
+                        pass
 
             with st.expander("Adjust pick number (advanced)", expanded=False):
                 st.number_input(
@@ -19359,9 +19388,14 @@ if active_page == "Draft Assistant Simulator":
         if developer_mode_enabled():
             _pool_diag = st.session_state.get("_ami_draft_projection", {}).get("player_pool_diagnostics")
             if isinstance(_pool_diag, dict) and _pool_diag:
-                with st.expander("AMI player pool diagnostics", expanded=False):
-                    for k, v in _pool_diag.items():
-                        st.text(f"{k}: {v}")
+                try:
+                    from page_diagnostics import inline_diagnostics_enabled
+                except ImportError:
+                    inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+                if inline_diagnostics_enabled(developer_mode_enabled()):
+                    with st.expander("AMI player pool diagnostics", expanded=False):
+                        for k, v in _pool_diag.items():
+                            st.text(f"{k}: {v}")
 
         st.subheader("Top players left by market value")
         st.caption("Best ADP/market ranks still on the board (lower rank number = drafted earlier in real leagues).")
@@ -19483,15 +19517,20 @@ if active_page == "Draft Assistant Simulator":
             style_cols=["Fantasy Edge", "Decision Score", "Roster Fit Score", "Player Grade", "ML Projection Score"],
         )
         if developer_mode_enabled():
-            with st.expander("Draft Scoring Breakdown", expanded=False):
-                st.caption("Per-component contributions from the draft scoring engine.")
-                _da_brk_opts = [""] + recs["fullName"].astype(str).tolist()
-                _da_brk_player = st.selectbox("Inspect player", _da_brk_opts, key="draft_assistant_breakdown_player")
-                render_draft_scoring_breakdown(
-                    available,
-                    player_name=_da_brk_player if _da_brk_player else None,
-                    key_suffix="assistant",
-                )
+            try:
+                from page_diagnostics import inline_diagnostics_enabled
+            except ImportError:
+                inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+            if inline_diagnostics_enabled(developer_mode_enabled()):
+                with st.expander("Draft Scoring Breakdown", expanded=False):
+                    st.caption("Per-component contributions from the draft scoring engine.")
+                    _da_brk_opts = [""] + recs["fullName"].astype(str).tolist()
+                    _da_brk_player = st.selectbox("Inspect player", _da_brk_opts, key="draft_assistant_breakdown_player")
+                    render_draft_scoring_breakdown(
+                        available,
+                        player_name=_da_brk_player if _da_brk_player else None,
+                        key_suffix="assistant",
+                    )
         st.subheader("Selected Player Insight")
         selected_draft_row = _select_insight_row(
             recs,
@@ -19624,6 +19663,7 @@ if active_page == "Draft Assistant Simulator":
         maybe_flush_deferred_draft_assistant_autosave(st, st.session_state)
     except ImportError:
         pass
+    _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
@@ -20492,10 +20532,16 @@ if active_page == "Draft Room Simulator":
                 )
 
     if developer_mode_enabled():
-        from draft_room_state import render_draft_board_diagnostics
+        try:
+            from page_diagnostics import inline_diagnostics_enabled
+        except ImportError:
+            inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+        if inline_diagnostics_enabled(developer_mode_enabled()):
+            from draft_room_state import render_draft_board_diagnostics
 
-        render_draft_board_diagnostics(st)
+            render_draft_board_diagnostics(st)
 
+    _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
@@ -21122,6 +21168,7 @@ if active_page == "Live Draft Room":
         "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft.",
         compact=True,
     )
+    render_page_guide(active_page)
     _prepare_and_show_draft_shared_settings(
         active_page,
         lookback_key="live_draft_proj_window",
@@ -22634,6 +22681,13 @@ if active_page == "Live Draft Room":
                         _defer_recs = True
                 except ImportError:
                     pass
+                try:
+                    from live_draft_rerun_scope import live_draft_should_skip_recommendations
+
+                    if live_draft_should_skip_recommendations(st.session_state, room):
+                        _defer_recs = True
+                except ImportError:
+                    pass
                 if not _defer_recs:
                     top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
                         st.session_state,
@@ -22973,15 +23027,20 @@ if active_page == "Live Draft Room":
                         style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
                     )
                 if developer_mode_enabled():
-                    with st.expander("Draft Scoring Breakdown", expanded=False):
-                        st.caption("Component contributions from the draft scoring engine.")
-                        _ld_brk_opts = [""] + (top_rec["fullName"].astype(str).tolist() if not top_rec.empty else [])
-                        _ld_brk_player = st.selectbox("Inspect player", _ld_brk_opts, key="live_draft_breakdown_player")
-                        render_draft_scoring_breakdown(
-                            top_rec if not top_rec.empty else pd.DataFrame(),
-                            player_name=_ld_brk_player if _ld_brk_player else None,
-                            key_suffix="live",
-                        )
+                    try:
+                        from page_diagnostics import inline_diagnostics_enabled
+                    except ImportError:
+                        inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+                    if inline_diagnostics_enabled(developer_mode_enabled()):
+                        with st.expander("Draft Scoring Breakdown", expanded=False):
+                            st.caption("Component contributions from the draft scoring engine.")
+                            _ld_brk_opts = [""] + (top_rec["fullName"].astype(str).tolist() if not top_rec.empty else [])
+                            _ld_brk_player = st.selectbox("Inspect player", _ld_brk_opts, key="live_draft_breakdown_player")
+                            render_draft_scoring_breakdown(
+                                top_rec if not top_rec.empty else pd.DataFrame(),
+                                player_name=_ld_brk_player if _ld_brk_player else None,
+                                key_suffix="live",
+                            )
 
                 from draft_ui import render_live_manual_draft_panel
 
@@ -23033,9 +23092,14 @@ if active_page == "Live Draft Room":
             )
 
         if developer_mode_enabled():
-            with st.expander("Live draft room debug (Dev)", expanded=False):
-                st.caption("Serialized room snapshot for diagnostics.")
-                st.json(serialize_live_draft_room(room))
+            try:
+                from page_diagnostics import inline_diagnostics_enabled
+            except ImportError:
+                inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+            if inline_diagnostics_enabled(developer_mode_enabled()):
+                with st.expander("Live draft room debug (Dev)", expanded=False):
+                    st.caption("Serialized room snapshot for diagnostics.")
+                    st.json(serialize_live_draft_room(room))
 
         st.subheader("Team Rosters")
         roster_df = live_draft_rosters_df(room)
@@ -23214,6 +23278,7 @@ if active_page == "Live Draft Room":
     except ImportError:
         pass
 
+    _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
@@ -23712,6 +23777,7 @@ if active_page == "Fantasy Standings Tracker":
         st.warning("Choose MLB API Auto-Fetch or upload a current-season stats CSV to calculate standings.")
 
     flush_fantasy_section_edits(st.session_state, "standings", st, reason="fantasy_standings_page_save")
+    _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
     if developer_mode_enabled():
         render_fantasy_state_debug(st, st.session_state, active_page)
@@ -24026,6 +24092,7 @@ if active_page == "Fantasy Lineup Assistant":
             )
     save_page_state(active_page)
     flush_fantasy_section_edits(st.session_state, "lineup", st, reason="fantasy_lineup_page_save")
+    _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
     if developer_mode_enabled():
         render_fantasy_state_debug(st, st.session_state, active_page)
@@ -24082,6 +24149,7 @@ if active_page == "Waiver Wire / Add-Drop Center":
         page_label_fn=page_option_label,
     )
     save_page_state(active_page)
+    _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
     render_page_filters_debug(active_page)
 

@@ -2574,6 +2574,12 @@ def render_draft_origin_repair_diagnostics(
     if not developer_mode:
         return
     try:
+        from page_diagnostics import inline_diagnostics_enabled
+    except ImportError:
+        inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+    if not inline_diagnostics_enabled(developer_mode):
+        return
+    try:
         diag = session.get(DRAFT_ORIGIN_REPAIR_DIAG_KEY)
         if not isinstance(diag, dict) or not diag:
             return

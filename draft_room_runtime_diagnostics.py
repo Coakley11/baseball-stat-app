@@ -312,6 +312,14 @@ def get_runtime_diagnostic_rows(session: dict[str, Any]) -> list[tuple[str, str,
 def render_runtime_diagnostic_table(st: Any, session: dict[str, Any]) -> None:
     """Single acceptance table visible in Live Draft Room (dev tools)."""
     try:
+        from page_diagnostics import suppress_inline_diagnostics
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        if suppress_inline_diagnostics(bool(developer_mode_checkbox_enabled(st=st))):
+            return
+    except ImportError:
+        pass
+    try:
         from suite_workspace import can_show_developer_tools
 
         if not can_show_developer_tools(st=st):

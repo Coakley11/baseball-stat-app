@@ -9,6 +9,12 @@ def render_draft_commit_diagnostics(st: Any, session: dict[str, Any], *, develop
     if not developer_mode:
         return
     try:
+        from page_diagnostics import suppress_inline_diagnostics
+    except ImportError:
+        suppress_inline_diagnostics = lambda _: False  # type: ignore[assignment,misc]
+    if suppress_inline_diagnostics(developer_mode):
+        return
+    try:
         from draft_commit_diagnostics import DRAFT_COMMIT_DIAG_KEY
     except ImportError:
         return

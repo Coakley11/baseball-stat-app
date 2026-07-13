@@ -24,8 +24,12 @@ def render_page_developer_diagnostics(
             st.markdown("**Summary**")
             for key, val in summary.items():
                 st.text(f"{key}: {val!r}")
+        if detail_sections:
+            st.markdown("**Sections**")
+            for section_name, section_data in detail_sections.items():
+                if not section_data:
+                    continue
+                with st.expander(str(section_name), expanded=False):
+                    st.code(json.dumps(section_data, indent=2, default=str), language="json")
         if render_extra is not None:
             render_extra(st)
-        if detail_sections:
-            with st.expander("Detailed traces (JSON)", expanded=False):
-                st.code(json.dumps(detail_sections, indent=2, default=str), language="json")
