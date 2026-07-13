@@ -4267,7 +4267,13 @@ def _render_archive_actions(
     )
 
 
-def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
+def render_saved_draft_library_page(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    page_label_fn=None,
+    developer_mode: bool = False,
+) -> None:
     """Dedicated management page for all saved draft teams."""
     try:
         from page_perf_phases import session_perf_phase
@@ -4284,10 +4290,21 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
             record_library_load_trace(session)
         except ImportError:
             pass
-        _render_saved_draft_library_page_body(st, session, page_label_fn=page_label_fn)
+        _render_saved_draft_library_page_body(
+            st,
+            session,
+            page_label_fn=page_label_fn,
+            developer_mode=developer_mode,
+        )
 
 
-def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
+def _render_saved_draft_library_page_body(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    page_label_fn=None,
+    developer_mode: bool = False,
+) -> None:
     try:
         from suite_identity_guard import enforce_identity_after_state_apply
 
@@ -4464,8 +4481,12 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
     try:
         from fantasy_league_context import render_draft_origin_repair_diagnostics
 
-        render_draft_origin_repair_diagnostics(st, session)
-    except ImportError:
+        render_draft_origin_repair_diagnostics(
+            st,
+            session,
+            developer_mode=developer_mode,
+        )
+    except Exception:
         pass
 
     try:

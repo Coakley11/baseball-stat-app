@@ -23032,7 +23032,12 @@ if active_page == "Saved Draft Library":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
-    render_saved_draft_library_page(st, st.session_state, page_label_fn=page_option_label)
+    render_saved_draft_library_page(
+        st,
+        st.session_state,
+        page_label_fn=page_option_label,
+        developer_mode=developer_mode_enabled(),
+    )
     save_page_state(active_page)
     _page_perf_end(active_page)
     render_page_filters_debug(active_page)

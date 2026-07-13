@@ -2373,19 +2373,27 @@ def ensure_live_draft_membership_metadata(
 DRAFT_ORIGIN_REPAIR_DIAG_KEY = "_draft_origin_repair_diag"
 
 
-def render_draft_origin_repair_diagnostics(st: Any, session: dict[str, Any]) -> None:
+def render_draft_origin_repair_diagnostics(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    developer_mode: bool = False,
+) -> None:
     """Developer Mode panel for draft-origin repair diagnostics."""
+    if not developer_mode:
+        return
     try:
-        from streamlit_app import developer_mode_enabled
-    except ImportError:
+        diag = session.get(DRAFT_ORIGIN_REPAIR_DIAG_KEY)
+        if not isinstance(diag, dict) or not diag:
+            return
+        with st.expander(
+            "Draft origin repair diagnostics",
+            expanded=False,
+            key="draft_origin_repair_diag_panel",
+        ):
+            st.json(diag)
+    except Exception:
         return
-    if not developer_mode_enabled():
-        return
-    diag = session.get(DRAFT_ORIGIN_REPAIR_DIAG_KEY)
-    if not isinstance(diag, dict) or not diag:
-        return
-    with st.expander("Draft origin repair diagnostics", expanded=False):
-        st.json(diag)
 
 
 def resolve_archive_draft_type_from_origin(
