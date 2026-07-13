@@ -1,9 +1,18 @@
 # Live Draft Phases 1–4 — Closure Matrix
 
 **Baseline:** `7ac0c9b` (workflow header + identity recursion hotfix)  
-**Closure commits:** `f1660a2` → `b7ed3ee` → `d9443e1` → `9245f7c` → `3f7366a`  
-**Deploy marker:** `211c21e` → `3f7366a` (supersedes `8854c70`)  
-**Scope:** Phases 1–4 only — Phase 5 deferred.
+**Closure commits:** `f1660a2` → … → `3f7366a` → `6fbf272` → `ff5f71d` → `fde92fd` → `17b1428`  
+**Deploy marker:** *(pending after P0 usability)* → `17b1428`  
+**Production usability:** **FAILED** on candidate `3f7366a` — P0 fixes in `6fbf272`–`17b1428`; **live acceptance not yet re-run**  
+**Scope:** Phases 1–4 only — Phase 5 deferred. **Do not declare complete until live P0 acceptance passes.**
+
+## P0 production usability (2026-07-13)
+
+| P0 | Root cause | Fix commit | Live verified |
+|----|------------|------------|---------------|
+| Slow pages (~20 min) | Full script reruns + ungated library repairs/migrations + double archive deepcopy on every render; helper-only profiling masked Streamlit wall time | `fde92fd` | no |
+| Robins lineup asks for 3 positions | `roster_settings.roster_slots` missing on completed Live Draft context; `needs_lineup_format_setup` treated league as flexible mock | `ff5f71d` | no |
+| Phone/Dell prefs diverge | Active league, overrides, Research Mode lived only in monolithic `full_session` blob with device-local session winner | `6fbf272` | no |
 
 ## Summary
 

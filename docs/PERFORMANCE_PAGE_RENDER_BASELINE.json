@@ -1,0 +1,29 @@
+{
+  "pages": {
+    "Saved Draft Library": {
+      "manifest_ms": 792.5,
+      "repair_first_ms": 0.93,
+      "repair_repeat_ms": 0.0,
+      "repair_trace": {
+        "ran": false,
+        "steps": [],
+        "skipped": "read_only_render"
+      },
+      "repair_repeat_skipped": "read_only_render"
+    },
+    "Fantasy Lineup Assistant": {
+      "lineup_repair_ms": 1.55
+    },
+    "Fantasy Standings Tracker": {},
+    "Waiver Wire / Add-Drop Center": {},
+    "Live Draft Room": {},
+    "Draft Assistant Simulator": {}
+  },
+  "shared": {
+    "library_selection_cold_ms": 10.11,
+    "library_selection_warm_ms": 0.01,
+    "workflow_descriptor_cold_ms": 1.49,
+    "workflow_descriptor_warm_ms": 3.3
+  },
+  "generated_at": "2026-07-13T13:02:01Z"
+}
