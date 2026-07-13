@@ -109,16 +109,32 @@ def _survival_label_from_prob(prob):
     return "Very unlikely — draft now"
 
 
-def enrich_player_survival_metrics(scored, *, current_pick, next_user_pick, num_teams=12):
+def enrich_player_survival_metrics(
+    scored,
+    *,
+    current_pick,
+    next_user_pick,
+    num_teams=12,
+    room=None,
+    user_team: str = "",
+):
     """
     Estimate P(player still available at user's next pick).
 
     Uses market rank vs pick gap (ADP logistic), snake spacing, and position scarcity pressure.
     """
+    from live_draft_ux import resolve_next_pick_for_survival
+
     out = scored.copy()
     cur = max(1, int(current_pick or 1))
-    nxt = int(next_user_pick) if next_user_pick is not None else cur
-    gap = max(0, nxt - cur)
+    nxt = resolve_next_pick_for_survival(
+        current_pick=cur,
+        next_user_pick=next_user_pick,
+        num_teams=num_teams,
+        room=room if isinstance(room, dict) else None,
+        user_team=str(user_team or ""),
+    )
+    gap = max(1, nxt - cur)
     mr = pd.to_numeric(out.get("Market Rank"), errors="coerce").fillna(9999)
     scale = max(10.0, float(num_teams) * 0.92)
     p_at_next = 1.0 / (1.0 + np.exp((mr - nxt) / scale))
@@ -129,8 +145,6 @@ def enrich_player_survival_metrics(scored, *, current_pick, next_user_pick, num_
         else pd.Series(0.0, index=out.index)
     ) * 0.10
     survival = (p_at_next * gap_decay - scarcity_pen).clip(0.02, 0.99)
-    if next_user_pick is None or nxt <= cur:
-        survival = pd.Series(1.0, index=out.index)
     out["Survival Probability"] = survival
     out["Survival Label"] = survival.apply(_survival_label_from_prob)
     out["Survival Urgency"] = (1.0 - survival).clip(0, 1)
@@ -527,6 +541,8 @@ def score_available_for_rule(available, roster_df, rule, target_counts, config=N
         current_pick=current_pick,
         next_user_pick=config.get("next_user_pick"),
         num_teams=int(config.get("num_teams", 12) or 12),
+        room=room,
+        user_team=str(config.get("your_team") or config.get("user_team") or ""),
     )
     rule = str(rule).strip().lower()
     if rule == "best market rank":

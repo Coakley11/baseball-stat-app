@@ -458,6 +458,14 @@ def inject_live_draft_room_styles(st: Any) -> None:
         """,
         unsafe_allow_html=True,
     )
+    try:
+        from live_draft_ux import inject_draft_animation_styles, inject_position_color_styles
+
+        extra = inject_position_color_styles() + inject_draft_animation_styles()
+        if extra.strip():
+            st.markdown(f"<style>{extra}</style>", unsafe_allow_html=True)
+    except ImportError:
+        pass
 
 
 def render_draft_room_code_panel(
@@ -496,8 +504,11 @@ def render_live_draft_room_code_header(
     *,
     multiplayer: bool,
     join_url: str = "",
+    draft_in_progress: bool = False,
 ) -> None:
     """Show room code, copy affordance, and missing-code warning near draft header."""
+    if draft_in_progress:
+        return
     code = ""
     try:
         from draft_room_context import resolve_shared_room_code
@@ -586,10 +597,10 @@ def render_live_draft_room_header(
         st.markdown(
             f"""
             <div class="ld-room-header">
-                <div class="ld-rh-title">Live Draft Room</div>
+                <div class="ld-rh-title">Live Draft Room · {mode_label}</div>
                 <div class="ld-rh-meta">
                     <strong>Teams:</strong> {teams_txt}<br/>
-                    You control all teams
+                    {mode_detail}
                 </div>
             </div>
             """,
@@ -601,6 +612,12 @@ def render_live_draft_room_header(
         f'<div class="ld-rh-code">{code}</div>' if code else '<span style="color:#b45309;">Code missing</span>'
     )
     role_txt = f"<strong>Your role:</strong> {role} · " if role else ""
+    try:
+        from live_draft_ux import format_your_fantasy_team_caption
+
+        team_line = format_your_fantasy_team_caption(assigned_team or "—")
+    except ImportError:
+        team_line = f"<strong>Your Fantasy Team:</strong> {assigned_team or '—'}"
     st.markdown(
         f"""
         <div class="ld-room-header">
@@ -608,7 +625,7 @@ def render_live_draft_room_header(
             {code_block}
             <div class="ld-rh-meta">
                 {role_txt}
-                <strong>Your team:</strong> {assigned_team or "—"} ·
+                {team_line} ·
                 <strong>Status:</strong> {status_txt}{live_badge} ·
                 <strong>{pick_label or "Pick"}</strong> ·
                 <strong>On clock:</strong> {on_clock_team or "—"}<br/>
@@ -618,7 +635,7 @@ def render_live_draft_room_header(
         """,
         unsafe_allow_html=True,
     )
-    if code:
+    if code and not draft_in_progress:
         try:
             st.code(code, language=None)
         except TypeError:
@@ -714,10 +731,20 @@ def render_category_outlook_panel(st: Any, outlook: dict[str, Any]) -> None:
     bars = outlook.get("bars") or []
     if not bars:
         return
-    bar_html = "".join(
-        f'<div class="ld-cat-bar-row">{b.get("category", "")}  {b.get("bar", "")}  {b.get("level", "")}</div>'
-        for b in bars
-    )
+    try:
+        from live_draft_ux import category_need_stars
+    except ImportError:
+        category_need_stars = None  # type: ignore[assignment,misc]
+    bar_html_parts: list[str] = []
+    for b in bars:
+        cat = str(b.get("category") or "")
+        if category_need_stars and cat in (outlook.get("needs_attention") or []):
+            bar_html_parts.append(f'<div class="ld-cat-bar-row">{category_need_stars(cat)}</div>')
+        else:
+            bar_html_parts.append(
+                f'<div class="ld-cat-bar-row">{cat}  {b.get("bar", "")}  {b.get("level", "")}</div>'
+            )
+    bar_html = "".join(bar_html_parts)
     needs = outlook.get("needs_attention") or []
     strengths = outlook.get("strengths") or []
     insight_parts = []
@@ -1099,7 +1126,12 @@ def build_rec_card_why_bullets(
     if gaps and pos in gaps:
         open_of = sum(1 for g in gaps if g == "OF")
         if pos == "OF" and open_of >= 2:
-            _add(f"Fills {open_of} of your remaining OF slots", key="fills_position")
+            try:
+                from live_draft_ux import format_of_slot_eligibility
+
+                _add(format_of_slot_eligibility(open_of), key="fills_position")
+            except ImportError:
+                _add(f"Fills {open_of} of your remaining OF slots", key="fills_position")
         else:
             _add(f"Fills one of your remaining {pos} slots", key="fills_position")
 
@@ -1115,10 +1147,24 @@ def build_rec_card_why_bullets(
 
     scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
     if pd.notna(scarcity) and float(scarcity) >= 0.55:
-        if pos:
-            _add(f"{pos} depth is thinning rapidly", key="scarcity")
-        else:
-            _add("Position depth is thinning rapidly", key="scarcity")
+        try:
+            from live_draft_ux import estimate_tier1_remaining, format_scarcity_explanation
+
+            tier1 = estimate_tier1_remaining(rec_df, pos) if pos else 0
+            _add(
+                format_scarcity_explanation(
+                    pos or "Position",
+                    tier1_remaining=tier1,
+                    picks_until_dropoff=3,
+                    scarcity_score=float(scarcity),
+                ),
+                key="scarcity",
+            )
+        except ImportError:
+            if pos:
+                _add(f"{pos} depth is thinning rapidly", key="scarcity")
+            else:
+                _add("Position depth is thinning rapidly", key="scarcity")
 
     mkt = pd.to_numeric(row.get("Market Rank", np.nan), errors="coerce")
     mdl = pd.to_numeric(row.get("Model Rank", np.nan), errors="coerce")
@@ -1364,8 +1410,10 @@ def render_live_draft_rec_cards(
         cfg = dict(room.get("config") or {})
         try:
             from live_draft_category_outlook import player_top_category_strengths
+            from live_draft_ux import describe_strengths
 
-            strengths = player_top_category_strengths(r, pool_df, config=cfg, max_count=2)
+            raw_strengths = player_top_category_strengths(r, pool_df, config=cfg, max_count=2)
+            strengths = describe_strengths(raw_strengths, max_count=2)
         except ImportError:
             strengths = []
         badges = _rec_card_badges(
@@ -1461,12 +1509,32 @@ def render_live_draft_rec_cards(
                         f'<div style="font-size:0.82rem;color:#475569;margin-top:4px;">'
                         f"Top strengths: {', '.join(strengths)}</div>"
                     )
-                meta_line = f"{pos}{team_line}" if not badges else f"{pos}{team_line}"
+                try:
+                    from live_draft_ux import confidence_label_from_score, position_color
+
+                    decision = pd.to_numeric(r.get("Decision Score", np.nan), errors="coerce")
+                    conf_label, conf_stars = confidence_label_from_score(
+                        float(decision) if pd.notna(decision) else None
+                    )
+                    confidence_txt = (
+                        f'<div style="font-size:0.8rem;color:#334155;margin-top:6px;">'
+                        f"<strong>{conf_label}</strong> {conf_stars}</div>"
+                    )
+                except ImportError:
+                    confidence_txt = ""
+                pos_color = "#475569"
+                try:
+                    from live_draft_ux import position_color
+
+                    pos_color = position_color(pos)
+                except ImportError:
+                    pass
+                meta_line = f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}' if not badges else f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}'
                 st.markdown(
                     f'<div class="ld-rec-card-header">{photo_html}<div class="ld-rec-card-meta">'
                     f'<div style="font-size:1.05rem;font-weight:800;line-height:1.25;">{name}</div>'
                     f'<div style="font-size:0.88rem;color:#475569;">{meta_line}</div>'
-                    f"{stat_html}{metrics_html}{strength_txt}"
+                    f"{stat_html}{metrics_html}{strength_txt}{confidence_txt}"
                     f"</div></div>",
                     unsafe_allow_html=True,
                 )
@@ -1496,7 +1564,7 @@ def render_live_draft_rec_cards(
             }
             already_queued = name.strip().lower() in queued_names
             with btn_col:
-                btn_label = f"Draft {name.split()[-1]}" if name else "Draft Player"
+                btn_label = "🔴 Draft Player"
                 btn_key = f"rec_card_draft_{pick_idx}_{stable_key}"
 
                 def _on_rec_draft_click(
@@ -1571,7 +1639,7 @@ def render_live_draft_rec_cards(
                     )
                 else:
                     st.button(
-                        "Add to Queue",
+                        "⭐ Add to Queue",
                         key=f"rec_card_queue_{pick_idx}_{stable_key}",
                         use_container_width=True,
                         on_click=_on_rec_queue_click,

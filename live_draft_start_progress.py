@@ -105,7 +105,14 @@ def render_draft_start_progress(st: Any, session: dict[str, Any], *, developer_m
     if not developer_mode:
         if not in_flight:
             return
-        st.info(f"Starting draft… current step: **{prog.get('current_step', '—')}**")
+        step = str(prog.get("current_step") or "")
+        try:
+            from live_draft_ux import user_facing_start_step
+
+            label = user_facing_start_step(step)
+        except ImportError:
+            label = "Preparing Draft…"
+        st.info(label)
         return
     with st.expander("Draft start progress", expanded=bool(in_flight or developer_mode)):
         if in_flight:

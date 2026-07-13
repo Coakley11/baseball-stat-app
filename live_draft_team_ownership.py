@@ -147,20 +147,29 @@ def waiting_participant_count(session: dict[str, Any], room: dict[str, Any]) -> 
 
 
 def format_team_claim_status(session: dict[str, Any], row: dict[str, Any]) -> str:
-    """User-facing team line: ``Daniel — claimed by you`` or ``Team 2 — open``."""
+    """User-facing team line using canonical participant identity."""
     team = str(row.get("team") or "").strip()
     if not row.get("claimed"):
         return f"{team} — open"
+    try:
+        from live_draft_ux import format_participant_identity
+    except ImportError:
+        format_participant_identity = None  # type: ignore[assignment,misc]
     try:
         from draft_room_participant_state import resolve_participant_id
 
         my_pid = str(resolve_participant_id(session) or "").strip()
         owner_pid = str(row.get("participant_id") or "").strip()
         if my_pid and owner_pid and my_pid == owner_pid:
+            if format_participant_identity:
+                return format_participant_identity("You", role="Guest" if not row.get("is_host") else "Commissioner", team=team)
             return f"{team} — claimed by you"
     except ImportError:
         pass
     owner = str(row.get("owner_label") or "Guest").strip()
+    role = "Commissioner" if row.get("is_host") else "Guest"
+    if format_participant_identity:
+        return format_participant_identity(owner, role=role, team=team)
     if row.get("is_host"):
         return f"{team} — claimed by {owner} (commissioner)"
     return f"{team} — claimed by {owner}"
@@ -181,8 +190,15 @@ def format_team_ownership_line(row: dict[str, Any]) -> str:
 
 def format_team_ownership_html(row: dict[str, Any]) -> str:
     team = str(row.get("team") or "")
+    try:
+        from live_draft_ux import format_participant_identity
+    except ImportError:
+        format_participant_identity = None  # type: ignore[assignment,misc]
     if row.get("claimed"):
         owner = str(row.get("owner_label") or "Guest")
+        role = "Commissioner" if row.get("is_host") else "Guest"
+        if format_participant_identity:
+            return format_participant_identity(owner, role=role, team=team) + " · ✓ Claimed"
         if row.get("is_host"):
             return f"<strong>{team}</strong> (Host) · ✓ Claimed"
         return f"<strong>{team}</strong> · ✓ Claimed by {owner}"

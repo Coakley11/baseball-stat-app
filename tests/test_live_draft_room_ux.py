@@ -101,7 +101,7 @@ class RoomHeaderTests(unittest.TestCase):
         joined = " ".join(str(c) for c in st.markdown.call_args_list)
         self.assertIn("ABC123", joined)
         self.assertIn("Shared Multiplayer", joined)
-        st.code.assert_called()
+        self.assertIn("ld-rh-code", joined)
 
 
 class TimerCountdownTests(unittest.TestCase):
@@ -163,15 +163,17 @@ class CompactRecCardTests(unittest.TestCase):
     def _draft_button_call(self) -> tuple[tuple[object, ...], dict[str, object]]:
         for call in self.st.button.call_args_list:
             label = str(call.args[0] if call.args else "")
-            if label.startswith("Draft "):
+            if "Draft Player" in label:
                 return call.args, call.kwargs
-        self.fail("Draft button not found in st.button calls")
+        self.fail("Draft Player button not found in st.button calls")
 
+    @mock.patch("draft_actions.resolve_player_draft_gate")
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
     @mock.patch("draft_actions.draft_action_context")
     @mock.patch("draft_actions._live_player_available", return_value=(True, ""))
-    def test_long_player_name_not_truncated(self, _avail: object, _ctx: object, gate_fn: mock.MagicMock) -> None:
+    def test_long_player_name_not_truncated(self, _avail: object, _ctx: object, gate_fn: mock.MagicMock, player_gate: mock.MagicMock) -> None:
         gate_fn.return_value = {"draft_enabled": True, "draft_complete": False}
+        player_gate.return_value = {"allowed": True, "disable_message": ""}
         long_df = pd.DataFrame(
             [
                 {
@@ -194,12 +196,13 @@ class CompactRecCardTests(unittest.TestCase):
         self.assertIn("Shohei Ohtani", html)
         self.assertNotIn("...", html)
         self.assertIn("DH", html)
-        self.assertIn("ld-rec-card-caption", html)
+        self.assertIn("ld-rec-card-header", html)
 
+    @mock.patch("draft_actions.resolve_player_draft_gate", return_value={"allowed": True, "disable_message": ""})
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
     @mock.patch("draft_actions.draft_action_context")
     @mock.patch("draft_actions._live_player_available", return_value=(True, ""))
-    def test_stacked_mobile_layout(self, _avail: object, _ctx: object, gate_fn: mock.MagicMock) -> None:
+    def test_stacked_mobile_layout(self, _avail: object, _ctx: object, gate_fn: mock.MagicMock, _pg: object) -> None:
         gate_fn.return_value = {"draft_enabled": True, "draft_complete": False}
         render_live_draft_rec_cards(
             self.st,
@@ -213,10 +216,11 @@ class CompactRecCardTests(unittest.TestCase):
         self.assertEqual(diag.get("recommendation_card_layout_mode"), "stacked")
         self.assertIn("Juan Soto", str(self.st.markdown.call_args_list))
 
+    @mock.patch("draft_actions.resolve_player_draft_gate", return_value={"allowed": True, "disable_message": ""})
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
     @mock.patch("draft_actions.draft_action_context")
     @mock.patch("draft_actions._live_player_available", return_value=(True, ""))
-    def test_compact_layout_and_draft_button(self, _avail: object, _ctx: object, gate_fn: mock.MagicMock) -> None:
+    def test_compact_layout_and_draft_button(self, _avail: object, _ctx: object, gate_fn: mock.MagicMock, _pg: object) -> None:
         gate_fn.return_value = {
             "draft_enabled": True,
             "draft_complete": False,
@@ -236,10 +240,10 @@ class CompactRecCardTests(unittest.TestCase):
         self.assertIn("Juan Soto", md)
         self.assertEqual(self.st.button.call_count, 2)
         args, kwargs = self._draft_button_call()
-        self.assertIn("Draft Soto", args[0])
+        self.assertIn("Draft Player", args[0])
         self.assertTrue(kwargs.get("on_click"))
         queue_calls = [
-            call for call in self.st.button.call_args_list if call.args and call.args[0] == "Add to Queue"
+            call for call in self.st.button.call_args_list if call.args and "Add to Queue" in str(call.args[0])
         ]
         self.assertEqual(len(queue_calls), 1)
 
@@ -262,10 +266,11 @@ class CompactRecCardTests(unittest.TestCase):
         _, kwargs = self._draft_button_call()
         self.assertTrue(kwargs.get("disabled"))
 
+    @mock.patch("draft_actions.resolve_player_draft_gate", return_value={"allowed": False, "disable_message": "already drafted"})
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
     @mock.patch("draft_actions.draft_action_context")
     @mock.patch("draft_actions._live_player_available", return_value=(False, "already drafted"))
-    def test_draft_button_disabled_when_unavailable(self, _avail: object, _ctx: object, gate_fn: mock.MagicMock) -> None:
+    def test_draft_button_disabled_when_unavailable(self, _avail: object, _ctx: object, gate_fn: mock.MagicMock, _pg: object) -> None:
         gate_fn.return_value = {"draft_enabled": True, "draft_complete": False}
         render_live_draft_rec_cards(
             self.st,
@@ -310,7 +315,7 @@ class RecCardDraftCommitTests(unittest.TestCase):
         }
         result = process_pending_manual_draft_pick(self.st, self.session)
         self.assertTrue(result.get("ok"))
-        self.assertFalse(result.get("should_rerun"))
+        self.assertTrue(result.get("should_rerun"))
         mock_draft.assert_called_once_with(self.session, "Juan Soto", source="live_draft_room", st_obj=self.st)
         diag = self.session.get(LIVE_DRAFT_REC_DIAG_KEY) or {}
         self.assertTrue(diag.get("rec_card_commit_success"))

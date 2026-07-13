@@ -122,7 +122,12 @@ def build_smart_recommendation_badges(
         if best_at_pos and name and best_at_pos == name:
             _add(f"Best Remaining {pos}", _BADGE_CSS["position"], concept=f"fill_{pos}")
         elif pos == "OF" and open_of >= 2:
-            _add(f"Fills {open_of} OF Slots", _BADGE_CSS["position"], concept="fill_position")
+            try:
+                from live_draft_ux import format_of_slot_eligibility
+
+                _add(format_of_slot_eligibility(open_of), _BADGE_CSS["position"], concept="fill_position")
+            except ImportError:
+                _add(f"Fills {open_of} OF Slots", _BADGE_CSS["position"], concept="fill_position")
         else:
             _add(f"Fills {pos} Slot", _BADGE_CSS["position"], concept="fill_position")
 

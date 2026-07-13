@@ -607,3 +607,85 @@ def render_active_draft_mode_banner(st: Any, session: dict[str, Any], *, room: d
 def start_button_disabled(session: dict[str, Any]) -> tuple[bool, str]:
     ok, reason = can_start_live_draft(session)
     return not ok, reason
+
+
+def render_lobby_status_panel(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+) -> None:
+    """Cleaner lobby join status with checkmarks and ready state."""
+    if not is_shared_multiplayer_intent(session, room=room):
+        return
+    if str(room.get("status") or "") != "not_started":
+        return
+    rows = team_claim_rows(session, room)
+    joined_lines: list[str] = []
+    waiting_lines: list[str] = []
+    for row in rows:
+        team = str(row.get("team") or "").strip()
+        if row.get("claimed"):
+            line = format_team_claim_status(session, row)
+            joined_lines.append(f"✓ {line}")
+        else:
+            waiting_lines.append(team)
+    with st.container(border=True):
+        st.markdown("#### Lobby Status")
+        for line in joined_lines:
+            st.markdown(line)
+        st.markdown("**Waiting:**")
+        if waiting_lines:
+            for team in waiting_lines:
+                st.markdown(f"- {team}")
+        else:
+            st.markdown("None")
+        joined, total = count_joined_teams(session, room)
+        if joined >= total and total > 0:
+            st.success("Ready to Start")
+
+
+def render_draft_status_summary_card(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    on_clock_team: str = "",
+    pick_label: str = "",
+    round_no: str = "",
+) -> None:
+    """Compact commissioner / room summary — room code, managers, draft status."""
+    code = shared_room_code(session)
+    is_host = _is_room_host(session)
+    host_team = str((room.get("config") or {}).get("your_team") or session.get("room_your_team") or "").strip()
+    joined, total = count_joined_teams(session, room)
+    status_txt = _room_status_label(room)
+    commissioner_label = host_team or "You"
+    if is_host:
+        commissioner_label = "You"
+    try:
+        from live_draft_ux import format_participant_identity
+
+        commissioner_line = format_participant_identity(
+            commissioner_label,
+            role="Commissioner",
+            team=host_team,
+        )
+    except ImportError:
+        commissioner_line = f"**Commissioner:** {commissioner_label}"
+
+    with st.container(border=True):
+        st.markdown("#### Draft Status Summary")
+        if code:
+            st.markdown(f"**Room Code:** `{code}`")
+        st.markdown(f"**{commissioner_line}**")
+        if pick_label:
+            st.markdown(f"**Current Pick:** {pick_label}")
+        if round_no:
+            st.markdown(f"**Current Round:** {round_no}")
+        st.markdown(f"**Draft Status:** {status_txt}")
+        st.markdown(f"**Connected Managers:** {joined} of {total}")
+        if on_clock_team:
+            st.markdown(f"**On the Clock:** {on_clock_team}")
+        st.markdown("**Claimed Teams**")
+        for row in team_claim_rows(session, room):
+            st.markdown(f"- {format_team_claim_status(session, row)}")

@@ -221,6 +221,12 @@ def player_top_category_strengths(
     labels: list[str] = []
     for _score, label, col in ranked:
         refined = _refine_strength_label(label, col, row, pool_df)
+        try:
+            from live_draft_ux import describe_strength
+
+            refined = describe_strength(refined)
+        except ImportError:
+            pass
         if refined in labels:
             continue
         labels.append(refined)

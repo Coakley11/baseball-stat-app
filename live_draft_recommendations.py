@@ -64,6 +64,8 @@ def _score_available(available, roster_df, rule, target_counts, config=None, roo
         current_pick=current_pick,
         next_user_pick=config.get("next_user_pick"),
         num_teams=int(config.get("num_teams", 12) or 12),
+        room=room,
+        user_team=str(config.get("your_team") or config.get("user_team") or ""),
     )
     rule = str(rule).strip().lower()
     if rule == "best market rank":

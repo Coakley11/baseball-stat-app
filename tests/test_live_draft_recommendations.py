@@ -9,10 +9,9 @@ import pandas as pd
 
 
 def _import_live_draft_recommendations():
-    try:
-        from streamlit_app import live_draft_recommendations, live_draft_current_slot
-    except ImportError:
-        from Streamlit_app import live_draft_recommendations, live_draft_current_slot  # type: ignore[no-redef]
+    from live_draft_recommendations import live_draft_recommendations
+    from live_draft_timer_logic import live_draft_current_slot
+
     return live_draft_recommendations, live_draft_current_slot
 
 

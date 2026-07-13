@@ -9614,45 +9614,32 @@ def _survival_label_from_prob(prob):
     return "Very unlikely — draft now"
 
 
-def enrich_player_survival_metrics(scored, *, current_pick, next_user_pick, num_teams=12):
-    """
-    Estimate P(player still available at user's next pick).
+def enrich_player_survival_metrics(
+    scored,
+    *,
+    current_pick,
+    next_user_pick,
+    num_teams=12,
+    room=None,
+    user_team: str = "",
+):
+    """Delegate to canonical scoring module."""
+    try:
+        from live_draft_pick_scoring import enrich_player_survival_metrics as _canonical
 
-    Uses market rank vs pick gap (ADP logistic), snake spacing, and position scarcity pressure.
-    """
-    out = scored.copy()
-    cur = max(1, int(current_pick or 1))
-    nxt = int(next_user_pick) if next_user_pick is not None else cur
-    gap = max(0, nxt - cur)
-    mr = pd.to_numeric(out.get("Market Rank"), errors="coerce").fillna(9999)
-    scale = max(10.0, float(num_teams) * 0.92)
-    p_at_next = 1.0 / (1.0 + np.exp((mr - nxt) / scale))
-    gap_decay = np.power(0.90, np.maximum(0, gap - 1))
-    scarcity_pen = (
-        normalize_series(out["Position Scarcity Score"])
-        if "Position Scarcity Score" in out.columns
-        else pd.Series(0.0, index=out.index)
-    ) * 0.10
-    survival = (p_at_next * gap_decay - scarcity_pen).clip(0.02, 0.99)
-    if next_user_pick is None or nxt <= cur:
-        survival = pd.Series(1.0, index=out.index)
-    out["Survival Probability"] = survival
-    out["Survival Label"] = survival.apply(_survival_label_from_prob)
-    out["Survival Urgency"] = (1.0 - survival).clip(0, 1)
-    if "Decision Score" in out.columns:
-        out["Decision Score"] = (
-            pd.to_numeric(out["Decision Score"], errors="coerce").fillna(0)
-            + normalize_series(out["Survival Urgency"]) * 0.05
-        ).clip(lower=0)
-    if "Draft Fit Score" in out.columns and "Availability Urgency Component" in out.columns:
-        out["Availability Urgency Component"] = (
-            pd.to_numeric(out["Availability Urgency Component"], errors="coerce").fillna(0)
-            + normalize_series(out["Survival Urgency"]) * 0.04
+        return _canonical(
+            scored,
+            current_pick=current_pick,
+            next_user_pick=next_user_pick,
+            num_teams=num_teams,
+            room=room,
+            user_team=user_team,
         )
-        out["Draft Fit Score"] = (
-            pd.to_numeric(out["Draft Fit Score"], errors="coerce").fillna(0)
-            + normalize_series(out["Survival Urgency"]) * 0.04
-        ).clip(lower=0)
+    except ImportError:
+        pass
+    out = scored.copy()
+    out["Survival Probability"] = 0.5
+    out["Survival Label"] = "May still be there — moderate risk"
     return out
 
 
@@ -9964,6 +9951,8 @@ def _live_draft_score_available(available, roster_df, rule, target_counts, confi
         current_pick=current_pick,
         next_user_pick=config.get("next_user_pick"),
         num_teams=int(config.get("num_teams", 12) or 12),
+        room=room,
+        user_team=str(config.get("your_team") or config.get("user_team") or ""),
     )
     rule = str(rule).strip().lower()
     if rule == "best market rank":
@@ -21946,7 +21935,8 @@ if active_page == "Live Draft Room":
             from live_draft_setup_mode import is_shared_lobby, is_shared_multiplayer_intent, setup_is_read_only
             from live_draft_setup_ui import (
                 _is_room_host,
-                render_draft_information_panel,
+                render_draft_status_summary_card,
+                render_lobby_status_panel,
                 render_shared_draft_ready_card,
             )
             from draft_ui import on_start_new_live_draft
@@ -21975,13 +21965,14 @@ if active_page == "Live Draft Room":
                     f"Pick {min(_lobby_done + 1, _lobby_total) if _lobby_total else 0} / {_lobby_total}"
                 )
                 if is_shared_lobby(st.session_state, room=room):
+                    render_lobby_status_panel(st, st.session_state, room)
                     render_shared_draft_ready_card(
                         st,
                         st.session_state,
                         room,
                         on_start=on_start_new_live_draft,
                     )
-                    render_draft_information_panel(
+                    render_draft_status_summary_card(
                         st,
                         st.session_state,
                         room,
@@ -22091,7 +22082,12 @@ if active_page == "Live Draft Room":
                 user_team = pteam or "—"
                 if pteam in ("", "—"):
                     st.warning("Your assigned team is missing — open **Team assignment (join/restore)** in Shared Draft Room.")
-                st.markdown(f"**Your team:** {user_team} *(shared room assignment)*")
+                try:
+                    from live_draft_ux import format_your_fantasy_team
+
+                    st.markdown(format_your_fantasy_team(user_team))
+                except ImportError:
+                    st.markdown(f"**Your Fantasy Team:** {user_team} *(shared room assignment)*")
             else:
                 def _live_draft_team_changed():
                     try:
@@ -22112,7 +22108,7 @@ if active_page == "Live Draft Room":
                         pass
 
                 user_team = st.selectbox(
-                    "Your team (for survival % & next-pick logic)",
+                    "Your Fantasy Team (for survival % & next-pick logic)",
                     team_list,
                     index=team_list.index(user_team) if user_team in team_list else 0,
                     key="live_draft_my_team",
@@ -22246,16 +22242,23 @@ if active_page == "Live Draft Room":
                 )
             except ImportError:
                 pass
-
-        st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
-        st.markdown('<div class="ld-controls-title">Draft control center</div>', unsafe_allow_html=True)
-        if _draft_in_progress and not _draft_is_complete:
+        if _multiplayer_draft and _draft_in_progress and not _shared_lobby_view:
             try:
-                from live_draft_navigation import render_leave_draft_button
+                from live_draft_setup_ui import render_draft_status_summary_card
 
-                render_leave_draft_button(st, st.session_state)
+                render_draft_status_summary_card(
+                    st,
+                    st.session_state,
+                    room,
+                    on_clock_team=on_clock_team,
+                    pick_label=pick_label,
+                    round_no=round_no,
+                )
             except ImportError:
                 pass
+
+        st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
+        st.markdown('<div class="ld-controls-title">Draft Control Center</div>', unsafe_allow_html=True)
         _timer_ok = bool(
             _draft_in_progress
             and slot is not None
@@ -22301,7 +22304,7 @@ if active_page == "Live Draft Room":
             st.markdown(f"**Time on clock:** {remaining}s *(timer paused — draft state recovery)*")
 
         st.markdown('<div class="live-draft-action-row">', unsafe_allow_html=True)
-        ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
+        ctrl1, ctrl2 = st.columns(2)
         with ctrl1:
             if st.button("⏸ Pause Draft", disabled=room.get("status") != "in_progress", key="live_draft_pause"):
                 from live_draft_timer_logic import live_draft_clear_timer
@@ -22330,55 +22333,64 @@ if active_page == "Live Draft Room":
                     request_live_draft_rerun(st, st.session_state, "resume_draft", room=room)
                 except ImportError:
                     st.rerun()
-        with ctrl3:
-            if st.button("↻ Reset Timer", disabled=room.get("status") != "in_progress", key="live_draft_reset_timer"):
-                live_draft_reset_timer(room)
-                _persist_live_draft_room(room, reason="reset_timer")
-        with ctrl4:
-            if st.button("⚡ Auto Pick Now", disabled=room.get("status") not in ("in_progress", "paused"), key="live_draft_auto_now"):
-                if room.get("status") == "paused":
-                    room["status"] = "in_progress"
-                ok, msg = live_draft_auto_pick(room, st.session_state)
-                if ok:
-                    try:
-                        from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
-
-                        invalidate_live_draft_ui_caches(st.session_state)
-                        invalidate_draft_assistant_scoring_cache(st.session_state)
-                    except ImportError:
-                        st.session_state.pop("_live_draft_rec_cache", None)
-                    st.success(msg)
-                    try:
-                        from live_draft_safe_mode import is_draft_truly_complete, request_live_draft_rerun
-
-                        if is_draft_truly_complete(room):
-                            request_live_draft_rerun(st, st.session_state, "auto_pick_complete", room=room)
-                        else:
-                            request_live_draft_rerun(st, st.session_state, "auto_pick", room=room)
-                    except ImportError:
-                        st.rerun()
-                else:
-                    st.warning(msg)
-                _persist_live_draft_room(room, reason="auto_pick")
         st.markdown("</div>", unsafe_allow_html=True)
-        if room.get("status") in ("in_progress", "paused", "not_started"):
-            st.markdown('<div class="live-draft-action-danger">', unsafe_allow_html=True)
-            if st.button(
-                "🗑 Delete Live Draft",
-                key="live_draft_abandon_btn",
-                help="Abandon this live draft and return ownership to the Draft Room Simulator.",
-            ):
-                from draft_room_membership import reset_live_draft_with_membership_guard
+        with st.expander("Advanced draft controls", expanded=False):
+            adv1, adv2 = st.columns(2)
+            with adv1:
+                if st.button("↻ Reset Timer", disabled=room.get("status") != "in_progress", key="live_draft_reset_timer"):
+                    live_draft_reset_timer(room)
+                    _persist_live_draft_room(room, reason="reset_timer")
+                if st.button("⚡ Auto Pick Now", disabled=room.get("status") not in ("in_progress", "paused"), key="live_draft_auto_now"):
+                    if room.get("status") == "paused":
+                        room["status"] = "in_progress"
+                    ok, msg = live_draft_auto_pick(room, st.session_state)
+                    if ok:
+                        try:
+                            from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
 
-                ok, msg = reset_live_draft_with_membership_guard(
-                    st.session_state, st_obj=st, reason="abandon_live_draft"
-                )
-                if ok:
-                    st.success("Live draft deleted.")
-                    st.rerun()
-                else:
-                    st.error(msg)
-            st.markdown("</div>", unsafe_allow_html=True)
+                            invalidate_live_draft_ui_caches(st.session_state)
+                            invalidate_draft_assistant_scoring_cache(st.session_state)
+                        except ImportError:
+                            st.session_state.pop("_live_draft_rec_cache", None)
+                        st.success(msg)
+                        try:
+                            from live_draft_safe_mode import is_draft_truly_complete, request_live_draft_rerun
+
+                            if is_draft_truly_complete(room):
+                                request_live_draft_rerun(st, st.session_state, "auto_pick_complete", room=room)
+                            else:
+                                request_live_draft_rerun(st, st.session_state, "auto_pick", room=room)
+                        except ImportError:
+                            st.rerun()
+                    else:
+                        st.warning(msg)
+                    _persist_live_draft_room(room, reason="auto_pick")
+            with adv2:
+                if room.get("status") in ("in_progress", "paused", "not_started"):
+                    if st.button(
+                        "🗑 Delete Draft",
+                        key="live_draft_abandon_btn",
+                        help="Abandon this live draft and return ownership to the Draft Room Simulator.",
+                    ):
+                        from draft_room_membership import reset_live_draft_with_membership_guard
+
+                        ok, msg = reset_live_draft_with_membership_guard(
+                            st.session_state, st_obj=st, reason="abandon_live_draft"
+                        )
+                        if ok:
+                            st.success("Live draft deleted.")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                try:
+                    from draft_room_context import leave_shared_draft_room
+
+                    if st.button("Leave Draft", key="live_draft_leave_btn"):
+                        leave_shared_draft_room(st.session_state)
+                        st.session_state.pop("live_draft_room", None)
+                        st.rerun()
+                except ImportError:
+                    pass
         st.markdown("</div>", unsafe_allow_html=True)
 
         board_col, rec_col = st.columns([1.45, 1.0])
@@ -22399,6 +22411,12 @@ if active_page == "Live Draft Room":
             if board_df.empty:
                 st.caption("No picks yet.")
             else:
+                try:
+                    from live_draft_ux import note_live_draft_board_pick_flash
+
+                    note_live_draft_board_pick_flash(st.session_state, st, len(board_df))
+                except ImportError:
+                    pass
                 try:
                     from live_draft_perf import PHASE_BOARD_TABLE, live_draft_perf_action
 
@@ -22660,10 +22678,20 @@ if active_page == "Live Draft Room":
                     if _defer_recs:
                         st.caption("Loading recommendations…")
                     else:
-                        st.caption(
-                            "**Fantasy Edge** shows value vs market; **Roster Fit** adjusts for your open slots. "
-                            "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
-                        )
+                        try:
+                            from live_draft_ux import FANTASY_EDGE_TOOLTIP, ROSTER_FIT_TOOLTIP
+
+                            st.markdown(
+                                f'**Fantasy Edge** <span title="{FANTASY_EDGE_TOOLTIP}">ⓘ</span> · '
+                                f'**Roster Fit** <span title="{ROSTER_FIT_TOOLTIP}">ⓘ</span> — '
+                                "Tap **Why Recommended** on any card for category impact, scarcity, and fit details.",
+                                unsafe_allow_html=True,
+                            )
+                        except ImportError:
+                            st.caption(
+                                "**Fantasy Edge** shows value vs market; **Roster Fit** adjusts for your open slots. "
+                                "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
+                            )
                         render_live_draft_rec_summary_banner(st, top_rec, gaps=_gaps)
                         render_live_draft_rec_cards(
                             st,
@@ -22686,6 +22714,27 @@ if active_page == "Live Draft Room":
                     "Draft Fit Score", "Decision Score",
                     "Why this pick",
                 ]
+                try:
+                    from live_draft_ux import REC_TABLE_SORT_OPTIONS, apply_survival_display_columns, sort_recommendation_table
+
+                    _rec_sort_labels = list(REC_TABLE_SORT_OPTIONS.keys())
+                    _rec_sort_choice = st.selectbox(
+                        "Sort recommendations by",
+                        _rec_sort_labels,
+                        index=0,
+                        key="live_draft_rec_table_sort",
+                    )
+                    _rec_sort_col = REC_TABLE_SORT_OPTIONS.get(_rec_sort_choice, "Decision Score")
+
+                    def _prepare_live_rec_table(df: pd.DataFrame) -> pd.DataFrame:
+                        if df is None or df.empty:
+                            return df
+                        sorted_df = sort_recommendation_table(df, _rec_sort_col)
+                        return apply_survival_display_columns(sorted_df)
+                except ImportError:
+                    def _prepare_live_rec_table(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[misc]
+                        return df
+
                 _pool_for_why = room.get("pool")
                 try:
                     from live_draft_ui_cache import enrich_live_draft_recommendations_with_why
@@ -22725,6 +22774,7 @@ if active_page == "Live Draft Room":
                     )
                 with rec_tabs[0]:
                     _top_show = top_rec[[c for c in rec_cols if c in top_rec.columns]].rename(columns={"fullName": "Player"})
+                    _top_show = _prepare_live_rec_table(_top_show)
                     try:
                         from live_draft_perf import PHASE_REC_SECTION, live_draft_perf_action
 
@@ -22746,6 +22796,7 @@ if active_page == "Live Draft Room":
                         )
                 with rec_tabs[1]:
                     _bpa_show = best_avail[[c for c in rec_cols if c in best_avail.columns]].rename(columns={"fullName": "Player"})
+                    _bpa_show = _prepare_live_rec_table(_bpa_show)
                     render_output_table(
                         format_fantasy_table(clean_ui_columns(_bpa_show)),
                         key="live_draft_rec_bpa",
@@ -22758,6 +22809,7 @@ if active_page == "Live Draft Room":
                         st.caption("No specific positional need flagged — take best value.")
                     else:
                         _pos_show = pos_fit[[c for c in rec_cols if c in pos_fit.columns]].rename(columns={"fullName": "Player"})
+                        _pos_show = _prepare_live_rec_table(_pos_show)
                         render_output_table(
                             format_fantasy_table(clean_ui_columns(_pos_show)),
                             key="live_draft_rec_pos",
@@ -22767,6 +22819,7 @@ if active_page == "Live Draft Room":
                         )
                 with rec_tabs[3]:
                     _val_show = value_sleep[[c for c in rec_cols if c in value_sleep.columns]].rename(columns={"fullName": "Player"})
+                    _val_show = _prepare_live_rec_table(_val_show)
                     render_output_table(
                         format_fantasy_table(clean_ui_columns(_val_show)),
                         key="live_draft_rec_value",

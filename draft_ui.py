@@ -953,16 +953,41 @@ def render_draft_queue_panel(
     container = st.sidebar if use_sidebar else st
     _prune_drafted_from_queue(session)
     queue = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+    rerun = False
 
     if show_subheader and not use_sidebar:
         container.subheader("Draft Queue")
         container.markdown('<div class="live-draft-queue-panel">', unsafe_allow_html=True)
 
     if not queue:
-        container.caption("Empty — add players with **Queue player** in Player Actions.")
+        container.caption("Empty — add players with **⭐ Add to Queue** on recommendation cards.")
         if show_subheader and not use_sidebar:
             container.markdown("</div>", unsafe_allow_html=True)
         return False
+
+    if not compact and not use_sidebar and len(queue) >= 2:
+        try:
+            from streamlit_sortables import sort_items
+
+            from draft_state import sync_draft_queue
+
+            try:
+                from live_draft_ux import inject_draft_queue_sortable_styles
+
+                container.markdown(
+                    f"<style>{inject_draft_queue_sortable_styles()}</style>",
+                    unsafe_allow_html=True,
+                )
+            except ImportError:
+                pass
+            container.caption("Drag players to set queue priority.")
+            sorted_queue = sort_items(list(queue), key=f"{key_prefix}_sortable")
+            if list(sorted_queue) != list(queue):
+                sync_draft_queue(session, list(sorted_queue), reason="drag_reorder_queue")
+                queue = list(sorted_queue)
+                rerun = True
+        except ImportError:
+            pass
 
     ctx = draft_action_context(session)
     if ctx.get("is_your_pick") and ctx.get("current_pick"):
@@ -997,7 +1022,6 @@ def render_draft_queue_panel(
     except ImportError:
         _queue_photos = False
 
-    rerun = False
     for idx, pname in enumerate(queue[:max_rows]):
         meta = lookup_player_draft_meta(session, pname)
         pool_row = lookup_player_pool_row(session, pname)
