@@ -364,6 +364,22 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any], *, develope
         if _allowed:
             st.caption(f"Allowed workspaces: {', '.join(f'`{w}`' for w in _allowed)}")
         st.markdown(f"**Cloud app key:** `{probe.get('cloud_app_key') or '—'}`")
+        try:
+            from live_draft_navigation import collect_simulator_resume_diagnostics
+
+            resume = collect_simulator_resume_diagnostics(session)
+            st.markdown("**Draft resume**")
+            st.caption(
+                f"account=`{resume.get('current_account') or '—'}` · "
+                f"workspace=`{resume.get('current_workspace') or '—'}` · "
+                f"source=`{resume.get('resume_source_kind') or '—'}` · "
+                f"owner_ws=`{resume.get('resume_owner_workspace') or '—'}` · "
+                f"resume_team=`{resume.get('resume_team') or '—'}` · "
+                f"live_team=`{resume.get('active_shared_room_team') or '—'}` · "
+                f"discard=`{resume.get('stale_resume_discarded_reason') or '—'}`"
+            )
+        except ImportError:
+            pass
     with col_b:
         st.markdown(f"**Session draft count:** {int(probe.get('session_draft_count') or 0)}")
         st.markdown(f"**Cloud draft count:** {int(probe.get('cloud_draft_count') or 0)}")

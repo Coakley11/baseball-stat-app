@@ -446,6 +446,12 @@ def _apply_authenticated_user(
 
 
 def _clear_auth_session(session_state: dict[str, Any], *, st: Any | None = None) -> None:
+    try:
+        from live_draft_navigation import clear_private_baseball_simulator_runtime
+
+        clear_private_baseball_simulator_runtime(session_state, reason="auth_sign_out")
+    except ImportError:
+        pass
     for key in (
         AUTH_SESSION_KEY,
         AUTH_USER_EMAIL_KEY,
@@ -537,6 +543,15 @@ def _persist_auth_session(
             from workflow_persist_guard import clear_draft_library_on_account_scope_change
 
             clear_draft_library_on_account_scope_change(session_state)
+        except ImportError:
+            pass
+        try:
+            from live_draft_navigation import clear_private_baseball_simulator_runtime
+
+            clear_private_baseball_simulator_runtime(
+                session_state,
+                reason="auth_account_scope_changed",
+            )
         except ImportError:
             pass
     if old_uid != new_uid:

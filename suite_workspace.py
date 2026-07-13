@@ -240,6 +240,12 @@ def _on_active_workspace_changed(st: Any) -> None:
             continue
         ss.pop(key, None)
     try:
+        from live_draft_navigation import clear_private_baseball_simulator_runtime
+
+        clear_private_baseball_simulator_runtime(ss, reason="workspace_changed")
+    except ImportError:
+        pass
+    try:
         import streamlit as st_module
 
         st_module.cache_data.clear()
