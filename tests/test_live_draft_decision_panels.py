@@ -329,7 +329,21 @@ class DraftNavigationTests(unittest.TestCase):
             self.assertEqual(session.get("_navigate_to_page"), "Live Draft Room")
 
     def test_simulator_return_context(self) -> None:
-        session: dict = {}
+        import pandas as pd
+
+        session: dict = {
+            "_suite_auth_user_id": "user:daniel",
+            "_suite_auth_external_id": "daniel",
+            "_suite_active_workspace_id": "daniel",
+            "room_your_team": "Team A",
+            "draft_room_table": pd.DataFrame(
+                [
+                    {"Pick": 1, "Team": "Team A", "Player": "A"},
+                    {"Pick": 2, "Team": "Team B", "Player": "B"},
+                    {"Pick": 3, "Team": "Team A", "Player": "C"},
+                ]
+            ),
+        }
         status = {
             "active": True,
             "mode": "draft_room_simulator",
@@ -345,6 +359,7 @@ class DraftNavigationTests(unittest.TestCase):
         assert ctx is not None
         self.assertEqual(ctx.get("kind"), "simulator")
         self.assertEqual(ctx.get("title"), "Return to Draft Simulator")
+        self.assertEqual(ctx.get("user_team"), "Team A")
 
     def test_simulator_return_navigates_to_simulator(self) -> None:
         session = {"active_page": "Fantasy Trends"}
