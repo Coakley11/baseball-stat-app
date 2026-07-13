@@ -208,8 +208,14 @@ def enforce_identity_after_state_apply(
             context=league_context if isinstance(league_context, dict) else None,
             reason=reason or mutator,
         )
+    except RecursionError as exc:
+        session_state.setdefault(IDENTITY_GUARD_DIAG_KEY, {})
+        session_state[IDENTITY_GUARD_DIAG_KEY]["team_identity_error"] = f"RecursionError: {exc}"
     except ImportError:
         pass
+    except Exception as exc:
+        session_state.setdefault(IDENTITY_GUARD_DIAG_KEY, {})
+        session_state[IDENTITY_GUARD_DIAG_KEY]["team_identity_error"] = f"{type(exc).__name__}: {exc}"
 
     trace = {
         "reason": str(reason or "").strip(),

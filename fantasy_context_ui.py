@@ -345,7 +345,12 @@ def render_fantasy_context_badge(st: Any, session: dict[str, Any]) -> None:
 
 def render_fantasy_using_caption(st: Any, session: dict[str, Any]) -> None:
     """Polished league-card header naming the effective fantasy source."""
-    st.markdown(fantasy_context_using_html(session), unsafe_allow_html=True)
+    try:
+        from fantasy_context_source import fantasy_workflow_using_html
+
+        st.markdown(fantasy_workflow_using_html(session), unsafe_allow_html=True)
+    except ImportError:
+        st.markdown(fantasy_context_using_html(session), unsafe_allow_html=True)
 
 
 def render_fantasy_workflow_page_header(

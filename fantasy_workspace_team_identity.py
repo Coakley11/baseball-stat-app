@@ -320,11 +320,11 @@ def _load_shared_doc_for_context(context: dict[str, Any] | None) -> dict[str, An
         return None
 
 
-def _team_from_live_draft_participants(
+def _raw_live_draft_participant_team(
     session: dict[str, Any],
     room: dict[str, Any] | None,
 ) -> str:
-    """Resolve team from this browser's live-draft participant membership only."""
+    """Read authoritative live-draft participant evidence only — no preference validation."""
     try:
         from draft_room_participant_state import active_participant_team
 
@@ -362,11 +362,15 @@ def _team_from_live_draft_participants(
                 team = str(slot.get("assigned_team") or "").strip()
                 if team:
                     return team
-
-    candidate = str(session.get("draft_room_participant_team") or "").strip()
-    if candidate and _local_team_preference_allowed(session, candidate, shared_doc=None, context=None):
-        return candidate
     return ""
+
+
+def _team_from_live_draft_participants(
+    session: dict[str, Any],
+    room: dict[str, Any] | None,
+) -> str:
+    """Resolve team from live-draft participant membership only."""
+    return _raw_live_draft_participant_team(session, room)
 
 
 def _local_team_preference_allowed(
@@ -375,6 +379,7 @@ def _local_team_preference_allowed(
     *,
     shared_doc: dict[str, Any] | None,
     context: dict[str, Any] | None,
+    participant_team: str = "",
 ) -> bool:
     candidate = str(team or "").strip()
     if not candidate:
@@ -393,7 +398,7 @@ def _local_team_preference_allowed(
                 return True
         except ImportError:
             pass
-    participant = _team_from_live_draft_participants(session, None)
+    participant = str(participant_team or "").strip()
     return bool(participant and participant == candidate)
 
 
@@ -443,7 +448,7 @@ def resolve_current_account_team_for_live_draft_and_league(
         if isinstance(overlaid, dict):
             ownership_team = str(overlaid.get("my_team_name") or "").strip()
 
-    participant_team = _team_from_live_draft_participants(session, room)
+    participant_team = _raw_live_draft_participant_team(session, room)
     if ownership_team:
         resolved = ownership_team
         source = "canonical_team_ownership"
@@ -463,6 +468,7 @@ def resolve_current_account_team_for_live_draft_and_league(
             candidate,
             shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
             context=context if isinstance(context, dict) else None,
+            participant_team=participant_team,
         ):
             resolved = candidate
             source = "local_preference"

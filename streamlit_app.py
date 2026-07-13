@@ -2150,20 +2150,19 @@ def render_page_guide(page_key):
         for x in (g.get("extra") or [])
         if str(x or "").strip()
     )
-    st.markdown(
-        f"""
-        <div class="page-guide">
-            <div class="page-guide-title">Quick guide</div>
-            <div class="page-guide-body">
-                <p class="page-guide-item"><strong>What it does:</strong> {_guide_html_line(g.get("purpose", ""))}</p>
-                <p class="page-guide-item"><strong>When to use it:</strong> {_guide_html_line(g.get("when", ""))}</p>
-                <p class="page-guide-item"><strong>Main outputs:</strong> {_guide_html_line(g.get("outputs", ""))}</p>
-                {extra_items}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    if extra_items:
+        st.markdown("##### Quick guide")
+        st.markdown(f"**What it does:** {g.get('purpose', '')}")
+        st.markdown(f"**When to use it:** {g.get('when', '')}")
+        st.markdown(f"**Main outputs:** {g.get('outputs', '')}")
+        for x in (g.get("extra") or []):
+            if str(x or "").strip():
+                st.markdown(str(x), unsafe_allow_html=True)
+        return
+    st.markdown("##### Quick guide")
+    st.markdown(f"**What it does:** {g.get('purpose', '')}")
+    st.markdown(f"**When to use it:** {g.get('when', '')}")
+    st.markdown(f"**Main outputs:** {g.get('outputs', '')}")
 
 
 def top_bar_chart(df, name_col, value_col, title, top_n=10):

@@ -4311,6 +4311,20 @@ def _render_saved_draft_library_page_body(
     page_label_fn=None,
     developer_mode: bool = False,
 ) -> None:
+    _persisted_library_context: dict[str, Any] | None = None
+    try:
+        from saved_draft_library_selection import prepare_saved_draft_library_active_selection
+
+        _library_selection = prepare_saved_draft_library_active_selection(session)
+        _persisted_library_context = _library_selection.get("linked_active_context") or _library_selection.get(
+            "active_context"
+        )
+        if not isinstance(_persisted_library_context, dict):
+            _persisted_library_context = None
+    except ImportError:
+        _library_selection = {}
+        _persisted_library_context = None
+
     try:
         from suite_identity_guard import enforce_identity_after_state_apply
 
@@ -4319,8 +4333,11 @@ def _render_saved_draft_library_page_body(
             reason="render_saved_draft_library_page",
             last_mutator="render_saved_draft_library_page",
             st=st,
+            league_context=_persisted_library_context,
         )
     except ImportError:
+        pass
+    except RecursionError:
         pass
     try:
         from fantasy_shared_league_library_sync import materialize_owned_shared_leagues_for_session
@@ -4331,8 +4348,16 @@ def _render_saved_draft_library_page_body(
     try:
         from fantasy_workspace_team_identity import apply_account_team_identity_to_session
 
-        apply_account_team_identity_to_session(session, reason="render_saved_draft_library_page")
+        apply_account_team_identity_to_session(
+            session,
+            reason="render_saved_draft_library_page",
+            context=_persisted_library_context,
+        )
+    except RecursionError:
+        pass
     except ImportError:
+        pass
+    except Exception:
         pass
     delete_flash = session.pop("_draft_delete_flash", None)
     if delete_flash:
