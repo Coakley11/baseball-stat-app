@@ -199,6 +199,14 @@ def collect_page_diagnostics(session: dict[str, Any], page: str) -> dict[str, di
         "Performance": _section_performance(session),
         "Repair history": _section_repair_history(session),
     }
+    try:
+        from account_fantasy_preferences import collect_account_preference_diagnostics
+
+        pref_diag = collect_account_preference_diagnostics(session)
+        if pref_diag:
+            sections["Account preferences sync"] = pref_diag
+    except ImportError:
+        pass
     extra = session.pop("_page_diag_extra_sections", None)
     if isinstance(extra, dict):
         sections.update(extra)

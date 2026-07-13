@@ -2182,6 +2182,15 @@ def _render_consolidated_page_diagnostics(page_key: str) -> None:
         pass
 
 
+def _maybe_render_account_pref_sync(page_key: str) -> None:
+    try:
+        from account_fantasy_preferences import maybe_render_account_preference_sync
+
+        maybe_render_account_preference_sync(st, page=str(page_key or ""))
+    except ImportError:
+        pass
+
+
 def top_bar_chart(df, name_col, value_col, title, top_n=10):
     if df.empty or value_col not in df.columns or name_col not in df.columns:
         return
@@ -18411,6 +18420,7 @@ if active_page == "Fantasy Sleepers & Busts":
 
 if active_page == "Draft Assistant Simulator":
     _page_perf_start(active_page)
+    _maybe_render_account_pref_sync(active_page)
     if pp.is_screenshot_mode(st) or pp.is_demo_mode(st):
         pp.render_hero_banner(
             st,
@@ -21148,6 +21158,7 @@ if active_page == DRAFT_LAB_PAGE:
 
 if active_page == "Live Draft Room":
     _page_perf_start(active_page)
+    _maybe_render_account_pref_sync(active_page)
     _setup_prep_ctx = None
     try:
         from live_draft_perf import PHASE_SETUP_PAGE_PREP, live_draft_perf_action
@@ -23300,6 +23311,7 @@ if active_page == "Saved Draft Library":
     from draft_archive_ui import render_saved_draft_library_page
 
     _page_perf_start(active_page)
+    _maybe_render_account_pref_sync(active_page)
     render_section_header(
         "📁 Saved Draft Library",
         "Browse and manage saved draft teams from Live Draft Room and Draft Room Simulator.",
@@ -23327,6 +23339,7 @@ if active_page == "Fantasy Standings Tracker":
     )
 
     _page_perf_start(active_page)
+    _maybe_render_account_pref_sync(active_page)
     prepare_fantasy_standings_page(st.session_state)
     prepare_fantasy_standings_filters(st.session_state)
     try:
@@ -23850,6 +23863,7 @@ if active_page == "Fantasy Lineup Assistant":
     )
 
     _page_perf_start(active_page)
+    _maybe_render_account_pref_sync(active_page)
     prepare_fantasy_lineup_page(st.session_state)
     prepare_fantasy_lineup_filters(st.session_state)
     try:
@@ -24115,6 +24129,7 @@ if active_page == "Waiver Wire / Add-Drop Center":
     from fantasy_waiver_wire_ui import render_waiver_wire_page
 
     _page_perf_start(active_page)
+    _maybe_render_account_pref_sync(active_page)
     render_section_header(
         "🔄 Waiver Wire / Add-Drop Center",
         "Improve your active fantasy team using current-season category performance, waiver pool adds, and paired add/drop planning.",

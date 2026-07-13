@@ -3997,13 +3997,39 @@ def _saved_draft_card_html(
 
 
 def _activate_archive_entry(st: Any, session: dict[str, Any], draft_id: str) -> None:
-    loaded_entry, loaded_context = activate_archive_league_context(
-        session,
-        draft_id,
-        defer_activation=True,
-    )
-    if not loaded_entry:
-        return
+    try:
+        from account_fantasy_preferences import (
+            activate_library_selection_and_sync_preferences,
+            pop_preference_sync_warning,
+        )
+        from library_repair_scheduler import mark_library_dirty
+
+        mark_library_dirty(session, reason="activate_archive")
+        activation = activate_library_selection_and_sync_preferences(
+            session,
+            draft_id=draft_id,
+            reason="activate_archive",
+        )
+        loaded_entry = activation.get("entry")
+        loaded_context = activation.get("context")
+        if not loaded_entry:
+            st.warning("Could not activate that saved draft. Try again.")
+            return
+        prefs_write = activation.get("prefs_write") or {}
+        if prefs_write and not prefs_write.get("write_verified") and prefs_write.get("skipped") != "unsigned":
+            warn = pop_preference_sync_warning(session) or (
+                "Your selection changed on this device, but account sync did not complete. Try again."
+            )
+            st.warning(warn)
+            # Still continue locally so the phone UI is correct even if cloud sync fails.
+    except ImportError:
+        loaded_entry, loaded_context = activate_archive_league_context(
+            session,
+            draft_id,
+            defer_activation=False,
+        )
+        if not loaded_entry:
+            return
     try:
         from draft_library_save_trace import record_restore_trace
 
@@ -4017,14 +4043,6 @@ def _activate_archive_entry(st: Any, session: dict[str, Any], draft_id: str) -> 
     except ImportError:
         pass
     _clear_fantasy_caches_on_archive_change(session)
-    try:
-        from account_fantasy_preferences import write_account_fantasy_preferences
-        from library_repair_scheduler import mark_library_dirty
-
-        mark_library_dirty(session, reason="activate_archive")
-        write_account_fantasy_preferences(session, reason="activate_archive")
-    except ImportError:
-        pass
     _persist_archive(session, st, reason="league_context_activated")
     try:
         from baseball_archive_activity import log_saved_draft_activated

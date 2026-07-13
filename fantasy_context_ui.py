@@ -99,6 +99,26 @@ _LIVE_CONTEXT_TOGGLE_WIDGET_KEY = "_fcs_live_context_toggle_widget"
 _SIM_CONTEXT_TOGGLE_WIDGET_KEY = "_fcs_sim_context_toggle_widget"
 _RESEARCH_SYNC_TOGGLE_WIDGET_KEY = "_fcs_research_sync_toggle_widget"
 
+FANTASY_CONTEXT_TOGGLE_WIDGET_KEYS: tuple[str, ...] = (
+    _LIVE_CONTEXT_TOGGLE_WIDGET_KEY,
+    _SIM_CONTEXT_TOGGLE_WIDGET_KEY,
+    _RESEARCH_SYNC_TOGGLE_WIDGET_KEY,
+)
+
+
+def clear_fantasy_context_toggle_widgets(session: dict[str, Any]) -> None:
+    """Drop checkbox widget keys so the next render reseeds from persisted keys."""
+    for key in FANTASY_CONTEXT_TOGGLE_WIDGET_KEYS:
+        session.pop(key, None)
+
+
+def reseed_fantasy_context_toggle_widgets(session: dict[str, Any]) -> None:
+    """Force widget keys to match persisted source-of-truth values."""
+    clear_fantasy_context_toggle_widgets(session)
+    session[_LIVE_CONTEXT_TOGGLE_WIDGET_KEY] = bool(session.get(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY))
+    session[_SIM_CONTEXT_TOGGLE_WIDGET_KEY] = bool(session.get(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY))
+    session[_RESEARCH_SYNC_TOGGLE_WIDGET_KEY] = bool(session.get(FANTASY_RESEARCH_SYNC_KEY))
+
 
 def _sync_persisted_context_toggles_from_widgets(session: dict[str, Any]) -> None:
     """Copy widget display state into persisted source-of-truth keys (on_change only)."""
@@ -123,9 +143,19 @@ def _persist_context_settings(*, lightweight: bool = True) -> None:
         return
     session = st.session_state
     try:
-        from account_fantasy_preferences import write_account_fantasy_preferences
+        from account_fantasy_preferences import (
+            pop_preference_sync_warning,
+            write_account_fantasy_preferences,
+        )
 
-        write_account_fantasy_preferences(session, reason="fantasy_context_toggle")
+        trace = write_account_fantasy_preferences(session, reason="fantasy_context_toggle")
+        if trace and not trace.get("write_verified") and trace.get("skipped") != "unsigned":
+            warn = pop_preference_sync_warning(session)
+            if warn:
+                try:
+                    st.warning(warn)
+                except Exception:
+                    session["_account_fantasy_prefs_write_fail_flash"] = warn
     except ImportError:
         pass
     if lightweight:
