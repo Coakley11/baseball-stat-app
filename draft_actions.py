@@ -1288,6 +1288,12 @@ def _draft_live(
         )
     except ImportError:
         pass
+    try:
+        from live_draft_rerun_scope import force_live_draft_expensive_recompute
+
+        force_live_draft_expensive_recompute(session)
+    except ImportError:
+        pass
     if record_draft_commit_diagnostics is not None:
         record_draft_commit_diagnostics(
             session,

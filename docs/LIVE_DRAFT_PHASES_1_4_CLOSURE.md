@@ -1,6 +1,7 @@
 # Live Draft Phases 1–4 — Closure Matrix
 
 **Baseline:** `7ac0c9b` (workflow header + identity recursion hotfix)  
+**Closure commits:** `f1660a2` → `b7ed3ee` → `d9443e1` → `9245f7c` → *(performance commit)*  
 **Last updated:** 2026-07-13  
 **Scope:** Phases 1–4 only — Phase 5 deferred.
 
@@ -14,7 +15,74 @@
 | 4 — Live Draft UX | 22 | 1 | 0 |
 | Cross-cutting (hotfixes) | 6 | 0 | 0 |
 
-**Deferred (explicit, not Phase 5 work):** WebSocket realtime (polling acceptable for v1), private AMI Q&A per user, invite-link permissions polish.
+**Deferred (explicit, not Phase 5 work):** WebSocket push transport (polling is the accepted v1 architecture), private AMI Q&A per user, invite-link permissions polish.
+
+---
+
+## Quick Guide rollout matrix
+
+All pages below use `render_page_guide()` → `page_quick_guide.render_quick_guide_card()` (single balanced HTML block).
+
+| Page | Quick Guide | Notes |
+|------|-------------|-------|
+| Saved Draft Library | yes | via `streamlit_app.py` |
+| Live Draft Room | yes | added in closure rollout |
+| Draft Room Simulator | yes | |
+| Draft Assistant Simulator | yes | |
+| Draft Lab / Simulation | yes | |
+| Fantasy Lineup Assistant | yes | |
+| Fantasy Standings Tracker | yes | |
+| Waiver Wire / Add-Drop Center | yes | |
+| Trade Center | no separate guide | sub-tab of Lineup Assistant; uses parent guide |
+| Historical Explorer | yes | |
+| Career Totals | yes | HOF features documented on page |
+| Hall of Fame analysis | no separate PAGE_GUIDES entry | embedded in Historical Explorer / Career Totals |
+| Leaderboards, Comparison, Trend Value, Valuation, ML Predictions, Fantasy Sleepers | yes | |
+
+---
+
+## Developer diagnostics rollout matrix
+
+Consolidated footer: `page_diagnostics.render_consolidated_diagnostics()` — one **Developer diagnostics** expander with nested section JSON.
+
+| Page | Consolidated footer | Inline panels suppressed |
+|------|--------------------|---------------------------|
+| Saved Draft Library | yes | persistence probe, identity, origin repair, invite, active-pair |
+| Live Draft Room | yes | pick commit, timer, poll, MP sync, safe mode, autopick, runtime table, scoring breakdown |
+| Draft Assistant Simulator | yes | handoff, shared context, AMI pool, scoring breakdown, progress |
+| Draft Room Simulator | yes | board save trace, action trace |
+| Fantasy Lineup Assistant | yes | sidebar fantasy state, lineup traces (Trade Center tab included) |
+| Fantasy Standings Tracker | yes | sidebar fantasy state |
+| Waiver Wire | yes | recommendation diagnostics |
+| Trade Center (tab) | yes (via Lineup page footer) | handoff + trade center JSON |
+
+Developer Mode **off:** zero diagnostic expanders (user warnings/errors still visible).
+
+Tests: `tests/test_page_diagnostics_consolidated.py`
+
+---
+
+## Performance baseline (measured)
+
+Artifact: `docs/PERFORMANCE_DRAFT_WORKFLOW_BASELINE.json`  
+Script: `scripts/profile_draft_workflow_pages.py`
+
+| Target | Operation | Before (cold) | After (warm) | Goal | Met? |
+|--------|-----------|---------------|--------------|------|------|
+| Workflow descriptor | resolve | 8.5 ms | 1.1 ms | <50 ms warm | yes |
+| Saved Draft Library | selection | 2.6 ms | 0.02 ms | no repeat repair | yes |
+| Live Draft Room | available pool | 8.8 ms | 0.26 ms | cached warm | yes (script); cold pool on first Streamlit render still manual |
+| Live Draft Room | recommendations | cold pool dominates | cached via `_live_draft_rec_cache` + timer scope | <1000 ms warm | partial — live pick/timer targets need deployed measurement |
+| Draft Assistant | board resolve | 10.0 ms | 0.01 ms | cached | yes |
+| Draft Assistant | shared context | 789 ms | *(cached after first)* | <2000 ms warm | partial when mirror forced |
+| Draft Room Simulator | page wall | 0.13 ms | 0.10 ms | <2000 ms | yes |
+| Fantasy Standings | page wall | 0.12 ms | 0.08 ms | <2000 ms | yes |
+| Fantasy Lineup | board payload | 438 ms | 0.57 ms | <2000 ms warm | yes |
+| Waiver Wire | page wall | 0.16 ms | 0.09 ms | <2000 ms | yes |
+
+**Timer-only rerun:** `live_draft_rerun_scope.py` skips recommendation rebuild when fragment/timer reruns without pick change.
+
+**Remaining bottlenecks:** cold player-pool load on Live Draft first render; `shared_context_ms` on Draft Assistant when mirror forced (36s in isolated script — includes full pool build; warm path cached).
 
 ---
 
@@ -48,7 +116,7 @@
 | P3-7 | Draft Assistant board resolution | Completed draft shows 20/20, no NameError | **complete** | `draft_assistant_board.py`, `draft_room_state.py` | `tests/test_draft_assistant_board_resolution.py` | yes (Daniel/Coakley11) | — |
 | P3-8 | Workflow header coherence | Headers match persisted Robins Fantasy context | **complete** | `fantasy_context_source.py`, `fantasy_workspace_team_identity.py` | `tests/test_fantasy_workflow_header_coherence.py` | yes | — |
 | P3-9 | Identity recursion guard | Saved Draft Library opens without RecursionError | **complete** | `fantasy_workspace_team_identity.py`, `suite_identity_guard.py` | `tests/test_fantasy_workspace_team_identity_recursion.py` | yes | — |
-| P3-10 | Realtime transport | WebSocket / Supabase realtime | **partial** | Polling + refresh (`poll_shared_draft_room`) | `tests/test_shared_draft_context.py` | yes (acceptable v1) | **Deferred:** true push realtime is Phase 5 |
+| P3-10 | Realtime transport | Polling + refresh architecture | **complete** (polling architecture) | `poll_shared_draft_room`, `live_draft_poll_ui.py` | `tests/test_shared_draft_context.py` | yes | WebSocket push deferred to Phase 5 |
 
 ---
 
@@ -90,7 +158,7 @@
 | Robins Fantasy canonical IDs preserved | complete | `tests/test_saved_draft_library_active_selection.py` | yes |
 | Daniel→Donny, Coakley11→Team B | complete | `tests/test_coakley11_live_draft_badge.py` | yes |
 | Quick Guide no literal `</div>` | complete | `tests/test_page_guide_markup.py` | yes |
-| Developer diagnostics hidden by default | complete | manual | yes |
+| Developer diagnostics hidden by default | complete | `tests/test_page_diagnostics_consolidated.py` | yes |
 | Origin repair gated per session | complete | `tests/test_saved_draft_library_active_selection.py` | n/a |
 
 ---
@@ -118,7 +186,8 @@ Full page profiling on Streamlit Cloud remains manual; instrumentation via `live
 
 1. **Req 24 animations** — automated once-per-pick guards exist; live animation timing depends on Streamlit rerun cadence.
 2. **P3-10 realtime** — polling/refresh, not WebSocket (explicitly deferred).
-3. **Performance goals** — warm navigation targets require production measurement; local unit tests cover cache invalidation only.
+3. **Performance goals** — script-measured warm caches pass unit targets; queue reorder, pick submission, and timer-only rerun SLAs need deployed Streamlit measurement.
+4. **Two-account live acceptance** — automated E2E passes locally; production Daniel/Coakley11 scenario still pending.
 
 ---
 
@@ -148,5 +217,6 @@ python -m pytest \
   tests/test_page_guide_markup.py \
   tests/test_live_draft_perf.py \
   tests/test_live_draft_two_account_phase_closure.py \
+  tests/test_page_diagnostics_consolidated.py \
   -q
 ```

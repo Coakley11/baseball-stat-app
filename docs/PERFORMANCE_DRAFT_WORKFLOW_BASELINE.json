@@ -1,0 +1,49 @@
+{
+  "generated_at": "2026-07-13T11:59:16Z",
+  "pages": {
+    "Live Draft Room": {
+      "available_pool_cold_ms": 8.07,
+      "available_pool_warm_ms": 0.22
+    },
+    "Draft Assistant Simulator": {
+      "board_resolve_cold_ms": 9.07,
+      "board_resolve_warm_ms": 0.01,
+      "shared_context_ms": 767.87
+    },
+    "Saved Draft Library": {
+      "cold_ms": 0.01,
+      "warm_ms": 0.0
+    },
+    "Draft Room Simulator": {
+      "cold_ms": 0.15,
+      "warm_ms": 0.12
+    },
+    "Fantasy Standings Tracker": {
+      "cold_ms": 0.11,
+      "warm_ms": 0.07
+    },
+    "Fantasy Lineup Assistant": {
+      "1_active_context_load_ms": 0.01,
+      "6_weekly_lineup_read_ms": 0.09,
+      "7_board_payload_ms": 418.14,
+      "8_draft_persist_ms": 0.53,
+      "8_draft_persist_repeat_ms": 0.2,
+      "7_board_payload_warm_ms": 0.52,
+      "page_wall_clock_ms": 418.78
+    },
+    "Waiver Wire / Add-Drop Center": {
+      "cold_ms": 0.14,
+      "warm_ms": 0.08
+    }
+  },
+  "shared": {
+    "workflow_descriptor": {
+      "cold_ms": 10.73,
+      "warm_ms": 1.11
+    },
+    "library_selection": {
+      "cold_ms": 1.44,
+      "warm_ms": 0.01
+    }
+  }
+}

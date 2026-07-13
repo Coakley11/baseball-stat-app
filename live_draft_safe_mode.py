@@ -449,5 +449,25 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
         return False
     session["_live_draft_last_rerun_source"] = source
     session["_live_draft_rerun_count"] = int(session.get("_live_draft_rerun_count") or 0) + 1
+    try:
+        from live_draft_rerun_scope import (
+            force_live_draft_expensive_recompute,
+            mark_live_draft_timer_tick,
+        )
+
+        if source in ("timer_fragment", "poll_fragment"):
+            mark_live_draft_timer_tick(session)
+        elif source in (
+            "manual_pick",
+            "auto_pick",
+            "live_draft_queue",
+            "pause_draft",
+            "resume_draft",
+            "pick_commit",
+            "auto_pick_complete",
+        ):
+            force_live_draft_expensive_recompute(session)
+    except ImportError:
+        pass
     st.rerun()
     return True

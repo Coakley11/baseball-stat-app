@@ -159,6 +159,12 @@ def render_live_on_clock_banner(
 
     @fragment(run_every=1)
     def _banner_tick() -> None:
+        try:
+            from live_draft_rerun_scope import mark_live_draft_timer_tick
+
+            mark_live_draft_timer_tick(session)
+        except ImportError:
+            pass
         tick_room = _resolve_live_room(session, room)
         tick_slot = live_draft_current_slot(tick_room) or slot_view
         tick_deadline = live_draft_timer_deadline(tick_room)

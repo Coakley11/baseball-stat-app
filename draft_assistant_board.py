@@ -127,6 +127,20 @@ def resolve_draft_assistant_board(
 ) -> dict[str, Any]:
     """Resolve Draft Assistant board with explicit source priority."""
     mode = str(context_mode or "").strip().lower()
+    fp = (
+        mode,
+        str((effective_context or {}).get("league_context_id") or ""),
+        str((active_archive or {}).get("draft_id") or ""),
+        int(len((live_room or session.get("live_draft_room") or {}).get("draft_board") or []))
+        if isinstance(live_room or session.get("live_draft_room"), dict)
+        else 0,
+        str(session.get("_suite_auth_user_id") or ""),
+    )
+    if session.get("_da_board_cache_fp") == fp:
+        cached = session.get("_da_board_cache")
+        if isinstance(cached, dict):
+            return dict(cached)
+
     diag: dict[str, Any] = {
         "selected_source_kind": mode or "none",
         "selected_context_id": str((effective_context or {}).get("league_context_id") or ""),
@@ -213,4 +227,7 @@ def resolve_draft_assistant_board(
 
     diag["board_source_used"] = best_source
     diag.update(best_norm_diag)
-    return {"board": best, "diagnostics": diag}
+    result = {"board": best, "diagnostics": diag}
+    session["_da_board_cache_fp"] = fp
+    session["_da_board_cache"] = result
+    return result
