@@ -119,8 +119,30 @@ def sync_uploaded_league_contexts_on_library_render(session: dict[str, Any]) -> 
     Pull canonical team_ownership from baseball_shared_leagues for library leagues.
 
     Runs once per Saved Draft Library render so commissioners see invitee claims
-    without requiring Set Active first.
+    without requiring Set Active first. Warm re-entry with unchanged identity skips
+    the expensive materialize/ownership pass.
     """
+    try:
+        from library_repair_scheduler import LIBRARY_DIRTY_KEY
+    except ImportError:
+        LIBRARY_DIRTY_KEY = "_library_repair_dirty"  # type: ignore[misc,assignment]
+    warm_fp = "|".join(
+        [
+            str(session.get("_suite_auth_user_id") or ""),
+            str(session.get("_suite_active_workspace_id") or ""),
+            str(session.get("_suite_cloud_session_revision") or ""),
+            str(len(session.get("draft_archive_teams") or [])),
+        ]
+    )
+    if (
+        session.get("_library_shared_sync_warm_fp") == warm_fp
+        and not session.get(LIBRARY_DIRTY_KEY)
+        and isinstance(session.get(_LIBRARY_SYNC_TRACE_KEY), dict)
+    ):
+        prior = dict(session.get(_LIBRARY_SYNC_TRACE_KEY) or {})
+        prior["skipped"] = "warm_render"
+        return prior
+
     materialize_owned_shared_leagues_for_session(session)
     results: list[dict[str, Any]] = []
     leagues_synced = 0
@@ -202,6 +224,7 @@ def sync_uploaded_league_contexts_on_library_render(session: dict[str, Any]) -> 
         "results": results,
     }
     session[_LIBRARY_SYNC_TRACE_KEY] = trace
+    session["_library_shared_sync_warm_fp"] = warm_fp
     return trace
 
 

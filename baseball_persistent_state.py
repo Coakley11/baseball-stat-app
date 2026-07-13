@@ -1278,17 +1278,23 @@ def prepare_baseball_workspace(st: Any) -> bool:
             ensure_session_workflow_hydrated(st, APP_ID)
         except ImportError:
             pass
-    try:
-        from global_fantasy_settings_state import prepare_global_fantasy_settings
+    # Warm navigation: skip global settings prep unless an explicit mirror/nav flag is set.
+    if not warm_skip or bool(
+        ss.get("_suite_page_user_nav")
+        or ss.get("_suite_workspace_refresh_needed")
+        or ss.get("_global_settings_force_mirror")
+    ):
+        try:
+            from global_fantasy_settings_state import prepare_global_fantasy_settings
 
-        force_mirror = bool(
-            ss.get("_suite_page_user_nav")
-            or ss.get("_suite_workspace_refresh_needed")
-            or ss.pop("_global_settings_force_mirror", None)
-        )
-        prepare_global_fantasy_settings(ss, force_mirror=force_mirror)
-    except Exception:
-        pass
+            force_mirror = bool(
+                ss.get("_suite_page_user_nav")
+                or ss.get("_suite_workspace_refresh_needed")
+                or ss.pop("_global_settings_force_mirror", None)
+            )
+            prepare_global_fantasy_settings(ss, force_mirror=force_mirror)
+        except Exception:
+            pass
     if not warm_skip:
         try:
             from suite_auth import is_auth_enabled, restore_auth_session
@@ -1365,7 +1371,7 @@ def prepare_baseball_workspace(st: Any) -> bool:
             pass
         except Exception:
             pass
-    # Account preferences are the final authority after any legacy hydration.
+    # Account preferences are the final authority after actual hydration only.
     try:
         from account_fantasy_preferences import (
             reassert_account_preferences_after_hydration,
@@ -1374,7 +1380,10 @@ def prepare_baseball_workspace(st: Any) -> bool:
 
         if not warm_skip:
             sync_account_fantasy_preferences(ss, force=bool(ss.get("_suite_workspace_refresh_needed")))
-        reassert_account_preferences_after_hydration(ss)
+            reassert_account_preferences_after_hydration(ss)
+        else:
+            # Warm navigation: compact header compare only — no full preference fetch.
+            sync_account_fantasy_preferences(ss, poll=True)
     except ImportError:
         pass
     except Exception:
