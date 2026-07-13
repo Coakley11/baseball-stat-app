@@ -211,11 +211,23 @@ def sync_library_manifest_from_cloud(session: dict[str, Any], *, force: bool = F
                 patched = dict(entry)
                 patched["content_updated_at"] = remote_at
                 patched["content_revision"] = remote_rev_row or local_rev_row or 1
+                remote_name = str(remote.get("display_name") or remote.get("draft_name") or "").strip()
+                if remote_name:
+                    patched["draft_name"] = remote_name
                 # Never invent updated_at from hydration clock.
                 if not patched.get("updated_at"):
                     patched["updated_at"] = remote_at
                 local[i] = patched
                 changed += 1
+            elif remote_rev_row == local_rev_row:
+                # Same content revision — still converge display_name after rename sync.
+                remote_name = str(remote.get("display_name") or remote.get("draft_name") or "").strip()
+                local_name = str(entry.get("draft_name") or "").strip()
+                if remote_name and remote_name != local_name:
+                    patched = dict(entry)
+                    patched["draft_name"] = remote_name
+                    local[i] = patched
+                    changed += 1
         if changed:
             session[DRAFT_ARCHIVE_KEY] = local
             session.pop(MANIFEST_FP_KEY, None)

@@ -160,6 +160,20 @@ def _section_performance(session: dict[str, Any]) -> dict[str, Any]:
         timings = perf.get("timings") or {}
         if timings:
             out["page_timings_ms"] = {k: round(float(v) * 1000.0, 2) for k, v in timings.items()}
+    try:
+        from deployed_page_timing import summarize_deployed_page_timing
+
+        page = str(session.get("_page_render_last_page") or session.get("active_page") or "")
+        if page:
+            out["deployed_page_timing"] = summarize_deployed_page_timing(session, page)
+        seq = session.get("_deployed_page_timing_sequence")
+        if isinstance(seq, list) and seq:
+            out["deployed_page_timing_sequence"] = seq[-12:]
+    except ImportError:
+        pass
+    out["warm_startup_skipped"] = bool(session.get("_baseball_warm_startup_skipped"))
+    if session.get("_suite_page_change_save_skipped"):
+        out["page_change_save_skipped"] = session.get("_suite_page_change_save_skipped")
     actions = session.get("_live_draft_perf_actions")
     if isinstance(actions, list) and actions:
         out["recent_live_draft_actions"] = actions[-8:]

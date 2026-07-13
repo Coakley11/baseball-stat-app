@@ -280,7 +280,7 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "projections_edit",
     "leaderboards_edit",
     "fantasy_edit",
-    "page_change",
+    # page_change intentionally omitted — warm nav must fingerprint-skip when clean
     "insight_persist",
     "insight_hydrate",
     "applied_math_send",

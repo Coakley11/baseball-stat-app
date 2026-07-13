@@ -4371,12 +4371,8 @@ def _render_saved_draft_library_page_body(
         pass
     except RecursionError:
         pass
-    try:
-        from fantasy_shared_league_library_sync import materialize_owned_shared_leagues_for_session
-
-        materialize_owned_shared_leagues_for_session(session)
-    except ImportError:
-        pass
+    # Shared-league materialize is owned by sync_uploaded_league_contexts_on_library_render
+    # (warm-gated). Do not call materialize again here on every Library render.
     try:
         from fantasy_workspace_team_identity import apply_account_team_identity_to_session
 
@@ -4416,6 +4412,12 @@ def _render_saved_draft_library_page_body(
 
         build_line = format_deploy_caption() or f"Build `{GIT_COMMIT_SHORT}`"
         st.caption(f"Library UI · {build_line}")
+    except ImportError:
+        pass
+    try:
+        from deployed_page_timing import mark_page_heading_visible
+
+        mark_page_heading_visible(session, "Saved Draft Library")
     except ImportError:
         pass
 
@@ -4733,6 +4735,15 @@ def _render_saved_draft_library_page_body(
             ),
             unsafe_allow_html=True,
         )
+        if not session.get("_library_main_content_marked"):
+            session["_library_main_content_marked"] = True
+            try:
+                from deployed_page_timing import mark_active_league_visible, mark_main_content_interactive
+
+                mark_active_league_visible(session, "Saved Draft Library")
+                mark_main_content_interactive(session, "Saved Draft Library")
+            except ImportError:
+                pass
         if is_focus:
             st.caption(f"Focused league `{draft_id}` — use **⭐ Set Active League** to manage this league.")
         elif is_active:

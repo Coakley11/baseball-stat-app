@@ -1207,6 +1207,26 @@ def _workspace_restore_cloud_first(session: dict[str, Any]) -> bool:
     return True
 
 
+def warm_startup_fingerprint(session: dict[str, Any]) -> str:
+    """Identity/cloud revision fingerprint used to skip expensive warm hydration.
+
+    Intentionally omits library_manifest_revision / archive list size so Visiting
+    Saved Draft Library cannot invalidate warm_skip for subsequent page hops.
+    """
+    return "|".join(
+        [
+            str(session.get("_suite_auth_user_id") or ""),
+            str(session.get("_suite_active_workspace_id") or ""),
+            str(
+                session.get("_suite_cloud_session_revision")
+                or session.get("_suite_workspace_cloud_meta_fp")
+                or ""
+            ),
+            str(WORKSPACE_SCHEMA_VERSION),
+        ]
+    )
+
+
 def prepare_baseball_workspace(st: Any) -> bool:
     """Single authoritative cloud/disk workspace sync before sidebar widgets."""
     ss = st.session_state
@@ -1220,15 +1240,7 @@ def prepare_baseball_workspace(st: Any) -> bool:
             or ss.get("_suite_workspace_refresh_needed")
             or ss.get("_suite_auth_just_signed_in")
         )
-        fp = "|".join(
-            [
-                str(ss.get("_suite_auth_user_id") or ""),
-                str(ss.get("_suite_active_workspace_id") or ""),
-                str(ss.get("_suite_cloud_session_revision") or ss.get("_suite_workspace_cloud_meta_fp") or ""),
-                str(WORKSPACE_SCHEMA_VERSION),
-                str(ss.get("_library_manifest_revision") or len(ss.get("draft_archive_teams") or [])),
-            ]
-        )
+        fp = warm_startup_fingerprint(ss)
         prev_fp = str(ss.get("_baseball_warm_startup_fp") or "")
         if synced and not force and prev_fp == fp and prev_fp:
             warm_skip = True
@@ -1278,19 +1290,19 @@ def prepare_baseball_workspace(st: Any) -> bool:
             ensure_session_workflow_hydrated(st, APP_ID)
         except ImportError:
             pass
-    # Warm navigation: skip global settings prep unless an explicit mirror/nav flag is set.
-    if not warm_skip or bool(
-        ss.get("_suite_page_user_nav")
-        or ss.get("_suite_workspace_refresh_needed")
+    # Warm navigation: skip global settings prep. Mirror only on cold hydrate or
+    # an explicit force flag — not on every sidebar hop (_suite_page_user_nav).
+    if (not warm_skip) or bool(
+        ss.get("_suite_workspace_refresh_needed")
         or ss.get("_global_settings_force_mirror")
     ):
         try:
             from global_fantasy_settings_state import prepare_global_fantasy_settings
 
             force_mirror = bool(
-                ss.get("_suite_page_user_nav")
-                or ss.get("_suite_workspace_refresh_needed")
+                ss.get("_suite_workspace_refresh_needed")
                 or ss.pop("_global_settings_force_mirror", None)
+                or (not warm_skip)
             )
             prepare_global_fantasy_settings(ss, force_mirror=force_mirror)
         except Exception:
@@ -1979,6 +1991,7 @@ __all__ = [
     "default_reset_baseball_session",
     "force_save_baseball_state",
     "prepare_baseball_workspace",
+    "warm_startup_fingerprint",
     "render_cross_device_sync_debug",
     "restore_baseball_disk_state_once",
     "sync_baseball_cloud_workspace",

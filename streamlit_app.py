@@ -12554,11 +12554,61 @@ def _page_perf_start(page: str) -> None:
         pass
 
 
+def _page_perf_mark(page: str, milestone: str) -> None:
+    try:
+        from deployed_page_timing import (
+            mark_active_league_visible,
+            mark_full_optional_complete,
+            mark_main_content_interactive,
+            mark_page_heading_visible,
+        )
+
+        key = str(milestone or "").strip()
+        if key == "page_heading_visible":
+            mark_page_heading_visible(st.session_state, page)
+        elif key == "active_league_team_visible":
+            mark_active_league_visible(st.session_state, page)
+        elif key == "main_content_interactive":
+            mark_main_content_interactive(st.session_state, page)
+        elif key == "full_optional_complete":
+            mark_full_optional_complete(st.session_state, page)
+    except ImportError:
+        pass
+
+
 def _page_perf_end(page: str) -> None:
+    # If the page body never marked interactivity, treat end-of-render as the milestone.
+    try:
+        from page_render_timing import last_page_timings
+
+        row = last_page_timings(st.session_state, page)
+        marks = dict(row.get("milestones") or {})
+        if "page_heading_visible" not in marks:
+            _page_perf_mark(page, "page_heading_visible")
+        if "active_league_team_visible" not in marks:
+            _page_perf_mark(page, "active_league_team_visible")
+        if "main_content_interactive" not in marks:
+            _page_perf_mark(page, "main_content_interactive")
+        _page_perf_mark(page, "full_optional_complete")
+    except ImportError:
+        pass
     try:
         from page_render_timing import finish_page_render
 
         finish_page_render(st.session_state, page)
+    except ImportError:
+        pass
+    try:
+        from deployed_page_timing import summarize_deployed_page_timing
+        from page_diagnostics import record_page_diagnostic_section
+
+        summary = summarize_deployed_page_timing(st.session_state, page)
+        record_page_diagnostic_section(st.session_state, "Deployed page timing", summary)
+        # Keep a rolling sequence summary for the warm acceptance circuit.
+        bucket = st.session_state.setdefault("_deployed_page_timing_sequence", [])
+        if isinstance(bucket, list):
+            bucket.append(summary)
+            st.session_state["_deployed_page_timing_sequence"] = bucket[-24:]
     except ImportError:
         pass
     try:
@@ -13832,13 +13882,23 @@ try:
     sync_developer_mode_widget(st.session_state, source="post_workspace_sync")
 except Exception:
     pass
+_active_page_for_prep = str(st.session_state.get("active_page") or "")
 try:
     from draft_room_context import prepare_global_draft_context
 
-    prepare_global_draft_context(st.session_state)
+    _warm_startup = bool(st.session_state.get("_baseball_warm_startup_skipped"))
+    _draftish = _active_page_for_prep in {
+        "Live Draft Room",
+        "Draft Assistant Simulator",
+        "Draft Room Simulator",
+        "Draft Lab / Simulation",
+        "Fantasy Sleepers & Busts",
+    }
+    # Ordinary warm hops onto Library/Lineup/Standings/Waiver skip live/draft board prep.
+    if (not _warm_startup) or _draftish:
+        prepare_global_draft_context(st.session_state)
 except Exception:
     pass
-_active_page_for_prep = str(st.session_state.get("active_page") or "")
 _DRAFT_BOARD_PAGES = frozenset({
     "Draft Room Simulator",
     "Draft Assistant Simulator",
@@ -13848,6 +13908,7 @@ _DRAFT_BOARD_PAGES = frozenset({
 })
 _needs_live_prep = False
 _ld_room = st.session_state.get("live_draft_room")
+_warm_startup = bool(st.session_state.get("_baseball_warm_startup_skipped"))
 if isinstance(_ld_room, dict) and str(_ld_room.get("status") or "") in (
     "in_progress",
     "paused",
@@ -13856,6 +13917,9 @@ if isinstance(_ld_room, dict) and str(_ld_room.get("status") or "") in (
     _needs_live_prep = True
 elif isinstance(_ld_room, dict) and _ld_room.get("draft_room_id"):
     _needs_live_prep = True
+# On warm navigation away from draft pages, do not re-prepare live draft state.
+if _warm_startup and _active_page_for_prep not in _DRAFT_BOARD_PAGES:
+    _needs_live_prep = False
 if _needs_live_prep:
     try:
         from live_draft_state import prepare_live_draft_state
@@ -13891,10 +13955,11 @@ except ImportError:
 try:
     from shared_draft_context import prepare_shared_draft_context
 
+    _warm_shared = bool(st.session_state.get("_baseball_warm_startup_skipped"))
     prepare_shared_draft_context(
         st.session_state,
         active_page=_active_page_for_prep,
-        force_mirror=bool(st.session_state.get("_global_settings_force_mirror")),
+        force_mirror=bool(st.session_state.get("_global_settings_force_mirror")) and not _warm_shared,
     )
 except ImportError:
     pass
@@ -13913,12 +13978,13 @@ try:
 except ImportError:
     pass
 st.session_state["_suite_post_restore_active_page"] = st.session_state.get("active_page")
-try:
-    from baseball_persistent_state import record_post_restore_workspace_diagnostics
+if not bool(st.session_state.get("_baseball_warm_startup_skipped")):
+    try:
+        from baseball_persistent_state import record_post_restore_workspace_diagnostics
 
-    record_post_restore_workspace_diagnostics(st)
-except ImportError:
-    pass
+        record_post_restore_workspace_diagnostics(st)
+    except ImportError:
+        pass
 if isinstance(st.session_state.get("_draft_library_nav_diag"), dict):
     st.session_state["_draft_library_nav_diag"]["active_page_after_rerun"] = st.session_state.get("active_page")
     st.session_state["_draft_library_nav_diag"]["main_sidebar_page_after"] = st.session_state.get(MAIN_SIDEBAR_PAGE_KEY)
@@ -13994,7 +14060,7 @@ except ImportError:
 try:
     from shared_draft_context import is_draft_sync_page, prepare_shared_draft_context
 
-    if is_draft_sync_page(active_page):
+    if is_draft_sync_page(active_page) and not bool(st.session_state.get("_baseball_warm_startup_skipped")):
         prepare_shared_draft_context(
             st.session_state,
             active_page=active_page,
@@ -14080,7 +14146,6 @@ if _page_changed and not _user_nav:
     except Exception:
         pass
 if _page_changed or _user_nav:
-    st.session_state["_global_settings_force_mirror"] = True
     _did_save = False
     if (_user_nav or _page_changed) and not _skip_page_change_save:
         try:
@@ -14096,11 +14161,24 @@ if _page_changed or _user_nav:
                 )
         except Exception:
             pass
+        _local_dirty = False
         try:
-            force_save_baseball_state(st, reason="page_change")
-            _did_save = True
+            from suite_user_persistence import _local_dirty_key
+
+            _local_dirty = bool(st.session_state.get(_local_dirty_key("baseball")))
         except Exception:
-            pass
+            _local_dirty = False
+        # Warm acceptance: clean page hops must not rebuild+upload the full_session blob.
+        # Content mutations set the dirty flag (or use an explicit mutation save reason).
+        if _local_dirty or bool(st.session_state.pop("_suite_force_page_change_save", None)):
+            st.session_state["_global_settings_force_mirror"] = True
+            try:
+                force_save_baseball_state(st, reason="page_change")
+                _did_save = True
+            except Exception:
+                pass
+        else:
+            st.session_state["_suite_page_change_save_skipped"] = "clean_warm_nav"
     try:
         from applied_math_return_insight import SESSION_RETURN_PAGE_KEY, consume_ami_return_resume
 
@@ -14170,7 +14248,7 @@ pg_state.handle_sidebar_page_state(
 try:
     from shared_draft_context import is_draft_sync_page, prepare_shared_draft_context
 
-    if is_draft_sync_page(active_page):
+    if is_draft_sync_page(active_page) and not bool(st.session_state.get("_baseball_warm_startup_skipped")):
         prepare_shared_draft_context(
             st.session_state,
             active_page=active_page,
@@ -14181,7 +14259,8 @@ except ImportError:
 try:
     from global_fantasy_settings_state import mirror_canonical_to_all_aliases
 
-    mirror_canonical_to_all_aliases(st.session_state)
+    if not bool(st.session_state.get("_baseball_warm_startup_skipped")):
+        mirror_canonical_to_all_aliases(st.session_state)
 except ImportError:
     pass
 # Apply contextual transfer before page widgets render (filters must be in session_state first).
