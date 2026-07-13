@@ -4049,6 +4049,12 @@ def _render_active_draft_section(
         return
 
     context = active_context or get_league_context_for_archive(session, active)
+    if not context:
+        st.warning(
+            "Active draft archive and league context are out of sync. "
+            "Use **⭐ Set Active League** on the correct saved draft below."
+        )
+        return
     title = str(active.get("draft_name") or "Saved Draft")
     team_count = league_team_count(context, active)
     player_n = archive_my_team_player_count(active, context=context)
@@ -4442,9 +4448,24 @@ def _render_saved_draft_library_page_body(
         except ImportError:
             pass
         active = None
-    active_context = get_active_league_context(session)
-    active_id = str((active or {}).get("draft_id") or "")
-    active_context_id = str((active_context or {}).get("league_context_id") or "")
+    try:
+        from saved_draft_library_selection import (
+            prepare_saved_draft_library_active_selection,
+            render_active_library_pair_diagnostics,
+            saved_draft_card_is_active,
+        )
+
+        selection = prepare_saved_draft_library_active_selection(session)
+        active = selection.get("active_archive")
+        active_context = selection.get("linked_active_context")
+        active_id = str(selection.get("active_draft_archive_id") or "")
+        active_context_id = str(selection.get("persisted_active_context_id") or "")
+        render_active_library_pair_diagnostics(st, session, developer_mode=developer_mode)
+    except ImportError:
+        active_context = get_active_league_context(session, respect_source_priority=False)
+        active_id = str((active or {}).get("draft_id") or "")
+        active_context_id = str((active_context or {}).get("league_context_id") or "")
+        selection = None
 
     st.caption(
         "Only **intentionally saved drafts** appear here. "
@@ -4599,8 +4620,14 @@ def _render_saved_draft_library_page_body(
         draft_id = str(entry.get("draft_id") or "")
         context = get_league_context_for_archive(session, entry)
         league_context_id = str((context or {}).get("league_context_id") or entry.get("league_context_id") or "")
-        is_active = draft_id == active_id and (
-            not active_context_id or not league_context_id or league_context_id == active_context_id
+        is_active = saved_draft_card_is_active(
+            session,
+            draft_id=draft_id,
+            league_context_id=league_context_id,
+            selection=selection,
+        ) if selection is not None else (
+            draft_id == active_id
+            and (not active_context_id or not league_context_id or league_context_id == active_context_id)
         )
         is_focus = bool(focus_draft_id and draft_id == focus_draft_id and not is_active)
         player_n = archive_card_player_count(entry)

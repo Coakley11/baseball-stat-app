@@ -110,12 +110,17 @@ def build_context_from_shared_for_workspace(
     """Seed or refresh a workspace league context from canonical shared league doc."""
     from fantasy_league_context import (
         CONTEXT_TYPE_REAL_LEAGUE,
+        CREATION_ORIGIN_LIVE_DRAFT_ROOM,
+        CREATION_ORIGIN_VALIDATED_IMPORT,
+        DRAFT_TYPE_IMPORTED,
         DRAFT_TYPE_LIVE,
         SOURCE_LIVE_DRAFT_ROOM,
         apply_draft_origin_to_context,
         context_id_for_archive,
         ensure_live_draft_membership_metadata,
+        read_immutable_creation_origin,
         resolve_archive_draft_type_from_origin,
+        stamp_immutable_creation_origin,
     )
     from fantasy_league_identity import ensure_league_identity
     from fantasy_shared_league_store import merge_shared_into_context
@@ -170,6 +175,7 @@ def build_context_from_shared_for_workspace(
         "_suite_active_workspace_id": workspace_id,
     }
     merged = ensure_live_draft_membership_metadata(merged, shared, session=identity_session)
+    existing_creation = read_immutable_creation_origin(context=base if isinstance(base, dict) else None, shared_doc=shared)
     origin_type = resolve_archive_draft_type_from_origin(
         context=merged,
         shared_doc=shared,
@@ -178,7 +184,11 @@ def build_context_from_shared_for_workspace(
     if bool(existing_meta.get("joined_via_invite")) and owner_user_id and owner_user_id != commissioner:
         meta["joined_via_invite"] = True
     elif my_team and owner_user_id and owner_user_id != commissioner:
-        if origin_type == DRAFT_TYPE_LIVE:
+        if existing_creation == CREATION_ORIGIN_VALIDATED_IMPORT or origin_type == DRAFT_TYPE_IMPORTED:
+            meta["joined_via_invite"] = True
+            meta.pop("joined_via_live_draft", None)
+            meta.pop("preassigned_live_draft_owner", None)
+        elif origin_type == DRAFT_TYPE_LIVE:
             meta["joined_via_live_draft"] = True
             meta["preassigned_live_draft_owner"] = True
             meta["created_from"] = "live_draft"
@@ -195,6 +205,14 @@ def build_context_from_shared_for_workspace(
         meta.pop("preassigned_live_draft_owner", None)
     if str(existing_meta.get("invite_id") or "").strip():
         meta["invite_id"] = str(existing_meta.get("invite_id") or "").strip()
+    if existing_creation == CREATION_ORIGIN_LIVE_DRAFT_ROOM:
+        meta = stamp_immutable_creation_origin(meta, CREATION_ORIGIN_LIVE_DRAFT_ROOM)
+    elif existing_creation == CREATION_ORIGIN_VALIDATED_IMPORT:
+        meta = stamp_immutable_creation_origin(meta, CREATION_ORIGIN_VALIDATED_IMPORT)
+    elif origin_type == DRAFT_TYPE_LIVE and not str(meta.get("creation_origin") or "").strip():
+        meta = stamp_immutable_creation_origin(meta, CREATION_ORIGIN_LIVE_DRAFT_ROOM)
+    elif origin_type == DRAFT_TYPE_IMPORTED and not str(meta.get("creation_origin") or "").strip():
+        meta = stamp_immutable_creation_origin(meta, CREATION_ORIGIN_VALIDATED_IMPORT)
     merged["metadata"] = meta
     merged = apply_draft_origin_to_context(merged, shared_doc=shared, session=identity_session)
     return ensure_league_identity(merged)
@@ -501,10 +519,6 @@ def repair_workspace_session_for_league(
         refreshed = find_league_context_by_league_id(session, league_id) or context
         trace["archive_team_rows_rewritten"] = _sync_archives_to_workspace_team(session, refreshed)
         repaired_draft_id = str((refreshed.get("metadata") or {}).get("source_draft_id") or "").strip()
-        if repaired_draft_id:
-            from draft_archive_state import set_active_draft_archive
-
-            set_active_draft_archive(session, repaired_draft_id)
         restore_trace = restore_active_draft_archive_selection(
             session,
             cloud_state=cloud_blob if isinstance(cloud_blob, dict) else {},
@@ -513,7 +527,7 @@ def repair_workspace_session_for_league(
         )
         trace["active_restore_trace"] = restore_trace if isinstance(restore_trace, dict) else {}
         if repaired_draft_id:
-            set_active_draft_archive(session, repaired_draft_id)
+            trace["repaired_draft_id"] = repaired_draft_id
         try:
             from global_fantasy_settings_state import sync_active_fantasy_team_to_canonical
 

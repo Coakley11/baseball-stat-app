@@ -18719,20 +18719,64 @@ if active_page == "Draft Assistant Simulator":
                 )
 
             pick_adjustment = int(st.session_state.get("draft_pick_adjustment") or 0)
-            draft_summary = draft_board_summary_for_team(
-                draft_room_table_for_assistant if board_has_players_for_summary else pd.DataFrame(),
-                your_team=assistant_my_team_name,
-                team_names=assistant_team_names,
-                pick_adjustment=pick_adjustment,
-                num_teams=int(st.session_state.get("room_team_count") or len(assistant_team_names) or 12),
-            )
-            current_pick = int(draft_summary["current_pick"])
+            _room_teams = int(st.session_state.get("room_team_count") or len(assistant_team_names) or 12)
+            _room_rounds = int(st.session_state.get("room_rounds") or 20)
+            _total_picks = _room_teams * _room_rounds
+            _room_status = ""
+            if isinstance(live_room, dict):
+                _room_status = str(live_room.get("status") or "")
+            try:
+                from draft_room_state import derive_draft_progress, round_one_team_order_from_board
+
+                if board_has_players_for_summary:
+                    _order_names = round_one_team_order_from_board(
+                        draft_room_table_for_assistant,
+                        num_teams=_room_teams,
+                    )
+                    if _order_names:
+                        assistant_team_names = _order_names
+                draft_progress = derive_draft_progress(
+                    draft_room_table_for_assistant if board_has_players_for_summary else pd.DataFrame(),
+                    draft_order=assistant_team_names,
+                    num_teams=_room_teams,
+                    total_picks=_total_picks,
+                    owned_team=assistant_my_team_name,
+                    room_status=_room_status,
+                    pick_adjustment=pick_adjustment,
+                )
+                draft_summary = draft_board_summary_for_team(
+                    draft_room_table_for_assistant if board_has_players_for_summary else pd.DataFrame(),
+                    your_team=assistant_my_team_name,
+                    team_names=assistant_team_names,
+                    pick_adjustment=pick_adjustment,
+                    num_teams=_room_teams,
+                    total_picks=_total_picks,
+                    room_status=_room_status,
+                )
+            except ImportError:
+                draft_progress = {}
+                draft_summary = draft_board_summary_for_team(
+                    draft_room_table_for_assistant if board_has_players_for_summary else pd.DataFrame(),
+                    your_team=assistant_my_team_name,
+                    team_names=assistant_team_names,
+                    pick_adjustment=pick_adjustment,
+                    num_teams=_room_teams,
+                )
 
             row1_a, row1_b, row1_c = st.columns(3)
-            row1_a.metric("Current pick", current_pick)
-            row1_b.metric("Current round", draft_summary["current_round"])
-            slot_label = draft_summary["draft_slot"] if draft_summary["draft_slot"] is not None else "—"
-            row1_c.metric("Your draft slot", slot_label)
+            if draft_summary.get("draft_complete") or draft_progress.get("draft_complete"):
+                row1_a.metric("Draft status", "Complete")
+                row1_b.metric("Picks", f"{draft_summary.get('filled_picks', draft_progress.get('filled_picks', 0))} of {draft_summary.get('total_picks', _total_picks)}")
+                row1_c.metric(
+                    "Rounds complete",
+                    f"{draft_summary.get('rounds_complete', draft_progress.get('rounds_complete', '—'))} of {draft_summary.get('total_rounds', draft_progress.get('total_rounds', '—'))}",
+                )
+            else:
+                current_pick = int(draft_summary["current_pick"])
+                row1_a.metric("Current pick", current_pick)
+                row1_b.metric("Current round", draft_summary["current_round"])
+                slot_label = draft_summary["draft_slot"] if draft_summary["draft_slot"] is not None else "—"
+                row1_c.metric("Your draft slot", slot_label)
 
             row2_a, row2_b, row2_c = st.columns(3)
             row2_a.metric("Your picks", draft_summary["players_you_drafted"])
@@ -18740,8 +18784,32 @@ if active_page == "Draft Assistant Simulator":
             next_pick_label = draft_summary["your_next_pick"] if draft_summary["your_next_pick"] is not None else "—"
             row2_c.metric("Your next pick", next_pick_label)
 
-            if pick_adjustment:
-                st.caption(f"Pick correction applied: {pick_adjustment:+d} (effective pick **{current_pick}**).")
+            if pick_adjustment and not draft_summary.get("draft_complete"):
+                st.caption(f"Pick correction applied: {pick_adjustment:+d} (effective pick **{draft_summary['current_pick']}**).")
+
+            try:
+                from saved_draft_library_selection import render_draft_assistant_progress_diagnostics
+
+                render_draft_assistant_progress_diagnostics(
+                    st,
+                    st.session_state,
+                    {
+                        "selected_source": _da_context_mode,
+                        "board_row_count": draft_progress.get("board_row_count", len(draft_room_table_for_assistant)),
+                        "unique_valid_pick_count": draft_progress.get("unique_valid_pick_count"),
+                        "configured_total_picks": _total_picks,
+                        "num_teams": _room_teams,
+                        "room_status": _room_status,
+                        "derived_next_pick": draft_summary.get("your_next_pick"),
+                        "derived_round": draft_summary.get("current_round"),
+                        "owned_team": assistant_my_team_name,
+                        "derived_draft_slot": draft_summary.get("draft_slot"),
+                        "draft_complete": draft_summary.get("draft_complete"),
+                    },
+                    developer_mode=developer_mode_enabled(),
+                )
+            except ImportError:
+                pass
 
         # Automatically infer position needs from host-configured draft slots (live draft room).
         roster_df_auto = draft_df[draft_df["fullName"].isin(set(my_roster))].copy()

@@ -378,20 +378,20 @@ def finalize_repaired_archives_for_membership(
 
     draft_id = str(shared_doc.get("draft_id") or (refreshed.get("metadata") or {}).get("source_draft_id") or "").strip()
     if draft_id:
-        from draft_archive_state import get_draft_archive, set_active_draft_archive
+        from draft_archive_state import get_draft_archive
         from fantasy_workspace_team_identity import record_team_identity_trace, resolve_archive_display_team
 
-        set_active_draft_archive(session, draft_id)
-        session["_suite_startup_canonical_active_draft_id"] = draft_id
         active_entry = get_draft_archive(session, draft_id)
         active_context = find_league_context_by_league_id(session, league_id) or refreshed
         record_team_identity_trace(
             session,
-            phase="finalize_repaired_archives_active_archive",
+            phase="finalize_repaired_archives_membership",
+            canonical_draft_id=draft_id,
             active_archive_team=str((active_entry or {}).get("team_name") or "").strip() or None,
             final_library_team=resolve_archive_display_team(session, active_entry, active_context) or None,
             final_fantasy_lineup_team=str((active_context or {}).get("my_team_name") or "").strip() or None,
         )
+        trace["canonical_draft_id"] = draft_id
 
     restore_trace = restore_active_draft_archive_selection(
         session,
@@ -401,8 +401,6 @@ def finalize_repaired_archives_for_membership(
         respect_canonical_membership=True,
     )
     trace["active_restore_trace"] = restore_trace if isinstance(restore_trace, dict) else {}
-    if draft_id:
-        session[ACTIVE_DRAFT_ARCHIVE_KEY] = draft_id
     return trace
 
 

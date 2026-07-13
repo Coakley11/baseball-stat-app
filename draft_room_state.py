@@ -1743,6 +1743,103 @@ def round_one_draft_slot(team_names: list[str], your_team: str) -> int | None:
     return None
 
 
+def round_one_team_order_from_board(table: Any, *, num_teams: int | None = None) -> list[str]:
+    """Round-1 team order from board Pick column (snake slot 1..N)."""
+    if not isinstance(table, pd.DataFrame) or table.empty:
+        return []
+    if "Pick" not in table.columns or "Team" not in table.columns:
+        return []
+    teams_n = max(1, int(num_teams or 0))
+    work = table.copy()
+    work["_pick_n"] = pd.to_numeric(work["Pick"], errors="coerce")
+    if teams_n <= 1:
+        teams_n = int(work["_pick_n"].max()) if work["_pick_n"].notna().any() else 1
+    first_round = work[work["_pick_n"] <= teams_n].sort_values("_pick_n", kind="stable")
+    names: list[str] = []
+    for _, row in first_round.iterrows():
+        name = str(row.get("Team") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def derive_draft_progress(
+    board: Any,
+    *,
+    draft_order: list[str] | None = None,
+    num_teams: int | None = None,
+    total_picks: int | None = None,
+    owned_team: str = "",
+    room_status: str = "",
+    pick_adjustment: int = 0,
+) -> dict[str, Any]:
+    """Canonical draft progress from board rows — shared by Assistant, Simulator, and Live Draft."""
+    names = [str(x).strip() for x in (draft_order or []) if str(x).strip()]
+    if not names:
+        names = round_one_team_order_from_board(board, num_teams=num_teams)
+    teams = max(int(num_teams or 0), len(names), 1)
+    if total_picks is None:
+        if isinstance(board, pd.DataFrame) and not board.empty:
+            total_picks = len(board)
+        else:
+            total_picks = teams * 20
+    total_picks = max(1, int(total_picks or 0))
+    filled = table_pick_count(board)
+    on_clock: dict[str, Any] | None = None
+    try:
+        from draft_actions import _next_on_clock_pick_info
+
+        on_clock = _next_on_clock_pick_info(board)
+    except ImportError:
+        on_clock = None
+
+    status = str(room_status or "").strip().lower()
+    draft_complete = bool(
+        status in ("complete", "completed")
+        or (filled >= total_picks)
+        or (filled > 0 and on_clock is None and isinstance(board, pd.DataFrame) and not board.empty)
+    )
+    adj = int(pick_adjustment or 0)
+    if draft_complete:
+        current_pick = max(filled, total_picks)
+        current_round = ((max(1, current_pick) - 1) // teams) + 1 if teams else 1
+        display_status = "Complete"
+        your_next_pick = None
+    elif isinstance(on_clock, dict) and on_clock.get("pick") is not None:
+        current_pick = max(1, int(on_clock["pick"]) + adj)
+        current_round = ((current_pick - 1) // teams) + 1 if teams else 1
+        display_status = "In Progress"
+        your_next_pick = next_board_pick_for_team(board, owned_team, min_pick=current_pick)
+    else:
+        current_pick = max(1, filled + 1 + adj)
+        current_round = ((current_pick - 1) // teams) + 1 if teams else 1
+        display_status = "In Progress" if filled else "Not Started"
+        your_next_pick = next_board_pick_for_team(board, owned_team, min_pick=current_pick)
+
+    team_s = str(owned_team or "").strip()
+    draft_slot = round_one_draft_slot(names, team_s) if names else None
+    total_rounds = (total_picks + teams - 1) // teams if teams else None
+    rounds_complete = total_rounds if draft_complete else max(0, current_round - 1)
+
+    return {
+        "draft_complete": draft_complete,
+        "display_status": display_status,
+        "current_pick": current_pick,
+        "current_round": current_round,
+        "draft_slot": draft_slot,
+        "your_next_pick": your_next_pick,
+        "filled_picks": filled,
+        "total_picks": total_picks,
+        "num_teams": teams,
+        "rounds_complete": rounds_complete,
+        "total_rounds": total_rounds,
+        "owned_team": team_s or None,
+        "on_clock_team": str((on_clock or {}).get("on_clock_team") or ""),
+        "board_row_count": len(board) if isinstance(board, pd.DataFrame) else 0,
+        "unique_valid_pick_count": filled,
+    }
+
+
 def next_board_pick_for_team(
     table: Any,
     team_name: str,
@@ -1778,11 +1875,23 @@ def draft_board_summary_for_team(
     team_names: list[str] | None = None,
     pick_adjustment: int = 0,
     num_teams: int | None = None,
+    total_picks: int | None = None,
+    room_status: str = "",
 ) -> dict[str, Any]:
     """Plain-language draft progress for Draft Assistant / status panels."""
     names = [str(x).strip() for x in (team_names or []) if str(x).strip()]
     teams = max(int(num_teams or 0), len(names), 1)
     team_s = str(your_team or "").strip()
+
+    progress = derive_draft_progress(
+        table,
+        draft_order=names,
+        num_teams=teams,
+        total_picks=total_picks,
+        owned_team=team_s,
+        room_status=room_status,
+        pick_adjustment=pick_adjustment,
+    )
 
     players_you: list[str] = []
     players_league: list[str] = []
@@ -1799,21 +1908,22 @@ def draft_board_summary_for_team(
 
     players_you = list(dict.fromkeys(players_you))
     players_league = list(dict.fromkeys(players_league))
-    total_picked = len(players_you) + len(players_league)
-    current_pick = max(1, total_picked + 1 + int(pick_adjustment or 0))
-    current_round = ((current_pick - 1) // teams) + 1 if teams else 1
-    draft_slot = round_one_draft_slot(names, team_s) if names else None
-    your_next_pick = next_board_pick_for_team(table, team_s, min_pick=current_pick)
 
     return {
         "your_team": team_s or None,
         "players_you_drafted": len(players_you),
         "players_league_drafted": len(players_league),
-        "current_pick": current_pick,
-        "current_round": current_round,
-        "draft_slot": draft_slot,
-        "your_next_pick": your_next_pick,
-        "num_teams": teams,
+        "current_pick": progress["current_pick"],
+        "current_round": progress["current_round"],
+        "draft_slot": progress["draft_slot"],
+        "your_next_pick": progress["your_next_pick"],
+        "num_teams": progress["num_teams"],
+        "draft_complete": progress["draft_complete"],
+        "display_status": progress["display_status"],
+        "filled_picks": progress["filled_picks"],
+        "total_picks": progress["total_picks"],
+        "rounds_complete": progress["rounds_complete"],
+        "total_rounds": progress["total_rounds"],
     }
 
 

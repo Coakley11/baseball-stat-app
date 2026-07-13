@@ -186,7 +186,6 @@ class DraftOriginDiagnosticsImportTests(unittest.TestCase):
         st.expander.side_effect = _expander
         render_saved_draft_library_page(st, session, developer_mode=True)
         self.assertEqual(expander_keys, ["draft_origin_repair_diag_panel"])
-        st.expander.assert_called_once()
 
     def test_coakley11_live_draft_badge_and_reason_after_library_repair(self) -> None:
         tmp = tempfile.TemporaryDirectory()

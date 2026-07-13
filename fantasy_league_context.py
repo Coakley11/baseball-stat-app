@@ -43,6 +43,124 @@ SOURCE_DRAFT_SIMULATOR = "draft_simulator"
 SOURCE_IMPORTED_DRAFT = "imported_draft"
 SOURCE_LEGACY_MIGRATION = "legacy_migration"
 
+CREATION_ORIGIN_VALIDATED_IMPORT = "validated_import"
+CREATION_ORIGIN_LIVE_DRAFT_ROOM = "live_draft_room"
+CREATION_ORIGIN_DRAFT_SIMULATOR = "draft_simulator"
+
+
+def stamp_immutable_creation_origin(metadata: dict[str, Any] | None, origin: str) -> dict[str, Any]:
+    """Set creation_origin only when absent — never overwrite on sync/repair."""
+    meta = dict(metadata or {})
+    if not str(meta.get("creation_origin") or "").strip():
+        stamped = str(origin or "").strip()
+        if stamped:
+            meta["creation_origin"] = stamped
+    return meta
+
+
+def read_immutable_creation_origin(
+    *,
+    context: dict[str, Any] | None = None,
+    shared_doc: dict[str, Any] | None = None,
+    archive_entry: dict[str, Any] | None = None,
+) -> str:
+    for source in (
+        dict((context or {}).get("metadata") or {}),
+        shared_doc if isinstance(shared_doc, dict) else {},
+        archive_entry if isinstance(archive_entry, dict) else {},
+    ):
+        origin = str(source.get("creation_origin") or "").strip()
+        if origin:
+            return origin
+    return ""
+
+
+def _infer_creation_origin_for_backfill(
+    *,
+    context: dict[str, Any] | None = None,
+    shared_doc: dict[str, Any] | None = None,
+    archive_entry: dict[str, Any] | None = None,
+) -> str:
+    """Infer immutable creation provenance for legacy rows missing creation_origin."""
+    existing = read_immutable_creation_origin(
+        context=context,
+        shared_doc=shared_doc,
+        archive_entry=archive_entry,
+    )
+    if existing:
+        return existing
+    tokens: list[str] = []
+    for blob in (shared_doc, context, dict((context or {}).get("metadata") or {})):
+        if not isinstance(blob, dict):
+            continue
+        for key in ("created_from", "source_draft_type", "source", "draft_type"):
+            val = str(blob.get(key) or "").strip()
+            if val:
+                tokens.append(val)
+    if isinstance(archive_entry, dict):
+        tokens.append(str(archive_entry.get("draft_type") or ""))
+    joined = " ".join(tokens).lower()
+    if any(tok in joined for tok in ("live_draft", "live_draft_room")):
+        return CREATION_ORIGIN_LIVE_DRAFT_ROOM
+    if any(tok in joined for tok in ("validated_import", "imported_draft", "imported", "import")):
+        return CREATION_ORIGIN_VALIDATED_IMPORT
+    if isinstance(context, dict) and str(context.get("source") or "") == SOURCE_IMPORTED_DRAFT:
+        return CREATION_ORIGIN_VALIDATED_IMPORT
+    if isinstance(context, dict) and str(context.get("source") or "") == SOURCE_LIVE_DRAFT_ROOM:
+        return CREATION_ORIGIN_LIVE_DRAFT_ROOM
+    if isinstance(archive_entry, dict) and str(archive_entry.get("draft_type") or "") == DRAFT_TYPE_IMPORTED:
+        return CREATION_ORIGIN_VALIDATED_IMPORT
+    if isinstance(archive_entry, dict) and str(archive_entry.get("draft_type") or "") == DRAFT_TYPE_LIVE:
+        return CREATION_ORIGIN_LIVE_DRAFT_ROOM
+    return ""
+
+
+def backfill_immutable_creation_origins(session: dict[str, Any]) -> int:
+    """Backfill creation_origin on contexts and shared docs without changing active selection."""
+    updated = 0
+    for ctx in list_league_contexts(session):
+        if not isinstance(ctx, dict):
+            continue
+        ctx_id = str(ctx.get("league_context_id") or "").strip()
+        meta = dict(ctx.get("metadata") or {})
+        if str(meta.get("creation_origin") or "").strip():
+            continue
+        shared_doc = None
+        try:
+            from fantasy_league_identity import resolve_canonical_league_id
+            from fantasy_shared_league_store import load_shared_league
+
+            league_id = str(resolve_canonical_league_id(ctx) or "").strip()
+            if league_id:
+                shared_doc = load_shared_league(league_id)
+        except ImportError:
+            shared_doc = None
+        draft_id = str(meta.get("source_draft_id") or "").strip()
+        archive_entry = get_draft_archive(session, draft_id) if draft_id else None
+        origin = _infer_creation_origin_for_backfill(
+            context=ctx,
+            shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
+            archive_entry=archive_entry if isinstance(archive_entry, dict) else None,
+        )
+        if not origin:
+            continue
+        meta = stamp_immutable_creation_origin(meta, origin)
+        ctx = dict(ctx)
+        ctx["metadata"] = meta
+        upsert_league_context(session, ctx, mark_persist_authoritative=False)
+        updated += 1
+        if isinstance(shared_doc, dict):
+            try:
+                from fantasy_shared_league_store import save_shared_league
+
+                shared_copy = dict(shared_doc)
+                if not str(shared_copy.get("creation_origin") or "").strip():
+                    shared_copy["creation_origin"] = origin
+                    save_shared_league(shared_copy)
+            except ImportError:
+                pass
+    return updated
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -1248,6 +1366,8 @@ def create_league_context_from_live_room(
         source_draft_id=str(source_draft_id or "").strip(),
         migration_status=MIGRATION_STATUS_FULL_LEAGUE,
     )
+    meta = stamp_immutable_creation_origin(dict(context.get("metadata") or {}), CREATION_ORIGIN_LIVE_DRAFT_ROOM)
+    context["metadata"] = meta
     if persist:
         return upsert_league_context(session, context)
     return context
@@ -1338,6 +1458,9 @@ def create_league_context_from_imported_board(
         source_draft_id=str(source_draft_id or "").strip(),
         migration_status=MIGRATION_STATUS_FULL_LEAGUE,
     )
+    meta = stamp_immutable_creation_origin(dict(context.get("metadata") or {}), CREATION_ORIGIN_VALIDATED_IMPORT)
+    meta["created_from"] = str(meta.get("created_from") or "validated_import").strip() or "validated_import"
+    context["metadata"] = meta
     return upsert_league_context(session, context)
 
 
@@ -2171,7 +2294,13 @@ def collect_origin_evidence(
         "explicit_live_origin": False,
         "explicit_import_origin": False,
         "context_type": "",
+        "creation_origin": "",
     }
+    evidence["creation_origin"] = read_immutable_creation_origin(
+        context=context,
+        shared_doc=shared_doc,
+        archive_entry=archive_entry,
+    )
     for token in _canonical_origin_tokens(shared_doc):
         classified = _classify_origin_token(token)
         if classified == DRAFT_TYPE_LIVE:
@@ -2248,6 +2377,11 @@ def resolve_archive_draft_type_with_reason(
         return DRAFT_TYPE_SIMULATOR, "mock_draft_simulation_context", evidence
     if context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT:
         return DRAFT_TYPE_LIVE, "live_draft_result_context", evidence
+    creation_origin = str(evidence.get("creation_origin") or "").strip()
+    if creation_origin == CREATION_ORIGIN_VALIDATED_IMPORT:
+        return DRAFT_TYPE_IMPORTED, "immutable_creation_origin_validated_import", evidence
+    if creation_origin == CREATION_ORIGIN_LIVE_DRAFT_ROOM:
+        return DRAFT_TYPE_LIVE, "immutable_creation_origin_live_draft_room", evidence
     if _strong_live_draft_membership(evidence):
         return DRAFT_TYPE_LIVE, "strong_live_draft_membership", evidence
     if _context_explicit_live_origin(context):
@@ -2282,12 +2416,15 @@ def repair_canonical_shared_doc_origin_in_place(
     draft_type: str,
 ) -> dict[str, Any] | None:
     """Repair canonical shared origin metadata when Live Draft evidence is confirmed."""
+    if read_immutable_creation_origin(context=context, shared_doc=shared_doc) == CREATION_ORIGIN_VALIDATED_IMPORT:
+        return None
     if draft_type != DRAFT_TYPE_LIVE:
         return None
     if selected_reason not in {
         "strong_live_draft_membership",
         "context_explicit_live_origin",
         "canonical_shared_live_origin",
+        "immutable_creation_origin_live_draft_room",
     }:
         return None
     if _shared_origin_fields_are_live(shared_doc):
@@ -2441,6 +2578,9 @@ def apply_draft_origin_to_context(
     elif draft_type == DRAFT_TYPE_IMPORTED:
         out["source"] = SOURCE_IMPORTED_DRAFT
         meta["source_draft_type"] = DRAFT_TYPE_IMPORTED
+        meta["created_from"] = str(meta.get("created_from") or "imported_draft").strip() or "imported_draft"
+        meta.pop("joined_via_live_draft", None)
+        meta.pop("preassigned_live_draft_owner", None)
     elif draft_type == DRAFT_TYPE_SIMULATOR:
         out["source"] = SOURCE_DRAFT_SIMULATOR
         meta["source_draft_type"] = DRAFT_TYPE_SIMULATOR
