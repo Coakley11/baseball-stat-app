@@ -1,8 +1,8 @@
 # Live Draft Phases 1–4 — Closure Matrix
 
 **Baseline:** `7ac0c9b` (workflow header + identity recursion hotfix)  
-**Closure commits:** `f1660a2` → `b7ed3ee` → `d9443e1` → `9245f7c` → *(performance commit)*  
-**Last updated:** 2026-07-13  
+**Closure commits:** `f1660a2` → `b7ed3ee` → `d9443e1` → `9245f7c` → `3f7366a`  
+**Deploy marker:** `211c21e` → `3f7366a` (supersedes `8854c70`)  
 **Scope:** Phases 1–4 only — Phase 5 deferred.
 
 ## Summary
