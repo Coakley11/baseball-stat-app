@@ -274,13 +274,14 @@ class SimulatorResumeAccountIsolationTests(unittest.TestCase):
         diag = collect_simulator_resume_diagnostics(session)
         self.assertEqual(diag.get("resume_source_kind"), "live_draft")
         self.assertEqual(diag.get("sidebar_source_selected"), "live_draft")
-        self.assertEqual(diag.get("sidebar_priority_reason"), "active_shared_membership")
+        self.assertEqual(diag.get("sidebar_priority_reason"), "draft_started")
         self.assertEqual(diag.get("shared_membership_team"), "Team B")
 
-    def test_shared_membership_without_hydrated_room_suppresses_simulator(self) -> None:
+    def test_shared_membership_without_start_keeps_simulator(self) -> None:
         session = _coakley_session()
-        session["draft_room_table"] = _sim_board(team="Donny", picks=20)
-        session["room_your_team"] = "Donny"
+        session["draft_room_table"] = _sim_board(team="Team B", picks=20)
+        session["room_your_team"] = "Team B"
+        stamp_simulator_board_ownership(session, origin="programmatic_pick")
         session["live_draft_setup_mode"] = "shared_multiplayer"
         session["active_shared_draft_room_code"] = "TEAM02"
         session["draft_room_participant_team"] = "Team 2"
@@ -292,7 +293,7 @@ class SimulatorResumeAccountIsolationTests(unittest.TestCase):
                 }
             }
         }
-        # No live_draft_room on Saved Draft Library / session.
+        # No live_draft_room / not started — Simulator remains primary.
         with mock.patch(
             "draft_room_participant_state.resolve_participant_id",
             return_value="user:coakley11",
@@ -301,20 +302,25 @@ class SimulatorResumeAccountIsolationTests(unittest.TestCase):
                 "live_draft_navigation._try_hydrate_shared_room",
                 return_value=None,
             ):
+                from live_draft_navigation import (
+                    get_live_draft_lobby_return_context,
+                    resolve_live_draft_activation_phase,
+                )
+
                 ctx = get_draft_return_context(session)
+                lobby = get_live_draft_lobby_return_context(session)
+                phase = resolve_live_draft_activation_phase(session)
         self.assertIsNotNone(ctx)
         assert ctx is not None
-        self.assertEqual(ctx.get("title"), "Return to Live Draft")
-        self.assertEqual(ctx.get("user_team"), "Team 2")
-        self.assertNotEqual(ctx.get("kind"), "simulator")
-        self.assertTrue(ctx.get("pending_hydration"))
-        self.assertEqual(_board_pick_count(session), 0)
-        diag = collect_simulator_resume_diagnostics(session)
-        self.assertEqual(diag.get("sidebar_source_selected"), "live_draft")
-        self.assertEqual(diag.get("sidebar_priority_reason"), "active_shared_membership")
-        self.assertEqual(diag.get("shared_membership_team"), "Team 2")
-        self.assertFalse(diag.get("shared_room_hydrated"))
-        self.assertFalse(diag.get("simulator_board_owner_verified"))
+        self.assertEqual(ctx.get("kind"), "simulator")
+        self.assertEqual(ctx.get("user_team"), "Team B")
+        self.assertEqual(phase, "participant_team_claimed")
+        self.assertIsNotNone(lobby)
+        assert lobby is not None
+        self.assertEqual(lobby.get("kind"), "live_lobby")
+        self.assertEqual(lobby.get("user_team"), "Team 2")
+        self.assertIsNone(lobby.get("pick_no"))
+        self.assertIsNone(lobby.get("on_clock"))
 
     def test_foreign_board_cannot_rehydrate_from_page_filter_or_caches(self) -> None:
         session = _coakley_session()

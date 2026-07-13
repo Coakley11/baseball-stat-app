@@ -266,8 +266,19 @@ def ensure_live_draft_synced_to_canonical_board(
 
     diag["live_draft_room_exists"] = True
     diag["live_draft_status"] = str(room.get("status") or "")
+    live_status = diag["live_draft_status"]
     live_picks = live_draft_handoff_pick_count(room)
     diag["live_draft_pick_count"] = live_picks
+
+    # Lobby / setup rooms must not mirror into the private Simulator board.
+    if live_status not in ("in_progress", "paused", "complete"):
+        diag["skipped"] = True
+        diag["skip_reason"] = "live_draft_not_started"
+        after = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+        diag["canonical_pick_count_after"] = after
+        diag["assistant_roster_source"] = "canonical_draft_board" if after > 0 else "empty"
+        session[LIVE_HANDOFF_SYNC_DIAG_KEY] = diag
+        return diag
 
     if live_picks <= 0:
         diag["skipped"] = True
@@ -378,23 +389,26 @@ def draft_handoff_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
 
 
 def should_resolve_live_draft_source(session: dict[str, Any]) -> bool:
-    """True when draft buttons and validation should use live_draft_room progress."""
+    """True when draft buttons/boards should use live_draft_room instead of private Simulator.
+
+    Setup form edits, Create Room, Join, and Claim do **not** flip ownership.
+    Only an in-progress/paused runtime — or a completed live draft that already
+    has picks for assistant handoff — resolves as the live source.
+    """
     if is_live_draft_runtime_active(session):
         return True
     try:
-        from draft_room_context import is_multiplayer_draft_active
         from live_draft_state import LIVE_DRAFT_ROOM_KEY, is_runtime_room
 
         room = session.get(LIVE_DRAFT_ROOM_KEY)
-        if not is_runtime_room(room) or not list(room.get("pick_order") or []):
+        if not is_runtime_room(room):
             return False
-        if live_draft_handoff_pick_count(room) > 0:
+        status = str(room.get("status") or "").strip()
+        picks = live_draft_handoff_pick_count(room)
+        # Completed live boards keep handoff ownership; empty lobby rooms do not.
+        if status == "complete" and picks > 0:
             return True
-        if is_multiplayer_draft_active(session):
-            return True
-        if str(room.get("status") or "") == "not_started" and not open_pick_row_options(
-            get_canonical_draft_board(session)
-        ):
+        if picks > 0 and status in ("in_progress", "paused", "complete"):
             return True
     except Exception:
         return False

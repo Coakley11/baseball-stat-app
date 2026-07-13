@@ -1111,13 +1111,31 @@ def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | 
     if short is not None:
         return short
     try:
-        from draft_room_context import clear_stale_multiplayer_state, is_multiplayer_draft_active
+        from draft_room_context import clear_stale_multiplayer_state, is_multiplayer_draft_active, resolve_shared_room_code
 
         if is_multiplayer_draft_active(session):
             room = session.get(LIVE_DRAFT_ROOM_KEY)
             if is_runtime_room(room):
                 write_canonical_live_draft_state(session, room, reason="multiplayer_hydrate", local_edit=False)
                 return _finish_prepare(session, room)
+            # Prefer hydrating the shared lobby over wiping Create/Join/Claim state.
+            try:
+                from draft_room_context import poll_shared_draft_room, sync_shared_draft_room
+
+                sync_shared_draft_room(session, force=False)
+                poll_shared_draft_room(session)
+                room = session.get(LIVE_DRAFT_ROOM_KEY)
+                if is_runtime_room(room):
+                    write_canonical_live_draft_state(session, room, reason="multiplayer_poll_hydrate", local_edit=False)
+                    return _finish_prepare(session, room)
+            except Exception:
+                pass
+            code = str(resolve_shared_room_code(session) or "").strip().upper()
+            membership = session.get("draft_room_participant_membership")
+            has_membership = isinstance(membership, dict) and bool(code) and code in membership
+            if has_membership or bool(session.get("draft_room_participant_team")):
+                # Valid Create/Join/Claim lobby — keep room code; do not treat as stale.
+                return _finish_prepare(session, room if isinstance(room, dict) else None)
             clear_stale_multiplayer_state(
                 session,
                 reason="Shared room was not loaded — restored your single-user live draft.",

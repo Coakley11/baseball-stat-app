@@ -543,104 +543,162 @@ def _try_hydrate_shared_room(session: dict[str, Any], room_code: str) -> dict[st
     return None
 
 
-def _shared_membership_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
-    """Live Draft continuation from shared membership — even before room object is hydrated."""
+def resolve_live_draft_activation_phase(session: dict[str, Any]) -> str:
+    """Product activation phases for shared Live Draft.
+
+    setup_draft → shared_room_created → participant_joined → participant_team_claimed → draft_started
+    Setup form edits alone remain ``setup_draft`` (no shared room / membership).
+    """
     snap = _shared_membership_snapshot(session)
-    if not snap.get("has_shared_membership"):
-        return None
+    code = str(snap.get("active_shared_room_code") or "").strip().upper()
+    room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else None
+    if not isinstance(room, dict) and code:
+        room = _live_draft_room_for_return(session)
+    status = str((room or {}).get("status") or "").strip() if isinstance(room, dict) else ""
+    if status in ("in_progress", "paused"):
+        return "draft_started"
+    if status == "complete":
+        return "draft_complete"
+    team = str(snap.get("shared_membership_team") or "").strip()
+    if code and team:
+        return "participant_team_claimed"
+    if code and snap.get("has_shared_membership"):
+        return "participant_joined"
+    if code or (isinstance(room, dict) and (room.get("draft_room_id") or room.get("pick_order"))):
+        return "shared_room_created"
+    return "setup_draft"
+
+
+def _live_room_team_label(room: dict[str, Any], *, code: str = "", team: str = "") -> tuple[str, str]:
+    cfg = dict(room.get("config") or {})
+    teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
+    team_label = " vs ".join(teams[:4]) if teams else str(cfg.get("league_name") or code or "Draft")
+    if not team:
+        team = str(cfg.get("your_team") or cfg.get("user_team") or "").strip()
+    return team_label, team
+
+
+def _started_shared_live_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
+    """Primary Live Draft card — only after Start Draft (in_progress/paused) or complete."""
+    snap = _shared_membership_snapshot(session)
     code = str(snap.get("active_shared_room_code") or "").strip().upper()
     team = str(snap.get("shared_membership_team") or "").strip()
-    room = _try_hydrate_shared_room(session, code)
-    hydrated = isinstance(room, dict)
-    if hydrated:
-        try:
-            from live_draft_state import analyze_live_draft_progress, has_active_live_draft
+    room = None
+    if code:
+        room = _try_hydrate_shared_room(session, code)
+    if not isinstance(room, dict):
+        room = _live_draft_room_for_return(session)
+    if not isinstance(room, dict):
+        return None
+    status = str(room.get("status") or "").strip()
+    if status not in ("in_progress", "paused", "complete"):
+        return None
+    try:
+        from live_draft_state import analyze_live_draft_progress
 
-            progress = analyze_live_draft_progress(room)
-            cfg = dict(room.get("config") or {})
-            teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
-            team_label = " vs ".join(teams[:4]) if teams else str(cfg.get("league_name") or "Draft")
-            if not team:
-                team = str(
-                    session.get("draft_room_participant_team")
-                    or cfg.get("your_team")
-                    or cfg.get("user_team")
-                    or ""
-                ).strip()
-            status = str(room.get("status") or "").strip()
-            kind = "live_active" if status in ("in_progress", "paused") else "live_lobby"
-            if progress.get("draft_complete") or status == "complete":
-                kind = "live_complete"
-            slot = progress.get("slot") or {}
-            _set_resume_diag(
-                session,
-                resume_source_kind="live_draft" if kind != "live_complete" else "live_complete",
-                resume_team=team,
-                active_shared_room_team=team,
-                shared_room_hydrated=True,
-                sidebar_source_selected="live_draft",
-                sidebar_priority_reason="active_shared_membership",
-                simulator_board_owner_verified=verify_simulator_board_ownership(session)[0],
-            )
-            return {
-                "kind": kind,
-                "title": "Draft Completed" if kind == "live_complete" else "Return to Live Draft",
-                "team_label": team_label,
-                "room_code": code,
-                "mode_label": "Shared Multiplayer",
-                "user_team": team,
-                "round_no": slot.get("Round") if isinstance(slot, dict) else None,
-                "pick_no": progress.get("current_pick"),
-                "on_clock": progress.get("on_clock_team") or "—",
-                "picks_label": (
-                    f"{int(progress.get('draft_board_count') or 0)} / {int(progress.get('total_picks') or 0)} picks made"
-                    if progress.get("total_picks")
-                    else f"{int(progress.get('draft_board_count') or 0)} picks"
-                ),
-                "seconds_remaining": _seconds_remaining(room) if kind == "live_active" else None,
-                "shared_room_hydrated": True,
-            }
-        except Exception:
-            pass
+        progress = analyze_live_draft_progress(room)
+        team_label, team = _live_room_team_label(room, code=code, team=team)
+        if not team:
+            team = str(session.get("draft_room_participant_team") or "").strip()
+        if code:
+            try:
+                from draft_room_participant_state import membership_team_for_participant
+
+                scoped = membership_team_for_participant(session, code)
+                if scoped:
+                    team = scoped
+            except ImportError:
+                pass
+        kind = "live_complete" if (progress.get("draft_complete") or status == "complete") else "live_active"
+        slot = progress.get("slot") or {}
         _set_resume_diag(
             session,
-            resume_source_kind="live_draft",
+            resume_source_kind="live_complete" if kind == "live_complete" else "live_draft",
             resume_team=team,
             active_shared_room_team=team,
             shared_room_hydrated=True,
             sidebar_source_selected="live_draft",
-            sidebar_priority_reason="active_shared_membership",
+            sidebar_priority_reason="draft_started" if kind == "live_active" else "draft_complete",
+            simulator_board_owner_verified=verify_simulator_board_ownership(session)[0],
         )
         return {
-            "kind": "live_lobby",
-            "title": "Return to Live Draft",
-            "team_label": str((room.get("config") or {}).get("league_name") or code or "Live Draft"),
+            "kind": kind,
+            "title": "Draft Completed" if kind == "live_complete" else "Return to Live Draft",
+            "team_label": team_label,
             "room_code": code,
-            "mode_label": "Shared Multiplayer",
+            "mode_label": "Shared Multiplayer" if code else "Solo Draft",
+            "user_team": team,
+            "round_no": slot.get("Round") if isinstance(slot, dict) else None,
+            "pick_no": progress.get("current_pick"),
+            "on_clock": progress.get("on_clock_team") or "—",
+            "picks_label": (
+                f"{int(progress.get('draft_board_count') or 0)} / {int(progress.get('total_picks') or 0)} picks made"
+                if progress.get("total_picks")
+                else f"{int(progress.get('draft_board_count') or 0)} picks"
+            ),
+            "seconds_remaining": _seconds_remaining(room) if kind == "live_active" else None,
+            "shared_room_hydrated": True,
+            "activation_phase": resolve_live_draft_activation_phase(session),
+        }
+    except Exception:
+        team_label, team = _live_room_team_label(room, code=code, team=team)
+        kind = "live_complete" if status == "complete" else "live_active"
+        _set_resume_diag(
+            session,
+            resume_source_kind="live_complete" if kind == "live_complete" else "live_draft",
+            resume_team=team,
+            active_shared_room_team=team,
+            shared_room_hydrated=True,
+            sidebar_source_selected="live_draft",
+            sidebar_priority_reason="draft_started" if kind == "live_active" else "draft_complete",
+        )
+        return {
+            "kind": kind,
+            "title": "Draft Completed" if kind == "live_complete" else "Return to Live Draft",
+            "team_label": team_label,
+            "room_code": code,
+            "mode_label": "Shared Multiplayer" if code else "Solo Draft",
             "user_team": team,
             "shared_room_hydrated": True,
+            "activation_phase": resolve_live_draft_activation_phase(session),
         }
 
-    # Membership known, room hydration pending — never fall through to simulator.
-    _set_resume_diag(
-        session,
-        resume_source_kind="live_draft",
-        resume_team=team,
-        active_shared_room_team=team,
-        shared_room_hydrated=False,
-        sidebar_source_selected="live_draft",
-        sidebar_priority_reason="active_shared_membership",
-    )
+
+def get_live_draft_lobby_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
+    """Secondary lobby card for created/joined rooms that have not started.
+
+    Must not replace an owned Simulator continuation — use only as an optional
+    secondary control after the primary Simulator card.
+    """
+    phase = resolve_live_draft_activation_phase(session)
+    if phase in ("draft_started", "draft_complete", "setup_draft"):
+        return None
+    snap = _shared_membership_snapshot(session)
+    code = str(snap.get("active_shared_room_code") or "").strip().upper()
+    team = str(snap.get("shared_membership_team") or "").strip()
+    room = _live_draft_room_for_return(session)
+    if isinstance(room, dict) and str(room.get("status") or "").strip() in ("in_progress", "paused", "complete"):
+        return None
+    team_label = code or "Shared Live Draft"
+    if isinstance(room, dict):
+        team_label, team = _live_room_team_label(room, code=code, team=team)
+    if not team:
+        team = str(session.get("draft_room_participant_team") or "").strip()
     return {
         "kind": "live_lobby",
-        "title": "Return to Live Draft",
-        "team_label": code or "Shared Live Draft",
+        "title": "Return to Live Draft Lobby",
+        "team_label": team_label,
         "room_code": code,
         "mode_label": "Shared Multiplayer",
         "user_team": team,
-        "picks_label": "Connecting to shared room…",
-        "shared_room_hydrated": False,
-        "pending_hydration": True,
+        "picks_label": "Waiting for Start Draft…",
+        "shared_room_hydrated": isinstance(room, dict),
+        "activation_phase": phase,
+        # Lobby must not advertise Pick 1 / on-clock before Start Draft.
+        "round_no": None,
+        "pick_no": None,
+        "on_clock": None,
+        "secondary": True,
     }
 
 
@@ -857,12 +915,16 @@ def _freeze_simulator_resume_identity(session: dict[str, Any], status: dict[str,
 
 
 def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
-    """Sidebar card context for active live draft, lobby, completed draft, or simulator.
+    """Primary sidebar card: started Live Draft (or complete), else owned Simulator.
 
     Priority:
-    1. Active / joined shared Live Draft (including hydration-pending membership)
+    1. Live Draft only when status is in_progress / paused / complete (Start Draft pressed
+       or finished) — never mere setup form, Create Room, Join, or Claim lobby
     2. Current-account-owned private Simulator board
     3. No continuation card
+
+    Lobby membership may still be shown via ``get_live_draft_lobby_return_context``
+    as a secondary control that does not replace Simulator.
     """
     scrub_simulator_runtime_for_current_account(session, reason="sidebar_render_scrub")
 
@@ -879,123 +941,61 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
             elif reason.startswith("mismatch_board") or reason.startswith("missing"):
                 discard_stale_simulator_resume_identity(session, reason=reason)
 
-    # Shared membership always beats private simulator — even before live_draft_room exists.
-    shared_ctx = _shared_membership_return_context(session)
-    if shared_ctx is not None:
-        return shared_ctx
+    started_ctx = _started_shared_live_draft_return_context(session)
+    if started_ctx is not None:
+        return started_ctx
 
+    # Hydrated solo/shared room still not started → fall through to Simulator.
     room = _live_draft_room_for_return(session)
-
     if isinstance(room, dict):
-        try:
-            from live_draft_state import analyze_live_draft_progress, has_active_live_draft
-            from live_draft_setup_mode import is_shared_multiplayer_intent, shared_room_code
-
-            progress = analyze_live_draft_progress(room)
-            cfg = dict(room.get("config") or {})
-            teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
-            team_label = " vs ".join(teams[:4]) if teams else str(cfg.get("league_name") or "Draft")
-            mode_label = "Shared Multiplayer" if is_shared_multiplayer_intent(session, room=room) else "Solo Draft"
-            code = shared_room_code(session) or ""
-            user_team = str(session.get("draft_room_participant_team") or cfg.get("your_team") or cfg.get("user_team") or "")
-            if code:
-                try:
-                    from draft_room_participant_state import membership_team_for_participant
-
-                    scoped = membership_team_for_participant(session, code)
-                    if scoped:
-                        user_team = scoped
-                except ImportError:
-                    pass
+        status = str(room.get("status") or "").strip()
+        if status in ("in_progress", "paused", "complete"):
+            # Membership path missed this room (no code) — still treat started room as primary.
+            started_ctx = _started_shared_live_draft_return_context(session)
+            if started_ctx is not None:
+                return started_ctx
             try:
-                from fantasy_workspace_team_identity import resolve_current_account_team_for_live_draft_and_league
+                from live_draft_state import analyze_live_draft_progress
 
-                resolved = resolve_current_account_team_for_live_draft_and_league(session, room=room)
-                if resolved:
-                    user_team = resolved
-            except ImportError:
+                progress = analyze_live_draft_progress(room)
+                cfg = dict(room.get("config") or {})
+                teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
+                team_label = " vs ".join(teams[:4]) if teams else str(cfg.get("league_name") or "Draft")
+                user_team = str(
+                    session.get("draft_room_participant_team")
+                    or cfg.get("your_team")
+                    or cfg.get("user_team")
+                    or ""
+                ).strip()
+                kind = "live_complete" if status == "complete" or progress.get("draft_complete") else "live_active"
+                slot = progress.get("slot") or {}
+                _set_resume_diag(
+                    session,
+                    resume_source_kind="live_complete" if kind == "live_complete" else "live_draft",
+                    resume_team=user_team,
+                    active_shared_room_team=user_team,
+                    sidebar_source_selected="live_draft",
+                    sidebar_priority_reason="draft_started" if kind == "live_active" else "draft_complete",
+                )
+                return {
+                    "kind": kind,
+                    "title": "Draft Completed" if kind == "live_complete" else "Return to Live Draft",
+                    "team_label": team_label,
+                    "user_team": user_team,
+                    "round_no": slot.get("Round") if isinstance(slot, dict) else None,
+                    "pick_no": progress.get("current_pick"),
+                    "on_clock": progress.get("on_clock_team") or "—",
+                    "picks_label": (
+                        f"{int(progress.get('draft_board_count') or 0)} / "
+                        f"{int(progress.get('total_picks') or 0)} picks made"
+                        if progress.get("total_picks")
+                        else f"{int(progress.get('draft_board_count') or 0)} picks"
+                    ),
+                    "seconds_remaining": _seconds_remaining(room) if kind == "live_active" else None,
+                    "activation_phase": resolve_live_draft_activation_phase(session),
+                }
+            except Exception:
                 pass
-            slot = progress.get("slot") or {}
-            round_no = slot.get("Round") if isinstance(slot, dict) else None
-            pick_no = progress.get("current_pick")
-            on_clock = progress.get("on_clock_team") or "—"
-            done = int(progress.get("draft_board_count") or 0)
-            total = int(progress.get("total_picks") or 0)
-            status = str(room.get("status") or "").strip()
-
-            if progress.get("draft_complete") or status == "complete":
-                _set_resume_diag(
-                    session,
-                    resume_source_kind="live_complete",
-                    resume_team=user_team,
-                    active_shared_room_team=user_team,
-                    sidebar_source_selected="live_draft",
-                    sidebar_priority_reason="hydrated_live_room",
-                )
-                return {
-                    "kind": "live_complete",
-                    "title": "Draft Completed",
-                    "team_label": team_label,
-                    "picks_label": f"{done} of {total} picks completed" if total else f"{done} picks",
-                    "room_code": code,
-                    "mode_label": mode_label,
-                    "user_team": user_team,
-                }
-
-            if has_active_live_draft(session) or status in ("not_started", "in_progress", "paused"):
-                _set_resume_diag(
-                    session,
-                    resume_source_kind="live_draft",
-                    resume_team=user_team,
-                    active_shared_room_team=user_team,
-                    sidebar_source_selected="live_draft",
-                    sidebar_priority_reason="hydrated_live_room",
-                )
-                return {
-                    "kind": "live_active" if status in ("in_progress", "paused") else "live_lobby",
-                    "title": "Return to Live Draft",
-                    "team_label": team_label,
-                    "room_code": code,
-                    "mode_label": mode_label,
-                    "user_team": user_team,
-                    "round_no": round_no,
-                    "pick_no": pick_no,
-                    "on_clock": on_clock,
-                    "picks_label": f"{done} / {total} picks made" if total else f"{done} picks",
-                    "seconds_remaining": _seconds_remaining(room),
-                }
-        except Exception:
-            status = str(room.get("status") or "").strip()
-            user_team = str(session.get("draft_room_participant_team") or "")
-            if status == "complete":
-                _set_resume_diag(
-                    session,
-                    resume_source_kind="live_complete",
-                    resume_team=user_team,
-                    active_shared_room_team=user_team,
-                    sidebar_source_selected="live_draft",
-                    sidebar_priority_reason="hydrated_live_room",
-                )
-                return {
-                    "kind": "live_complete",
-                    "title": "Draft Completed",
-                    "team_label": str((room.get("config") or {}).get("league_name") or "Live Draft"),
-                    "user_team": user_team,
-                }
-            _set_resume_diag(
-                session,
-                resume_source_kind="live_draft",
-                resume_team=user_team,
-                active_shared_room_team=user_team,
-                sidebar_source_selected="live_draft",
-                sidebar_priority_reason="hydrated_live_room",
-            )
-            return {
-                "kind": "live_active" if status in ("in_progress", "paused") else "live_lobby",
-                "title": "Return to Live Draft",
-                "team_label": str((room.get("config") or {}).get("league_name") or "Live Draft"),
-                "user_team": user_team,
-            }
 
     try:
         from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, get_active_draft_status
@@ -1004,6 +1004,7 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
         if status.get("active"):
             mode = status.get("mode")
             if mode == ACTIVE_DRAFT_MODE_LIVE:
+                # Runtime live ownership without a return card — do not invent a lobby card here.
                 return None
             identity = _freeze_simulator_resume_identity(session, status)
             if not identity:
@@ -1047,30 +1048,26 @@ def apply_force_sync_on_return(session: dict[str, Any]) -> bool:
     except ImportError:
         pass
     try:
-        from draft_room_state import ensure_live_draft_synced_to_canonical_board
+        from draft_room_state import ensure_live_draft_synced_to_canonical_board, is_live_draft_runtime_active
 
-        ensure_live_draft_synced_to_canonical_board(session, reason="force_sync_on_return")
-        synced = True
+        # Mirror live picks into Simulator only after Start Draft.
+        if is_live_draft_runtime_active(session):
+            ensure_live_draft_synced_to_canonical_board(session, reason="force_sync_on_return")
+            synced = True
     except ImportError:
         pass
     return synced
 
 
-def render_return_to_draft_sidebar(
+def _render_return_card(
     st: Any,
     session: dict[str, Any],
+    ctx: dict[str, Any],
     *,
-    active_page: str = "",
     page_label_fn=None,
+    button_key: str,
 ) -> None:
-    """Prominent sidebar card to return to active live draft, completed draft, or simulator."""
-    ctx = get_draft_return_context(session)
-    if not ctx:
-        return
-
     kind = str(ctx.get("kind") or "")
-    if active_page == "Live Draft Room" and kind == "live_complete":
-        return
     with st.sidebar.container(border=True):
         st.markdown(f"**{ctx.get('title')}**")
         if ctx.get("team_label"):
@@ -1097,6 +1094,7 @@ def render_return_to_draft_sidebar(
                 f"ws={diag.get('current_workspace') or '—'}",
                 f"src={diag.get('sidebar_source_selected') or diag.get('resume_source_kind') or '—'}",
                 f"team={diag.get('resume_team') or diag.get('shared_membership_team') or '—'}",
+                f"phase={resolve_live_draft_activation_phase(session)}",
             ]
             if diag.get("shared_membership_team") or diag.get("active_shared_room_team"):
                 bits.append(
@@ -1113,11 +1111,19 @@ def render_return_to_draft_sidebar(
         except Exception:
             pass
 
-        if kind in ("live_active", "live_lobby"):
+        if kind == "live_active":
             st.button(
                 _with_page_icon("Live Draft Room", "Return to Live Draft", page_label_fn),
                 type="primary",
-                key="sidebar_return_live_draft_btn",
+                key=button_key,
+                use_container_width=True,
+                on_click=on_return_to_live_draft,
+                args=(session,),
+            )
+        elif kind == "live_lobby":
+            st.button(
+                _with_page_icon("Live Draft Room", "Return to Live Draft Lobby", page_label_fn),
+                key=button_key,
                 use_container_width=True,
                 on_click=on_return_to_live_draft,
                 args=(session,),
@@ -1125,7 +1131,7 @@ def render_return_to_draft_sidebar(
         elif kind == "live_complete":
             st.button(
                 _with_page_icon("Live Draft Room", "Open Live Draft Room", page_label_fn),
-                key="sidebar_open_completed_draft_btn",
+                key=button_key,
                 use_container_width=True,
                 on_click=on_return_to_live_draft,
                 args=(session,),
@@ -1134,10 +1140,44 @@ def render_return_to_draft_sidebar(
             st.button(
                 _with_page_icon("Draft Room Simulator", "Return to Draft Simulator", page_label_fn),
                 type="primary",
-                key="sidebar_return_simulator_btn",
+                key=button_key,
                 use_container_width=True,
                 on_click=on_return_to_draft_simulator,
                 args=(session,),
+            )
+
+
+def render_return_to_draft_sidebar(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    active_page: str = "",
+    page_label_fn=None,
+) -> None:
+    """Primary started-live/simulator card, plus optional secondary lobby control."""
+    ctx = get_draft_return_context(session)
+    if ctx:
+        kind = str(ctx.get("kind") or "")
+        if not (active_page == "Live Draft Room" and kind == "live_complete"):
+            _render_return_card(
+                st,
+                session,
+                ctx,
+                page_label_fn=page_label_fn,
+                button_key="sidebar_return_primary_btn",
+            )
+
+    # Secondary lobby only when primary is Simulator (or nothing) — never replaces it.
+    primary_kind = str((ctx or {}).get("kind") or "")
+    if primary_kind in ("", "simulator", "none"):
+        lobby = get_live_draft_lobby_return_context(session)
+        if lobby and active_page != "Live Draft Room":
+            _render_return_card(
+                st,
+                session,
+                lobby,
+                page_label_fn=page_label_fn,
+                button_key="sidebar_return_lobby_secondary_btn",
             )
 
 
