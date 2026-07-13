@@ -123,5 +123,25 @@ class FantasyWorkflowHeaderCoherenceTests(unittest.TestCase):
         self.assertEqual(desc["canonical_league_id"], str(resolve_canonical_league_id(data_ctx) or ""))
 
 
+class WorkflowDescriptorCacheTests(unittest.TestCase):
+    def test_descriptor_cached_until_fingerprint_changes(self) -> None:
+        session = _session()
+        session["_suite_auth_user_id"] = "user:daniel"
+        ctx = _robins_context()
+        upsert_league_context(session, ctx)
+        session[FANTASY_LEAGUE_CONTEXT_STATE_KEY]["active_league_context_id"] = ctx["league_context_id"]
+        first = resolve_fantasy_workflow_source_descriptor(session)
+        cached_obj = session.get("_workflow_descriptor_cached")
+        first_fp = session.get("_workflow_descriptor_fp")
+        second = resolve_fantasy_workflow_source_descriptor(session)
+        self.assertIs(session.get("_workflow_descriptor_cached"), cached_obj)
+        self.assertEqual(first, second)
+        session["room_your_team"] = "Team B"
+        third = resolve_fantasy_workflow_source_descriptor(session)
+        self.assertNotEqual(session.get("_workflow_descriptor_fp"), first_fp)
+        self.assertIsNot(session.get("_workflow_descriptor_cached"), cached_obj)
+        self.assertIsInstance(third, dict)
+
+
 if __name__ == "__main__":
     unittest.main()

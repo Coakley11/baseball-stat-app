@@ -701,6 +701,20 @@ def _workflow_matchup_line(my_team: str, team_names: list[str]) -> str:
 
 def resolve_fantasy_workflow_source_descriptor(session: dict[str, Any]) -> dict[str, Any]:
     """Coherent workflow source — same context identity that feeds Lineup/Standings/Waiver data."""
+    cache_fp = str(session.get("active_league_context_id") or "")
+    try:
+        from fantasy_league_context import ensure_fantasy_league_context_state
+
+        store = ensure_fantasy_league_context_state(session)
+        cache_fp = str(store.get("active_league_context_id") or cache_fp)
+    except ImportError:
+        pass
+    cache_fp = f"{cache_fp}|{session.get('room_your_team')}|{session.get('_suite_auth_user_id')}"
+    if session.get("_workflow_descriptor_fp") == cache_fp:
+        cached = session.get("_workflow_descriptor_cached")
+        if isinstance(cached, dict):
+            return dict(cached)
+
     empty: dict[str, Any] = {
         "draft_id": "",
         "league_context_id": "",
@@ -818,7 +832,7 @@ def resolve_fantasy_workflow_source_descriptor(session: dict[str, Any]) -> dict[
     else:
         source_kind = WORKFLOW_SOURCE_GENERIC
 
-    return {
+    result = {
         "draft_id": draft_id,
         "league_context_id": league_context_id,
         "canonical_league_id": canonical_league_id,
@@ -835,6 +849,9 @@ def resolve_fantasy_workflow_source_descriptor(session: dict[str, Any]) -> dict[
         "context": context,
         "archive": archive if isinstance(archive, dict) else None,
     }
+    session["_workflow_descriptor_fp"] = cache_fp
+    session["_workflow_descriptor_cached"] = dict(result)
+    return result
 
 
 def is_ephemeral_league_context_id(league_context_id: str) -> bool:
