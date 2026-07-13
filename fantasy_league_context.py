@@ -1416,6 +1416,24 @@ def create_league_context_from_live_room(
         source_draft_id=str(source_draft_id or "").strip(),
         migration_status=MIGRATION_STATUS_FULL_LEAGUE,
     )
+    try:
+        from live_draft_lineup_config import build_live_draft_slot_config, persist_live_draft_lineup_metadata
+
+        slot_cfg = build_live_draft_slot_config(
+            roster_size=int(cfg.get("rounds") or cfg.get("roster_size") or 0) or 0,
+            slots=dict(cfg.get("slots") or {}),
+        )
+        if not slot_cfg.get("slots"):
+            slot_cfg = {"slots": dict(cfg.get("slots") or {}), "slot_instances": list(cfg.get("slot_instances") or [])}
+        context = persist_live_draft_lineup_metadata(
+            context,
+            slot_cfg,
+            roster_size=int(cfg.get("rounds") or cfg.get("roster_size") or 0),
+            draft_rounds=int(cfg.get("rounds") or 0),
+            team_count=int(cfg.get("team_count") or len(league_rosters)),
+        )
+    except ImportError:
+        pass
     meta = stamp_immutable_creation_origin(dict(context.get("metadata") or {}), CREATION_ORIGIN_LIVE_DRAFT_ROOM)
     context["metadata"] = meta
     if persist:

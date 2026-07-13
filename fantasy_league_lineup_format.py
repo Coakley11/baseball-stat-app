@@ -67,6 +67,13 @@ def needs_lineup_format_setup(context: dict[str, Any] | None) -> bool:
         return False
     if lineup_format_block(context):
         return False
+    try:
+        from live_draft_lineup_config import live_draft_skips_lineup_format_setup
+
+        if live_draft_skips_lineup_format_setup(context):
+            return False
+    except ImportError:
+        pass
     ctx_type = str(context.get("context_type") or "").strip()
     if ctx_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT and context_has_roster_slots(context):
         return False
