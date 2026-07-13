@@ -24026,18 +24026,33 @@ if active_page == "Fantasy Lineup Assistant":
         )
 
         _resolved = resolve_fantasy_context_for_page(st.session_state, force=False)
-        _lineup_archive = get_active_draft_archive(st.session_state)
-        if _resolved.active_draft_id:
+        _lineup_archive = None
+        if not _resolved.source_kind.startswith("temporary") and _resolved.active_draft_id:
             loaded = get_draft_archive(st.session_state, _resolved.active_draft_id)
             if isinstance(loaded, dict):
                 _lineup_archive = loaded
-        _lineup_context = get_active_league_context(st.session_state, respect_source_priority=False)
+            else:
+                _lineup_archive = get_active_draft_archive(st.session_state)
+        # Effective descriptor context (override-aware) — never force saved Active League.
+        _lineup_context = None
+        try:
+            from fantasy_context_source import resolve_fantasy_workflow_source_descriptor
+
+            _lineup_desc = resolve_fantasy_workflow_source_descriptor(st.session_state)
+            if isinstance(_lineup_desc.get("context"), dict):
+                _lineup_context = dict(_lineup_desc["context"])
+        except ImportError:
+            _lineup_context = None
+        if _lineup_context is None:
+            _lineup_context = get_active_league_context(st.session_state, respect_source_priority=True)
         # Prefer the coherent resolved roster map over any session leftover.
         if isinstance(_lineup_context, dict) and _resolved.league_rosters:
             _lineup_context = dict(_lineup_context)
             _lineup_context["league_rosters"] = copy.deepcopy(_resolved.league_rosters)
             if _resolved.active_team_name:
                 _lineup_context["my_team_name"] = _resolved.active_team_name
+            if _resolved.active_league_context_id:
+                _lineup_context["league_context_id"] = _resolved.active_league_context_id
         if not roster_stats.empty and not roster_dataframe_matches_resolved(roster_stats, _resolved):
             roster_stats = pd.DataFrame()
             st.session_state.pop("fantasy_current_roster_stats", None)
@@ -24138,7 +24153,15 @@ if active_page == "Fantasy Lineup Assistant":
             from fantasy_league_context import get_active_league_context
             from fantasy_lineup_scope import resolve_canonical_lineup_team
 
-            _lineup_ctx = get_active_league_context(st.session_state, respect_source_priority=False)
+            _lineup_ctx = get_active_league_context(st.session_state, respect_source_priority=True)
+            try:
+                from fantasy_context_source import resolve_fantasy_workflow_source_descriptor
+
+                _desc = resolve_fantasy_workflow_source_descriptor(st.session_state)
+                if isinstance(_desc.get("context"), dict):
+                    _lineup_ctx = dict(_desc["context"])
+            except ImportError:
+                pass
             _owned_lineup_team = resolve_canonical_lineup_team(
                 st.session_state,
                 _lineup_ctx,

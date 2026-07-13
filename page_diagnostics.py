@@ -82,6 +82,28 @@ def _section_active_source(session: dict[str, Any], page: str) -> dict[str, Any]
     except ImportError:
         pass
     try:
+        from fantasy_context_source import collect_saved_vs_effective_source_diagnostics
+
+        layers = collect_saved_vs_effective_source_diagnostics(session)
+        out["saved_selection"] = {
+            "saved_active_draft_id": layers.get("saved_active_draft_id"),
+            "saved_active_context_id": layers.get("saved_active_context_id"),
+            "saved_active_name": layers.get("saved_active_name"),
+            "saved_active_team": layers.get("saved_active_team"),
+        }
+        out["effective_workflow_source"] = {
+            "effective_source_kind": layers.get("effective_source_kind"),
+            "effective_context_id": layers.get("effective_context_id"),
+            "effective_team": layers.get("effective_team"),
+            "effective_roster_team_names": layers.get("effective_roster_team_names"),
+            "effective_board_pick_count": layers.get("effective_board_pick_count"),
+            "effective_context_fingerprint": layers.get("effective_context_fingerprint"),
+            "descriptor_cache_fingerprint": layers.get("descriptor_cache_fingerprint"),
+            "context_coherent": layers.get("context_coherent"),
+        }
+    except ImportError:
+        pass
+    try:
         from fantasy_league_context import get_active_league_context
 
         ctx = get_active_league_context(session, respect_source_priority=False)

@@ -188,11 +188,8 @@ def resolve_lineup_page_context(session: dict[str, Any]) -> dict[str, Any] | Non
         pass
 
     with _phase("lineup_active_context_load"):
-        result = (
-            get_active_league_context(session, respect_source_priority=False)
-            or get_active_league_context(session)
-            or storage
-        )
+        # Effective override-aware context first; storage is saved Active League only.
+        result = get_active_league_context(session, respect_source_priority=True) or storage
     try:
         from fantasy_lineup_perf import store_lineup_page_context
 
