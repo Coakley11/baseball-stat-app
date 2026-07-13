@@ -25,6 +25,8 @@ SESSION_APPLIED_FP_KEY = "_account_fantasy_prefs_applied_fingerprint"
 LAST_POLL_TS_KEY = "_account_fantasy_prefs_last_poll_ts"
 LAST_SYNC_TRACE_KEY = "_account_fantasy_prefs_last_sync_trace"
 LAST_SYNC_ERROR_KEY = "_account_fantasy_prefs_last_error"
+LAST_WRITE_TRACE_KEY = "_account_fantasy_prefs_last_write_trace"
+SYNC_STATUS_FLASH_KEY = "_account_fantasy_prefs_sync_status_flash"
 WRITE_FAIL_FLASH_KEY = "_account_fantasy_prefs_write_fail_flash"
 REMOTE_APPLY_IN_PROGRESS_KEY = "_account_preferences_remote_apply_in_progress"
 SYNC_FAIL_USER_MSG = (
@@ -708,6 +710,261 @@ def sync_account_fantasy_preferences(
         return trace
 
 
+def update_account_fantasy_preference_fields(
+    session: dict[str, Any],
+    *,
+    changed_fields: dict[str, Any],
+    reason: str = "",
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
+    """Atomically patch preference fields without rebuilding from ambient session state."""
+    trace: dict[str, Any] = {
+        "reason": reason,
+        "written": False,
+        "cloud_saved": False,
+        "write_verified": False,
+        "changed_fields": dict(changed_fields or {}),
+    }
+    session[LAST_WRITE_TRACE_KEY] = trace
+    if not changed_fields:
+        trace["skipped"] = "empty_changed_fields"
+        return trace
+    if not _signed_in(session):
+        # Still update local persisted keys for unsigned sessions.
+        _apply_changed_fields_locally(session, changed_fields)
+        trace["skipped"] = "unsigned"
+        return trace
+    if not _cloud_sync_available():
+        _apply_changed_fields_locally(session, changed_fields)
+        trace["skipped"] = "cloud_disabled"
+        return trace
+
+    try:
+        cloud = _load_cloud_prefs(session)
+    except Exception as exc:
+        _record_error(session, where="update_fields_load", exc=exc)
+        trace["error"] = type(exc).__name__
+        session[WRITE_FAIL_FLASH_KEY] = SYNC_FAIL_USER_MSG
+        session[SYNC_STATUS_FLASH_KEY] = "Changed on this device, but account sync failed"
+        return trace
+
+    cloud_rev = int(cloud.get("revision") or 0)
+    local_rev = int(session.get(SESSION_LOCAL_REV_KEY) or session.get(SESSION_APPLIED_REV_KEY) or 0)
+    base_rev = max(cloud_rev, local_rev)
+    if expected_revision is not None and int(expected_revision) < cloud_rev:
+        trace["conflict"] = "cloud_newer"
+        _apply_prefs_to_session(session, cloud, source="conflict_resolve")
+        session[LAST_WRITE_TRACE_KEY] = trace
+        return trace
+
+    new_rev = base_rev + 1
+    # Start from cloud doc (authoritative), fall back to session build when empty.
+    if cloud:
+        doc = copy.deepcopy(cloud)
+    else:
+        doc = build_preference_document(session, revision=new_rev)
+    for key, value in changed_fields.items():
+        doc[key] = value
+    doc["revision"] = new_rev
+    doc["updated_at"] = _utc_now_iso()
+    doc["updated_by_device_id"] = _device_id(session)
+    doc["schema_version"] = SCHEMA_VERSION
+    # Keep user/workspace metadata aligned
+    fields = _read_session_prefs_fields(session)
+    doc["user_id"] = fields.get("user_id") or doc.get("user_id") or ""
+    doc["workspace_id"] = fields.get("workspace_id") or doc.get("workspace_id") or ""
+    # Preserve active league from existing doc unless explicitly changed
+    if "active_draft_id" not in changed_fields and not doc.get("active_draft_id"):
+        doc["active_draft_id"] = fields.get("active_draft_id") or ""
+    if "active_league_context_id" not in changed_fields and not doc.get("active_league_context_id"):
+        doc["active_league_context_id"] = fields.get("active_league_context_id") or ""
+
+    trace["revision"] = new_rev
+    trace["write_document"] = {
+        k: doc.get(k)
+        for k in (
+            "revision",
+            "active_draft_id",
+            "active_league_context_id",
+            "research_mode_enabled",
+            "fantasy_source_override_kind",
+            "fantasy_source_override_id",
+        )
+    }
+    saved = _save_cloud_prefs(session, doc)
+    trace["cloud_saved"] = saved
+    if not saved:
+        _apply_changed_fields_locally(session, changed_fields)
+        session[WRITE_FAIL_FLASH_KEY] = SYNC_FAIL_USER_MSG
+        session[SYNC_STATUS_FLASH_KEY] = "Changed on this device, but account sync failed"
+        session[LAST_WRITE_TRACE_KEY] = trace
+        return trace
+
+    readback = _load_cloud_prefs(session)
+    trace["readback_document"] = {
+        k: readback.get(k)
+        for k in (
+            "revision",
+            "active_draft_id",
+            "active_league_context_id",
+            "research_mode_enabled",
+            "fantasy_source_override_kind",
+            "fantasy_source_override_id",
+        )
+    }
+    mismatches: list[str] = []
+    for key, value in changed_fields.items():
+        got = readback.get(key)
+        if isinstance(value, bool):
+            if bool(got) != bool(value):
+                mismatches.append(key)
+        elif str(got or "").strip() != str(value or "").strip():
+            mismatches.append(key)
+    if int(readback.get("revision") or 0) != new_rev:
+        mismatches.append("revision")
+    trace["write_verified"] = not mismatches
+    if mismatches:
+        trace["verification_error"] = f"changed_field_mismatch:{mismatches}"
+        session[WRITE_FAIL_FLASH_KEY] = SYNC_FAIL_USER_MSG
+        session[SYNC_STATUS_FLASH_KEY] = "Changed on this device, but account sync failed"
+        session[LAST_WRITE_TRACE_KEY] = trace
+        return trace
+
+    # Local authoritative state from verified readback
+    session[REMOTE_APPLY_IN_PROGRESS_KEY] = True
+    try:
+        _apply_changed_fields_locally(session, {k: readback.get(k) for k in changed_fields})
+        # Also sync any remaining known preference fields from readback
+        session[FANTASY_RESEARCH_SYNC_KEY] = bool(readback.get("research_mode_enabled"))
+        session[SYNC_POSITION_NEEDS_KEY] = bool(readback.get("use_draft_assistant_position_needs"))
+        override_kind = str(readback.get("fantasy_source_override_kind") or "none").strip().lower()
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = override_kind == "live_draft_room"
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = override_kind == "simulator_board"
+        session[SESSION_APPLIED_REV_KEY] = new_rev
+        session[SESSION_LOCAL_REV_KEY] = new_rev
+        session[SESSION_APPLIED_FP_KEY] = preference_document_fingerprint(readback)
+        reseed_ok = False
+        try:
+            from fantasy_context_ui import (
+                _LIVE_CONTEXT_TOGGLE_WIDGET_KEY,
+                _RESEARCH_SYNC_TOGGLE_WIDGET_KEY,
+                _SIM_CONTEXT_TOGGLE_WIDGET_KEY,
+            )
+
+            # Only reseed keys touched by this write — avoid stomping concurrent toggle changes.
+            if "research_mode_enabled" in changed_fields:
+                session.pop(_RESEARCH_SYNC_TOGGLE_WIDGET_KEY, None)
+                session[_RESEARCH_SYNC_TOGGLE_WIDGET_KEY] = bool(readback.get("research_mode_enabled"))
+            if "fantasy_source_override_kind" in changed_fields:
+                kind = str(readback.get("fantasy_source_override_kind") or "none").strip().lower()
+                session.pop(_LIVE_CONTEXT_TOGGLE_WIDGET_KEY, None)
+                session.pop(_SIM_CONTEXT_TOGGLE_WIDGET_KEY, None)
+                session[_LIVE_CONTEXT_TOGGLE_WIDGET_KEY] = kind == "live_draft_room"
+                session[_SIM_CONTEXT_TOGGLE_WIDGET_KEY] = kind == "simulator_board"
+            reseed_ok = True
+        except ImportError:
+            pass
+        trace["widget_reseed_result"] = reseed_ok
+    finally:
+        session.pop(REMOTE_APPLY_IN_PROGRESS_KEY, None)
+
+    session.pop(LAST_SYNC_ERROR_KEY, None)
+    session[SYNC_STATUS_FLASH_KEY] = "Synced to your account"
+    trace["written"] = True
+    session[LAST_WRITE_TRACE_KEY] = trace
+    session[LAST_SYNC_TRACE_KEY] = {"source": "local_write", **trace}
+    return trace
+
+
+def _apply_changed_fields_locally(session: dict[str, Any], changed_fields: dict[str, Any]) -> None:
+    if "research_mode_enabled" in changed_fields:
+        session[FANTASY_RESEARCH_SYNC_KEY] = bool(changed_fields.get("research_mode_enabled"))
+    if "use_draft_assistant_position_needs" in changed_fields:
+        session[SYNC_POSITION_NEEDS_KEY] = bool(changed_fields.get("use_draft_assistant_position_needs"))
+    if "fantasy_source_override_kind" in changed_fields:
+        kind = str(changed_fields.get("fantasy_source_override_kind") or "none").strip().lower()
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = kind == "live_draft_room"
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = kind == "simulator_board"
+    if "active_draft_id" in changed_fields:
+        draft_id = str(changed_fields.get("active_draft_id") or "").strip()
+        if draft_id:
+            session["active_draft_archive_id"] = draft_id
+    if "active_league_context_id" in changed_fields:
+        ctx_id = str(changed_fields.get("active_league_context_id") or "").strip()
+        if ctx_id:
+            try:
+                from fantasy_league_context import ensure_fantasy_league_context_state
+
+                ensure_fantasy_league_context_state(session)["active_league_context_id"] = ctx_id
+            except ImportError:
+                pass
+
+
+def ensure_account_preferences_applied_before_controls(session: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative prefs must win before Research/Live/Simulator checkboxes render."""
+    trace: dict[str, Any] = {"applied": False, "source": "before_controls"}
+    if not _signed_in(session) or not _cloud_sync_available():
+        # Still reseed widgets from whatever persisted keys exist.
+        try:
+            from fantasy_context_ui import reseed_fantasy_context_toggle_widgets
+
+            reseed_fantasy_context_toggle_widgets(session)
+            trace["widget_reseed_result"] = True
+        except ImportError:
+            trace["widget_reseed_result"] = False
+        return trace
+
+    meta = load_preference_revision_meta(session)
+    remote_rev = int(meta.get("revision") or 0)
+    remote_fp = str(meta.get("preference_fingerprint") or "")
+    local_rev = int(session.get(SESSION_APPLIED_REV_KEY) or 0)
+    local_fp = str(session.get(SESSION_APPLIED_FP_KEY) or "")
+    local_fields = _read_session_prefs_fields(session)
+    synth = {**local_fields, "revision": local_rev}
+    local_drift = bool(local_fp) and preference_document_fingerprint(synth) != local_fp
+    need_full = remote_rev > local_rev or (remote_fp and remote_fp != local_fp) or local_drift or not local_fp
+    if not need_full:
+        try:
+            from fantasy_context_ui import reseed_fantasy_context_toggle_widgets
+
+            # Clear then reseed so widgets cannot retain stale values across hydration.
+            reseed_fantasy_context_toggle_widgets(session)
+            trace["widget_reseed_result"] = True
+            trace["skipped"] = "header_unchanged"
+        except ImportError:
+            pass
+        return trace
+
+    cloud = _load_cloud_prefs(session)
+    if not cloud:
+        try:
+            from fantasy_context_ui import reseed_fantasy_context_toggle_widgets
+
+            reseed_fantasy_context_toggle_widgets(session)
+        except ImportError:
+            pass
+        trace["skipped"] = "empty_cloud"
+        return trace
+
+    applied = reassert_account_preferences_after_hydration(session)
+    # Force widget delete + reseed even if reassert thought values already matched.
+    try:
+        from fantasy_context_ui import clear_fantasy_context_toggle_widgets, reseed_fantasy_context_toggle_widgets
+
+        clear_fantasy_context_toggle_widgets(session)
+        reseed_fantasy_context_toggle_widgets(session)
+        applied["widget_reseed_result"] = True
+    except ImportError:
+        applied["widget_reseed_result"] = False
+    applied["source"] = applied.get("source") or "before_controls"
+    session[LAST_SYNC_TRACE_KEY] = dict(applied)
+    return applied
+
+
+def pop_preference_sync_status(session: dict[str, Any]) -> str:
+    return str(session.pop(SYNC_STATUS_FLASH_KEY, "") or "").strip()
+
+
 def write_account_fantasy_preferences(
     session: dict[str, Any],
     *,
@@ -878,7 +1135,19 @@ def collect_account_preference_diagnostics(session: dict[str, Any]) -> dict[str,
     except Exception as exc:
         remote_err = f"{type(exc).__name__}: {exc}"[:200]
     last_trace = session.get(LAST_SYNC_TRACE_KEY)
+    last_write = session.get(LAST_WRITE_TRACE_KEY)
     last_error = session.get(LAST_SYNC_ERROR_KEY)
+    header = {}
+    try:
+        header = load_preference_revision_meta(session)
+    except Exception:
+        header = {}
+    widget_live = session.get("_fcs_live_context_toggle_widget")
+    widget_sim = session.get("_fcs_sim_context_toggle_widget")
+    widget_research = session.get("_fcs_research_sync_toggle_widget")
+    persisted_research = bool(session.get(FANTASY_RESEARCH_SYNC_KEY))
+    persisted_live = bool(session.get(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY))
+    persisted_sim = bool(session.get(USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY))
     return {
         "authenticated_user_id": local_fields.get("user_id"),
         "external_account_id": str(session.get("_suite_auth_external_id") or ""),
@@ -886,28 +1155,45 @@ def collect_account_preference_diagnostics(session: dict[str, Any]) -> dict[str,
         "preference_settings_app": _prefs_settings_app(session),
         "preference_revision_app": prefs_revision_settings_app(session),
         "preference_doc_key": PREFS_DOC_KEY,
-        "local_applied_revision": int(session.get(SESSION_APPLIED_REV_KEY) or 0),
-        "local_applied_fingerprint": str(session.get(SESSION_APPLIED_FP_KEY) or ""),
-        "remote_revision": int(remote.get("revision") or 0),
-        "remote_fingerprint": preference_document_fingerprint(remote) if remote else "",
+        "full_preference_document_revision": int(remote.get("revision") or 0),
+        "revision_header_revision": int(header.get("revision") or 0),
+        "preference_fingerprint_local": str(session.get(SESSION_APPLIED_FP_KEY) or ""),
+        "preference_fingerprint_remote": preference_document_fingerprint(remote) if remote else "",
+        "preference_fingerprint_header": str(header.get("preference_fingerprint") or ""),
+        "remote_research_mode_enabled": bool(remote.get("research_mode_enabled")) if remote else None,
+        "remote_fantasy_source_override_kind": str(remote.get("fantasy_source_override_kind") or "") if remote else None,
+        "remote_fantasy_source_override_id": str(remote.get("fantasy_source_override_id") or "") if remote else None,
+        "local_persisted_research_mode": persisted_research,
+        "local_persisted_live_override": persisted_live,
+        "local_persisted_simulator_override": persisted_sim,
+        "widget_research_mode": widget_research if widget_research is not None else None,
+        "widget_live_override": widget_live if widget_live is not None else None,
+        "widget_simulator_override": widget_sim if widget_sim is not None else None,
+        "widget_matches_persisted": {
+            "research": (widget_research is None) or (bool(widget_research) == persisted_research),
+            "live": (widget_live is None) or (bool(widget_live) == persisted_live),
+            "simulator": (widget_sim is None) or (bool(widget_sim) == persisted_sim),
+        },
         "local_active_draft_id": local_fields.get("active_draft_id"),
         "local_active_context_id": local_fields.get("active_league_context_id"),
         "remote_active_draft_id": str(remote.get("active_draft_id") or ""),
         "remote_active_context_id": str(remote.get("active_league_context_id") or ""),
-        "research_mode_local": bool(local_fields.get("research_mode_enabled")),
-        "research_mode_remote": bool(remote.get("research_mode_enabled")) if remote else None,
-        "simulator_override_local": str(local_fields.get("fantasy_source_override_kind") or "") == "simulator_board",
-        "simulator_override_remote": str(remote.get("fantasy_source_override_kind") or "") == "simulator_board"
-        if remote
+        "last_preference_write_reason": (last_write or {}).get("reason") if isinstance(last_write, dict) else None,
+        "last_preference_write_document": (last_write or {}).get("write_document") if isinstance(last_write, dict) else {},
+        "write_readback_document": (last_write or {}).get("readback_document") if isinstance(last_write, dict) else {},
+        "write_verified": (last_write or {}).get("write_verified") if isinstance(last_write, dict) else None,
+        "last_remote_apply_source": (last_trace or {}).get("source") if isinstance(last_trace, dict) else None,
+        "mismatched_fields": (last_trace or {}).get("mismatched_fields") if isinstance(last_trace, dict) else [],
+        "widget_reseed_result": (last_write or last_trace or {}).get("widget_reseed_result")
+        if isinstance(last_write or last_trace, dict)
         else None,
-        "updated_by_device_id": str(remote.get("updated_by_device_id") or ""),
-        "last_sync_source": (last_trace or {}).get("source") if isinstance(last_trace, dict) else None,
         "last_sync_result": last_trace if isinstance(last_trace, dict) else {},
         "last_sync_error": last_error if isinstance(last_error, dict) else {},
         "cloud_read_error": remote_err,
         "cloud_sync_available": _cloud_sync_available(),
         "signed_in": _signed_in(session),
     }
+
 
 
 def pop_preference_sync_warning(session: dict[str, Any]) -> str:

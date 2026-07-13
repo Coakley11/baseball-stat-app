@@ -4470,9 +4470,25 @@ def _render_saved_draft_library_page_body(
         pass
 
     try:
-        from draft_library_manifest import build_library_manifest
+        from draft_library_manifest import (
+            build_library_manifest,
+            collect_library_content_clock_diagnostics,
+            sync_library_manifest_from_cloud,
+        )
 
+        sync_library_manifest_from_cloud(session)
         build_library_manifest(session)
+        if developer_mode:
+            try:
+                from page_diagnostics import record_page_diagnostic_section
+
+                record_page_diagnostic_section(
+                    session,
+                    "Library content clocks",
+                    collect_library_content_clock_diagnostics(session),
+                )
+            except ImportError:
+                pass
     except ImportError:
         pass
 

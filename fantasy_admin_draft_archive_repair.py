@@ -412,7 +412,19 @@ def _sync_archives_to_workspace_team(session: dict[str, Any], context: dict[str,
         )
         if needs_write:
             updated["snapshot"] = _build_archive_snapshot(updated, league_rosters=league_rosters if isinstance(league_rosters, dict) else {})
-            updated["updated_at"] = _utc_now_iso()
+            # Hydration/repair must not rewrite content clocks shown on library cards.
+            if not str(updated.get("content_updated_at") or "").strip():
+                updated["content_updated_at"] = str(
+                    entry.get("content_updated_at") or entry.get("updated_at") or entry.get("created_at") or ""
+                ).strip() or _utc_now_iso()
+            if not updated.get("content_revision"):
+                try:
+                    updated["content_revision"] = int(entry.get("content_revision") or 1)
+                except (TypeError, ValueError):
+                    updated["content_revision"] = 1
+            updated["last_local_hydration_at"] = _utc_now_iso()
+            # Preserve prior content updated_at; only touch generic updated_at for diag.
+            updated["updated_at"] = str(entry.get("updated_at") or updated.get("content_updated_at") or "")
             entries[idx] = updated
             changed += 1
     if changed:

@@ -159,6 +159,8 @@ def save_draft_archive(
         "team_name": str(team_name or "").strip(),
         "created_at": now,
         "updated_at": now,
+        "content_updated_at": now,
+        "content_revision": 1,
         "fantasy_format": cfg.get("fantasy_format") or cfg.get("scoring_type") or "",
         "roster_slots": dict(cfg.get("slots") or {}),
         "slot_instances": list(cfg.get("slot_instances") or []),
@@ -185,6 +187,14 @@ def save_draft_archive(
     for i, existing in enumerate(entries):
         if str(existing.get("draft_id") or "") == entry_id:
             entry["created_at"] = existing.get("created_at") or now
+            # Genuine content save — bump content clocks only here.
+            prev_rev = 0
+            try:
+                prev_rev = int(existing.get("content_revision") or 0)
+            except (TypeError, ValueError):
+                prev_rev = 0
+            entry["content_updated_at"] = now
+            entry["content_revision"] = prev_rev + 1
             if not draft_fingerprint:
                 entry["draft_fingerprint"] = str(existing.get("draft_fingerprint") or "").strip()
             entries[i] = entry
@@ -212,6 +222,12 @@ def save_draft_archive(
     if not replaced:
         entries.append(entry)
     _set_archive_list(session, entries)
+    try:
+        from draft_library_manifest import publish_library_manifest_to_cloud
+
+        publish_library_manifest_to_cloud(session)
+    except ImportError:
+        pass
     return entry
 
 
@@ -360,9 +376,15 @@ def draft_type_display(entry: dict[str, Any] | None) -> str:
 
 
 def format_archive_modified(entry: dict[str, Any] | None) -> str:
+    """Library card 'Updated' — content mutations only, never hydration/active selection."""
     if not entry:
         return "—"
-    raw = str(entry.get("updated_at") or entry.get("created_at") or "").strip()
+    raw = str(
+        entry.get("content_updated_at")
+        or entry.get("updated_at")
+        or entry.get("created_at")
+        or ""
+    ).strip()
     if not raw:
         return "—"
     try:
@@ -370,6 +392,31 @@ def format_archive_modified(entry: dict[str, Any] | None) -> str:
         return dt.strftime("%b %d, %Y %H:%M UTC")
     except ValueError:
         return raw[:16]
+
+
+def touch_archive_content_updated(session: dict[str, Any], draft_id: str) -> bool:
+    """Bump content clocks for an explicit content mutation (rename, etc.)."""
+    draft_id = str(draft_id or "").strip()
+    if not draft_id:
+        return False
+    entries = _archive_list(session)
+    now = _utc_now_iso()
+    for i, existing in enumerate(entries):
+        if str(existing.get("draft_id") or "") != draft_id:
+            continue
+        row = dict(existing)
+        prev_rev = 0
+        try:
+            prev_rev = int(row.get("content_revision") or 0)
+        except (TypeError, ValueError):
+            prev_rev = 0
+        row["content_updated_at"] = now
+        row["content_revision"] = prev_rev + 1
+        row["updated_at"] = now
+        entries[i] = row
+        _set_archive_list(session, entries)
+        return True
+    return False
 
 
 def rename_draft_archive(session: dict[str, Any], draft_id: str, new_name: str) -> dict[str, Any] | None:
@@ -384,13 +431,27 @@ def rename_draft_archive(session: dict[str, Any], draft_id: str, new_name: str) 
             continue
         row = dict(existing)
         row["draft_name"] = label
-        row["updated_at"] = _utc_now_iso()
+        now = _utc_now_iso()
+        prev_rev = 0
+        try:
+            prev_rev = int(row.get("content_revision") or 0)
+        except (TypeError, ValueError):
+            prev_rev = 0
+        row["content_updated_at"] = now
+        row["content_revision"] = prev_rev + 1
+        row["updated_at"] = now
         entries[i] = row
         updated = row
         break
     if updated is None:
         return None
     _set_archive_list(session, entries)
+    try:
+        from draft_library_manifest import publish_library_manifest_to_cloud
+
+        publish_library_manifest_to_cloud(session)
+    except ImportError:
+        pass
     return copy.deepcopy(updated)
 
 

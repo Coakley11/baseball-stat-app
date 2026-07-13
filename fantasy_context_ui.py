@@ -194,6 +194,64 @@ def _on_context_setting_changed(*_args, **_kwargs) -> None:
     _persist_context_settings()
 
 
+def apply_research_mode_toggle_from_widget(session: dict[str, Any]) -> dict[str, Any]:
+    """User-change helper — can be invoked from Streamlit or unit tests."""
+    enabled = bool(session.get(_RESEARCH_SYNC_TOGGLE_WIDGET_KEY))
+    session[FANTASY_RESEARCH_SYNC_KEY] = enabled
+    try:
+        from account_fantasy_preferences import update_account_fantasy_preference_fields
+
+        return update_account_fantasy_preference_fields(
+            session,
+            changed_fields={"research_mode_enabled": enabled},
+            reason="research_mode_toggle",
+        )
+    except ImportError:
+        return {"skipped": "import_error", "write_verified": False}
+
+
+def apply_live_override_toggle_from_widget(session: dict[str, Any]) -> dict[str, Any]:
+    enabled = bool(session.get(_LIVE_CONTEXT_TOGGLE_WIDGET_KEY))
+    session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = enabled
+    if enabled:
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+    try:
+        from account_fantasy_preferences import update_account_fantasy_preference_fields
+
+        return update_account_fantasy_preference_fields(
+            session,
+            changed_fields={
+                "fantasy_source_override_kind": "live_draft_room" if enabled else "none",
+                "fantasy_source_override_id": str(session.get("active_shared_draft_room_code") or "").strip()
+                if enabled
+                else "",
+            },
+            reason="live_override_toggle",
+        )
+    except ImportError:
+        return {"skipped": "import_error", "write_verified": False}
+
+
+def apply_simulator_override_toggle_from_widget(session: dict[str, Any]) -> dict[str, Any]:
+    enabled = bool(session.get(_SIM_CONTEXT_TOGGLE_WIDGET_KEY))
+    session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = enabled
+    if enabled:
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
+    try:
+        from account_fantasy_preferences import update_account_fantasy_preference_fields
+
+        return update_account_fantasy_preference_fields(
+            session,
+            changed_fields={
+                "fantasy_source_override_kind": "simulator_board" if enabled else "none",
+                "fantasy_source_override_id": "simulator" if enabled else "",
+            },
+            reason="simulator_override_toggle",
+        )
+    except ImportError:
+        return {"skipped": "import_error", "write_verified": False}
+
+
 def _on_research_sync_toggle_changed() -> None:
     try:
         import streamlit as st
@@ -201,10 +259,7 @@ def _on_research_sync_toggle_changed() -> None:
         return
     if st.session_state.get("_account_preferences_remote_apply_in_progress"):
         return
-    st.session_state[FANTASY_RESEARCH_SYNC_KEY] = bool(
-        st.session_state.get(_RESEARCH_SYNC_TOGGLE_WIDGET_KEY)
-    )
-    _persist_context_settings()
+    apply_research_mode_toggle_from_widget(st.session_state)
 
 
 def _on_live_context_toggle_changed() -> None:
@@ -214,10 +269,7 @@ def _on_live_context_toggle_changed() -> None:
         return
     if st.session_state.get("_account_preferences_remote_apply_in_progress"):
         return
-    st.session_state[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = bool(
-        st.session_state.get(_LIVE_CONTEXT_TOGGLE_WIDGET_KEY)
-    )
-    _persist_context_settings()
+    apply_live_override_toggle_from_widget(st.session_state)
 
 
 def _on_sim_context_toggle_changed() -> None:
@@ -227,10 +279,7 @@ def _on_sim_context_toggle_changed() -> None:
         return
     if st.session_state.get("_account_preferences_remote_apply_in_progress"):
         return
-    st.session_state[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = bool(
-        st.session_state.get(_SIM_CONTEXT_TOGGLE_WIDGET_KEY)
-    )
-    _persist_context_settings()
+    apply_simulator_override_toggle_from_widget(st.session_state)
 
 
 def _prepare_context_checkbox_widget(
@@ -342,6 +391,21 @@ def render_fantasy_context_sync_control(
     key: str = "library_fantasy_context_sync",
 ) -> None:
     """Research-page sync toggle + temporary workspace overrides."""
+    try:
+        from account_fantasy_preferences import (
+            ensure_account_preferences_applied_before_controls,
+            pop_preference_sync_status,
+        )
+
+        ensure_account_preferences_applied_before_controls(session)
+        status = pop_preference_sync_status(session)
+        if status:
+            if "failed" in status.lower():
+                st.warning(status)
+            else:
+                st.caption(status)
+    except ImportError:
+        pass
     render_fantasy_context_source_controls(st, session, key_prefix=key)
     st.markdown("##### Research Mode Sync")
     st.caption(RESEARCH_SYNC_INTRO)
