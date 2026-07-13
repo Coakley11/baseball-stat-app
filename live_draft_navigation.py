@@ -192,6 +192,56 @@ def _live_draft_room_for_return(session: dict[str, Any]) -> dict[str, Any] | Non
     return None
 
 
+SIMULATOR_RESUME_IDENTITY_KEY = "_draft_simulator_resume_identity"
+
+
+def _freeze_simulator_resume_identity(session: dict[str, Any], status: dict[str, Any]) -> dict[str, Any]:
+    """Keep an independent simulator resume card that does not follow Active League team changes."""
+    picks = int(status.get("pick_count") or 0)
+    if picks <= 0:
+        return {}
+    frozen = session.get(SIMULATOR_RESUME_IDENTITY_KEY)
+    if isinstance(frozen, dict) and str(frozen.get("user_team") or "").strip():
+        updated = dict(frozen)
+        updated["pick_count"] = picks
+        updated["round_no"] = status.get("current_round")
+        updated["pick_no"] = status.get("current_pick")
+        updated["on_clock"] = status.get("on_clock_team")
+        session[SIMULATOR_RESUME_IDENTITY_KEY] = updated
+        return updated
+    team = str(status.get("your_team") or session.get("room_your_team") or "").strip()
+    # Prefer the most frequent Fantasy Team on the board when room_your_team already drifted.
+    try:
+        table = session.get("draft_room_table")
+        if table is not None and hasattr(table, "empty") and not table.empty:
+            col = "Fantasy Team" if "Fantasy Team" in table.columns else ("Team" if "Team" in table.columns else "")
+            if col:
+                counts = table[col].astype(str).str.strip().value_counts()
+                if len(counts) > 0:
+                    top = str(counts.index[0] or "").strip()
+                    if top and top.lower() not in {"nan", "none"}:
+                        # If room_your_team is present in the board, prefer it; else keep top board team.
+                        if team and team in set(counts.index.astype(str)):
+                            pass
+                        else:
+                            team = top
+    except Exception:
+        pass
+    identity = {
+        "kind": "simulator",
+        "source_kind": "draft_simulator",
+        "user_team": team,
+        "pick_count": picks,
+        "round_no": status.get("current_round"),
+        "pick_no": status.get("current_pick"),
+        "on_clock": status.get("on_clock_team"),
+        "return_page": "Draft Room Simulator",
+        "draft_name": str(session.get("sim_draft_archive_name_input") or session.get("draft_room_league_name") or "Draft Simulator"),
+    }
+    session[SIMULATOR_RESUME_IDENTITY_KEY] = identity
+    return identity
+
+
 def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
     """Sidebar card context for active live draft, lobby, completed draft, or simulator."""
     room = _live_draft_room_for_return(session)
@@ -273,14 +323,19 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
             mode = status.get("mode")
             if mode == ACTIVE_DRAFT_MODE_LIVE:
                 return None
+            identity = _freeze_simulator_resume_identity(session, status)
+            user_team = str(identity.get("user_team") or status.get("your_team") or "").strip()
             return {
                 "kind": "simulator",
+                "source_kind": "draft_simulator",
                 "title": "Return to Draft Simulator",
-                "picks_label": f"{status.get('pick_count', 0)} pick(s) logged",
-                "round_no": status.get("current_round"),
-                "pick_no": status.get("current_pick"),
-                "on_clock": str(status.get("on_clock_team") or "").strip(),
-                "user_team": status.get("your_team") or "",
+                "picks_label": f"{int(identity.get('pick_count') or status.get('pick_count') or 0)} pick(s) logged",
+                "round_no": identity.get("round_no") if identity.get("round_no") is not None else status.get("current_round"),
+                "pick_no": identity.get("pick_no") if identity.get("pick_no") is not None else status.get("current_pick"),
+                "on_clock": str(identity.get("on_clock") or status.get("on_clock_team") or "").strip(),
+                "user_team": user_team,
+                "return_page": "Draft Room Simulator",
+                "draft_name": str(identity.get("draft_name") or "Draft Simulator"),
             }
     except ImportError:
         pass
