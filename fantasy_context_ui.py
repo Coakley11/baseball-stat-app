@@ -142,6 +142,8 @@ def _persist_context_settings(*, lightweight: bool = True) -> None:
     except Exception:
         return
     session = st.session_state
+    if session.get("_account_preferences_remote_apply_in_progress"):
+        return
     try:
         from account_fantasy_preferences import (
             pop_preference_sync_warning,
@@ -182,6 +184,13 @@ def _persist_context_settings(*, lightweight: bool = True) -> None:
 
 def _on_context_setting_changed(*_args, **_kwargs) -> None:
     """Persist fantasy context toggles immediately on change (Research Mode toggle)."""
+    try:
+        import streamlit as st
+
+        if st.session_state.get("_account_preferences_remote_apply_in_progress"):
+            return
+    except Exception:
+        pass
     _persist_context_settings()
 
 
@@ -189,6 +198,8 @@ def _on_research_sync_toggle_changed() -> None:
     try:
         import streamlit as st
     except Exception:
+        return
+    if st.session_state.get("_account_preferences_remote_apply_in_progress"):
         return
     st.session_state[FANTASY_RESEARCH_SYNC_KEY] = bool(
         st.session_state.get(_RESEARCH_SYNC_TOGGLE_WIDGET_KEY)
@@ -201,6 +212,8 @@ def _on_live_context_toggle_changed() -> None:
         import streamlit as st
     except Exception:
         return
+    if st.session_state.get("_account_preferences_remote_apply_in_progress"):
+        return
     st.session_state[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = bool(
         st.session_state.get(_LIVE_CONTEXT_TOGGLE_WIDGET_KEY)
     )
@@ -211,6 +224,8 @@ def _on_sim_context_toggle_changed() -> None:
     try:
         import streamlit as st
     except Exception:
+        return
+    if st.session_state.get("_account_preferences_remote_apply_in_progress"):
         return
     st.session_state[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = bool(
         st.session_state.get(_SIM_CONTEXT_TOGGLE_WIDGET_KEY)

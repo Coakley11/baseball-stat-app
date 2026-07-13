@@ -443,6 +443,19 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
     for key in _WORKFLOW_KEYS:
         if key in ss:
             try:
+                from account_fantasy_preferences import ACCOUNT_OWNED_SESSION_KEYS
+
+                if key in ACCOUNT_OWNED_SESSION_KEYS:
+                    continue
+            except ImportError:
+                if key in (
+                    "use_active_league_context_waiver_filter",
+                    "use_live_draft_as_fantasy_context",
+                    "use_simulator_board_as_fantasy_context",
+                    "sync_draft_assistant_position_needs",
+                ):
+                    continue
+            try:
                 state[key] = copy.deepcopy(ss[key])
             except Exception:
                 state[key] = ss[key]
@@ -613,6 +626,20 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     for key in _GLOBAL_KEYS + _INSIGHT_KEYS + _HOF_HANDOFF_KEYS + _WORKSPACE_KEYS + _WORKFLOW_KEYS:
         if key not in state:
             continue
+        # Account preference document owns these fields — never restore from full_session.
+        try:
+            from account_fantasy_preferences import ACCOUNT_OWNED_SESSION_KEYS
+
+            if key in ACCOUNT_OWNED_SESSION_KEYS:
+                continue
+        except ImportError:
+            if key in (
+                "use_active_league_context_waiver_filter",
+                "use_live_draft_as_fantasy_context",
+                "use_simulator_board_as_fantasy_context",
+                "sync_draft_assistant_position_needs",
+            ):
+                continue
         if foreign_blob and key in _FOREIGN_GLOBAL_KEYS:
             continue
         if multiplayer_restore and key in _MULTIPLAYER_SCOPED_GLOBALS:
@@ -1183,41 +1210,74 @@ def _workspace_restore_cloud_first(session: dict[str, Any]) -> bool:
 def prepare_baseball_workspace(st: Any) -> bool:
     """Single authoritative cloud/disk workspace sync before sidebar widgets."""
     ss = st.session_state
+    warm_skip = False
     try:
-        from page_perf_phases import session_perf_phase
+        from suite_user_persistence import _workspace_synced_key
 
-        with session_perf_phase(ss, "cloud_hydration"):
+        synced = bool(ss.get(_workspace_synced_key(APP_ID)))
+        force = bool(
+            ss.get("_suite_workspace_force_sync")
+            or ss.get("_suite_workspace_refresh_needed")
+            or ss.get("_suite_auth_just_signed_in")
+        )
+        fp = "|".join(
+            [
+                str(ss.get("_suite_auth_user_id") or ""),
+                str(ss.get("_suite_active_workspace_id") or ""),
+                str(ss.get("_suite_cloud_session_revision") or ss.get("_suite_workspace_cloud_meta_fp") or ""),
+                str(WORKSPACE_SCHEMA_VERSION),
+                str(ss.get("_library_manifest_revision") or len(ss.get("draft_archive_teams") or [])),
+            ]
+        )
+        prev_fp = str(ss.get("_baseball_warm_startup_fp") or "")
+        if synced and not force and prev_fp == fp and prev_fp:
+            warm_skip = True
+            ss["_baseball_warm_startup_skipped"] = True
+        else:
+            ss["_baseball_warm_startup_fp"] = fp
+            ss["_baseball_warm_startup_skipped"] = False
+    except Exception:
+        warm_skip = False
+
+    result = False
+    if warm_skip:
+        result = True
+    else:
+        try:
+            from page_perf_phases import session_perf_phase
+
+            with session_perf_phase(ss, "cloud_hydration"):
+                result = sync_workspace_protocol(
+                    st,
+                    APP_ID,
+                    apply_state=lambda st_obj, s: apply_baseball_disk_state(st_obj, s),
+                    cloud_first=_workspace_restore_cloud_first(ss),
+                )
+        except ImportError:
+            try:
+                from page_perf import perf_end, perf_timer
+
+                t0 = perf_timer(ss, "workspace_sync")
+            except ImportError:
+                t0 = 0.0
             result = sync_workspace_protocol(
                 st,
                 APP_ID,
                 apply_state=lambda st_obj, s: apply_baseball_disk_state(st_obj, s),
                 cloud_first=_workspace_restore_cloud_first(ss),
             )
-    except ImportError:
-        try:
-            from page_perf import perf_end, perf_timer
+            try:
+                from page_perf import perf_end
 
-            t0 = perf_timer(ss, "workspace_sync")
-        except ImportError:
-            t0 = 0.0
-        result = sync_workspace_protocol(
-            st,
-            APP_ID,
-            apply_state=lambda st_obj, s: apply_baseball_disk_state(st_obj, s),
-            cloud_first=_workspace_restore_cloud_first(ss),
-        )
+                perf_end(ss, "workspace_sync", t0)
+            except ImportError:
+                pass
         try:
-            from page_perf import perf_end
+            from workflow_persist_guard import ensure_session_workflow_hydrated
 
-            perf_end(ss, "workspace_sync", t0)
+            ensure_session_workflow_hydrated(st, APP_ID)
         except ImportError:
             pass
-    try:
-        from workflow_persist_guard import ensure_session_workflow_hydrated
-
-        ensure_session_workflow_hydrated(st, APP_ID)
-    except ImportError:
-        pass
     try:
         from global_fantasy_settings_state import prepare_global_fantasy_settings
 
@@ -1229,86 +1289,92 @@ def prepare_baseball_workspace(st: Any) -> bool:
         prepare_global_fantasy_settings(ss, force_mirror=force_mirror)
     except Exception:
         pass
+    if not warm_skip:
+        try:
+            from suite_auth import is_auth_enabled, restore_auth_session
+
+            if is_auth_enabled():
+                before_auth_workspace = str(ss.get("_suite_active_workspace_id") or "")
+                restore_auth_session(ss, st=st)
+                try:
+                    from suite_auth import enforce_workspace_ownership
+
+                    enforce_workspace_ownership(ss)
+                except ImportError:
+                    pass
+                after_auth_workspace = str(ss.get("_suite_active_workspace_id") or "")
+                try:
+                    from workflow_persist_guard import ensure_session_workflow_hydrated
+
+                    post_auth_hydrate = ensure_session_workflow_hydrated(st, APP_ID)
+                    ss["_suite_post_auth_workflow_hydrate"] = dict(post_auth_hydrate)
+                    if (
+                        post_auth_hydrate.get("hydrated")
+                        and not ss.get("_suite_post_auth_workflow_hydration_rerun_done")
+                    ):
+                        ss["_suite_post_auth_workflow_hydration_rerun_done"] = True
+                        ss["_suite_post_auth_workflow_hydration_rerun_reason"] = (
+                            "workspace_changed_after_auth"
+                            if before_auth_workspace != after_auth_workspace
+                            else "post_auth_workflow_hydrated"
+                        )
+                        rerun = getattr(st, "rerun", None)
+                        if callable(rerun):
+                            rerun()
+                except ImportError:
+                    pass
+        except ImportError:
+            pass
+        try:
+            from workflow_persist_guard import AUTH_RESTORE_CYCLE_COMPLETE_KEY
+
+            ss[AUTH_RESTORE_CYCLE_COMPLETE_KEY] = True
+        except ImportError:
+            pass
+        try:
+            from workflow_persist_guard import run_consolidated_startup_workflow
+
+            ss["_suite_consolidated_startup_trace"] = run_consolidated_startup_workflow(st, APP_ID)
+        except ImportError:
+            pass
+        except Exception:
+            pass
+        try:
+            from fantasy_league_invites import reconcile_stranded_foreign_disk_drafts
+
+            if not ss.get("_suite_shared_league_startup_sync_trace", {}).get("rebuilt"):
+                reconcile_stranded_foreign_disk_drafts(st, APP_ID)
+        except ImportError:
+            pass
+        except Exception:
+            pass
+        try:
+            from workflow_persist_guard import maybe_authenticated_workflow_cloud_writeback
+
+            if not ss.get("_suite_shared_league_startup_sync_trace", {}).get("rebuilt"):
+                maybe_authenticated_workflow_cloud_writeback(st, APP_ID)
+        except ImportError:
+            pass
+        except Exception:
+            pass
+        try:
+            from live_draft_lineup_config import repair_known_live_draft_lineup_configs
+
+            repair_known_live_draft_lineup_configs(ss)
+        except ImportError:
+            pass
+        except Exception:
+            pass
+    # Account preferences are the final authority after any legacy hydration.
     try:
-        from suite_auth import is_auth_enabled, restore_auth_session
+        from account_fantasy_preferences import (
+            reassert_account_preferences_after_hydration,
+            sync_account_fantasy_preferences,
+        )
 
-        if is_auth_enabled():
-            before_auth_workspace = str(ss.get("_suite_active_workspace_id") or "")
-            restore_auth_session(ss, st=st)
-            try:
-                from suite_auth import enforce_workspace_ownership
-
-                enforce_workspace_ownership(ss)
-            except ImportError:
-                pass
-            after_auth_workspace = str(ss.get("_suite_active_workspace_id") or "")
-            try:
-                from workflow_persist_guard import ensure_session_workflow_hydrated
-
-                post_auth_hydrate = ensure_session_workflow_hydrated(st, APP_ID)
-                ss["_suite_post_auth_workflow_hydrate"] = dict(post_auth_hydrate)
-                if (
-                    post_auth_hydrate.get("hydrated")
-                    and not ss.get("_suite_post_auth_workflow_hydration_rerun_done")
-                ):
-                    ss["_suite_post_auth_workflow_hydration_rerun_done"] = True
-                    ss["_suite_post_auth_workflow_hydration_rerun_reason"] = (
-                        "workspace_changed_after_auth"
-                        if before_auth_workspace != after_auth_workspace
-                        else "post_auth_workflow_hydrated"
-                    )
-                    rerun = getattr(st, "rerun", None)
-                    if callable(rerun):
-                        rerun()
-            except ImportError:
-                pass
-    except ImportError:
-        pass
-    try:
-        from workflow_persist_guard import AUTH_RESTORE_CYCLE_COMPLETE_KEY
-
-        ss[AUTH_RESTORE_CYCLE_COMPLETE_KEY] = True
-    except ImportError:
-        pass
-    try:
-        from workflow_persist_guard import run_consolidated_startup_workflow
-
-        ss["_suite_consolidated_startup_trace"] = run_consolidated_startup_workflow(st, APP_ID)
-    except ImportError:
-        pass
-    except Exception:
-        pass
-    try:
-        from fantasy_league_invites import reconcile_stranded_foreign_disk_drafts
-
-        if not ss.get("_suite_shared_league_startup_sync_trace", {}).get("rebuilt"):
-            reconcile_stranded_foreign_disk_drafts(st, APP_ID)
-    except ImportError:
-        pass
-    except Exception:
-        pass
-    try:
-        from workflow_persist_guard import maybe_authenticated_workflow_cloud_writeback
-
-        if not ss.get("_suite_shared_league_startup_sync_trace", {}).get("rebuilt"):
-            maybe_authenticated_workflow_cloud_writeback(st, APP_ID)
-    except ImportError:
-        pass
-    except Exception:
-        pass
-    try:
-        from account_fantasy_preferences import sync_account_fantasy_preferences
-
-        sync_account_fantasy_preferences(ss, force=bool(ss.get("_suite_workspace_refresh_needed")))
-        sync_account_fantasy_preferences(ss, poll=True)
-    except ImportError:
-        pass
-    except Exception:
-        pass
-    try:
-        from live_draft_lineup_config import repair_known_live_draft_lineup_configs
-
-        repair_known_live_draft_lineup_configs(ss)
+        if not warm_skip:
+            sync_account_fantasy_preferences(ss, force=bool(ss.get("_suite_workspace_refresh_needed")))
+        reassert_account_preferences_after_hydration(ss)
     except ImportError:
         pass
     except Exception:
