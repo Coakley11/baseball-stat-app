@@ -29,9 +29,14 @@ LAST_WRITE_TRACE_KEY = "_account_fantasy_prefs_last_write_trace"
 SYNC_STATUS_FLASH_KEY = "_account_fantasy_prefs_sync_status_flash"
 WRITE_FAIL_FLASH_KEY = "_account_fantasy_prefs_write_fail_flash"
 REMOTE_APPLY_IN_PROGRESS_KEY = "_account_preferences_remote_apply_in_progress"
+PAIR_ALIGNED_KEY = "_account_fantasy_prefs_full_header_pair_aligned"
+HEADER_LAST_ERROR_KEY = "_account_fantasy_prefs_last_header_error"
+SESSION_PAIR_VERIFIED_KEY = "_account_fantasy_prefs_pair_verified_this_session"
 SYNC_FAIL_USER_MSG = (
     "Your selection changed on this device, but account sync did not complete. Try again."
 )
+SYNC_FAIL_STATUS_MSG = "Changed on this device, but account sync failed"
+SYNC_OK_STATUS_MSG = "Synced to your account"
 
 POLL_INTERVAL_SEC = 8.0
 
@@ -60,18 +65,26 @@ _COMPARE_FIELDS: tuple[str, ...] = (
 _TEST_CLOUD_STORE: dict[str, dict[str, Any]] | None = None
 _TEST_CLOUD_AVAILABLE: bool | None = None
 _TEST_SIGNED_IN: bool | None = None
+_TEST_FAIL_HEADER_SAVE: bool = False
 
 
 def install_test_cloud_store(store: dict[str, dict[str, Any]] | None) -> None:
     """Install or clear an in-memory cloud preference store for tests."""
-    global _TEST_CLOUD_STORE, _TEST_CLOUD_AVAILABLE, _TEST_SIGNED_IN
+    global _TEST_CLOUD_STORE, _TEST_CLOUD_AVAILABLE, _TEST_SIGNED_IN, _TEST_FAIL_HEADER_SAVE
     _TEST_CLOUD_STORE = store
     if store is None:
         _TEST_CLOUD_AVAILABLE = None
         _TEST_SIGNED_IN = None
+        _TEST_FAIL_HEADER_SAVE = False
     else:
         _TEST_CLOUD_AVAILABLE = True
         _TEST_SIGNED_IN = True
+
+
+def install_test_header_save_failure(fail: bool = True) -> None:
+    """Force revision-header saves to fail (tests only)."""
+    global _TEST_FAIL_HEADER_SAVE
+    _TEST_FAIL_HEADER_SAVE = bool(fail)
 
 
 def _utc_now_iso() -> str:
@@ -298,8 +311,16 @@ def _revision_header_from_doc(doc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def load_preference_revision_meta(session: dict[str, Any]) -> dict[str, Any]:
-    """Compact revision-header fetch — does not load the full preference document."""
+def load_preference_revision_meta(
+    session: dict[str, Any],
+    *,
+    allow_prefs_fallback: bool = True,
+) -> dict[str, Any]:
+    """Compact revision-header fetch — does not load the full preference document.
+
+    When ``allow_prefs_fallback=False``, missing headers return empty (used for
+    write verification so a successful full-doc write cannot fake header success).
+    """
     empty = {
         "revision": 0,
         "preference_fingerprint": "",
@@ -322,10 +343,12 @@ def load_preference_revision_meta(session: dict[str, Any]) -> dict[str, Any]:
                     "settings_app": rev_app,
                     "source": "revision_header",
                 }
+            if not allow_prefs_fallback:
+                return {**empty, "settings_app": rev_app, "source": "missing_header"}
             # Fallback for older writes that only stored the full prefs doc.
             doc = _load_cloud_prefs(session)
             if not doc:
-                return empty
+                return {**empty, "settings_app": rev_app, "source": "missing_header"}
             header = _revision_header_from_doc(doc)
             return {**header, "settings_app": rev_app, "source": "prefs_fallback"}
 
@@ -342,17 +365,23 @@ def load_preference_revision_meta(session: dict[str, Any]) -> dict[str, Any]:
                 "settings_app": rev_app,
                 "source": "revision_header",
             }
+        if not allow_prefs_fallback:
+            return {**empty, "settings_app": rev_app, "source": "missing_header"}
         doc = _load_cloud_prefs(session)
         if not doc:
-            return empty
+            return {**empty, "settings_app": rev_app, "source": "missing_header"}
         header = _revision_header_from_doc(doc)
         return {**header, "settings_app": rev_app, "source": "prefs_fallback"}
     except Exception as exc:
         _record_error(session, where="load_preference_revision_meta", exc=exc)
-        return {**empty, "error": type(exc).__name__}
+        session[HEADER_LAST_ERROR_KEY] = type(exc).__name__
+        return {**empty, "error": type(exc).__name__, "source": "error"}
 
 
 def _save_revision_header(session: dict[str, Any], doc: dict[str, Any]) -> bool:
+    if _TEST_FAIL_HEADER_SAVE:
+        session[HEADER_LAST_ERROR_KEY] = "test_header_save_fail"
+        return False
     header = _revision_header_from_doc(doc)
     rev_app = prefs_revision_settings_app(session)
     try:
@@ -367,10 +396,12 @@ def _save_revision_header(session: dict[str, Any], doc: dict[str, Any]) -> bool:
         return True
     except Exception as exc:
         _record_error(session, where="save_revision_header", exc=exc)
+        session[HEADER_LAST_ERROR_KEY] = type(exc).__name__
         return False
 
 
-def _save_cloud_prefs(session: dict[str, Any], doc: dict[str, Any]) -> bool:
+def _save_full_preference_document(session: dict[str, Any], doc: dict[str, Any]) -> bool:
+    """Persist the full preference document only (no revision header)."""
     if not _cloud_sync_available() or not _signed_in(session):
         return False
     app = _prefs_settings_app(session)
@@ -379,7 +410,6 @@ def _save_cloud_prefs(session: dict[str, Any], doc: dict[str, Any]) -> bool:
             envelope = copy.deepcopy(_TEST_CLOUD_STORE.get(app) or {})
             envelope[PREFS_DOC_KEY] = copy.deepcopy(doc)
             _TEST_CLOUD_STORE[app] = envelope
-            _save_revision_header(session, doc)
             return True
         from suite_account import load_settings, save_settings
 
@@ -388,11 +418,173 @@ def _save_cloud_prefs(session: dict[str, Any], doc: dict[str, Any]) -> bool:
             envelope = {}
         envelope[PREFS_DOC_KEY] = copy.deepcopy(doc)
         save_settings(app, envelope)
-        _save_revision_header(session, doc)
         return True
     except Exception as exc:
-        _record_error(session, where="save_cloud_prefs", exc=exc)
+        _record_error(session, where="save_full_preference_document", exc=exc)
         return False
+
+
+def _headers_align_with_doc(doc: dict[str, Any], header: dict[str, Any]) -> bool:
+    if not isinstance(doc, dict) or not doc:
+        return False
+    if not isinstance(header, dict) or not header:
+        return False
+    expected = _revision_header_from_doc(doc)
+    return (
+        int(header.get("revision") or 0) == int(expected.get("revision") or 0)
+        and str(header.get("preference_fingerprint") or "") == str(expected.get("preference_fingerprint") or "")
+        and str(header.get("updated_at") or "") == str(expected.get("updated_at") or "")
+        and str(header.get("updated_by_device_id") or "") == str(expected.get("updated_by_device_id") or "")
+    )
+
+
+def persist_and_verify_preference_pair(session: dict[str, Any], doc: dict[str, Any]) -> dict[str, Any]:
+    """Save full document + revision header and verify both readbacks match."""
+    result: dict[str, Any] = {
+        "cloud_saved": False,
+        "revision_header_write_verified": False,
+        "revision_header_readback_verified": False,
+        "full_header_pair_aligned": False,
+        "write_verified": False,
+        "readback_document": {},
+        "readback_header": {},
+    }
+    session[PAIR_ALIGNED_KEY] = False
+    if not _save_full_preference_document(session, doc):
+        result["error"] = "full_document_save_failed"
+        session[HEADER_LAST_ERROR_KEY] = "full_document_save_failed"
+        return result
+    result["cloud_saved"] = True
+
+    header_ok = _save_revision_header(session, doc)
+    result["revision_header_write_verified"] = bool(header_ok)
+    if not header_ok:
+        result["error"] = "revision_header_save_failed"
+        session[HEADER_LAST_ERROR_KEY] = str(session.get(HEADER_LAST_ERROR_KEY) or "revision_header_save_failed")
+        return result
+
+    readback = _load_cloud_prefs(session)
+    header_rb = load_preference_revision_meta(session, allow_prefs_fallback=False)
+    result["readback_document"] = {
+        k: readback.get(k)
+        for k in (
+            "revision",
+            "active_draft_id",
+            "active_league_context_id",
+            "research_mode_enabled",
+            "fantasy_source_override_kind",
+            "fantasy_source_override_id",
+            "updated_at",
+            "updated_by_device_id",
+        )
+    }
+    result["readback_header"] = {
+        "revision": int(header_rb.get("revision") or 0),
+        "preference_fingerprint": str(header_rb.get("preference_fingerprint") or ""),
+        "updated_at": str(header_rb.get("updated_at") or ""),
+        "updated_by_device_id": str(header_rb.get("updated_by_device_id") or ""),
+        "source": str(header_rb.get("source") or ""),
+    }
+    doc_ok, mismatch = _docs_match_for_verification(doc, readback)
+    header_aligned = _headers_align_with_doc(readback if readback else doc, header_rb)
+    result["revision_header_readback_verified"] = header_aligned
+    result["full_header_pair_aligned"] = bool(doc_ok and header_aligned)
+    result["write_verified"] = bool(doc_ok and header_aligned)
+    if not doc_ok:
+        result["error"] = mismatch or "full_document_readback_mismatch"
+        session[HEADER_LAST_ERROR_KEY] = result["error"]
+        return result
+    if not header_aligned:
+        result["error"] = "revision_header_readback_mismatch"
+        session[HEADER_LAST_ERROR_KEY] = "revision_header_readback_mismatch"
+        return result
+
+    session[PAIR_ALIGNED_KEY] = True
+    session[SESSION_PAIR_VERIFIED_KEY] = True
+    session.pop(HEADER_LAST_ERROR_KEY, None)
+    return result
+
+
+def _save_cloud_prefs(session: dict[str, Any], doc: dict[str, Any]) -> bool:
+    """Persist prefs and revision header as one logical write (return True only if both ok)."""
+    pair = persist_and_verify_preference_pair(session, doc)
+    # Compatibility: callers that only check bool still need header success.
+    return bool(pair.get("cloud_saved") and pair.get("revision_header_write_verified"))
+
+
+def repair_stale_preference_revision_header(session: dict[str, Any], doc: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite compact header from authoritative full document when they diverge."""
+    trace: dict[str, Any] = {"repaired": False}
+    if not isinstance(doc, dict) or not doc:
+        trace["skipped"] = "empty_doc"
+        return trace
+    header = load_preference_revision_meta(session, allow_prefs_fallback=False)
+    if _headers_align_with_doc(doc, header):
+        session[PAIR_ALIGNED_KEY] = True
+        trace["skipped"] = "already_aligned"
+        return trace
+    if not _save_revision_header(session, doc):
+        trace["error"] = "header_save_failed"
+        session[PAIR_ALIGNED_KEY] = False
+        return trace
+    header_rb = load_preference_revision_meta(session, allow_prefs_fallback=False)
+    ok = _headers_align_with_doc(doc, header_rb)
+    session[PAIR_ALIGNED_KEY] = ok
+    trace["repaired"] = ok
+    if not ok:
+        trace["error"] = "header_readback_mismatch"
+        session[HEADER_LAST_ERROR_KEY] = "stale_header_repair_failed"
+    else:
+        session.pop(HEADER_LAST_ERROR_KEY, None)
+    return trace
+
+
+def verify_preference_document_header_pair_once(session: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
+    """Low-frequency safety: once per session, load full doc and align/repair the header."""
+    trace: dict[str, Any] = {"verified": False, "applied": False}
+    if not force and session.get(SESSION_PAIR_VERIFIED_KEY) and session.get(PAIR_ALIGNED_KEY):
+        trace["skipped"] = "already_verified"
+        return trace
+    if not _signed_in(session) or not _cloud_sync_available():
+        trace["skipped"] = "unavailable"
+        return trace
+    doc = _load_cloud_prefs(session)
+    if not doc:
+        session[SESSION_PAIR_VERIFIED_KEY] = True
+        session[PAIR_ALIGNED_KEY] = False
+        trace["skipped"] = "empty_cloud"
+        return trace
+    repair = repair_stale_preference_revision_header(session, doc)
+    trace["repair"] = repair
+    session[SESSION_PAIR_VERIFIED_KEY] = True
+    applied = _apply_prefs_to_session(session, doc, source="pair_safety_verify")
+    trace["applied"] = bool(applied.get("changed"))
+    trace["verified"] = bool(session.get(PAIR_ALIGNED_KEY))
+    return trace
+
+
+def _can_skip_full_preference_fetch(
+    session: dict[str, Any],
+    meta: dict[str, Any],
+    *,
+    local_rev: int,
+    local_fp: str,
+) -> bool:
+    """True only when compact header is trustworthy and matches locally applied prefs."""
+    source = str(meta.get("source") or "")
+    remote_rev = int(meta.get("revision") or 0)
+    remote_fp = str(meta.get("preference_fingerprint") or "")
+    if source in {"missing_header", "error", "prefs_fallback"} or not remote_fp or remote_rev <= 0:
+        return False
+    if not session.get(PAIR_ALIGNED_KEY):
+        return False
+    if remote_rev != local_rev or remote_fp != local_fp:
+        return False
+    local_fields = _read_session_prefs_fields(session)
+    synth = {**local_fields, "revision": local_rev}
+    if not local_fp or preference_document_fingerprint(synth) != local_fp:
+        return False
+    return True
 
 
 def _docs_match_for_verification(expected: dict[str, Any], actual: dict[str, Any]) -> tuple[bool, str]:
@@ -662,17 +854,26 @@ def sync_account_fantasy_preferences(
         local_fp = str(session.get(SESSION_APPLIED_FP_KEY) or "")
         trace["remote_revision"] = remote_rev
         trace["local_revision"] = local_rev
+        trace["header_source"] = str(meta.get("source") or "")
+
+        # Low-frequency safety when this session never verified a full/header pair.
+        if not session.get(SESSION_PAIR_VERIFIED_KEY):
+            safety = verify_preference_document_header_pair_once(session)
+            trace["pair_safety"] = safety
+            if safety.get("applied"):
+                trace["applied"] = True
+                trace["needs_rerun"] = True
+                session[LAST_SYNC_TRACE_KEY] = trace
+                return trace
+
         need_full = bool(force) or remote_rev > local_rev or (remote_fp and remote_fp != local_fp)
-        if not need_full and remote_rev == local_rev:
-            # Check local field drift against applied fingerprint without fetching full doc
-            # when header matches; still reassert if local fingerprint differs from fields.
-            local_fields = _read_session_prefs_fields(session)
-            synth = {**local_fields, "revision": local_rev}
-            if preference_document_fingerprint(synth) == local_fp and local_fp:
+        if not need_full:
+            if _can_skip_full_preference_fetch(session, meta, local_rev=local_rev, local_fp=local_fp):
                 trace["skipped"] = "revision_equal_fields_match"
                 session[LAST_SYNC_TRACE_KEY] = trace
                 return trace
             need_full = True
+            trace["force_due_to_untrusted_header"] = True
 
         if not need_full:
             trace["skipped"] = "revision_not_newer"
@@ -684,6 +885,9 @@ def sync_account_fantasy_preferences(
             trace["skipped"] = "empty_cloud"
             session[LAST_SYNC_TRACE_KEY] = trace
             return trace
+        # Repair compact header when full doc is authoritative and header lagging/missing.
+        repair = repair_stale_preference_revision_header(session, cloud)
+        trace["header_repair"] = repair
         match, mismatched = account_preference_fields_match_session(session, cloud)
         cloud_rev = int(cloud.get("revision") or 0)
         if cloud_rev > local_rev:
@@ -696,6 +900,10 @@ def sync_account_fantasy_preferences(
             applied = reassert_account_preferences_after_hydration(session)
         else:
             applied = _apply_prefs_to_session(session, cloud, source="cloud_sync")
+        session[SESSION_PAIR_VERIFIED_KEY] = True
+        session[PAIR_ALIGNED_KEY] = bool(session.get(PAIR_ALIGNED_KEY))
+        if repair.get("repaired") or repair.get("skipped") == "already_aligned":
+            session[PAIR_ALIGNED_KEY] = True
         trace.update(applied)
         trace["applied"] = bool(applied.get("changed"))
         trace["needs_rerun"] = bool(applied.get("changed"))
@@ -791,27 +999,21 @@ def update_account_fantasy_preference_fields(
             "fantasy_source_override_id",
         )
     }
-    saved = _save_cloud_prefs(session, doc)
-    trace["cloud_saved"] = saved
-    if not saved:
+    pair = persist_and_verify_preference_pair(session, doc)
+    trace["cloud_saved"] = bool(pair.get("cloud_saved"))
+    trace["revision_header_write_verified"] = bool(pair.get("revision_header_write_verified"))
+    trace["revision_header_readback_verified"] = bool(pair.get("revision_header_readback_verified"))
+    trace["full_header_pair_aligned"] = bool(pair.get("full_header_pair_aligned"))
+    trace["readback_document"] = pair.get("readback_document") or {}
+    trace["readback_header"] = pair.get("readback_header") or {}
+    if not pair.get("cloud_saved"):
         _apply_changed_fields_locally(session, changed_fields)
         session[WRITE_FAIL_FLASH_KEY] = SYNC_FAIL_USER_MSG
-        session[SYNC_STATUS_FLASH_KEY] = "Changed on this device, but account sync failed"
+        session[SYNC_STATUS_FLASH_KEY] = SYNC_FAIL_STATUS_MSG
         session[LAST_WRITE_TRACE_KEY] = trace
         return trace
 
     readback = _load_cloud_prefs(session)
-    trace["readback_document"] = {
-        k: readback.get(k)
-        for k in (
-            "revision",
-            "active_draft_id",
-            "active_league_context_id",
-            "research_mode_enabled",
-            "fantasy_source_override_kind",
-            "fantasy_source_override_id",
-        )
-    }
     mismatches: list[str] = []
     for key, value in changed_fields.items():
         got = readback.get(key)
@@ -822,11 +1024,15 @@ def update_account_fantasy_preference_fields(
             mismatches.append(key)
     if int(readback.get("revision") or 0) != new_rev:
         mismatches.append("revision")
-    trace["write_verified"] = not mismatches
-    if mismatches:
-        trace["verification_error"] = f"changed_field_mismatch:{mismatches}"
+    if not pair.get("write_verified"):
+        mismatches.append("revision_header_pair")
+    trace["write_verified"] = not mismatches and bool(pair.get("write_verified"))
+    if mismatches or not pair.get("write_verified"):
+        trace["verification_error"] = (
+            pair.get("error") or f"changed_field_mismatch:{mismatches}"
+        )
         session[WRITE_FAIL_FLASH_KEY] = SYNC_FAIL_USER_MSG
-        session[SYNC_STATUS_FLASH_KEY] = "Changed on this device, but account sync failed"
+        session[SYNC_STATUS_FLASH_KEY] = SYNC_FAIL_STATUS_MSG
         session[LAST_WRITE_TRACE_KEY] = trace
         return trace
 
@@ -869,7 +1075,7 @@ def update_account_fantasy_preference_fields(
         session.pop(REMOTE_APPLY_IN_PROGRESS_KEY, None)
 
     session.pop(LAST_SYNC_ERROR_KEY, None)
-    session[SYNC_STATUS_FLASH_KEY] = "Synced to your account"
+    session[SYNC_STATUS_FLASH_KEY] = SYNC_OK_STATUS_MSG
     trace["written"] = True
     session[LAST_WRITE_TRACE_KEY] = trace
     session[LAST_SYNC_TRACE_KEY] = {"source": "local_write", **trace}
@@ -914,6 +1120,26 @@ def ensure_account_preferences_applied_before_controls(session: dict[str, Any]) 
             trace["widget_reseed_result"] = False
         return trace
 
+    # First visit to controls this session: verify full document/header pair once.
+    if not session.get(SESSION_PAIR_VERIFIED_KEY):
+        safety = verify_preference_document_header_pair_once(session)
+        trace["pair_safety"] = safety
+        if safety.get("applied"):
+            try:
+                from fantasy_context_ui import (
+                    clear_fantasy_context_toggle_widgets,
+                    reseed_fantasy_context_toggle_widgets,
+                )
+
+                clear_fantasy_context_toggle_widgets(session)
+                reseed_fantasy_context_toggle_widgets(session)
+                trace["widget_reseed_result"] = True
+                trace["applied"] = True
+                session[LAST_SYNC_TRACE_KEY] = dict(trace)
+                return trace
+            except ImportError:
+                pass
+
     meta = load_preference_revision_meta(session)
     remote_rev = int(meta.get("revision") or 0)
     remote_fp = str(meta.get("preference_fingerprint") or "")
@@ -922,7 +1148,13 @@ def ensure_account_preferences_applied_before_controls(session: dict[str, Any]) 
     local_fields = _read_session_prefs_fields(session)
     synth = {**local_fields, "revision": local_rev}
     local_drift = bool(local_fp) and preference_document_fingerprint(synth) != local_fp
-    need_full = remote_rev > local_rev or (remote_fp and remote_fp != local_fp) or local_drift or not local_fp
+    need_full = (
+        remote_rev > local_rev
+        or (remote_fp and remote_fp != local_fp)
+        or local_drift
+        or not local_fp
+        or not _can_skip_full_preference_fetch(session, meta, local_rev=local_rev, local_fp=local_fp)
+    )
     if not need_full:
         try:
             from fantasy_context_ui import reseed_fantasy_context_toggle_widgets
@@ -946,6 +1178,7 @@ def ensure_account_preferences_applied_before_controls(session: dict[str, Any]) 
         trace["skipped"] = "empty_cloud"
         return trace
 
+    repair_stale_preference_revision_header(session, cloud)
     applied = reassert_account_preferences_after_hydration(session)
     # Force widget delete + reseed even if reassert thought values already matched.
     try:
@@ -957,6 +1190,7 @@ def ensure_account_preferences_applied_before_controls(session: dict[str, Any]) 
     except ImportError:
         applied["widget_reseed_result"] = False
     applied["source"] = applied.get("source") or "before_controls"
+    session[SESSION_PAIR_VERIFIED_KEY] = True
     session[LAST_SYNC_TRACE_KEY] = dict(applied)
     return applied
 
@@ -1007,28 +1241,37 @@ def write_account_fantasy_preferences(
     trace["revision"] = new_rev
     trace["doc_active_draft_id"] = doc.get("active_draft_id")
     trace["doc_active_league_context_id"] = doc.get("active_league_context_id")
-    saved = _save_cloud_prefs(session, doc)
-    trace["cloud_saved"] = saved
-    if not saved:
+    pair = persist_and_verify_preference_pair(session, doc)
+    trace["cloud_saved"] = bool(pair.get("cloud_saved"))
+    trace["revision_header_write_verified"] = bool(pair.get("revision_header_write_verified"))
+    trace["revision_header_readback_verified"] = bool(pair.get("revision_header_readback_verified"))
+    trace["full_header_pair_aligned"] = bool(pair.get("full_header_pair_aligned"))
+    trace["readback_header"] = pair.get("readback_header") or {}
+    if not pair.get("cloud_saved"):
         session[WRITE_FAIL_FLASH_KEY] = SYNC_FAIL_USER_MSG
+        session[SYNC_STATUS_FLASH_KEY] = SYNC_FAIL_STATUS_MSG
         session[LAST_SYNC_TRACE_KEY] = trace
+        session[LAST_WRITE_TRACE_KEY] = trace
         return trace
 
-    readback = _load_cloud_prefs(session)
-    ok, mismatch = _docs_match_for_verification(doc, readback)
+    ok = bool(pair.get("write_verified"))
     trace["write_verified"] = ok
     if not ok:
-        trace["verification_error"] = mismatch or "readback_mismatch"
+        trace["verification_error"] = pair.get("error") or "readback_mismatch"
         session[WRITE_FAIL_FLASH_KEY] = SYNC_FAIL_USER_MSG
+        session[SYNC_STATUS_FLASH_KEY] = SYNC_FAIL_STATUS_MSG
         session[LAST_SYNC_TRACE_KEY] = trace
+        session[LAST_WRITE_TRACE_KEY] = trace
         return trace
 
     session[SESSION_APPLIED_REV_KEY] = new_rev
     session[SESSION_LOCAL_REV_KEY] = new_rev
     session[SESSION_APPLIED_FP_KEY] = preference_document_fingerprint(doc)
     session.pop(LAST_SYNC_ERROR_KEY, None)
+    session[SYNC_STATUS_FLASH_KEY] = SYNC_OK_STATUS_MSG
     trace["written"] = True
     session[LAST_SYNC_TRACE_KEY] = trace
+    session[LAST_WRITE_TRACE_KEY] = trace
     return trace
 
 
@@ -1156,10 +1399,23 @@ def collect_account_preference_diagnostics(session: dict[str, Any]) -> dict[str,
         "preference_revision_app": prefs_revision_settings_app(session),
         "preference_doc_key": PREFS_DOC_KEY,
         "full_preference_document_revision": int(remote.get("revision") or 0),
+        "full_document_revision": int(remote.get("revision") or 0),
+        "full_document_fingerprint": preference_document_fingerprint(remote) if remote else "",
         "revision_header_revision": int(header.get("revision") or 0),
+        "revision_header_fingerprint": str(header.get("preference_fingerprint") or ""),
         "preference_fingerprint_local": str(session.get(SESSION_APPLIED_FP_KEY) or ""),
         "preference_fingerprint_remote": preference_document_fingerprint(remote) if remote else "",
         "preference_fingerprint_header": str(header.get("preference_fingerprint") or ""),
+        "revision_header_write_verified": (last_write or {}).get("revision_header_write_verified")
+        if isinstance(last_write, dict)
+        else None,
+        "revision_header_readback_verified": (last_write or {}).get("revision_header_readback_verified")
+        if isinstance(last_write, dict)
+        else None,
+        "full_header_pair_aligned": bool(session.get(PAIR_ALIGNED_KEY)),
+        "last_header_error": str(session.get(HEADER_LAST_ERROR_KEY) or ""),
+        "header_source": str(header.get("source") or ""),
+        "pair_verified_this_session": bool(session.get(SESSION_PAIR_VERIFIED_KEY)),
         "remote_research_mode_enabled": bool(remote.get("research_mode_enabled")) if remote else None,
         "remote_fantasy_source_override_kind": str(remote.get("fantasy_source_override_kind") or "") if remote else None,
         "remote_fantasy_source_override_id": str(remote.get("fantasy_source_override_id") or "") if remote else None,
@@ -1219,11 +1475,16 @@ def render_account_preference_sync_fragment(st: Any) -> None:
         local_fields = _read_session_prefs_fields(session)
         synth = {**local_fields, "revision": local_rev}
         local_drift = bool(local_fp) and preference_document_fingerprint(synth) != local_fp
-        if remote_rev < local_rev:
+        if not session.get(SESSION_PAIR_VERIFIED_KEY) or not session.get(PAIR_ALIGNED_KEY):
+            result = sync_account_fantasy_preferences(session, force=True)
+        elif remote_rev < local_rev:
             return
-        if remote_rev == local_rev and remote_fp == local_fp and not local_drift:
-            return
-        result = sync_account_fantasy_preferences(session, force=True)
+        elif remote_rev == local_rev and remote_fp == local_fp and not local_drift:
+            if _can_skip_full_preference_fetch(session, meta, local_rev=local_rev, local_fp=local_fp):
+                return
+            result = sync_account_fantasy_preferences(session, force=True)
+        else:
+            result = sync_account_fantasy_preferences(session, force=True)
         if result.get("needs_rerun") or result.get("applied"):
             rerun = getattr(st, "rerun", None)
             if callable(rerun):
