@@ -553,15 +553,53 @@ def _draft_round_for_pick(session: dict[str, Any], pick_n: int | None) -> int | 
     return ((int(pick_n) - 1) // team_count) + 1
 
 
+def live_pick_clock_may_display(session: dict[str, Any]) -> bool:
+    """True only after Start Draft (or a completed live draft) — never during setup/lobby."""
+    room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else None
+    status = str((room or {}).get("status") or "").strip() if room else ""
+    if status in {"in_progress", "paused", "complete"}:
+        return True
+    try:
+        from live_draft_navigation import resolve_live_draft_activation_phase
+
+        return resolve_live_draft_activation_phase(session) in {"draft_started", "draft_complete"}
+    except ImportError:
+        return False
+
+
 def draft_status_summary(session: dict[str, Any]) -> dict[str, Any]:
     """Sidebar-friendly round/pick/on-clock/timer snapshot for active drafts."""
     ctx = draft_action_context(session)
+    phase = ""
+    try:
+        from live_draft_navigation import resolve_live_draft_activation_phase
+
+        phase = resolve_live_draft_activation_phase(session)
+    except ImportError:
+        phase = ""
+
+    # Setup form / lobby: no current pick, no on-clock, timer inactive.
+    if not live_pick_clock_may_display(session):
+        return {
+            **ctx,
+            "round": None,
+            "pick": None,
+            "current_pick": None,
+            "on_clock_team": None,
+            "is_my_turn": False,
+            "timer_seconds": None,
+            "has_active_draft": False,
+            "live_pick_clock_allowed": False,
+            "activation_phase": phase or "setup_draft",
+        }
+
     pick = ctx.get("current_pick")
     try:
         pick_n = int(pick) if pick is not None else None
     except (TypeError, ValueError):
         pick_n = None
     on_clock = str(ctx.get("on_clock_team") or "").strip()
+    room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else None
     if not on_clock and pick_n is not None and not ctx.get("draft_complete"):
         try:
             from draft_room_state import get_canonical_draft_board
@@ -573,41 +611,33 @@ def draft_status_summary(session: dict[str, Any]) -> dict[str, Any]:
                     on_clock = str(match.iloc[0].get("Team") or "").strip()
         except Exception:
             pass
-    if not on_clock:
-        room = session.get("live_draft_room")
-        if isinstance(room, dict):
-            try:
-                from live_draft_state import analyze_live_draft_progress
-                from live_draft_timer_logic import live_draft_current_slot
+    if not on_clock and isinstance(room, dict):
+        try:
+            from live_draft_state import analyze_live_draft_progress
 
-                progress = analyze_live_draft_progress(room)
-                on_clock = str(progress.get("on_clock_team") or "").strip()
-                if not on_clock:
-                    slot = progress.get("slot") or live_draft_current_slot(room)
-                    if isinstance(slot, dict):
-                        on_clock = str(slot.get("Team") or "").strip()
-                if not on_clock:
-                    picks = room.get("pick_order") or []
-                    idx = int(room.get("current_pick_index") or 0)
-                    if 0 <= idx < len(picks) and isinstance(picks[idx], dict):
-                        on_clock = str(picks[idx].get("Team") or "").strip()
-            except ImportError:
-                pass
+            progress = analyze_live_draft_progress(room)
+            on_clock = str(progress.get("on_clock_team") or "").strip()
+            if pick_n is None and progress.get("current_pick") is not None:
+                try:
+                    pick_n = int(progress.get("current_pick"))
+                except (TypeError, ValueError):
+                    pick_n = None
+        except ImportError:
+            pass
     timer_seconds: int | None = None
-    if ctx.get("live_draft_active"):
-        room = session.get("live_draft_room")
-        if isinstance(room, dict) and str(room.get("status") or "") == "in_progress":
-            try:
-                from live_draft_timer_logic import ensure_live_draft_timer_for_pick, live_draft_seconds_remaining
+    if ctx.get("live_draft_active") and isinstance(room, dict) and str(room.get("status") or "") == "in_progress":
+        try:
+            from live_draft_timer_logic import ensure_live_draft_timer_for_pick, live_draft_seconds_remaining
 
-                ensure_live_draft_timer_for_pick(room)
-                timer_seconds = int(live_draft_seconds_remaining(room))
-            except ImportError:
-                timer_seconds = None
+            ensure_live_draft_timer_for_pick(room)
+            timer_seconds = int(live_draft_seconds_remaining(room))
+        except ImportError:
+            timer_seconds = None
     return {
         **ctx,
         "round": _draft_round_for_pick(session, pick_n),
         "pick": pick_n,
+        "current_pick": pick_n,
         "on_clock_team": on_clock or None,
         "is_my_turn": bool(ctx.get("is_your_pick")),
         "timer_seconds": timer_seconds,
@@ -615,6 +645,8 @@ def draft_status_summary(session: dict[str, Any]) -> dict[str, Any]:
             not ctx.get("draft_complete")
             and (pick_n is not None or on_clock or str(ctx.get("draft_status") or "") == "in_progress")
         ),
+        "live_pick_clock_allowed": True,
+        "activation_phase": phase or "draft_started",
     }
 
 
@@ -663,13 +695,15 @@ def resolve_on_clock_team_label(
     summary: dict[str, Any] | None = None,
 ) -> str:
     """Shared on-clock label for sidebar + status lines (live room slot is source of truth)."""
+    if not live_pick_clock_may_display(session):
+        return ""
     snap = summary if isinstance(summary, dict) else draft_status_summary(session)
     on_clock = str(snap.get("on_clock_team") or "").strip()
     if on_clock and on_clock != "—":
         return on_clock
 
     room = session.get("live_draft_room")
-    if isinstance(room, dict):
+    if isinstance(room, dict) and str(room.get("status") or "").strip() in {"in_progress", "paused", "complete"}:
         on_clock = _on_clock_team_from_live_room(session, room)
     if on_clock:
         return on_clock

@@ -794,10 +794,12 @@ def render_draft_button(
 
 
 def render_draft_sidebar_status(st: Any, session: dict[str, Any]) -> dict[str, Any]:
-    """Always show round, pick, and on-clock team in the workflow sidebar."""
-    from draft_actions import draft_status_summary, resolve_on_clock_team_label
+    """Show round/pick/on-clock only after Start Draft (or for a completed live draft)."""
+    from draft_actions import draft_status_summary, live_pick_clock_may_display, resolve_on_clock_team_label
 
     summary = draft_status_summary(session)
+    if not live_pick_clock_may_display(session):
+        return summary
     if summary.get("draft_complete"):
         st.sidebar.caption("Draft complete")
         return summary
@@ -812,7 +814,8 @@ def render_draft_sidebar_status(st: Any, session: dict[str, Any]) -> dict[str, A
         if line_parts:
             st.sidebar.markdown(f"**{' · '.join(line_parts)}**")
         on_clock = resolve_on_clock_team_label(session, summary=summary)
-        st.sidebar.caption(f"On Clock: **{on_clock or '—'}**")
+        if on_clock and on_clock != "—":
+            st.sidebar.caption(f"On Clock: **{on_clock}**")
         if summary.get("live_draft_active"):
             render_draft_sidebar_timer(st, session, summary=summary)
     return summary

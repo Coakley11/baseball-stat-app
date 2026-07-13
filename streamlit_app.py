@@ -22237,15 +22237,21 @@ if active_page == "Live Draft Room":
                 st.rerun()
 
             if is_shared_multiplayer_intent(st.session_state, room=room):
-                _lobby_slot = live_draft_current_slot(room)
+                _lobby_status = str(room.get("status") or "").strip()
+                _lobby_started = _lobby_status in ("in_progress", "paused", "complete")
+                _lobby_slot = live_draft_current_slot(room) if _lobby_started else None
                 _lobby_pick_order = room.get("pick_order") or []
                 _lobby_total = len(_lobby_pick_order)
                 _lobby_done = len(room.get("draft_board") or [])
                 _lobby_on_clock = (
-                    str(_lobby_slot.get("Team") or "—") if isinstance(_lobby_slot, dict) else "—"
+                    str(_lobby_slot.get("Team") or "—")
+                    if _lobby_started and isinstance(_lobby_slot, dict)
+                    else ""
                 )
                 _lobby_pick = (
                     f"Pick {min(_lobby_done + 1, _lobby_total) if _lobby_total else 0} / {_lobby_total}"
+                    if _lobby_started
+                    else ""
                 )
                 if is_shared_lobby(st.session_state, room=room):
                     render_lobby_status_panel(st, st.session_state, room)

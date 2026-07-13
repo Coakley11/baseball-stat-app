@@ -47,7 +47,8 @@ class LiveDraftProgressTests(unittest.TestCase):
         progress = analyze_live_draft_progress(_sample_live_room(status="not_started"))
         self.assertFalse(progress["draft_complete"])
         self.assertEqual(progress["draft_complete_reason"], "not_started")
-        self.assertEqual(progress["current_pick"], 1)
+        self.assertIsNone(progress["current_pick"])
+        self.assertIsNone(progress["on_clock_team"])
 
     def test_repair_stale_complete_status_with_picks_remaining(self) -> None:
         room = _sample_live_room(status="complete", pick_index=99)
@@ -63,14 +64,20 @@ class LiveDraftProgressTests(unittest.TestCase):
             "room_your_team": "Team 1",
         }
         try:
-            from draft_room_state import ACTIVE_DRAFT_SOURCE_LIVE, set_canonical_draft_meta
+            from draft_room_state import set_canonical_draft_meta
 
             set_canonical_draft_meta(session, mode="live_draft_room", source="test", pick_count=0)
         except ImportError:
             pass
+        # not_started lobby is not the effective live source — no Pick 1 / on-clock.
+        progress = analyze_live_draft_progress(session["live_draft_room"])
+        self.assertFalse(progress["draft_complete"])
+        self.assertEqual(progress["draft_complete_reason"], "not_started")
+        self.assertIsNone(progress["current_pick"])
+        self.assertIsNone(progress["on_clock_team"])
         ctx = draft_action_context(session)
-        self.assertFalse(ctx["draft_complete"])
-        self.assertEqual(ctx["draft_complete_reason"], "not_started")
+        self.assertNotEqual(ctx.get("active_draft_source"), "live")
+        self.assertFalse(bool(ctx.get("live_draft_active")))
 
     @patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_fresh_shared_room_is_not_complete(self, _mock_auth: object) -> None:

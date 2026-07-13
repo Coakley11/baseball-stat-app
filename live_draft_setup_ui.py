@@ -673,6 +673,12 @@ def render_draft_status_summary_card(
     except ImportError:
         commissioner_line = f"**Commissioner:** {commissioner_label}"
 
+    show_pick_clock = str(room.get("status") or "").strip() in {"in_progress", "paused", "complete"}
+    if not show_pick_clock:
+        on_clock_team = ""
+        pick_label = ""
+        round_no = ""
+
     with st.container(border=True):
         st.markdown("#### Draft Status Summary")
         if code:
@@ -684,7 +690,7 @@ def render_draft_status_summary_card(
             st.markdown(f"**Current Round:** {round_no}")
         st.markdown(f"**Draft Status:** {status_txt}")
         st.markdown(f"**Connected Managers:** {joined} of {total}")
-        if on_clock_team:
+        if on_clock_team and str(on_clock_team) not in {"", "—"}:
             st.markdown(f"**On the Clock:** {on_clock_team}")
         st.markdown("**Claimed Teams**")
         for row in team_claim_rows(session, room):

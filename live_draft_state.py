@@ -474,6 +474,20 @@ def analyze_live_draft_progress(room: dict[str, Any] | None) -> dict[str, Any]:
         base["draft_complete_reason"] = "missing_pick_order"
         return base
 
+    # Setup / lobby: never invent Pick 1 / on-clock before Start Draft.
+    if status not in ("in_progress", "paused", "complete"):
+        base["draft_complete"] = False
+        if status == "not_started" and board_count == 0:
+            base["draft_complete_reason"] = "not_started"
+        elif status:
+            base["draft_complete_reason"] = f"inactive_status:{status}"
+        else:
+            base["draft_complete_reason"] = "inactive_status"
+        base["current_pick"] = None
+        base["on_clock_team"] = None
+        base["slot"] = None
+        return base
+
     if draft_complete:
         return base
 
@@ -490,8 +504,6 @@ def analyze_live_draft_progress(room: dict[str, Any] | None) -> dict[str, Any]:
             except (TypeError, ValueError):
                 base["current_pick"] = None
             base["on_clock_team"] = str(slot.get("Team") or "").strip() or None
-        if status == "not_started" and board_count == 0:
-            base["draft_complete_reason"] = "not_started"
         return base
 
     slot = pick_order[min(idx, len(pick_order) - 1)] if pick_order else None
@@ -503,8 +515,6 @@ def analyze_live_draft_progress(room: dict[str, Any] | None) -> dict[str, Any]:
             base["current_pick"] = None
         base["on_clock_team"] = str(slot.get("Team") or "").strip() or None
 
-    if status == "not_started" and board_count == 0:
-        base["draft_complete_reason"] = "not_started"
     return base
 
 
