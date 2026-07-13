@@ -2,8 +2,8 @@
 
 **Baseline:** `7ac0c9b` (workflow header + identity recursion hotfix)  
 **Closure commits:** `f1660a2` → … → `3f7366a` → `6fbf272` → `ff5f71d` → `fde92fd` → `17b1428`  
-**Deploy marker:** *(pending after P0 usability)* → `17b1428`  
-**Production usability:** Dell active league synced on `9fcf8a2`, but Research/Simulator checkboxes failed after hydration (same-revision drift). Fix: `179da73`–`9844cf8`. Page speed still pending live measurement.
+**Deploy marker:** `4bd5579` (toggle atomic writes + library content clocks + warm-nav)  
+**Production usability:** Active league sync worked on `9844cf8`, but Research/Simulator checkboxes and library Updated stamps failed. Fix: `ed0c1d1`–`4bd5579`. Page speed still pending live measurement.
 **Do not declare Phases 1–4 complete until live P0 acceptance passes.**
 
 ## P0 production usability (2026-07-13)
