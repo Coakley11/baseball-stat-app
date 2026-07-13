@@ -40,6 +40,9 @@ def shared_league_document_from_context(context: dict[str, Any], *, revision: in
         meta = context.get("metadata") or {}
         ownership = meta.get("team_ownership") or {}
     meta = context.get("metadata") or {}
+    source = str(context.get("source") or meta.get("source") or "").strip()
+    created_from = str(meta.get("created_from") or "").strip()
+    source_draft_type = str(meta.get("source_draft_type") or source or "").strip()
     return {
         "schema_version": 1,
         "league_id": league_id,
@@ -49,6 +52,14 @@ def shared_league_document_from_context(context: dict[str, Any], *, revision: in
         "commissioner_user_id": str(meta.get("commissioner_user_id") or "").strip(),
         "revision": int(revision or 1),
         "updated_at": _utc_now_iso(),
+        "created_from": created_from,
+        "source_draft_type": source_draft_type,
+        "source": source,
+        "metadata": {
+            "created_from": created_from,
+            "source_draft_type": source_draft_type,
+            "source": source,
+        },
         "league_rosters": copy.deepcopy(context.get("league_rosters") or {}),
         "roster_settings": copy.deepcopy(context.get("roster_settings") or {}),
         "team_ownership": copy.deepcopy(ownership if isinstance(ownership, dict) else {}),

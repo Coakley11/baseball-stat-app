@@ -110,8 +110,11 @@ def build_context_from_shared_for_workspace(
     """Seed or refresh a workspace league context from canonical shared league doc."""
     from fantasy_league_context import (
         CONTEXT_TYPE_REAL_LEAGUE,
-        SOURCE_IMPORTED_DRAFT,
+        DRAFT_TYPE_LIVE,
+        SOURCE_LIVE_DRAFT_ROOM,
+        apply_draft_origin_to_context,
         context_id_for_archive,
+        resolve_archive_draft_type_from_origin,
     )
     from fantasy_league_identity import ensure_league_identity
     from fantasy_shared_league_store import merge_shared_into_context
@@ -132,7 +135,6 @@ def build_context_from_shared_for_workspace(
         base = {
             "league_context_id": league_context_id,
             "context_type": CONTEXT_TYPE_REAL_LEAGUE,
-            "source": SOURCE_IMPORTED_DRAFT,
             "display_name": str(shared.get("league_name") or "Shared League").strip(),
             "league_name": str(shared.get("league_name") or "").strip(),
             "my_team_name": my_team,
@@ -161,24 +163,21 @@ def build_context_from_shared_for_workspace(
     meta["source_draft_id"] = draft_id or str(meta.get("source_draft_id") or "").strip()
     meta["commissioner_user_id"] = str(shared.get("commissioner_user_id") or meta.get("commissioner_user_id") or "").strip()
     commissioner = str(meta.get("commissioner_user_id") or shared_doc.get("commissioner_user_id") or "").strip()
+    origin_type = resolve_archive_draft_type_from_origin(context=merged, shared_doc=shared)
     if bool(existing_meta.get("joined_via_invite")) and owner_user_id and owner_user_id != commissioner:
         meta["joined_via_invite"] = True
     elif my_team and owner_user_id and owner_user_id != commissioner:
-        created_from = str(
-            shared.get("created_from")
-            or meta.get("created_from")
-            or existing_meta.get("created_from")
-            or ""
-        ).strip()
-        source = str(shared.get("source") or merged.get("source") or "").strip()
-        if created_from == "live_draft" or "live_draft" in source.lower():
+        if origin_type == DRAFT_TYPE_LIVE:
             meta["joined_via_live_draft"] = True
             meta["preassigned_live_draft_owner"] = True
-            meta.setdefault("created_from", "live_draft")
-            meta.setdefault("source_draft_type", "live_draft_room")
+            meta["created_from"] = "live_draft"
+            meta["source_draft_type"] = DRAFT_TYPE_LIVE
+            merged["source"] = SOURCE_LIVE_DRAFT_ROOM
             meta.pop("joined_via_invite", None)
         else:
             meta["joined_via_invite"] = True
+            meta.pop("joined_via_live_draft", None)
+            meta.pop("preassigned_live_draft_owner", None)
     else:
         meta.pop("joined_via_invite", None)
         meta.pop("joined_via_live_draft", None)
@@ -186,6 +185,7 @@ def build_context_from_shared_for_workspace(
     if str(existing_meta.get("invite_id") or "").strip():
         meta["invite_id"] = str(existing_meta.get("invite_id") or "").strip()
     merged["metadata"] = meta
+    merged = apply_draft_origin_to_context(merged, shared_doc=shared)
     return ensure_league_identity(merged)
 
 
@@ -265,9 +265,14 @@ def _ownership_snapshot(context: dict[str, Any] | None) -> dict[str, str]:
 
 
 def _normalize_repaired_archive_types(session: dict[str, Any]) -> int:
-    """Ensure imported shared-league archives carry imported_draft type after stub repair."""
-    from draft_archive_state import DRAFT_ARCHIVE_KEY, DRAFT_TYPE_IMPORTED, list_draft_archives
-    from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, get_league_context_for_archive
+    """Ensure repaired archives carry the canonical draft_type from origin metadata."""
+    from draft_archive_state import DRAFT_ARCHIVE_KEY, list_draft_archives
+    from fantasy_league_context import (
+        CONTEXT_TYPE_REAL_LEAGUE,
+        get_league_context_for_archive,
+        resolve_archive_draft_type_from_origin,
+    )
+    from fantasy_league_identity import resolve_canonical_league_id
 
     fixed = 0
     entries = list_draft_archives(session)
@@ -279,9 +284,23 @@ def _normalize_repaired_archive_types(session: dict[str, Any]) -> int:
             continue
         if str(ctx.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
             continue
-        if str(entry.get("draft_type") or "").strip() == DRAFT_TYPE_IMPORTED:
+        shared_doc = None
+        league_id = str(resolve_canonical_league_id(ctx) or "").strip()
+        if league_id:
+            try:
+                from fantasy_shared_league_store import load_shared_league
+
+                shared_doc = load_shared_league(league_id)
+            except ImportError:
+                shared_doc = None
+        expected = resolve_archive_draft_type_from_origin(
+            context=ctx,
+            shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
+            archive_entry=entry,
+        )
+        if str(entry.get("draft_type") or "").strip() == expected:
             continue
-        entry["draft_type"] = DRAFT_TYPE_IMPORTED
+        entry["draft_type"] = expected
         fixed += 1
     if fixed:
         session[DRAFT_ARCHIVE_KEY] = entries
@@ -290,7 +309,9 @@ def _normalize_repaired_archive_types(session: dict[str, Any]) -> int:
 
 def _sync_archives_to_workspace_team(session: dict[str, Any], context: dict[str, Any]) -> int:
     """Rewrite existing repaired archive rows so card identity matches owned team."""
-    from draft_archive_state import DRAFT_ARCHIVE_KEY, DRAFT_TYPE_IMPORTED, _build_archive_snapshot, list_draft_archives
+    from draft_archive_state import DRAFT_ARCHIVE_KEY, _build_archive_snapshot, list_draft_archives
+    from fantasy_league_context import resolve_archive_draft_type_from_origin
+    from fantasy_league_identity import resolve_canonical_league_id
 
     if not isinstance(context, dict):
         return 0
@@ -321,6 +342,19 @@ def _sync_archives_to_workspace_team(session: dict[str, Any], context: dict[str,
         if isinstance(player, dict)
     ]
     league_context_id = str(context.get("league_context_id") or "").strip()
+    shared_doc = None
+    league_id = str(resolve_canonical_league_id(context) or "").strip()
+    if league_id:
+        try:
+            from fantasy_shared_league_store import load_shared_league
+
+            shared_doc = load_shared_league(league_id)
+        except ImportError:
+            shared_doc = None
+    resolved_draft_type = resolve_archive_draft_type_from_origin(
+        context=context,
+        shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
+    )
     entries = list_draft_archives(session)
     changed = 0
     for idx, entry in enumerate(entries):
@@ -331,7 +365,7 @@ def _sync_archives_to_workspace_team(session: dict[str, Any], context: dict[str,
         updated = copy.deepcopy(entry)
         updated["team_name"] = my_team
         updated["players"] = players
-        updated["draft_type"] = DRAFT_TYPE_IMPORTED
+        updated["draft_type"] = resolved_draft_type
         if isinstance(league_rosters, dict):
             updated["league_rosters"] = copy.deepcopy(league_rosters)
         if league_context_id:
@@ -340,7 +374,7 @@ def _sync_archives_to_workspace_team(session: dict[str, Any], context: dict[str,
         needs_write = (
             str(entry.get("team_name") or "").strip() != my_team
             or entry.get("players") != players
-            or str(entry.get("draft_type") or "").strip() != DRAFT_TYPE_IMPORTED
+            or str(entry.get("draft_type") or "").strip() != resolved_draft_type
             or entry.get("league_rosters") != updated.get("league_rosters")
             or str(entry.get("league_context_id") or "").strip() != league_context_id
             or not bool(entry.get("repaired_from_context"))

@@ -29,6 +29,9 @@ def _shared_doc(league_id: str = "league:test123", draft_id: str = "draft99") ->
         "commissioner_user_id": "user:donny",
         "revision": 3,
         "updated_at": "2026-07-09T00:00:00+00:00",
+        "source": "imported_draft",
+        "source_draft_type": "imported_draft",
+        "created_from": "imported_draft",
         "league_rosters": {
             "Daniel": {
                 "team_name": "Daniel",

@@ -1953,38 +1953,173 @@ def repair_misclassified_imported_league_archives(session: dict[str, Any]) -> in
     return repaired
 
 
-def resolve_archive_draft_type_from_context(context: dict[str, Any] | None) -> str:
-    """Map league context origin metadata to saved-draft library draft_type."""
-    if not isinstance(context, dict):
-        return DRAFT_TYPE_SIMULATOR
-    meta = dict(context.get("metadata") or {})
-    context_type = str(context.get("context_type") or "").strip()
-    source = str(context.get("source") or meta.get("source") or "").strip()
-    created_from = str(meta.get("created_from") or "").strip()
-    source_draft_type = str(meta.get("source_draft_type") or "").strip()
+def _classify_origin_token(token: str) -> str | None:
+    """Map a single origin hint to draft_type, or None if inconclusive."""
+    value = str(token or "").strip().lower()
+    if not value:
+        return None
     try:
         from live_draft_shared_league import CREATED_FROM_LIVE_DRAFT
     except ImportError:
         CREATED_FROM_LIVE_DRAFT = "live_draft"
-
-    if (
-        source == SOURCE_LIVE_DRAFT_ROOM
-        or created_from == CREATED_FROM_LIVE_DRAFT
-        or source_draft_type == DRAFT_TYPE_LIVE
-        or context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT
-    ):
+    live_markers = {
+        CREATED_FROM_LIVE_DRAFT,
+        "live_draft",
+        DRAFT_TYPE_LIVE,
+        SOURCE_LIVE_DRAFT_ROOM,
+    }
+    import_markers = {
+        DRAFT_TYPE_IMPORTED,
+        SOURCE_IMPORTED_DRAFT,
+        "imported_draft",
+        "uploaded_draft",
+        "draft_import",
+    }
+    sim_markers = {
+        DRAFT_TYPE_SIMULATOR,
+        SOURCE_DRAFT_SIMULATOR,
+        "simulator",
+        "mock_draft",
+    }
+    if value in live_markers or "live_draft" in value:
         return DRAFT_TYPE_LIVE
-    if source == SOURCE_IMPORTED_DRAFT or source_draft_type == DRAFT_TYPE_IMPORTED:
+    if value in import_markers or "import" in value:
         return DRAFT_TYPE_IMPORTED
-    if (
-        context_type == CONTEXT_TYPE_MOCK_DRAFT_SIMULATION
-        or source == SOURCE_DRAFT_SIMULATOR
-        or source_draft_type == DRAFT_TYPE_SIMULATOR
-    ):
+    if value in sim_markers:
         return DRAFT_TYPE_SIMULATOR
-    if context_type == CONTEXT_TYPE_REAL_LEAGUE:
-        return DRAFT_TYPE_IMPORTED
+    return None
+
+
+def _ordered_origin_tokens(
+    *,
+    shared_doc: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+    archive_entry: dict[str, Any] | None = None,
+) -> list[str]:
+    """Collect origin hints in canonical priority order."""
+    tokens: list[str] = []
+
+    def _push(value: Any) -> None:
+        text = str(value or "").strip()
+        if text:
+            tokens.append(text)
+
+    if isinstance(shared_doc, dict):
+        shared_meta = dict(shared_doc.get("metadata") or {})
+        _push(shared_doc.get("created_from"))
+        _push(shared_meta.get("created_from"))
+        _push(shared_doc.get("source_draft_type"))
+        _push(shared_meta.get("source_draft_type"))
+        _push(shared_doc.get("source"))
+    if isinstance(context, dict):
+        context_meta = dict(context.get("metadata") or {})
+        _push(context_meta.get("created_from"))
+        _push(context_meta.get("source_draft_type"))
+        _push(context.get("source"))
+        _push(context_meta.get("source"))
+        if context_meta.get("joined_via_live_draft") or context_meta.get("preassigned_live_draft_owner"):
+            _push("live_draft")
+    if isinstance(archive_entry, dict):
+        _push(archive_entry.get("draft_type"))
+    return tokens
+
+
+def _shared_preassigned_live_draft_membership(
+    shared_doc: dict[str, Any] | None,
+    context: dict[str, Any] | None,
+) -> bool:
+    """True when a non-commissioner owns a team without invite/import origin evidence."""
+    if not isinstance(shared_doc, dict) or not isinstance(context, dict):
+        return False
+    meta = dict(context.get("metadata") or {})
+    if meta.get("joined_via_invite"):
+        return False
+    for token in _ordered_origin_tokens(shared_doc=shared_doc, context=context):
+        classified = _classify_origin_token(token)
+        if classified == DRAFT_TYPE_IMPORTED:
+            return False
+        if classified == DRAFT_TYPE_LIVE:
+            return True
+    invites = shared_doc.get("league_invites") or []
+    if isinstance(invites, list):
+        for invite in invites:
+            if isinstance(invite, dict) and str(invite.get("status") or "").strip() == "accepted":
+                return False
+    ownership = shared_doc.get("team_ownership") or {}
+    my_team = str(context.get("my_team_name") or "").strip()
+    if not my_team or not isinstance(ownership, dict):
+        return False
+    record = ownership.get(my_team)
+    if not isinstance(record, dict) or not str(record.get("user_id") or "").strip():
+        return False
+    commissioner = str(
+        shared_doc.get("commissioner_user_id") or meta.get("commissioner_user_id") or ""
+    ).strip()
+    owner_uid = str(record.get("user_id") or "").strip()
+    if not commissioner or owner_uid == commissioner:
+        return False
+    return True
+
+
+def resolve_archive_draft_type_from_origin(
+    *,
+    context: dict[str, Any] | None = None,
+    shared_doc: dict[str, Any] | None = None,
+    archive_entry: dict[str, Any] | None = None,
+) -> str:
+    """Resolve saved-draft library draft_type from canonical origin hints."""
+    for token in _ordered_origin_tokens(
+        shared_doc=shared_doc,
+        context=context,
+        archive_entry=archive_entry,
+    ):
+        classified = _classify_origin_token(token)
+        if classified:
+            return classified
+    if isinstance(context, dict):
+        context_type = str(context.get("context_type") or "").strip()
+        if context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT:
+            return DRAFT_TYPE_LIVE
+        if context_type == CONTEXT_TYPE_MOCK_DRAFT_SIMULATION:
+            return DRAFT_TYPE_SIMULATOR
+        if context_type == CONTEXT_TYPE_REAL_LEAGUE:
+            if _shared_preassigned_live_draft_membership(shared_doc, context):
+                return DRAFT_TYPE_LIVE
+            return DRAFT_TYPE_IMPORTED
     return DRAFT_TYPE_SIMULATOR
+
+
+def resolve_archive_draft_type_from_context(context: dict[str, Any] | None) -> str:
+    """Map league context origin metadata to saved-draft library draft_type."""
+    return resolve_archive_draft_type_from_origin(context=context)
+
+
+def apply_draft_origin_to_context(
+    context: dict[str, Any],
+    *,
+    shared_doc: dict[str, Any] | None = None,
+    archive_entry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Stamp context source/metadata from canonical origin resolution."""
+    out = copy.deepcopy(context)
+    draft_type = resolve_archive_draft_type_from_origin(
+        context=out,
+        shared_doc=shared_doc,
+        archive_entry=archive_entry,
+    )
+    meta = dict(out.get("metadata") or {})
+    if draft_type == DRAFT_TYPE_LIVE:
+        out["source"] = SOURCE_LIVE_DRAFT_ROOM
+        meta["created_from"] = "live_draft"
+        meta["source_draft_type"] = DRAFT_TYPE_LIVE
+    elif draft_type == DRAFT_TYPE_IMPORTED:
+        out["source"] = SOURCE_IMPORTED_DRAFT
+        meta["source_draft_type"] = DRAFT_TYPE_IMPORTED
+    elif draft_type == DRAFT_TYPE_SIMULATOR:
+        out["source"] = SOURCE_DRAFT_SIMULATOR
+        meta["source_draft_type"] = DRAFT_TYPE_SIMULATOR
+    out["metadata"] = meta
+    return out
 
 
 def repair_archive_draft_type_for_entry(
@@ -2005,7 +2140,22 @@ def repair_archive_draft_type_for_entry(
         ctx = get_league_context(session, linked_id) if linked_id else None
         if not isinstance(ctx, dict):
             ctx = get_league_context(session, context_id_for_archive(draft_id))
-    expected = resolve_archive_draft_type_from_context(ctx if isinstance(ctx, dict) else None)
+    shared_doc = None
+    if isinstance(ctx, dict):
+        try:
+            from fantasy_league_identity import resolve_canonical_league_id
+            from fantasy_shared_league_store import load_shared_league
+
+            league_id = str(resolve_canonical_league_id(ctx) or "").strip()
+            if league_id:
+                shared_doc = load_shared_league(league_id)
+        except ImportError:
+            shared_doc = None
+    expected = resolve_archive_draft_type_from_origin(
+        context=ctx if isinstance(ctx, dict) else None,
+        shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
+        archive_entry=entry,
+    )
     current = str(entry.get("draft_type") or "").strip()
     if current == expected:
         return entry
@@ -2024,6 +2174,7 @@ def repair_archive_draft_type_for_entry(
 def repair_archive_draft_types_from_contexts(session: dict[str, Any]) -> int:
     """Backfill misclassified archive draft_type values from league context origin."""
     from draft_archive_state import list_draft_archives
+    from fantasy_league_identity import resolve_canonical_league_id
 
     repaired = 0
     for entry in list_draft_archives(session):
@@ -2036,10 +2187,37 @@ def repair_archive_draft_types_from_contexts(session: dict[str, Any]) -> int:
         ctx = get_league_context(session, linked_id) if linked_id else None
         if not isinstance(ctx, dict):
             ctx = get_league_context(session, context_id_for_archive(draft_id))
-        expected = resolve_archive_draft_type_from_context(ctx if isinstance(ctx, dict) else None)
+        shared_doc = None
+        if isinstance(ctx, dict):
+            league_id = str(resolve_canonical_league_id(ctx) or "").strip()
+            if league_id:
+                try:
+                    from fantasy_shared_league_store import load_shared_league
+
+                    shared_doc = load_shared_league(league_id)
+                except ImportError:
+                    shared_doc = None
+        if isinstance(ctx, dict):
+            repaired_ctx = apply_draft_origin_to_context(
+                ctx,
+                shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
+                archive_entry=entry,
+            )
+            if repaired_ctx != ctx:
+                upsert_league_context(session, repaired_ctx, mark_persist_authoritative=False)
+                ctx = repaired_ctx
+        expected = resolve_archive_draft_type_from_origin(
+            context=ctx if isinstance(ctx, dict) else None,
+            shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
+            archive_entry=entry,
+        )
         if str(entry.get("draft_type") or "").strip() == expected:
             continue
-        repair_archive_draft_type_for_entry(session, entry, context=ctx if isinstance(ctx, dict) else None)
+        repair_archive_draft_type_for_entry(
+            session,
+            entry,
+            context=ctx if isinstance(ctx, dict) else None,
+        )
         repaired += 1
     if repaired:
         try:
