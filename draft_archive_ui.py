@@ -4485,7 +4485,8 @@ def _render_saved_draft_library_page_body(
         active_context = selection.get("linked_active_context")
         active_id = str(selection.get("active_draft_archive_id") or "")
         active_context_id = str(selection.get("persisted_active_context_id") or "")
-        render_active_library_pair_diagnostics(st, session, developer_mode=developer_mode)
+        if developer_mode:
+            render_active_library_pair_diagnostics(st, session, developer_mode=developer_mode)
     except ImportError:
         active_context = get_active_league_context(session, respect_source_priority=False)
         active_id = str((active or {}).get("draft_id") or "")
@@ -4498,18 +4499,18 @@ def _render_saved_draft_library_page_body(
         "Unsaved simulator or live boards stay in their workspace pages — use **Fantasy Context Source** toggles to point at them temporarily."
     )
 
-    render_persistence_probe_panel(st, session)
+    if developer_mode:
+        render_persistence_probe_panel(st, session)
+        try:
+            from suite_identity_guard import render_identity_guard_diagnostic_panel
 
-    try:
-        from suite_identity_guard import render_identity_guard_diagnostic_panel
-
-        render_identity_guard_diagnostic_panel(
-            st,
-            session,
-            title="Saved Draft Library — account / workspace identity",
-        )
-    except ImportError:
-        pass
+            render_identity_guard_diagnostic_panel(
+                st,
+                session,
+                title="Saved Draft Library — account / workspace identity",
+            )
+        except ImportError:
+            pass
 
     try:
         from fantasy_shared_league_library_sync import (
@@ -4549,10 +4550,10 @@ def _render_saved_draft_library_page_body(
     else:
         try:
             render_pending_league_invites(st, session)
-            render_invite_flow_diagnostics_panel(st, session)
-            # Invite panel before diagnostics so submit trace is recorded first on the same run.
             render_commissioner_invite_panel(st, session)
-            render_commissioner_invite_diagnostics_panel(st, session)
+            if developer_mode:
+                render_invite_flow_diagnostics_panel(st, session)
+                render_commissioner_invite_diagnostics_panel(st, session)
         except Exception as exc:
             st.error(f"Shared league invite UI failed while rendering: {exc}")
 
