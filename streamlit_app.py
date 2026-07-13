@@ -12526,6 +12526,12 @@ def render_hof_developer_diagnostics(
 
 def _page_perf_start(page: str) -> None:
     try:
+        from page_render_timing import mark_navigation_start
+
+        mark_navigation_start(st.session_state, page)
+    except ImportError:
+        pass
+    try:
         from page_perf_diagnostics import start_page_perf_run
 
         start_page_perf_run(page)
@@ -12540,6 +12546,12 @@ def _page_perf_start(page: str) -> None:
 
 
 def _page_perf_end(page: str) -> None:
+    try:
+        from page_render_timing import finish_page_render
+
+        finish_page_render(st.session_state, page)
+    except ImportError:
+        pass
     try:
         from page_perf_diagnostics import finish_page_perf_run
 

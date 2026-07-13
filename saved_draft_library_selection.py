@@ -147,6 +147,12 @@ def prepare_saved_draft_library_active_selection(session: dict[str, Any]) -> dic
     except ImportError:
         pass
     fp_parts.append(str(session.get("_suite_auth_user_id") or ""))
+    try:
+        from account_fantasy_preferences import preference_revision_fingerprint
+
+        fp_parts.append(preference_revision_fingerprint(session))
+    except ImportError:
+        pass
     fp = "|".join(fp_parts)
     if session.get("_library_selection_fp") == fp:
         cached = session.get("_library_selection_cached")
@@ -161,6 +167,12 @@ def prepare_saved_draft_library_active_selection(session: dict[str, Any]) -> dic
             session["_creation_origin_repair_done"] = True
         except ImportError:
             pass
+    try:
+        from library_repair_scheduler import run_gated_library_repairs
+
+        run_gated_library_repairs(session, user_mutated=False)
+    except ImportError:
+        pass
     sel = resolve_coherent_active_library_selection(session)
     if not sel.get("coherent"):
         sel = repair_incoherent_active_library_selection(session)

@@ -231,3 +231,8 @@ def resolve_draft_assistant_board(
     session["_da_board_cache_fp"] = fp
     session["_da_board_cache"] = result
     return result
+
+
+def invalidate_draft_assistant_board_cache(session: dict[str, Any]) -> None:
+    session.pop("_da_board_cache_fp", None)
+    session.pop("_da_board_cache", None)

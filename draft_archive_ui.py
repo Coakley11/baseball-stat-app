@@ -4017,6 +4017,14 @@ def _activate_archive_entry(st: Any, session: dict[str, Any], draft_id: str) -> 
     except ImportError:
         pass
     _clear_fantasy_caches_on_archive_change(session)
+    try:
+        from account_fantasy_preferences import write_account_fantasy_preferences
+        from library_repair_scheduler import mark_library_dirty
+
+        mark_library_dirty(session, reason="activate_archive")
+        write_account_fantasy_preferences(session, reason="activate_archive")
+    except ImportError:
+        pass
     _persist_archive(session, st, reason="league_context_activated")
     try:
         from baseball_archive_activity import log_saved_draft_activated
@@ -4430,30 +4438,23 @@ def _render_saved_draft_library_page_body(
 
     prune_invisible_shared_league_state(session)
     try:
-        from fantasy_league_context import (
-            migrate_legacy_archives_to_contexts,
-            repair_missing_draft_archives_from_contexts,
-            repair_misclassified_imported_league_archives,
-        )
+        from library_repair_scheduler import run_gated_library_repairs
 
-        migrate_legacy_archives_to_contexts(session)
-        if repair_misclassified_imported_league_archives(session):
-            prune_invisible_shared_league_state(session)
-        try:
-            from fantasy_league_context import repair_archive_draft_types_from_contexts
-
-            if repair_archive_draft_types_from_contexts(session):
-                prune_invisible_shared_league_state(session)
-        except ImportError:
-            pass
-        if repair_missing_draft_archives_from_contexts(session):
-            prune_invisible_shared_league_state(session)
+        run_gated_library_repairs(session, user_mutated=False)
+        prune_invisible_shared_league_state(session)
         try:
             from workflow_persist_guard import restore_active_draft_archive_selection
 
             restore_active_draft_archive_selection(session)
         except ImportError:
             pass
+    except ImportError:
+        pass
+
+    try:
+        from draft_library_manifest import build_library_manifest
+
+        build_library_manifest(session)
     except ImportError:
         pass
 
