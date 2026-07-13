@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 import pandas as pd
 
 from live_draft_ux import (
     apply_survival_display_columns,
     confidence_label_from_score,
+    consume_latest_board_row_highlight,
     describe_strength,
     describe_strengths,
     format_of_slot_eligibility,
@@ -16,7 +18,11 @@ from live_draft_ux import (
     format_scarcity_explanation,
     format_survival_probability,
     format_your_fantasy_team,
+    on_clock_should_flash,
+    record_live_draft_pick_posted,
+    render_live_draft_pick_announcement,
     resolve_next_pick_for_survival,
+    should_highlight_latest_board_row,
     sort_recommendation_table,
     star_rating,
     user_facing_start_step,
@@ -93,6 +99,34 @@ class LiveDraftUxTests(unittest.TestCase):
 
     def test_star_rating(self) -> None:
         self.assertTrue(star_rating(5, label="Home Runs").startswith("★★★★★"))
+
+    def test_pick_announcement_once_per_signature(self) -> None:
+        session: dict = {}
+        st = mock.MagicMock()
+        record_live_draft_pick_posted(
+            session,
+            pick=3,
+            round_no=2,
+            team="Donny",
+            player="Aaron Judge",
+        )
+        self.assertTrue(render_live_draft_pick_announcement(session, st))
+        st.reset_mock()
+        self.assertFalse(render_live_draft_pick_announcement(session, st))
+
+    def test_on_clock_flash_once_per_pick_index(self) -> None:
+        session: dict = {}
+        self.assertTrue(on_clock_should_flash(session, 1))
+        self.assertFalse(on_clock_should_flash(session, 1))
+        self.assertTrue(on_clock_should_flash(session, 2))
+
+    def test_board_row_highlight_once_per_pick_count(self) -> None:
+        session: dict = {}
+        self.assertTrue(should_highlight_latest_board_row(session, 1))
+        self.assertFalse(should_highlight_latest_board_row(session, 1))
+        self.assertTrue(should_highlight_latest_board_row(session, 2))
+        self.assertTrue(consume_latest_board_row_highlight(session))
+        self.assertFalse(consume_latest_board_row_highlight(session))
 
 
 if __name__ == "__main__":

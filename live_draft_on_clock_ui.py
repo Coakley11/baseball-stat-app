@@ -24,6 +24,7 @@ def _render_on_clock_banner_html(
     next_pick: int | None = None,
     pick_index: int = 0,
     deadline: float | None = None,
+    flash: bool = False,
 ) -> None:
     team = slot.get("Team", "—")
     rnd = slot.get("Round", "—")
@@ -36,9 +37,10 @@ def _render_on_clock_banner_html(
         if deadline is not None
         else f'<span class="live-draft-timer">{int(remaining)}s</span>'
     )
+    flash_class = " ld-on-clock-flash" if flash else ""
     st.markdown(
         f"""
-        <div class="live-draft-on-clock" style="border-left: 8px solid {accent};">
+        <div class="live-draft-on-clock{flash_class}" style="border-left: 8px solid {accent};">
             <div class="ld-title">On the clock</div>
             <div class="ld-team-name">{team}</div>
             <div class="ld-pick-pills">
@@ -80,10 +82,18 @@ def render_live_on_clock_banner(
     slot_view = dict(slot)
     next_pick_view = next_pick
     pick_idx = int(live_room.get("current_pick_index") or 0)
+    try:
+        from live_draft_ux import on_clock_should_flash
+
+        clock_flash = on_clock_should_flash(session, pick_idx)
+    except ImportError:
+        clock_flash = False
 
     if str(live_room.get("status") or "") == "paused":
         remaining = live_draft_display_seconds(live_room)
-        _render_on_clock_banner_html(st, slot_view, remaining, next_pick=next_pick_view, pick_index=pick_idx, deadline=None)
+        _render_on_clock_banner_html(
+            st, slot_view, remaining, next_pick=next_pick_view, pick_index=pick_idx, deadline=None, flash=clock_flash
+        )
         st.caption("Draft paused — timer stopped")
         return
 
@@ -94,7 +104,7 @@ def render_live_on_clock_banner(
             remaining = display_seconds_with_freeze(session, live_room)
             deadline = frozen_deadline(session, live_room)
             _render_on_clock_banner_html(
-                st, slot_view, remaining, next_pick=next_pick_view, pick_index=pick_idx, deadline=deadline
+                st, slot_view, remaining, next_pick=next_pick_view, pick_index=pick_idx, deadline=deadline, flash=clock_flash
             )
             st.caption("Submitting pick…")
             return
@@ -129,6 +139,7 @@ def render_live_on_clock_banner(
             next_pick=next_pick_view,
             pick_index=pick_idx,
             deadline=deadline,
+            flash=clock_flash,
         )
         return
 
@@ -142,6 +153,7 @@ def render_live_on_clock_banner(
             next_pick=next_pick_view,
             pick_index=pick_idx,
             deadline=deadline,
+            flash=clock_flash,
         )
         return
 
@@ -164,6 +176,7 @@ def render_live_on_clock_banner(
             next_pick=next_pick_view,
             pick_index=tick_idx,
             deadline=tick_deadline,
+            flash=False,
         )
 
     _banner_tick()

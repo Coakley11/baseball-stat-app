@@ -541,7 +541,7 @@ def score_available_for_rule(available, roster_df, rule, target_counts, config=N
         current_pick=current_pick,
         next_user_pick=config.get("next_user_pick"),
         num_teams=int(config.get("num_teams", 12) or 12),
-        room=room,
+        room=config.get("room"),
         user_team=str(config.get("your_team") or config.get("user_team") or ""),
     )
     rule = str(rule).strip().lower()

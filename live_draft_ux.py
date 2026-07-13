@@ -291,26 +291,38 @@ def inject_position_color_styles() -> str:
 def inject_draft_animation_styles() -> str:
     return """
     @keyframes ld-pick-flash {
-        0% { box-shadow: 0 0 0 0 rgba(45, 140, 255, 0.55); }
-        70% { box-shadow: 0 0 0 12px rgba(45, 140, 255, 0); }
-        100% { box-shadow: 0 0 0 0 rgba(45, 140, 255, 0); }
+        0% { box-shadow: 0 0 0 0 rgba(45, 140, 255, 0.55); background: rgba(45, 140, 255, 0.18); }
+        70% { box-shadow: 0 0 0 12px rgba(45, 140, 255, 0); background: rgba(45, 140, 255, 0.08); }
+        100% { box-shadow: 0 0 0 0 rgba(45, 140, 255, 0); background: rgba(45, 140, 255, 0.12); }
     }
     .ld-pick-flash {
         animation: ld-pick-flash 0.9s ease-out 1;
     }
     @keyframes ld-board-slide-in {
-        from { opacity: 0; transform: translateY(-8px); }
+        from { opacity: 0; transform: translateY(-12px); }
         to { opacity: 1; transform: translateY(0); }
     }
     .ld-board-new-pick {
-        animation: ld-board-slide-in 0.35s ease-out 1;
+        animation: ld-board-slide-in 0.45s ease-out 1;
+    }
+    @keyframes ld-on-clock-flash {
+        0% { border-color: #1f6feb; box-shadow: 0 0 0 0 rgba(31, 111, 235, 0.45); }
+        100% { border-color: rgba(11, 61, 110, 0.25); box-shadow: none; }
+    }
+    .ld-on-clock-flash {
+        animation: ld-on-clock-flash 0.85s ease-out 1;
     }
     .ld-board-pick-notice {
-        padding: 6px 10px;
+        padding: 8px 12px;
         border-radius: 8px;
         background: rgba(45, 140, 255, 0.12);
-        font-size: 0.85rem;
+        font-size: 0.88rem;
         margin-bottom: 8px;
+        border: 1px solid rgba(45, 140, 255, 0.35);
+    }
+    .ld-board-row-highlight td {
+        background: rgba(45, 140, 255, 0.14) !important;
+        animation: ld-board-slide-in 0.45s ease-out 1;
     }
     """
 
@@ -330,15 +342,114 @@ def inject_draft_queue_sortable_styles() -> str:
     """
 
 
-def note_live_draft_board_pick_flash(session: dict[str, Any], st: Any, pick_count: int) -> None:
-    """Flash a lightweight notice when a new pick lands on the board."""
+def record_live_draft_pick_posted(
+    session: dict[str, Any],
+    *,
+    pick: int,
+    round_no: int,
+    team: str,
+    player: str,
+) -> None:
+    """Store the latest pick for one-shot announcement + board animation."""
+    player_s = str(player or "").strip()
+    team_s = str(team or "").strip()
+    sig = f"{int(pick)}|{team_s}|{player_s}"
+    session["_ld_last_pick_announcement"] = {
+        "pick": int(pick),
+        "round": int(round_no),
+        "team": team_s,
+        "player": player_s,
+        "sig": sig,
+    }
+    session.pop("_ld_shown_pick_announcement_sig", None)
+
+
+def render_live_draft_pick_announcement(session: dict[str, Any], st: Any) -> bool:
+    """Show pick-announcement card once per new pick signature."""
+    ann = session.get("_ld_last_pick_announcement")
+    if not isinstance(ann, dict):
+        return False
+    sig = str(ann.get("sig") or "").strip()
+    if not sig or sig == str(session.get("_ld_shown_pick_announcement_sig") or ""):
+        return False
+    session["_ld_shown_pick_announcement_sig"] = sig
+    player = str(ann.get("player") or "Player").strip()
+    team = str(ann.get("team") or "").strip()
+    pick = int(ann.get("pick") or 0)
+    round_no = int(ann.get("round") or 0)
+    st.markdown(
+        f'<div class="ld-board-pick-notice ld-pick-flash ld-board-new-pick">'
+        f"<strong>Pick {pick}</strong> (Round {round_no}) — "
+        f"<strong>{player}</strong> → {team}"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    return True
+
+
+def on_clock_should_flash(session: dict[str, Any], pick_index: int) -> bool:
+    """True once when the on-clock pick index advances."""
+    idx = int(pick_index or 0)
+    prev = session.get("_ld_on_clock_flash_index")
+    if prev == idx:
+        return False
+    session["_ld_on_clock_flash_index"] = idx
+    return True
+
+
+def should_highlight_latest_board_row(session: dict[str, Any], pick_count: int) -> bool:
+    """True once per new pick when the board row count advances."""
+    count = max(0, int(pick_count or 0))
+    prev = int(session.get("_ld_last_board_highlight_count") or 0)
+    if count <= prev:
+        return False
+    session["_ld_last_board_highlight_count"] = count
+    sig = f"board_row:{count}"
+    if str(session.get("_ld_board_row_highlight_shown") or "") == sig:
+        return False
+    session["_ld_board_row_highlight_sig"] = sig
+    return True
+
+
+def consume_latest_board_row_highlight(session: dict[str, Any]) -> bool:
+    """Mark the pending board-row highlight as shown for this run."""
+    sig = str(session.get("_ld_board_row_highlight_sig") or "").strip()
+    if not sig or str(session.get("_ld_board_row_highlight_shown") or "") == sig:
+        return False
+    session["_ld_board_row_highlight_shown"] = sig
+    return True
+
+
+def style_latest_board_row(df: pd.DataFrame) -> Any:
+    """Highlight the newest board row with a one-shot slide-in animation."""
+    if df is None or df.empty:
+        return df
+    last_idx = df.index[-1]
+
+    def _row_style(row: pd.Series) -> list[str]:
+        if row.name != last_idx:
+            return [""] * len(row)
+        return [
+            "background-color: rgba(45, 140, 255, 0.14); animation: ld-board-slide-in 0.45s ease-out 1;"
+        ] * len(row)
+
+    return df.style.apply(_row_style, axis=1)
+
+
+def note_live_draft_board_pick_flash(session: dict[str, Any], st: Any, pick_count: int) -> bool:
+    """Flash board notice when pick count advances — uses announcement when available."""
     count = max(0, int(pick_count or 0))
     prev = int(session.get("_ld_last_board_pick_count") or 0)
     session["_ld_last_board_pick_count"] = count
-    if count > prev:
-        st.markdown(
-            '<div class="ld-board-pick-notice ld-pick-flash ld-board-new-pick">'
-            "Latest pick posted to the draft board."
-            "</div>",
-            unsafe_allow_html=True,
-        )
+    if count <= prev:
+        return False
+    should_highlight_latest_board_row(session, count)
+    if render_live_draft_pick_announcement(session, st):
+        return True
+    st.markdown(
+        '<div class="ld-board-pick-notice ld-pick-flash ld-board-new-pick">'
+        "Latest pick posted to the draft board."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    return True

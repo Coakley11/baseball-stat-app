@@ -152,8 +152,8 @@ class PlayerCategoryStrengthsTests(unittest.TestCase):
         )
         strengths = player_top_category_strengths(row, self._pool(), config=_config())
         self.assertLessEqual(len(strengths), 2)
-        self.assertIn("HR", strengths)
-        self.assertIn("RBI", strengths)
+        self.assertIn("Elite Power", strengths)
+        self.assertIn("Excellent Run Production", strengths)
 
     def test_speed_profile(self) -> None:
         row = pd.Series(
@@ -169,8 +169,8 @@ class PlayerCategoryStrengthsTests(unittest.TestCase):
         )
         strengths = player_top_category_strengths(row, self._pool(), config=_config())
         self.assertLessEqual(len(strengths), 2)
-        self.assertIn("SB", strengths)
-        self.assertIn("Runs", strengths)
+        self.assertIn("Above-Average Speed", strengths)
+        self.assertIn("Strong Run Scoring", strengths)
 
     def test_contact_hitter_label(self) -> None:
         row = pd.Series(
@@ -185,8 +185,8 @@ class PlayerCategoryStrengthsTests(unittest.TestCase):
             }
         )
         strengths = player_top_category_strengths(row, self._pool(), config=_config())
-        self.assertIn("AVG", strengths)
-        self.assertTrue("Contact" in strengths or "OBP" in strengths)
+        self.assertIn("Strong Batting Average", strengths)
+        self.assertTrue("Elite Contact" in strengths or "On-Base Skill" in strengths)
 
     def test_details_includes_top_category_strengths(self) -> None:
         from live_draft_room_ui import render_live_draft_rec_cards
@@ -364,11 +364,14 @@ class DraftNavigationTests(unittest.TestCase):
 
     def test_recommendations_heading_follows_quick_navigation(self) -> None:
         text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
-        quick_idx = text.find("render_live_draft_quick_nav(st, st.session_state)")
-        heading_idx = text.find('st.markdown("##### Recommendations")')
+        quick_idx = text.find("render_live_draft_quick_nav(st, st.session_state")
         self.assertNotEqual(quick_idx, -1)
+        section = text[quick_idx : quick_idx + 6000]
+        heading_idx = section.find('st.markdown("##### Recommendations")')
+        rec_cards_idx = section.find("render_live_draft_rec_cards(")
         self.assertNotEqual(heading_idx, -1)
-        self.assertGreater(heading_idx, quick_idx)
+        self.assertNotEqual(rec_cards_idx, -1)
+        self.assertGreater(rec_cards_idx, heading_idx)
 
 
 _REPO = Path(__file__).resolve().parents[1]

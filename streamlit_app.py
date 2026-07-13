@@ -604,6 +604,7 @@ st.markdown("""
 .page-guide-title {font-size: 13px; font-weight: 700; color: #0b3d6e; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px;}
 .page-guide-body {color: #2c3e50; font-size: 14px; line-height: 1.45;}
 .page-guide-item {margin: 0 0 6px 0;}
+.page-guide-tips {margin: 4px 0 0 18px; padding: 0;}
 .page-guide strong {color: #12324a;}
 .fantasy-source-card {border-radius: 14px; padding: 16px 18px; margin: 0 0 14px 0; line-height: 1.35;}
 .fantasy-source-kicker {font-size: 12px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px;}
@@ -2145,24 +2146,26 @@ def render_page_guide(page_key):
             g.get("outputs", ""),
         )
         return
-    extra_items = "".join(
-        f'<p class="page-guide-item">{_guide_html_line(x)}</p>'
-        for x in (g.get("extra") or [])
-        if str(x or "").strip()
-    )
-    if extra_items:
-        st.markdown("##### Quick guide")
-        st.markdown(f"**What it does:** {g.get('purpose', '')}")
-        st.markdown(f"**When to use it:** {g.get('when', '')}")
-        st.markdown(f"**Main outputs:** {g.get('outputs', '')}")
-        for x in (g.get("extra") or []):
-            if str(x or "").strip():
-                st.markdown(str(x), unsafe_allow_html=True)
+    try:
+        from page_quick_guide import render_quick_guide_card
+
+        render_quick_guide_card(
+            st,
+            what_it_does=str(g.get("purpose") or ""),
+            when_to_use=str(g.get("when") or ""),
+            main_outputs=str(g.get("outputs") or ""),
+            tips=[str(x) for x in (g.get("extra") or []) if str(x or "").strip()],
+        )
         return
+    except ImportError:
+        pass
     st.markdown("##### Quick guide")
     st.markdown(f"**What it does:** {g.get('purpose', '')}")
     st.markdown(f"**When to use it:** {g.get('when', '')}")
     st.markdown(f"**Main outputs:** {g.get('outputs', '')}")
+    for x in (g.get("extra") or []):
+        if str(x or "").strip():
+            st.markdown(str(x), unsafe_allow_html=True)
 
 
 def top_bar_chart(df, name_col, value_col, title, top_n=10):
@@ -22542,18 +22545,29 @@ if active_page == "Live Draft Room":
             if board_df.empty:
                 st.caption("No picks yet.")
             else:
+                _highlight_board_row = False
                 try:
-                    from live_draft_ux import note_live_draft_board_pick_flash
+                    from live_draft_ux import (
+                        consume_latest_board_row_highlight,
+                        note_live_draft_board_pick_flash,
+                        style_latest_board_row,
+                    )
 
                     note_live_draft_board_pick_flash(st.session_state, st, len(board_df))
+                    _highlight_board_row = consume_latest_board_row_highlight(st.session_state)
                 except ImportError:
                     pass
+                _board_display = (
+                    style_latest_board_row(format_fantasy_table(clean_ui_columns(board_df)))
+                    if _highlight_board_row
+                    else format_fantasy_table(clean_ui_columns(board_df))
+                )
                 try:
                     from live_draft_perf import PHASE_BOARD_TABLE, live_draft_perf_action
 
                     with live_draft_perf_action(st.session_state, "board_table", phase=PHASE_BOARD_TABLE):
                         render_output_table(
-                            format_fantasy_table(clean_ui_columns(board_df)),
+                            _board_display,
                             key="live_draft_board",
                             file_name="live_draft_board.csv",
                             display_rows=80,
@@ -22561,7 +22575,7 @@ if active_page == "Live Draft Room":
                         )
                 except ImportError:
                     render_output_table(
-                        format_fantasy_table(clean_ui_columns(board_df)),
+                        _board_display,
                         key="live_draft_board",
                         file_name="live_draft_board.csv",
                         display_rows=80,

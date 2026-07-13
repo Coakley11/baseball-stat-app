@@ -1276,6 +1276,18 @@ def _draft_live(
         player_id = str(player_row.get("playerID") or player_row.get("player_id") or player_name).strip()
         pick_key = f"{commit.board_size_after}:{player_id}"
         set_live_draft_pick_notice(session, "success", result["message"], pick_key=pick_key)
+    try:
+        from live_draft_ux import record_live_draft_pick_posted
+
+        record_live_draft_pick_posted(
+            session,
+            pick=int(result.get("target_pick") or slot.get("Pick") or 0),
+            round_no=int(slot.get("Round") or 1),
+            team=str(result.get("on_clock_team") or slot.get("Team") or ""),
+            player=player_name,
+        )
+    except ImportError:
+        pass
     if record_draft_commit_diagnostics is not None:
         record_draft_commit_diagnostics(
             session,

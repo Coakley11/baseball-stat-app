@@ -35,10 +35,9 @@ from suite_auth import AUTH_USER_ID_KEY
 
 
 def _import_live_helpers():
-    try:
-        from streamlit_app import live_draft_get_available, live_draft_make_pick
-    except ImportError:
-        from Streamlit_app import live_draft_get_available, live_draft_make_pick  # type: ignore[no-redef]
+    from live_draft_pick_engine import live_draft_make_pick
+    from live_draft_state import live_draft_get_available
+
     return live_draft_get_available, live_draft_make_pick
 
 

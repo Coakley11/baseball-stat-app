@@ -64,6 +64,7 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
     roster_df = pd.DataFrame(room["rosters"].get(team, []))
     cfg = dict(room.get("config", {}))
     cfg["current_pick"] = int(slot.get("Pick", 1))
+    cfg["room"] = room
     target_counts = live_draft_target_counts(cfg)
     configured_rule = str(cfg.get("auto_pick_rule", "balanced recommendation") or "balanced recommendation")
 

@@ -131,12 +131,14 @@ def repair_incoherent_active_library_selection(session: dict[str, Any]) -> dict[
 
 def prepare_saved_draft_library_active_selection(session: dict[str, Any]) -> dict[str, Any]:
     """Repair incoherent pointers, then return persisted library selection."""
-    try:
-        from fantasy_league_context import backfill_immutable_creation_origins
+    if not session.get("_creation_origin_repair_done"):
+        try:
+            from fantasy_league_context import backfill_immutable_creation_origins
 
-        backfill_immutable_creation_origins(session)
-    except ImportError:
-        pass
+            backfill_immutable_creation_origins(session)
+            session["_creation_origin_repair_done"] = True
+        except ImportError:
+            pass
     sel = resolve_coherent_active_library_selection(session)
     if not sel.get("coherent"):
         sel = repair_incoherent_active_library_selection(session)
