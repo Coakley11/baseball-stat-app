@@ -24011,16 +24011,36 @@ if active_page == "Fantasy Lineup Assistant":
 
     roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame()).copy()
     try:
-        from draft_archive_state import build_roster_stats_from_archive, get_active_draft_archive
+        import copy
+
+        from draft_archive_state import build_roster_stats_from_archive, get_active_draft_archive, get_draft_archive
         from fantasy_league_context import (
             build_roster_stats_from_league_context,
             get_active_league_context,
             has_full_league_rosters,
         )
         from fantasy_trade_roster_sync import roster_stats_cache_stale
+        from resolved_fantasy_context import (
+            resolve_fantasy_context_for_page,
+            roster_dataframe_matches_resolved,
+        )
 
+        _resolved = resolve_fantasy_context_for_page(st.session_state, force=False)
         _lineup_archive = get_active_draft_archive(st.session_state)
-        _lineup_context = get_active_league_context(st.session_state)
+        if _resolved.active_draft_id:
+            loaded = get_draft_archive(st.session_state, _resolved.active_draft_id)
+            if isinstance(loaded, dict):
+                _lineup_archive = loaded
+        _lineup_context = get_active_league_context(st.session_state, respect_source_priority=False)
+        # Prefer the coherent resolved roster map over any session leftover.
+        if isinstance(_lineup_context, dict) and _resolved.league_rosters:
+            _lineup_context = dict(_lineup_context)
+            _lineup_context["league_rosters"] = copy.deepcopy(_resolved.league_rosters)
+            if _resolved.active_team_name:
+                _lineup_context["my_team_name"] = _resolved.active_team_name
+        if not roster_stats.empty and not roster_dataframe_matches_resolved(roster_stats, _resolved):
+            roster_stats = pd.DataFrame()
+            st.session_state.pop("fantasy_current_roster_stats", None)
         if (
             not roster_stats.empty
             and _lineup_context is not None
@@ -24044,7 +24064,13 @@ if active_page == "Fantasy Lineup Assistant":
                         normalize_name_fn=normalize_player_name_for_merge,
                     )
                 if not roster_stats.empty:
-                    st.session_state["fantasy_current_roster_stats"] = roster_stats
+                    if roster_dataframe_matches_resolved(roster_stats, _resolved):
+                        st.session_state["fantasy_current_roster_stats"] = roster_stats
+                        st.session_state["_fantasy_roster_stats_scope_fingerprint"] = _resolved.context_fingerprint
+                    else:
+                        roster_stats = pd.DataFrame()
+        if not _resolved.coherent:
+            st.session_state["_resolved_fantasy_context_diag"] = _resolved.to_diag()
     except ImportError:
         pass
 
@@ -24101,10 +24127,18 @@ if active_page == "Fantasy Lineup Assistant":
         sync_lineup_format_from_canonical(st.session_state, force=True)
         lineup_team = get_active_fantasy_team(st.session_state)
         try:
+            from resolved_fantasy_context import resolve_fantasy_context_for_page
+
+            _resolved_team = resolve_fantasy_context_for_page(st.session_state).active_team_name
+            if _resolved_team:
+                lineup_team = _resolved_team
+        except ImportError:
+            pass
+        try:
             from fantasy_league_context import get_active_league_context
             from fantasy_lineup_scope import resolve_canonical_lineup_team
 
-            _lineup_ctx = get_active_league_context(st.session_state)
+            _lineup_ctx = get_active_league_context(st.session_state, respect_source_priority=False)
             _owned_lineup_team = resolve_canonical_lineup_team(
                 st.session_state,
                 _lineup_ctx,

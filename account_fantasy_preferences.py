@@ -629,8 +629,25 @@ def invalidate_preference_dependent_caches(session: dict[str, Any]) -> None:
         "_lineup_board_payload_cache",
         "_waiver_page_context_cache",
         "_standings_page_context_cache",
+        "_fantasy_roster_stats_scope_fingerprint",
+        "_lineup_resolved_page_context",
+        "_lineup_ctx_resolved_for_run",
+        "_trade_page_context_cache",
     ):
         session.pop(key, None)
+    try:
+        from resolved_fantasy_context import invalidate_resolved_fantasy_context
+
+        invalidate_resolved_fantasy_context(session)
+    except ImportError:
+        pass
+    try:
+        from fantasy_trade_roster_sync import invalidate_fantasy_roster_view_caches
+
+        invalidate_fantasy_roster_view_caches(session)
+    except ImportError:
+        session.pop("fantasy_current_roster_stats", None)
+        session.pop("fantasy_current_standings", None)
     try:
         from fantasy_context_ui import reseed_fantasy_context_toggle_widgets
 

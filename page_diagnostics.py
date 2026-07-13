@@ -90,6 +90,14 @@ def _section_active_source(session: dict[str, Any], page: str) -> dict[str, Any]
             out["active_context_name"] = ctx.get("display_name") or ctx.get("league_name")
     except ImportError:
         pass
+    try:
+        from resolved_fantasy_context import collect_resolved_fantasy_context_diagnostics
+
+        resolved = collect_resolved_fantasy_context_diagnostics(session)
+        if resolved:
+            out["Resolved fantasy context"] = resolved
+    except ImportError:
+        pass
     return out
 
 

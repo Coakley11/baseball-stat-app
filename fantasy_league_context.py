@@ -1191,6 +1191,25 @@ def _clear_fantasy_context_caches(session: dict[str, Any]) -> None:
         session.pop(LINEUP_SCORES_CACHE_KEY, None)
     except ImportError:
         pass
+    try:
+        from fantasy_trade_roster_sync import invalidate_fantasy_roster_view_caches
+
+        invalidate_fantasy_roster_view_caches(session)
+    except ImportError:
+        session.pop("fantasy_current_roster_stats", None)
+        session.pop("fantasy_current_standings", None)
+    try:
+        from resolved_fantasy_context import invalidate_resolved_fantasy_context
+
+        invalidate_resolved_fantasy_context(session)
+    except ImportError:
+        pass
+    try:
+        from fantasy_context_source import invalidate_fantasy_workflow_descriptor_cache
+
+        invalidate_fantasy_workflow_descriptor_cache(session)
+    except ImportError:
+        pass
 
 
 def apply_pending_league_context_activation(session: dict[str, Any]) -> bool:
@@ -1304,6 +1323,7 @@ def activate_league_context(session: dict[str, Any], league_context_id: str) -> 
             }
     except ImportError:
         pass
+    _clear_fantasy_context_caches(session)
     return context
 
 

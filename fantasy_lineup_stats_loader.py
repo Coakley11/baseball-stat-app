@@ -81,9 +81,28 @@ def ensure_lineup_page_hitter_stats(
 
     roster_stats = session.get("fantasy_current_roster_stats", pd.DataFrame())
     if isinstance(roster_stats, pd.DataFrame) and not roster_stats.empty:
-        result["roster_stats"] = roster_stats.copy()
-        result["ok"] = True
-        return result
+        try:
+            from resolved_fantasy_context import (
+                resolve_fantasy_context_for_page,
+                roster_dataframe_matches_resolved,
+            )
+
+            resolved = resolve_fantasy_context_for_page(session)
+            if not roster_dataframe_matches_resolved(roster_stats, resolved):
+                session.pop("fantasy_current_roster_stats", None)
+                roster_stats = pd.DataFrame()
+            else:
+                result["roster_stats"] = roster_stats.copy()
+                result["ok"] = True
+                return result
+        except ImportError:
+            result["roster_stats"] = roster_stats.copy()
+            result["ok"] = True
+            return result
+        if isinstance(roster_stats, pd.DataFrame) and not roster_stats.empty:
+            result["roster_stats"] = roster_stats.copy()
+            result["ok"] = True
+            return result
 
     try:
         from fantasy_league_context import (
