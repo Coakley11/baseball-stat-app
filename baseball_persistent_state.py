@@ -531,13 +531,18 @@ def _comparison_players_from_workspace_blob(state: dict[str, Any]) -> list[str] 
 def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     """Apply one authoritative workspace blob atomically (page + all page_filter_state)."""
     ss = st.session_state
-    auth_snapshot: dict[str, Any] = {}
+    identity_snapshot: dict[str, Any] = {}
     try:
-        from suite_auth import restore_auth_session_snapshot, snapshot_auth_session
+        from suite_identity_guard import snapshot_protected_browser_identity
 
-        auth_snapshot = snapshot_auth_session(ss)
+        identity_snapshot = snapshot_protected_browser_identity(ss)
     except ImportError:
-        pass
+        try:
+            from suite_auth import snapshot_auth_session
+
+            identity_snapshot = {"auth": snapshot_auth_session(ss), "workspace": {}}
+        except ImportError:
+            pass
     pre_restore_session_page = str(ss.get("active_page") or "").strip()
     pre_restore_user_nav = bool(ss.get("_suite_page_user_nav"))
     skip_draft_room = False
@@ -1116,11 +1121,29 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     except ImportError:
         pass
 
-    if auth_snapshot:
-        try:
-            from suite_auth import restore_auth_session_snapshot
+    try:
+        from suite_identity_guard import enforce_identity_after_state_apply
 
-            restore_auth_session_snapshot(ss, auth_snapshot)
+        enforce_identity_after_state_apply(
+            ss,
+            snapshot=identity_snapshot if identity_snapshot else None,
+            reason="apply_baseball_disk_state",
+            last_mutator="apply_baseball_disk_state",
+            st=st,
+        )
+    except ImportError:
+        auth_snap = identity_snapshot.get("auth") if isinstance(identity_snapshot, dict) else None
+        if isinstance(auth_snap, dict) and auth_snap:
+            try:
+                from suite_auth import restore_auth_session_snapshot
+
+                restore_auth_session_snapshot(ss, auth_snap)
+            except ImportError:
+                pass
+        try:
+            from suite_auth import enforce_workspace_ownership
+
+            enforce_workspace_ownership(ss)
         except ImportError:
             pass
 

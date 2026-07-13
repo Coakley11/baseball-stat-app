@@ -3119,6 +3119,14 @@ def _process_live_draft_shared_league_create_request(
         create_error="",
     )
 
+    identity_snapshot = None
+    try:
+        from suite_identity_guard import snapshot_protected_browser_identity
+
+        identity_snapshot = snapshot_protected_browser_identity(session)
+    except ImportError:
+        pass
+
     try:
         try:
             from live_draft_shared_league import preview_shared_league_creation, save_live_draft_shared_league_context
@@ -3357,6 +3365,18 @@ def _process_live_draft_shared_league_create_request(
             shared_push_ok=shared_push_ok,
         )
     finally:
+        try:
+            from suite_identity_guard import enforce_identity_after_state_apply
+
+            enforce_identity_after_state_apply(
+                session,
+                snapshot=identity_snapshot if isinstance(identity_snapshot, dict) else None,
+                reason="live_draft_shared_league_create",
+                last_mutator="_process_live_draft_shared_league_create_request",
+                st=st,
+            )
+        except ImportError:
+            pass
         _clear_create_processing_lock(session, request_id=request_id)
         _sync_shared_league_create_diag_from_session(session)
 
@@ -3392,6 +3412,17 @@ def render_live_draft_completion_panel(
 ) -> None:
     """Post-final-pick Draft Complete hub."""
     try:
+        from suite_identity_guard import enforce_identity_after_state_apply
+
+        enforce_identity_after_state_apply(
+            session,
+            reason="render_live_draft_completion_panel",
+            last_mutator="render_live_draft_completion_panel",
+            st=st,
+        )
+    except ImportError:
+        pass
+    try:
         from live_draft_completion import apply_live_draft_completion
 
         room = apply_live_draft_completion(room, session)
@@ -3417,6 +3448,18 @@ def render_live_draft_completion_panel(
         draft_fingerprint=str(identity.get("draft_fingerprint") or ""),
         shared_button_callback_count=int(session.get(SHARED_LEAGUE_OPEN_CALLBACK_COUNT_KEY) or 0),
     )
+
+    try:
+        from suite_identity_guard import render_identity_guard_diagnostic_panel
+
+        render_identity_guard_diagnostic_panel(
+            st,
+            session,
+            title="Live Draft completion — account / workspace identity",
+            room=room,
+        )
+    except ImportError:
+        pass
 
     expand_save = bool(session.pop("_draft_save_trace_expand", False))
     flash = _pop_draft_save_ui_flash(session)
@@ -4222,6 +4265,17 @@ def render_saved_draft_library_page(st: Any, session: dict[str, Any], *, page_la
 
 
 def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
+    try:
+        from suite_identity_guard import enforce_identity_after_state_apply
+
+        enforce_identity_after_state_apply(
+            session,
+            reason="render_saved_draft_library_page",
+            last_mutator="render_saved_draft_library_page",
+            st=st,
+        )
+    except ImportError:
+        pass
     delete_flash = session.pop("_draft_delete_flash", None)
     if delete_flash:
         st.success(str(delete_flash))
@@ -4347,6 +4401,17 @@ def _render_saved_draft_library_page_body(st: Any, session: dict[str, Any], *, p
     )
 
     render_persistence_probe_panel(st, session)
+
+    try:
+        from suite_identity_guard import render_identity_guard_diagnostic_panel
+
+        render_identity_guard_diagnostic_panel(
+            st,
+            session,
+            title="Saved Draft Library — account / workspace identity",
+        )
+    except ImportError:
+        pass
 
     try:
         from fantasy_shared_league_library_sync import (

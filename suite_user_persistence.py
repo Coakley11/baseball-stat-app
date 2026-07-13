@@ -1185,7 +1185,23 @@ def sync_workspace_protocol(
         return False
 
     try:
+        from suite_identity_guard import apply_state_with_identity_guard
+
+        apply_state_with_identity_guard(
+            st,
+            apply_state,
+            picked.state,
+            reason="sync_workspace_protocol",
+            last_mutator="sync_workspace_protocol.apply_state",
+        )
+    except ImportError:
         apply_state(st, picked.state)
+        try:
+            from suite_auth import enforce_workspace_ownership
+
+            enforce_workspace_ownership(st.session_state)
+        except ImportError:
+            pass
     except Exception as exc:
         reason = f"apply_state failed: {exc}"
         st.session_state["_suite_persist_restore_skip_reason"] = reason
@@ -1661,7 +1677,23 @@ def sync_cloud_workspace_before_sidebar(
         return False
 
     try:
+        from suite_identity_guard import apply_state_with_identity_guard
+
+        apply_state_with_identity_guard(
+            st,
+            apply_state,
+            picked.state,
+            reason="sync_workspace_protocol",
+            last_mutator="sync_workspace_protocol.apply_state",
+        )
+    except ImportError:
         apply_state(st, picked.state)
+        try:
+            from suite_auth import enforce_workspace_ownership
+
+            enforce_workspace_ownership(st.session_state)
+        except ImportError:
+            pass
     except Exception as exc:
         st.session_state["_suite_persist_restore_skip_reason"] = f"apply_state failed: {exc}"
         return False

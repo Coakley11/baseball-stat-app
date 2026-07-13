@@ -367,6 +367,13 @@ def rebuild_workflow_from_canonical_shared_leagues(
     )
 
     session = st.session_state
+    identity_snapshot = None
+    try:
+        from suite_identity_guard import snapshot_protected_browser_identity
+
+        identity_snapshot = snapshot_protected_browser_identity(session)
+    except ImportError:
+        pass
     before_drafts = count_draft_archives(session.get(DRAFT_ARCHIVE_KEY))
     before_contexts = count_league_contexts(session.get(LEAGUE_CONTEXT_STATE_KEY))
     trace: dict[str, Any] = {
@@ -467,6 +474,18 @@ def rebuild_workflow_from_canonical_shared_leagues(
         except ImportError:
             pass
     session[_STARTUP_SYNC_TRACE_KEY] = trace
+    try:
+        from suite_identity_guard import enforce_identity_after_state_apply
+
+        enforce_identity_after_state_apply(
+            session,
+            snapshot=identity_snapshot if isinstance(identity_snapshot, dict) else None,
+            reason="rebuild_workflow_from_canonical_shared_leagues",
+            last_mutator="fantasy_shared_league_startup_sync.rebuild",
+            st=st,
+        )
+    except ImportError:
+        pass
     return trace
 
 

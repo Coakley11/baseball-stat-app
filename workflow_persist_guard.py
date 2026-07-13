@@ -1648,6 +1648,17 @@ def ensure_session_workflow_hydrated(
         if isinstance(active_trace, dict):
             out["active_restore_reason"] = active_trace.get("restore_reason")
             out["active_restore_source"] = active_trace.get("active_source")
+        try:
+            from suite_identity_guard import enforce_identity_after_state_apply
+
+            enforce_identity_after_state_apply(
+                session,
+                reason="ensure_session_workflow_hydrated",
+                last_mutator="workflow_persist_guard.ensure_session_workflow_hydrated",
+                st=st,
+            )
+        except ImportError:
+            pass
     return out
 
 
