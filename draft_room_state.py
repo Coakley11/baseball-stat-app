@@ -2813,6 +2813,25 @@ def effective_board_pick_count(session: dict[str, Any]) -> int:
     return max((int(c) for c in counts if c is not None), default=0)
 
 
+def _should_stamp_simulator_board_ownership(*, local_edit: bool, reason: str) -> bool:
+    """Only stamp ownership for deliberate current-account edits — never on rehydrate/prepare."""
+    if not local_edit:
+        return False
+    r = str(reason or "").strip()
+    if not r or r.startswith("prepare_") or r.startswith("test_seed"):
+        return False
+    if r in {
+        "board_authority",
+        "direct_cloud_save",
+        "dirty_runtime_preserve",
+        "richest_restore",
+        "cloud_restore",
+        "disk_restore",
+    }:
+        return False
+    return True
+
+
 def sync_board_to_session_keys(
     session: dict[str, Any],
     table: Any,
@@ -2843,6 +2862,13 @@ def sync_board_to_session_keys(
     session["cloud_payload_pick_count"] = int(blob.get("pick_count") or pick_count)
     session["_draft_room_canonical_sync_reason"] = reason
     session["_draft_room_canonical_pick_count"] = pick_count
+    if pick_count > 0 and _should_stamp_simulator_board_ownership(local_edit=local_edit, reason=reason):
+        try:
+            from live_draft_navigation import stamp_simulator_board_ownership
+
+            stamp_simulator_board_ownership(session, origin=reason or "local_edit")
+        except ImportError:
+            pass
     return normalized
 
 

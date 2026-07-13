@@ -194,6 +194,8 @@ def _live_draft_room_for_return(session: dict[str, Any]) -> dict[str, Any] | Non
 
 SIMULATOR_RESUME_IDENTITY_KEY = "_draft_simulator_resume_identity"
 SIMULATOR_RESUME_DIAG_KEY = "_draft_simulator_resume_diag"
+SIMULATOR_BOARD_OWNERSHIP_KEY = "_simulator_board_ownership"
+SIMULATOR_OWNERSHIP_SCRUB_TOKEN_KEY = "_simulator_ownership_scrub_token"
 
 # Private Draft Room Simulator runtime — cleared on account/workspace change.
 # Never include shared Live Draft room keys here.
@@ -208,6 +210,7 @@ PRIVATE_SIMULATOR_RUNTIME_KEYS: tuple[str, ...] = (
     "fantasy_draft_projection_style",
     "draft_shared_settings",
     SIMULATOR_RESUME_IDENTITY_KEY,
+    SIMULATOR_BOARD_OWNERSHIP_KEY,
 )
 
 
@@ -230,6 +233,12 @@ def _current_session_ownership(session: dict[str, Any]) -> dict[str, str]:
         "external_id": str(external or "").strip().lower(),
         "workspace_id": str(workspace or "").strip(),
     }
+
+
+def _is_daniel_account(ownership: dict[str, str]) -> bool:
+    ext = str(ownership.get("external_id") or "").strip().lower()
+    ws = str(ownership.get("workspace_id") or "").strip().lower()
+    return ext == "daniel" or ws == "daniel"
 
 
 def _simulator_board_fingerprint(session: dict[str, Any]) -> str:
@@ -261,35 +270,155 @@ def _simulator_board_fingerprint(session: dict[str, Any]) -> str:
     return f"sim:{len(parts)}:{digest}"
 
 
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def stamp_simulator_board_ownership(
+    session: dict[str, Any],
+    *,
+    origin: str,
+) -> dict[str, Any] | None:
+    """Stamp ownership when the current account deliberately creates/edits the private board.
+
+    Never call this merely because an unowned board exists in session.
+    """
+    ownership = _current_session_ownership(session)
+    if not (ownership.get("auth_user_id") or ownership.get("external_id")) or not ownership.get("workspace_id"):
+        return None
+    board_fp = _simulator_board_fingerprint(session)
+    if not board_fp:
+        return None
+    stamp = {
+        "simulator_owner_auth_user_id": ownership.get("auth_user_id") or "",
+        "simulator_owner_external_id": ownership.get("external_id") or "",
+        "simulator_owner_workspace_id": ownership.get("workspace_id") or "",
+        "simulator_board_fingerprint": board_fp,
+        "simulator_board_created_at": _utc_now_iso(),
+        "simulator_board_origin": str(origin or "local_edit").strip() or "local_edit",
+    }
+    session[SIMULATOR_BOARD_OWNERSHIP_KEY] = stamp
+    return stamp
+
+
+def verify_simulator_board_ownership(session: dict[str, Any]) -> tuple[bool, str]:
+    """Return (verified, reason). Unowned boards are not owned by inventing a new stamp."""
+    board_fp = _simulator_board_fingerprint(session)
+    if not board_fp:
+        return True, ""
+    ownership = _current_session_ownership(session)
+    stamp = session.get(SIMULATOR_BOARD_OWNERSHIP_KEY)
+    if not isinstance(stamp, dict) or not str(stamp.get("simulator_board_fingerprint") or "").strip():
+        if _is_daniel_account(ownership):
+            return True, "legacy_daniel_allowed"
+        return False, "legacy_or_foreign_board"
+    if str(stamp.get("simulator_owner_external_id") or "").strip().lower() != (
+        ownership.get("external_id") or ""
+    ):
+        return False, "foreign_board_owner_mismatch"
+    if str(stamp.get("simulator_owner_workspace_id") or "").strip() != (ownership.get("workspace_id") or ""):
+        return False, "foreign_board_workspace_mismatch"
+    owned_uid = str(stamp.get("simulator_owner_auth_user_id") or "").strip()
+    current_uid = ownership.get("auth_user_id") or ""
+    if owned_uid and current_uid and owned_uid != current_uid:
+        return False, "foreign_board_auth_mismatch"
+    if str(stamp.get("simulator_board_fingerprint") or "").strip() != board_fp:
+        return False, "board_fingerprint_mismatch"
+    return True, ""
+
+
+def scrub_simulator_runtime_for_current_account(
+    session: dict[str, Any],
+    *,
+    reason: str = "first_render_migration",
+    force: bool = False,
+) -> dict[str, Any]:
+    """Reject unowned/foreign private boards — safe to call on every prepare / sidebar render."""
+    ownership = _current_session_ownership(session)
+    token = f"{ownership.get('external_id')}|{ownership.get('workspace_id')}|{_simulator_board_fingerprint(session)}"
+    if not force and session.get(SIMULATOR_OWNERSHIP_SCRUB_TOKEN_KEY) == token:
+        verified, reject = verify_simulator_board_ownership(session)
+        return {
+            "skipped": "already_scrubbed",
+            "verified": verified,
+            "reason": reject,
+        }
+    session[SIMULATOR_OWNERSHIP_SCRUB_TOKEN_KEY] = token
+    board_fp = _simulator_board_fingerprint(session)
+    if not board_fp:
+        return {"cleared": False, "verified": True, "reason": "empty_board"}
+    verified, reject = verify_simulator_board_ownership(session)
+    if verified:
+        _set_resume_diag(
+            session,
+            simulator_board_owner_verified=True,
+            simulator_board_rejected_reason="",
+        )
+        return {"cleared": False, "verified": True, "reason": reject or "ok"}
+    clear_private_baseball_simulator_runtime(
+        session,
+        reason=reject or reason or "legacy_unowned_board_rejected",
+    )
+    session[SIMULATOR_OWNERSHIP_SCRUB_TOKEN_KEY] = (
+        f"{ownership.get('external_id')}|{ownership.get('workspace_id')}|"
+    )
+    _set_resume_diag(
+        session,
+        simulator_board_owner_verified=False,
+        simulator_board_rejected_reason=reject or "legacy_unowned_board_rejected",
+        sidebar_source_selected="none",
+        sidebar_priority_reason="foreign_or_unowned_board_cleared",
+    )
+    return {"cleared": True, "verified": False, "reason": reject}
+
+
 def _set_resume_diag(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
     ownership = _current_session_ownership(session)
-    shared_team = str(session.get("draft_room_participant_team") or "").strip()
-    if not shared_team:
-        room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else None
-        if isinstance(room, dict):
-            cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
-            shared_team = str(cfg.get("your_team") or cfg.get("user_team") or "").strip()
+    stamp = session.get(SIMULATOR_BOARD_OWNERSHIP_KEY) if isinstance(session.get(SIMULATOR_BOARD_OWNERSHIP_KEY), dict) else {}
+    shared = _shared_membership_snapshot(session)
     frozen = session.get(SIMULATOR_RESUME_IDENTITY_KEY)
     frozen_ws = ""
     frozen_team = ""
     if isinstance(frozen, dict):
         frozen_ws = str(frozen.get("workspace_id") or "").strip()
         frozen_team = str(frozen.get("user_team") or "").strip()
+    verified, reject = verify_simulator_board_ownership(session)
     diag = {
         "current_account": ownership.get("external_id") or ownership.get("auth_user_id") or "",
         "current_workspace": ownership.get("workspace_id") or "",
         "resume_source_kind": "",
-        "resume_owner_workspace": frozen_ws,
+        "resume_owner_workspace": frozen_ws or str(stamp.get("simulator_owner_workspace_id") or ""),
         "resume_team": frozen_team,
-        "active_shared_room_team": shared_team,
+        "active_shared_room_team": shared.get("shared_membership_team") or "",
         "stale_resume_discarded_reason": "",
+        "simulator_board_owner_auth_user_id": str(stamp.get("simulator_owner_auth_user_id") or ""),
+        "simulator_board_owner_external_id": str(stamp.get("simulator_owner_external_id") or ""),
+        "simulator_board_owner_workspace_id": str(stamp.get("simulator_owner_workspace_id") or ""),
+        "simulator_board_owner_verified": verified,
+        "simulator_board_rejected_reason": "" if verified else reject,
+        "active_shared_room_code": shared.get("active_shared_room_code") or "",
+        "shared_membership_room_id": shared.get("shared_membership_room_id") or "",
+        "shared_membership_team": shared.get("shared_membership_team") or "",
+        "shared_room_hydrated": bool(shared.get("shared_room_hydrated")),
+        "sidebar_source_selected": "",
+        "sidebar_priority_reason": "",
     }
     prev = session.get(SIMULATOR_RESUME_DIAG_KEY)
     if isinstance(prev, dict):
-        # Keep last discard reason until overwritten or cleared explicitly.
         if prev.get("stale_resume_discarded_reason") and "stale_resume_discarded_reason" not in fields:
             diag["stale_resume_discarded_reason"] = prev.get("stale_resume_discarded_reason")
+        # Keep last rejection visible after the foreign board was cleared from session.
+        if prev.get("simulator_board_rejected_reason") and "simulator_board_rejected_reason" not in fields:
+            if not verified or not _simulator_board_fingerprint(session):
+                diag["simulator_board_rejected_reason"] = prev.get("simulator_board_rejected_reason")
+                if not _simulator_board_fingerprint(session) and prev.get("simulator_board_owner_verified") is False:
+                    diag["simulator_board_owner_verified"] = False
     diag.update({k: v for k, v in fields.items() if v is not None})
+    # After a foreign/unowned board was rejected and cleared, keep verified=false for diagnostics.
+    if diag.get("simulator_board_rejected_reason") and not _simulator_board_fingerprint(session):
+        diag["simulator_board_owner_verified"] = False
     session[SIMULATOR_RESUME_DIAG_KEY] = diag
     return diag
 
@@ -298,13 +427,221 @@ def collect_simulator_resume_diagnostics(session: dict[str, Any]) -> dict[str, A
     """Compact resume ownership diagnostics for Auth/sidebar UI."""
     raw = session.get(SIMULATOR_RESUME_DIAG_KEY)
     if isinstance(raw, dict) and raw:
-        # Refresh live fields without wiping discard reason.
         return _set_resume_diag(
             session,
             resume_source_kind=raw.get("resume_source_kind") or "",
             stale_resume_discarded_reason=raw.get("stale_resume_discarded_reason") or "",
+            sidebar_source_selected=raw.get("sidebar_source_selected") or "",
+            sidebar_priority_reason=raw.get("sidebar_priority_reason") or "",
+            simulator_board_rejected_reason=raw.get("simulator_board_rejected_reason") or "",
         )
     return _set_resume_diag(session)
+
+
+def _shared_membership_snapshot(session: dict[str, Any]) -> dict[str, Any]:
+    code = ""
+    try:
+        from live_draft_setup_mode import shared_room_code
+
+        code = str(shared_room_code(session) or "").strip().upper()
+    except ImportError:
+        pass
+    if not code:
+        # Prefer resolved join codes, but still honor an explicit session membership code
+        # when the room object is not hydrated yet (pending lobby card).
+        code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+    team = ""
+    room_id = ""
+    membership_bound = False
+    if code:
+        try:
+            from draft_room_participant_state import membership_team_for_participant
+
+            team = str(membership_team_for_participant(session, code) or "").strip()
+            membership_bound = bool(team) or _membership_entry_exists(session, code)
+        except ImportError:
+            membership_bound = _membership_entry_exists(session, code)
+        if not team and membership_bound:
+            # Global participant team only when membership binds it to this exact room.
+            team = str(session.get("draft_room_participant_team") or "").strip()
+        if not membership_bound:
+            # Room-scoped participant_state may carry assigned_team without membership blob.
+            try:
+                from draft_room_participant_state import participant_state_for_room
+
+                room_state = participant_state_for_room(session, code)
+                slot_team = str(room_state.get("assigned_team") or "").strip()
+                if slot_team:
+                    team = team or slot_team
+                    membership_bound = True
+            except ImportError:
+                pass
+        room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else None
+        if isinstance(room, dict):
+            room_id = str(room.get("draft_room_id") or room.get("room_id") or "").strip()
+    hydrated = bool(_live_draft_room_for_return(session))
+    has_membership = bool(code and (team or membership_bound))
+    return {
+        "active_shared_room_code": code,
+        "shared_membership_room_id": room_id or code,
+        "shared_membership_team": team,
+        "shared_room_hydrated": hydrated,
+        "has_shared_membership": has_membership,
+    }
+
+
+def _membership_entry_exists(session: dict[str, Any], room_code: str) -> bool:
+    code = str(room_code or "").strip().upper()
+    if not code:
+        return False
+    membership = session.get("draft_room_participant_membership")
+    if not isinstance(membership, dict):
+        return False
+    entry = membership.get(code)
+    return bool(entry)
+
+
+def _try_hydrate_shared_room(session: dict[str, Any], room_code: str) -> dict[str, Any] | None:
+    code = str(room_code or "").strip().upper()
+    if not code:
+        return None
+    room = _live_draft_room_for_return(session)
+    if isinstance(room, dict):
+        return room
+    try:
+        from draft_room_shared_state import load_shared_room
+        from live_draft_state import room_from_persist_dict
+
+        doc = load_shared_room(code)
+        if not isinstance(doc, dict):
+            return None
+        # Shared docs often wrap live draft under live_draft / draft_room keys.
+        blob = doc.get("live_draft") or doc.get("live_draft_room") or doc.get("room") or doc
+        restored = None
+        if isinstance(blob, dict):
+            try:
+                restored = room_from_persist_dict(blob)
+            except Exception:
+                restored = blob if blob.get("draft_room_id") or blob.get("pick_order") or blob.get("status") else None
+        if isinstance(restored, dict):
+            session["live_draft_room"] = restored
+            return restored
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    try:
+        from draft_room_context import poll_shared_draft_room, sync_shared_draft_room
+
+        sync_shared_draft_room(session, force=True)
+        poll_shared_draft_room(session)
+        return _live_draft_room_for_return(session)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    return None
+
+
+def _shared_membership_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
+    """Live Draft continuation from shared membership — even before room object is hydrated."""
+    snap = _shared_membership_snapshot(session)
+    if not snap.get("has_shared_membership"):
+        return None
+    code = str(snap.get("active_shared_room_code") or "").strip().upper()
+    team = str(snap.get("shared_membership_team") or "").strip()
+    room = _try_hydrate_shared_room(session, code)
+    hydrated = isinstance(room, dict)
+    if hydrated:
+        try:
+            from live_draft_state import analyze_live_draft_progress, has_active_live_draft
+
+            progress = analyze_live_draft_progress(room)
+            cfg = dict(room.get("config") or {})
+            teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
+            team_label = " vs ".join(teams[:4]) if teams else str(cfg.get("league_name") or "Draft")
+            if not team:
+                team = str(
+                    session.get("draft_room_participant_team")
+                    or cfg.get("your_team")
+                    or cfg.get("user_team")
+                    or ""
+                ).strip()
+            status = str(room.get("status") or "").strip()
+            kind = "live_active" if status in ("in_progress", "paused") else "live_lobby"
+            if progress.get("draft_complete") or status == "complete":
+                kind = "live_complete"
+            slot = progress.get("slot") or {}
+            _set_resume_diag(
+                session,
+                resume_source_kind="live_draft" if kind != "live_complete" else "live_complete",
+                resume_team=team,
+                active_shared_room_team=team,
+                shared_room_hydrated=True,
+                sidebar_source_selected="live_draft",
+                sidebar_priority_reason="active_shared_membership",
+                simulator_board_owner_verified=verify_simulator_board_ownership(session)[0],
+            )
+            return {
+                "kind": kind,
+                "title": "Draft Completed" if kind == "live_complete" else "Return to Live Draft",
+                "team_label": team_label,
+                "room_code": code,
+                "mode_label": "Shared Multiplayer",
+                "user_team": team,
+                "round_no": slot.get("Round") if isinstance(slot, dict) else None,
+                "pick_no": progress.get("current_pick"),
+                "on_clock": progress.get("on_clock_team") or "—",
+                "picks_label": (
+                    f"{int(progress.get('draft_board_count') or 0)} / {int(progress.get('total_picks') or 0)} picks made"
+                    if progress.get("total_picks")
+                    else f"{int(progress.get('draft_board_count') or 0)} picks"
+                ),
+                "seconds_remaining": _seconds_remaining(room) if kind == "live_active" else None,
+                "shared_room_hydrated": True,
+            }
+        except Exception:
+            pass
+        _set_resume_diag(
+            session,
+            resume_source_kind="live_draft",
+            resume_team=team,
+            active_shared_room_team=team,
+            shared_room_hydrated=True,
+            sidebar_source_selected="live_draft",
+            sidebar_priority_reason="active_shared_membership",
+        )
+        return {
+            "kind": "live_lobby",
+            "title": "Return to Live Draft",
+            "team_label": str((room.get("config") or {}).get("league_name") or code or "Live Draft"),
+            "room_code": code,
+            "mode_label": "Shared Multiplayer",
+            "user_team": team,
+            "shared_room_hydrated": True,
+        }
+
+    # Membership known, room hydration pending — never fall through to simulator.
+    _set_resume_diag(
+        session,
+        resume_source_kind="live_draft",
+        resume_team=team,
+        active_shared_room_team=team,
+        shared_room_hydrated=False,
+        sidebar_source_selected="live_draft",
+        sidebar_priority_reason="active_shared_membership",
+    )
+    return {
+        "kind": "live_lobby",
+        "title": "Return to Live Draft",
+        "team_label": code or "Shared Live Draft",
+        "room_code": code,
+        "mode_label": "Shared Multiplayer",
+        "user_team": team,
+        "picks_label": "Connecting to shared room…",
+        "shared_room_hydrated": False,
+        "pending_hydration": True,
+    }
 
 
 def _ownership_matches_frozen(session: dict[str, Any], frozen: dict[str, Any]) -> tuple[bool, str]:
@@ -348,7 +685,6 @@ def clear_private_baseball_simulator_runtime(
         if key in session:
             session.pop(key, None)
             cleared.append(key)
-    # Also drop common simulator editor aliases that can rehydrate the stale board.
     for key in (
         "draft_room_board_editor_cache",
         "draft_room_board_editor_seed",
@@ -366,23 +702,40 @@ def clear_private_baseball_simulator_runtime(
         "payload_has_draft_board",
         "cloud_payload_pick_count",
         "canonical_draft_meta",
+        SIMULATOR_OWNERSHIP_SCRUB_TOKEN_KEY,
     ):
         if key in session:
             session.pop(key, None)
             cleared.append(key)
-    # page_filter_state often rehydrates draft_room_table after account switches.
     pfs = session.get("page_filter_state")
     if isinstance(pfs, dict):
         for page_key in ("Draft Room Simulator", "Draft Workflow"):
             if page_key in pfs:
                 pfs.pop(page_key, None)
                 cleared.append(f"page_filter_state.{page_key}")
+    # Canonical draft-room copies nested under full-session / workflow blobs in-session.
+    for bag_key in ("_suite_full_session_cache", "_workflow_persist_cache", "full_session"):
+        bag = session.get(bag_key)
+        if not isinstance(bag, dict):
+            continue
+        for nested in ("draft_room_table", "draft_room_state", SIMULATOR_RESUME_IDENTITY_KEY, SIMULATOR_BOARD_OWNERSHIP_KEY):
+            if nested in bag:
+                bag.pop(nested, None)
+                cleared.append(f"{bag_key}.{nested}")
+        nested_pfs = bag.get("page_filter_state")
+        if isinstance(nested_pfs, dict):
+            for page_key in ("Draft Room Simulator", "Draft Workflow"):
+                if page_key in nested_pfs:
+                    nested_pfs.pop(page_key, None)
+                    cleared.append(f"{bag_key}.page_filter_state.{page_key}")
     _set_resume_diag(
         session,
         resume_source_kind="none",
         resume_owner_workspace="",
         resume_team="",
         stale_resume_discarded_reason=str(reason or "account_or_workspace_changed"),
+        simulator_board_owner_verified=False,
+        simulator_board_rejected_reason=str(reason or "account_or_workspace_changed"),
     )
     session["_private_simulator_runtime_clear_trace"] = {
         "reason": reason,
@@ -392,7 +745,7 @@ def clear_private_baseball_simulator_runtime(
 
 
 def _freeze_simulator_resume_identity(session: dict[str, Any], status: dict[str, Any]) -> dict[str, Any]:
-    """Keep an independent simulator resume card scoped to the current account/workspace/board."""
+    """Keep an independent simulator resume card scoped to the current account-owned board."""
     picks = int(status.get("pick_count") or 0)
     if picks <= 0:
         discard_stale_simulator_resume_identity(session, reason="empty_board")
@@ -403,18 +756,31 @@ def _freeze_simulator_resume_identity(session: dict[str, Any], status: dict[str,
     if not board_fp:
         discard_stale_simulator_resume_identity(session, reason="missing_board_fingerprint")
         return {}
-    # Require a signed-in / workspace-scoped owner before freezing private resume.
     if not (ownership.get("auth_user_id") or ownership.get("external_id")) or not ownership.get("workspace_id"):
         discard_stale_simulator_resume_identity(session, reason="unsigned_or_unscoped_session")
         return {}
+
+    # Board ownership stamp is required — never invent ownership around a leftover board.
+    verified, reject = verify_simulator_board_ownership(session)
+    if not verified:
+        clear_private_baseball_simulator_runtime(
+            session,
+            reason=reject or "legacy_unowned_board_rejected",
+        )
+        return {}
+    if reject == "legacy_daniel_allowed":
+        # Daniel may keep legacy boards for continuity, but still require an explicit stamp
+        # before advertising a resume card under a fresh freeze.
+        stamped = stamp_simulator_board_ownership(session, origin="legacy_daniel_resume_adopt")
+        if not stamped:
+            discard_stale_simulator_resume_identity(session, reason="legacy_daniel_stamp_failed")
+            return {}
 
     frozen = session.get(SIMULATOR_RESUME_IDENTITY_KEY)
     if isinstance(frozen, dict) and str(frozen.get("user_team") or "").strip():
         ok, mismatch = _ownership_matches_frozen(session, frozen)
         if not ok:
             reason = mismatch or "ownership_mismatch"
-            # Account/workspace ownership failures must wipe the private board, not rebuild
-            # a Donny resume under Coakley11 from leftover Daniel board rows.
             if reason.startswith(("mismatch_auth", "mismatch_external", "mismatch_workspace", "missing_frozen", "missing_current")):
                 clear_private_baseball_simulator_runtime(session, reason=reason)
                 return {}
@@ -435,11 +801,14 @@ def _freeze_simulator_resume_identity(session: dict[str, Any], status: dict[str,
                 resume_owner_workspace=ownership.get("workspace_id") or "",
                 resume_team=str(updated.get("user_team") or ""),
                 stale_resume_discarded_reason="",
+                sidebar_source_selected="draft_simulator",
+                sidebar_priority_reason="current_account_owned_simulator",
+                simulator_board_owner_verified=True,
+                simulator_board_rejected_reason="",
             )
             return updated
 
     team = str(status.get("your_team") or session.get("room_your_team") or "").strip()
-    # Prefer the most frequent Fantasy Team on the board when room_your_team already drifted.
     try:
         table = session.get("draft_room_table")
         if table is not None and hasattr(table, "empty") and not table.empty:
@@ -479,12 +848,24 @@ def _freeze_simulator_resume_identity(session: dict[str, Any], status: dict[str,
         resume_owner_workspace=ownership.get("workspace_id") or "",
         resume_team=team,
         stale_resume_discarded_reason="",
+        sidebar_source_selected="draft_simulator",
+        sidebar_priority_reason="current_account_owned_simulator",
+        simulator_board_owner_verified=True,
+        simulator_board_rejected_reason="",
     )
     return identity
 
 
 def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
-    """Sidebar card context for active live draft, lobby, completed draft, or simulator."""
+    """Sidebar card context for active live draft, lobby, completed draft, or simulator.
+
+    Priority:
+    1. Active / joined shared Live Draft (including hydration-pending membership)
+    2. Current-account-owned private Simulator board
+    3. No continuation card
+    """
+    scrub_simulator_runtime_for_current_account(session, reason="sidebar_render_scrub")
+
     # Drop private simulator ownership that no longer matches this browser account.
     frozen = session.get(SIMULATOR_RESUME_IDENTITY_KEY)
     if isinstance(frozen, dict) and frozen:
@@ -497,6 +878,11 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
                 clear_private_baseball_simulator_runtime(session, reason=reason)
             elif reason.startswith("mismatch_board") or reason.startswith("missing"):
                 discard_stale_simulator_resume_identity(session, reason=reason)
+
+    # Shared membership always beats private simulator — even before live_draft_room exists.
+    shared_ctx = _shared_membership_return_context(session)
+    if shared_ctx is not None:
+        return shared_ctx
 
     room = _live_draft_room_for_return(session)
 
@@ -512,6 +898,15 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
             mode_label = "Shared Multiplayer" if is_shared_multiplayer_intent(session, room=room) else "Solo Draft"
             code = shared_room_code(session) or ""
             user_team = str(session.get("draft_room_participant_team") or cfg.get("your_team") or cfg.get("user_team") or "")
+            if code:
+                try:
+                    from draft_room_participant_state import membership_team_for_participant
+
+                    scoped = membership_team_for_participant(session, code)
+                    if scoped:
+                        user_team = scoped
+                except ImportError:
+                    pass
             try:
                 from fantasy_workspace_team_identity import resolve_current_account_team_for_live_draft_and_league
 
@@ -534,6 +929,8 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
                     resume_source_kind="live_complete",
                     resume_team=user_team,
                     active_shared_room_team=user_team,
+                    sidebar_source_selected="live_draft",
+                    sidebar_priority_reason="hydrated_live_room",
                 )
                 return {
                     "kind": "live_complete",
@@ -546,12 +943,13 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
                 }
 
             if has_active_live_draft(session) or status in ("not_started", "in_progress", "paused"):
-                # Shared Live Draft always wins over any private simulator continuation.
                 _set_resume_diag(
                     session,
                     resume_source_kind="live_draft",
                     resume_team=user_team,
                     active_shared_room_team=user_team,
+                    sidebar_source_selected="live_draft",
+                    sidebar_priority_reason="hydrated_live_room",
                 )
                 return {
                     "kind": "live_active" if status in ("in_progress", "paused") else "live_lobby",
@@ -575,6 +973,8 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
                     resume_source_kind="live_complete",
                     resume_team=user_team,
                     active_shared_room_team=user_team,
+                    sidebar_source_selected="live_draft",
+                    sidebar_priority_reason="hydrated_live_room",
                 )
                 return {
                     "kind": "live_complete",
@@ -587,6 +987,8 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
                 resume_source_kind="live_draft",
                 resume_team=user_team,
                 active_shared_room_team=user_team,
+                sidebar_source_selected="live_draft",
+                sidebar_priority_reason="hydrated_live_room",
             )
             return {
                 "kind": "live_active" if status in ("in_progress", "paused") else "live_lobby",
@@ -621,7 +1023,12 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
             }
     except ImportError:
         pass
-    _set_resume_diag(session, resume_source_kind="none")
+    _set_resume_diag(
+        session,
+        resume_source_kind="none",
+        sidebar_source_selected="none",
+        sidebar_priority_reason="no_continuation",
+    )
     return None
 
 
@@ -688,14 +1095,21 @@ def render_return_to_draft_sidebar(
             bits = [
                 f"acct={diag.get('current_account') or '—'}",
                 f"ws={diag.get('current_workspace') or '—'}",
-                f"src={diag.get('resume_source_kind') or '—'}",
-                f"team={diag.get('resume_team') or diag.get('active_shared_room_team') or '—'}",
+                f"src={diag.get('sidebar_source_selected') or diag.get('resume_source_kind') or '—'}",
+                f"team={diag.get('resume_team') or diag.get('shared_membership_team') or '—'}",
             ]
-            if diag.get("active_shared_room_team"):
-                bits.append(f"live={diag.get('active_shared_room_team')}")
+            if diag.get("shared_membership_team") or diag.get("active_shared_room_team"):
+                bits.append(
+                    f"live={diag.get('shared_membership_team') or diag.get('active_shared_room_team')}"
+                )
+            bits.append(f"sim_ok={diag.get('simulator_board_owner_verified')}")
+            if diag.get("simulator_board_rejected_reason"):
+                bits.append(f"sim_reject={diag.get('simulator_board_rejected_reason')}")
+            if diag.get("sidebar_priority_reason"):
+                bits.append(f"pri={diag.get('sidebar_priority_reason')}")
             if diag.get("stale_resume_discarded_reason"):
                 bits.append(f"discard={diag.get('stale_resume_discarded_reason')}")
-            st.caption("Resume · " + " · ".join(bits))
+            st.caption("Resume · " + " · ".join(str(b) for b in bits))
         except Exception:
             pass
 

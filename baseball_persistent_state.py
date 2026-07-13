@@ -1400,6 +1400,19 @@ def prepare_baseball_workspace(st: Any) -> bool:
         pass
     except Exception:
         pass
+    # First-render (and every prepare): reject foreign/unowned private simulator boards
+    # already present in a signed-in session — sign-out transitions alone are not enough.
+    try:
+        from live_draft_navigation import scrub_simulator_runtime_for_current_account
+
+        ss["_simulator_ownership_scrub_trace"] = scrub_simulator_runtime_for_current_account(
+            ss,
+            reason="prepare_baseball_workspace",
+        )
+    except ImportError:
+        pass
+    except Exception as exc:
+        ss["_simulator_ownership_scrub_trace"] = {"error": str(exc)}
     return result
 
 

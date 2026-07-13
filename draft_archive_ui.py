@@ -372,10 +372,16 @@ def render_persistence_probe_panel(st: Any, session: dict[str, Any], *, develope
             st.caption(
                 f"account=`{resume.get('current_account') or '—'}` · "
                 f"workspace=`{resume.get('current_workspace') or '—'}` · "
-                f"source=`{resume.get('resume_source_kind') or '—'}` · "
-                f"owner_ws=`{resume.get('resume_owner_workspace') or '—'}` · "
-                f"resume_team=`{resume.get('resume_team') or '—'}` · "
-                f"live_team=`{resume.get('active_shared_room_team') or '—'}` · "
+                f"source=`{resume.get('sidebar_source_selected') or resume.get('resume_source_kind') or '—'}` · "
+                f"pri=`{resume.get('sidebar_priority_reason') or '—'}` · "
+                f"sim_owner=`{resume.get('simulator_board_owner_external_id') or '—'}`/"
+                f"`{resume.get('simulator_board_owner_workspace_id') or '—'}` · "
+                f"sim_ok=`{resume.get('simulator_board_owner_verified')}` · "
+                f"sim_reject=`{resume.get('simulator_board_rejected_reason') or '—'}` · "
+                f"shared_code=`{resume.get('active_shared_room_code') or '—'}` · "
+                f"shared_room=`{resume.get('shared_membership_room_id') or '—'}` · "
+                f"shared_team=`{resume.get('shared_membership_team') or resume.get('active_shared_room_team') or '—'}` · "
+                f"hydrated=`{resume.get('shared_room_hydrated')}` · "
                 f"discard=`{resume.get('stale_resume_discarded_reason') or '—'}`"
             )
         except ImportError:
