@@ -1296,6 +1296,23 @@ def prepare_baseball_workspace(st: Any) -> bool:
         pass
     except Exception:
         pass
+    try:
+        from account_fantasy_preferences import sync_account_fantasy_preferences
+
+        sync_account_fantasy_preferences(ss, force=bool(ss.get("_suite_workspace_refresh_needed")))
+        sync_account_fantasy_preferences(ss, poll=True)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    try:
+        from live_draft_lineup_config import repair_known_live_draft_lineup_configs
+
+        repair_known_live_draft_lineup_configs(ss)
+    except ImportError:
+        pass
+    except Exception:
+        pass
     return result
 
 

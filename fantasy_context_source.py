@@ -854,6 +854,11 @@ def resolve_fantasy_workflow_source_descriptor(session: dict[str, Any]) -> dict[
     return result
 
 
+def invalidate_fantasy_workflow_descriptor_cache(session: dict[str, Any]) -> None:
+    session.pop("_workflow_descriptor_fp", None)
+    session.pop("_workflow_descriptor_cached", None)
+
+
 def is_ephemeral_league_context_id(league_context_id: str) -> bool:
     try:
         from fantasy_league_context import is_ephemeral_league_context_id as _is_ephemeral

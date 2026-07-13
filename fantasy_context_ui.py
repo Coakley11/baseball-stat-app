@@ -116,10 +116,25 @@ def _sync_persisted_context_toggles_from_widgets(session: dict[str, Any]) -> Non
         )
 
 
-def _persist_context_settings() -> None:
+def _persist_context_settings(*, lightweight: bool = True) -> None:
     try:
         import streamlit as st
     except Exception:
+        return
+    session = st.session_state
+    try:
+        from account_fantasy_preferences import write_account_fantasy_preferences
+
+        write_account_fantasy_preferences(session, reason="fantasy_context_toggle")
+    except ImportError:
+        pass
+    if lightweight:
+        try:
+            from suite_user_persistence import _local_dirty_key
+
+            st.session_state[_local_dirty_key("baseball")] = True
+        except Exception:
+            pass
         return
     try:
         from suite_user_persistence import _local_dirty_key
