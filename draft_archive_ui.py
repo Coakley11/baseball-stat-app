@@ -4565,26 +4565,23 @@ def _render_saved_draft_library_page_body(
 
     prune_invisible_shared_league_state(session)
     try:
-        from library_repair_scheduler import mark_library_dirty, run_gated_library_repairs
+        from library_repair_scheduler import (
+            mark_library_dirty,
+            run_gated_library_repairs,
+            run_library_origin_migration,
+        )
 
-        # prepare_saved_draft_library_active_selection may have already marked repairs
-        # complete before shared-league materialize. Force a second pass after sync so
-        # Live Draft origin migration sees the canonical shared doc.
+        # Optional heavy gated repairs (legacy migrate / missing archives). Origin
+        # migration is always-on below and must not depend on this gate.
         if not (isinstance(library_sync_trace, dict) and library_sync_trace.get("skipped") == "warm_render"):
             mark_library_dirty(session, reason="post_shared_league_library_sync")
-        repair_trace = run_gated_library_repairs(session, user_mutated=False)
-        session["_library_repair_last_trace"] = dict(repair_trace or {})
-        # Always evaluate/repair origin for visible cards — gated repair can skip on warm renders.
-        try:
-            from fantasy_league_context import (
-                evaluate_origin_decisions_for_visible_archives,
-                repair_archive_draft_types_from_contexts,
-            )
+        gated_trace = run_gated_library_repairs(session, user_mutated=False)
+        session["_library_gated_repair_last_trace"] = dict(gated_trace or {})
 
-            repair_archive_draft_types_from_contexts(session)
-            evaluate_origin_decisions_for_visible_archives(session)
-        except ImportError:
-            pass
+        # ALWAYS run origin migration after materialize — never skip as read_only_render.
+        origin_trace = run_library_origin_migration(session)
+        session["_library_repair_last_trace"] = dict(origin_trace or {})
+
         prune_invisible_shared_league_state(session)
         try:
             from workflow_persist_guard import restore_active_draft_archive_selection
@@ -4714,28 +4711,38 @@ def _render_saved_draft_library_page_body(
         from fantasy_league_context import ORIGIN_REPAIR_DECISIONS_KEY
 
         decisions = session.get(ORIGIN_REPAIR_DECISIONS_KEY)
-        repair_trace = session.get("_library_repair_last_trace")
+        repair_trace = session.get("_library_repair_last_trace") or session.get("_origin_migration_trace")
+        gated_trace = session.get("_library_gated_repair_last_trace")
+        has_decisions = isinstance(decisions, list) and bool(decisions)
         if isinstance(decisions, list) or isinstance(repair_trace, dict):
-            with st.expander("Origin repair log", expanded=False):
+            with st.expander("Origin repair log", expanded=True):
                 st.caption(
-                    "Per-league decisions from the latest Saved Draft Library origin migration."
+                    "Per-league decisions from the always-on Saved Draft Library origin migration "
+                    "(not the gated read_only_render path)."
                 )
                 if isinstance(repair_trace, dict):
                     st.write(
                         {
-                            "repair_ran": bool(repair_trace.get("ran")),
-                            "skipped": repair_trace.get("skipped"),
+                            "origin_migration_ran": bool(repair_trace.get("ran")),
+                            "origin_migration_skipped": repair_trace.get("skipped"),
+                            "origin_migration_path": repair_trace.get("path"),
+                            "decision_count": repair_trace.get("decision_count"),
                             "steps": repair_trace.get("steps") or [],
                             "failures": repair_trace.get("failures") or [],
+                            "gated_repair_ran": bool((gated_trace or {}).get("ran"))
+                            if isinstance(gated_trace, dict)
+                            else None,
+                            "gated_repair_skipped": (gated_trace or {}).get("skipped")
+                            if isinstance(gated_trace, dict)
+                            else None,
                         }
                     )
-                if isinstance(decisions, list) and decisions:
+                if has_decisions:
                     st.json(decisions)
                 else:
                     st.caption("No per-league origin decisions recorded on this render.")
     except Exception:
         pass
-
     try:
         from fantasy_league_invite_ui import (
             render_commissioner_invite_diagnostics_panel,

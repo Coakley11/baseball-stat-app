@@ -155,7 +155,9 @@ class CreationOriginRepairTests(unittest.TestCase):
         self.assertEqual(reason, "origin_conflict")
         self.assertNotEqual(draft_type, DRAFT_TYPE_LIVE)
 
-    def test_prepare_library_runs_known_repair(self) -> None:
+    def test_library_origin_migration_runs_known_repair(self) -> None:
+        from library_repair_scheduler import run_library_origin_migration
+
         session = _session()
         draft_id = "3ce50b4f2e8b"
         session[DRAFT_ARCHIVE_KEY] = [{"draft_id": draft_id, "draft_type": DRAFT_TYPE_LIVE}]
@@ -163,9 +165,54 @@ class CreationOriginRepairTests(unittest.TestCase):
         with patch("fantasy_shared_league_store.load_shared_league", return_value=None), patch(
             "fantasy_shared_league_store.save_shared_league"
         ):
-            prepare_saved_draft_library_active_selection(session)
+            trace = run_library_origin_migration(session)
+        self.assertTrue(trace.get("ran"))
+        self.assertIsNone(trace.get("skipped"))
+        self.assertGreaterEqual(int(trace.get("decision_count") or 0), 1)
         archive = session[DRAFT_ARCHIVE_KEY][0]
         self.assertEqual(archive["draft_type"], DRAFT_TYPE_IMPORTED)
+
+    def test_origin_migration_runs_even_when_gated_repairs_skip(self) -> None:
+        from library_repair_scheduler import mark_library_repairs_complete, run_gated_library_repairs, run_library_origin_migration
+
+        session = _session()
+        draft_id = "always-on-origin-1"
+        session[DRAFT_ARCHIVE_KEY] = [
+            {
+                "draft_id": draft_id,
+                "draft_type": DRAFT_TYPE_IMPORTED,
+                "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+                "shared_league_created": True,
+                "draft_name": "Always On Origin",
+            }
+        ]
+        upsert_league_context(
+            session,
+            {
+                "league_context_id": context_id_for_archive(draft_id),
+                "context_type": "real_league",
+                "source": "imported_draft",
+                "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+                "my_team_name": "Team 1",
+                "metadata": {
+                    "source_draft_id": draft_id,
+                    "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+                    "created_from": "imported_draft",
+                },
+                "league_rosters": {"Team 1": {"players": []}},
+            },
+        )
+        mark_library_repairs_complete(session)
+        gated = run_gated_library_repairs(session, user_mutated=False)
+        self.assertEqual(gated.get("skipped"), "read_only_render")
+        with patch("fantasy_shared_league_store.load_shared_league", return_value=None), patch(
+            "fantasy_shared_league_store.save_shared_league"
+        ):
+            origin = run_library_origin_migration(session)
+        self.assertTrue(origin.get("ran"))
+        self.assertNotEqual(origin.get("skipped"), "read_only_render")
+        self.assertGreaterEqual(int(origin.get("decision_count") or 0), 1)
+        self.assertEqual(session[DRAFT_ARCHIVE_KEY][0]["draft_type"], DRAFT_TYPE_LIVE)
 
     def test_repair_reason_recorded(self) -> None:
         self.assertIn("3ce50b4f2e8b", KNOWN_MISCLASSIFIED_IMPORT_DRAFTS)

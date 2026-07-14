@@ -9,6 +9,7 @@ from library_repair_scheduler import (
     mark_library_dirty,
     mark_library_repairs_complete,
     run_gated_library_repairs,
+    run_library_origin_migration,
 )
 from page_render_timing import finish_page_render, mark_navigation_start, record_milestone
 
@@ -20,6 +21,15 @@ class LibraryRepairSchedulerTests(unittest.TestCase):
         self.assertTrue(first.get("ran"))
         second = run_gated_library_repairs(session, user_mutated=False)
         self.assertEqual(second.get("skipped"), "read_only_render")
+
+    def test_origin_migration_not_gated_by_read_only_render(self) -> None:
+        session: dict = {"draft_archive_teams": [{"draft_id": "abc", "draft_name": "T"}]}
+        mark_library_repairs_complete(session)
+        gated = run_gated_library_repairs(session, user_mutated=False)
+        self.assertEqual(gated.get("skipped"), "read_only_render")
+        origin = run_library_origin_migration(session)
+        self.assertTrue(origin.get("ran"))
+        self.assertNotEqual(origin.get("skipped"), "read_only_render")
 
     def test_user_mutation_marks_dirty(self) -> None:
         session: dict = {}

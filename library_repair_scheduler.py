@@ -71,7 +71,7 @@ def run_gated_library_repairs(session: dict[str, Any], *, user_mutated: bool = F
     for fn_name, mod, attr in (
         ("migrate_legacy", "fantasy_league_context", "migrate_legacy_archives_to_contexts"),
         ("repair_imported", "fantasy_league_context", "repair_misclassified_imported_league_archives"),
-        ("repair_draft_types", "fantasy_league_context", "repair_archive_draft_types_from_contexts"),
+        # Origin draft-type repair is owned by run_library_origin_migration (always-on).
         ("repair_missing_archives", "fantasy_league_context", "repair_missing_draft_archives_from_contexts"),
     ):
         try:
@@ -88,5 +88,55 @@ def run_gated_library_repairs(session: dict[str, Any], *, user_mutated: bool = F
                 failures.append(f"{fn_name}:{type(exc).__name__}:{exc}")
 
     mark_library_repairs_complete(session)
+    session["_library_gated_repair_last_trace"] = dict(trace)
+    return trace
+
+
+def run_library_origin_migration(session: dict[str, Any]) -> dict[str, Any]:
+    """Always-on Live/Imported origin repair + per-league decision log.
+
+    Not subject to read_only_render gating — Saved Draft Library must diagnose and
+    migrate origin labels every open after shared-league materialize.
+    """
+    trace: dict[str, Any] = {
+        "ran": False,
+        "skipped": None,
+        "steps": [],
+        "failures": [],
+        "decision_count": 0,
+        "decisions": [],
+        "path": "run_library_origin_migration",
+    }
+    try:
+        from fantasy_league_context import (
+            ORIGIN_REPAIR_DECISIONS_KEY,
+            evaluate_origin_decisions_for_visible_archives,
+            repair_archive_draft_types_from_contexts,
+        )
+    except ImportError as exc:
+        trace["skipped"] = "import_error"
+        trace["failures"].append(f"import:{exc}")
+        session["_library_repair_last_trace"] = dict(trace)
+        session["_origin_migration_trace"] = dict(trace)
+        return trace
+
+    try:
+        repaired = int(repair_archive_draft_types_from_contexts(session) or 0)
+        trace["steps"].append(f"repair_draft_types:{repaired}")
+    except Exception as exc:
+        trace["failures"].append(f"repair_draft_types:{type(exc).__name__}:{exc}")
+
+    try:
+        decisions = evaluate_origin_decisions_for_visible_archives(session)
+        if not isinstance(decisions, list):
+            decisions = list(session.get(ORIGIN_REPAIR_DECISIONS_KEY) or [])
+        trace["steps"].append(f"evaluate_visible:{len(decisions)}")
+        trace["decisions"] = decisions
+        trace["decision_count"] = len(decisions)
+    except Exception as exc:
+        trace["failures"].append(f"evaluate_visible:{type(exc).__name__}:{exc}")
+
+    trace["ran"] = True
     session["_library_repair_last_trace"] = dict(trace)
+    session["_origin_migration_trace"] = dict(trace)
     return trace

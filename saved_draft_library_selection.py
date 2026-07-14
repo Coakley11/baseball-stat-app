@@ -167,12 +167,9 @@ def prepare_saved_draft_library_active_selection(session: dict[str, Any]) -> dic
             session["_creation_origin_repair_done"] = True
         except ImportError:
             pass
-    try:
-        from library_repair_scheduler import run_gated_library_repairs
-
-        run_gated_library_repairs(session, user_mutated=False)
-    except ImportError:
-        pass
+    # Do NOT run gated library repairs here. That marks repairs complete before
+    # Saved Draft Library materializes shared leagues, then later Library renders
+    # skip with read_only_render and never migrate origin labels.
     sel = resolve_coherent_active_library_selection(session)
     if not sel.get("coherent"):
         sel = repair_incoherent_active_library_selection(session)
