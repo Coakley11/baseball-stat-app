@@ -35,7 +35,7 @@ def _utc_now_iso() -> str:
 def resolve_participant_id(session: dict[str, Any]) -> str:
     """Stable participant key — auth user id when Real Accounts is on, else workspace (dev)."""
     try:
-        from suite_auth import AUTH_USER_ID_KEY, is_auth_enabled
+        from suite_auth import AUTH_USER_ID_KEY, is_auth_enabled, is_authenticated
 
         if is_auth_enabled():
             auth_id = str(session.get(AUTH_USER_ID_KEY) or "").strip()
@@ -45,6 +45,16 @@ def resolve_participant_id(session: dict[str, Any]) -> str:
                     session.pop(ACTIVE_PARTICIPANT_ID_KEY, None)
                     session.pop(ACTIVE_PARTICIPANT_TEAM_KEY, None)
                 return auth_id
+            # Auth enabled but unsigned — never fall through to workspace:daniel.
+            if not is_authenticated(session):
+                existing = str(session.get(ACTIVE_PARTICIPANT_ID_KEY) or "").strip()
+                if existing.startswith("anonymous:"):
+                    return existing
+                import uuid
+
+                anon = f"anonymous:{uuid.uuid4().hex[:12]}"
+                session[ACTIVE_PARTICIPANT_ID_KEY] = anon
+                return anon
     except ImportError:
         pass
     explicit = str(session.get(ACTIVE_PARTICIPANT_ID_KEY) or "").strip()
@@ -784,6 +794,23 @@ def clear_participant_left_room(session: dict[str, Any], room_code: str) -> None
 
 def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
     """Rehydrate active room code + team from persisted workspace blob after refresh."""
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated
+
+        # Unsigned browsers must never reattach to another account's multiplayer room.
+        if is_auth_enabled() and not is_authenticated(session):
+            session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+            session.pop(ACTIVE_PARTICIPANT_TEAM_KEY, None)
+            try:
+                from live_draft_state import LIVE_DRAFT_ROOM_KEY, LIVE_DRAFT_STATE_KEY
+
+                session.pop(LIVE_DRAFT_ROOM_KEY, None)
+                session.pop(LIVE_DRAFT_STATE_KEY, None)
+            except ImportError:
+                session.pop("live_draft_room", None)
+            return ""
+    except ImportError:
+        pass
     try:
         from draft_room_create_verify import is_plausible_share_code
     except ImportError:

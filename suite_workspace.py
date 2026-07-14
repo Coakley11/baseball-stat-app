@@ -87,7 +87,9 @@ def load_persisted_workspace_id(*, session_state: dict[str, Any] | None = None) 
 
     Authenticated: delegates once to the account-owned path (which reads the
     account file directly and does NOT call back here). Unauthenticated/demo:
-    resolves the legacy global workspace file with no delegation.
+    resolves the legacy global workspace file with no delegation — but when
+    Real Accounts auth is enabled and the user is signed out, always return
+    ``guest`` so unsigned browsers never inherit daniel's workspace.
     """
     try:
         from suite_auth import is_auth_enabled, is_authenticated
@@ -97,6 +99,12 @@ def load_persisted_workspace_id(*, session_state: dict[str, Any] | None = None) 
             and is_auth_enabled()
             and is_authenticated(session_state)
         )
+        if (
+            isinstance(session_state, dict)
+            and is_auth_enabled()
+            and not is_authenticated(session_state)
+        ):
+            return "guest"
     except ImportError:
         account_aware = False
 
@@ -151,6 +159,21 @@ def resolve_workspace_id(*, st: Any | None = None, explicit: str | None = None) 
         ws = load_persisted_workspace_id(session_state=ss)
     if ss is not None:
         ws = _sync_account_scoped_workspace(ws, session_state=ss, st=st)
+        # Auth-enabled but unsigned: never attach to daniel (or any owned) workspace.
+        try:
+            from suite_auth import is_auth_enabled, is_authenticated
+
+            if is_auth_enabled() and not is_authenticated(ss):
+                if ws != "guest":
+                    ws = "guest"
+                    ss[SESSION_KEY] = "guest"
+                    try:
+                        ss["_suite_owned_workspace_id"] = "guest"
+                        ss["_suite_active_workspace_id"] = "guest"
+                    except Exception:
+                        pass
+        except ImportError:
+            pass
     return ws
 
 

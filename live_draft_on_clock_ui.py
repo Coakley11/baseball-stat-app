@@ -16,6 +16,90 @@ def _team_accent(team: str) -> str:
     return f"#{digest[:6]}"
 
 
+def _emit_banner_html(st: Any, html: str, *, height: int = 210) -> None:
+    """Render banner HTML via components.html so fragments do not show escaped markup."""
+    try:
+        import streamlit.components.v1 as components
+
+        components.html(
+            f"""
+            <style>
+              .live-draft-on-clock {{
+                font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+                background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 55%, #1d4ed8 100%);
+                color: #f8fafc;
+                border-radius: 12px;
+                padding: 16px 18px;
+                margin: 0 0 8px 0;
+                box-shadow: 0 8px 24px rgba(15, 23, 42, 0.35);
+              }}
+              .live-draft-on-clock .ld-title {{
+                font-size: 12px;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+                opacity: 0.85;
+                margin-bottom: 4px;
+              }}
+              .live-draft-on-clock .ld-team-name {{
+                font-size: 28px;
+                font-weight: 800;
+                line-height: 1.1;
+                margin-bottom: 10px;
+              }}
+              .live-draft-on-clock .ld-pick-pills {{ display: flex; gap: 8px; flex-wrap: wrap; }}
+              .live-draft-on-clock .ld-pill {{
+                background: rgba(248, 250, 252, 0.14);
+                border: 1px solid rgba(248, 250, 252, 0.22);
+                border-radius: 999px;
+                padding: 4px 10px;
+                font-size: 13px;
+                font-weight: 600;
+              }}
+              .live-draft-on-clock .ld-next-pick {{
+                margin-top: 10px;
+                font-size: 13px;
+                opacity: 0.92;
+              }}
+              .live-draft-on-clock .ld-meta {{
+                margin-top: 14px;
+                display: flex;
+                align-items: baseline;
+                gap: 10px;
+              }}
+              .live-draft-on-clock .ld-clock-label {{
+                font-size: 12px;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+                opacity: 0.8;
+              }}
+              .live-draft-on-clock .live-draft-timer {{
+                font-size: 28px;
+                font-weight: 800;
+                font-variant-numeric: tabular-nums;
+              }}
+              .live-draft-on-clock.ld-on-clock-flash {{
+                animation: ldFlash 0.9s ease-in-out 2;
+              }}
+              @keyframes ldFlash {{
+                0%, 100% {{ filter: brightness(1); }}
+                50% {{ filter: brightness(1.18); }}
+              }}
+            </style>
+            {html}
+            """,
+            height=height,
+        )
+        return
+    except Exception:
+        pass
+    try:
+        st.html(html)
+        return
+    except Exception:
+        pass
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def _render_on_clock_banner_html(
     st: Any,
     slot: dict[str, Any],
@@ -38,8 +122,7 @@ def _render_on_clock_banner_html(
         else f'<span class="live-draft-timer">{int(remaining)}s</span>'
     )
     flash_class = " ld-on-clock-flash" if flash else ""
-    st.markdown(
-        f"""
+    html = f"""
         <div class="live-draft-on-clock{flash_class}" style="border-left: 8px solid {accent};">
             <div class="ld-title">On the clock</div>
             <div class="ld-team-name">{team}</div>
@@ -53,9 +136,8 @@ def _render_on_clock_banner_html(
                 {timer_html}
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
+    _emit_banner_html(st, html, height=220 if next_pick else 190)
     if deadline is not None:
         _mount_js_countdown(
             st,

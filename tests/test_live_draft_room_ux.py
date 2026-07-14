@@ -126,16 +126,19 @@ class TimerCountdownTests(unittest.TestCase):
     def test_on_clock_banner_html_includes_timer_element(self, html_mock: mock.MagicMock) -> None:
         st = mock.MagicMock()
         slot = {"Team": "Team 1", "Round": 1, "Pick": 1}
-        _render_on_clock_banner_html(
-            st,
-            slot,
-            40,
-            pick_index=0,
-            deadline=time.time() + 40,
-        )
-        html = str(st.markdown.call_args)
+        with mock.patch("live_draft_on_clock_ui._mount_js_countdown"):
+            _render_on_clock_banner_html(
+                st,
+                slot,
+                40,
+                pick_index=0,
+                deadline=time.time() + 40,
+            )
+        html_mock.assert_called()
+        html = str(html_mock.call_args)
         self.assertIn("ld-banner-timer-0", html)
-        html_mock.assert_called_once()
+        self.assertIn("On the clock", html)
+        st.markdown.assert_not_called()
 
 
 class CompactRecCardTests(unittest.TestCase):

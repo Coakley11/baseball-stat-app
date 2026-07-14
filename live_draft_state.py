@@ -130,8 +130,11 @@ def live_draft_restore_allowed(
     except ImportError:
         return True, "auth_module_missing"
 
-    if not is_auth_enabled() or not is_authenticated(session):
+    if not is_auth_enabled():
         return True, "auth_disabled"
+    if not is_authenticated(session):
+        # Signed-out visitors must not adopt owned/shared multiplayer blobs.
+        return False, "auth_required"
 
     current_auth = _current_auth_user_id(session)
     owner_auth = live_draft_blob_owner_auth_id(blob)
@@ -176,8 +179,10 @@ def workspace_blob_owned_by_session(session: dict[str, Any], state: dict[str, An
     try:
         from suite_auth import is_auth_enabled, is_authenticated
 
-        if not is_auth_enabled() or not is_authenticated(session):
+        if not is_auth_enabled():
             return True, "auth_disabled"
+        if not is_authenticated(session):
+            return False, "auth_required"
     except ImportError:
         return True, "auth_module_missing"
 

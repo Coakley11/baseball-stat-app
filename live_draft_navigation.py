@@ -1088,28 +1088,35 @@ def _render_return_card(
             st.caption(f"Time remaining: **{sec}s**")
 
         try:
-            diag = collect_simulator_resume_diagnostics(session)
-            bits = [
-                f"acct={diag.get('current_account') or '—'}",
-                f"ws={diag.get('current_workspace') or '—'}",
-                f"src={diag.get('sidebar_source_selected') or diag.get('resume_source_kind') or '—'}",
-                f"team={diag.get('resume_team') or diag.get('shared_membership_team') or '—'}",
-                f"phase={resolve_live_draft_activation_phase(session)}",
-            ]
-            if diag.get("shared_membership_team") or diag.get("active_shared_room_team"):
-                bits.append(
-                    f"live={diag.get('shared_membership_team') or diag.get('active_shared_room_team')}"
-                )
-            bits.append(f"sim_ok={diag.get('simulator_board_owner_verified')}")
-            if diag.get("simulator_board_rejected_reason"):
-                bits.append(f"sim_reject={diag.get('simulator_board_rejected_reason')}")
-            if diag.get("sidebar_priority_reason"):
-                bits.append(f"pri={diag.get('sidebar_priority_reason')}")
-            if diag.get("stale_resume_discarded_reason"):
-                bits.append(f"discard={diag.get('stale_resume_discarded_reason')}")
-            st.caption("Resume · " + " · ".join(str(b) for b in bits))
-        except Exception:
-            pass
+            from suite_workspace import developer_mode_checkbox_enabled
+
+            _show_resume_diag = bool(developer_mode_checkbox_enabled(st=st))
+        except ImportError:
+            _show_resume_diag = False
+        if _show_resume_diag:
+            try:
+                diag = collect_simulator_resume_diagnostics(session)
+                bits = [
+                    f"acct={diag.get('current_account') or '—'}",
+                    f"ws={diag.get('current_workspace') or '—'}",
+                    f"src={diag.get('sidebar_source_selected') or diag.get('resume_source_kind') or '—'}",
+                    f"team={diag.get('resume_team') or diag.get('shared_membership_team') or '—'}",
+                    f"phase={resolve_live_draft_activation_phase(session)}",
+                ]
+                if diag.get("shared_membership_team") or diag.get("active_shared_room_team"):
+                    bits.append(
+                        f"live={diag.get('shared_membership_team') or diag.get('active_shared_room_team')}"
+                    )
+                bits.append(f"sim_ok={diag.get('simulator_board_owner_verified')}")
+                if diag.get("simulator_board_rejected_reason"):
+                    bits.append(f"sim_reject={diag.get('simulator_board_rejected_reason')}")
+                if diag.get("sidebar_priority_reason"):
+                    bits.append(f"pri={diag.get('sidebar_priority_reason')}")
+                if diag.get("stale_resume_discarded_reason"):
+                    bits.append(f"discard={diag.get('stale_resume_discarded_reason')}")
+                st.caption("Resume · " + " · ".join(str(b) for b in bits))
+            except Exception:
+                pass
 
         if kind == "live_active":
             st.button(

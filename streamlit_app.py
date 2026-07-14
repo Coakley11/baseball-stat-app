@@ -2287,6 +2287,8 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
     """Render a table quickly and add a CSV export button that opens cleanly in Excel."""
     from table_display_format import filter_styler_format_map
 
+    if df is None:
+        df = pd.DataFrame()
     table_df = df.copy()
     export_df = table_df
     if _is_team_projected_totals_table_key(key):
@@ -10444,8 +10446,7 @@ def _render_live_draft_on_clock_banner(slot, remaining, next_pick=None):
     pick_no = slot.get("Pick", "—")
     next_txt = f'<div class="ld-next-pick">Your next pick: #{next_pick}</div>' if next_pick else ""
     accent = _live_draft_team_accent(team)
-    st.markdown(
-        f"""
+    html = f"""
         <div class="live-draft-on-clock" style="border-left: 8px solid {accent};">
             <div class="ld-title">On the clock</div>
             <div class="ld-team-name">{team}</div>
@@ -10459,9 +10460,22 @@ def _render_live_draft_on_clock_banner(slot, remaining, next_pick=None):
                 <span class="live-draft-timer">{remaining}s</span>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
+    try:
+        from live_draft_on_clock_ui import _emit_banner_html
+
+        _emit_banner_html(st, html, height=190)
+        return
+    except ImportError:
+        pass
+    try:
+        import streamlit.components.v1 as components
+
+        components.html(html, height=190)
+        return
+    except Exception:
+        pass
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def _render_live_draft_rec_cards(rec_df, max_cards=6):
@@ -22775,27 +22789,29 @@ if active_page == "Live Draft Room":
                     _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
                 _rec_team = str(on_clock_team or slot.get("Team") or "").strip() or None
                 _LIVE_REC_TOP_N = 10
-                _defer_recs = False
+                _skip_for_setup = False
                 try:
                     from live_draft_start_progress import is_live_draft_start_in_flight
 
-                    _defer_recs = is_live_draft_start_in_flight(st.session_state)
+                    _skip_for_setup = is_live_draft_start_in_flight(st.session_state)
                 except ImportError:
                     pass
                 try:
                     from live_draft_setup_persist import should_skip_live_draft_recommendations
 
                     if should_skip_live_draft_recommendations(st.session_state, room):
-                        _defer_recs = True
+                        _skip_for_setup = True
                 except ImportError:
                     pass
+                _expensive_ok = True
                 try:
-                    from live_draft_rerun_scope import live_draft_should_skip_recommendations
+                    from live_draft_rerun_scope import live_draft_expensive_recompute_required
 
-                    if live_draft_should_skip_recommendations(st.session_state, room):
-                        _defer_recs = True
+                    _expensive_ok = live_draft_expensive_recompute_required(st.session_state)
                 except ImportError:
                     pass
+                _defer_recs = bool(_skip_for_setup or not _expensive_ok)
+                top_rec = best_avail = pos_fit = value_sleep = None
                 if not _defer_recs:
                     top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
                         st.session_state,
@@ -22804,7 +22820,38 @@ if active_page == "Live Draft Room":
                         team=_rec_team,
                     )
                 else:
-                    top_rec = best_avail = pos_fit = value_sleep = pd.DataFrame()
+                    # Timer-only tick / setup: reuse last good cache — never blank player rows.
+                    try:
+                        from live_draft_ui_cache import REC_CACHE_KEY
+
+                        _rec_entry = st.session_state.get(REC_CACHE_KEY)
+                    except ImportError:
+                        _rec_entry = st.session_state.get("_live_draft_rec_cache")
+                    if isinstance(_rec_entry, dict) and _rec_entry.get("top_rec") is not None:
+                        top_rec = _rec_entry.get("top_rec")
+                        best_avail = _rec_entry.get("best_avail")
+                        pos_fit = _rec_entry.get("pos_fit")
+                        value_sleep = _rec_entry.get("value_sleep")
+                    # Timer tick with empty/missing cache would blank the UI — compute once.
+                    if (
+                        not _skip_for_setup
+                        and (top_rec is None or getattr(top_rec, "empty", True))
+                    ):
+                        top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
+                            st.session_state,
+                            room,
+                            top_n=_LIVE_REC_TOP_N,
+                            team=_rec_team,
+                        )
+                        _defer_recs = False
+                if top_rec is None:
+                    top_rec = pd.DataFrame()
+                if best_avail is None:
+                    best_avail = pd.DataFrame()
+                if pos_fit is None:
+                    pos_fit = pd.DataFrame()
+                if value_sleep is None:
+                    value_sleep = pd.DataFrame()
                 try:
                     from live_draft_start_progress import flush_pending_live_draft_created_activity, mark_start_step
 
@@ -22982,7 +23029,7 @@ if active_page == "Live Draft Room":
                         render_live_draft_rec_summary_banner,
                     )
 
-                    if _defer_recs:
+                    if _defer_recs and (top_rec is None or getattr(top_rec, "empty", True)):
                         st.caption("Loading recommendations…")
                     else:
                         try:

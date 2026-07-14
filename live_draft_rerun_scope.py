@@ -28,6 +28,8 @@ def live_draft_expensive_recompute_required(session: dict[str, Any]) -> bool:
         session.pop(TIMER_TICK_KEY, None)
         return True
     if session.get(TIMER_TICK_KEY):
+        # One-shot: timer-only ticks skip expensive work once, then clear.
+        session.pop(TIMER_TICK_KEY, None)
         return False
     return True
 
