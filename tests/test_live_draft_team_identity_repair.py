@@ -111,15 +111,15 @@ class TestLiveDraftTeamIdentityRepair(unittest.TestCase):
         room["status"] = "in_progress"
         session = _cio11_session(
             live_draft_room=room,
-            draft_room_participant_team="Donny",
+            draft_room_participant_team="Team B",
             active_shared_draft_room_code="ABC123",
         )
         with patch(
-            "fantasy_workspace_team_identity.resolve_current_account_team_for_live_draft_and_league",
-            return_value="Team B",
-        ), patch(
             "live_draft_state.has_active_live_draft",
             return_value=True,
+        ), patch(
+            "draft_room_participant_state.membership_team_for_participant",
+            return_value="Team B",
         ):
             ctx = get_draft_return_context(session)
         self.assertIsNotNone(ctx)
