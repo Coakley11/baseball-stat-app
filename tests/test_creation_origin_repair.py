@@ -25,9 +25,6 @@ from fantasy_league_context import (
     stamp_immutable_creation_origin,
     upsert_league_context,
 )
-from saved_draft_library_selection import prepare_saved_draft_library_active_selection
-
-
 def _session() -> dict:
     return {
         DRAFT_ARCHIVE_KEY: [],
