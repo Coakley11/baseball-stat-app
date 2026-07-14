@@ -107,18 +107,24 @@ class TestLiveDraftTeamIdentityRepair(unittest.TestCase):
         self.assertEqual(session["live_draft_room"]["config"]["your_team"], "Team B")
 
     def test_sidebar_return_context_uses_team_b(self) -> None:
+        room = _room_with_rosters()
+        room["status"] = "in_progress"
         session = _cio11_session(
-            live_draft_room=apply_live_draft_completion(_room_with_rosters(), {}),
+            live_draft_room=room,
             draft_room_participant_team="Donny",
             active_shared_draft_room_code="ABC123",
         )
         with patch(
             "fantasy_workspace_team_identity.resolve_current_account_team_for_live_draft_and_league",
             return_value="Team B",
+        ), patch(
+            "live_draft_state.has_active_live_draft",
+            return_value=True,
         ):
             ctx = get_draft_return_context(session)
         self.assertIsNotNone(ctx)
         assert ctx is not None
+        self.assertEqual(ctx.get("kind"), "live_active")
         self.assertEqual(ctx.get("user_team"), "Team B")
 
     def test_daniel_remains_donny(self) -> None:
