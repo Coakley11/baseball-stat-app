@@ -124,6 +124,44 @@ def preview_shared_league_creation(
     }
 
 
+def _resolve_room_code_for_owners(session: dict[str, Any], room: dict[str, Any]) -> str:
+    for candidate in (
+        session.get("active_shared_draft_room_code"),
+        (room.get("sync") or {}).get("room_code") if isinstance(room.get("sync"), dict) else "",
+        room.get("room_code"),
+        room.get("draft_room_id"),
+    ):
+        code = str(candidate or "").strip().upper()
+        if code:
+            return code
+    return ""
+
+
+def _participant_owner_fields(meta: dict[str, Any], *, participant_id: str = "") -> dict[str, str]:
+    pid = str(participant_id or "").strip()
+    email = str(meta.get("email") or "").strip().lower()
+    display = str(meta.get("display_name") or "").strip()
+    if not email and "@" in display:
+        email = display.lower()
+    external = str(meta.get("external_id") or "").strip().lower()
+    if not external and email and "@" in email:
+        external = email.split("@", 1)[0].strip().lower()
+    user_id = str(
+        meta.get("account_user_id") or meta.get("user_id") or ""
+    ).strip()
+    # Prefer suite/local identity keys over bare Auth participant ids when present.
+    if not user_id and external:
+        user_id = f"user:{external}"
+    if not user_id:
+        user_id = pid
+    return {
+        "user_id": user_id,
+        "external_id": external,
+        "email": email,
+        "display_name": display or email or external or pid,
+    }
+
+
 def _resolve_preassigned_owners(
     session: dict[str, Any],
     room: dict[str, Any],
@@ -133,8 +171,23 @@ def _resolve_preassigned_owners(
     try:
         from live_draft_team_ownership import load_shared_participants, team_claim_rows
 
-        rows = team_claim_rows(session, room)
-        participants = load_shared_participants(session)
+        room_code = _resolve_room_code_for_owners(session, room)
+        document = None
+        if room_code:
+            try:
+                from draft_room_shared_state import load_shared_room
+
+                document = load_shared_room(room_code)
+            except ImportError:
+                document = None
+        rows = team_claim_rows(session, room, document=document if isinstance(document, dict) else None)
+        participants = {}
+        if isinstance(document, dict):
+            raw = document.get("participants") or {}
+            if isinstance(raw, dict):
+                participants = {str(k): dict(v) for k, v in raw.items() if isinstance(v, dict)}
+        if not participants:
+            participants = load_shared_participants(session, room_code=room_code or None)
         for row in rows:
             if not row.get("claimed"):
                 continue
@@ -143,12 +196,10 @@ def _resolve_preassigned_owners(
             if not team or not pid:
                 continue
             meta = participants.get(pid) or {}
-            user_id = str(meta.get("user_id") or meta.get("account_user_id") or pid).strip()
-            owners[team] = {
-                "user_id": user_id,
-                "email": str(meta.get("email") or "").strip(),
-                "display_name": str(meta.get("display_name") or row.get("owner_label") or "").strip(),
-            }
+            fields = _participant_owner_fields(meta if isinstance(meta, dict) else {}, participant_id=pid)
+            if not fields.get("display_name"):
+                fields["display_name"] = str(row.get("owner_label") or "").strip()
+            owners[team] = fields
     except ImportError:
         pass
     return owners
@@ -245,8 +296,19 @@ def save_live_draft_shared_league_context(
     meta = dict(context.get("metadata") or {})
     meta["created_from"] = CREATED_FROM_LIVE_DRAFT
     meta["source_draft_type"] = "live_draft_room"
+    meta["source"] = SOURCE_LIVE_DRAFT_ROOM
     meta["draft_results"] = draft_results
     meta["teams"] = teams
+    room_code = _resolve_room_code_for_owners(session, room)
+    if room_code:
+        meta["source_room_code"] = room_code
+    try:
+        from fantasy_league_context import CREATION_ORIGIN_LIVE_DRAFT_ROOM, stamp_immutable_creation_origin
+
+        meta = stamp_immutable_creation_origin(meta, CREATION_ORIGIN_LIVE_DRAFT_ROOM)
+    except ImportError:
+        CREATION_ORIGIN_LIVE_DRAFT_ROOM = "live_draft_room"  # type: ignore[misc,assignment]
+        stamp_immutable_creation_origin = None  # type: ignore[assignment,misc]
     try:
         from fantasy_league_identity import ensure_league_identity
 
@@ -254,7 +316,10 @@ def save_live_draft_shared_league_context(
         meta = dict(context.get("metadata") or meta)
     except ImportError:
         pass
+    if callable(stamp_immutable_creation_origin):
+        meta = stamp_immutable_creation_origin(meta, CREATION_ORIGIN_LIVE_DRAFT_ROOM)
     context["metadata"] = meta
+    context["source"] = SOURCE_LIVE_DRAFT_ROOM
     context["draft_results"] = draft_results
     context = upsert_league_context(session, context)
 
@@ -301,6 +366,7 @@ def save_live_draft_shared_league_context(
                     user_id=str(owner.get("user_id") or "").strip() or None,
                     email=str(owner.get("email") or "").strip() or None,
                     display_name=str(owner.get("display_name") or "").strip() or None,
+                    external_id=str(owner.get("external_id") or "").strip() or None,
                 )
             context = upsert_league_context(session, context)
         except ImportError:
@@ -322,12 +388,47 @@ def save_live_draft_shared_league_context(
     meta = dict(context.get("metadata") or {})
     meta["created_from"] = CREATED_FROM_LIVE_DRAFT
     meta["source_draft_type"] = "live_draft_room"
+    meta["source"] = SOURCE_LIVE_DRAFT_ROOM
+    try:
+        from fantasy_league_context import CREATION_ORIGIN_LIVE_DRAFT_ROOM, stamp_immutable_creation_origin
+
+        meta = stamp_immutable_creation_origin(meta, CREATION_ORIGIN_LIVE_DRAFT_ROOM)
+    except ImportError:
+        pass
     meta["draft_results"] = draft_results
     context["metadata"] = meta
+    context["source"] = SOURCE_LIVE_DRAFT_ROOM
     context["draft_results"] = draft_results
     context = upsert_league_context(session, context)
     entry = dict(entry)
     entry["shared_league_created"] = True
     entry["canonical_league_id"] = str(context.get("league_id") or (context.get("metadata") or {}).get("league_id") or "")
     entry["context_type"] = CONTEXT_TYPE_REAL_LEAGUE
+    try:
+        from draft_archive_state import DRAFT_ARCHIVE_KEY, DRAFT_TYPE_LIVE, get_draft_archive
+
+        entry["draft_type"] = DRAFT_TYPE_LIVE
+        origin = str(meta.get("creation_origin") or "").strip()
+        if origin:
+            entry["creation_origin"] = origin
+        archives = list(session.get(DRAFT_ARCHIVE_KEY) or [])
+        for idx, existing in enumerate(archives):
+            if not isinstance(existing, dict):
+                continue
+            if str(existing.get("draft_id") or "").strip() != draft_id:
+                continue
+            updated = dict(existing)
+            updated["draft_type"] = DRAFT_TYPE_LIVE
+            if origin:
+                updated["creation_origin"] = origin
+            archives[idx] = updated
+            session[DRAFT_ARCHIVE_KEY] = archives
+            entry = {**updated, **entry}
+            break
+        else:
+            existing = get_draft_archive(session, draft_id)
+            if isinstance(existing, dict):
+                entry = {**existing, **entry, "draft_type": DRAFT_TYPE_LIVE}
+    except ImportError:
+        pass
     return entry, context

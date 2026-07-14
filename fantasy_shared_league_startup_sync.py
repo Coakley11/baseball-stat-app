@@ -36,9 +36,16 @@ def _record_matches_account(
 ) -> bool:
     if not isinstance(record, dict):
         return False
-    stored = str(record.get("user_id") or "").strip()
+    stored = str(record.get("user_id") or record.get("account_user_id") or "").strip()
     if stored and user_id and account_user_ids_match(stored, user_id):
         return True
+    email = str(record.get("email") or "").strip().lower()
+    display = str(record.get("display_name") or "").strip().lower()
+    display_local = display.split("@", 1)[0] if "@" in display else display
+    email_local = email.split("@", 1)[0] if email else ""
+    if not email and "@" in display:
+        email = display
+        email_local = display_local
     aliases = {
         x.lower()
         for x in (
@@ -46,8 +53,10 @@ def _record_matches_account(
             external_id,
             workspace_id,
             str(record.get("external_id") or "").strip(),
-            str(record.get("display_name") or "").strip(),
-            str(record.get("email") or "").strip().split("@", 1)[0],
+            email,
+            email_local,
+            display,
+            display_local,
             str(record.get("invitee_external_id") or "").strip(),
             str(record.get("invitee_workspace_id") or "").strip(),
             str(record.get("accepted_by_external_id") or "").strip(),
@@ -61,6 +70,8 @@ def _record_matches_account(
     for candidate in (
         external_id,
         workspace_id,
+        email,
+        email_local,
         str(record.get("invitee_external_id") or "").strip().lower(),
         str(record.get("invitee_workspace_id") or "").strip(),
         str(record.get("accepted_by_external_id") or "").strip().lower(),

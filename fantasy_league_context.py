@@ -64,8 +64,10 @@ def read_immutable_creation_origin(
     shared_doc: dict[str, Any] | None = None,
     archive_entry: dict[str, Any] | None = None,
 ) -> str:
+    shared_meta = dict((shared_doc or {}).get("metadata") or {}) if isinstance(shared_doc, dict) else {}
     for source in (
         dict((context or {}).get("metadata") or {}),
+        shared_meta,
         shared_doc if isinstance(shared_doc, dict) else {},
         archive_entry if isinstance(archive_entry, dict) else {},
     ):
@@ -2481,6 +2483,12 @@ def resolve_archive_draft_type_with_reason(
         return DRAFT_TYPE_LIVE, "context_explicit_live_origin", evidence
     if evidence.get("explicit_live_origin"):
         return DRAFT_TYPE_LIVE, "canonical_shared_live_origin", evidence
+    # Prefer an already-stamped Live Draft archive over Real-League default Import.
+    existing_archive_type = str(evidence.get("existing_archive_type") or "").strip()
+    if existing_archive_type == DRAFT_TYPE_LIVE and not evidence.get("explicit_import_origin"):
+        return DRAFT_TYPE_LIVE, "existing_archive_live_draft_type", evidence
+    if evidence.get("live_evidence_found") and not evidence.get("import_evidence_found"):
+        return DRAFT_TYPE_LIVE, "live_evidence_without_import", evidence
     if (
         evidence.get("explicit_import_origin")
         and not evidence.get("joined_via_live_draft")

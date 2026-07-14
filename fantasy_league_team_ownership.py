@@ -50,9 +50,40 @@ def account_user_ids_match(stored_id: str, current_id: str = "") -> bool:
         from suite_user import get_account_user_id, get_external_user_id
 
         ext = str(get_external_user_id() or "").strip().lower()
+        canonical = str(get_account_user_id() or "").strip()
+        session_aliases: set[str] = set()
+        try:
+            import streamlit as st
+
+            ss = getattr(st, "session_state", None)
+            if isinstance(ss, dict):
+                for key in (
+                    "_suite_auth_user_id",
+                    "_suite_cloud_user_id",
+                    "_suite_auth_external_id",
+                ):
+                    token = str(ss.get(key) or "").strip()
+                    if token:
+                        session_aliases.add(token)
+                        session_aliases.add(token.lower())
+        except Exception:
+            pass
+        if canonical:
+            session_aliases.add(canonical)
+        if ext:
+            session_aliases.update(
+                {
+                    ext,
+                    f"user:{ext}",
+                    f"local:{ext}",
+                    f"local:{ext.lower()}",
+                }
+            )
+        # Auth UUID written during Live Draft join must match suite/cloud ids on library sync.
+        if stored in session_aliases and current in session_aliases:
+            return True
         if not ext:
             return False
-        canonical = str(get_account_user_id() or "").strip()
         local_keys = {f"local:{ext}", f"local:{ext.lower()}"}
         if stored in local_keys and current == canonical:
             return True
@@ -156,6 +187,7 @@ def assign_team_owner_to_context(
     user_id: str = "",
     email: str = "",
     display_name: str = "",
+    external_id: str = "",
 ) -> dict[str, Any]:
     team = str(team_name or "").strip()
     if not team:
@@ -164,11 +196,23 @@ def assign_team_owner_to_context(
     league_id = resolve_canonical_league_id(context)
     ownership = get_team_ownership(context)
     uid = str(user_id or _resolve_user_id()).strip()
+    resolved_email = str(email or _resolve_user_email()).strip().lower()
+    resolved_external = str(external_id or "").strip().lower()
+    if not resolved_external and resolved_email and "@" in resolved_email:
+        resolved_external = resolved_email.split("@", 1)[0].strip().lower()
+    if not resolved_external:
+        try:
+            from suite_user import get_external_user_id
+
+            resolved_external = str(get_external_user_id() or "").strip().lower()
+        except ImportError:
+            pass
     ownership[team] = {
         "team_name": team,
         "team_id": team,
         "user_id": uid,
-        "email": str(email or _resolve_user_email()).strip(),
+        "email": resolved_email,
+        "external_id": resolved_external,
         "display_name": str(display_name or _resolve_display_name()).strip(),
         "league_id": league_id,
         "assigned_at": _utc_now_iso(),

@@ -88,6 +88,21 @@ def materialize_owned_shared_leagues_for_session(session: dict[str, Any]) -> dic
             trace["errors"].append(f"{league_id}:shared_doc_not_found")
             continue
         try:
+            draft_id = str(shared_doc.get("draft_id") or row.get("draft_id") or "").strip()
+            if draft_id:
+                try:
+                    from draft_archive_state import DELETED_DRAFT_ARCHIVE_IDS_KEY
+
+                    tombstones = {
+                        str(item).strip()
+                        for item in (session.get(DELETED_DRAFT_ARCHIVE_IDS_KEY) or [])
+                        if str(item).strip()
+                    }
+                    if draft_id in tombstones:
+                        tombstones.discard(draft_id)
+                        session[DELETED_DRAFT_ARCHIVE_IDS_KEY] = sorted(tombstones)
+                except ImportError:
+                    pass
             existing = find_league_context_by_league_id(session, league_id)
             context = build_context_from_shared_for_workspace(
                 shared_doc,
@@ -102,7 +117,7 @@ def materialize_owned_shared_leagues_for_session(session: dict[str, Any]) -> dic
             trace["materialized"].append(
                 {
                     "league_id": league_id,
-                    "draft_id": str(shared_doc.get("draft_id") or "").strip(),
+                    "draft_id": draft_id,
                     "owned_teams": list(row.get("owned_teams") or []),
                     "finalize_trace": finalize_trace,
                 }

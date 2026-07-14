@@ -4492,6 +4492,19 @@ def _render_saved_draft_library_page_body(
         unsafe_allow_html=True,
     )
 
+    # Materialize owned shared leagues BEFORE prune/list so second accounts see
+    # Live Draft Shared Leagues on the same Saved Draft Library render.
+    try:
+        from fantasy_shared_league_library_sync import (
+            summarize_library_sync_for_banner,
+            sync_uploaded_league_contexts_on_library_render,
+        )
+
+        library_sync_trace = sync_uploaded_league_contexts_on_library_render(session)
+    except ImportError:
+        library_sync_trace = {}
+        summarize_library_sync_for_banner = None  # type: ignore[assignment,misc]
+
     prune_invisible_shared_league_state(session)
     try:
         from library_repair_scheduler import run_gated_library_repairs
@@ -4539,6 +4552,7 @@ def _render_saved_draft_library_page_body(
         pass
 
     archives = list_visible_draft_archives(session)
+
     focus_draft_id = str(session.get("_saved_draft_library_focus_draft_id") or "").strip()
     if focus_draft_id:
         session.pop("_saved_draft_library_focus_draft_id", None)
@@ -4602,16 +4616,11 @@ def _render_saved_draft_library_page_body(
                 pass
 
     try:
-        from fantasy_shared_league_library_sync import (
-            summarize_library_sync_for_banner,
-            sync_uploaded_league_contexts_on_library_render,
-        )
-
-        library_sync_trace = sync_uploaded_league_contexts_on_library_render(session)
-        sync_banner = summarize_library_sync_for_banner(library_sync_trace)
-        if sync_banner:
-            st.success(sync_banner)
-    except ImportError:
+        if callable(summarize_library_sync_for_banner):
+            sync_banner = summarize_library_sync_for_banner(library_sync_trace if isinstance(library_sync_trace, dict) else {})
+            if sync_banner:
+                st.success(sync_banner)
+    except Exception:
         pass
 
     try:

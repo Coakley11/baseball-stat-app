@@ -710,32 +710,94 @@ def record_join_assignment_diagnostics(
     return diag
 
 
+def _participant_account_identity(session: dict[str, Any] | None = None) -> dict[str, str]:
+    """Suite-stable account fields for room participants (not Auth UUID-only)."""
+    identity = {
+        "user_id": "",
+        "account_user_id": "",
+        "external_id": "",
+        "email": "",
+        "display_name": "",
+    }
+    try:
+        from suite_user import get_account_user_id, get_external_user_id, get_user_email
+
+        identity["user_id"] = str(get_account_user_id() or "").strip()
+        identity["account_user_id"] = identity["user_id"]
+        identity["external_id"] = str(get_external_user_id() or "").strip().lower()
+        identity["email"] = str(get_user_email() or "").strip().lower()
+    except ImportError:
+        pass
+    if isinstance(session, dict):
+        if not identity["user_id"]:
+            identity["user_id"] = str(
+                session.get("_suite_cloud_user_id") or session.get("_suite_auth_user_id") or ""
+            ).strip()
+            identity["account_user_id"] = identity["user_id"]
+        if not identity["external_id"]:
+            identity["external_id"] = str(session.get("_suite_auth_external_id") or "").strip().lower()
+        if not identity["email"]:
+            identity["email"] = str(session.get("_suite_auth_user_email") or "").strip().lower()
+    try:
+        from draft_room_membership import participant_display_name
+
+        identity["display_name"] = str(participant_display_name(session or {}) or "").strip()
+    except ImportError:
+        pass
+    if not identity["display_name"]:
+        identity["display_name"] = identity["email"] or identity["external_id"] or identity["user_id"]
+    return identity
+
+
 def register_participant_in_shared_document(
     shared_document: dict[str, Any],
     *,
     participant_id: str,
     assigned_team: str,
     display_name: str = "",
+    session: dict[str, Any] | None = None,
+    user_id: str = "",
+    account_user_id: str = "",
+    external_id: str = "",
+    email: str = "",
 ) -> dict[str, Any]:
     out = copy.deepcopy(shared_document)
     participants = dict(out.get("participants") or {})
     pid = str(participant_id)
+    identity = _participant_account_identity(session)
+    resolved_user = str(user_id or account_user_id or identity.get("user_id") or "").strip()
+    resolved_account = str(account_user_id or identity.get("account_user_id") or resolved_user).strip()
+    resolved_external = str(external_id or identity.get("external_id") or "").strip().lower()
+    resolved_email = str(email or identity.get("email") or "").strip().lower()
+    resolved_display = str(display_name or identity.get("display_name") or participant_id).strip()
     if pid in participants and isinstance(participants[pid], dict):
         entry = dict(participants[pid])
-        if display_name:
-            entry["display_name"] = str(display_name)
+        if resolved_display:
+            entry["display_name"] = resolved_display
         team_val = str(assigned_team or "").strip()
         if team_val:
             entry["assigned_team"] = team_val
         else:
             entry.setdefault("assigned_team", "")
         entry.setdefault("joined_at", _utc_now_iso())
+        if resolved_user:
+            entry["user_id"] = resolved_user
+        if resolved_account:
+            entry["account_user_id"] = resolved_account
+        if resolved_external:
+            entry["external_id"] = resolved_external
+        if resolved_email:
+            entry["email"] = resolved_email
         participants[pid] = entry
     else:
         participants[pid] = {
             "assigned_team": str(assigned_team),
-            "display_name": str(display_name or participant_id),
+            "display_name": resolved_display,
             "joined_at": _utc_now_iso(),
+            "user_id": resolved_user,
+            "account_user_id": resolved_account,
+            "external_id": resolved_external,
+            "email": resolved_email,
         }
     out["participants"] = participants
     out["revision"] = int(out.get("revision") or 0) + 1

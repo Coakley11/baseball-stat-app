@@ -594,6 +594,7 @@ def create_and_host_shared_room(
         participant_id=participant_id,
         assigned_team=assigned,
         display_name=participant_display_name(session),
+        session=session,
     )
     try:
         from draft_room_runtime_diagnostics import record_scoring_pipeline_stage
@@ -838,6 +839,7 @@ def join_shared_draft_room(
             participant_id=participant_id,
             assigned_team=assigned,
             display_name=display_name or participant_display_name(session),
+            session=session,
         )
         try:
             backend.save(document)
