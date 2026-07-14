@@ -21658,12 +21658,14 @@ if active_page == DRAFT_LAB_PAGE:
 if active_page == "Live Draft Room":
     _page_perf_start(active_page)
     try:
-        from live_draft_render_trace import begin_live_draft_render_trace, ldr_section
+        from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section
 
-        begin_live_draft_render_trace(st, st.session_state)
+        force_render_live_draft_trace_banner(st, st.session_state, label="page_entry")
         ldr_section(st.session_state, "page_entry", st=st)
-    except ImportError:
-        pass
+    except Exception as _ldr_trace_boot_exc:
+        st.error(
+            f"LDR TRACE BOOT ERROR: {type(_ldr_trace_boot_exc).__name__}: {_ldr_trace_boot_exc}"
+        )
     _maybe_render_account_pref_sync(active_page)
     try:
         from live_draft_render_trace import ldr_section_done
@@ -21720,11 +21722,16 @@ if active_page == "Live Draft Room":
     )
     render_page_guide(active_page)
     try:
-        from live_draft_render_trace import ldr_section_done
+        from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section_done
 
         ldr_section_done(st.session_state, "header_and_guide", st=st)
-    except ImportError:
-        pass
+        # Second paint in the upper LDR region (still above lower half) so markers after page_entry
+        # are visible even when st.empty()-style panels previously wiped themselves.
+        force_render_live_draft_trace_banner(st, st.session_state, label="after_header")
+    except Exception as _ldr_trace_hdr_exc:
+        st.error(
+            f"LDR TRACE HEADER ERROR: {type(_ldr_trace_hdr_exc).__name__}: {_ldr_trace_hdr_exc}"
+        )
     try:
         from live_draft_render_trace import ldr_section
 
@@ -24154,12 +24161,14 @@ if active_page == "Live Draft Room":
         pass
 
     try:
-        from live_draft_render_trace import ldr_section_done, render_live_draft_render_trace
+        from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section_done
 
         ldr_section_done(st.session_state, "page_complete", st=st)
-        render_live_draft_render_trace(st)
-    except ImportError:
-        pass
+        force_render_live_draft_trace_banner(st, st.session_state, label="page_complete")
+    except Exception as _ldr_trace_end_exc:
+        st.error(
+            f"LDR TRACE END ERROR: {type(_ldr_trace_end_exc).__name__}: {_ldr_trace_end_exc}"
+        )
 
     _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)

@@ -720,7 +720,12 @@ def resolve_archive_display_team(
     archive_entry: dict[str, Any] | None,
     context: dict[str, Any] | None = None,
 ) -> str:
-    """Team label for Saved Draft Library cards — canonical ownership, not stale archive.team_name."""
+    """Team label for Saved Draft Library cards.
+
+    Uses only archive / shared-league ownership for THIS draft.
+    Never falls back to temporary Live Draft session widgets
+    (`live_draft_my_team`, `room_your_team`, `resolve_current_account_team_for_live_draft_and_league`).
+    """
     if not isinstance(archive_entry, dict):
         return ""
     if context is None:
@@ -730,19 +735,62 @@ def resolve_archive_display_team(
             context = get_league_context_for_archive(session, archive_entry)
         except ImportError:
             context = None
-    canonical = resolve_current_account_team_for_live_draft_and_league(session, context=context)
-    if canonical:
-        return canonical
+
+    # 1) Shared-league ownership for THIS archive's league (account → team mapping).
+    shared = _load_shared_doc_for_context(context) if isinstance(context, dict) else None
+    owned = owned_team_from_shared_doc(shared, session) if isinstance(shared, dict) else ""
+    if owned:
+        return owned
     if isinstance(context, dict):
-        team = str(context.get("my_team_name") or "").strip()
-        if team:
-            return team
-    league_id = ""
+        try:
+            from fantasy_shared_league_store import get_team_ownership_from_context
+
+            ownership = get_team_ownership_from_context(context)
+        except ImportError:
+            ownership = {}
+        if isinstance(ownership, dict) and ownership:
+            uid, _, _, _, _ = session_account_identity(session)
+            owned = owned_team_from_ownership(
+                ownership,
+                owner_user_id=uid,
+                aliases=build_account_aliases(session),
+            )
+            if owned:
+                return owned
+
+    archive_team = ""
+    for key in ("my_team", "claimed_team", "team_name", "owner_team"):
+        archive_team = str(archive_entry.get(key) or "").strip()
+        if archive_team:
+            break
+
+    ctx_team = ""
     if isinstance(context, dict):
-        league_id = str(resolve_canonical_league_id(context) or "").strip()
-    if league_id:
-        return ""
-    return str(archive_entry.get("team_name") or "").strip()
+        ctx_team = str(context.get("my_team_name") or "").strip()
+
+    # Reject temporary Live Draft teams leaking into archive cards.
+    live_room = session.get("live_draft_room") if isinstance(session, dict) else None
+    live_teams: set[str] = set()
+    if isinstance(live_room, dict):
+        for t in list(live_room.get("teams") or []) + list((live_room.get("config") or {}).get("teams") or []):
+            name = str(t or "").strip()
+            if name:
+                live_teams.add(name)
+    if (
+        archive_team
+        and ctx_team
+        and live_teams
+        and ctx_team in live_teams
+        and ctx_team != archive_team
+    ):
+        return archive_team
+
+    # 2) League-context team for this archive only (may already be ownership-overlaid by caller).
+    if ctx_team:
+        return ctx_team
+
+    # 3) Permanent fields stored on the archive row itself.
+    return archive_team
 
 
 def resolve_final_fantasy_lineup_team(session: dict[str, Any]) -> str:

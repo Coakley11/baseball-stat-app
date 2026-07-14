@@ -260,12 +260,10 @@ def ldr_trace(
 
 def ldr_section(session: dict[str, Any], name: str, *, st: Any | None = None, **extra: Any) -> None:
     ldr_trace(session, section=name, reason="enter", kind="section", st=st, extra=extra or None)
-    refresh_live_draft_render_trace(st, session)
 
 
 def ldr_section_done(session: dict[str, Any], name: str, *, st: Any | None = None, **extra: Any) -> None:
     ldr_trace(session, section=name, reason="complete", kind="section_end", st=st, extra=extra or None)
-    refresh_live_draft_render_trace(st, session)
 
 
 def ldr_early_return(session: dict[str, Any], name: str, *, reason: str, st: Any | None = None) -> None:
@@ -349,10 +347,6 @@ def _format_poll_state(snap: dict[str, Any]) -> str:
     return " | ".join(str(p) for p in parts)
 
 
-_LDR_MAIN_SLOT_KEY = "_live_draft_render_trace_main_slot"
-_LDR_SIDEBAR_SLOT_KEY = "_live_draft_render_trace_sidebar_slot"
-
-
 def _write_ldr_trace_panel_body(st: Any, ss: dict[str, Any]) -> None:
     snap = build_ldr_workspace_compare_snapshot(ss)
     stall = analyze_ldr_stall(ss)
@@ -386,50 +380,44 @@ def _write_ldr_trace_panel_body(st: Any, ss: dict[str, Any]) -> None:
     st.code(json.dumps(snap, indent=2, default=str), language="json")
 
 
-def refresh_live_draft_render_trace(st: Any | None, session: dict[str, Any] | None = None) -> None:
-    """Rewrite updatable main/sidebar slots with the latest stall diagnosis."""
-    if st is None or not isinstance(session, dict):
-        return
-    if not is_ldr_trace_enabled(session, st):
-        return
-    title = "### Live Draft render trace (debug — always on)"
-    for key in (_LDR_MAIN_SLOT_KEY, _LDR_SIDEBAR_SLOT_KEY):
-        slot = session.get(key)
-        if slot is None:
-            continue
+def force_render_live_draft_trace_banner(
+    st: Any,
+    session: dict[str, Any] | None = None,
+    *,
+    label: str = "top",
+) -> None:
+    """Direct widgets only — never st.empty(). Always paint something visible."""
+    ss = session if isinstance(session, dict) else st.session_state
+    # Force-enable for this debug window regardless of prior gates.
+    if isinstance(ss, dict):
+        ss[LDR_TRACE_ENABLED_KEY] = True
+        ss["_live_draft_render_trace_force"] = True
+    title = f"Live Draft render trace (debug — always on) [{label}]"
+    try:
+        st.warning(
+            f"🔎 {title} — temporary stall-debug instrumentation. "
+            "Copy the fields below if the lower half of Live Draft Room does not finish rendering."
+        )
+        with st.expander(title, expanded=True):
+            _write_ldr_trace_panel_body(st, ss)
         try:
-            with slot.container():
-                st.markdown(title)
-                _write_ldr_trace_panel_body(st, session)
-        except Exception:
-            pass
+            with st.sidebar.expander(title, expanded=True):
+                _write_ldr_trace_panel_body(st, ss)
+        except Exception as sidebar_exc:
+            st.caption(f"(Sidebar trace unavailable: {type(sidebar_exc).__name__})")
+    except Exception as exc:
+        st.error(f"LDR TRACE RENDER ERROR [{label}]: {type(exc).__name__}: {exc}")
 
 
 def begin_live_draft_render_trace(st: Any, session: dict[str, Any] | None = None) -> None:
-    """Create updatable main + sidebar slots (call once at Live Draft page entry)."""
-    ss = session if isinstance(session, dict) else st.session_state
-    if not is_ldr_trace_enabled(ss, st):
+    force_render_live_draft_trace_banner(st, session, label="page_entry")
+
+
+def refresh_live_draft_render_trace(st: Any | None, session: dict[str, Any] | None = None) -> None:
+    if st is None:
         return
-    # Clear stale slot refs from prior runs — Empty handles are run-scoped.
-    ss.pop(_LDR_MAIN_SLOT_KEY, None)
-    ss.pop(_LDR_SIDEBAR_SLOT_KEY, None)
-    try:
-        ss[_LDR_MAIN_SLOT_KEY] = st.empty()
-    except Exception:
-        ss.pop(_LDR_MAIN_SLOT_KEY, None)
-    try:
-        ss[_LDR_SIDEBAR_SLOT_KEY] = st.sidebar.empty()
-    except Exception:
-        ss.pop(_LDR_SIDEBAR_SLOT_KEY, None)
-    refresh_live_draft_render_trace(st, ss)
+    force_render_live_draft_trace_banner(st, session, label="refresh")
 
 
 def render_live_draft_render_trace(st: Any, session: dict[str, Any] | None = None) -> None:
-    """Backward-compatible entry: begin slots if missing, otherwise refresh."""
-    ss = session if isinstance(session, dict) else st.session_state
-    if not is_ldr_trace_enabled(ss, st):
-        return
-    if ss.get(_LDR_MAIN_SLOT_KEY) is None and ss.get(_LDR_SIDEBAR_SLOT_KEY) is None:
-        begin_live_draft_render_trace(st, ss)
-        return
-    refresh_live_draft_render_trace(st, ss)
+    force_render_live_draft_trace_banner(st, session, label="render")

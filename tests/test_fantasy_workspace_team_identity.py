@@ -67,6 +67,43 @@ class TestFantasyWorkspaceTeamIdentity(unittest.TestCase):
         self.assertEqual(resolve_archive_display_team(session, archive, overlaid), "Daniel")
         self.assertEqual(owned_team_from_shared_doc(shared_doc, session), "Daniel")
 
+    def test_temporary_live_team_does_not_leak_into_archive_cards(self) -> None:
+        session = {
+            "_suite_auth_user_id": "user:coakley11",
+            "_suite_auth_external_id": "coakley11",
+            "_suite_owned_workspace_id": "coakley11",
+            "live_draft_my_team": "Team Y",
+            "room_your_team": "Team Y",
+            "live_draft_room": {
+                "draft_room_id": "tmp-practice",
+                "status": "in_progress",
+                "teams": ["Team X", "Team Y"],
+                "config": {"user_team": "Team Y", "league_name": "Temporary Practice Board"},
+            },
+        }
+        archive = {
+            "draft_id": "upload-demo",
+            "draft_name": "UPLOAD TEST DEMO",
+            "team_name": "Team 2",
+        }
+        context = {
+            "context_type": "archive",
+            "my_team_name": "Team 2",
+            "metadata": {},
+        }
+        self.assertEqual(resolve_archive_display_team(session, archive, context), "Team 2")
+        # Even if context is polluted with the temporary room team, prefer archive storage.
+        polluted = {"context_type": "archive", "my_team_name": "Team Y", "metadata": {}}
+        self.assertEqual(resolve_archive_display_team(session, archive, polluted), "Team 2")
+        self.assertEqual(
+            resolve_archive_display_team(
+                session,
+                {"draft_id": "robins", "draft_name": "Robins Fantasy", "team_name": "Team B"},
+                {"my_team_name": "Team B"},
+            ),
+            "Team B",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
