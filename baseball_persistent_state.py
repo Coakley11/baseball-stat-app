@@ -90,7 +90,8 @@ _HOF_HANDOFF_KEYS = (
     "_ami_submit_render_insight_this_run",
     "_ami_hydrated_insight_id",
     "_ami_insight_return_preserve",
-    "_skip_page_restore_for",
+    # `_skip_page_restore_for` is session-ephemeral. Persisting it in full_session poisoned
+    # long-lived workspaces (e.g. Daniel stuck on Historical Explorer after sidebar clicks).
     "_hof_case_last_submit_diag",
     "_hof_case_pipeline_status",
     "_hof_case_pipeline_errors",
@@ -655,6 +656,13 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             "_navigate_to_page",
         ):
             continue
+        # Never re-inject durable/stale skip targets over an explicit sidebar hop.
+        if key == "_skip_page_restore_for" and (
+            pre_restore_user_nav
+            or str(ss.get("_suite_user_owned_page") or "").strip()
+            or ss.get("active_page_source") in ("user_sidebar", "auth_preserve")
+        ):
+            continue
         if preserve_insight and key in _INSIGHT_KEYS + _HOF_HANDOFF_KEYS:
             if key == "_ami_pending_insight" and isinstance(val, dict):
                 session_pending = ss.get("_ami_pending_insight")
@@ -790,7 +798,8 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     elif owned_page and (
         owned_page == pre_restore_session_page
         or owned_page == last_persisted
-        or ss.get("active_page_source") == "auth_preserve"
+        or pre_restore_user_nav
+        or ss.get("active_page_source") in ("auth_preserve", "user_sidebar")
     ):
         preferred_page = owned_page
     user_owns_page = bool(
@@ -824,8 +833,10 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     ss["_suite_page_overwrite_source"] = overwrite_source
     resume_page = str(ss.get("_navigate_to_page") or "").strip()
     skip_for = str(ss.get("_skip_page_restore_for") or "").strip()
+    resume_from_skip_only = False
     if not resume_page and skip_for:
         resume_page = skip_for
+        resume_from_skip_only = True
     if (
         ss.get("_suite_pending_draft_lab_resume")
         and resume_page
@@ -851,14 +862,38 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         overwrite_source = "hof_case_skip_restore_preserved"
         ss["_suite_page_overwrite_source"] = overwrite_source
     elif resume_page and resume_page != active:
-        active = resume_page
-        overwrite_source = "scheduled_navigation_preserved"
-        ss["_suite_page_overwrite_source"] = overwrite_source
+        # Explicit `_navigate_to_page` still wins. A skip-only resume from an old
+        # workspace blob must not yank the user off a sidebar/owned page.
+        user_intent = (
+            preferred_page
+            or owned_page
+            or (pre_restore_session_page if pre_restore_user_nav else "")
+        )
+        if resume_from_skip_only and user_intent and resume_page != user_intent:
+            ss.pop("_skip_page_restore_for", None)
+            if active != user_intent:
+                active = user_intent
+                overwrite_source = "user_page_preserved"
+                ss["_suite_page_overwrite_source"] = overwrite_source
+        else:
+            active = resume_page
+            overwrite_source = "scheduled_navigation_preserved"
+            ss["_suite_page_overwrite_source"] = overwrite_source
     consumed_target = str(ss.get("_suite_nav_consumed_target") or "").strip()
     if consumed_target:
-        active = consumed_target
-        overwrite_source = "nav_consumed_preserved"
-        ss["_suite_page_overwrite_source"] = overwrite_source
+        user_intent = (
+            preferred_page
+            or owned_page
+            or (pre_restore_session_page if pre_restore_user_nav else "")
+        )
+        if user_intent and consumed_target != user_intent and consumed_target != active:
+            # Stale consume marker from a prior blob/page — do not override sidebar intent.
+            ss.pop("_suite_nav_consumed_target", None)
+            ss.pop("_suite_nav_consumed_this_run", None)
+        else:
+            active = consumed_target
+            overwrite_source = "nav_consumed_preserved"
+            ss["_suite_page_overwrite_source"] = overwrite_source
     if active:
         # Only clear widget keys and restore from snapshot when navigating to a
         # different page (or on fresh-session startup where pre_restore_session_page

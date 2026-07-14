@@ -596,6 +596,10 @@ def claim_user_page_ownership(st: Any, app_id: str, page: str) -> None:
         reconcile_stale_page_navigation(st, app_id)
     except Exception:
         pass
+    # Own the skip target after reconcile clears AMI leftovers — prevents a
+    # workspace blob's Historical Explorer skip from winning on the next apply.
+    ss["_skip_page_restore_for"] = selected
+    ss.pop("_suite_cloud_target_page", None)
 
 
 def resolve_session_active_page(session: dict[str, Any]) -> str:

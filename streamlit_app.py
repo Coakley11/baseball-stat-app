@@ -13866,6 +13866,8 @@ def _on_sidebar_page_change() -> None:
     st.session_state.pop("_pending_active_page", None)
     st.session_state.pop("_suite_nav_consumed_target", None)
     st.session_state.pop("_suite_nav_consumed_this_run", None)
+    # Do not keep a stale skip aiming at another page (common on long-lived Daniel blob).
+    st.session_state["_skip_page_restore_for"] = pick
     try:
         from draft_lab_resume import cancel_draft_lab_resume_navigation
 

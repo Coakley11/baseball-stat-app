@@ -56,6 +56,31 @@ class BaseballNavRestoreTests(unittest.TestCase):
         self.assertEqual(ss["active_page"], "Historical Explorer")
         self.assertNotIn("_navigate_to_page", ss)
 
+    def test_sidebar_nav_beats_stale_skip_for_historical_explorer(self) -> None:
+        """Daniel-style workspace: durable skip must not override a sidebar hop."""
+        ss = {
+            "active_page": "Live Draft Room",
+            "main_sidebar_page": "Live Draft Room",
+            "_suite_page_user_nav": True,
+            "_suite_user_owned_page": "Live Draft Room",
+            "active_page_source": "user_sidebar",
+            # Leftover skip from an old full_session / prior restore.
+            "_skip_page_restore_for": "Historical Explorer",
+            "_suite_last_persisted_page": "Historical Explorer",
+        }
+        st_obj = SimpleNamespace(session_state=ss)
+        apply_baseball_disk_state(
+            st_obj,
+            {
+                "active_page": "Historical Explorer",
+                "_skip_page_restore_for": "Historical Explorer",
+            },
+        )
+        self.assertEqual(ss["active_page"], "Live Draft Room")
+        self.assertEqual(ss["main_sidebar_page"], "Live Draft Room")
+        self.assertEqual(ss.get("_suite_page_overwrite_source"), "user_page_preserved")
+        self.assertNotEqual(ss.get("_skip_page_restore_for"), "Historical Explorer")
+
 
 if __name__ == "__main__":
     unittest.main()
