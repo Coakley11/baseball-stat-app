@@ -128,10 +128,11 @@ class ScoreFormattingTests(unittest.TestCase):
 
 class LiveDraftUxTests(unittest.TestCase):
     def test_quick_nav_pages_defined(self) -> None:
-        pages = [p for p, _ in LIVE_DRAFT_QUICK_NAV_PAGES]
+        pages = [p for p, _label, _sub, _theme in LIVE_DRAFT_QUICK_NAV_PAGES]
         self.assertIn("Draft Assistant Simulator", pages)
         self.assertIn("Fantasy Sleepers & Busts", pages)
-        self.assertIn("Trend Value", pages)
+        self.assertNotIn("Trend Value", pages)
+        self.assertNotIn("ML Predictions", pages)
 
     def test_quick_nav_renders_buttons(self) -> None:
         class _Col:
@@ -142,6 +143,9 @@ class LiveDraftUxTests(unittest.TestCase):
                 return self
 
             def __exit__(self, *_a) -> None:
+                return None
+
+            def markdown(self, *_a, **_k) -> None:
                 return None
 
             def button(self, label: str, **kwargs) -> bool:
@@ -163,7 +167,7 @@ class LiveDraftUxTests(unittest.TestCase):
         session: dict = {}
         render_live_draft_quick_nav(st, session)
         total_calls = sum(len(c.calls) for c in st.cols)
-        self.assertEqual(total_calls, len(LIVE_DRAFT_QUICK_NAV_PAGES))
+        self.assertEqual(total_calls, 3)  # Assistant + Sleepers + Queue
 
     def test_rec_card_metrics_include_core_fields(self) -> None:
         row = {

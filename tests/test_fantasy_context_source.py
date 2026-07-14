@@ -127,7 +127,7 @@ class FantasyContextSourceTests(unittest.TestCase):
         source = resolve_fantasy_context_source(session)
         self.assertEqual(source.kind, SOURCE_LIVE_DRAFT)
 
-    def test_live_override_disabled_falls_back_to_simulator(self) -> None:
+    def test_live_in_progress_wins_even_when_live_override_disabled(self) -> None:
         session = _saved_context_session()
         session.update(_simulator_board_session())
         session["live_draft_room"] = {
@@ -138,7 +138,36 @@ class FantasyContextSourceTests(unittest.TestCase):
         }
         session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
         source = resolve_fantasy_context_source(session)
-        self.assertEqual(source.kind, SOURCE_SIMULATOR_BOARD)
+        self.assertEqual(source.kind, SOURCE_LIVE_DRAFT)
+        self.assertEqual(source.origin, "active_live")
+
+    def test_completed_live_without_override_returns_to_active_draft(self) -> None:
+        session = _saved_context_session()
+        session.update(_simulator_board_session())
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
+        session["live_draft_room"] = {
+            "draft_room_id": "room1",
+            "status": "complete",
+            "config": {"user_team": "Daniel"},
+            "draft_board": [{"Team": "Daniel", "Player": "Aaron Judge"}],
+        }
+        source = resolve_fantasy_context_source(session)
+        self.assertEqual(source.kind, SOURCE_ACTIVE_DRAFT)
+
+    def test_completed_live_with_override_stays_live(self) -> None:
+        session = _saved_context_session()
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = True
+        session["live_draft_room"] = {
+            "draft_room_id": "room1",
+            "status": "complete",
+            "config": {"user_team": "Daniel"},
+            "draft_board": [{"Team": "Daniel", "Player": "Aaron Judge"}],
+        }
+        source = resolve_fantasy_context_source(session)
+        self.assertEqual(source.kind, SOURCE_LIVE_DRAFT)
+        self.assertEqual(source.origin, "override")
 
     def test_effective_context_uses_saved_when_simulator_disabled(self) -> None:
         session = _saved_context_session()
@@ -188,14 +217,17 @@ class FantasyContextSourceTests(unittest.TestCase):
         session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = True
         self.assertFalse(simulator_board_context_available(session))
 
-    def test_natural_simulator_when_no_active_draft_and_no_override(self) -> None:
+    def test_natural_simulator_without_override_is_generic(self) -> None:
         session = _simulator_board_session()
         session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
         session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
         session.pop("fantasy_league_context_state", None)
         session.pop("draft_archive_teams", None)
+        session.pop("active_draft_archive_id", None)
+        from fantasy_context_source import SOURCE_GENERIC
+
         source = resolve_fantasy_context_source(session)
-        self.assertEqual(source.kind, SOURCE_SIMULATOR_BOARD)
+        self.assertEqual(source.kind, SOURCE_GENERIC)
 
     def test_active_draft_blocks_natural_simulator_without_override(self) -> None:
         session = _saved_context_session()
@@ -357,24 +389,30 @@ class FantasyContextRoutingTests(unittest.TestCase):
         self.assertEqual(draft_assistant_context_mode(session), "simulator_board")
         self.assertTrue(simulator_feeds_draft_assistant(session))
 
-    def test_natural_simulator_feeds_das_without_research_sync(self) -> None:
+    def test_natural_simulator_without_override_does_not_feed_fantasy_pages(self) -> None:
+        """Simulator sandbox never auto-becomes effective source without Override."""
+        from fantasy_context_source import SOURCE_GENERIC
+
         session = _simulator_board_session()
         session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
         session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
         session.pop("fantasy_league_context_state", None)
         session.pop("draft_archive_teams", None)
+        session.pop("active_draft_archive_id", None)
         session[FANTASY_RESEARCH_SYNC_KEY] = False
-        self.assertEqual(resolve_fantasy_context_source(session).kind, SOURCE_SIMULATOR_BOARD)
-        self.assertTrue(simulator_feeds_draft_assistant(session))
-        self.assertTrue(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
-        self.assertFalse(fantasy_drafted_pool_filter_applies(session, "Trend Value"))
-        self.assertEqual(draft_assistant_context_mode(session), "simulator_board")
+        self.assertEqual(resolve_fantasy_context_source(session).kind, SOURCE_GENERIC)
+        self.assertFalse(simulator_feeds_draft_assistant(session))
+        self.assertFalse(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
+        self.assertEqual(draft_assistant_context_mode(session), "none")
 
-    def test_natural_simulator_feeds_research_pages_with_research_sync(self) -> None:
+    def test_simulator_override_required_for_research_feed(self) -> None:
         session = _simulator_board_session()
-        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = True
         session.pop("fantasy_league_context_state", None)
+        session.pop("draft_archive_teams", None)
+        session.pop("active_draft_archive_id", None)
         session[FANTASY_RESEARCH_SYNC_KEY] = True
+        self.assertEqual(resolve_fantasy_context_source(session).kind, SOURCE_SIMULATOR_BOARD)
         self.assertTrue(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
         self.assertTrue(fantasy_drafted_pool_filter_applies(session, "Trend Value"))
         self.assertEqual(draft_assistant_context_mode(session), "simulator_board")

@@ -74,16 +74,16 @@ ROSTER_FIT_TOOLTIP = (
 )
 
 REC_TABLE_SORT_OPTIONS: dict[str, str] = {
+    # label → actual dataframe column used by the recommendation engine
     "Decision Score": "Decision Score",
     "Player Grade": "Player Grade",
     "Fantasy Edge": "Fantasy Edge",
-    "Roster Fit Score": "Roster Fit",
-    "Market Rank": "Market Discount",
-    "Primary Position": "Position",
-    "Risk Score": "Risk",
-    "Category Need Bonus": "Category Need",
-    "Expected Fantasy Value": "Player Grade",
-    "Draft Fit Score": "Roster Fit",
+    "Roster Fit Score": "Roster Fit Score",
+    "Market Rank": "Market Rank",
+    "Primary Position": "Primary Position",
+    "Risk Score": "Risk Score",
+    "Survival Probability": "Survival Probability",
+    "Category Need Bonus": "Category Need Bonus",
 }
 
 
@@ -270,8 +270,27 @@ def sort_recommendation_table(df: pd.DataFrame, sort_key: str, *, ascending: boo
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
     col = str(sort_key or "Decision Score").strip()
+    # Map legacy / display alias → live column when present.
+    aliases = {
+        "Roster Fit": "Roster Fit Score",
+        "Draft Fit Score": "Roster Fit Score",
+        "Expected Fantasy Value": "Player Grade",
+        "Market Discount": "Market Rank",
+        "Position": "Primary Position",
+        "Risk": "Risk Score",
+        "Category Need": "Category Need Bonus",
+    }
+    if col not in df.columns and col in aliases:
+        col = aliases[col]
+    if col == "Player Grade" and col not in df.columns and "Expected Fantasy Value" in df.columns:
+        col = "Expected Fantasy Value"
+    if col == "Roster Fit Score" and col not in df.columns and "Draft Fit Score" in df.columns:
+        col = "Draft Fit Score"
     if col not in df.columns:
         return df
+    # Rank-like fields sort ascending (lower is better); scores/probabilities descending.
+    if ascending is False and col in {"Market Rank", "Primary Position"}:
+        ascending = True if col == "Market Rank" else False
     return df.sort_values(col, ascending=ascending, na_position="last")
 
 

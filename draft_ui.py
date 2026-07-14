@@ -960,6 +960,8 @@ def render_draft_queue_panel(
 
     if show_subheader and not use_sidebar:
         container.subheader("Draft Queue")
+        if session.pop("_live_draft_focus_queue", None):
+            container.info("Draft Queue — reorder and draft from here while you’re on the clock.")
         container.markdown('<div class="live-draft-queue-panel">', unsafe_allow_html=True)
 
     if not queue:
@@ -1699,6 +1701,50 @@ def render_live_manual_draft_panel(
             "pool_source": pool_source,
         }
     )
+
+    # Position filter — narrow Manual Draft candidates by roster need.
+    position_options = ["All", "C", "1B", "2B", "3B", "SS", "OF", "SP", "RP", "UTIL"]
+    pos_filter = st.selectbox(
+        "Position filter",
+        position_options,
+        key="live_draft_manual_position_filter",
+        help="Filter the Manual Draft pool by position.",
+    )
+    if pos_filter and pos_filter != "All" and available is not None and hasattr(available, "columns"):
+        pos_col = "Primary Position" if "Primary Position" in available.columns else (
+            "Position" if "Position" in available.columns else ""
+        )
+        name_col = "fullName" if "fullName" in available.columns else (
+            "Player" if "Player" in available.columns else ""
+        )
+        if pos_col and name_col:
+            pos_series = available[pos_col].astype(str).str.upper()
+            allowed_names = {
+                str(n).strip()
+                for n in available.loc[
+                    pos_series.str.contains(str(pos_filter).upper(), na=False)
+                    | ((pos_filter == "UTIL") & pos_series.isin(["UTIL", "DH", "PH"])),
+                    name_col,
+                ].tolist()
+                if str(n).strip()
+            }
+            if pos_filter == "OF":
+                allowed_names |= {
+                    str(n).strip()
+                    for n in available.loc[
+                        pos_series.isin(["OF", "LF", "CF", "RF", "OF/DH"]),
+                        name_col,
+                    ].tolist()
+                    if str(n).strip()
+                }
+            player_options = [n for n in player_options if n in allowed_names]
+            filtered_count = len(player_options)
+            diag_base["filtered_player_count"] = filtered_count
+            diag_base["candidate_count"] = filtered_count
+            diag_base["position_filter"] = pos_filter
+            if not player_options:
+                st.caption(f"No available players at **{pos_filter}** — try All or another position.")
+
     paused = room.get("status") == "paused"
     board_size, total_picks, draft_is_complete = _live_draft_room_progress(room)
     draft_in_progress = bool(total_picks > 0 and board_size < total_picks and not draft_is_complete)

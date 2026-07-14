@@ -157,23 +157,26 @@ class QueueMetricsTests(unittest.TestCase):
 
 class QuickNavTests(unittest.TestCase):
     def test_quick_nav_pages_complete(self) -> None:
+        from live_draft_navigation import LIVE_DRAFT_QUICK_NAV_QUEUE_ACTION
+
         labels = {label for _page, label, _sub, _theme in LIVE_DRAFT_QUICK_NAV_PAGES}
-        self.assertIn("Draft Assistant", labels)
-        self.assertIn("Sleepers", labels)
-        self.assertIn("Trends", labels)
-        self.assertIn("Valuation", labels)
-        self.assertIn("ML Projections", labels)
-        self.assertIn("Comparison", labels)
+        labels.add(LIVE_DRAFT_QUICK_NAV_QUEUE_ACTION[1])
+        self.assertEqual(labels, {"Draft Assistant", "Sleepers", "Queue"})
+        self.assertNotIn("Trends", labels)
+        self.assertNotIn("ML Projections", labels)
 
     def test_quick_nav_renders_buttons(self) -> None:
+        from live_draft_navigation import LIVE_DRAFT_QUICK_NAV_QUEUE_ACTION
+
         st = mock.MagicMock()
         session: dict = {}
         cols = [mock.MagicMock() for _ in range(3)]
-        st.columns.side_effect = [cols, cols]
+        st.columns.return_value = cols
         with mock.patch("shared_draft_context.prepare_canonical_scoring_context"):
             render_live_draft_quick_nav(st, session)
         button_calls = sum(col.button.call_count for col in cols)
-        self.assertEqual(button_calls, len(LIVE_DRAFT_QUICK_NAV_PAGES))
+        self.assertEqual(button_calls, len(LIVE_DRAFT_QUICK_NAV_PAGES) + 1)
+        self.assertEqual(LIVE_DRAFT_QUICK_NAV_QUEUE_ACTION[1], "Queue")
 
 
 class DraftFlowUpdateTests(unittest.TestCase):

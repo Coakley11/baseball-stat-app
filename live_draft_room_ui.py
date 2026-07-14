@@ -285,16 +285,16 @@ def inject_live_draft_room_styles(st: Any) -> None:
         }
         .live-rec-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-            gap: 10px;
-            margin-bottom: 12px;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 8px;
+            margin-bottom: 8px;
         }
         .live-rec-card {
             background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
             border: 1px solid #dbe3ee;
-            border-radius: 14px;
-            padding: 14px 14px 12px 14px;
-            box-shadow: 0 2px 6px rgba(15,23,42,0.05);
+            border-radius: 12px;
+            padding: 10px 12px 8px 12px;
+            box-shadow: 0 1px 4px rgba(15,23,42,0.04);
             border-left: 4px solid #2563eb;
         }
         .live-rec-card.tier-top { border-left-color: #16a34a; }
@@ -402,18 +402,21 @@ def inject_live_draft_room_styles(st: Any) -> None:
         }
         .ld-rec-detail-cell { flex: 1 1 150px; min-width: 130px; }
         .ld-rec-detail-label {
-            font-size: 0.7rem;
-            font-weight: 700;
-            color: #64748b;
+            font-size: 0.72rem;
+            font-weight: 800;
+            color: #334155;
             text-transform: uppercase;
-            letter-spacing: 0.03em;
+            letter-spacing: 0.04em;
         }
         .ld-rec-detail-value {
-            font-size: 0.82rem;
+            font-size: 0.86rem;
             color: #1e293b;
-            line-height: 1.4;
+            line-height: 1.45;
             margin-top: 2px;
         }
+        .ld-rec-detail-grid { margin-top: 4px; max-width: 100%; }
+        .ld-rec-detail-cell { flex: 1 1 180px; min-width: 160px; }
+
         .ld-draft-complete-banner {
             background: linear-gradient(135deg, #ecfdf5 0%, #dbeafe 100%);
             border: 2px solid #22c55e;
@@ -1545,19 +1548,6 @@ def render_live_draft_rec_cards(
                 st.caption(f"{pos}")
             if badge_html:
                 st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
-            why_bullets = build_rec_card_why_bullets(
-                i,
-                r,
-                rec_df,
-                badges=badges,
-                gaps=gaps,
-                category_needs=category_needs,
-                strengths=strengths,
-            )
-            if why_bullets:
-                st.markdown("**Why Recommended:**")
-                for bullet in why_bullets:
-                    st.markdown(f"- {bullet}")
             btn_col, queue_col, detail_col = st.columns([2, 1, 1])
             queued_names = {
                 str(x).strip().lower()

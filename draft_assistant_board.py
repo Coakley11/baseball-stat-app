@@ -2,13 +2,135 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pandas as pd
 
+logger = logging.getLogger(__name__)
+
+# Canonical fantasy draft board columns after normalization.
+CANONICAL_BOARD_COLUMNS: tuple[str, ...] = ("Team", "Player", "Pick", "Round")
+
 
 def _player_cell_filled(value: Any) -> bool:
     return bool(str(value or "").strip())
+
+
+def _lower_col_map(columns: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for col in columns:
+        key = str(col).strip().lower()
+        if key and key not in out:
+            out[key] = col
+    return out
+
+
+def _coalesce_duplicate_named_columns(work: pd.DataFrame, name: str) -> pd.Series:
+    """If ``name`` appears more than once, coalesce to a single Series (first non-empty)."""
+    col = work[name]
+    if isinstance(col, pd.Series):
+        return col
+    if isinstance(col, pd.DataFrame):
+        logger.warning(
+            "normalize_draft_board_df: duplicate column %r width=%s columns=%s",
+            name,
+            col.shape[1],
+            list(work.columns),
+        )
+        series = col.iloc[:, 0].copy()
+        for idx in range(1, col.shape[1]):
+            other = col.iloc[:, idx]
+            blank = series.isna() | (series.astype(str).str.strip() == "") | (series.astype(str) == "nan")
+            series = series.where(~blank, other)
+        return series
+    return pd.Series(col, index=work.index)
+
+
+def _collapse_duplicate_columns(work: pd.DataFrame) -> pd.DataFrame:
+    """Ensure each column label appears once after renames."""
+    if not bool(work.columns.duplicated().any()):
+        return work
+    rebuilt = pd.DataFrame(index=work.index)
+    for label in dict.fromkeys(str(c) for c in work.columns):
+        rebuilt[label] = _coalesce_duplicate_named_columns(work, label)
+    return rebuilt
+
+
+def _apply_canonical_column_map(work: pd.DataFrame) -> pd.DataFrame:
+    """Map aliases onto a single canonical schema without creating duplicate labels.
+
+    Live Draft rows often contain both ``Team`` (MLB) and ``Fantasy Team``. Mapping both
+    to ``Team`` produced duplicate columns so ``work["Team"]`` returned a DataFrame and
+    ``.str`` crashed.
+    """
+    lower = _lower_col_map(work.columns)
+    rename_map: dict[Any, str] = {}
+
+    # Player: prefer existing Player, else fullName / Name.
+    if "player" not in lower:
+        for alias in ("fullname", "full_name", "player_name", "name"):
+            if alias in lower:
+                rename_map[lower[alias]] = "Player"
+                break
+
+    fantasy_aliases = ("fantasy team", "fantasy_team", "draft team", "draft_team")
+    fantasy_col = next((lower[a] for a in fantasy_aliases if a in lower), None)
+    raw_team_col = lower.get("team")
+    mlb_col = lower.get("mlb team") or lower.get("mlb_team")
+
+    if fantasy_col is not None:
+        rename_map[fantasy_col] = "Team"
+        if raw_team_col is not None and raw_team_col != fantasy_col:
+            rename_map[raw_team_col] = "MLB Team"
+        elif mlb_col is not None and mlb_col != fantasy_col:
+            rename_map[mlb_col] = "MLB Team"
+    elif raw_team_col is not None:
+        rename_map[raw_team_col] = "Team"
+    elif mlb_col is not None:
+        rename_map[mlb_col] = "Team"
+
+    for alias, dest in (
+        ("pick", "Pick"),
+        ("round", "Round"),
+        ("primary position", "Primary Position"),
+        ("primary_position", "Primary Position"),
+        ("position", "Position"),
+        ("pos", "Position"),
+    ):
+        if alias not in lower:
+            continue
+        src = lower[alias]
+        if src in rename_map:
+            continue
+        # Skip if destination already present under another physical column.
+        if dest.lower() in lower and lower[dest.lower()] != src:
+            continue
+        rename_map[src] = dest
+
+    if rename_map:
+        work = work.rename(columns=rename_map)
+    return _collapse_duplicate_columns(work)
+
+
+def validate_canonical_board_schema(df: pd.DataFrame) -> dict[str, Any]:
+    """Return schema diagnostics. ``ok`` requires unique Team/Player Series."""
+    cols = list(df.columns)
+    required_present = [c for c in CANONICAL_BOARD_COLUMNS if c in cols]
+    missing = [c for c in CANONICAL_BOARD_COLUMNS if c not in cols]
+    duplicates = sorted({str(c) for c in cols if cols.count(c) > 1})
+    team_is_series = True
+    if "Team" in cols:
+        team_is_series = isinstance(df["Team"], pd.Series)
+    ok = "Player" in cols and "Team" in cols and not duplicates and team_is_series
+    return {
+        "ok": ok,
+        "columns": cols,
+        "required_present": required_present,
+        "missing_required": missing,
+        "duplicate_columns": duplicates,
+        "team_is_series": team_is_series,
+    }
 
 
 def normalize_draft_board_df(df: pd.DataFrame | None) -> tuple[pd.DataFrame, dict[str, Any]]:
@@ -20,46 +142,73 @@ def normalize_draft_board_df(df: pd.DataFrame | None) -> tuple[pd.DataFrame, dic
         "min_pick": None,
         "max_pick": None,
         "missing_pick_numbers": [],
+        "schema": {},
     }
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return pd.DataFrame(), diag
 
     work = df.copy()
     diag["board_row_count_raw"] = len(work)
-
-    rename_map: dict[str, str] = {}
-    for col in work.columns:
-        key = str(col).strip().lower()
-        if key in ("player", "fullname", "full_name", "name"):
-            rename_map[col] = "Player"
-        elif key in ("team", "fantasy team", "fantasy_team"):
-            rename_map[col] = "Team"
-        elif key == "pick":
-            rename_map[col] = "Pick"
-        elif key == "round":
-            rename_map[col] = "Round"
-    if rename_map:
-        work = work.rename(columns=rename_map)
+    work = _apply_canonical_column_map(work)
+    diag["schema"] = validate_canonical_board_schema(work)
 
     if "Player" not in work.columns:
+        logger.warning(
+            "normalize_draft_board_df: missing Player after remap | columns=%s",
+            list(work.columns),
+        )
         return pd.DataFrame(), diag
 
+    player_series = _coalesce_duplicate_named_columns(work, "Player")
+    work = _collapse_duplicate_columns(work)
+    work["Player"] = player_series
     work = work[work["Player"].apply(_player_cell_filled)].copy()
     if work.empty:
         return pd.DataFrame(), diag
 
     if "Pick" in work.columns:
-        work["_pick_n"] = pd.to_numeric(work["Pick"], errors="coerce")
+        pick_series = _coalesce_duplicate_named_columns(work, "Pick")
+        work = _collapse_duplicate_columns(work)
+        work["_pick_n"] = pd.to_numeric(pick_series, errors="coerce")
         work = work[work["_pick_n"].notna()].copy()
         work = work.sort_values("_pick_n", kind="stable")
         work = work.drop_duplicates(subset=["_pick_n"], keep="first")
         work["Pick"] = work["_pick_n"].astype(int)
-        work = work.drop(columns=["_pick_n"])
+        work = work.drop(columns=["_pick_n"], errors="ignore")
+        work = _collapse_duplicate_columns(work)
+
     if "Round" in work.columns:
-        work["Round"] = pd.to_numeric(work["Round"], errors="coerce")
+        round_series = _coalesce_duplicate_named_columns(work, "Round")
+        work = _collapse_duplicate_columns(work)
+        work["Round"] = pd.to_numeric(round_series, errors="coerce")
 
     if "Team" in work.columns:
-        work["Team"] = work["Team"].astype(str).str.strip()
+        team_col = work["Team"]
+        logger.info(
+            "normalize_draft_board_df Team preprocess | type(work)=%s type(Team)=%s "
+            "columns=%s dtypes=%s head=%s",
+            type(work).__name__,
+            type(team_col).__name__,
+            list(work.columns),
+            {str(k): str(v) for k, v in work.dtypes.items()},
+            work.head(3).to_dict(orient="records"),
+        )
+        if isinstance(team_col, pd.DataFrame):
+            logger.error(
+                "normalize_draft_board_df: Team is DataFrame (duplicate columns) — coalescing. columns=%s",
+                list(work.columns),
+            )
+            team_series = _coalesce_duplicate_named_columns(work, "Team")
+            work = _collapse_duplicate_columns(work)
+            work["Team"] = team_series.astype(str).str.strip()
+        else:
+            work["Team"] = team_col.astype(str).str.strip()
+
+    schema_after = validate_canonical_board_schema(work)
+    diag["schema"] = schema_after
+    if not schema_after.get("team_is_series", True):
+        logger.error("normalize_draft_board_df: Team still not a Series after collapse")
+        return pd.DataFrame(), diag
 
     work = work.sort_values("Pick", kind="stable") if "Pick" in work.columns else work
     diag["board_row_count_normalized"] = len(work)
@@ -94,8 +243,8 @@ def board_from_archive(archive: dict[str, Any] | None, session: dict[str, Any] |
     for key in ("draft_board", "board", "final_board", "pick_history"):
         rows = snapshot.get(key) if isinstance(snapshot, dict) else None
         if isinstance(rows, list) and rows:
-            df = pd.DataFrame(rows)
-            normalized, _ = normalize_draft_board_df(df)
+            frame = pd.DataFrame(rows)
+            normalized, _ = normalize_draft_board_df(frame)
             if not normalized.empty:
                 return normalized
     draft_id = str(archive.get("draft_id") or "").strip()
@@ -114,7 +263,10 @@ def board_from_archive(archive: dict[str, Any] | None, session: dict[str, Any] |
 def _board_has_populated_picks(df: pd.DataFrame) -> bool:
     if df is None or df.empty or "Player" not in df.columns:
         return False
-    return bool(df["Player"].astype(str).str.strip().ne("").any())
+    player = df["Player"]
+    if isinstance(player, pd.DataFrame):
+        player = player.iloc[:, 0]
+    return bool(player.astype(str).str.strip().ne("").any())
 
 
 def resolve_draft_assistant_board(
@@ -201,9 +353,7 @@ def resolve_draft_assistant_board(
         except ImportError:
             pass
 
-    if mode not in ("live_board",) and not any(
-        src.startswith("live") for src, _ in candidates
-    ):
+    if mode not in ("live_board",) and not any(src.startswith("live") for src, _ in candidates):
         try:
             from draft_room_state import get_canonical_draft_board
 

@@ -125,6 +125,9 @@ def simulator_board_context_available(session: dict[str, Any], *, ignore_live_ov
         return False
     if ignore_live_override:
         return True
+    # Active Live Draft preempts simulator as effective fantasy source.
+    if is_live_draft_in_progress(session):
+        return False
     try:
         from draft_room_state import is_live_draft_runtime_active
 
@@ -242,7 +245,11 @@ def _active_draft_label(session: dict[str, Any], ctx: dict[str, Any]) -> str:
 
 
 def _resolve_override_source(session: dict[str, Any]) -> FantasyContextSource | None:
-    """Temporary override only — user explicitly checked a workspace override box."""
+    """Temporary override only — user explicitly checked a workspace override box.
+
+    Completed Live Drafts stay effective only while the Live override is ON.
+    Simulator boards never become effective without this override.
+    """
     if live_draft_sync_enabled(session) and live_draft_context_available(session):
         return FantasyContextSource(
             SOURCE_LIVE_DRAFT, "Live Draft Room (temporary override)", origin="override"
@@ -254,25 +261,44 @@ def _resolve_override_source(session: dict[str, Any]) -> FantasyContextSource | 
     return None
 
 
-def _resolve_natural_board_source(session: dict[str, Any]) -> FantasyContextSource | None:
-    """Unsaved workspace boards when there is no Saved Active Draft (no override required)."""
-    if saved_active_draft_available(session):
+def _resolve_active_live_draft_source(session: dict[str, Any]) -> FantasyContextSource | None:
+    """In-progress / paused Live Draft automatically becomes the effective source."""
+    if not is_live_draft_in_progress(session):
         return None
-    if live_draft_context_available(session):
-        return FantasyContextSource(SOURCE_LIVE_DRAFT, "Live Draft Room", origin="natural")
-    if simulator_board_context_available(session, ignore_live_override=True):
-        return FantasyContextSource(SOURCE_SIMULATOR_BOARD, "Draft Room Simulator", origin="natural")
+    if not live_draft_context_available(session):
+        # Allow activation even before the first pick when room is in_progress/paused.
+        room = session.get("live_draft_room")
+        if not (isinstance(room, dict) and str(room.get("status") or "").strip() in ("in_progress", "paused")):
+            return None
+    return FantasyContextSource(
+        SOURCE_LIVE_DRAFT,
+        "Live Draft Room (active)",
+        origin="active_live",
+    )
+
+
+def _resolve_natural_board_source(session: dict[str, Any]) -> FantasyContextSource | None:
+    """Natural fallback boards when there is no Saved Active Draft and no override.
+
+    Simulator never auto-attaches. Completed Live Draft without override does not either.
+    Active in-progress Live Draft is handled earlier by ``_resolve_active_live_draft_source``.
+    """
+    del session  # Natural simulator/live attach removed by product rule.
     return None
 
 
 def resolve_fantasy_context_source(session: dict[str, Any]) -> FantasyContextSource:
     """Canonical priority for core fantasy + research (when Research Mode Sync is on).
 
-    1. Temporary workspace override (Live or Simulator checkbox), if enabled.
-    2. Saved Active Draft / Active League.
-    3. Current unsaved Live or Simulator board when no Active Draft exists.
-    4. Generic/default team context.
+    1. Active Live Draft (in_progress / paused) — automatic, no Override required.
+    2. Temporary workspace override (completed Live or Simulator checkbox).
+    3. Saved Active Draft / Active League.
+    4. Generic/default (no active draft).
     """
+    active_live = _resolve_active_live_draft_source(session)
+    if active_live is not None:
+        return active_live
+
     override = _resolve_override_source(session)
     if override is not None:
         return override
