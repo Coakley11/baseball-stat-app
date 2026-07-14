@@ -4232,46 +4232,53 @@ def _render_active_draft_section(
         f"{team_count} Teams | {player_n} Players · "
         f"Updated {format_archive_modified(active)}"
     )
-    # Always show the active league's origin decision so Cloud sessions can be diagnosed.
+    # Developer-only: active league origin decision dump.
     try:
-        from fantasy_league_context import get_origin_repair_decisions
+        from suite_workspace import can_show_developer_tools
 
-        active_id = str(active.get("draft_id") or "").strip()
-        decisions = get_origin_repair_decisions(session)
-        hit = next(
-            (row for row in decisions if isinstance(row, dict) and str(row.get("draft_id") or "") == active_id),
-            None,
-        )
-        if isinstance(hit, dict):
-            keys = (
-                "draft_id",
-                "draft_name",
-                "selected_draft_type",
-                "selected_reason",
-                "archive_type_before",
-                "archive_type_after",
-                "creation_origin_before",
-                "live_created_from_evidence",
-                "shared_doc_loaded",
-                "context_loaded",
-                "shared_league_created_flag",
-                "shared_created_from",
-                "context_created_from",
-                "migrated",
-                "source",
+        _show_origin_diag = can_show_developer_tools(st=st)
+    except ImportError:
+        _show_origin_diag = False
+    if _show_origin_diag:
+        try:
+            from fantasy_league_context import get_origin_repair_decisions
+
+            active_id = str(active.get("draft_id") or "").strip()
+            decisions = get_origin_repair_decisions(session)
+            hit = next(
+                (row for row in decisions if isinstance(row, dict) and str(row.get("draft_id") or "") == active_id),
+                None,
             )
-            st.code(
-                "Origin decision (active league)\n"
-                + "\n".join(f"{key}: {hit.get(key)}" for key in keys),
-                language="text",
-            )
-        else:
-            st.caption(
-                f"Origin decision missing for active draft_id=`{active_id}` "
-                f"(have {len(decisions)} decision rows in migration payload)."
-            )
-    except Exception:
-        pass
+            if isinstance(hit, dict):
+                keys = (
+                    "draft_id",
+                    "draft_name",
+                    "selected_draft_type",
+                    "selected_reason",
+                    "archive_type_before",
+                    "archive_type_after",
+                    "creation_origin_before",
+                    "live_created_from_evidence",
+                    "shared_doc_loaded",
+                    "context_loaded",
+                    "shared_league_created_flag",
+                    "shared_created_from",
+                    "context_created_from",
+                    "migrated",
+                    "source",
+                )
+                st.code(
+                    "Origin decision (active league)\n"
+                    + "\n".join(f"{key}: {hit.get(key)}" for key in keys),
+                    language="text",
+                )
+            else:
+                st.caption(
+                    f"Origin decision missing for active draft_id=`{active_id}` "
+                    f"(have {len(decisions)} decision rows in migration payload)."
+                )
+        except Exception:
+            pass
     tool1, tool2, tool3, clear_col = st.columns([1, 1, 1, 1])
     with tool1:
         if st.button(
@@ -4584,10 +4591,12 @@ def _render_saved_draft_library_page_body(
             )
 
     try:
+        from suite_workspace import can_show_developer_tools
         from suite_deploy_marker import GIT_COMMIT_SHORT, format_deploy_caption
 
-        build_line = format_deploy_caption() or f"Build `{GIT_COMMIT_SHORT}`"
-        st.caption(f"Library UI · {build_line}")
+        if can_show_developer_tools(st=st):
+            build_line = format_deploy_caption() or f"Build `{GIT_COMMIT_SHORT}`"
+            st.caption(f"Library UI · {build_line}")
     except ImportError:
         pass
     try:

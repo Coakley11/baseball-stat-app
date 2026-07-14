@@ -259,11 +259,39 @@ def get_shared_league_store() -> SharedLeagueStore:
 def set_shared_league_store(store: SharedLeagueStore | None) -> None:
     global _SHARED_STORE
     _SHARED_STORE = store
+    invalidate_shared_league_doc_cache()
+
+
+_SHARED_DOC_SOFT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_SHARED_DOC_CACHE_TTL_S = 12.0
+
+
+def invalidate_shared_league_doc_cache(league_id: str = "") -> None:
+    """Drop soft-cached shared docs (call after writes / auth switches)."""
+    lid = str(league_id or "").strip()
+    if lid:
+        _SHARED_DOC_SOFT_CACHE.pop(lid, None)
+        return
+    _SHARED_DOC_SOFT_CACHE.clear()
 
 
 def load_shared_league(league_id: str, *, store: SharedLeagueStore | None = None) -> dict[str, Any] | None:
+    import copy
+    import time
+
+    lid = str(league_id or "").strip()
+    if not lid:
+        return None
+    # Soft-cache only the default store path — explicit store overrides skip cache.
+    if store is None:
+        hit = _SHARED_DOC_SOFT_CACHE.get(lid)
+        if hit is not None and (time.monotonic() - hit[0]) < _SHARED_DOC_CACHE_TTL_S:
+            return copy.deepcopy(hit[1])
     backend = store or get_shared_league_store()
-    return backend.load(str(league_id or "").strip())
+    doc = backend.load(lid)
+    if isinstance(doc, dict) and store is None:
+        _SHARED_DOC_SOFT_CACHE[lid] = (time.monotonic(), copy.deepcopy(doc))
+    return doc
 
 
 def list_shared_league_documents(*, store: SharedLeagueStore | None = None) -> list[dict[str, Any]]:
@@ -276,7 +304,9 @@ def list_shared_league_documents(*, store: SharedLeagueStore | None = None) -> l
 
 def save_shared_league(document: dict[str, Any], *, store: SharedLeagueStore | None = None) -> dict[str, Any]:
     backend = store or get_shared_league_store()
-    return backend.save(document)
+    saved = backend.save(document)
+    invalidate_shared_league_doc_cache(str((document or {}).get("league_id") or "").strip())
+    return saved
 
 
 def _proposal_sort_key(proposal: dict[str, Any]) -> str:
@@ -695,13 +725,61 @@ def sync_context_with_shared_store(
     context: dict[str, Any],
     *,
     store: SharedLeagueStore | None = None,
+    force: bool = False,
+    allow_push: bool = False,
 ) -> dict[str, Any]:
+    """Pull shared ownership/rosters into local context.
+
+    Soft-caches per league+account so Lineup/Trade/Library paint does not
+    repeatedly hit the cloud. Pass ``force=True`` after mutations. Cloud push
+    is opt-in (``allow_push=True``) — page reads never write back.
+    """
+    import time
+
     from fantasy_league_context import upsert_league_context
-    from fantasy_workspace_team_identity import overlay_workspace_team_on_context, record_team_identity_trace
+    from fantasy_workspace_team_identity import (
+        overlay_workspace_team_on_context,
+        record_team_identity_trace,
+        session_account_identity,
+    )
 
     league_id = resolve_canonical_league_id(context)
     if not league_id:
         return context
+
+    uid = ""
+    try:
+        uid, *_rest = session_account_identity(session)
+        uid = str(uid or "").strip()
+    except Exception:
+        uid = ""
+    soft_key = f"{league_id}|{uid}"
+    soft = session.setdefault("_shared_ctx_sync_soft", {})
+    if not isinstance(soft, dict):
+        soft = {}
+        session["_shared_ctx_sync_soft"] = soft
+    now = time.monotonic()
+    prev = soft.get(soft_key) if isinstance(soft.get(soft_key), dict) else None
+    if (
+        not force
+        and prev
+        and (now - float(prev.get("t") or 0)) < _SHARED_DOC_CACHE_TTL_S
+        and isinstance(prev.get("shared"), dict)
+    ):
+        shared_cached = prev["shared"]
+        # Still merge ownership/proposals from cached shared doc (no network).
+        merged_fast = merge_shared_into_context(context, shared_cached)
+        merged_fast = overlay_workspace_team_on_context(
+            session,
+            merged_fast,
+            shared_doc=shared_cached,
+            trace_phase="sync_context_with_shared_store_soft",
+            record_trace=False,
+        )
+        if isinstance(merged_fast, dict):
+            return upsert_league_context(session, merged_fast, mark_persist_authoritative=False)
+        return context
+
     shared = load_shared_league(league_id, store=store)
     if not isinstance(shared, dict):
         return context
@@ -719,7 +797,7 @@ def sync_context_with_shared_store(
     )
     if not isinstance(merged, dict):
         merged = context
-    if roster_changed:
+    if roster_changed and allow_push:
         try:
             from fantasy_trade_roster_sync import finalize_trade_roster_persistence
 
@@ -730,6 +808,7 @@ def sync_context_with_shared_store(
             pass
         except Exception:
             pass
+    soft[soft_key] = {"t": now, "shared": copy.deepcopy(shared)}
     record_team_identity_trace(
         session,
         phase="sync_context_with_shared_store",
@@ -780,6 +859,9 @@ def push_league_context_to_shared(
             document.get("league_activity") or [],
         )
     saved = backend.save(document)
+    invalidate_shared_league_doc_cache(league_id)
+    if isinstance(session, dict):
+        session.pop("_shared_ctx_sync_soft", None)
     meta = dict(context.get("metadata") or {})
     meta["shared_revision"] = int((saved or document).get("revision") or document.get("revision") or 1)
     context["metadata"] = meta

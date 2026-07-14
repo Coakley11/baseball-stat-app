@@ -24726,7 +24726,14 @@ if active_page == "Fantasy Standings Tracker":
                 standings = _cached_standings
                 _used_standings_cache = True
                 if _use_full_league_context and active_league_context is not None:
-                    _standings_team_ctx = str(active_league_context.get("my_team_name") or "")
+                    try:
+                        from fantasy_league_team_ownership import resolve_account_fantasy_team
+
+                        _standings_team_ctx = str(
+                            resolve_account_fantasy_team(st.session_state, active_league_context) or ""
+                        ).strip() or str(active_league_context.get("my_team_name") or "")
+                    except ImportError:
+                        _standings_team_ctx = str(active_league_context.get("my_team_name") or "")
                 elif active_archive:
                     _standings_team_ctx = str(active_archive.get("team_name") or "")
                 else:
@@ -24750,7 +24757,14 @@ if active_page == "Fantasy Standings Tracker":
                         merged_current_stats,
                         normalize_name_fn=normalize_player_name_for_merge,
                     )
-                    _standings_team_ctx = str(active_league_context.get("my_team_name") or "")
+                    try:
+                        from fantasy_league_team_ownership import resolve_account_fantasy_team
+
+                        _standings_team_ctx = str(
+                            resolve_account_fantasy_team(st.session_state, active_league_context) or ""
+                        ).strip() or str(active_league_context.get("my_team_name") or "")
+                    except ImportError:
+                        _standings_team_ctx = str(active_league_context.get("my_team_name") or "")
                 elif active_archive and not _temporary_fantasy_source:
                     roster_stats = build_roster_stats_from_archive(
                         active_archive,
@@ -24758,6 +24772,17 @@ if active_page == "Fantasy Standings Tracker":
                         normalize_name_fn=normalize_player_name_for_merge,
                     )
                     _standings_team_ctx = str(active_archive.get("team_name") or "")
+                    try:
+                        if active_league_context is not None:
+                            from fantasy_league_team_ownership import resolve_account_fantasy_team
+
+                            owned = str(
+                                resolve_account_fantasy_team(st.session_state, active_league_context) or ""
+                            ).strip()
+                            if owned:
+                                _standings_team_ctx = owned
+                    except ImportError:
+                        pass
                 else:
                     roster_stats = pd.DataFrame()
                     _standings_team_ctx = (
@@ -24985,18 +25010,22 @@ if active_page == "Fantasy Lineup Assistant":
         pass
 
     try:
-        from global_fantasy_settings_state import get_active_fantasy_team
+        from fantasy_league_team_ownership import resolve_account_fantasy_team
 
-        _lineup_team_hdr = get_active_fantasy_team(st.session_state)
+        _lineup_team_hdr = resolve_account_fantasy_team(st.session_state)
+        if not _lineup_team_hdr:
+            from global_fantasy_settings_state import get_active_fantasy_team
+
+            _lineup_team_hdr = get_active_fantasy_team(st.session_state)
     except ImportError:
-        _lineup_team_hdr = str(st.session_state.get("lineup_team") or st.session_state.get("room_your_team") or "").strip()
+        try:
+            from global_fantasy_settings_state import get_active_fantasy_team
+
+            _lineup_team_hdr = get_active_fantasy_team(st.session_state)
+        except ImportError:
+            _lineup_team_hdr = str(st.session_state.get("lineup_team") or st.session_state.get("room_your_team") or "").strip()
     if _lineup_team_hdr:
-        _hdr_label = (
-            _lineup_team_hdr
-            if str(_lineup_team_hdr).lower().startswith("team ")
-            else f"Team {_lineup_team_hdr}"
-        )
-        _lineup_title = f"Fantasy Lineup Assistant — {_hdr_label}"
+        _lineup_title = f"Fantasy Lineup Assistant — {_lineup_team_hdr}"
     else:
         _lineup_title = "Fantasy Lineup Assistant / Start-Sit AI"
     render_section_header(

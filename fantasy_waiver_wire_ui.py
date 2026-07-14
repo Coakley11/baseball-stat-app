@@ -606,7 +606,15 @@ def render_waiver_wire_page(
             else:
                 st.info(message)
 
-    my_team = str(context.get("my_team_name") or "").strip()
+    my_team = ""
+    try:
+        from fantasy_league_team_ownership import resolve_account_fantasy_team
+
+        my_team = str(resolve_account_fantasy_team(session, context) or "").strip()
+    except ImportError:
+        my_team = str(context.get("my_team_name") or "").strip()
+    if not my_team:
+        my_team = str(context.get("my_team_name") or "").strip()
     if my_team:
         st.caption(f"My team: **{my_team}**")
 
@@ -643,7 +651,14 @@ def render_waiver_wire_page(
                 normalize_name_fn=normalize_name_fn,
             )
 
-    my_team = str(context.get("my_team_name") or "").strip()
+    try:
+        from fantasy_league_team_ownership import resolve_account_fantasy_team
+
+        my_team = str(resolve_account_fantasy_team(session, context) or "").strip() or my_team
+    except ImportError:
+        my_team = str(context.get("my_team_name") or "").strip() or my_team
+    if not my_team:
+        my_team = str(context.get("my_team_name") or "").strip()
     league_df = filter_roster_stats_to_league_teams(league_df, context)
     if not league_df.empty and my_team and "Team" in league_df.columns:
         my_roster = league_df[league_df["Team"].astype(str) == my_team].copy()

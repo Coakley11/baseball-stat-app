@@ -118,7 +118,17 @@ def _saved_active_league_team_info(session: dict[str, Any]) -> tuple[str, str] |
         return None
     if not isinstance(ctx, dict):
         return None
-    team = str(ctx.get("my_team_name") or "").strip()
+
+    team = ""
+    try:
+        from fantasy_league_team_ownership import resolve_account_fantasy_team
+
+        team = str(resolve_account_fantasy_team(session, ctx) or "").strip()
+    except ImportError:
+        team = ""
+    if not team:
+        team = str(ctx.get("my_team_name") or "").strip()
+
     label = str(ctx.get("display_name") or ctx.get("draft_name") or "").strip()
     archive = None
     try:
@@ -128,8 +138,16 @@ def _saved_active_league_team_info(session: dict[str, Any]) -> tuple[str, str] |
     except ImportError:
         archive = None
     if not team and isinstance(archive, dict):
-        # Prefer archive.team_name over leftover temporary Live Draft room_your_team.
-        team = str(archive.get("team_name") or "").strip()
+        # Shared leagues: never fall back to archive Team 1/2 slot names.
+        block_archive = False
+        try:
+            from fantasy_league_team_ownership import ownership_blocks_archive_team_fallback
+
+            block_archive = ownership_blocks_archive_team_fallback(ctx)
+        except ImportError:
+            block_archive = False
+        if not block_archive:
+            team = str(archive.get("team_name") or "").strip()
     if not label and isinstance(archive, dict):
         label = str(archive.get("draft_name") or "").strip()
     if not team:

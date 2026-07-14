@@ -62,6 +62,10 @@ class StaleTeamHeaderTests(unittest.TestCase):
         from global_fantasy_settings_state import get_active_fantasy_team
 
         session: dict = {
+            "_suite_auth_user_id": "user:daniel",
+            "_suite_auth_external_id": "daniel",
+            "_suite_owned_workspace_id": "daniel",
+            "_suite_active_workspace_id": "daniel",
             "active_draft_archive_id": "fresh10",
             "room_your_team": "Team X",
             "live_draft_my_team": "Team X",
@@ -82,6 +86,14 @@ class StaleTeamHeaderTests(unittest.TestCase):
                 "context_type": CONTEXT_TYPE_REAL_LEAGUE,
                 "display_name": "Fresh 10-Pick Live Test",
                 "my_team_name": "Team 1",
+                "metadata": {"league_id": "league:fresh10"},
+                "team_ownership": {
+                    "Team 1": {
+                        "user_id": "user:daniel",
+                        "display_name": "Daniel",
+                        "claim_status": "claimed",
+                    }
+                },
                 "league_rosters": {"Team 1": {"players": []}, "Team 2": {"players": []}},
             },
         )
@@ -94,6 +106,12 @@ class StaleTeamHeaderTests(unittest.TestCase):
         ), patch(
             "draft_room_context.is_multiplayer_draft_active",
             return_value=False,
+        ), patch(
+            "fantasy_shared_league_store.sync_context_with_shared_store",
+            side_effect=lambda _s, ctx, **_k: ctx,
+        ), patch(
+            "fantasy_league_team_ownership.upsert_league_context",
+            side_effect=lambda _s, ctx, **_k: ctx,
         ):
             self.assertEqual(get_active_fantasy_team(session), "Team 1")
             self.assertEqual(session.get("room_your_team"), "Team 1")

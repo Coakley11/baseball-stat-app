@@ -175,7 +175,7 @@ def _load_mutable_context(session: dict[str, Any]) -> tuple[dict[str, Any] | Non
     try:
         from fantasy_shared_league_store import sync_context_with_shared_store
 
-        context = sync_context_with_shared_store(session, context)
+        context = sync_context_with_shared_store(session, context, force=True)
     except ImportError:
         context = get_league_context(session, league_context_id)
     if not context:

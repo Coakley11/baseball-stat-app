@@ -207,8 +207,7 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
         if stranded:
             st.info(
                 "A foreign shared-league draft was removed from this account's library. "
-                "If you were invited, check **Invite flow diagnostic** for pending invites "
-                "from the canonical shared league document."
+                "If you were invited, ask the commissioner to re-send the invite, then refresh this page."
             )
         return False
 
@@ -428,10 +427,10 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
     except ImportError:
         pass
     if not is_league_commissioner(context, uid):
-        st.warning(
-            "Invite controls are hidden because `is_league_commissioner` failed after "
-            "`commissioner_invite_context` returned a context. See **Invite panel diagnostic** below."
-        )
+            st.warning(
+                "Invite controls are hidden because you are not recognized as the commissioner "
+                "for this league. Sign in with the commissioner account or open Invite panel diagnostic in Developer Mode."
+            )
         return False
 
     league_name = str(context.get("league_name") or context.get("display_name") or "Shared league").strip()
@@ -451,11 +450,21 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
         push_ok = session.get("_last_invite_shared_push_ok")
         push_err = str(session.get("_last_invite_shared_push_error") or "").strip()
         if push_ok is False or push_err:
-            st.warning(
-                f"Shared league push failed or incomplete. "
-                f"ok={push_ok} · error `{push_err or '—'}`"
-            )
-    if submit_snap.get("updated_at"):
+            st.warning("Invite saved, but shared-league sync failed. Try sending again.")
+            try:
+                from suite_workspace import can_show_developer_tools
+
+                if can_show_developer_tools(st=st):
+                    st.caption(f"ok={push_ok} · error `{push_err or '—'}`")
+            except ImportError:
+                pass
+    try:
+        from suite_workspace import can_show_developer_tools
+
+        _show_invite_submit_diag = can_show_developer_tools(st=st)
+    except ImportError:
+        _show_invite_submit_diag = False
+    if _show_invite_submit_diag and submit_snap.get("updated_at"):
         st.caption(
             f"Last submit: button_clicked={submit_snap.get('button_clicked')} · "
             f"create_called={submit_snap.get('create_league_invite_called')} · "

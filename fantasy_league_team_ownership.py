@@ -528,3 +528,37 @@ def resolve_trade_team_for_session(context: dict[str, Any] | None, session: dict
     if isinstance(ctx, dict):
         return str(ctx.get("my_team_name") or "").strip()
     return ""
+
+
+def resolve_account_fantasy_team(
+    session: dict[str, Any] | None,
+    context: dict[str, Any] | None = None,
+) -> str:
+    """Single source of truth for 'your team' on Fantasy analysis pages.
+
+    Prefer authenticated shared-league ownership over Active Draft archive
+    ``team_name``, lineup cache, or temporary Live Draft aliases.
+    """
+    ctx = context
+    if ctx is None and isinstance(session, dict):
+        try:
+            ctx = get_active_league_context(session)
+        except Exception:
+            ctx = None
+    return resolve_trade_team_for_session(ctx, session)
+
+
+def context_is_shared_league(context: dict[str, Any] | None) -> bool:
+    if not isinstance(context, dict):
+        return False
+    return bool(str(resolve_canonical_league_id(context) or "").strip())
+
+
+def ownership_blocks_archive_team_fallback(context: dict[str, Any] | None) -> bool:
+    """True when archive Team 1/2 names must not override ownership identity."""
+    if not isinstance(context, dict):
+        return False
+    ownership = get_team_ownership(context)
+    if any(ownership_is_firm_claim(record) for record in ownership.values()):
+        return True
+    return context_is_shared_league(context)

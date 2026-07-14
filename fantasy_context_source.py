@@ -446,9 +446,24 @@ def _context_team_name(session: dict[str, Any]) -> str:
     if source.kind == SOURCE_ACTIVE_DRAFT:
         saved = _get_saved_active_league_context(session)
         if isinstance(saved, dict):
+            try:
+                from fantasy_league_team_ownership import resolve_account_fantasy_team
+
+                owned = str(resolve_account_fantasy_team(session, saved) or "").strip()
+                if owned:
+                    return owned
+            except ImportError:
+                pass
             team = str(saved.get("my_team_name") or "").strip()
             if team:
                 return team
+            try:
+                from fantasy_league_team_ownership import ownership_blocks_archive_team_fallback
+
+                if ownership_blocks_archive_team_fallback(saved):
+                    return ""
+            except ImportError:
+                pass
         try:
             from draft_archive_state import get_active_draft_archive
 
@@ -468,11 +483,27 @@ def _context_team_name(session: dict[str, Any]) -> str:
 
 
 def _restore_saved_context_team(session: dict[str, Any], context: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Fill blank my_team after shared-league overlay wipe using archive / session fallbacks."""
+    """Fill blank my_team after shared-league overlay wipe using ownership, never archive Team 1/2."""
     if not isinstance(context, dict):
         return context
     if str(context.get("my_team_name") or "").strip():
         return context
+    try:
+        from fantasy_league_team_ownership import (
+            ownership_blocks_archive_team_fallback,
+            resolve_account_fantasy_team,
+        )
+
+        owned = str(resolve_account_fantasy_team(session, context) or "").strip()
+        if owned:
+            out = dict(context)
+            out["my_team_name"] = owned
+            return out
+        if ownership_blocks_archive_team_fallback(context):
+            return context
+    except ImportError:
+        pass
+
     team = ""
     try:
         from draft_archive_state import get_active_draft_archive
@@ -1062,8 +1093,19 @@ def resolve_fantasy_workflow_source_descriptor(session: dict[str, Any]) -> dict[
         canonical_league_id = ""
 
     my_team_name = str(context.get("my_team_name") or "").strip()
-    if not my_team_name and isinstance(archive, dict):
-        my_team_name = str(archive.get("team_name") or "").strip()
+    if not my_team_name:
+        try:
+            from fantasy_league_team_ownership import (
+                ownership_blocks_archive_team_fallback,
+                resolve_account_fantasy_team,
+            )
+
+            my_team_name = str(resolve_account_fantasy_team(session, context) or "").strip()
+            if not my_team_name and not ownership_blocks_archive_team_fallback(context) and isinstance(archive, dict):
+                my_team_name = str(archive.get("team_name") or "").strip()
+        except ImportError:
+            if isinstance(archive, dict):
+                my_team_name = str(archive.get("team_name") or "").strip()
     if not my_team_name and source.kind in (SOURCE_SIMULATOR_BOARD, SOURCE_LIVE_DRAFT):
         my_team_name = _resolve_my_team_for_ephemeral(session, source=source)
     if not my_team_name:

@@ -75,7 +75,12 @@ def render_team_claim_panel(
         st.markdown(f"- **{team}** — {badge}")
 
     if not needs_team_assignment(context):
-        owned = owned_team_for_user(context)
+        try:
+            from fantasy_league_team_ownership import resolve_account_fantasy_team
+
+            owned = resolve_account_fantasy_team(session, context)
+        except ImportError:
+            owned = owned_team_for_user(context)
         if owned:
             st.success(f"Your account owns **{owned}** in this league.")
         return bool(owned)
