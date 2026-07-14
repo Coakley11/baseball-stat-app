@@ -598,7 +598,28 @@ def claim_user_page_ownership(st: Any, app_id: str, page: str) -> None:
         pass
     # Own the skip target after reconcile clears AMI leftovers — prevents a
     # workspace blob's Historical Explorer skip from winning on the next apply.
-    ss["_skip_page_restore_for"] = selected
+    try:
+        from nav_page_trace import assign_nav_key
+
+        assign_nav_key(
+            ss,
+            "_skip_page_restore_for",
+            selected,
+            function="claim_user_page_ownership",
+            reason="sidebar ownership",
+            st=st,
+        )
+        assign_nav_key(
+            ss,
+            SESSION_USER_OWNED_PAGE_KEY,
+            selected,
+            function="claim_user_page_ownership",
+            reason="sidebar ownership",
+            st=st,
+        )
+    except ImportError:
+        ss["_skip_page_restore_for"] = selected
+        ss[SESSION_USER_OWNED_PAGE_KEY] = selected
     ss.pop("_suite_cloud_target_page", None)
 
 

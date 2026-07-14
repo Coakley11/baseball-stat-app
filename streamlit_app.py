@@ -12447,6 +12447,9 @@ def get_sidebar_page_label(page_key: str) -> str:
 def normalize_page_key(value) -> str:
     """Map sidebar/session values back to canonical page keys."""
     key = str(value or "").strip()
+    if not key:
+        # Empty must not collapse to Historical Explorer — that poisoned skip/restore checks.
+        return ""
     key = _PAGE_LEGACY_ALIASES.get(key, key)
     if key in _PAGE_OPTION_SET:
         return key
@@ -13123,10 +13126,52 @@ def _consume_scheduled_navigation():
         # sidebar align and can trap the UI on Historical Explorer after a click.
         current = get_sidebar_page_value(st.session_state.get("active_page"))
         if target == current:
+            try:
+                from nav_page_trace import log_nav_event
+
+                log_nav_event(
+                    st.session_state,
+                    function="_consume_scheduled_navigation",
+                    reason="ignore same-page schedule",
+                    key="_navigate_to_page",
+                    previous=target,
+                    new=None,
+                    st=st,
+                )
+            except ImportError:
+                pass
             return None
-        st.session_state[MAIN_SIDEBAR_PAGE_KEY] = target
-        st.session_state["active_page"] = target
-        st.session_state["_skip_page_restore_for"] = target
+        try:
+            from nav_page_trace import assign_nav_key
+
+            assign_nav_key(
+                st.session_state,
+                MAIN_SIDEBAR_PAGE_KEY,
+                target,
+                function="_consume_scheduled_navigation",
+                reason="consume scheduled page",
+                st=st,
+            )
+            assign_nav_key(
+                st.session_state,
+                "active_page",
+                target,
+                function="_consume_scheduled_navigation",
+                reason="consume scheduled page",
+                st=st,
+            )
+            assign_nav_key(
+                st.session_state,
+                "_skip_page_restore_for",
+                target,
+                function="_consume_scheduled_navigation",
+                reason="consume scheduled page",
+                st=st,
+            )
+        except ImportError:
+            st.session_state[MAIN_SIDEBAR_PAGE_KEY] = target
+            st.session_state["active_page"] = target
+            st.session_state["_skip_page_restore_for"] = target
         st.session_state["_suite_page_user_nav"] = True
         st.session_state["_suite_nav_consumed_this_run"] = True
         st.session_state["_suite_nav_consumed_target"] = target
@@ -13135,6 +13180,13 @@ def _consume_scheduled_navigation():
 
 def render_scheduled_navigation_diagnostics() -> None:
     """Developer Mode: visible end-to-end navigation trace for button/sidebar debugging."""
+    try:
+        from nav_page_trace import is_nav_page_trace_enabled, render_nav_assignment_trace
+
+        if is_nav_page_trace_enabled(st.session_state, st):
+            render_nav_assignment_trace(st)
+    except ImportError:
+        pass
     if pp.is_screenshot_mode(st) or not developer_mode_enabled():
         return
     with st.sidebar.expander("Navigation diagnostics", expanded=True):
@@ -13161,9 +13213,11 @@ def render_scheduled_navigation_diagnostics() -> None:
             "main_sidebar_page": st.session_state.get(MAIN_SIDEBAR_PAGE_KEY),
             "final_active_page": st.session_state.get("active_page"),
             "nav_phase": st.session_state.get("_suite_sidebar_nav_phase"),
+            "owned_page": st.session_state.get("_suite_user_owned_page"),
+            "pending_resume": st.session_state.get("_suite_pending_resume_query"),
         }
         st.dataframe(
-            pd.DataFrame([{"key": k, "value": v} for k, v in rows.items()]),
+            pd.DataFrame([{"key": k, "value": str(v)} for k, v in rows.items()]),
             width="stretch",
             hide_index=True,
         )
@@ -13860,14 +13914,48 @@ def _on_resume_live_draft_sidebar() -> None:
 def _on_sidebar_page_change() -> None:
     """Manual sidebar navigation wins over cloud page restore in the same run."""
     pick = normalize_page_key(st.session_state.get(MAIN_SIDEBAR_PAGE_KEY))
-    st.session_state["active_page"] = pick
+    try:
+        from nav_page_trace import assign_nav_key, begin_nav_trace_run, note_nav_snapshot
+
+        begin_nav_trace_run(st.session_state, st=st, phase="sidebar_on_change")
+        assign_nav_key(
+            st.session_state,
+            "active_page",
+            pick,
+            function="_on_sidebar_page_change",
+            reason="sidebar radio on_change",
+            st=st,
+        )
+        assign_nav_key(
+            st.session_state,
+            "_navigate_to_page",
+            None,
+            function="_on_sidebar_page_change",
+            reason="clear scheduled nav on sidebar click",
+            st=st,
+        )
+        assign_nav_key(
+            st.session_state,
+            "_skip_page_restore_for",
+            pick,
+            function="_on_sidebar_page_change",
+            reason="sidebar owns skip target",
+            st=st,
+        )
+        note_nav_snapshot(
+            st.session_state,
+            function="_on_sidebar_page_change",
+            reason="after_sidebar_click_clears",
+            st=st,
+        )
+    except ImportError:
+        st.session_state["active_page"] = pick
+        st.session_state.pop("_navigate_to_page", None)
+        st.session_state["_skip_page_restore_for"] = pick
     # Sidebar click beats any leftover scheduled/consumed navigation from restore.
-    st.session_state.pop("_navigate_to_page", None)
     st.session_state.pop("_pending_active_page", None)
     st.session_state.pop("_suite_nav_consumed_target", None)
     st.session_state.pop("_suite_nav_consumed_this_run", None)
-    # Do not keep a stale skip aiming at another page (common on long-lived Daniel blob).
-    st.session_state["_skip_page_restore_for"] = pick
     try:
         from draft_lab_resume import cancel_draft_lab_resume_navigation
 
@@ -13924,8 +14012,26 @@ st.session_state.pop("_suite_nav_consumed_target", None)
 st.session_state.pop("_suite_nav_consumed_this_run", None)
 st.session_state["_suite_nav_active_page_before"] = st.session_state.get("active_page")
 st.session_state["_suite_nav_scheduled_target_before"] = st.session_state.get("_navigate_to_page")
+try:
+    from nav_page_trace import begin_nav_trace_run, note_nav_snapshot
+
+    begin_nav_trace_run(st.session_state, st=st, phase="run_start_before_consume")
+except ImportError:
+    pass
 _record_sidebar_nav_trace("run_start_before_consume")
 _consumed_nav_target = _consume_scheduled_navigation()
+try:
+    from nav_page_trace import note_nav_snapshot
+
+    note_nav_snapshot(
+        st.session_state,
+        function="streamlit_app",
+        reason="after_consume_scheduled_navigation",
+        st=st,
+        consumed_target=_consumed_nav_target,
+    )
+except ImportError:
+    pass
 st.session_state["_suite_post_consume_active_page"] = st.session_state.get("active_page")
 _record_sidebar_nav_trace(
     "after_consume_scheduled_navigation",
@@ -13956,6 +14062,17 @@ try:
 
     prepare_baseball_workspace(st)
 except Exception:
+    pass
+try:
+    from nav_page_trace import note_nav_snapshot
+
+    note_nav_snapshot(
+        st.session_state,
+        function="streamlit_app",
+        reason="after_prepare_baseball_workspace",
+        st=st,
+    )
+except ImportError:
     pass
 try:
     from suite_workspace import sync_developer_mode_widget
@@ -14130,14 +14247,53 @@ _selected_page = st.sidebar.radio(
     format_func=page_option_label,
     on_change=_on_sidebar_page_change,
 )
-st.session_state["active_page"] = normalize_page_key(_selected_page)
-active_page = st.session_state["active_page"]
+try:
+    from nav_page_trace import assign_nav_key, note_nav_snapshot, resolve_body_page
+
+    assign_nav_key(
+        st.session_state,
+        "active_page",
+        normalize_page_key(_selected_page),
+        function="streamlit_app.after_sidebar_radio",
+        reason="radio return value",
+        st=st,
+    )
+    note_nav_snapshot(
+        st.session_state,
+        function="streamlit_app.after_sidebar_radio",
+        reason="before_body_resolve",
+        st=st,
+        radio_selected=_selected_page,
+    )
+    active_page = resolve_body_page(
+        st.session_state,
+        radio_selected=_selected_page,
+        normalize_page_key=normalize_page_key,
+        function="streamlit_app.resolve_body_page",
+        st=st,
+    )
+except ImportError:
+    st.session_state["active_page"] = normalize_page_key(_selected_page)
+    active_page = st.session_state["active_page"]
 try:
     from hof_case_resume import finalize_hof_case_resume_if_ready
 
     finalize_hof_case_resume_if_ready(st)
 except ImportError:
     pass
+# Re-read after resume finalizers; prefer sidebar/owned when they diverge.
+try:
+    from nav_page_trace import resolve_body_page
+
+    active_page = resolve_body_page(
+        st.session_state,
+        radio_selected=_selected_page,
+        normalize_page_key=normalize_page_key,
+        function="streamlit_app.resolve_body_page_post_finalize",
+        st=st,
+    )
+except ImportError:
+    active_page = normalize_page_key(st.session_state.get("active_page") or _selected_page)
 try:
     from shared_draft_context import is_draft_sync_page, prepare_shared_draft_context
 
@@ -14285,6 +14441,26 @@ _record_sidebar_nav_trace(
     active_page_after=active_page,
     page_overwrite_source=st.session_state.get("_suite_page_overwrite_source") or "",
 )
+try:
+    from nav_page_trace import note_nav_snapshot, resolve_body_page
+
+    # Last chance before page-body blocks — catch any post-radio mutators.
+    active_page = resolve_body_page(
+        st.session_state,
+        radio_selected=_selected_page,
+        normalize_page_key=normalize_page_key,
+        function="streamlit_app.resolve_body_page_pre_body",
+        st=st,
+    )
+    note_nav_snapshot(
+        st.session_state,
+        function="streamlit_app",
+        reason="nav_final_pre_body",
+        st=st,
+        body_active_page=active_page,
+    )
+except ImportError:
+    pass
 
 from baseball_ami_sidebar import render_baseball_insight_sidebar
 

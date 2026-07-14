@@ -768,9 +768,30 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         except ImportError:
             pass
         try:
-            ss[key] = copy.deepcopy(val)
+            new_val = copy.deepcopy(val)
         except Exception:
-            ss[key] = val
+            new_val = val
+        if key in (
+            "active_page",
+            "main_sidebar_page",
+            "_skip_page_restore_for",
+            "_navigate_to_page",
+        ):
+            try:
+                from nav_page_trace import assign_nav_key
+
+                assign_nav_key(
+                    ss,
+                    key,
+                    new_val,
+                    function="apply_baseball_disk_state.copy_blob_key",
+                    reason=f"workspace blob restore key={key}",
+                    st=st,
+                )
+            except ImportError:
+                ss[key] = new_val
+        else:
+            ss[key] = new_val
 
     try:
         from workflow_persist_guard import merge_protected_workflow_on_restore
@@ -781,6 +802,20 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
 
     blob_page = str(state.get("active_page") or "").strip()
     session_page_after_blob = str(ss.get("active_page") or "").strip()
+    try:
+        from nav_page_trace import note_nav_snapshot
+
+        note_nav_snapshot(
+            ss,
+            function="apply_baseball_disk_state",
+            reason="after_blob_key_copy",
+            st=st,
+            blob_page=blob_page,
+            pre_restore_session_page=pre_restore_session_page,
+            pre_restore_user_nav=pre_restore_user_nav,
+        )
+    except ImportError:
+        pass
     last_persisted = str(ss.get("_suite_last_persisted_page") or "").strip()
     auth_preserve_page = ""
     owned_page = ""
@@ -903,8 +938,46 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         page_actually_changed = active != pre_restore_session_page
         if page_actually_changed:
             _clear_page_widget_keys(ss, active)
-        ss["active_page"] = active
-        ss["main_sidebar_page"] = active
+        try:
+            from nav_page_trace import assign_nav_key, log_nav_event
+
+            assign_nav_key(
+                ss,
+                "active_page",
+                active,
+                function="apply_baseball_disk_state.finalize",
+                reason=f"overwrite_source={overwrite_source}",
+                st=st,
+            )
+            assign_nav_key(
+                ss,
+                "main_sidebar_page",
+                active,
+                function="apply_baseball_disk_state.finalize",
+                reason=f"overwrite_source={overwrite_source}",
+                st=st,
+            )
+            log_nav_event(
+                ss,
+                function="apply_baseball_disk_state.finalize",
+                reason="page_decision",
+                key="resume_page",
+                previous=pre_restore_session_page,
+                new=active,
+                extra={
+                    "overwrite_source": overwrite_source,
+                    "blob_page": blob_page,
+                    "preferred_page": preferred_page,
+                    "owned_page": owned_page,
+                    "skip_for": skip_for,
+                    "resume_from_skip_only": resume_from_skip_only,
+                    "consumed_target": consumed_target,
+                },
+                st=st,
+            )
+        except ImportError:
+            ss["active_page"] = active
+            ss["main_sidebar_page"] = active
         pending_nav = str(ss.get("_navigate_to_page") or "").strip()
         # Keep a real redirect schedule (even after we mirror it into active). Do not leave a
         # sticky same-page schedule from ordinary restore — that re-forces the old page on
@@ -918,8 +991,32 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         if pending_nav and (pending_nav != active or _keep_scheduled):
             pass
         else:
-            ss.pop("_navigate_to_page", None)
-        ss["_suite_last_persisted_page"] = active
+            try:
+                from nav_page_trace import assign_nav_key
+
+                assign_nav_key(
+                    ss,
+                    "_navigate_to_page",
+                    None,
+                    function="apply_baseball_disk_state.finalize",
+                    reason="clear sticky same-page navigate",
+                    st=st,
+                )
+            except ImportError:
+                ss.pop("_navigate_to_page", None)
+        try:
+            from nav_page_trace import assign_nav_key
+
+            assign_nav_key(
+                ss,
+                "_suite_last_persisted_page",
+                active,
+                function="apply_baseball_disk_state.finalize",
+                reason=f"overwrite_source={overwrite_source}",
+                st=st,
+            )
+        except ImportError:
+            ss["_suite_last_persisted_page"] = active
         ss.pop("_suite_cloud_target_page", None)
         if page_actually_changed:
             try:

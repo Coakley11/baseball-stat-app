@@ -1569,9 +1569,34 @@ def _maybe_restore_page_from_cloud_blob(session: dict[str, Any], cloud_state: di
     cloud_page = str(cloud_state.get("active_page") or "").strip()
     if not cloud_page or cloud_page in _DEFAULT_STARTUP_PAGES:
         return ""
-    session["active_page"] = cloud_page
-    session["main_sidebar_page"] = cloud_page
-    session["_suite_last_persisted_page"] = cloud_page
+    try:
+        from nav_page_trace import assign_nav_key
+
+        assign_nav_key(
+            session,
+            "active_page",
+            cloud_page,
+            function="_maybe_restore_page_from_cloud_blob",
+            reason="cloud_workflow_hydration",
+        )
+        assign_nav_key(
+            session,
+            "main_sidebar_page",
+            cloud_page,
+            function="_maybe_restore_page_from_cloud_blob",
+            reason="cloud_workflow_hydration",
+        )
+        assign_nav_key(
+            session,
+            "_suite_last_persisted_page",
+            cloud_page,
+            function="_maybe_restore_page_from_cloud_blob",
+            reason="cloud_workflow_hydration",
+        )
+    except ImportError:
+        session["active_page"] = cloud_page
+        session["main_sidebar_page"] = cloud_page
+        session["_suite_last_persisted_page"] = cloud_page
     session["_suite_page_overwrite_source"] = "cloud_workflow_hydration"
     return cloud_page
 

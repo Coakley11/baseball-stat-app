@@ -390,10 +390,38 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
                     section=str(st.session_state.get("_suite_resume_draft_section") or ""),
                 )
             else:
-                st.session_state["_navigate_to_page"] = target_page
+                try:
+                    from nav_page_trace import assign_nav_key
+
+                    assign_nav_key(
+                        st.session_state,
+                        "_navigate_to_page",
+                        target_page,
+                        function="suite_resume_launch._apply_baseball",
+                        reason=f"resume={resume or page}",
+                        st=st,
+                    )
+                    assign_nav_key(
+                        st.session_state,
+                        "_skip_page_restore_for",
+                        target_page,
+                        function="suite_resume_launch._apply_baseball",
+                        reason=f"resume={resume or page}",
+                        st=st,
+                    )
+                    assign_nav_key(
+                        st.session_state,
+                        "active_page",
+                        target_page,
+                        function="suite_resume_launch._apply_baseball",
+                        reason=f"resume={resume or page}",
+                        st=st,
+                    )
+                except ImportError:
+                    st.session_state["_navigate_to_page"] = target_page
+                    st.session_state["_skip_page_restore_for"] = target_page
+                    st.session_state["active_page"] = target_page
                 st.session_state["_suite_page_user_nav"] = True
-                st.session_state["_skip_page_restore_for"] = target_page
-                st.session_state["active_page"] = target_page
         except ImportError:
             st.session_state["_navigate_to_page"] = target_page
             st.session_state["_suite_page_user_nav"] = True
