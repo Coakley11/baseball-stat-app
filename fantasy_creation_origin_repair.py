@@ -71,6 +71,10 @@ def repair_incorrect_creation_origin(
             patched = dict(row)
             patched["draft_type"] = target_draft_type
             patched["creation_origin"] = origin
+            if is_import:
+                patched.pop("shared_league_created", None)
+            elif not is_import:
+                patched["shared_league_created"] = True
             entries[i] = patched
             trace["archive_updated"] = True
             break

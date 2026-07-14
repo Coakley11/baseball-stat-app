@@ -401,14 +401,21 @@ def resolve_draft_type_display(
         except Exception:
             ctx = None
     shared_doc = None
+    league_id = ""
     if isinstance(ctx, dict):
         try:
             from fantasy_league_identity import resolve_canonical_league_id
-            from fantasy_shared_league_store import load_shared_league
 
             league_id = str(resolve_canonical_league_id(ctx) or "").strip()
-            if league_id:
-                shared_doc = load_shared_league(league_id)
+        except ImportError:
+            league_id = ""
+    if not league_id:
+        league_id = str(entry.get("canonical_league_id") or "").strip()
+    if league_id:
+        try:
+            from fantasy_shared_league_store import load_shared_league
+
+            shared_doc = load_shared_league(league_id)
         except ImportError:
             shared_doc = None
     expected = resolve_archive_draft_type_from_origin(

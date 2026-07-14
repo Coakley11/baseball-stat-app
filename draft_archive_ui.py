@@ -4140,11 +4140,56 @@ def _render_active_draft_section(
     player_n = archive_my_team_player_count(active, context=context)
     league_line = _format_league_matchup_label(context, active, session=session)
     st.markdown(f"**{title}** — {league_line}")
+    origin_label = resolve_draft_type_display(session, active, context=context)
     st.caption(
-        f"{resolve_draft_type_display(session, active, context=context)} | "
+        f"{origin_label} | "
         f"{team_count} Teams | {player_n} Players · "
         f"Updated {format_archive_modified(active)}"
     )
+    # Always show the active league's origin decision so Cloud sessions can be diagnosed.
+    try:
+        from fantasy_league_context import ORIGIN_REPAIR_DECISIONS_KEY
+
+        active_id = str(active.get("draft_id") or "").strip()
+        decisions = session.get(ORIGIN_REPAIR_DECISIONS_KEY) or []
+        hit = next(
+            (row for row in decisions if isinstance(row, dict) and str(row.get("draft_id") or "") == active_id),
+            None,
+        )
+        if not isinstance(hit, dict):
+            from fantasy_league_context import evaluate_origin_decisions_for_visible_archives
+
+            evaluate_origin_decisions_for_visible_archives(session)
+            decisions = session.get(ORIGIN_REPAIR_DECISIONS_KEY) or []
+            hit = next(
+                (row for row in decisions if isinstance(row, dict) and str(row.get("draft_id") or "") == active_id),
+                None,
+            )
+        if isinstance(hit, dict):
+            keys = (
+                "draft_id",
+                "draft_name",
+                "selected_draft_type",
+                "selected_reason",
+                "archive_type_before",
+                "archive_type_after",
+                "creation_origin_before",
+                "live_created_from_evidence",
+                "shared_doc_loaded",
+                "context_loaded",
+                "shared_league_created_flag",
+                "shared_created_from",
+                "context_created_from",
+                "migrated",
+                "source",
+            )
+            st.code(
+                "Origin decision (active league)\n"
+                + "\n".join(f"{key}: {hit.get(key)}" for key in keys),
+                language="text",
+            )
+    except Exception:
+        pass
     tool1, tool2, tool3, clear_col = st.columns([1, 1, 1, 1])
     with tool1:
         if st.button(
@@ -4529,6 +4574,17 @@ def _render_saved_draft_library_page_body(
             mark_library_dirty(session, reason="post_shared_league_library_sync")
         repair_trace = run_gated_library_repairs(session, user_mutated=False)
         session["_library_repair_last_trace"] = dict(repair_trace or {})
+        # Always evaluate/repair origin for visible cards — gated repair can skip on warm renders.
+        try:
+            from fantasy_league_context import (
+                evaluate_origin_decisions_for_visible_archives,
+                repair_archive_draft_types_from_contexts,
+            )
+
+            repair_archive_draft_types_from_contexts(session)
+            evaluate_origin_decisions_for_visible_archives(session)
+        except ImportError:
+            pass
         prune_invisible_shared_league_state(session)
         try:
             from workflow_persist_guard import restore_active_draft_archive_selection

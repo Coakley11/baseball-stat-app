@@ -220,6 +220,31 @@ class CreationOriginRepairTests(unittest.TestCase):
         self.assertEqual(entry["creation_origin"], CREATION_ORIGIN_LIVE_DRAFT_ROOM)
         self.assertEqual(draft_type_display(entry), "Live Draft")
 
+    def test_shared_league_created_flag_overrides_poisoned_import_origin(self) -> None:
+        draft_id = "sharedflag01"
+        archive = {
+            "draft_id": draft_id,
+            "draft_type": DRAFT_TYPE_IMPORTED,
+            "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+            "shared_league_created": True,
+            "draft_name": "Flagged Live Shared League",
+        }
+        context = {
+            "context_type": "real_league",
+            "source": "imported_draft",
+            "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+            "metadata": {
+                "source_draft_id": draft_id,
+                "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+                "created_from": "imported_draft",
+            },
+        }
+        draft_type, reason, _ = resolve_archive_draft_type_with_reason(
+            context=context, archive_entry=archive
+        )
+        self.assertEqual(draft_type, DRAFT_TYPE_LIVE)
+        self.assertEqual(reason, "poisoned_import_origin_overridden_by_live_created_from")
+
     def test_display_resolves_live_even_if_archive_row_stale(self) -> None:
         from draft_archive_state import resolve_draft_type_display
 

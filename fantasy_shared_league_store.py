@@ -68,16 +68,29 @@ def shared_league_document_from_context(
         DRAFT_TYPE_LIVE = "live_draft_room"
         DRAFT_TYPE_IMPORTED = "imported_draft"
     creation_origin = str(meta.get("creation_origin") or "").strip()
+    existing_meta = dict((existing or {}).get("metadata") or {}) if isinstance(existing, dict) else {}
+    preexisting_created_from = str(
+        meta.get("created_from")
+        or (existing or {}).get("created_from")
+        or existing_meta.get("created_from")
+        or ""
+    ).strip()
+    # Never let a poisoned import resolve wipe Live Draft provenance on push.
+    if preexisting_created_from == "live_draft" or str(
+        (existing or {}).get("source_room_code") or existing_meta.get("source_room_code") or meta.get("source_room_code") or ""
+    ).strip():
+        draft_type = DRAFT_TYPE_LIVE
     if draft_type == DRAFT_TYPE_LIVE:
         created_from = "live_draft"
         source = "live_draft_room"
         source_draft_type = "live_draft_room"
-        if not creation_origin:
-            try:
-                from fantasy_league_context import CREATION_ORIGIN_LIVE_DRAFT_ROOM
+        try:
+            from fantasy_league_context import CREATION_ORIGIN_LIVE_DRAFT_ROOM, CREATION_ORIGIN_VALIDATED_IMPORT
 
+            if not creation_origin or creation_origin == CREATION_ORIGIN_VALIDATED_IMPORT:
                 creation_origin = CREATION_ORIGIN_LIVE_DRAFT_ROOM
-            except ImportError:
+        except ImportError:
+            if not creation_origin or creation_origin == "validated_import":
                 creation_origin = "live_draft_room"
     elif draft_type == DRAFT_TYPE_IMPORTED:
         created_from = str(meta.get("created_from") or "imported_draft").strip() or "imported_draft"
@@ -94,6 +107,18 @@ def shared_league_document_from_context(
         source = str(context.get("source") or meta.get("source") or "").strip()
         created_from = str(meta.get("created_from") or "").strip()
         source_draft_type = str(meta.get("source_draft_type") or source or "").strip()
+    room_code = str(
+        meta.get("source_room_code")
+        or existing_meta.get("source_room_code")
+        or (existing or {}).get("source_room_code")
+        or ""
+    ).strip()
+    draft_results = (
+        meta.get("draft_results")
+        or context.get("draft_results")
+        or existing_meta.get("draft_results")
+        or (existing or {}).get("draft_results")
+    )
     metadata_out = {
         "created_from": created_from,
         "source_draft_type": source_draft_type,
@@ -101,7 +126,11 @@ def shared_league_document_from_context(
     }
     if creation_origin:
         metadata_out["creation_origin"] = creation_origin
-    return {
+    if room_code:
+        metadata_out["source_room_code"] = room_code
+    if isinstance(draft_results, list) and draft_results:
+        metadata_out["draft_results"] = copy.deepcopy(draft_results)
+    document = {
         "schema_version": 1,
         "league_id": league_id,
         "draft_fingerprint": fp,
@@ -122,6 +151,11 @@ def shared_league_document_from_context(
         "league_invites": copy.deepcopy(invites),
         "league_activity": copy.deepcopy(activity),
     }
+    if room_code:
+        document["source_room_code"] = room_code
+    if isinstance(draft_results, list) and draft_results:
+        document["draft_results"] = copy.deepcopy(draft_results)
+    return document
 
 
 @runtime_checkable
