@@ -498,6 +498,30 @@ def resolve_current_account_team_for_live_draft_and_league(
     return resolved
 
 
+# Bound to a Streamlit selectbox on Live Draft Room — cannot be written after widget render.
+_LIVE_DRAFT_MY_TEAM_WIDGET_KEY = "live_draft_my_team"
+
+
+def _set_session_key_unless_widget_locked(
+    session: dict[str, Any],
+    key: str,
+    value: Any,
+) -> str:
+    """Set session[key]=value, skipping when Streamlit already owns the key as a widget."""
+    if session.get(key) == value:
+        return "unchanged"
+    try:
+        session[key] = value
+        return "set"
+    except Exception as exc:
+        # StreamlitAPIException: "cannot be modified after the widget with key ... is instantiated"
+        name = type(exc).__name__
+        msg = str(exc).lower()
+        if name == "StreamlitAPIException" or "widget with key" in msg or "already been created" in msg:
+            return "skipped_widget_locked"
+        raise
+
+
 def apply_account_team_identity_to_session(
     session: dict[str, Any],
     *,
@@ -528,7 +552,12 @@ def apply_account_team_identity_to_session(
 
     session["draft_room_participant_team"] = team
     session["room_your_team"] = team
-    session["live_draft_my_team"] = team
+    # Widget key: set only when Streamlit has not already instantiated the selectbox.
+    out["live_draft_my_team_set"] = _set_session_key_unless_widget_locked(
+        session,
+        _LIVE_DRAFT_MY_TEAM_WIDGET_KEY,
+        team,
+    )
 
     if isinstance(room, dict):
         cfg = dict(room.get("config") or {})

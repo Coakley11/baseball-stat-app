@@ -22491,6 +22491,32 @@ if active_page == "Live Draft Room":
             _multiplayer_draft = is_multiplayer_draft_active(st.session_state)
         except ImportError:
             _multiplayer_draft = False
+        # Identity sync must run BEFORE the live_draft_my_team selectbox is created.
+        try:
+            from fantasy_workspace_team_identity import (
+                apply_account_team_identity_to_session,
+                resolve_current_account_team_for_live_draft_and_league,
+            )
+
+            apply_account_team_identity_to_session(
+                st.session_state,
+                room=room,
+                reason="live_draft_room_page_pre_widget",
+            )
+            resolved_team = resolve_current_account_team_for_live_draft_and_league(
+                st.session_state,
+                room=room,
+            )
+            if resolved_team:
+                user_team = resolved_team
+                cfg["user_team"] = user_team
+                cfg["your_team"] = user_team
+                if isinstance(room.get("config"), dict):
+                    room["config"]["user_team"] = user_team
+                    room["config"]["your_team"] = user_team
+                st.session_state["room_your_team"] = user_team
+        except ImportError:
+            pass
         if team_list:
             if _multiplayer_draft:
                 try:
@@ -22541,31 +22567,6 @@ if active_page == "Live Draft Room":
                 room["config"]["user_team"] = user_team
                 room["config"]["your_team"] = user_team
                 st.session_state["room_your_team"] = user_team
-        try:
-            from fantasy_workspace_team_identity import (
-                apply_account_team_identity_to_session,
-                resolve_current_account_team_for_live_draft_and_league,
-            )
-
-            apply_account_team_identity_to_session(
-                st.session_state,
-                room=room,
-                reason="live_draft_room_page",
-            )
-            resolved_team = resolve_current_account_team_for_live_draft_and_league(
-                st.session_state,
-                room=room,
-            )
-            if resolved_team:
-                user_team = resolved_team
-                cfg["user_team"] = user_team
-                cfg["your_team"] = user_team
-                if isinstance(room.get("config"), dict):
-                    room["config"]["user_team"] = user_team
-                    room["config"]["your_team"] = user_team
-                st.session_state["room_your_team"] = user_team
-        except ImportError:
-            pass
         room_label = str(room.get("draft_room_id") or "")
         internal_id = room_label
         try:

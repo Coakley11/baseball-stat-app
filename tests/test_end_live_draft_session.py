@@ -51,6 +51,8 @@ class EndLiveDraftSessionTests(unittest.TestCase):
         self.assertIn("ctx-keep-1", session.get("league_contexts") or {})
         notice = session.get(SESSION_ENDED_NOTICE_KEY) or {}
         self.assertIn("Ended the Live Draft session", str(notice.get("message") or ""))
+        self.assertFalse(session.get("_start_live_draft_pending"))
+        self.assertNotIn("live_draft_my_team", session)
         room = prepare_live_draft_state(session)
         self.assertIsNone(room)
         self.assertIsNone(get_draft_return_context(session))

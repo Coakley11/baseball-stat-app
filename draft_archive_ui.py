@@ -3621,32 +3621,22 @@ def render_live_draft_completion_panel(
     else:
         st.markdown("---")
     st.caption(
-        "Ending the Live Draft session returns you to Create / Join. "
-        "Saved drafts and Shared Leagues are preserved."
+        "End this Live Draft session to return to Create / Join. "
+        "Saved drafts and Shared Leagues are preserved — nothing new starts automatically."
     )
     try:
         from live_draft_completion import on_end_live_draft_session
     except ImportError:
         on_end_live_draft_session = None  # type: ignore[assignment]
     if callable(on_end_live_draft_session):
-        end_col, start_col = st.columns(2)
-        with end_col:
-            st.button(
-                "End Live Draft",
-                key=f"{key_prefix}_end_session_btn",
-                use_container_width=True,
-                on_click=on_end_live_draft_session,
-                kwargs={"start_new": False},
-            )
-        with start_col:
-            st.button(
-                "Start New Live Draft",
-                key=f"{key_prefix}_start_new_session_btn",
-                use_container_width=True,
-                type="primary",
-                on_click=on_end_live_draft_session,
-                kwargs={"start_new": True},
-            )
+        st.button(
+            "End Draft / Start New Draft",
+            key=f"{key_prefix}_end_session_btn",
+            use_container_width=True,
+            type="primary",
+            on_click=on_end_live_draft_session,
+            help="Close this completed draft session and return to the Live Draft home screen.",
+        )
 
     _merge_shared_league_diag(
         session,

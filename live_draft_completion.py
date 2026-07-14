@@ -127,12 +127,12 @@ def end_live_draft_session(
     *,
     st: Any | None = None,
     reason: str = "end_live_draft_session",
-    start_new: bool = False,
 ) -> dict[str, Any]:
     """Close the active Live Draft runtime session without deleting archives/shared leagues.
 
     Clears the in-room/session hydrate path so Live Draft Room returns to Create/Join.
     Saved drafts, Shared Leagues, and historical results are left untouched.
+    Does not auto-start another draft — landing page lets the user choose next.
     """
     room = session.get("live_draft_room")
     if not isinstance(room, dict):
@@ -171,6 +171,7 @@ def end_live_draft_session(
         "draft_room_participant_id",
         "draft_room_participant_notes",
         "room_your_team",
+        "live_draft_my_team",
         "_live_draft_shared_league_confirm_open",
         "_live_draft_browsing_away",
         "_live_draft_force_sync_on_return",
@@ -178,19 +179,18 @@ def end_live_draft_session(
         "_draft_room_publish_error",
         "_draft_room_conflict_notice",
         "_draft_room_membership_notice",
+        "_start_live_draft_pending",
     ):
         session.pop(key, None)
 
     session[SESSION_ENDED_NOTICE_KEY] = {
         "message": (
             f"Ended the Live Draft session for **{draft_label}**. "
-            "Saved drafts and Shared Leagues were preserved."
+            "Saved drafts and Shared Leagues were preserved. "
+            "Choose Create or Join when you are ready for the next draft."
         ),
-        "start_new": bool(start_new),
         "ended_at": _utc_now_iso(),
     }
-    if start_new:
-        session["_start_live_draft_pending"] = True
 
     try:
         from live_draft_state import commit_live_draft_room
@@ -205,11 +205,11 @@ def end_live_draft_session(
         session.pop("live_draft_room", None)
         session.pop("live_draft_state", None)
 
-    return {"ok": True, "reason": reason, "start_new": bool(start_new), "draft_label": draft_label}
+    return {"ok": True, "reason": reason, "draft_label": draft_label}
 
 
-def on_end_live_draft_session(*, start_new: bool = False) -> None:
-    """Streamlit on_click handler for End / Start New Live Draft."""
+def on_end_live_draft_session() -> None:
+    """Streamlit on_click: end session and return to Live Draft landing (no auto-start)."""
     try:
         import streamlit as st_mod
     except Exception:
@@ -217,6 +217,5 @@ def on_end_live_draft_session(*, start_new: bool = False) -> None:
     end_live_draft_session(
         st_mod.session_state,
         st=st_mod,
-        reason="start_new_live_draft" if start_new else "end_live_draft_session",
-        start_new=bool(start_new),
+        reason="end_live_draft_session",
     )

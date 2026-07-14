@@ -232,6 +232,40 @@ class TestLiveDraftTeamIdentityRepair(unittest.TestCase):
             render_identity_guard_diagnostic_panel(st, session)
         self.assertIn("Mismatch", getattr(st, "title", ""))
 
+    def test_apply_skips_live_draft_my_team_after_widget_lock(self) -> None:
+        """Regression: Streamlit forbids writing selectbox keys after instantiation."""
+
+        class StreamlitAPIException(Exception):
+            pass
+
+        class GuardSession(dict):
+            def __setitem__(self, key, value) -> None:  # type: ignore[override]
+                if key == "live_draft_my_team" and self.get("_widget_live_draft_my_team"):
+                    raise StreamlitAPIException(
+                        'st.session_state.live_draft_my_team cannot be modified after the widget '
+                        'with key "live_draft_my_team" is instantiated.'
+                    )
+                super().__setitem__(key, value)
+
+        session = GuardSession(
+            _cio11_session(
+                live_draft_room=_room_with_rosters(),
+                draft_room_participant_team="Donny",
+            )
+        )
+        session["live_draft_my_team"] = "Donny"
+        session["_widget_live_draft_my_team"] = True
+        with patch(
+            "fantasy_workspace_team_identity.resolve_current_account_team_for_live_draft_and_league",
+            return_value="Team B",
+        ):
+            out = apply_account_team_identity_to_session(session, reason="post_widget")
+        self.assertTrue(out.get("applied"))
+        self.assertEqual(out.get("live_draft_my_team_set"), "skipped_widget_locked")
+        self.assertEqual(session.get("live_draft_my_team"), "Donny")
+        self.assertEqual(session.get("draft_room_participant_team"), "Team B")
+        self.assertEqual(session.get("room_your_team"), "Team B")
+
 
 if __name__ == "__main__":
     unittest.main()
