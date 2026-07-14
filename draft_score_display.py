@@ -289,8 +289,10 @@ def style_cols_for_display(style_cols: list[str] | None) -> list[str]:
 
 def prepare_draft_scores_for_display(df: pd.DataFrame | None) -> pd.DataFrame:
     """Scale and rename draft score columns for tables/exports (display only)."""
-    if df is None or getattr(df, "empty", True):
-        return df if df is not None else pd.DataFrame()
+    if df is None or not isinstance(df, pd.DataFrame):
+        return pd.DataFrame()
+    if df.empty:
+        return df.copy()
     out = df.copy()
     for col in list(out.columns):
         if col not in SCALE_TO_DISPLAY_100:

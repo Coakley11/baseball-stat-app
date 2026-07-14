@@ -206,18 +206,22 @@ def enrich_live_draft_recommendations_with_why(
 ) -> dict[str, pd.DataFrame]:
     """Cache expensive Why-this-pick column enrichment across tab reruns."""
     from live_draft_room_ui import add_why_this_pick_column
+    from table_dataframe_guard import ensure_dataframe
 
-    if ui_cache_key is None:
-        return {
-            name: add_why_this_pick_column(
-                df,
+    def _enrich_one(df: Any) -> pd.DataFrame:
+        return ensure_dataframe(
+            add_why_this_pick_column(
+                ensure_dataframe(df, caller="enrich_why.input"),
                 gaps=gaps,
                 category_needs=category_needs,
                 pool_df=pool_df,
                 config=config,
-            )
-            for name, df in tables.items()
-        }
+            ),
+            caller="enrich_why.output",
+        )
+
+    if ui_cache_key is None:
+        return {name: _enrich_one(df) for name, df in tables.items()}
     entry = session.get(WHY_COLUMN_CACHE_KEY)
     if isinstance(entry, dict) and entry.get("key") == ui_cache_key:
         stored = entry.get("tables")
@@ -228,25 +232,17 @@ def enrich_live_draft_recommendations_with_why(
                 record_cache_event(session, "live_draft_why_columns", hit=True)
             except ImportError:
                 pass
-            return {name: stored[name].copy() for name in tables}
+            return {name: ensure_dataframe(stored[name], caller="enrich_why.cache_hit") for name in tables}
     try:
         from page_perf_phases import record_cache_event
 
         record_cache_event(session, "live_draft_why_columns", hit=False)
     except ImportError:
         pass
-    enriched: dict[str, pd.DataFrame] = {}
-    for name, df in tables.items():
-        enriched[name] = add_why_this_pick_column(
-            df,
-            gaps=gaps,
-            category_needs=category_needs,
-            pool_df=pool_df,
-            config=config,
-        )
+    enriched: dict[str, pd.DataFrame] = {name: _enrich_one(df) for name, df in tables.items()}
     session[WHY_COLUMN_CACHE_KEY] = {
         "key": ui_cache_key,
-        "tables": {name: enriched[name].copy() for name in enriched},
+        "tables": {name: frame.copy() for name, frame in enriched.items()},
     }
     return enriched
 

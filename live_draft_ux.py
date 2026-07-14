@@ -258,8 +258,8 @@ def format_survival_probability(value: Any) -> str:
 
 
 def apply_survival_display_columns(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
     out = df.copy()
     if "Survival Probability" in out.columns:
         out["Survival Probability"] = out["Survival Probability"].apply(format_survival_probability)
@@ -267,8 +267,8 @@ def apply_survival_display_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def sort_recommendation_table(df: pd.DataFrame, sort_key: str, *, ascending: bool = False) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
     col = str(sort_key or "Decision Score").strip()
     if col not in df.columns:
         return df
@@ -421,9 +421,14 @@ def consume_latest_board_row_highlight(session: dict[str, Any]) -> bool:
 
 
 def style_latest_board_row(df: pd.DataFrame) -> Any:
-    """Highlight the newest board row with a one-shot slide-in animation."""
-    if df is None or df.empty:
-        return df
+    """Highlight the newest board row with a one-shot slide-in animation.
+
+    Returns a pandas ``Styler`` for ``st.dataframe`` display only.
+    Never pass the result into ``render_output_table`` — Styler has no ``.copy()``.
+    Empty / invalid input returns an empty DataFrame (never None).
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
     last_idx = df.index[-1]
 
     def _row_style(row: pd.Series) -> list[str]:

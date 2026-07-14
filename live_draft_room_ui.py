@@ -1274,10 +1274,12 @@ def add_why_this_pick_column(
     category_needs: list[str] | None = None,
     pool_df: Any = None,
     config: dict[str, Any] | None = None,
-) -> Any:
+) -> pd.DataFrame:
     """Add a single ``Why this pick`` column to a recommendation table."""
-    if rec_df is None or getattr(rec_df, "empty", True):
-        return rec_df
+    if rec_df is None or not isinstance(rec_df, pd.DataFrame):
+        return pd.DataFrame()
+    if rec_df.empty:
+        return rec_df.copy()
     out = rec_df.copy()
     whys: list[str] = []
     for _, r in out.iterrows():

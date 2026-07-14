@@ -1876,14 +1876,17 @@ def format_trend_arrow_value(x, is_rate=False):
 
 def format_fantasy_table(df):
     """Fantasy/Draft display formatting. Ranks and Fantasy Edge are integers; score/rate fields are clean."""
+    from table_dataframe_guard import ensure_dataframe
+
+    df = ensure_dataframe(df, caller="format_fantasy_table")
     try:
         from draft_score_display import prepare_draft_scores_for_display
 
-        df = prepare_draft_scores_for_display(df)
+        df = ensure_dataframe(prepare_draft_scores_for_display(df), caller="format_fantasy_table.prepare")
     except ImportError:
         df = df.copy()
-    if df is None or getattr(df, "empty", True):
-        return df if df is not None else pd.DataFrame()
+    if df.empty:
+        return df
     df = df.copy()
     rank_cols = [
         "Market Rank", "Model Rank", "Current Rank", "FantasyPros Rank", "ADP Rank",
@@ -2283,20 +2286,42 @@ MAX_TABLE_DISPLAY_ROWS = 250
 def _df_to_csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
 
-def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_ROWS, style_cols=None):
-    """Render a table quickly and add a CSV export button that opens cleanly in Excel."""
+def render_output_table(
+    df,
+    *,
+    key,
+    file_name,
+    display_rows=MAX_TABLE_DISPLAY_ROWS,
+    style_cols=None,
+    highlight_last_row: bool = False,
+):
+    """Render a table quickly and add a CSV export button that opens cleanly in Excel.
+
+    Callers must pass a pandas DataFrame (empty is fine). Non-DataFrame inputs are
+    logged and coerced — the Live Draft board previously passed a Styler after a pick,
+    which has no ``.copy()`` and crashed here.
+    """
+    from table_dataframe_guard import ensure_dataframe, is_pandas_dataframe
     from table_display_format import filter_styler_format_map
 
-    if df is None:
-        df = pd.DataFrame()
-    table_df = df.copy()
+    if not is_pandas_dataframe(df):
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "render_output_table invalid input | key=%s type=%s is_none=%s shape=%s",
+            key,
+            type(df).__name__ if df is not None else "NoneType",
+            df is None,
+            getattr(df, "shape", None) if df is not None else None,
+        )
+    table_df = ensure_dataframe(df, caller="render_output_table", key=str(key))
     export_df = table_df
     if _is_team_projected_totals_table_key(key):
-        export_df = format_team_projected_totals_table(df.copy(), for_export=True)
+        export_df = format_team_projected_totals_table(table_df.copy(), for_export=True)
         table_df = format_team_projected_totals_table(table_df, for_export=False)
     elif str(key).startswith("draft_lab"):
         table_df = format_draft_lab_table(table_df, for_export=False)
-        export_df = format_draft_lab_table(df.copy(), for_export=True)
+        export_df = format_draft_lab_table(export_df.copy(), for_export=True)
     if len(table_df) > display_rows:
         st.caption(f"Showing first {display_rows:,} rows. Export downloads all {len(table_df):,} rows.")
         display_df = table_df.head(display_rows)
@@ -2304,6 +2329,24 @@ def render_output_table(df, *, key, file_name, display_rows=MAX_TABLE_DISPLAY_RO
         display_df = table_df
 
     style_cols = [c for c in (style_cols or []) if c in display_df.columns]
+
+    if highlight_last_row and not display_df.empty:
+        try:
+            from live_draft_ux import style_latest_board_row
+
+            # Styler is display-only — never pass it back through DataFrame APIs.
+            st.dataframe(style_latest_board_row(display_df), width="stretch", hide_index=True)
+            st.download_button(
+                "Export CSV for Excel",
+                data=_df_to_csv_bytes(export_df if str(key).startswith("draft_lab") else table_df),
+                file_name=file_name,
+                mime="text/csv",
+                width="content",
+            )
+            return
+        except Exception:
+            pass
+
     # Avoid heavy styling on large tables. Styling was slowing Trend/Valuation pages and re-expanding decimals.
     if style_cols and display_df.size <= 2500:
         if str(key).startswith("draft_lab"):
@@ -3883,7 +3926,9 @@ def clean_feature_name(feature):
 
 def clean_ui_columns(df):
     """Final safeguard so backend ID-style columns never appear in displayed tables."""
-    df = df.copy()
+    from table_dataframe_guard import ensure_dataframe
+
+    df = ensure_dataframe(df, caller="clean_ui_columns")
     rename_map = {
         "yearID": "Year",
         "fullName": "Player",
@@ -22719,18 +22764,13 @@ if active_page == "Live Draft Room":
                     from live_draft_ux import (
                         consume_latest_board_row_highlight,
                         note_live_draft_board_pick_flash,
-                        style_latest_board_row,
                     )
 
                     note_live_draft_board_pick_flash(st.session_state, st, len(board_df))
                     _highlight_board_row = consume_latest_board_row_highlight(st.session_state)
                 except ImportError:
                     pass
-                _board_display = (
-                    style_latest_board_row(format_fantasy_table(clean_ui_columns(board_df)))
-                    if _highlight_board_row
-                    else format_fantasy_table(clean_ui_columns(board_df))
-                )
+                _board_display = format_fantasy_table(clean_ui_columns(board_df))
                 try:
                     from live_draft_perf import PHASE_BOARD_TABLE, live_draft_perf_action
 
@@ -22741,6 +22781,7 @@ if active_page == "Live Draft Room":
                             file_name="live_draft_board.csv",
                             display_rows=80,
                             style_cols=["Fantasy Edge", "Player Grade"],
+                            highlight_last_row=_highlight_board_row,
                         )
                 except ImportError:
                     render_output_table(
@@ -22749,6 +22790,7 @@ if active_page == "Live Draft Room":
                         file_name="live_draft_board.csv",
                         display_rows=80,
                         style_cols=["Fantasy Edge", "Player Grade"],
+                        highlight_last_row=_highlight_board_row,
                     )
             st.markdown("</div>", unsafe_allow_html=True)
 
@@ -23081,13 +23123,21 @@ if active_page == "Live Draft Room":
                     _rec_sort_col = REC_TABLE_SORT_OPTIONS.get(_rec_sort_choice, "Decision Score")
 
                     def _prepare_live_rec_table(df: pd.DataFrame) -> pd.DataFrame:
-                        if df is None or df.empty:
-                            return df
-                        sorted_df = sort_recommendation_table(df, _rec_sort_col)
-                        return apply_survival_display_columns(sorted_df)
+                        from table_dataframe_guard import ensure_dataframe
+
+                        frame = ensure_dataframe(df, caller="_prepare_live_rec_table")
+                        if frame.empty:
+                            return frame
+                        sorted_df = sort_recommendation_table(frame, _rec_sort_col)
+                        return ensure_dataframe(
+                            apply_survival_display_columns(sorted_df),
+                            caller="_prepare_live_rec_table.survival",
+                        )
                 except ImportError:
                     def _prepare_live_rec_table(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[misc]
-                        return df
+                        from table_dataframe_guard import ensure_dataframe
+
+                        return ensure_dataframe(df, caller="_prepare_live_rec_table.fallback")
 
                 _pool_for_why = room.get("pool")
                 try:
@@ -23126,6 +23176,22 @@ if active_page == "Live Draft Room":
                     value_sleep = add_why_this_pick_column(
                         value_sleep, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
                     )
+                try:
+                    from table_dataframe_guard import ensure_dataframe
+
+                    top_rec = ensure_dataframe(top_rec, caller="live_draft.top_rec")
+                    best_avail = ensure_dataframe(best_avail, caller="live_draft.best_avail")
+                    pos_fit = ensure_dataframe(pos_fit, caller="live_draft.pos_fit")
+                    value_sleep = ensure_dataframe(value_sleep, caller="live_draft.value_sleep")
+                except ImportError:
+                    if top_rec is None:
+                        top_rec = pd.DataFrame()
+                    if best_avail is None:
+                        best_avail = pd.DataFrame()
+                    if pos_fit is None:
+                        pos_fit = pd.DataFrame()
+                    if value_sleep is None:
+                        value_sleep = pd.DataFrame()
                 with rec_tabs[0]:
                     _top_show = top_rec[[c for c in rec_cols if c in top_rec.columns]].rename(columns={"fullName": "Player"})
                     _top_show = _prepare_live_rec_table(_top_show)
