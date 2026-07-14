@@ -302,97 +302,146 @@ def _render_js_countdown(st: Any, deadline: float, *, pick_index: int, session: 
 
 def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
     """Countdown that refreshes every second via Streamlit fragment when available."""
-    live_room = _resolve_live_room(session, room)
+    try:
+        from live_draft_render_trace import ldr_rerun, ldr_step
+    except ImportError:
+        ldr_step = None  # type: ignore[assignment]
+        ldr_rerun = None  # type: ignore[assignment]
+
+        class _NullStep:
+            def __init__(self, *_a: Any, **_k: Any) -> None:
+                pass
+
+            def __enter__(self) -> None:
+                return None
+
+            def __exit__(self, *_a: Any) -> bool:
+                return False
+
+        def ldr_step(*_a: Any, **_k: Any) -> Any:  # type: ignore[misc]
+            return _NullStep()
+
+    with ldr_step(session, "timer_bar_resolve_room", st=st):
+        live_room = _resolve_live_room(session, room)
     if str(live_room.get("status") or "") == "paused":
-        remaining = live_draft_display_seconds(live_room)
-        st.markdown(f"**Draft paused** · {remaining}s on clock")
-        record_timer_diagnostics(session, live_room, source="paused")
+        with ldr_step(session, "timer_bar_paused_render", st=st):
+            remaining = live_draft_display_seconds(live_room)
+            st.markdown(f"**Draft paused** · {remaining}s on clock")
+            record_timer_diagnostics(session, live_room, source="paused")
         return
     try:
         from live_draft_pick_timer import frozen_deadline, is_pick_submitting, display_seconds_with_freeze
 
-        if is_pick_submitting(session):
-            remaining = display_seconds_with_freeze(session, live_room)
-            fdl = frozen_deadline(session, live_room)
-            pick_idx = int(live_room.get("current_pick_index") or 0)
-            if fdl is not None:
-                _render_js_countdown(st, float(fdl), pick_index=pick_idx, session=session)
-            st.caption(f"Submitting pick… ({remaining}s frozen)")
+        with ldr_step(session, "timer_bar_submitting_check", st=st):
+            submitting = bool(is_pick_submitting(session))
+        if submitting:
+            with ldr_step(session, "timer_bar_frozen_countdown", st=st):
+                remaining = display_seconds_with_freeze(session, live_room)
+                fdl = frozen_deadline(session, live_room)
+                pick_idx = int(live_room.get("current_pick_index") or 0)
+                if fdl is not None:
+                    _render_js_countdown(st, float(fdl), pick_index=pick_idx, session=session)
+                st.caption(f"Submitting pick… ({remaining}s frozen)")
             return
     except ImportError:
         pass
     try:
         from live_draft_safe_mode import record_safe_mode_diagnostics, timer_should_run
 
-        if not timer_should_run(session, live_room):
-            remaining = live_draft_display_seconds(live_room)
-            record_safe_mode_diagnostics(session, timer_fragment_active=False, timer_should_run=False)
-            deadline = live_draft_timer_deadline(live_room)
-            if deadline is not None:
-                _render_js_countdown(st, float(deadline), pick_index=int(live_room.get("current_pick_index") or 0), session=session)
-            else:
-                st.markdown(f"**Time on clock:** {remaining}s")
+        with ldr_step(session, "timer_bar_should_run_check", st=st):
+            can_run = bool(timer_should_run(session, live_room))
+        if not can_run:
+            with ldr_step(session, "timer_bar_disabled_countdown", st=st):
+                remaining = live_draft_display_seconds(live_room)
+                record_safe_mode_diagnostics(session, timer_fragment_active=False, timer_should_run=False)
+                deadline = live_draft_timer_deadline(live_room)
+                if deadline is not None:
+                    _render_js_countdown(st, float(deadline), pick_index=int(live_room.get("current_pick_index") or 0), session=session)
+                else:
+                    st.markdown(f"**Time on clock:** {remaining}s")
             return
         record_safe_mode_diagnostics(session, timer_fragment_active=True, timer_should_run=True)
     except ImportError:
         pass
-    live_room = sync_live_draft_timer_state(session, live_room)
-    deadline = live_draft_timer_deadline(live_room)
-    pick_idx = int(live_room.get("current_pick_index") or 0)
-    if deadline is not None:
-        _render_js_countdown(st, float(deadline), pick_index=pick_idx, session=session)
+    with ldr_step(session, "timer_bar_sync_state", st=st):
+        live_room = sync_live_draft_timer_state(session, live_room)
+        deadline = live_draft_timer_deadline(live_room)
+        pick_idx = int(live_room.get("current_pick_index") or 0)
+    with ldr_step(session, "timer_bar_js_countdown", st=st, has_deadline=deadline is not None):
+        if deadline is not None:
+            _render_js_countdown(st, float(deadline), pick_index=pick_idx, session=session)
 
-    try:
-        fragment = st.fragment
-    except AttributeError:
-        _render_timer_static(st, session, live_room, source="static_no_fragment")
-        return
+    with ldr_step(session, "timer_attach_fragment", st=st):
+        try:
+            fragment = st.fragment
+        except AttributeError:
+            fragment = None
+        if fragment is None:
+            with ldr_step(session, "timer_bar_static_no_fragment", st=st):
+                _render_timer_static(st, session, live_room, source="static_no_fragment")
+            return
 
-    @fragment(run_every=1)
-    def _timer_tick() -> None:
-        session[TIMER_TICK_COUNT_KEY] = int(session.get(TIMER_TICK_COUNT_KEY) or 0) + 1
-        session[TIMER_LAST_TICK_TS_KEY] = time.time()
-        tick_room, poll_changed = _sync_room_on_timer_tick(session, room)
-        _render_timer_static(st, session, tick_room, source="fragment_tick")
-        if poll_changed:
+        @fragment(run_every=1)
+        def _timer_tick() -> None:
             try:
-                from live_draft_ui_cache import invalidate_live_draft_ui_caches
-
-                invalidate_live_draft_ui_caches(session)
+                from live_draft_render_trace import ldr_rerun as _ldr_rerun
+                from live_draft_render_trace import ldr_step as _ldr_step
             except ImportError:
-                session.pop("_live_draft_rec_cache", None)
-            try:
-                from live_draft_safe_mode import request_live_draft_rerun
+                _ldr_step = ldr_step
+                _ldr_rerun = None
+            with _ldr_step(session, "timer_fragment_tick", st=st, polling_loop=True):
+                session[TIMER_TICK_COUNT_KEY] = int(session.get(TIMER_TICK_COUNT_KEY) or 0) + 1
+                session[TIMER_LAST_TICK_TS_KEY] = time.time()
+                with _ldr_step(session, "timer_fragment_poll_shared", st=st):
+                    tick_room, poll_changed = _sync_room_on_timer_tick(session, room)
+                with _ldr_step(session, "timer_fragment_render_static", st=st):
+                    _render_timer_static(st, session, tick_room, source="fragment_tick")
+                if poll_changed:
+                    try:
+                        from live_draft_ui_cache import invalidate_live_draft_ui_caches
 
-                if request_live_draft_rerun(st, session, "poll_fragment", room=tick_room):
-                    return
-            except ImportError:
-                st.rerun()
-                return
-        elif _guest_waiting_for_host_autopick(session, tick_room):
-            st.caption("Waiting for host to auto-pick…")
-        remaining = live_draft_display_seconds(tick_room)
-        if remaining <= 0 and tick_room.get("status") == "in_progress":
-            session[EXPIRED_PICK_PENDING_KEY] = True
-            if should_fragment_trigger_full_rerun(session, tick_room):
-                try:
-                    from live_draft_safe_mode import request_live_draft_rerun
+                        invalidate_live_draft_ui_caches(session)
+                    except ImportError:
+                        session.pop("_live_draft_rec_cache", None)
+                    try:
+                        from live_draft_safe_mode import request_live_draft_rerun
 
-                    if request_live_draft_rerun(st, session, "timer_fragment_zero", room=tick_room):
+                        if _ldr_rerun is not None:
+                            _ldr_rerun(session, "timer_fragment_poll_shared", reason="poll_changed_rerun", st=st)
+                        if request_live_draft_rerun(st, session, "poll_fragment", room=tick_room):
+                            return
+                    except ImportError:
+                        st.rerun()
                         return
-                except ImportError:
-                    st.rerun()
-                    return
-        elif should_fragment_trigger_full_rerun(session, tick_room):
-            session[EXPIRED_PICK_PENDING_KEY] = True
-            try:
-                from live_draft_safe_mode import request_live_draft_rerun
+                elif _guest_waiting_for_host_autopick(session, tick_room):
+                    st.caption("Waiting for host to auto-pick…")
+                remaining = live_draft_display_seconds(tick_room)
+                if remaining <= 0 and tick_room.get("status") == "in_progress":
+                    session[EXPIRED_PICK_PENDING_KEY] = True
+                    if should_fragment_trigger_full_rerun(session, tick_room):
+                        try:
+                            from live_draft_safe_mode import request_live_draft_rerun
 
-                request_live_draft_rerun(st, session, "timer_fragment", room=tick_room)
-            except ImportError:
-                pass
+                            if _ldr_rerun is not None:
+                                _ldr_rerun(session, "timer_fragment_tick", reason="timer_zero_rerun", st=st)
+                            if request_live_draft_rerun(st, session, "timer_fragment_zero", room=tick_room):
+                                return
+                        except ImportError:
+                            st.rerun()
+                            return
+                elif should_fragment_trigger_full_rerun(session, tick_room):
+                    session[EXPIRED_PICK_PENDING_KEY] = True
+                    try:
+                        from live_draft_safe_mode import request_live_draft_rerun
 
-    _timer_tick()
+                        if _ldr_rerun is not None:
+                            _ldr_rerun(session, "timer_fragment_tick", reason="timer_fragment_rerun", st=st)
+                        request_live_draft_rerun(st, session, "timer_fragment", room=tick_room)
+                    except ImportError:
+                        pass
+
+        with ldr_step(session, "timer_invoke_fragment_tick", st=st, callback=" _timer_tick"):
+            _timer_tick()
 
 
 def _render_timer_static(st: Any, session: dict[str, Any], room: dict[str, Any], *, source: str = "static") -> None:

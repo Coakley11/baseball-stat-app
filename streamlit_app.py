@@ -23160,177 +23160,236 @@ if active_page == "Live Draft Room":
         except ImportError:
             pass
         try:
-            from live_draft_render_trace import ldr_section
+            from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section, ldr_step
 
             ldr_section(st.session_state, "room_controls_timer", st=st)
-        except ImportError:
-            pass
+            force_render_live_draft_trace_banner(st, st.session_state, label="before_controls_timer")
+        except Exception as _ldr_timer_boot_exc:
+            st.error(
+                f"LDR TIMER TRACE BOOT ERROR: {type(_ldr_timer_boot_exc).__name__}: {_ldr_timer_boot_exc}"
+            )
+            from contextlib import nullcontext as _ldr_nullcontext
+
+            def ldr_step(*_a, **_k):  # type: ignore[misc]
+                return _ldr_nullcontext()
 
         st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
         st.markdown('<div class="ld-controls-title">Draft Control Center</div>', unsafe_allow_html=True)
-        _timer_ok = bool(
-            _draft_in_progress
-            and slot is not None
-            and (_reconcile is None or getattr(_reconcile, "timer_should_run", True))
-        )
-        try:
-            from draft_ui import DISABLE_AUTOPICK_FOR_TESTING_KEY, live_draft_autopick_disabled
+        with ldr_step(st.session_state, "timer_enter", st=st):
+            _timer_ok = bool(
+                _draft_in_progress
+                and slot is not None
+                and (_reconcile is None or getattr(_reconcile, "timer_should_run", True))
+            )
+            try:
+                from draft_ui import DISABLE_AUTOPICK_FOR_TESTING_KEY, live_draft_autopick_disabled
 
-            if developer_mode_enabled():
-                st.checkbox(
-                    "Disable auto-pick for manual testing",
-                    key=DISABLE_AUTOPICK_FOR_TESTING_KEY,
-                    help="Stops timer/page auto-pick so manual Draft Player clicks are not raced.",
-                )
-            _autopick_off = live_draft_autopick_disabled(st.session_state)
-        except ImportError:
-            _autopick_off = False
+                if developer_mode_enabled():
+                    st.checkbox(
+                        "Disable auto-pick for manual testing",
+                        key=DISABLE_AUTOPICK_FOR_TESTING_KEY,
+                        help="Stops timer/page auto-pick so manual Draft Player clicks are not raced.",
+                    )
+                _autopick_off = live_draft_autopick_disabled(st.session_state)
+            except ImportError:
+                _autopick_off = False
+
+        with ldr_step(
+            st.session_state,
+            "timer_load_timer_state",
+            st=st,
+            timer_ok=bool(_timer_ok),
+            autopick_off=bool(_autopick_off),
+        ):
+            pass
+
+        with ldr_step(
+            st.session_state,
+            "timer_load_room_state",
+            st=st,
+            status=str(room.get("status") or ""),
+            pick_index=int(room.get("current_pick_index") or 0),
+        ):
+            pass
+
+        with ldr_step(st.session_state, "timer_load_poll_state", st=st):
+            _poll_diag = st.session_state.get("_live_draft_poll_diag")
+            _poll_ts = st.session_state.get("_shared_draft_poll_ts")
+            _poll_pending = bool(st.session_state.get("_live_draft_poll_apply_pending"))
+
         if _timer_ok and not _autopick_off:
             try:
                 from live_draft_expired_pick import autopick_error_message, handle_expired_pick_on_page
                 from live_draft_safe_mode import request_live_draft_rerun
                 from live_draft_timer_ui import note_live_draft_page_load, render_live_draft_timer_bar
 
-                note_live_draft_page_load(st.session_state, room)
-                render_live_draft_timer_bar(st, st.session_state, room)
-                expired_result = handle_expired_pick_on_page(st.session_state, room, source="page_autopick")
-                if expired_result.error:
-                    st.error(expired_result.error)
-                else:
-                    backoff_err = autopick_error_message(st.session_state, room)
-                    if backoff_err:
-                        st.error(backoff_err)
-                if expired_result.ok and expired_result.message:
-                    st.success(expired_result.message)
-                if expired_result.should_rerun:
-                    request_live_draft_rerun(st, st.session_state, "page_autopick", room=room)
-            except ImportError:
-                idx = int(room.get("current_pick_index", 0))
-                remaining = live_draft_seconds_remaining(room)
-                st.caption(f"Time on clock: {remaining}s")
-        elif room.get("status") == "in_progress" and slot is not None:
-            remaining = live_draft_seconds_remaining(room)
-            st.markdown(f"**Time on clock:** {remaining}s *(timer paused — draft state recovery)*")
-
-        st.markdown('<div class="live-draft-action-row">', unsafe_allow_html=True)
-        _status = str(room.get("status") or "")
-        ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
-        with ctrl1:
-            if st.button("⏸ Pause Draft", disabled=_status != "in_progress", key="live_draft_pause"):
-                from live_draft_timer_logic import live_draft_clear_timer
-
-                room["paused_remaining_seconds"] = live_draft_seconds_remaining(room)
-                room["status"] = "paused"
-                live_draft_clear_timer(room)
-                _persist_live_draft_room(room, reason="pause_draft")
-                try:
-                    from live_draft_safe_mode import request_live_draft_rerun
-
-                    request_live_draft_rerun(st, st.session_state, "pause_draft", room=room)
-                except ImportError:
-                    st.rerun()
-        with ctrl2:
-            if st.button("▶ Resume Draft", disabled=_status != "paused", key="live_draft_resume", type="primary"):
-                from live_draft_timer_logic import live_draft_resume_timer
-
-                room["status"] = "in_progress"
-                pause_left = int(room.get("paused_remaining_seconds") or cfg.get("timer_seconds", 60))
-                live_draft_resume_timer(room, pause_left)
-                _persist_live_draft_room(room, reason="resume_draft")
-                try:
-                    from live_draft_safe_mode import request_live_draft_rerun
-
-                    request_live_draft_rerun(st, st.session_state, "resume_draft", room=room)
-                except ImportError:
-                    st.rerun()
-        with ctrl3:
-            if st.button(
-                "🗑 Delete Draft",
-                key="live_draft_delete_btn",
-                help="Delete this Live Draft session and return to Create / Join.",
-            ):
-                st.session_state["_live_draft_delete_confirm"] = True
-        with ctrl4:
-            try:
-                from live_draft_completion import on_end_live_draft_session
-
-                st.button(
-                    "End Draft",
-                    key="live_draft_end_btn",
-                    help="End this Live Draft session. Saved drafts and Shared Leagues are preserved.",
-                    on_click=on_end_live_draft_session,
-                )
-            except ImportError:
-                pass
-        if st.session_state.get("_live_draft_delete_confirm"):
-            st.warning("Delete this Live Draft session? The in-progress room will be cleared. Saved Draft Library and Shared Leagues are not deleted.")
-            confirm_col, cancel_col = st.columns(2)
-            with confirm_col:
-                if st.button("Yes, delete this draft", key="live_draft_delete_confirm_btn", type="primary"):
-                    from draft_room_membership import reset_live_draft_with_membership_guard
-
-                    st.session_state.pop("_live_draft_delete_confirm", None)
-                    ok, msg = reset_live_draft_with_membership_guard(
-                        st.session_state, st_obj=st, reason="abandon_live_draft"
+                with ldr_step(st.session_state, "timer_note_page_load", st=st):
+                    note_live_draft_page_load(st.session_state, room)
+                with ldr_step(st.session_state, "timer_render_countdown", st=st):
+                    render_live_draft_timer_bar(st, st.session_state, room)
+                with ldr_step(st.session_state, "timer_handle_expired_pick", st=st):
+                    expired_result = handle_expired_pick_on_page(
+                        st.session_state, room, source="page_autopick"
                     )
-                    if ok:
-                        st.success("Live draft deleted.")
+                    if expired_result.error:
+                        st.error(expired_result.error)
+                    else:
+                        backoff_err = autopick_error_message(st.session_state, room)
+                        if backoff_err:
+                            st.error(backoff_err)
+                    if expired_result.ok and expired_result.message:
+                        st.success(expired_result.message)
+                    if expired_result.should_rerun:
+                        try:
+                            from live_draft_render_trace import ldr_rerun
+
+                            ldr_rerun(
+                                st.session_state,
+                                "timer_handle_expired_pick",
+                                reason="page_autopick",
+                                st=st,
+                            )
+                        except ImportError:
+                            pass
+                        request_live_draft_rerun(st, st.session_state, "page_autopick", room=room)
+            except ImportError:
+                with ldr_step(st.session_state, "timer_compute_remaining", st=st, fallback=True):
+                    remaining = live_draft_seconds_remaining(room)
+                with ldr_step(st.session_state, "timer_render_countdown", st=st, fallback=True):
+                    st.caption(f"Time on clock: {remaining}s")
+        elif room.get("status") == "in_progress" and slot is not None:
+            with ldr_step(st.session_state, "timer_compute_remaining", st=st, recovery=True):
+                remaining = live_draft_seconds_remaining(room)
+            with ldr_step(st.session_state, "timer_render_countdown", st=st, recovery=True):
+                st.markdown(f"**Time on clock:** {remaining}s *(timer paused — draft state recovery)*")
+
+        with ldr_step(st.session_state, "timer_render_controls", st=st):
+            st.markdown('<div class="live-draft-action-row">', unsafe_allow_html=True)
+            _status = str(room.get("status") or "")
+            ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
+            with ctrl1:
+                if st.button("⏸ Pause Draft", disabled=_status != "in_progress", key="live_draft_pause"):
+                    from live_draft_timer_logic import live_draft_clear_timer
+
+                    room["paused_remaining_seconds"] = live_draft_seconds_remaining(room)
+                    room["status"] = "paused"
+                    live_draft_clear_timer(room)
+                    _persist_live_draft_room(room, reason="pause_draft")
+                    try:
+                        from live_draft_safe_mode import request_live_draft_rerun
+
+                        request_live_draft_rerun(st, st.session_state, "pause_draft", room=room)
+                    except ImportError:
                         st.rerun()
-                    else:
-                        st.error(msg)
-            with cancel_col:
-                if st.button("Cancel", key="live_draft_delete_cancel_btn"):
-                    st.session_state.pop("_live_draft_delete_confirm", None)
-                    st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
-        with st.expander("Advanced draft controls", expanded=False):
-            adv1, adv2 = st.columns(2)
-            with adv1:
-                if st.button("↻ Reset Timer", disabled=_status != "in_progress", key="live_draft_reset_timer"):
-                    live_draft_reset_timer(room)
-                    _persist_live_draft_room(room, reason="reset_timer")
-                if st.button("⚡ Auto Pick Now", disabled=_status not in ("in_progress", "paused"), key="live_draft_auto_now"):
-                    if room.get("status") == "paused":
-                        room["status"] = "in_progress"
-                    ok, msg = live_draft_auto_pick(room, st.session_state)
-                    if ok:
-                        try:
-                            from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
+            with ctrl2:
+                if st.button("▶ Resume Draft", disabled=_status != "paused", key="live_draft_resume", type="primary"):
+                    from live_draft_timer_logic import live_draft_resume_timer
 
-                            invalidate_live_draft_ui_caches(st.session_state)
-                            invalidate_draft_assistant_scoring_cache(st.session_state)
-                        except ImportError:
-                            st.session_state.pop("_live_draft_rec_cache", None)
-                        st.success(msg)
-                        try:
-                            from live_draft_safe_mode import is_draft_truly_complete, request_live_draft_rerun
+                    room["status"] = "in_progress"
+                    pause_left = int(room.get("paused_remaining_seconds") or cfg.get("timer_seconds", 60))
+                    live_draft_resume_timer(room, pause_left)
+                    _persist_live_draft_room(room, reason="resume_draft")
+                    try:
+                        from live_draft_safe_mode import request_live_draft_rerun
 
-                            if is_draft_truly_complete(room):
-                                request_live_draft_rerun(st, st.session_state, "auto_pick_complete", room=room)
-                            else:
-                                request_live_draft_rerun(st, st.session_state, "auto_pick", room=room)
-                        except ImportError:
-                            st.rerun()
-                    else:
-                        st.warning(msg)
-                    _persist_live_draft_room(room, reason="auto_pick")
-            with adv2:
+                        request_live_draft_rerun(st, st.session_state, "resume_draft", room=room)
+                    except ImportError:
+                        st.rerun()
+            with ctrl3:
+                if st.button(
+                    "🗑 Delete Draft",
+                    key="live_draft_delete_btn",
+                    help="Delete this Live Draft session and return to Create / Join.",
+                ):
+                    st.session_state["_live_draft_delete_confirm"] = True
+            with ctrl4:
                 try:
-                    from draft_room_context import leave_shared_draft_room
+                    from live_draft_completion import on_end_live_draft_session
 
-                    if st.button("Leave Draft", key="live_draft_leave_btn"):
-                        leave_shared_draft_room(st.session_state)
-                        st.session_state.pop("live_draft_room", None)
-                        st.rerun()
+                    st.button(
+                        "End Draft",
+                        key="live_draft_end_btn",
+                        help="End this Live Draft session. Saved drafts and Shared Leagues are preserved.",
+                        on_click=on_end_live_draft_session,
+                    )
                 except ImportError:
                     pass
+            if st.session_state.get("_live_draft_delete_confirm"):
+                st.warning("Delete this Live Draft session? The in-progress room will be cleared. Saved Draft Library and Shared Leagues are not deleted.")
+                confirm_col, cancel_col = st.columns(2)
+                with confirm_col:
+                    if st.button("Yes, delete this draft", key="live_draft_delete_confirm_btn", type="primary"):
+                        from draft_room_membership import reset_live_draft_with_membership_guard
+
+                        st.session_state.pop("_live_draft_delete_confirm", None)
+                        ok, msg = reset_live_draft_with_membership_guard(
+                            st.session_state, st_obj=st, reason="abandon_live_draft"
+                        )
+                        if ok:
+                            st.success("Live draft deleted.")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                with cancel_col:
+                    if st.button("Cancel", key="live_draft_delete_cancel_btn"):
+                        st.session_state.pop("_live_draft_delete_confirm", None)
+                        st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with ldr_step(st.session_state, "timer_attach_callbacks", st=st):
+            with st.expander("Advanced draft controls", expanded=False):
+                adv1, adv2 = st.columns(2)
+                with adv1:
+                    if st.button("↻ Reset Timer", disabled=_status != "in_progress", key="live_draft_reset_timer"):
+                        live_draft_reset_timer(room)
+                        _persist_live_draft_room(room, reason="reset_timer")
+                    if st.button("⚡ Auto Pick Now", disabled=_status not in ("in_progress", "paused"), key="live_draft_auto_now"):
+                        if room.get("status") == "paused":
+                            room["status"] = "in_progress"
+                        ok, msg = live_draft_auto_pick(room, st.session_state)
+                        if ok:
+                            try:
+                                from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
+
+                                invalidate_live_draft_ui_caches(st.session_state)
+                                invalidate_draft_assistant_scoring_cache(st.session_state)
+                            except ImportError:
+                                st.session_state.pop("_live_draft_rec_cache", None)
+                            st.success(msg)
+                            try:
+                                from live_draft_safe_mode import is_draft_truly_complete, request_live_draft_rerun
+
+                                if is_draft_truly_complete(room):
+                                    request_live_draft_rerun(st, st.session_state, "auto_pick_complete", room=room)
+                                else:
+                                    request_live_draft_rerun(st, st.session_state, "auto_pick", room=room)
+                            except ImportError:
+                                st.rerun()
+                        else:
+                            st.warning(msg)
+                        _persist_live_draft_room(room, reason="auto_pick")
+                with adv2:
+                    try:
+                        from draft_room_context import leave_shared_draft_room
+
+                        if st.button("Leave Draft", key="live_draft_leave_btn"):
+                            leave_shared_draft_room(st.session_state)
+                            st.session_state.pop("live_draft_room", None)
+                            st.rerun()
+                    except ImportError:
+                        pass
         st.markdown("</div>", unsafe_allow_html=True)
         try:
-            from live_draft_render_trace import ldr_section_done
+            from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section_done, ldr_step
 
+            with ldr_step(st.session_state, "timer_exit", st=st):
+                pass
             ldr_section_done(st.session_state, "room_controls_timer", st=st)
-        except ImportError:
-            pass
+            force_render_live_draft_trace_banner(st, st.session_state, label="after_controls_timer")
+        except Exception as _ldr_timer_end_exc:
+            st.error(
+                f"LDR TIMER TRACE END ERROR: {type(_ldr_timer_end_exc).__name__}: {_ldr_timer_end_exc}"
+            )
         try:
             from live_draft_render_trace import ldr_section
 

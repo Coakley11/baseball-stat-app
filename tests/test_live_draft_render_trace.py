@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from live_draft_render_trace import (
+    LDR_TRACE_LAST_STEP_KEY,
     LDR_TRACE_UNCONDITIONAL,
     analyze_ldr_stall,
     build_ldr_workspace_compare_snapshot,
@@ -14,6 +15,7 @@ from live_draft_render_trace import (
     ldr_rerun,
     ldr_section,
     ldr_section_done,
+    ldr_step,
 )
 
 
@@ -56,6 +58,22 @@ class LiveDraftRenderTraceTests(unittest.TestCase):
             "poll",
             format_next_behavior_label(stall["next_behavior"], terminal=stall.get("terminal")),
         )
+
+    def test_ldr_step_records_elapsed_and_stall_point(self) -> None:
+        ss = {"_live_draft_render_trace_force": True, "active_page": "Live Draft Room"}
+        ldr_section_done(ss, "room_headers")
+        with ldr_step(ss, "timer_render_countdown", ui_marker=False):
+            pass
+        with self.assertRaises(RuntimeError):
+            with ldr_step(ss, "timer_attach_fragment", ui_marker=False):
+                raise RuntimeError("boom")
+        stall = analyze_ldr_stall(ss)
+        self.assertEqual(stall["last_successful_section"], "timer_render_countdown")
+        self.assertEqual(stall["next_section_begun"], "timer_attach_fragment")
+        self.assertEqual(stall["next_behavior"], "exception")
+        self.assertEqual(ss.get(LDR_TRACE_LAST_STEP_KEY), "timer_attach_fragment")
+        text = format_ldr_trace_text(ss)
+        self.assertIn("ms", text)
 
     def test_compare_snapshot_keys(self) -> None:
         ss = {

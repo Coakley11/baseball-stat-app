@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import time
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 LDR_TRACE_LOG_KEY = "_live_draft_render_trace_log"
 LDR_TRACE_ENABLED_KEY = "_live_draft_render_trace_enabled"
@@ -33,11 +34,25 @@ LDR_SECTION_ORDER = (
     "room_team_identity",
     "room_headers",
     "room_controls_timer",
+    "timer_enter",
+    "timer_load_timer_state",
+    "timer_load_room_state",
+    "timer_load_poll_state",
+    "timer_compute_remaining",
+    "timer_render_countdown",
+    "timer_attach_fragment",
+    "timer_fragment_tick",
+    "timer_handle_expired_pick",
+    "timer_render_controls",
+    "timer_attach_callbacks",
+    "timer_exit",
     "room_board_column",
     "room_recommendations",
     "room_decision_panels",
     "page_complete",
 )
+
+LDR_TRACE_LAST_STEP_KEY = "_live_draft_render_last_step"
 
 
 def is_ldr_trace_enabled(session: dict[str, Any] | None, st: Any | None = None) -> bool:
@@ -186,12 +201,12 @@ def analyze_ldr_stall(session: dict[str, Any]) -> dict[str, Any]:
         kind = str(entry.get("kind") or "")
         section = str(entry.get("section") or "")
         reason = str(entry.get("reason") or "")
-        if kind in {"section_end", "section", "fragment", "empty", "container"} and reason == "complete":
+        if kind in {"section_end", "step_end"} and reason == "complete":
             last_success = section
             next_begun = ""
             next_behavior = "unknown"
             terminal = None
-        elif kind == "section" and reason == "enter":
+        elif kind in {"section", "step"} and reason == "enter":
             if last_success and not next_begun:
                 next_begun = section
             elif not last_success:
@@ -215,7 +230,7 @@ def analyze_ldr_stall(session: dict[str, Any]) -> dict[str, Any]:
     if terminal and next_behavior == "unknown":
         kind = str(terminal.get("kind") or "")
         reason = str(terminal.get("reason") or "")
-        if kind == "section" and reason == "enter":
+        if kind in {"section", "step"} and reason == "enter":
             next_behavior = "entered_not_completed"
     analysis_bits = [
         f"LAST SUCCESSFUL SECTION: {last_success or '(none)'}",
@@ -253,8 +268,10 @@ def ldr_trace(
     }
     if extra:
         entry["extra"] = extra
-    if kind in {"section", "section_end", "fragment", "empty", "container"}:
+    if kind in {"section", "section_end", "fragment", "empty", "container", "step", "step_end"}:
         session[LDR_TRACE_LAST_SECTION_KEY] = str(section or "")
+    if kind in {"step", "step_end"}:
+        session[LDR_TRACE_LAST_STEP_KEY] = str(section or "")
     _append(session, entry)
 
 
@@ -289,6 +306,68 @@ def ldr_exception(session: dict[str, Any], name: str, exc: BaseException, *, st:
     )
 
 
+@contextmanager
+def ldr_step(
+    session: dict[str, Any],
+    name: str,
+    *,
+    st: Any | None = None,
+    ui_marker: bool = True,
+    **extra: Any,
+) -> Iterator[None]:
+    """Fine-grained timed subsection tracer for stall isolation."""
+    if not is_ldr_trace_enabled(session, st):
+        yield
+        return
+    t0 = time.perf_counter()
+    ldr_trace(
+        session,
+        section=name,
+        reason="enter",
+        kind="step",
+        st=st,
+        extra=extra or None,
+    )
+    if ui_marker and st is not None:
+        try:
+            st.caption(f"⏱ LDR step enter: `{name}`")
+        except Exception:
+            pass
+    try:
+        yield
+    except Exception as exc:
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        ldr_trace(
+            session,
+            section=name,
+            reason=f"exception:{type(exc).__name__}:{exc}",
+            kind="exception",
+            st=st,
+            extra={"elapsed_ms": elapsed_ms, "traceback": traceback.format_exc()[-1500:]},
+        )
+        if ui_marker and st is not None:
+            try:
+                st.error(f"⏱ LDR step exception: `{name}` ({elapsed_ms}ms) {type(exc).__name__}: {exc}")
+            except Exception:
+                pass
+        raise
+    else:
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        ldr_trace(
+            session,
+            section=name,
+            reason="complete",
+            kind="step_end",
+            st=st,
+            extra={"elapsed_ms": elapsed_ms, **(extra or {})},
+        )
+        if ui_marker and st is not None:
+            try:
+                st.caption(f"⏱ LDR step done: `{name}` ({elapsed_ms}ms)")
+            except Exception:
+                pass
+
+
 def format_ldr_trace_text(session: dict[str, Any], *, limit: int = 120) -> str:
     log = session.get(LDR_TRACE_LOG_KEY) or []
     if not isinstance(log, list) or not log:
@@ -297,12 +376,18 @@ def format_ldr_trace_text(session: dict[str, Any], *, limit: int = 120) -> str:
     for i, entry in enumerate(log[-limit:], 1):
         if not isinstance(entry, dict):
             continue
+        extra = entry.get("extra") if isinstance(entry.get("extra"), dict) else {}
+        elapsed = extra.get("elapsed_ms")
+        suffix = f" | {elapsed}ms" if elapsed is not None else ""
         lines.append(
-            f"{i:02d}. [{entry.get('kind')}] {entry.get('section')} | {entry.get('reason')}"
+            f"{i:02d}. [{entry.get('kind')}] {entry.get('section')} | {entry.get('reason')}{suffix}"
         )
     stall = analyze_ldr_stall(session)
     lines.append("")
     lines.append(stall["analysis"])
+    last_step = session.get(LDR_TRACE_LAST_STEP_KEY) or ""
+    if last_step:
+        lines.append(f"LAST TIMER/STEP: {last_step}")
     return "\n".join(lines)
 
 
@@ -363,6 +448,7 @@ def _write_ldr_trace_panel_body(st: Any, ss: dict[str, Any]) -> None:
     st.markdown(f"**Last successful section:** `{stall.get('last_successful_section') or '—'}`")
     st.markdown(f"**Next section entered:** `{stall.get('next_section_begun') or '—'}`")
     st.markdown(f"**Next behavior:** `{behavior_label}`")
+    st.markdown(f"**Last timer/step:** `{ss.get(LDR_TRACE_LAST_STEP_KEY) or '—'}`")
     st.markdown("---")
     st.markdown(f"**Effective Draft Source:** `{effective_source}`")
     st.markdown(f"**Workspace ID:** `{snap.get('workspace_id') or '—'}`")
