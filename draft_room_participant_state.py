@@ -435,7 +435,153 @@ def set_active_participant(
     state["joined_at"] = _utc_now_iso()
     clear_participant_left_room(session, code)
     _persist_room_membership(session, room_code=code, participant_id=pid, assigned_team=team)
+    # New create/join becomes the only auto-restored Live Draft session.
+    bind_current_live_draft_session(session, code, assigned_team=team)
     return state
+
+
+def live_draft_room_share_code(room: dict[str, Any] | None) -> str:
+    """Share code stamped on a live runtime room (or empty)."""
+    if not isinstance(room, dict):
+        return ""
+    sync = room.get("sync") if isinstance(room.get("sync"), dict) else {}
+    cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
+    for candidate in (
+        sync.get("room_code"),
+        room.get("room_code"),
+        room.get("share_code"),
+        cfg.get("share_code"),
+        cfg.get("room_code"),
+        room.get("draft_room_id"),
+    ):
+        code = str(candidate or "").strip().upper()
+        if code and len(code) >= 4:
+            return code
+    return ""
+
+
+def _membership_joined_at(session: dict[str, Any], room_code: str) -> str:
+    code = str(room_code or "").strip().upper()
+    slot = participant_workflow_slot(session, code)
+    return str(slot.get("joined_at") or slot.get("left_at") or "").strip()
+
+
+def clear_mismatched_live_draft_runtime(session: dict[str, Any], keep_room_code: str) -> None:
+    """Drop live_draft_room / live_draft_state when they belong to another room."""
+    keep = str(keep_room_code or "").strip().upper()
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, LIVE_DRAFT_STATE_KEY
+
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+        room_code = live_draft_room_share_code(room if isinstance(room, dict) else None)
+        if isinstance(room, dict) and room_code and keep and room_code != keep:
+            session.pop(LIVE_DRAFT_ROOM_KEY, None)
+            session.pop(LIVE_DRAFT_STATE_KEY, None)
+            session.pop("live_draft_my_team", None)
+        elif keep and not isinstance(room, dict):
+            session.pop(LIVE_DRAFT_STATE_KEY, None)
+    except ImportError:
+        room = session.get("live_draft_room")
+        room_code = live_draft_room_share_code(room if isinstance(room, dict) else None)
+        if isinstance(room, dict) and room_code and keep and room_code != keep:
+            session.pop("live_draft_room", None)
+            session.pop("live_draft_my_team", None)
+
+
+def bind_current_live_draft_session(
+    session: dict[str, Any],
+    room_code: str,
+    *,
+    assigned_team: str = "",
+) -> str:
+    """Make ``room_code`` the only auto-restored current Live Draft session.
+
+    Older memberships remain in Saved Draft Library history but are marked left so
+    refresh / Return to Live Draft cannot revive them automatically.
+    """
+    keep = str(room_code or "").strip().upper()
+    if not keep:
+        return ""
+
+    membership = session.get(MEMBERSHIP_KEY)
+    if isinstance(membership, dict):
+        for raw_code in list(membership.keys()):
+            other = str(raw_code or "").strip().upper()
+            if other and other != keep and not participant_has_left_room(session, other):
+                mark_participant_left_room(session, other)
+
+    bucket = session.get(PARTICIPANT_STATE_KEY)
+    if isinstance(bucket, dict):
+        for raw_code in list(bucket.keys()):
+            other = str(raw_code or "").strip().upper()
+            if other and other != keep and other != SOLO_WORKFLOW_ROOM_KEY:
+                if not participant_has_left_room(session, other):
+                    mark_participant_left_room(session, other)
+
+    session[ACTIVE_SHARED_ROOM_CODE_KEY] = keep
+    clear_participant_left_room(session, keep)
+    clear_mismatched_live_draft_runtime(session, keep)
+
+    team = str(assigned_team or "").strip()
+    if not team:
+        team = membership_team_for_participant(session, keep) or str(
+            session.get(ACTIVE_PARTICIPANT_TEAM_KEY) or ""
+        ).strip()
+    if team:
+        session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
+        session["live_draft_my_team"] = team
+        try:
+            session["room_your_team"] = team
+        except Exception:
+            pass
+
+    try:
+        from draft_room_shared_state import SHARED_ROOM_META_KEY
+
+        meta = session.get(SHARED_ROOM_META_KEY)
+        if not isinstance(meta, dict) or str(meta.get("room_code") or "").strip().upper() != keep:
+            session[SHARED_ROOM_META_KEY] = {
+                "room_code": keep,
+                "updated_at": _utc_now_iso(),
+                "reason": "bind_current_live_draft_session",
+            }
+    except ImportError:
+        pass
+    return keep
+
+
+def align_live_draft_session_with_active_league(session: dict[str, Any]) -> str:
+    """If Active League came from a Live Draft room, bind that as the current session."""
+    try:
+        from fantasy_league_context import get_active_league_context
+    except ImportError:
+        return ""
+    ctx = get_active_league_context(session, respect_source_priority=False)
+    if not isinstance(ctx, dict):
+        return ""
+    meta = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+    source = str(
+        meta.get("source_room_code")
+        or ctx.get("source_room_code")
+        or ""
+    ).strip().upper()
+    if not source:
+        return ""
+    try:
+        from draft_room_create_verify import is_plausible_share_code
+
+        if not is_plausible_share_code(source):
+            return ""
+    except ImportError:
+        pass
+    team = ""
+    try:
+        from fantasy_league_team_ownership import resolve_account_fantasy_team
+
+        team = str(resolve_account_fantasy_team(session, ctx) or "").strip()
+    except ImportError:
+        team = str(ctx.get("my_team_name") or "").strip()
+    return bind_current_live_draft_session(session, source, assigned_team=team)
 
 
 def active_participant_team(session: dict[str, Any]) -> str:
@@ -887,7 +1033,41 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
         return code
 
     pid = resolve_participant_id(session)
+    preferred = ""
+    active_ctx: dict[str, Any] | None = None
+    try:
+        from fantasy_league_context import get_active_league_context
+
+        active_ctx = get_active_league_context(session, respect_source_priority=False)
+        if isinstance(active_ctx, dict):
+            meta = active_ctx.get("metadata") if isinstance(active_ctx.get("metadata"), dict) else {}
+            preferred = _valid_code(
+                meta.get("source_room_code") or active_ctx.get("source_room_code") or ""
+            )
+    except Exception:
+        preferred = ""
+        active_ctx = None
+
     code = _valid_code(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "")
+    if preferred and code and preferred != code:
+        # Active League's Live Draft origin wins over a stale resume pointer.
+        team = ""
+        try:
+            from fantasy_league_team_ownership import resolve_account_fantasy_team
+
+            team = str(resolve_account_fantasy_team(session, active_ctx) or "").strip()
+        except Exception:
+            team = membership_team_for_participant(session, preferred, participant_id=pid)
+        bind_current_live_draft_session(session, preferred, assigned_team=team)
+        _hydrate_team_from_membership(session, preferred, participant_id=pid)
+        return preferred
+
+    if preferred and not code:
+        team = membership_team_for_participant(session, preferred, participant_id=pid)
+        bind_current_live_draft_session(session, preferred, assigned_team=team)
+        _hydrate_team_from_membership(session, preferred, participant_id=pid)
+        return preferred
+
     if code:
         if participant_has_left_room(session, code):
             session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
@@ -899,26 +1079,19 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
                 if team:
                     session[ACTIVE_PARTICIPANT_ID_KEY] = pid
                     session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
+            clear_mismatched_live_draft_runtime(session, code)
             return code
 
+    candidates: list[tuple[str, str, str]] = []
     membership = session.get(MEMBERSHIP_KEY)
     if isinstance(membership, dict):
-        for raw_code, room_mem in membership.items():
+        for raw_code, _room_mem in membership.items():
             room_code = _valid_code(raw_code)
             if not room_code or participant_has_left_room(session, room_code):
                 continue
             team = membership_team_for_participant(session, room_code, participant_id=pid)
             if team:
-                session[ACTIVE_SHARED_ROOM_CODE_KEY] = room_code
-                session[ACTIVE_PARTICIPANT_ID_KEY] = pid
-                session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
-                try:
-                    from draft_room_runtime_diagnostics import note_prepare_global_rehydrate
-
-                    note_prepare_global_rehydrate(session, room_code=room_code, source="membership_blob")
-                except ImportError:
-                    pass
-                return room_code
+                candidates.append((room_code, team, _membership_joined_at(session, room_code)))
 
     bucket = session.get(PARTICIPANT_STATE_KEY)
     if isinstance(bucket, dict):
@@ -926,22 +1099,30 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
             room_code = _valid_code(raw_code)
             if not room_code or not isinstance(state, dict) or participant_has_left_room(session, room_code):
                 continue
+            if any(c[0] == room_code for c in candidates):
+                continue
             legacy_pid = str(state.get("participant_id") or "").strip()
             team = membership_team_for_participant(session, room_code, participant_id=pid)
             if not team and legacy_pid == pid:
                 team = str(state.get("assigned_team") or "").strip()
             if team:
-                session[ACTIVE_SHARED_ROOM_CODE_KEY] = room_code
-                session[ACTIVE_PARTICIPANT_ID_KEY] = pid
-                session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
-                try:
-                    from draft_room_runtime_diagnostics import note_prepare_global_rehydrate
+                candidates.append((room_code, team, _membership_joined_at(session, room_code)))
 
-                    note_prepare_global_rehydrate(session, room_code=room_code, source="participant_state_blob")
-                except ImportError:
-                    pass
-                return room_code
-    return ""
+    if not candidates:
+        return ""
+
+    # Newest join wins — never silently revive the oldest membership key.
+    candidates.sort(key=lambda row: row[2] or "", reverse=True)
+    room_code, team, _joined = candidates[0]
+    bind_current_live_draft_session(session, room_code, assigned_team=team)
+    session[ACTIVE_PARTICIPANT_ID_KEY] = pid
+    try:
+        from draft_room_runtime_diagnostics import note_prepare_global_rehydrate
+
+        note_prepare_global_rehydrate(session, room_code=room_code, source="membership_newest")
+    except ImportError:
+        pass
+    return room_code
 
 
 def _hydrate_team_from_membership(

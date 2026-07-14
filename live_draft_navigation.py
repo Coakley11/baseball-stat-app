@@ -509,7 +509,25 @@ def _try_hydrate_shared_room(session: dict[str, Any], room_code: str) -> dict[st
         return None
     room = _live_draft_room_for_return(session)
     if isinstance(room, dict):
-        return room
+        try:
+            from draft_room_participant_state import live_draft_room_share_code
+
+            existing_code = live_draft_room_share_code(room)
+        except ImportError:
+            sync = room.get("sync") if isinstance(room.get("sync"), dict) else {}
+            existing_code = str(
+                sync.get("room_code") or room.get("room_code") or room.get("draft_room_id") or ""
+            ).strip().upper()
+        if existing_code == code:
+            return room
+        # Stale local blob from another room — do not advertise as this resume target.
+        try:
+            from draft_room_participant_state import clear_mismatched_live_draft_runtime
+
+            clear_mismatched_live_draft_runtime(session, code)
+        except ImportError:
+            session.pop("live_draft_room", None)
+        room = None
     try:
         from draft_room_shared_state import load_shared_room
         from live_draft_state import room_from_persist_dict
@@ -527,6 +545,7 @@ def _try_hydrate_shared_room(session: dict[str, Any], room_code: str) -> dict[st
                 restored = blob if blob.get("draft_room_id") or blob.get("pick_order") or blob.get("status") else None
         if isinstance(restored, dict):
             session["live_draft_room"] = restored
+            session["active_shared_draft_room_code"] = code
             return restored
     except ImportError:
         pass
@@ -537,7 +556,15 @@ def _try_hydrate_shared_room(session: dict[str, Any], room_code: str) -> dict[st
 
         sync_shared_draft_room(session, force=True)
         poll_shared_draft_room(session)
-        return _live_draft_room_for_return(session)
+        hydrated = _live_draft_room_for_return(session)
+        if isinstance(hydrated, dict):
+            try:
+                from draft_room_participant_state import live_draft_room_share_code
+
+                if live_draft_room_share_code(hydrated) in ("", code):
+                    return hydrated
+            except ImportError:
+                return hydrated
     except ImportError:
         pass
     except Exception:

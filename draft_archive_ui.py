@@ -2680,6 +2680,12 @@ def _on_click_set_active_league(
             return
 
     _clear_fantasy_caches_on_archive_change(session)
+    try:
+        from draft_room_participant_state import align_live_draft_session_with_active_league
+
+        align_live_draft_session_with_active_league(session)
+    except ImportError:
+        pass
     _persist_archive(session, st, reason="league_context_activated", entry=loaded_entry)
     label = str(
         league_label

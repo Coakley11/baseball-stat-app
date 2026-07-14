@@ -1198,6 +1198,12 @@ def join_shared_league_from_invite(
         invite_id=invite_id,
         league_id=league_id,
     )
+    try:
+        from draft_room_participant_state import align_live_draft_session_with_active_league
+
+        align_live_draft_session_with_active_league(session)
+    except ImportError:
+        pass
     _notify_invite_response_activity(
         session,
         invite=invite,
