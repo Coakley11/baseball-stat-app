@@ -379,10 +379,15 @@ def owned_team_for_user(context: dict[str, Any] | None, user_id: str = "") -> st
     uid = str(user_id or _resolve_user_id()).strip()
     if not uid:
         return ""
+    soft_match = ""
     for team, record in get_team_ownership(context).items():
-        if account_user_ids_match(str(record.get("user_id") or "").strip(), uid):
+        if not account_user_ids_match(str(record.get("user_id") or "").strip(), uid):
+            continue
+        if ownership_is_firm_claim(record):
             return team
-    return ""
+        if not soft_match:
+            soft_match = team
+    return soft_match
 
 
 def owner_user_id_for_team(context: dict[str, Any] | None, team_name: str) -> str:
@@ -474,11 +479,52 @@ def trades_enabled(context: dict[str, Any] | None, session: dict[str, Any] | Non
 
 
 def resolve_trade_team_for_session(context: dict[str, Any] | None, session: dict[str, Any] | None = None) -> str:
-    """Prefer owned team over context my_team_name for trade UI/actions."""
-    del session
-    owned = owned_team_for_user(context)
+    """Resolve my_team exclusively from shared-league ownership for the auth account.
+
+    Syncs firm claims from the shared store when a session is provided. Never falls
+    back to stale local/cached ``my_team_name`` (or page lineup team) when any firm
+    ownership claims already exist in the league.
+    """
+    ctx = context if isinstance(context, dict) else None
+    if isinstance(session, dict) and ctx is not None:
+        try:
+            league_id = str(resolve_canonical_league_id(ctx) or "").strip()
+            if league_id:
+                from fantasy_shared_league_store import sync_context_with_shared_store
+
+                synced = sync_context_with_shared_store(session, ctx)
+                if isinstance(synced, dict):
+                    ctx = synced
+        except Exception:
+            pass
+
+    uid = ""
+    if isinstance(session, dict):
+        try:
+            from fantasy_workspace_team_identity import session_account_identity
+
+            uid, *_rest = session_account_identity(session)
+            uid = str(uid or "").strip()
+        except Exception:
+            uid = ""
+    owned = owned_team_for_user(ctx, uid)
     if owned:
+        if isinstance(session, dict) and isinstance(ctx, dict):
+            if str(ctx.get("my_team_name") or "").strip() != owned:
+                healed = dict(ctx)
+                healed["my_team_name"] = owned
+                try:
+                    upsert_league_context(session, healed, mark_persist_authoritative=False)
+                except TypeError:
+                    upsert_league_context(session, healed)
+                except Exception:
+                    pass
         return owned
-    if isinstance(context, dict):
-        return str(context.get("my_team_name") or "").strip()
+
+    ownership = get_team_ownership(ctx)
+    if any(ownership_is_firm_claim(record) for record in ownership.values()):
+        # Shared league has claims, but not for this account — force claim UI.
+        return ""
+    if isinstance(ctx, dict):
+        return str(ctx.get("my_team_name") or "").strip()
     return ""

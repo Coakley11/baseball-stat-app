@@ -189,7 +189,7 @@ class TradePhase1CrossAccountTests(unittest.TestCase):
         self.assertEqual(incoming[0]["status"], TRADE_PROPOSAL_STATUS_PENDING)
 
         alerts = get_trade_notifications(session_b, "Team 2")
-        self.assertTrue(any("New trade offer from Daniel" in str(a.get("message") or "") for a in alerts))
+        self.assertTrue(any("incoming trade offer from Daniel" in str(a.get("message") or "") for a in alerts))
 
         accepted, accept_err = _accept_proposal(session_b, str(proposal["proposal_id"]))
         self.assertEqual(accept_err, "")

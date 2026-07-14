@@ -21,6 +21,7 @@ from fantasy_league_team_ownership import (
     owner_display_for_team,
     owner_user_id_for_team,
     owned_team_for_user,
+    resolve_trade_team_for_session,
     trades_enabled,
 )
 
@@ -751,7 +752,7 @@ def create_trade_proposal(
 
     proposer = str(proposer_team or "").strip()
     recipient = str(recipient_team or "").strip()
-    my_owned = owned_team_for_user(context)
+    my_owned = resolve_trade_team_for_session(context, session)
     if my_owned and proposer != my_owned:
         err = f"Your account owns {my_owned}; trades must be proposed from that team."
         record_trade_submit_trace(
@@ -1028,7 +1029,7 @@ def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[di
         return None, msg
 
     recipient = str(proposal.get("recipient_team") or "").strip()
-    my_owned = owned_team_for_user(context)
+    my_owned = resolve_trade_team_for_session(context, session)
     record_trade_response_trace(session, recipient_team=recipient, my_owned_team=my_owned or None)
     if my_owned and recipient != my_owned:
         err = f"Only the owner of {recipient} can accept this trade."
@@ -1087,6 +1088,11 @@ def decline_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[d
     if str(proposal.get("status") or "") != TRADE_PROPOSAL_STATUS_PENDING:
         return None, "This trade is no longer pending."
 
+    recipient = str(proposal.get("recipient_team") or "").strip()
+    my_owned = resolve_trade_team_for_session(context, session)
+    if my_owned and recipient != my_owned:
+        return None, f"Only the owner of {recipient} can decline this trade."
+
     now = _utc_now_iso()
     proposal["status"] = TRADE_PROPOSAL_STATUS_DECLINED
     proposal["updated_at"] = now
@@ -1132,7 +1138,10 @@ def cancel_trade_proposal(
     if str(proposal.get("status") or "") != TRADE_PROPOSAL_STATUS_PENDING:
         return None, "Only pending trades can be canceled."
     proposer = str(proposal.get("proposer_team") or "").strip()
-    team = str(canceled_by_team or proposer).strip()
+    my_owned = resolve_trade_team_for_session(context, session)
+    team = str(canceled_by_team or my_owned or proposer).strip()
+    if my_owned and team != my_owned:
+        return None, f"Your account owns {my_owned}; only that team can cancel offers."
     if team != proposer:
         return None, "Only the proposing team can cancel this offer."
 

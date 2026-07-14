@@ -69,14 +69,34 @@ def _resolve_trade_scope(session: dict[str, Any], *, page_lineup_team: str) -> d
     try:
         from fantasy_league_context import get_active_league_context
         from fantasy_league_identity import resolve_canonical_league_id
-        from fantasy_lineup_scope import resolve_canonical_lineup_team, resolve_lineup_scope
+        from fantasy_league_team_ownership import (
+            get_team_ownership,
+            ownership_is_firm_claim,
+            resolve_trade_team_for_session,
+        )
 
         context = get_active_league_context(session) or {}
-        scope = resolve_lineup_scope(session, context, week=1, page_lineup_team=page_lineup_team)
-        my_team = resolve_canonical_lineup_team(session, context, page_lineup_team=page_lineup_team)
-        league_context_id = str(context.get("league_context_id") or "").strip()
-        canonical_league_id = str(scope.league_id if scope else "") or str(resolve_canonical_league_id(context) or "").strip()
-        fingerprint = str(scope.fingerprint if scope else f"trade|{my_team}|{canonical_league_id}")
+        try:
+            from fantasy_shared_league_store import sync_context_with_shared_store
+
+            if isinstance(context, dict) and resolve_canonical_league_id(context):
+                context = sync_context_with_shared_store(session, context) or context
+        except Exception:
+            pass
+
+        # Shared-league Trade Center must ignore page/cached lineup/live-draft team.
+        my_team = resolve_trade_team_for_session(context, session)
+        canonical_league_id = str(resolve_canonical_league_id(context) or "").strip()
+        context_type = str((context or {}).get("context_type") or "").strip()
+        is_shared_league = bool(canonical_league_id) or context_type == "real_league"
+        if not my_team and not is_shared_league:
+            ownership = get_team_ownership(context if isinstance(context, dict) else None)
+            has_firm = any(ownership_is_firm_claim(record) for record in ownership.values())
+            if not has_firm:
+                my_team = str(page_lineup_team or "").strip()
+
+        league_context_id = str((context or {}).get("league_context_id") or "").strip()
+        fingerprint = f"trade|{my_team}|{canonical_league_id or league_context_id}"
         return {
             "my_team": my_team,
             "league_context_id": league_context_id,
@@ -899,17 +919,26 @@ def _render_build_analyze(
 
 
 def _count_pending_offers(session: dict[str, Any], my_team: str) -> int:
+    team = str(my_team or "").strip()
+    if not team:
+        return 0
     try:
-        from fantasy_trade_proposals import get_trade_proposals
-
-        proposals = get_trade_proposals(session) or []
-        return sum(
-            1
-            for p in proposals
-            if isinstance(p, dict)
-            and str(p.get("status") or "").lower() == "pending"
-            and (str(p.get("to_team") or "") == my_team or str(p.get("from_team") or "") == my_team)
+        from fantasy_league_context import get_active_league_context
+        from fantasy_trade_proposals import (
+            TRADE_PROPOSAL_STATUS_PENDING,
+            get_display_status,
+            get_incoming_trade_proposals,
+            get_outgoing_trade_proposals,
         )
+
+        context = get_active_league_context(session)
+        if not context:
+            return 0
+        pending = 0
+        for proposal in get_incoming_trade_proposals(session, team) + get_outgoing_trade_proposals(session, team):
+            if get_display_status(context, proposal) == TRADE_PROPOSAL_STATUS_PENDING:
+                pending += 1
+        return pending
     except Exception:
         return 0
 
@@ -969,11 +998,12 @@ def render_trade_center_tab(
         return
 
     try:
-        from fantasy_lineup_scope import assert_lineup_write_identity, resolve_lineup_scope
         from fantasy_league_context import get_active_league_context
+        from fantasy_lineup_scope import assert_lineup_write_identity, resolve_lineup_scope
 
         context = get_active_league_context(session) or {}
-        scope = resolve_lineup_scope(session, context, week=1, page_lineup_team=lineup_team)
+        # Identity gate must use ownership-resolved team, not stale page lineup.
+        scope = resolve_lineup_scope(session, context, week=1, page_lineup_team=my_team or lineup_team)
         ok, err = assert_lineup_write_identity(scope)
         if not ok:
             st.warning(err)

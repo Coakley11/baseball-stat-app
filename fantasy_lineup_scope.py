@@ -95,7 +95,15 @@ def resolve_lineup_scope(
     uid, _external, owned_ws, email, _local = session_account_identity(session)
     active_ws = str(session.get("_suite_active_workspace_id") or owned_ws or "").strip()
     league_id = str(resolve_canonical_league_id(merged) or "").strip()
-    owned_team = str(merged.get("my_team_name") or "").strip()
+    owned_team = ""
+    try:
+        from fantasy_league_team_ownership import owned_team_for_user
+
+        owned_team = str(owned_team_for_user(merged, uid) or "").strip()
+    except ImportError:
+        owned_team = ""
+    if not owned_team:
+        owned_team = str(merged.get("my_team_name") or "").strip()
     page_team = str(page_lineup_team or "").strip()
 
     fingerprint = build_lineup_scope_fingerprint(
@@ -127,9 +135,9 @@ def resolve_canonical_lineup_team(
     scope = resolve_lineup_scope(session, context, week=1, page_lineup_team=page_lineup_team)
     if scope and scope.owned_team:
         return scope.owned_team
-    if isinstance(context, dict):
-        return str(context.get("my_team_name") or "").strip()
-    return str(page_lineup_team or "").strip()
+    # Do not rebound to pre-overlay context.my_team_name or page lineup — those
+    # are the Team X / cache bleed sources. Empty signals "claim required".
+    return ""
 
 
 def lineup_identity_in_sync(scope: LineupScope | None) -> bool:

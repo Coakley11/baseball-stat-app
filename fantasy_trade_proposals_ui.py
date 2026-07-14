@@ -56,9 +56,11 @@ def build_trade_response_ui_diag(
 ) -> dict[str, Any]:
     """Structured diagnostics for trade response v2 render path tracing."""
     context = get_active_league_context(session)
-    owned_team = owned_team_for_user(context) if context else ""
+    owned_team = ""
     resolved_team = resolve_trade_team_for_session(context, session) if context else ""
-    team_for_inbox = owned_team or resolved_team or str(my_team or "").strip()
+    if context:
+        owned_team = owned_team_for_user(context) or resolved_team
+    team_for_inbox = resolved_team or owned_team
     incoming = get_incoming_trade_proposals(session, team_for_inbox) if context and team_for_inbox else []
     pending_actionable = 0
     if context and team_for_inbox:
@@ -365,10 +367,7 @@ def submit_trade_proposal_from_analyzer(
     """Create a pending trade proposal from Trade Center builder state."""
     shape_error = _validate_ui_trade_shape(give_players, get_players)
     context = get_active_league_context(session)
-    proposer_team = resolve_trade_team_for_session(context, session) if context else str(my_team or "").strip()
-    owned_team = owned_team_for_user(context) if context else ""
-    if owned_team:
-        proposer_team = owned_team
+    proposer_team = resolve_trade_team_for_session(context, session) if context else ""
     if shape_error:
         session["_last_trade_proposal_submit_error"] = shape_error
         st.error(shape_error)
@@ -378,13 +377,18 @@ def submit_trade_proposal_from_analyzer(
         session["_last_trade_proposal_submit_error"] = msg
         st.error(msg)
         return
+    if not proposer_team:
+        msg = "Claim your team before proposing a trade."
+        session["_last_trade_proposal_submit_error"] = msg
+        st.error(msg)
+        return
 
     pending_before = count_pending_trade_proposals(context)
-    outgoing_before = len(get_outgoing_trade_proposals(session, proposer_team or my_team))
+    outgoing_before = len(get_outgoing_trade_proposals(session, proposer_team))
     record_trade_submit_trace(
         session,
         button_clicked=True,
-        proposer_team=proposer_team or my_team,
+        proposer_team=proposer_team,
         recipient_team=other_team,
         give_players=list(give_players),
         receive_players=list(get_players),
@@ -394,7 +398,7 @@ def submit_trade_proposal_from_analyzer(
     )
     proposal, err = create_trade_proposal(
         session,
-        proposer_team=proposer_team or my_team,
+        proposer_team=proposer_team,
         recipient_team=other_team,
         proposer_gives=give_players,
         proposer_receives=get_players,
@@ -405,7 +409,7 @@ def submit_trade_proposal_from_analyzer(
     record_trade_submit_trace(
         session,
         pending_trade_count_after=count_pending_trade_proposals(refreshed_ctx),
-        outgoing_count_after=len(get_outgoing_trade_proposals(session, proposer_team or my_team)),
+        outgoing_count_after=len(get_outgoing_trade_proposals(session, proposer_team)),
     )
     if err:
         session["_last_trade_proposal_submit_error"] = err
@@ -628,16 +632,16 @@ def render_trade_proposals_section(
         st.caption("Set an **Active Draft** in Saved Draft Library to propose league trades.")
         return
 
-    my_team_name = str(my_team or resolve_trade_team_for_session(context, session) or context.get("my_team_name") or "").strip()
-    proposer_team = resolve_trade_team_for_session(context, session) or my_team_name
-    owned_team = owned_team_for_user(context)
-    if owned_team and my_team_name and my_team_name != owned_team:
-        st.warning(
-            f"Trade analyzer selected **{my_team_name}**, but your claimed team is **{owned_team}**. "
-            f"Proposals will use **{owned_team}**."
+    # Inbox / actions / history use shared-league ownership only — never analyzer
+    # cache or page lineup team when a firm claim exists for this account.
+    owned_team = resolve_trade_team_for_session(context, session)
+    my_team_name = owned_team or str(my_team or "").strip()
+    proposer_team = owned_team or my_team_name
+    analyzer_team = str(my_team or "").strip()
+    if owned_team and analyzer_team and analyzer_team != owned_team:
+        st.caption(
+            f"Trade analyzer cache showed **{analyzer_team}**; using claimed team **{owned_team}**."
         )
-        my_team_name = owned_team
-        proposer_team = owned_team
     team_names = sorted((context.get("league_rosters") or {}).keys())
 
     if needs_team_assignment(context):
