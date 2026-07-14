@@ -152,15 +152,26 @@ def _active_league_team_info(session: dict[str, Any]) -> tuple[str, str] | None:
 
 def _live_draft_team_name(session: dict[str, Any]) -> str:
     room = session.get("live_draft_room")
-    if isinstance(room, dict):
-        cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
-        for key in ("user_team", "your_team"):
-            val = cfg.get(key)
-            if val:
-                return str(val).strip()
-        teams = room.get("teams")
-        if isinstance(teams, list) and teams:
-            return str(teams[0]).strip()
+    if not isinstance(room, dict):
+        return ""
+    room_teams: list[str] = []
+    raw_teams = room.get("teams")
+    if isinstance(raw_teams, list):
+        room_teams = [str(t).strip() for t in raw_teams if str(t).strip()]
+    candidates: list[str] = []
+    my_widget = str(session.get("live_draft_my_team") or "").strip()
+    if my_widget:
+        candidates.append(my_widget)
+    cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
+    for key in ("user_team", "your_team"):
+        val = str(cfg.get(key) or "").strip()
+        if val:
+            candidates.append(val)
+    for candidate in candidates:
+        if candidate and (not room_teams or candidate in room_teams):
+            return candidate
+    if room_teams:
+        return room_teams[0]
     return ""
 
 

@@ -21657,7 +21657,20 @@ if active_page == DRAFT_LAB_PAGE:
 
 if active_page == "Live Draft Room":
     _page_perf_start(active_page)
+    try:
+        from live_draft_render_trace import ldr_section, ldr_section_done, render_live_draft_render_trace
+
+        ldr_section(st.session_state, "page_entry", st=st)
+        render_live_draft_render_trace(st)
+    except ImportError:
+        pass
     _maybe_render_account_pref_sync(active_page)
+    try:
+        from live_draft_render_trace import ldr_section_done
+
+        ldr_section_done(st.session_state, "account_pref_sync", st=st)
+    except ImportError:
+        pass
     _setup_prep_ctx = None
     try:
         from live_draft_perf import PHASE_SETUP_PAGE_PREP, live_draft_perf_action
@@ -21669,7 +21682,9 @@ if active_page == "Live Draft Room":
     try:
         from global_fantasy_settings_state import GLOBAL_FORMAT_KEY, prepare_global_fantasy_settings, to_live_draft_scoring
         from live_draft_perf import PHASE_SETUP_GLOBAL_FANTASY, live_draft_perf_action
+        from live_draft_render_trace import ldr_section
 
+        ldr_section(st.session_state, "prepare_global_fantasy_settings", st=st)
         with live_draft_perf_action(st.session_state, "global_fantasy", phase=PHASE_SETUP_GLOBAL_FANTASY):
             prepare_global_fantasy_settings(st.session_state, force_mirror=True)
             fmt = st.session_state.get(GLOBAL_FORMAT_KEY)
@@ -21685,12 +21700,31 @@ if active_page == "Live Draft Room":
                 st.session_state["live_draft_scoring"] = to_live_draft_scoring(fmt)
         except ImportError:
             pass
+    except Exception as _ldr_gs_exc:
+        try:
+            from live_draft_render_trace import ldr_exception
+
+            ldr_exception(st.session_state, "prepare_global_fantasy_settings", _ldr_gs_exc, st=st)
+        except ImportError:
+            pass
+    try:
+        from live_draft_render_trace import ldr_section_done
+
+        ldr_section_done(st.session_state, "prepare_global_fantasy_settings", st=st)
+    except ImportError:
+        pass
     render_section_header(
         "📡 Live Draft Room",
         "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft.",
         compact=True,
     )
     render_page_guide(active_page)
+    try:
+        from live_draft_render_trace import ldr_section_done
+
+        ldr_section_done(st.session_state, "header_and_guide", st=st)
+    except ImportError:
+        pass
     _prepare_and_show_draft_shared_settings(
         active_page,
         lookback_key="live_draft_proj_window",
@@ -21752,6 +21786,12 @@ if active_page == "Live Draft Room":
                 from live_draft_start_progress import should_skip_live_draft_poll
 
                 _skip_poll = _skip_poll or should_skip_live_draft_poll(st.session_state)
+            except ImportError:
+                pass
+            try:
+                from live_draft_render_trace import ldr_section
+
+                ldr_section(st.session_state, "poll_fragment", st=st)
             except ImportError:
                 pass
             render_live_draft_poll_fragment(st, st.session_state)
@@ -22614,8 +22654,26 @@ if active_page == "Live Draft Room":
     room = st.session_state.get("live_draft_room")
 
     if room is None:
+        try:
+            from live_draft_render_trace import ldr_early_return
+
+            ldr_early_return(st.session_state, "room_body", reason="no_live_draft_room", st=st)
+        except ImportError:
+            pass
         st.info("Open **Draft Setup** to configure a new draft, or use **Advanced → Convert Simulator to Live Draft** to promote an existing simulator board.")
     else:
+        try:
+            from live_draft_render_trace import ldr_section
+
+            ldr_section(
+                st.session_state,
+                "room_body",
+                st=st,
+                status=str(room.get("status") or ""),
+                team=str((room.get("config") or {}).get("user_team") or ""),
+            )
+        except ImportError:
+            pass
         try:
             from live_draft_room_ui import inject_live_draft_room_styles
 
@@ -23900,6 +23958,14 @@ if active_page == "Live Draft Room":
     except ImportError:
         pass
 
+    try:
+        from live_draft_render_trace import ldr_section_done, render_live_draft_render_trace
+
+        ldr_section_done(st.session_state, "page_complete", st=st)
+        render_live_draft_render_trace(st)
+    except ImportError:
+        pass
+
     _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
     save_page_state(active_page)
@@ -24175,6 +24241,22 @@ if active_page == "Fantasy Standings Tracker":
             active_league_context = None
             archive_roster_dataframe = None  # type: ignore[assignment,misc]
 
+        # Temporary Live/Simulator must never fall back to a different Active Draft archive.
+        _temporary_fantasy_source = False
+        try:
+            from fantasy_context_source import (
+                SOURCE_LIVE_DRAFT,
+                SOURCE_SIMULATOR_BOARD,
+                resolve_fantasy_context_source,
+            )
+
+            _eff_kind = resolve_fantasy_context_source(st.session_state).kind
+            _temporary_fantasy_source = _eff_kind in (SOURCE_LIVE_DRAFT, SOURCE_SIMULATOR_BOARD)
+            if _temporary_fantasy_source:
+                active_archive = None
+        except ImportError:
+            pass
+
         roster_stats = pd.DataFrame()
         standings = pd.DataFrame()
         _standings_team_ctx = ""
@@ -24188,6 +24270,9 @@ if active_page == "Fantasy Standings Tracker":
                 _use_full_league_context = _has_full_league_rosters(active_league_context)
             except ImportError:
                 pass
+            # Ephemeral live context should drive standings even before "full" is true.
+            if _temporary_fantasy_source:
+                _use_full_league_context = True
         try:
             from fantasy_perf_cache import (
                 _df_sig,
@@ -24258,7 +24343,7 @@ if active_page == "Fantasy Standings Tracker":
                         normalize_name_fn=normalize_player_name_for_merge,
                     )
                     _standings_team_ctx = str(active_league_context.get("my_team_name") or "")
-                elif active_archive:
+                elif active_archive and not _temporary_fantasy_source:
                     roster_stats = build_roster_stats_from_archive(
                         active_archive,
                         merged_current_stats,
@@ -24267,7 +24352,11 @@ if active_page == "Fantasy Standings Tracker":
                     _standings_team_ctx = str(active_archive.get("team_name") or "")
                 else:
                     roster_stats = pd.DataFrame()
-                    _standings_team_ctx = ""
+                    _standings_team_ctx = (
+                        str((active_league_context or {}).get("my_team_name") or "")
+                        if _temporary_fantasy_source
+                        else ""
+                    )
                 if not roster_stats.empty:
                     standings = score_fantasy_rosters_from_stats(roster_stats, scoring_format_tracker)
             try:

@@ -674,6 +674,33 @@ def _board_team_names(table: pd.DataFrame) -> list[str]:
     return names
 
 
+def _live_room_team_names(room: dict[str, Any] | None) -> list[str]:
+    """Teams that belong to the current Live Draft board only."""
+    if not isinstance(room, dict):
+        return []
+    teams = room.get("teams")
+    names: list[str] = []
+    seen: set[str] = set()
+    if isinstance(teams, list):
+        for t in teams:
+            name = str(t or "").strip()
+            if name and name.lower() not in {"nan", "none"} and name not in seen:
+                seen.add(name)
+                names.append(name)
+    if names:
+        return names
+    board = room.get("draft_board") or room.get("pick_order") or []
+    if isinstance(board, list):
+        for row in board:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("Team") or row.get("team") or "").strip()
+            if name and name.lower() not in {"nan", "none"} and name not in seen:
+                seen.add(name)
+                names.append(name)
+    return names
+
+
 def _resolve_my_team_for_ephemeral(session: dict[str, Any], *, source: FantasyContextSource) -> str:
     """Team identity for temporary Live/Simulator boards — never Active League's saved team."""
     if source.kind == SOURCE_SIMULATOR_BOARD:
@@ -694,23 +721,33 @@ def _resolve_my_team_for_ephemeral(session: dict[str, Any], *, source: FantasyCo
         return candidate
     if source.kind == SOURCE_LIVE_DRAFT:
         room = _resolve_live_room(session)
+        room_teams = _live_room_team_names(room if isinstance(room, dict) else None)
+        # Prefer the Live Draft Room selectbox / room config — only if on this board.
+        candidates: list[str] = []
+        for key in ("live_draft_my_team",):
+            val = str(session.get(key) or "").strip()
+            if val:
+                candidates.append(val)
         if isinstance(room, dict):
             cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
             for key in ("user_team", "your_team"):
                 val = str(cfg.get(key) or "").strip()
                 if val:
-                    return val
-            try:
-                from fantasy_workspace_team_identity import (
-                    resolve_current_account_team_for_live_draft_and_league,
-                )
-
-                resolved = resolve_current_account_team_for_live_draft_and_league(session, room=room)
-                if resolved:
-                    return str(resolved).strip()
-            except ImportError:
-                pass
-        return str(session.get("room_your_team") or "").strip()
+                    candidates.append(val)
+            # Do not call resolve_current_account_team here — it loads league context via
+            # get_effective_fantasy_context and would recurse forever.
+            participant = str(session.get("draft_room_participant_team") or "").strip()
+            if participant:
+                candidates.append(participant)
+        room_your = str(session.get("room_your_team") or "").strip()
+        if room_your:
+            candidates.append(room_your)
+        for candidate in candidates:
+            if candidate and (not room_teams or candidate in room_teams):
+                return candidate
+        if room_teams:
+            return room_teams[0]
+        return ""
     try:
         from global_fantasy_settings_state import get_active_fantasy_team
 
@@ -856,6 +893,8 @@ def _workflow_descriptor_cache_fingerprint(session: dict[str, Any]) -> str:
 
     live_id = ""
     live_rev = ""
+    live_my = ""
+    live_teams = ""
     room = _resolve_live_room(session)
     if isinstance(room, dict):
         live_id = str(room.get("draft_room_id") or room.get("room_id") or "").strip()
@@ -865,6 +904,14 @@ def _workflow_descriptor_cache_fingerprint(session: dict[str, Any]) -> str:
             or room.get("updated_at")
             or (len(board) if isinstance(board, list) else 0)
         )
+        live_team_names = _live_room_team_names(room)
+        live_teams = ",".join(live_team_names)
+        cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
+        live_my = str(session.get("live_draft_my_team") or "").strip()
+        if not live_my:
+            live_my = str(cfg.get("user_team") or cfg.get("your_team") or "").strip()
+        if live_my and live_team_names and live_my not in live_team_names:
+            live_my = live_team_names[0] if live_team_names else ""
 
     active_draft = str(session.get("active_draft_archive_id") or "").strip()
     active_ctx = str(session.get("active_league_context_id") or "").strip()
@@ -889,6 +936,8 @@ def _workflow_descriptor_cache_fingerprint(session: dict[str, Any]) -> str:
             f"sim_my={sim_my}",
             f"live_id={live_id}",
             f"live_rev={live_rev}",
+            f"live_my={live_my}",
+            f"live_teams={live_teams}",
             f"active_draft={active_draft}",
             f"active_ctx={active_ctx}",
             f"auth={auth}",

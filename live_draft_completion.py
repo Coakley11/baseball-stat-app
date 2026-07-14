@@ -187,7 +187,7 @@ def end_live_draft_session(
         "message": (
             f"Ended the Live Draft session for **{draft_label}**. "
             "Saved drafts and Shared Leagues were preserved. "
-            "Choose Create or Join when you are ready for the next draft."
+            "Fantasy pages restored to the Active Draft when Live Draft Override is off."
         ),
         "ended_at": _utc_now_iso(),
     }
@@ -204,6 +204,23 @@ def end_live_draft_session(
     except Exception:
         session.pop("live_draft_room", None)
         session.pop("live_draft_state", None)
+
+    # Live Draft Override OFF → temporary board is gone; restore Active Draft my-team.
+    try:
+        from fantasy_context_source import (
+            USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY,
+            invalidate_fantasy_workflow_descriptor_cache,
+        )
+
+        override_on = bool(session.get(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY))
+        invalidate_fantasy_workflow_descriptor_cache(session)
+        if not override_on:
+            from global_fantasy_settings_state import sync_active_fantasy_team_to_canonical
+
+            restored = sync_active_fantasy_team_to_canonical(session)
+            session["_live_draft_ended_restored_active_team"] = restored
+    except Exception:
+        pass
 
     return {"ok": True, "reason": reason, "draft_label": draft_label}
 
