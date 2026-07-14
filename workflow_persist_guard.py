@@ -3487,6 +3487,18 @@ def run_consolidated_startup_workflow(st: Any, app_id: str = "baseball") -> dict
     if trace["canonical_sync"].get("rebuilt") and not session.get("_suite_startup_canonical_sync_rerun_done"):
         session["_suite_startup_canonical_sync_rerun_done"] = True
         trace["rerun_requested"] = True
+        try:
+            from fantasy_workflow_trace import note_rerun
+
+            note_rerun(
+                session,
+                function="run_consolidated_startup_workflow",
+                reason="startup_canonical_sync_rebuilt",
+                page=str(session.get("active_page") or ""),
+                st=st,
+            )
+        except ImportError:
+            pass
         rerun = getattr(st, "rerun", None)
         if callable(rerun):
             rerun()

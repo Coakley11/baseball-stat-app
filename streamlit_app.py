@@ -2194,11 +2194,31 @@ def _render_consolidated_page_diagnostics(page_key: str) -> None:
 
 def _maybe_render_account_pref_sync(page_key: str) -> None:
     try:
+        from fantasy_workflow_trace import mark_fantasy_page_enter, render_fantasy_workflow_trace
+
+        mark_fantasy_page_enter(st.session_state, str(page_key or ""), st=st)
+        render_fantasy_workflow_trace(st)
+    except ImportError:
+        pass
+    try:
         from account_fantasy_preferences import maybe_render_account_preference_sync
 
         maybe_render_account_preference_sync(st, page=str(page_key or ""))
     except ImportError:
         pass
+    except Exception as exc:
+        try:
+            from fantasy_workflow_trace import note_suppressed_exception
+
+            note_suppressed_exception(
+                st.session_state,
+                function="_maybe_render_account_pref_sync",
+                exc=exc,
+                page=str(page_key or ""),
+                st=st,
+            )
+        except ImportError:
+            pass
 
 
 def top_bar_chart(df, name_col, value_col, title, top_n=10):
@@ -14094,9 +14114,33 @@ try:
     }
     # Ordinary warm hops onto Library/Lineup/Standings/Waiver skip live/draft board prep.
     if (not _warm_startup) or _draftish:
+        try:
+            from fantasy_workflow_trace import log_wf
+
+            log_wf(
+                st.session_state,
+                function="prepare_global_draft_context",
+                reason="begin:workspace_restore",
+                page=_active_page_for_prep,
+                st=st,
+                extra={"warm_startup": _warm_startup, "draftish": _draftish},
+            )
+        except ImportError:
+            pass
         prepare_global_draft_context(st.session_state)
-except Exception:
-    pass
+except Exception as _gdc_exc:
+    try:
+        from fantasy_workflow_trace import note_suppressed_exception
+
+        note_suppressed_exception(
+            st.session_state,
+            function="prepare_global_draft_context",
+            exc=_gdc_exc,
+            page=str(st.session_state.get("active_page") or ""),
+            st=st,
+        )
+    except ImportError:
+        pass
 _DRAFT_BOARD_PAGES = frozenset({
     "Draft Room Simulator",
     "Draft Assistant Simulator",
@@ -14120,11 +14164,34 @@ if _warm_startup and _active_page_for_prep not in _DRAFT_BOARD_PAGES:
     _needs_live_prep = False
 if _needs_live_prep:
     try:
+        from fantasy_workflow_trace import log_wf
+
+        log_wf(
+            st.session_state,
+            function="prepare_live_draft_state",
+            reason="begin:draft_restore",
+            page=_active_page_for_prep,
+            st=st,
+        )
+    except ImportError:
+        pass
+    try:
         from live_draft_state import prepare_live_draft_state
 
         prepare_live_draft_state(st.session_state)
-    except Exception:
-        pass
+    except Exception as _ld_exc:
+        try:
+            from fantasy_workflow_trace import note_suppressed_exception
+
+            note_suppressed_exception(
+                st.session_state,
+                function="prepare_live_draft_state",
+                exc=_ld_exc,
+                page=_active_page_for_prep,
+                st=st,
+            )
+        except ImportError:
+            pass
 if _active_page_for_prep in _DRAFT_BOARD_PAGES:
     _skip_draft_room_prep = False
     try:
@@ -14135,6 +14202,18 @@ if _active_page_for_prep in _DRAFT_BOARD_PAGES:
         pass
     if not _skip_draft_room_prep:
         try:
+            from fantasy_workflow_trace import log_wf
+
+            log_wf(
+                st.session_state,
+                function="prepare_draft_room_state",
+                reason="begin:shared_league_restore",
+                page=_active_page_for_prep,
+                st=st,
+            )
+        except ImportError:
+            pass
+        try:
             from draft_room_state import ensure_live_draft_synced_to_canonical_board, prepare_draft_room_state
 
             ensure_live_draft_synced_to_canonical_board(
@@ -14142,8 +14221,19 @@ if _active_page_for_prep in _DRAFT_BOARD_PAGES:
                 reason=f"draft_board_page:{_active_page_for_prep}",
             )
             prepare_draft_room_state(st.session_state)
-        except Exception:
-            pass
+        except Exception as _dr_exc:
+            try:
+                from fantasy_workflow_trace import note_suppressed_exception
+
+                note_suppressed_exception(
+                    st.session_state,
+                    function="prepare_draft_room_state",
+                    exc=_dr_exc,
+                    page=_active_page_for_prep,
+                    st=st,
+                )
+            except ImportError:
+                pass
 try:
     from global_fantasy_settings_state import sync_active_fantasy_team_to_canonical
 
@@ -14154,6 +14244,19 @@ try:
     from shared_draft_context import prepare_shared_draft_context
 
     _warm_shared = bool(st.session_state.get("_baseball_warm_startup_skipped"))
+    try:
+        from fantasy_workflow_trace import log_wf
+
+        log_wf(
+            st.session_state,
+            function="prepare_shared_draft_context",
+            reason="begin:fantasy_context_restore",
+            page=_active_page_for_prep,
+            st=st,
+            extra={"force_mirror": bool(st.session_state.get("_global_settings_force_mirror")) and not _warm_shared},
+        )
+    except ImportError:
+        pass
     prepare_shared_draft_context(
         st.session_state,
         active_page=_active_page_for_prep,
@@ -20197,6 +20300,7 @@ def _on_undo_last_simulator_pick_click() -> None:
 
 
 if active_page == "Draft Room Simulator":
+    _maybe_render_account_pref_sync(active_page)
     _page_perf_start(active_page)
     render_section_header(
         "🧾 Draft Room Simulator",

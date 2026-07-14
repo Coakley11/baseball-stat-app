@@ -1494,7 +1494,16 @@ def render_account_preference_sync_fragment(st: Any) -> None:
         synth = {**local_fields, "revision": local_rev}
         local_drift = bool(local_fp) and preference_document_fingerprint(synth) != local_fp
         if not session.get(SESSION_PAIR_VERIFIED_KEY) or not session.get(PAIR_ALIGNED_KEY):
+            # Only force-reconcile once per session unless revision meta changes.
+            pair_key = f"{remote_rev}:{remote_fp}"
+            if session.get("_account_fantasy_prefs_pair_force_key") == pair_key:
+                return
             result = sync_account_fantasy_preferences(session, force=True)
+            session["_account_fantasy_prefs_pair_force_key"] = pair_key
+            # Prevent infinite force→rerun loops when header pair never flips true.
+            if not result.get("error"):
+                session[SESSION_PAIR_VERIFIED_KEY] = True
+                session[PAIR_ALIGNED_KEY] = True
         elif remote_rev < local_rev:
             return
         elif remote_rev == local_rev and remote_fp == local_fp and not local_drift:
@@ -1504,6 +1513,31 @@ def render_account_preference_sync_fragment(st: Any) -> None:
         else:
             result = sync_account_fantasy_preferences(session, force=True)
         if result.get("needs_rerun") or result.get("applied"):
+            try:
+                from fantasy_workflow_trace import (
+                    log_wf,
+                    note_prefs_app_rerun,
+                    prefs_app_rerun_allowed,
+                )
+
+                allowed, gate_reason = prefs_app_rerun_allowed(session)
+                log_wf(
+                    session,
+                    function="render_account_preference_sync_fragment._tick",
+                    reason=f"prefs_sync_wants_rerun gate={gate_reason}",
+                    page=str(session.get("active_page") or ""),
+                    key="needs_rerun",
+                    previous=False,
+                    new=True,
+                    extra={"sync": {k: result.get(k) for k in ("applied", "needs_rerun", "skipped", "error")}},
+                    st=st,
+                )
+                if not allowed:
+                    session["_account_fantasy_prefs_deferred_rerun"] = True
+                    return
+                note_prefs_app_rerun(session, reason=gate_reason, st=st)
+            except ImportError:
+                pass
             rerun = getattr(st, "rerun", None)
             if callable(rerun):
                 try:
@@ -1532,10 +1566,35 @@ def maybe_render_account_preference_sync(st: Any, *, page: str = "") -> None:
         "Waiver Wire / Add-Drop Center",
         "Draft Assistant Simulator",
         "Live Draft Room",
+        "Draft Room Simulator",
     }
     if page and page not in supported:
         return
     try:
+        from fantasy_workflow_trace import log_wf
+
+        log_wf(
+            st.session_state,
+            function="maybe_render_account_preference_sync",
+            reason="first_workflow_initialization",
+            page=str(page or ""),
+            st=st,
+        )
+    except ImportError:
+        pass
+    try:
         render_account_preference_sync_fragment(st)
     except Exception as exc:
+        try:
+            from fantasy_workflow_trace import note_suppressed_exception
+
+            note_suppressed_exception(
+                st.session_state,
+                function="maybe_render_account_preference_sync",
+                exc=exc,
+                page=str(page or ""),
+                st=st,
+            )
+        except ImportError:
+            pass
         _record_error(st.session_state, where="render_account_preference_sync_fragment", exc=exc)

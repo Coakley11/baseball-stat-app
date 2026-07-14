@@ -437,6 +437,18 @@ def request_poll_apply_rerun(st: Any, session: dict[str, Any], *, room: dict[str
         return False
     session["_live_draft_last_rerun_source"] = "poll_apply"
     session.pop("_live_draft_poll_apply_pending", None)
+    try:
+        from fantasy_workflow_trace import note_rerun
+
+        note_rerun(
+            session,
+            function="request_poll_apply_rerun",
+            reason="poll_apply",
+            page="Live Draft Room",
+            st=st,
+        )
+    except ImportError:
+        pass
     st.rerun()
     return True
 
@@ -446,6 +458,21 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
     allowed, reason = is_rerun_allowed(session, source, room=room)
     record_rerun_diagnostics(session, rerun_source=source, rerun_allowed=allowed, rerun_blocked_reason=reason or None)
     if not allowed:
+        try:
+            from fantasy_workflow_trace import log_wf
+
+            log_wf(
+                session,
+                function="request_live_draft_rerun",
+                reason=f"rerun_blocked:{reason}",
+                page="Live Draft Room",
+                key="rerun",
+                previous=True,
+                new=False,
+                st=st,
+            )
+        except ImportError:
+            pass
         return False
     session["_live_draft_last_rerun_source"] = source
     session["_live_draft_rerun_count"] = int(session.get("_live_draft_rerun_count") or 0) + 1
@@ -472,6 +499,18 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
             "auto_pick_complete",
         ):
             force_live_draft_expensive_recompute(session)
+    except ImportError:
+        pass
+    try:
+        from fantasy_workflow_trace import note_rerun
+
+        note_rerun(
+            session,
+            function="request_live_draft_rerun",
+            reason=str(source),
+            page="Live Draft Room",
+            st=st,
+        )
     except ImportError:
         pass
     st.rerun()

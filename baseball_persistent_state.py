@@ -1478,6 +1478,18 @@ def prepare_baseball_workspace(st: Any) -> bool:
                             if before_auth_workspace != after_auth_workspace
                             else "post_auth_workflow_hydrated"
                         )
+                        try:
+                            from fantasy_workflow_trace import note_rerun
+
+                            note_rerun(
+                                ss,
+                                function="prepare_baseball_workspace.post_auth_hydrate",
+                                reason=str(ss.get("_suite_post_auth_workflow_hydration_rerun_reason") or ""),
+                                page=str(ss.get("active_page") or ""),
+                                st=st,
+                            )
+                        except ImportError:
+                            pass
                         rerun = getattr(st, "rerun", None)
                         if callable(rerun):
                             rerun()
