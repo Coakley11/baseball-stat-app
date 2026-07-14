@@ -21658,10 +21658,25 @@ if active_page == DRAFT_LAB_PAGE:
 if active_page == "Live Draft Room":
     _page_perf_start(active_page)
     try:
-        from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section
+        from live_draft_render_trace import (
+            force_render_live_draft_trace_banner,
+            ldr_post_rerun_checkpoint,
+            ldr_section,
+        )
 
         force_render_live_draft_trace_banner(st, st.session_state, label="page_entry")
-        ldr_section(st.session_state, "page_entry", st=st)
+        ldr_section(
+            st.session_state,
+            "page_entry",
+            st=st,
+            last_rerun_source=str(st.session_state.get("_live_draft_last_rerun_source") or ""),
+        )
+        if str(st.session_state.get("_live_draft_last_rerun_source") or "") in {
+            "timer_fragment_zero",
+            "timer_fragment",
+            "page_autopick",
+        }:
+            ldr_post_rerun_checkpoint(st, st.session_state, "post_timer_zero_rerun_boot")
     except Exception as _ldr_trace_boot_exc:
         st.error(
             f"LDR TRACE BOOT ERROR: {type(_ldr_trace_boot_exc).__name__}: {_ldr_trace_boot_exc}"
@@ -21722,34 +21737,53 @@ if active_page == "Live Draft Room":
     )
     render_page_guide(active_page)
     try:
-        from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section_done
+        from live_draft_render_trace import ldr_post_rerun_checkpoint, ldr_section_done, ldr_step
 
         ldr_section_done(st.session_state, "header_and_guide", st=st)
-        # Second paint in the upper LDR region (still above lower half) so markers after page_entry
-        # are visible even when st.empty()-style panels previously wiped themselves.
-        force_render_live_draft_trace_banner(st, st.session_state, label="after_header")
+        # Lightweight only — heavy banner after header made the stall look like "after header_and_guide".
+        ldr_post_rerun_checkpoint(st, st.session_state, "post_rerun_after_header")
+        _ldr_step_ctx = ldr_step
     except Exception as _ldr_trace_hdr_exc:
         st.error(
             f"LDR TRACE HEADER ERROR: {type(_ldr_trace_hdr_exc).__name__}: {_ldr_trace_hdr_exc}"
         )
-    try:
-        from live_draft_render_trace import ldr_section
+        from contextlib import nullcontext as _ldr_nullcontext
 
-        ldr_section(st.session_state, "shared_settings", st=st)
-    except ImportError:
-        pass
-    _prepare_and_show_draft_shared_settings(
-        active_page,
-        lookback_key="live_draft_proj_window",
-        style_key="live_draft_proj_style",
-        format_key="live_draft_scoring",
-    )
-    try:
-        from live_draft_render_trace import ldr_section_done
+        def _ldr_step_ctx(*_a, **_k):  # type: ignore[misc]
+            return _ldr_nullcontext()
 
-        ldr_section_done(st.session_state, "shared_settings", st=st)
-    except ImportError:
-        pass
+    _ldr_last_rerun = str(st.session_state.get("_live_draft_last_rerun_source") or "")
+    try:
+        with _ldr_step_ctx(
+            st.session_state,
+            "shared_settings",
+            st=st,
+            last_rerun_source=_ldr_last_rerun,
+        ):
+            _prepare_and_show_draft_shared_settings(
+                active_page,
+                lookback_key="live_draft_proj_window",
+                style_key="live_draft_proj_style",
+                format_key="live_draft_scoring",
+            )
+        try:
+            from live_draft_render_trace import ldr_post_rerun_checkpoint
+
+            ldr_post_rerun_checkpoint(st, st.session_state, "after_shared_settings")
+        except ImportError:
+            pass
+    except Exception as _ldr_shared_settings_exc:
+        try:
+            from live_draft_render_trace import ldr_exception
+
+            ldr_exception(st.session_state, "shared_settings", _ldr_shared_settings_exc, st=st)
+        except ImportError:
+            pass
+        st.error(
+            f"LDR shared_settings exception: {type(_ldr_shared_settings_exc).__name__}: {_ldr_shared_settings_exc}"
+        )
+        raise
+
     _pending_pick_result: dict = {"processed": False}
     try:
         from draft_ui import process_pending_manual_draft_pick
@@ -21769,25 +21803,38 @@ if active_page == "Live Draft Room":
     except ImportError:
         pass
     try:
-        from live_draft_render_trace import ldr_section
+        with _ldr_step_ctx(
+            st.session_state,
+            "prepare_live_draft_state",
+            st=st,
+            skipped=bool(_skip_live_prep),
+            last_rerun_source=_ldr_last_rerun,
+        ):
+            if not _skip_live_prep:
+                try:
+                    from live_draft_perf import PHASE_SETUP_PREPARE_LIVE_STATE, live_draft_perf_action
 
-        ldr_section(st.session_state, "prepare_live_draft_state", st=st, skipped=bool(_skip_live_prep))
-    except ImportError:
-        pass
-    if not _skip_live_prep:
+                    with live_draft_perf_action(
+                        st.session_state, "prepare_live_state", phase=PHASE_SETUP_PREPARE_LIVE_STATE
+                    ):
+                        prepare_live_draft_state(st.session_state)
+                except ImportError:
+                    prepare_live_draft_state(st.session_state)
         try:
-            from live_draft_perf import PHASE_SETUP_PREPARE_LIVE_STATE, live_draft_perf_action
+            from live_draft_render_trace import ldr_post_rerun_checkpoint
 
-            with live_draft_perf_action(st.session_state, "prepare_live_state", phase=PHASE_SETUP_PREPARE_LIVE_STATE):
-                prepare_live_draft_state(st.session_state)
+            ldr_post_rerun_checkpoint(st, st.session_state, "after_prepare_live_draft_state")
         except ImportError:
-            prepare_live_draft_state(st.session_state)
-    try:
-        from live_draft_render_trace import ldr_section_done
+            pass
+    except Exception as _ldr_prep_exc:
+        try:
+            from live_draft_render_trace import ldr_exception
 
-        ldr_section_done(st.session_state, "prepare_live_draft_state", st=st, skipped=bool(_skip_live_prep))
-    except ImportError:
-        pass
+            ldr_exception(st.session_state, "prepare_live_draft_state", _ldr_prep_exc, st=st)
+        except ImportError:
+            pass
+        st.error(f"LDR prepare_live_draft_state exception: {type(_ldr_prep_exc).__name__}: {_ldr_prep_exc}")
+        raise
     try:
         if _setup_prep_ctx is not None:
             _setup_prep_ctx.__exit__(None, None, None)
@@ -21801,6 +21848,7 @@ if active_page == "Live Draft Room":
             reconcile_live_draft_room(st.session_state, _early_room)
         except ImportError:
             pass
+    _shared_panel_wants_rerun = False
     try:
         from draft_room_context import is_multiplayer_draft_active, poll_shared_draft_room
         from draft_ui_multiplayer import render_shared_draft_room_panel
@@ -21820,18 +21868,28 @@ if active_page == "Live Draft Room":
             except ImportError:
                 pass
             try:
-                from live_draft_render_trace import ldr_section
+                with _ldr_step_ctx(
+                    st.session_state,
+                    "poll_fragment",
+                    st=st,
+                    last_rerun_source=_ldr_last_rerun,
+                ):
+                    render_live_draft_poll_fragment(st, st.session_state)
+                try:
+                    from live_draft_render_trace import ldr_post_rerun_checkpoint
 
-                ldr_section(st.session_state, "poll_fragment", st=st)
-            except ImportError:
-                pass
-            render_live_draft_poll_fragment(st, st.session_state)
-            try:
-                from live_draft_render_trace import ldr_section_done
+                    ldr_post_rerun_checkpoint(st, st.session_state, "after_poll_fragment")
+                except ImportError:
+                    pass
+            except Exception as _ldr_poll_exc:
+                try:
+                    from live_draft_render_trace import ldr_exception
 
-                ldr_section_done(st.session_state, "poll_fragment", st=st)
-            except ImportError:
-                pass
+                    ldr_exception(st.session_state, "poll_fragment", _ldr_poll_exc, st=st)
+                except ImportError:
+                    pass
+                st.error(f"LDR poll_fragment exception: {type(_ldr_poll_exc).__name__}: {_ldr_poll_exc}")
+                raise
             import time
 
             interval = shared_draft_poll_interval_sec(st.session_state)
@@ -21880,12 +21938,29 @@ if active_page == "Live Draft Room":
                     except ImportError:
                         st.rerun()
         try:
-            from live_draft_render_trace import ldr_section
+            with _ldr_step_ctx(
+                st.session_state,
+                "shared_draft_panel",
+                st=st,
+                last_rerun_source=_ldr_last_rerun,
+            ):
+                _shared_panel_wants_rerun = bool(render_shared_draft_room_panel(st, st.session_state))
+            try:
+                from live_draft_render_trace import ldr_post_rerun_checkpoint
 
-            ldr_section(st.session_state, "shared_draft_panel", st=st)
-        except ImportError:
-            pass
-        if render_shared_draft_room_panel(st, st.session_state):
+                ldr_post_rerun_checkpoint(st, st.session_state, "after_shared_draft_panel")
+            except ImportError:
+                pass
+        except Exception as _ldr_panel_exc:
+            try:
+                from live_draft_render_trace import ldr_exception
+
+                ldr_exception(st.session_state, "shared_draft_panel", _ldr_panel_exc, st=st)
+            except ImportError:
+                pass
+            st.error(f"LDR shared_draft_panel exception: {type(_ldr_panel_exc).__name__}: {_ldr_panel_exc}")
+            raise
+        if _shared_panel_wants_rerun:
             try:
                 from live_draft_render_trace import ldr_rerun
 
@@ -21903,12 +21978,6 @@ if active_page == "Live Draft Room":
                 )
             except ImportError:
                 st.rerun()
-        try:
-            from live_draft_render_trace import ldr_section_done
-
-            ldr_section_done(st.session_state, "shared_draft_panel", st=st)
-        except ImportError:
-            pass
         try:
             from draft_room_runtime_diagnostics import render_runtime_diagnostic_table
 
@@ -22713,6 +22782,12 @@ if active_page == "Live Draft Room":
             pass
 
     room = st.session_state.get("live_draft_room")
+    try:
+        from live_draft_render_trace import ldr_post_rerun_checkpoint
+
+        ldr_post_rerun_checkpoint(st, st.session_state, "before_room_body")
+    except ImportError:
+        pass
 
     if room is None:
         try:
@@ -22724,17 +22799,33 @@ if active_page == "Live Draft Room":
         st.info("Open **Draft Setup** to configure a new draft, or use **Advanced → Convert Simulator to Live Draft** to promote an existing simulator board.")
     else:
         try:
-            from live_draft_render_trace import ldr_section
+            from live_draft_render_trace import ldr_post_rerun_checkpoint, ldr_section
 
             ldr_section(
                 st.session_state,
                 "room_body",
                 st=st,
+                last_rerun_source=str(st.session_state.get("_live_draft_last_rerun_source") or ""),
                 status=str(room.get("status") or ""),
                 team=str((room.get("config") or {}).get("user_team") or ""),
             )
-        except ImportError:
-            pass
+            try:
+                st.caption(
+                    "⏱ LDR step enter: `room_body` "
+                    f"(last_rerun=`{st.session_state.get('_live_draft_last_rerun_source') or '—'}`)"
+                )
+            except Exception:
+                pass
+            ldr_post_rerun_checkpoint(st, st.session_state, "after_room_body_enter")
+        except Exception as _ldr_room_body_exc:
+            try:
+                from live_draft_render_trace import ldr_exception
+
+                ldr_exception(st.session_state, "room_body", _ldr_room_body_exc, st=st)
+            except ImportError:
+                pass
+            st.error(f"LDR room_body exception: {type(_ldr_room_body_exc).__name__}: {_ldr_room_body_exc}")
+            raise
         try:
             from live_draft_room_ui import inject_live_draft_room_styles
 

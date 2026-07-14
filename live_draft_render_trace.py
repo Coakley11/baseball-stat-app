@@ -42,21 +42,16 @@ LDR_SECTION_ORDER = (
     "timer_render_countdown",
     "timer_attach_fragment",
     "timer_fragment_tick",
-    "timer_fragment_render_static",
-    "render_static_enter",
-    "load_timer_display",
-    "build_status_text",
-    "record_timer_diagnostics",
-    "record_mp_diagnostics",
-    "mp_diag_role_flags",
-    "mp_diag_shared_store_load",
-    "mp_diag_host_autopick_flags",
-    "render_status_markdown",
-    "render_static_exit",
     "timer_handle_expired_pick",
     "timer_render_controls",
     "timer_attach_callbacks",
     "timer_exit",
+    "post_rerun_after_header",
+    "shared_settings",
+    "prepare_live_draft_state",
+    "poll_fragment",
+    "shared_draft_panel",
+    "room_body",
     "room_board_column",
     "room_recommendations",
     "room_decision_panels",
@@ -475,6 +470,36 @@ def _write_ldr_trace_panel_body(st: Any, ss: dict[str, Any]) -> None:
     st.code(format_ldr_trace_text(ss), language="text")
     st.caption("Full workspace / draft compare JSON (Daniel vs coakley11):")
     st.code(json.dumps(snap, indent=2, default=str), language="json")
+
+
+def ldr_post_rerun_checkpoint(
+    st: Any,
+    session: dict[str, Any],
+    label: str,
+) -> None:
+    """Lightweight in-page marker for the post-timer-zero rerun path (no heavy JSON dump)."""
+    if not is_ldr_trace_enabled(session, st):
+        return
+    last_rerun = str(session.get("_live_draft_last_rerun_source") or "")
+    last_step = str(session.get(LDR_TRACE_LAST_STEP_KEY) or "")
+    last_section = str(session.get(LDR_TRACE_LAST_SECTION_KEY) or "")
+    try:
+        st.info(
+            f"LDR post-rerun checkpoint `{label}` · "
+            f"last_rerun=`{last_rerun or '—'}` · "
+            f"last_section=`{last_section or '—'}` · "
+            f"last_step=`{last_step or '—'}`"
+        )
+    except Exception:
+        pass
+    ldr_trace(
+        session,
+        section=label,
+        reason="checkpoint",
+        kind="checkpoint",
+        st=st,
+        extra={"last_rerun_source": last_rerun},
+    )
 
 
 def force_render_live_draft_trace_banner(

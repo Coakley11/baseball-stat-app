@@ -59,22 +59,27 @@ class LiveDraftRenderTraceTests(unittest.TestCase):
             format_next_behavior_label(stall["next_behavior"], terminal=stall.get("terminal")),
         )
 
-    def test_render_static_step_names_in_order(self) -> None:
-        ss = {"_live_draft_render_trace_force": True, "active_page": "Live Draft Room"}
+    def test_post_rerun_path_steps(self) -> None:
+        ss = {
+            "_live_draft_render_trace_force": True,
+            "active_page": "Live Draft Room",
+            "_live_draft_last_rerun_source": "timer_fragment_zero",
+        }
+        ldr_section_done(ss, "header_and_guide")
         for name in (
-            "render_static_enter",
-            "load_timer_display",
-            "build_status_text",
-            "record_timer_diagnostics",
-            "record_mp_diagnostics",
-            "mp_diag_shared_store_load",
-            "render_static_exit",
+            "shared_settings",
+            "prepare_live_draft_state",
+            "poll_fragment",
+            "shared_draft_panel",
+            "room_body",
         ):
-            with ldr_step(ss, name, ui_marker=False):
+            with ldr_step(ss, name, ui_marker=False, last_rerun_source="timer_fragment_zero"):
                 pass
+        stall = analyze_ldr_stall(ss)
+        self.assertEqual(stall["last_successful_section"], "room_body")
         text = format_ldr_trace_text(ss)
-        self.assertIn("LAST TIMER/STEP: render_static_exit", text)
-        self.assertIn("mp_diag_shared_store_load", text)
+        self.assertIn("shared_settings", text)
+        self.assertIn("prepare_live_draft_state", text)
 
     def test_ldr_step_records_elapsed_and_stall_point(self) -> None:
         ss = {"_live_draft_render_trace_force": True, "active_page": "Live Draft Room"}

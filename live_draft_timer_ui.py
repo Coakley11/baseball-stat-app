@@ -445,68 +445,26 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
 
 
 def _render_timer_static(st: Any, session: dict[str, Any], room: dict[str, Any], *, source: str = "static") -> None:
+    # Fine-grained static tracing removed — stall is on the post-timer-zero rerun path.
     try:
-        from live_draft_render_trace import ldr_step
+        from live_draft_pick_timer import display_seconds_with_freeze, is_pick_submitting
+
+        remaining = display_seconds_with_freeze(session, room)
+        submitting = is_pick_submitting(session)
     except ImportError:
-        class _NullStep:
-            def __init__(self, *_a: Any, **_k: Any) -> None:
-                pass
+        remaining = live_draft_display_seconds(room)
+        submitting = False
+    record_timer_diagnostics(session, room, source=source)
+    try:
+        from live_draft_mp_diagnostics import record_multiplayer_sync_diagnostics
 
-            def __enter__(self) -> None:
-                return None
-
-            def __exit__(self, *_a: Any) -> bool:
-                return False
-
-        def ldr_step(*_a: Any, **_k: Any) -> Any:  # type: ignore[misc]
-            return _NullStep()
-
-    # Fragment ticks already wrap this call; keep captions so the hung statement paints in-page.
-    with ldr_step(session, "render_static_enter", st=st, source=source):
+        record_multiplayer_sync_diagnostics(session, room=room)
+    except ImportError:
         pass
-
-    remaining = 0
-    submitting = False
-    with ldr_step(session, "load_timer_display", st=st, source=source):
-        try:
-            from live_draft_pick_timer import display_seconds_with_freeze, is_pick_submitting
-
-            remaining = display_seconds_with_freeze(session, room)
-            submitting = bool(is_pick_submitting(session))
-        except ImportError:
-            remaining = live_draft_display_seconds(room)
-            submitting = False
-
-    status_label = ""
-    with ldr_step(session, "build_status_text", st=st, source=source):
+    if source != "fragment_tick":
         if str(room.get("status") or "") == "paused":
-            status_label = f"**Draft paused** · {remaining}s on clock"
+            st.markdown(f"**Draft paused** · {remaining}s on clock")
         elif submitting:
-            status_label = f"**Submitting pick…** · {remaining}s frozen"
+            st.markdown(f"**Submitting pick…** · {remaining}s frozen")
         else:
-            status_label = f"**Time on clock:** {remaining}s"
-
-    with ldr_step(session, "record_timer_diagnostics", st=st, source=source):
-        record_timer_diagnostics(session, room, source=source)
-
-    with ldr_step(session, "record_mp_diagnostics", st=st, source=source):
-        try:
-            from live_draft_mp_diagnostics import record_multiplayer_sync_diagnostics
-
-            record_multiplayer_sync_diagnostics(session, room=room, st=st)
-        except ImportError:
-            pass
-
-    # fragment_tick historically skipped markdown; keep that behavior but mark the branch.
-    with ldr_step(
-        session,
-        "render_status_markdown",
-        st=st,
-        source=source,
-        skipped=(source == "fragment_tick"),
-    ):
-        if source != "fragment_tick" and status_label:
-            st.markdown(status_label)
-
-    with ldr_step(session, "render_static_exit", st=st, source=source, remaining=remaining):
-        pass
+            st.markdown(f"**Time on clock:** {remaining}s")

@@ -106,7 +106,6 @@ def record_multiplayer_sync_diagnostics(
     poll_applied: bool | None = None,
     last_shared_write_ok: bool | None = None,
     last_pick_source: str | None = None,
-    st: Any | None = None,
 ) -> dict[str, Any]:
     diag = dict(session.get(LIVE_DRAFT_MP_DIAG_KEY) or {})
     if local_revision is not None:
@@ -160,47 +159,16 @@ def record_multiplayer_sync_diagnostics(
         from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY, get_shared_room_store
         from live_draft_expired_pick import _multiplayer_autopick_allowed
 
-        try:
-            from live_draft_render_trace import ldr_step
-        except ImportError:
-            ldr_step = None  # type: ignore[assignment]
-
-            class _NullStep:
-                def __init__(self, *_a: Any, **_k: Any) -> None:
-                    pass
-
-                def __enter__(self) -> None:
-                    return None
-
-                def __exit__(self, *_a: Any) -> bool:
-                    return False
-
-            def ldr_step(*_a: Any, **_k: Any) -> Any:  # type: ignore[misc]
-                return _NullStep()
-
-        with ldr_step(session, "mp_diag_role_flags", st=st, ui_marker=bool(st)):
-            mp = is_multiplayer_draft_active(session)
-            diag["multiplayer_active"] = mp
-            diag["team_assignment"] = str(active_participant_team(session) or "")
-
+        mp = is_multiplayer_draft_active(session)
+        diag["multiplayer_active"] = mp
+        diag["team_assignment"] = str(active_participant_team(session) or "")
         if mp:
             code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
-            document = None
-            with ldr_step(
-                session,
-                "mp_diag_shared_store_load",
-                st=st,
-                ui_marker=bool(st),
-                room_code=code or "",
-                blocking_wait=True,
-            ):
-                # Shared-store load can block on network; isolate for LDR stall diagnosis.
-                document = get_shared_room_store().load(code) if code else None
-            with ldr_step(session, "mp_diag_host_autopick_flags", st=st, ui_marker=bool(st)):
-                is_host = bool(is_room_host(session, document))
-                diag["is_host"] = is_host
-                diag["device_role"] = "host" if is_host else "guest"
-                diag["auto_pick_allowed"] = bool(_multiplayer_autopick_allowed(session))
+            document = get_shared_room_store().load(code) if code else None
+            is_host = bool(is_room_host(session, document))
+            diag["is_host"] = is_host
+            diag["device_role"] = "host" if is_host else "guest"
+            diag["auto_pick_allowed"] = bool(_multiplayer_autopick_allowed(session))
     except ImportError:
         pass
 
