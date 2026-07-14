@@ -119,18 +119,21 @@ def _saved_active_league_team_info(session: dict[str, Any]) -> tuple[str, str] |
     if not isinstance(ctx, dict):
         return None
     team = str(ctx.get("my_team_name") or "").strip()
+    label = str(ctx.get("display_name") or ctx.get("draft_name") or "").strip()
+    archive = None
+    try:
+        from draft_archive_state import get_active_draft_archive
+
+        archive = get_active_draft_archive(session)
+    except ImportError:
+        archive = None
+    if not team and isinstance(archive, dict):
+        # Prefer archive.team_name over leftover temporary Live Draft room_your_team.
+        team = str(archive.get("team_name") or "").strip()
+    if not label and isinstance(archive, dict):
+        label = str(archive.get("draft_name") or "").strip()
     if not team:
         return None
-    label = str(ctx.get("display_name") or ctx.get("draft_name") or "").strip()
-    if not label:
-        try:
-            from draft_archive_state import get_active_draft_archive
-
-            archive = get_active_draft_archive(session)
-            if isinstance(archive, dict):
-                label = str(archive.get("draft_name") or "").strip()
-        except ImportError:
-            pass
     return team, label or "Active Draft"
 
 
@@ -201,7 +204,18 @@ def get_active_fantasy_team(session: dict[str, Any]) -> str:
     if src == "active_draft":
         league_info = _saved_active_league_team_info(session)
         if league_info:
-            return league_info[0]
+            team = league_info[0]
+            # Self-heal stale temporary Live Draft aliases (Team X) after Override-OFF restore.
+            if str(session.get(GLOBAL_TEAM_KEY) or "").strip() != team:
+                session[GLOBAL_TEAM_KEY] = team
+                try:
+                    _mirror_globals_to_aliases(session)
+                except Exception:
+                    pass
+                session.pop("live_draft_my_team", None)
+            return team
+        # Active Draft is authoritative — never fall through to stale temporary Team X.
+        return ""
     return str(session.get(GLOBAL_TEAM_KEY) or "").strip()
 
 

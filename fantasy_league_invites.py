@@ -975,7 +975,6 @@ def join_shared_league_from_invite(
     team_name: str,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str]:
     """Accept invite: link library entry to canonical league_id and claim one team."""
-    from draft_archive_state import DRAFT_TYPE_IMPORTED, save_draft_archive
     from fantasy_league_context import (
         create_league_context,
         resolve_canonical_save_ids,
@@ -1042,6 +1041,29 @@ def join_shared_league_from_invite(
         invite.get("league_name") or shared.get("league_name") or f"Shared League {league_id}"
     ).strip()
     cfg = dict(session.get("draft_shared_settings") or {})
+
+    # Origin travels with the shared league — Live Draft leagues stay Live for invitees.
+    from draft_archive_state import DRAFT_TYPE_IMPORTED, DRAFT_TYPE_LIVE, save_draft_archive
+
+    shared_created_from = str(shared.get("created_from") or (shared.get("metadata") or {}).get("created_from") or "").strip()
+    shared_source = str(shared.get("source") or (shared.get("metadata") or {}).get("source") or "").strip()
+    shared_source_type = str(
+        shared.get("source_draft_type") or (shared.get("metadata") or {}).get("source_draft_type") or ""
+    ).strip()
+    is_live_origin = (
+        shared_created_from == "live_draft"
+        or shared_source in {"live_draft_room", "live_draft"}
+        or shared_source_type in {"live_draft_room", "live_draft"}
+        or bool(str(shared.get("source_room_code") or (shared.get("metadata") or {}).get("source_room_code") or "").strip())
+    )
+    archive_draft_type = DRAFT_TYPE_LIVE if is_live_origin else DRAFT_TYPE_IMPORTED
+    try:
+        from fantasy_league_context import SOURCE_LIVE_DRAFT_ROOM
+
+        context_source = SOURCE_LIVE_DRAFT_ROOM if is_live_origin else SOURCE_IMPORTED_DRAFT
+    except ImportError:
+        context_source = "live_draft_room" if is_live_origin else SOURCE_IMPORTED_DRAFT
+
     draft_id, league_context_id, fingerprint = resolve_canonical_save_ids(
         session,
         league_rosters=league_rosters,
@@ -1061,7 +1083,7 @@ def join_shared_league_from_invite(
 
     entry = save_draft_archive(
         session,
-        draft_type=DRAFT_TYPE_IMPORTED,
+        draft_type=archive_draft_type,
         draft_name=league_name,
         team_name=team,
         config=cfg,
@@ -1105,12 +1127,25 @@ def join_shared_league_from_invite(
             "slot_instances": list(cfg.get("slot_instances") or []),
         },
         display_name=league_name,
-        source=SOURCE_IMPORTED_DRAFT,
+        source=context_source,
         source_draft_id=draft_id,
     )
     context["league_id"] = league_id
     meta = dict(context.get("metadata") or {})
     meta["league_id"] = league_id
+    if is_live_origin:
+        meta["created_from"] = "live_draft"
+        meta["source_draft_type"] = "live_draft_room"
+        meta["creation_origin"] = str(
+            shared.get("creation_origin")
+            or (shared.get("metadata") or {}).get("creation_origin")
+            or "live_draft_room"
+        ).strip()
+        room_code = str(
+            shared.get("source_room_code") or (shared.get("metadata") or {}).get("source_room_code") or ""
+        ).strip()
+        if room_code:
+            meta["source_room_code"] = room_code
     shared_fp = str(shared.get("draft_fingerprint") or invite.get("draft_fingerprint") or "").strip()
     if shared_fp:
         meta["draft_fingerprint"] = shared_fp
@@ -1142,6 +1177,13 @@ def join_shared_league_from_invite(
     ownership[team] = get_team_ownership(saved_context).get(team) or {}
     shared["team_ownership"] = ownership
     shared["league_rosters"] = copy.deepcopy(league_rosters)
+    _append_invite_response_activity(
+        shared,
+        invite=invite,
+        status=INVITE_STATUS_ACCEPTED,
+        team_name=team,
+        responder_user_id=uid,
+    )
 
     try:
         from fantasy_shared_league_store import save_shared_league
@@ -1156,6 +1198,13 @@ def join_shared_league_from_invite(
         invite_id=invite_id,
         league_id=league_id,
     )
+    _notify_invite_response_activity(
+        session,
+        invite=invite,
+        status=INVITE_STATUS_ACCEPTED,
+        team_name=team,
+        league_name=league_name,
+    )
     return entry, saved_context, ""
 
 
@@ -1167,6 +1216,82 @@ def merge_shared_into_context_for_invite(context: dict[str, Any], shared: dict[s
     if isinstance(invites, list):
         _set_league_invites(merged, [dict(x) for x in invites if isinstance(x, dict)])
     return merged
+
+
+def _append_invite_response_activity(
+    shared: dict[str, Any],
+    *,
+    invite: dict[str, Any],
+    status: str,
+    team_name: str = "",
+    responder_user_id: str = "",
+) -> None:
+    """Record accept/decline on the shared league so the commissioner can see it."""
+    activities = [dict(x) for x in (shared.get("league_activity") or []) if isinstance(x, dict)]
+    invitee = str(
+        invite.get("invitee_display_name")
+        or invite.get("invitee_username")
+        or invite.get("invitee_email")
+        or invite.get("invitee_user_id")
+        or "Invitee"
+    ).strip()
+    league_name = str(invite.get("league_name") or shared.get("league_name") or "your league").strip()
+    if status == INVITE_STATUS_ACCEPTED and team_name:
+        message = f"{invitee} accepted your invitation and claimed {team_name}"
+    elif status == INVITE_STATUS_ACCEPTED:
+        message = f"{invitee} accepted your invitation"
+    else:
+        message = f"{invitee} declined your invitation to {league_name}"
+    activities.insert(
+        0,
+        {
+            "activity_id": f"invite_{status}_{invite.get('invite_id') or uuid.uuid4().hex[:8]}",
+            "kind": f"invite_{status}",
+            "message": message,
+            "invite_id": str(invite.get("invite_id") or "").strip(),
+            "league_id": str(shared.get("league_id") or invite.get("league_id") or "").strip(),
+            "team_name": str(team_name or "").strip(),
+            "responder_user_id": str(responder_user_id or "").strip(),
+            "created_at": _utc_now_iso(),
+            "audience": "commissioner",
+        },
+    )
+    shared["league_activity"] = activities[:100]
+
+
+def _notify_invite_response_activity(
+    session: dict[str, Any],
+    *,
+    invite: dict[str, Any],
+    status: str,
+    team_name: str = "",
+    league_name: str = "",
+) -> None:
+    """Queue a session flash for invite responses (invitee-side write; commissioner reads shared)."""
+    invitee = str(
+        invite.get("invitee_display_name")
+        or invite.get("invitee_username")
+        or invite.get("invitee_email")
+        or "Invitee"
+    ).strip()
+    name = str(league_name or invite.get("league_name") or "your league").strip()
+    if status == INVITE_STATUS_ACCEPTED:
+        message = f"{invitee} accepted your invitation"
+        if team_name:
+            message = f"{invitee} accepted your invitation and claimed {team_name}"
+    else:
+        message = f"{invitee} declined your invitation to {name}"
+    pending = list(session.get("_league_invite_response_notifications") or [])
+    pending.append(
+        {
+            "kind": f"invite_{status}",
+            "message": message,
+            "invite_id": str(invite.get("invite_id") or "").strip(),
+            "league_id": str(invite.get("league_id") or "").strip(),
+            "created_at": _utc_now_iso(),
+        }
+    )
+    session["_league_invite_response_notifications"] = pending[-20:]
 
 
 def decline_league_invite(
@@ -1199,6 +1324,12 @@ def decline_league_invite(
     shared["league_invites"] = [
         invite if str(row.get("invite_id") or "") == invite_id else row for row in invites
     ]
+    _append_invite_response_activity(
+        shared,
+        invite=invite,
+        status=INVITE_STATUS_DECLINED,
+        responder_user_id=uid,
+    )
     try:
         from fantasy_shared_league_store import save_shared_league
 
@@ -1206,7 +1337,66 @@ def decline_league_invite(
     except (ImportError, RuntimeError, OSError):
         return False, "Could not update invite status."
     remove_invite_from_inbox(_resolve_workspace_id(session), invite_id=invite_id, league_id=league_id)
+    _notify_invite_response_activity(
+        session,
+        invite=invite,
+        status=INVITE_STATUS_DECLINED,
+        league_name=str(invite.get("league_name") or shared.get("league_name") or ""),
+    )
     return True, ""
+
+
+def list_commissioner_invite_response_notifications(
+    session: dict[str, Any],
+    *,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Pull unread accept/decline notices for leagues this account commissioned."""
+    uid = _resolve_user_id()
+    if not uid:
+        return []
+    seen = set(str(x) for x in (session.get("_league_invite_response_seen_ids") or []) if str(x).strip())
+    alerts: list[dict[str, Any]] = []
+    try:
+        for doc in list_shared_league_documents() or []:
+            if not isinstance(doc, dict):
+                continue
+            commissioner = str(doc.get("commissioner_user_id") or "").strip()
+            if commissioner and not account_user_ids_match(commissioner, uid):
+                continue
+            for raw in doc.get("league_activity") or []:
+                if not isinstance(raw, dict):
+                    continue
+                kind = str(raw.get("kind") or "").strip()
+                if kind not in {f"invite_{INVITE_STATUS_ACCEPTED}", f"invite_{INVITE_STATUS_DECLINED}"}:
+                    continue
+                if str(raw.get("audience") or "") not in {"", "commissioner"}:
+                    continue
+                aid = str(raw.get("activity_id") or "").strip()
+                if not aid or aid in seen:
+                    continue
+                alerts.append(
+                    {
+                        "alert_key": aid,
+                        "kind": kind,
+                        "message": str(raw.get("message") or "").strip(),
+                        "league_id": str(raw.get("league_id") or doc.get("league_id") or "").strip(),
+                        "created_at": str(raw.get("created_at") or "").strip(),
+                    }
+                )
+    except Exception:
+        pass
+    alerts.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    return alerts[: max(1, int(limit or 10))]
+
+
+def mark_invite_response_notifications_seen(session: dict[str, Any], alert_keys: list[str]) -> None:
+    seen = set(str(x) for x in (session.get("_league_invite_response_seen_ids") or []) if str(x).strip())
+    for key in alert_keys:
+        k = str(key or "").strip()
+        if k:
+            seen.add(k)
+    session["_league_invite_response_seen_ids"] = sorted(seen)[-200:]
 
 
 def unclaimed_teams_for_invite(

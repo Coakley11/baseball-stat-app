@@ -409,6 +409,17 @@ def finalize_repaired_archives_for_membership(
         )
         trace["canonical_draft_id"] = draft_id
 
+    # Membership sync (invite accept on another account, library rematerialize) must never
+    # invent or flip the commissioner's Active League. Preserve an existing selection.
+    prev_active = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    if prev_active:
+        trace["active_restore_trace"] = {
+            "skipped": "preserve_existing_session_active",
+            "active": prev_active,
+            "phase": "startup_canonical_sync",
+        }
+        return trace
+
     restore_trace = restore_active_draft_archive_selection(
         session,
         cloud_state=cloud_blob if isinstance(cloud_blob, dict) else {},

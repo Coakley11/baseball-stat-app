@@ -35,6 +35,14 @@ def render_team_claim_panel(
     if str(context.get("context_type") or "") != "real_league":
         return False
 
+    # Prefer shared league ownership over stale local session stamps.
+    try:
+        from fantasy_shared_league_store import sync_context_with_shared_store
+
+        context = sync_context_with_shared_store(session, context) or context
+    except Exception:
+        pass
+
     try:
         from fantasy_league_invites import can_claim_team_for_context
 
@@ -51,11 +59,16 @@ def render_team_claim_panel(
         return False
 
     st.markdown(f"##### {title}")
+    try:
+        from fantasy_league_team_ownership import ownership_is_firm_claim
+    except ImportError:
+        ownership_is_firm_claim = lambda record: bool(  # type: ignore[assignment,misc]
+            isinstance(record, dict) and str(record.get("user_id") or "").strip()
+        )
     ownership = get_team_ownership(context)
     for team in teams:
         record = ownership.get(team) or {}
-        owner_uid = str(record.get("user_id") or "").strip()
-        if owner_uid:
+        if ownership_is_firm_claim(record):
             badge = f"Claimed by **{owner_display_for_team(context, team)}**"
         else:
             badge = "Unclaimed"
@@ -68,7 +81,11 @@ def render_team_claim_panel(
         return bool(owned)
 
     st.warning(TEAM_ASSIGNMENT_PROMPT)
-    unclaimed = [team for team in teams if not str((ownership.get(team) or {}).get("user_id") or "").strip()]
+    unclaimed = [
+        team
+        for team in teams
+        if not ownership_is_firm_claim(ownership.get(team) or {})
+    ]
     choices = unclaimed or teams
     pick = st.selectbox("Choose your team", choices, key=f"{key_prefix}_team_pick")
     if st.button("Claim team", key=f"{key_prefix}_claim_btn"):

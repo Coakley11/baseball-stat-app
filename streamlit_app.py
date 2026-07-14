@@ -24990,11 +24990,15 @@ if active_page == "Fantasy Lineup Assistant":
         _lineup_team_hdr = get_active_fantasy_team(st.session_state)
     except ImportError:
         _lineup_team_hdr = str(st.session_state.get("lineup_team") or st.session_state.get("room_your_team") or "").strip()
-    _lineup_title = (
-        f"Fantasy Lineup Assistant — Team {_lineup_team_hdr}"
-        if _lineup_team_hdr
-        else "Fantasy Lineup Assistant / Start-Sit AI"
-    )
+    if _lineup_team_hdr:
+        _hdr_label = (
+            _lineup_team_hdr
+            if str(_lineup_team_hdr).lower().startswith("team ")
+            else f"Team {_lineup_team_hdr}"
+        )
+        _lineup_title = f"Fantasy Lineup Assistant — {_hdr_label}"
+    else:
+        _lineup_title = "Fantasy Lineup Assistant / Start-Sit AI"
     render_section_header(
         _lineup_title,
         "Set your weekly starting lineup, then optionally review Start-Sit recommendations.",

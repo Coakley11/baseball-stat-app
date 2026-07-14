@@ -426,7 +426,28 @@ def _merge_league_activity(*sources: list[Any]) -> list[dict[str, Any]]:
     return ordered[:100]
 
 
-def _merge_team_ownership(*sources: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _merge_team_ownership(
+    *sources: dict[str, Any],
+    prefer_firm_from: str = "last",
+) -> dict[str, dict[str, Any]]:
+    """Merge ownership maps team-by-team.
+
+    prefer_firm_from:
+      - ``last``: used when pulling shared → local (shared is last arg). Firm shared
+        claims beat local firm claims for a different user_id even if local
+        ``assigned_at`` is newer.
+      - ``first``: used when pushing local → shared (shared existing is first). Firm
+        shared claims are not overwritten by a different local firm user_id.
+    Timestamp order still applies when neither side is a conflicting firm claim.
+    """
+    try:
+        from fantasy_league_team_ownership import account_user_ids_match, ownership_is_firm_claim
+    except ImportError:
+        account_user_ids_match = lambda a, b: str(a or "").strip() == str(b or "").strip()  # type: ignore[assignment,misc]
+        ownership_is_firm_claim = lambda record: bool(  # type: ignore[assignment,misc]
+            isinstance(record, dict) and str(record.get("user_id") or "").strip()
+        )
+
     merged: dict[str, dict[str, Any]] = {}
     for source in sources:
         if not isinstance(source, dict):
@@ -439,6 +460,31 @@ def _merge_team_ownership(*sources: dict[str, Any]) -> dict[str, dict[str, Any]]
             if existing is None:
                 merged[team_name] = copy.deepcopy(record)
                 continue
+
+            existing_firm = ownership_is_firm_claim(existing)
+            incoming_firm = ownership_is_firm_claim(record)
+            existing_uid = str(existing.get("user_id") or "").strip()
+            incoming_uid = str(record.get("user_id") or "").strip()
+            conflict = (
+                existing_firm
+                and incoming_firm
+                and existing_uid
+                and incoming_uid
+                and not account_user_ids_match(existing_uid, incoming_uid)
+            )
+            if conflict:
+                if prefer_firm_from == "first":
+                    # Keep the earlier (shared) firm claim.
+                    continue
+                # prefer_firm_from == "last": take incoming (shared on pull).
+                merged[team_name] = copy.deepcopy(record)
+                continue
+            if incoming_firm and not existing_firm:
+                merged[team_name] = copy.deepcopy(record)
+                continue
+            if existing_firm and not incoming_firm:
+                continue
+
             existing_ts = str(existing.get("assigned_at") or "")
             incoming_ts = str(record.get("assigned_at") or "")
             if incoming_ts >= existing_ts:
@@ -494,7 +540,11 @@ def merge_shared_into_context(context: dict[str, Any], shared: dict[str, Any]) -
         merged_settings = dict(local_roster_settings if isinstance(local_roster_settings, dict) else {})
         merged_settings.update(copy.deepcopy(shared_roster_settings))
         out["roster_settings"] = merged_settings
-    ownership = _merge_team_ownership(get_team_ownership_from_context(out), shared.get("team_ownership") or {})
+    ownership = _merge_team_ownership(
+        get_team_ownership_from_context(out),
+        shared.get("team_ownership") or {},
+        prefer_firm_from="last",
+    )
     out["team_ownership"] = ownership
     meta = dict(out.get("metadata") or {})
     meta["team_ownership"] = copy.deepcopy(ownership)
@@ -719,6 +769,7 @@ def push_league_context_to_shared(
         document["team_ownership"] = _merge_team_ownership(
             existing.get("team_ownership") or {},
             document.get("team_ownership") or {},
+            prefer_firm_from="first",
         )
         document["league_invites"] = _merge_league_invites(
             existing.get("league_invites") or [],

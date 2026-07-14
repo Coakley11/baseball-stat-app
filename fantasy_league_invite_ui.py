@@ -157,6 +157,50 @@ def _render_last_invite_submit_section(st: Any, submit: dict[str, Any] | None) -
 
 def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
     """Surface pending shared-league invites at the top of Saved Draft Library."""
+    # Commissioner notices for responses — accepted/declined invites leave the library UI.
+    try:
+        from fantasy_league_invites import (
+            list_commissioner_invite_response_notifications,
+            mark_invite_response_notifications_seen,
+        )
+
+        notices = list_commissioner_invite_response_notifications(session)
+        if notices:
+            seen_keys: list[str] = []
+            for notice in notices:
+                msg = str(notice.get("message") or "").strip()
+                if not msg:
+                    continue
+                kind = str(notice.get("kind") or "")
+                if "declined" in kind:
+                    st.warning(msg)
+                else:
+                    st.success(msg)
+                seen_keys.append(str(notice.get("alert_key") or ""))
+            if seen_keys:
+                mark_invite_response_notifications_seen(session, seen_keys)
+    except ImportError:
+        pass
+
+    # Refresh commissioner's last-sent invite banner from shared status (drop accepted/declined).
+    last_sent = session.get("_last_commissioner_invite_sent")
+    if isinstance(last_sent, dict):
+        lid = str(last_sent.get("league_id") or "").strip()
+        iid = str(last_sent.get("invite_id") or "").strip()
+        if lid and iid:
+            shared_doc = load_shared_league(lid) or {}
+            for row in shared_doc.get("league_invites") or []:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("invite_id") or "") != iid:
+                    continue
+                status = str(row.get("status") or "").strip()
+                if status and status != "pending":
+                    session.pop("_last_commissioner_invite_sent", None)
+                else:
+                    session["_last_commissioner_invite_sent"] = dict(row)
+                break
+
     pending = list_pending_invites_for_session(session)
     if not pending:
         stranded = session.get("_suite_stranded_foreign_disk_draft")
