@@ -12,11 +12,14 @@ from live_draft_expired_pick import (
     AUTOPICK_ATTEMPTED_INDEX_KEY,
     AUTOPICK_BACKOFF_INDEX_KEY,
     RERUN_LOOP_PREVENTED_KEY,
+    TIMER_ZERO_RERUN_LATCH_KEY,
     autopick_failure_backoff_active,
+    claim_timer_zero_rerun,
     clear_autopick_backoff_for_manual,
     expired_pick_detected,
     handle_expired_pick_on_page,
     run_expired_autopick_once,
+    should_attach_timer_fragment,
     should_fragment_trigger_full_rerun,
 )
 from live_draft_pick_commit import PickCommitResult, commit_manual_live_pick, persist_applied_pick
@@ -59,6 +62,30 @@ class ExpiredPickDetectionTests(unittest.TestCase):
         session[RERUN_LOOP_PREVENTED_KEY] = True
         session[AUTOPICK_BACKOFF_INDEX_KEY] = 4
         self.assertFalse(should_fragment_trigger_full_rerun(session, room))
+
+    def test_timer_fragment_detached_when_clock_already_zero(self) -> None:
+        session: dict = {}
+        room = _room()
+        self.assertFalse(should_attach_timer_fragment(session, room))
+        self.assertTrue(session.get("_live_draft_timer_expired_pending"))
+
+    def test_timer_zero_rerun_latched_once_per_pick(self) -> None:
+        session: dict = {}
+        room = _room()
+        self.assertTrue(claim_timer_zero_rerun(session, room))
+        self.assertEqual(session[TIMER_ZERO_RERUN_LATCH_KEY], 4)
+        self.assertFalse(claim_timer_zero_rerun(session, room))
+        self.assertFalse(should_fragment_trigger_full_rerun(session, room))
+
+    def test_timer_zero_rerun_blocked_by_safe_mode_gate(self) -> None:
+        from live_draft_safe_mode import is_rerun_allowed
+
+        session: dict = {}
+        room = _room()
+        claim_timer_zero_rerun(session, room)
+        allowed, reason = is_rerun_allowed(session, "timer_fragment_zero", room=room)
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "timer_zero_rerun_already_latched")
 
 
 class AutopickBackoffTests(unittest.TestCase):

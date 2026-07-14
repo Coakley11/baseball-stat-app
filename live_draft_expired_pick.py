@@ -17,6 +17,9 @@ AUTOPICK_ERROR_KEY = "_live_draft_autopick_error"
 AUTOPICK_RETRY_SECONDS = 5.0
 RERUN_LOOP_PREVENTED_KEY = "_live_draft_rerun_loop_prevented"
 EXPIRED_PICK_PENDING_KEY = "_live_draft_timer_expired_pending"
+# One full-app timer_fragment_zero per pick index — prevents fragment attach → sync tick →
+# st.rerun() from aborting room_controls_timer before handle_expired_pick_on_page runs.
+TIMER_ZERO_RERUN_LATCH_KEY = "_live_draft_timer_zero_rerun_pick"
 
 
 @dataclass
@@ -96,6 +99,33 @@ def _multiplayer_autopick_allowed(session: dict[str, Any]) -> bool:
         return True
 
 
+def timer_zero_rerun_already_latched(session: dict[str, Any], room: dict[str, Any]) -> bool:
+    return session.get(TIMER_ZERO_RERUN_LATCH_KEY) == _pick_index(room)
+
+
+def claim_timer_zero_rerun(session: dict[str, Any], room: dict[str, Any]) -> bool:
+    """Claim the single timer_fragment_zero full-app rerun for this pick index."""
+    idx = _pick_index(room)
+    if session.get(TIMER_ZERO_RERUN_LATCH_KEY) == idx:
+        return False
+    session[TIMER_ZERO_RERUN_LATCH_KEY] = idx
+    session[EXPIRED_PICK_PENDING_KEY] = True
+    return True
+
+
+def should_attach_timer_fragment(session: dict[str, Any], room: dict[str, Any]) -> bool:
+    """False when clock is already expired — page script must own autopick, not the fragment."""
+    if str(room.get("status") or "") != "in_progress":
+        return True
+    try:
+        if live_draft_timer_expired_for_pick(room) or live_draft_seconds_remaining(room) <= 0:
+            session[EXPIRED_PICK_PENDING_KEY] = True
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def should_fragment_trigger_full_rerun(session: dict[str, Any], room: dict[str, Any]) -> bool:
     """At most one full rerun per expired pick index before attempt is recorded."""
     try:
@@ -119,6 +149,9 @@ def should_fragment_trigger_full_rerun(session: dict[str, Any], room: dict[str, 
     if not expired_pick_detected(room):
         session.pop(EXPIRED_PICK_PENDING_KEY, None)
         return False
+    if timer_zero_rerun_already_latched(session, room):
+        # Fragment already handed control to a full-page path for this pick.
+        return False
     if autopick_failure_backoff_active(session, room):
         return False
     if autopick_attempted_for_index(session, room):
@@ -139,6 +172,7 @@ def clear_autopick_state_for_pick_advance(session: dict[str, Any], new_index: in
     session.pop(RERUN_LOOP_PREVENTED_KEY, None)
     session.pop(EXPIRED_PICK_PENDING_KEY, None)
     session.pop(AUTOPICK_LOCK_KEY, None)
+    session.pop(TIMER_ZERO_RERUN_LATCH_KEY, None)
     if new_index is not None:
         record_autopick_diagnostics(
             session,

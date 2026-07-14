@@ -17,6 +17,7 @@ SAFE_MODE_ERROR_REASON_KEY = "_live_draft_draft_state_error_reason"
 _BLOCKED_RERUN_SOURCES = frozenset(
     {
         "timer_fragment",
+        "timer_fragment_zero",
         "page_autopick",
         "poll_shared_draft",
         "shared_draft_room_panel",
@@ -390,6 +391,7 @@ def is_rerun_allowed(session: dict[str, Any], source: str, *, room: dict[str, An
             "poll_apply",
             "poll_remote_revision",
             "timer_fragment",
+            "timer_fragment_zero",
             "page_autopick",
         ):
             return False, "draft_start_in_flight"
@@ -399,13 +401,20 @@ def is_rerun_allowed(session: dict[str, Any], source: str, *, room: dict[str, An
         return False, f"safe_mode_blocks_{source}"
 
     try:
-        from live_draft_expired_pick import RERUN_LOOP_PREVENTED_KEY, autopick_failure_backoff_active
+        from live_draft_expired_pick import (
+            RERUN_LOOP_PREVENTED_KEY,
+            autopick_failure_backoff_active,
+            timer_zero_rerun_already_latched,
+        )
 
         live = room or session.get(LIVE_DRAFT_ROOM_KEY)
         if session.get(RERUN_LOOP_PREVENTED_KEY) and source in _BLOCKED_RERUN_SOURCES:
             return False, "rerun_loop_prevented"
         if isinstance(live, dict) and autopick_failure_backoff_active(session, live) and source in _BLOCKED_RERUN_SOURCES:
             return False, "autopick_failure_backoff_active"
+        if source == "timer_fragment_zero" and isinstance(live, dict):
+            if timer_zero_rerun_already_latched(session, live):
+                return False, "timer_zero_rerun_already_latched"
     except ImportError:
         pass
 
@@ -474,6 +483,21 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
         except ImportError:
             pass
         return False
+    if source == "timer_fragment_zero":
+        try:
+            from live_draft_expired_pick import claim_timer_zero_rerun
+
+            live = room or session.get(LIVE_DRAFT_ROOM_KEY)
+            if isinstance(live, dict) and not claim_timer_zero_rerun(session, live):
+                record_rerun_diagnostics(
+                    session,
+                    rerun_source=source,
+                    rerun_allowed=False,
+                    rerun_blocked_reason="timer_zero_rerun_claim_failed",
+                )
+                return False
+        except ImportError:
+            pass
     session["_live_draft_last_rerun_source"] = source
     session["_live_draft_rerun_count"] = int(session.get("_live_draft_rerun_count") or 0) + 1
     try:

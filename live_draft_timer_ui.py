@@ -16,7 +16,11 @@ from live_draft_timer_logic import (
 LIVE_DRAFT_TIMER_DIAG_KEY = "_live_draft_timer_diag"
 TIMER_TICK_COUNT_KEY = "_live_draft_timer_tick_count"
 TIMER_LAST_TICK_TS_KEY = "_live_draft_timer_last_tick_ts"
-from live_draft_expired_pick import EXPIRED_PICK_PENDING_KEY, should_fragment_trigger_full_rerun
+from live_draft_expired_pick import (
+    EXPIRED_PICK_PENDING_KEY,
+    should_attach_timer_fragment,
+    should_fragment_trigger_full_rerun,
+)
 LIVE_DRAFT_GRACE_MARKER_KEY = "_live_draft_grace_marker"
 _AUTOPICK_GRACE_SEC = 2.0
 
@@ -372,6 +376,17 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
             _render_js_countdown(st, float(deadline), pick_index=pick_idx, session=session)
 
     with ldr_step(session, "timer_attach_fragment", st=st):
+        # Critical sync fix: when the clock is already at 0, attaching @fragment(run_every=1)
+        # and immediately invoking it requests timer_fragment_zero → st.rerun() *during*
+        # room_controls_timer, aborting the page before handle_expired_pick_on_page runs.
+        # Page script owns expiry; fragment only runs while time remains.
+        if not should_attach_timer_fragment(session, live_room):
+            with ldr_step(session, "timer_skip_fragment_expired", st=st):
+                session[EXPIRED_PICK_PENDING_KEY] = True
+                _render_timer_static(st, session, live_room, source="static_expired_no_fragment")
+                st.caption("Clock at 0s — processing expired pick on page (fragment detached).")
+            return
+
         try:
             fragment = st.fragment
         except AttributeError:
@@ -394,6 +409,29 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                 session[TIMER_LAST_TICK_TS_KEY] = time.time()
                 with _ldr_step(session, "timer_fragment_poll_shared", st=st):
                     tick_room, poll_changed = _sync_room_on_timer_tick(session, room)
+                # If the clock hit zero between ticks, stop this fragment from full-app
+                # rerunning again — next full page render owns autopick.
+                if not should_attach_timer_fragment(session, tick_room):
+                    session[EXPIRED_PICK_PENDING_KEY] = True
+                    with _ldr_step(session, "timer_fragment_render_static", st=st, expired=True):
+                        _render_timer_static(st, session, tick_room, source="fragment_tick_expired")
+                    if should_fragment_trigger_full_rerun(session, tick_room):
+                        try:
+                            from live_draft_safe_mode import request_live_draft_rerun
+
+                            if _ldr_rerun is not None:
+                                _ldr_rerun(
+                                    session,
+                                    "timer_fragment_tick",
+                                    reason="timer_zero_rerun",
+                                    st=st,
+                                )
+                            request_live_draft_rerun(
+                                st, session, "timer_fragment_zero", room=tick_room
+                            )
+                        except ImportError:
+                            pass
+                    return
                 with _ldr_step(session, "timer_fragment_render_static", st=st):
                     _render_timer_static(st, session, tick_room, source="fragment_tick")
                 if poll_changed:
@@ -415,20 +453,6 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                         return
                 elif _guest_waiting_for_host_autopick(session, tick_room):
                     st.caption("Waiting for host to auto-pick…")
-                remaining = live_draft_display_seconds(tick_room)
-                if remaining <= 0 and tick_room.get("status") == "in_progress":
-                    session[EXPIRED_PICK_PENDING_KEY] = True
-                    if should_fragment_trigger_full_rerun(session, tick_room):
-                        try:
-                            from live_draft_safe_mode import request_live_draft_rerun
-
-                            if _ldr_rerun is not None:
-                                _ldr_rerun(session, "timer_fragment_tick", reason="timer_zero_rerun", st=st)
-                            if request_live_draft_rerun(st, session, "timer_fragment_zero", room=tick_room):
-                                return
-                        except ImportError:
-                            st.rerun()
-                            return
                 elif should_fragment_trigger_full_rerun(session, tick_room):
                     session[EXPIRED_PICK_PENDING_KEY] = True
                     try:
@@ -440,7 +464,7 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                     except ImportError:
                         pass
 
-        with ldr_step(session, "timer_invoke_fragment_tick", st=st, callback=" _timer_tick"):
+        with ldr_step(session, "timer_invoke_fragment_tick", st=st, callback="_timer_tick"):
             _timer_tick()
 
 

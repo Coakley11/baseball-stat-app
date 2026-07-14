@@ -116,6 +116,51 @@ class LiveDraftTimerLogicTests(unittest.TestCase):
         slot = live_draft_current_slot(room)
         self.assertEqual(slot["Team"], "B")
 
+    def test_render_timer_bar_skips_fragment_when_expired(self) -> None:
+        import time
+
+        from live_draft_timer_ui import render_live_draft_timer_bar
+
+        class _FakeSt:
+            def __init__(self) -> None:
+                self.captions: list[str] = []
+                self.markdowns: list[str] = []
+                self.fragment_called = False
+
+            def caption(self, text: str) -> None:
+                self.captions.append(str(text))
+
+            def markdown(self, text: str, **_kwargs: object) -> None:
+                self.markdowns.append(str(text))
+
+            def fragment(self, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+                self.fragment_called = True
+
+                def deco(fn):  # type: ignore[no-untyped-def]
+                    return fn
+
+                return deco
+
+        session: dict = {"_live_draft_render_trace_force": True}
+        room = {
+            "status": "in_progress",
+            "config": {"timer_seconds": 60},
+            "timer_deadline": time.time() - 5,
+            "timer_started_at": time.time() - 120,
+            "current_pick_index": 0,
+            "timer_handled_index": -1,
+        }
+        fake = _FakeSt()
+        with mock.patch("live_draft_timer_ui.timer_should_run", return_value=True, create=True):
+            with mock.patch(
+                "live_draft_safe_mode.timer_should_run",
+                return_value=True,
+            ):
+                render_live_draft_timer_bar(fake, session, room)
+        self.assertFalse(fake.fragment_called)
+        self.assertTrue(session.get("_live_draft_timer_expired_pending"))
+        self.assertTrue(any("fragment detached" in c for c in fake.captions))
+
     def test_grace_skipped_when_timer_expired(self) -> None:
         import time
 
