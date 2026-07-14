@@ -220,6 +220,96 @@ class CreationOriginRepairTests(unittest.TestCase):
         self.assertEqual(entry["creation_origin"], CREATION_ORIGIN_LIVE_DRAFT_ROOM)
         self.assertEqual(draft_type_display(entry), "Live Draft")
 
+    def test_display_resolves_live_even_if_archive_row_stale(self) -> None:
+        from draft_archive_state import resolve_draft_type_display
+
+        draft_id = "stalearchive99"
+        session = _session()
+        entry = {
+            "draft_id": draft_id,
+            "draft_type": DRAFT_TYPE_IMPORTED,
+            "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+            "league_context_id": context_id_for_archive(draft_id),
+            "draft_name": "Stale Archive Live League",
+        }
+        session[DRAFT_ARCHIVE_KEY] = [entry]
+        upsert_league_context(
+            session,
+            {
+                "league_context_id": context_id_for_archive(draft_id),
+                "context_type": "real_league",
+                "source": "imported_draft",
+                "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+                "my_team_name": "Team 1",
+                "metadata": {
+                    "source_draft_id": draft_id,
+                    "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+                    "created_from": "live_draft",
+                    "source_room_code": "ROOM77",
+                    "draft_results": [{"Team": "Team 1", "Player": "P1"}],
+                },
+                "league_rosters": {"Team 1": {"players": [{"player_name": "P1"}]}},
+            },
+        )
+        with patch("fantasy_shared_league_store.load_shared_league", return_value=None):
+            label = resolve_draft_type_display(session, entry)
+        self.assertEqual(label, "Live Draft")
+        self.assertEqual(session[DRAFT_ARCHIVE_KEY][0]["draft_type"], DRAFT_TYPE_LIVE)
+
+    def test_library_repair_logs_decision_for_poisoned_live_league(self) -> None:
+        draft_id = "decisionlog01"
+        session = _session()
+        session[DRAFT_ARCHIVE_KEY] = [
+            {
+                "draft_id": draft_id,
+                "draft_type": DRAFT_TYPE_IMPORTED,
+                "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+                "league_context_id": context_id_for_archive(draft_id),
+                "draft_name": "Decision Log League",
+            }
+        ]
+        upsert_league_context(
+            session,
+            {
+                "league_context_id": context_id_for_archive(draft_id),
+                "context_type": "real_league",
+                "source": "live_draft_room",
+                "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+                "my_team_name": "Team 1",
+                "metadata": {
+                    "source_draft_id": draft_id,
+                    "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+                    "source": "live_draft_room",
+                    "source_draft_type": "live_draft_room",
+                },
+                "league_rosters": {"Team 1": {"players": []}, "Team 2": {"players": []}},
+            },
+        )
+        with patch("fantasy_shared_league_store.load_shared_league", return_value=None), patch(
+            "fantasy_shared_league_store.save_shared_league"
+        ):
+            repair_archive_draft_types_from_contexts(session)
+        from fantasy_league_context import ORIGIN_REPAIR_DECISIONS_KEY
+
+        decisions = session.get(ORIGIN_REPAIR_DECISIONS_KEY) or []
+        self.assertTrue(decisions)
+        hit = next((row for row in decisions if row.get("draft_id") == draft_id), None)
+        self.assertIsNotNone(hit)
+        assert hit is not None
+        self.assertEqual(hit.get("selected_draft_type"), DRAFT_TYPE_LIVE)
+        self.assertTrue(hit.get("live_created_from_evidence"))
+        self.assertEqual(hit.get("archive_type_after"), DRAFT_TYPE_LIVE)
+        self.assertEqual(draft_type_display(session[DRAFT_ARCHIVE_KEY][0]), "Live Draft")
+        self.assertIn(
+            hit.get("selected_reason"),
+            {
+                "poisoned_import_origin_overridden_by_live_created_from",
+                "canonical_created_from_live_draft",
+                "immutable_creation_origin_live_draft_room",
+                "context_explicit_live_origin",
+            },
+        )
+
     def test_library_repair_flips_legacy_live_badge_without_known_id(self) -> None:
         draft_id = "f6e5d4c3b2a1"
         session = _session()

@@ -15,6 +15,7 @@ from draft_archive_state import (
     get_draft_archive,
     list_draft_archives,
     rename_draft_archive,
+    resolve_draft_type_display,
 )
 from draft_import_pipeline import board_should_save_as_imported_league
 from draft_archive_visibility import (
@@ -1425,8 +1426,17 @@ def _clear_fantasy_caches_on_archive_change(session: dict[str, Any]) -> None:
         pass
 
 
-def _draft_type_badge_html(entry: dict[str, Any]) -> str:
-    label = draft_type_display(entry)
+def _draft_type_badge_html(
+    entry: dict[str, Any],
+    *,
+    session: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> str:
+    label = (
+        resolve_draft_type_display(session, entry, context=context)
+        if isinstance(session, dict)
+        else draft_type_display(entry)
+    )
     if label == "Live Draft":
         css = "ld-archive-badge-live"
     elif label == "Imported League":
@@ -1445,7 +1455,7 @@ def _context_badge_html(label: str, css_class: str) -> str:
 def _context_badges_html(session: dict[str, Any], entry: dict[str, Any]) -> str:
     context = get_league_context_for_archive(session, entry)
     parts = [
-        _draft_type_badge_html(entry),
+        _draft_type_badge_html(entry, session=session, context=context if isinstance(context, dict) else None),
         _context_badge_html(league_context_coverage_badge(context), "ld-archive-badge-coverage"),
         _context_badge_html(league_context_type_badge(context), "ld-archive-badge-context-type"),
     ]
@@ -4007,6 +4017,8 @@ def _saved_draft_card_html(
     player_n: int,
     team_n: int,
     display_team: str = "",
+    session: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
 ) -> str:
     title = str(entry.get("draft_name") or "Saved Draft")
     team = str(display_team or entry.get("team_name") or "—")
@@ -4022,7 +4034,7 @@ def _saved_draft_card_html(
         if is_active
         else ""
     )
-    type_badge = _draft_type_badge_html(entry)
+    type_badge = _draft_type_badge_html(entry, session=session, context=context)
     return (
         f'<div class="{card_class}">{active_badge}{type_badge} '
         f"<strong>{title}</strong><br>"
@@ -4129,7 +4141,8 @@ def _render_active_draft_section(
     league_line = _format_league_matchup_label(context, active, session=session)
     st.markdown(f"**{title}** — {league_line}")
     st.caption(
-        f"{draft_type_display(active)} | {team_count} Teams | {player_n} Players · "
+        f"{resolve_draft_type_display(session, active, context=context)} | "
+        f"{team_count} Teams | {player_n} Players · "
         f"Updated {format_archive_modified(active)}"
     )
     tool1, tool2, tool3, clear_col = st.columns([1, 1, 1, 1])
@@ -4507,9 +4520,15 @@ def _render_saved_draft_library_page_body(
 
     prune_invisible_shared_league_state(session)
     try:
-        from library_repair_scheduler import run_gated_library_repairs
+        from library_repair_scheduler import mark_library_dirty, run_gated_library_repairs
 
-        run_gated_library_repairs(session, user_mutated=False)
+        # prepare_saved_draft_library_active_selection may have already marked repairs
+        # complete before shared-league materialize. Force a second pass after sync so
+        # Live Draft origin migration sees the canonical shared doc.
+        if not (isinstance(library_sync_trace, dict) and library_sync_trace.get("skipped") == "warm_render"):
+            mark_library_dirty(session, reason="post_shared_league_library_sync")
+        repair_trace = run_gated_library_repairs(session, user_mutated=False)
+        session["_library_repair_last_trace"] = dict(repair_trace or {})
         prune_invisible_shared_league_state(session)
         try:
             from workflow_persist_guard import restore_active_draft_archive_selection
@@ -4631,6 +4650,33 @@ def _render_saved_draft_library_page_body(
             session,
             developer_mode=developer_mode,
         )
+    except Exception:
+        pass
+
+    # Always-available origin migration log (answers: did repair run / why this league).
+    try:
+        from fantasy_league_context import ORIGIN_REPAIR_DECISIONS_KEY
+
+        decisions = session.get(ORIGIN_REPAIR_DECISIONS_KEY)
+        repair_trace = session.get("_library_repair_last_trace")
+        if isinstance(decisions, list) or isinstance(repair_trace, dict):
+            with st.expander("Origin repair log", expanded=False):
+                st.caption(
+                    "Per-league decisions from the latest Saved Draft Library origin migration."
+                )
+                if isinstance(repair_trace, dict):
+                    st.write(
+                        {
+                            "repair_ran": bool(repair_trace.get("ran")),
+                            "skipped": repair_trace.get("skipped"),
+                            "steps": repair_trace.get("steps") or [],
+                            "failures": repair_trace.get("failures") or [],
+                        }
+                    )
+                if isinstance(decisions, list) and decisions:
+                    st.json(decisions)
+                else:
+                    st.caption("No per-league origin decisions recorded on this render.")
     except Exception:
         pass
 
@@ -4777,6 +4823,8 @@ def _render_saved_draft_library_page_body(
                 player_n=player_n,
                 team_n=team_n,
                 display_team=display_team,
+                session=session,
+                context=context if isinstance(context, dict) else None,
             ),
             unsafe_allow_html=True,
         )

@@ -375,6 +375,59 @@ def draft_type_display(entry: dict[str, Any] | None) -> str:
     return "Simulator"
 
 
+def resolve_draft_type_display(
+    session: dict[str, Any] | None,
+    entry: dict[str, Any] | None,
+    *,
+    context: dict[str, Any] | None = None,
+) -> str:
+    """Library badge/caption label — resolve from origin evidence, not stale archive alone."""
+    if not entry:
+        return ""
+    if not isinstance(session, dict):
+        return draft_type_display(entry)
+    try:
+        from fantasy_league_context import (
+            get_league_context_for_archive,
+            resolve_archive_draft_type_from_origin,
+            repair_archive_draft_type_for_entry,
+        )
+    except ImportError:
+        return draft_type_display(entry)
+    ctx = context
+    if not isinstance(ctx, dict):
+        try:
+            ctx = get_league_context_for_archive(session, entry)
+        except Exception:
+            ctx = None
+    shared_doc = None
+    if isinstance(ctx, dict):
+        try:
+            from fantasy_league_identity import resolve_canonical_league_id
+            from fantasy_shared_league_store import load_shared_league
+
+            league_id = str(resolve_canonical_league_id(ctx) or "").strip()
+            if league_id:
+                shared_doc = load_shared_league(league_id)
+        except ImportError:
+            shared_doc = None
+    expected = resolve_archive_draft_type_from_origin(
+        context=ctx if isinstance(ctx, dict) else None,
+        shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
+        archive_entry=entry,
+        session=session,
+    )
+    if str(entry.get("draft_type") or "").strip() != expected:
+        repaired = repair_archive_draft_type_for_entry(
+            session,
+            entry,
+            context=ctx if isinstance(ctx, dict) else None,
+        )
+        if isinstance(repaired, dict):
+            entry = repaired
+    return draft_type_display({"draft_type": expected})
+
+
 def format_archive_modified(entry: dict[str, Any] | None) -> str:
     """Library card 'Updated' — content mutations only, never hydration/active selection."""
     if not entry:

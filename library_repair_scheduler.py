@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-LIBRARY_REPAIR_VERSION = 3
-
+LIBRARY_REPAIR_VERSION = 4
 LIBRARY_REPAIR_DONE_KEY = "_library_repair_scheduler_done_v"
 LIBRARY_DIRTY_KEY = "_library_repair_dirty"
 LIBRARY_MANIFEST_REV_KEY = "_library_manifest_revision"
@@ -83,8 +82,11 @@ def run_gated_library_repairs(session: dict[str, Any], *, user_mutated: bool = F
                 trace["steps"].append(fn_name)
         except ImportError:
             pass
-        except Exception:
-            pass
+        except Exception as exc:
+            failures = trace.setdefault("failures", [])
+            if isinstance(failures, list):
+                failures.append(f"{fn_name}:{type(exc).__name__}:{exc}")
 
     mark_library_repairs_complete(session)
+    session["_library_repair_last_trace"] = dict(trace)
     return trace

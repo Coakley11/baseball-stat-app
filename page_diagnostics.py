@@ -226,6 +226,12 @@ def _section_repair_history(session: dict[str, Any]) -> dict[str, Any]:
     origin = session.get("_draft_origin_repair_diag")
     if isinstance(origin, dict):
         out["draft_origin_repair"] = origin
+    decisions = session.get("_draft_origin_repair_decisions")
+    if isinstance(decisions, list) and decisions:
+        out["draft_origin_repair_decisions"] = decisions
+    repair_trace = session.get("_library_repair_last_trace")
+    if isinstance(repair_trace, dict) and repair_trace:
+        out["library_repair_last_trace"] = repair_trace
     invite = session.get("_league_invite_flow_diag")
     if invite:
         out["invite_flow"] = invite
