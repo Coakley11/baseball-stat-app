@@ -361,10 +361,7 @@ class FantasyContextSourceTests(unittest.TestCase):
             or ("Temporary Draft Board" in temp_html),
             temp_html,
         )
-        self.assertTrue(
-            ("Draft Room Simulator" in temp_html) or ("Simulator" in temp_html),
-            temp_html,
-        )
+        self.assertIn("Daniel", temp_html)
         self.assertNotIn("fantasy-source-card-active", temp_html)
 
     def test_streamlit_app_has_no_active_fantasy_team_caption_calls(self) -> None:
