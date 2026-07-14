@@ -42,6 +42,20 @@ class BaseballNavRestoreTests(unittest.TestCase):
         self.assertEqual(ss["main_sidebar_page"], "Saved Draft Library")
         self.assertEqual(ss.get("_suite_page_overwrite_source"), "nav_consumed_preserved")
 
+    def test_apply_clears_sticky_same_page_navigate(self) -> None:
+        ss = {
+            "active_page": "Historical Explorer",
+            "main_sidebar_page": "Historical Explorer",
+            "_navigate_to_page": "Historical Explorer",
+        }
+        st_obj = SimpleNamespace(session_state=ss)
+        apply_baseball_disk_state(
+            st_obj,
+            {"active_page": "Historical Explorer"},
+        )
+        self.assertEqual(ss["active_page"], "Historical Explorer")
+        self.assertNotIn("_navigate_to_page", ss)
+
 
 if __name__ == "__main__":
     unittest.main()

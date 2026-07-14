@@ -100,10 +100,15 @@ class CategoryOutlookTests(unittest.TestCase):
         )
         outlook = compute_category_outlook(pd.DataFrame(), pool, config=_config(), roster_gaps=["C"])
         self.assertTrue(outlook["bars"])
+        self.assertTrue(outlook.get("pre_draft_neutral"))
+        self.assertEqual(outlook.get("needs_attention"), [])
+        self.assertEqual(outlook.get("strengths"), [])
         for bar in outlook["bars"]:
             self.assertIn("expected", bar)
             self.assertEqual(bar["team_value"], 0.0)
-            self.assertEqual(bar["ratio"], 0.0)
+            self.assertEqual(bar["ratio"], 1.0)
+            self.assertEqual(bar["level_num"], 5)
+            self.assertEqual(bar["level"], "Neutral")
 
     def test_partial_roster_missing_columns_is_safe(self) -> None:
         roster = pd.DataFrame([{"fullName": "Player A", "proj_HR": 25}])

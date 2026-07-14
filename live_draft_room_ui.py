@@ -734,27 +734,30 @@ def render_category_outlook_panel(st: Any, outlook: dict[str, Any]) -> None:
     bars = outlook.get("bars") or []
     if not bars:
         return
-    try:
-        from live_draft_ux import category_need_stars
-    except ImportError:
-        category_need_stars = None  # type: ignore[assignment,misc]
     bar_html_parts: list[str] = []
     for b in bars:
         cat = str(b.get("category") or "")
-        if category_need_stars and cat in (outlook.get("needs_attention") or []):
-            bar_html_parts.append(f'<div class="ld-cat-bar-row">{category_need_stars(cat)}</div>')
+        level_num = max(0, min(5, int(b.get("level_num") or 0)))
+        level = str(b.get("level") or "")
+        # Always show roster-derived strength (not static category importance stars).
+        if level_num > 0:
+            stars = "★" * level_num + "☆" * (5 - level_num)
+            bar_html_parts.append(f'<div class="ld-cat-bar-row">{cat}  {stars}  {level}</div>')
         else:
             bar_html_parts.append(
-                f'<div class="ld-cat-bar-row">{cat}  {b.get("bar", "")}  {b.get("level", "")}</div>'
+                f'<div class="ld-cat-bar-row">{cat}  {b.get("bar", "")}  {level}</div>'
             )
     bar_html = "".join(bar_html_parts)
     needs = outlook.get("needs_attention") or []
     strengths = outlook.get("strengths") or []
     insight_parts = []
-    if needs:
-        insight_parts.append("<strong>Needs attention:</strong> " + ", ".join(needs))
-    if strengths:
-        insight_parts.append("<strong>Strengths:</strong> " + ", ".join(strengths))
+    if outlook.get("pre_draft_neutral"):
+        insight_parts.append("Neutral baseline — outlook updates after the first pick.")
+    else:
+        if needs:
+            insight_parts.append("<strong>Needs attention:</strong> " + ", ".join(needs))
+        if strengths:
+            insight_parts.append("<strong>Strengths:</strong> " + ", ".join(strengths))
     insight = "<br/>".join(insight_parts)
     st.markdown(
         f'<div class="ld-category-outlook-panel">'

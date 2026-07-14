@@ -13119,6 +13119,11 @@ def _consume_scheduled_navigation():
         if isinstance(pending, dict):
             target = get_sidebar_page_value(pending.get("target"))
     if target and target in _PAGE_OPTION_SET:
+        # Ignore sticky same-page schedules left by older restore paths — they skip
+        # sidebar align and can trap the UI on Historical Explorer after a click.
+        current = get_sidebar_page_value(st.session_state.get("active_page"))
+        if target == current:
+            return None
         st.session_state[MAIN_SIDEBAR_PAGE_KEY] = target
         st.session_state["active_page"] = target
         st.session_state["_skip_page_restore_for"] = target
@@ -13856,6 +13861,11 @@ def _on_sidebar_page_change() -> None:
     """Manual sidebar navigation wins over cloud page restore in the same run."""
     pick = normalize_page_key(st.session_state.get(MAIN_SIDEBAR_PAGE_KEY))
     st.session_state["active_page"] = pick
+    # Sidebar click beats any leftover scheduled/consumed navigation from restore.
+    st.session_state.pop("_navigate_to_page", None)
+    st.session_state.pop("_pending_active_page", None)
+    st.session_state.pop("_suite_nav_consumed_target", None)
+    st.session_state.pop("_suite_nav_consumed_this_run", None)
     try:
         from draft_lab_resume import cancel_draft_lab_resume_navigation
 
@@ -13907,6 +13917,9 @@ def _align_active_page_from_sidebar() -> None:
 
 # Page navigation: consume scheduled navigation FIRST, then workspace sync, then sidebar radio.
 st.session_state.pop("_shared_draft_prep_sig", None)
+# Prior-run consume markers must not re-force pages on warm hops / workspace apply.
+st.session_state.pop("_suite_nav_consumed_target", None)
+st.session_state.pop("_suite_nav_consumed_this_run", None)
 st.session_state["_suite_nav_active_page_before"] = st.session_state.get("active_page")
 st.session_state["_suite_nav_scheduled_target_before"] = st.session_state.get("_navigate_to_page")
 _record_sidebar_nav_trace("run_start_before_consume")

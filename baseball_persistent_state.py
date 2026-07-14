@@ -871,10 +871,19 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         ss["active_page"] = active
         ss["main_sidebar_page"] = active
         pending_nav = str(ss.get("_navigate_to_page") or "").strip()
-        if pending_nav and pending_nav != active:
+        # Keep a real redirect schedule (even after we mirror it into active). Do not leave a
+        # sticky same-page schedule from ordinary restore — that re-forces the old page on
+        # the next consume and fights the sidebar (Historical Explorer stuck).
+        _keep_scheduled = overwrite_source in {
+            "scheduled_navigation_preserved",
+            "draft_lab_resume_preserved",
+            "hof_case_resume_preserved",
+            "hof_case_skip_restore_preserved",
+        }
+        if pending_nav and (pending_nav != active or _keep_scheduled):
             pass
         else:
-            ss["_navigate_to_page"] = active
+            ss.pop("_navigate_to_page", None)
         ss["_suite_last_persisted_page"] = active
         ss.pop("_suite_cloud_target_page", None)
         if page_actually_changed:

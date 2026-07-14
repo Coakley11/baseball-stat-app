@@ -98,7 +98,8 @@ class TestBaseballPersistence(unittest.TestCase):
         ss = st.session_state
         self.assertEqual(ss["active_page"], "Comparison Tool")
         self.assertEqual(ss["main_sidebar_page"], "Comparison Tool")
-        self.assertEqual(ss["_navigate_to_page"], "Comparison Tool")
+        # Same-page restore must not leave a sticky schedule (fights sidebar clicks).
+        self.assertNotIn("_navigate_to_page", ss)
         self.assertEqual(ss["sig_player_a_clean"], "Juan Soto (NYY)")
         self.assertEqual(ss["sig_player_b_clean"], "Francisco Lindor (NYM)")
         self.assertTrue(ss.get("_suite_cloud_workspace_applied"))

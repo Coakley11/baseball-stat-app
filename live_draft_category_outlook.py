@@ -64,6 +64,33 @@ def compute_category_outlook(
             ("proj_R", "Runs", "sum"),
         ]
 
+    # Before Pick 1 there is no roster — do not invent category deficits vs a 1-player baseline.
+    if roster_df.empty:
+        bars = []
+        for col, label, kind in specs:
+            if not pool_df.empty and col not in pool_df.columns:
+                continue
+            bars.append(
+                {
+                    "category": label,
+                    "column": col,
+                    "team_value": 0.0,
+                    "expected": 0.0,
+                    "ratio": 1.0,
+                    "level": "Neutral",
+                    "level_num": 5,
+                    "bar": _bar_blocks(5),
+                    "pre_draft_neutral": True,
+                }
+            )
+        return {
+            "bars": bars,
+            "needs_attention": [],
+            "strengths": [],
+            "fantasy_format": fantasy_format,
+            "pre_draft_neutral": True,
+        }
+
     n_players = max(1, len(roster_df))
     bars: list[dict[str, Any]] = []
     needs: list[str] = []
@@ -78,7 +105,7 @@ def compute_category_outlook(
 
         expected = pool_med if kind == "rate" else pool_med * n_players
 
-        if roster_df.empty or col not in roster_df.columns:
+        if col not in roster_df.columns:
             team_val = 0.0
         elif kind == "rate":
             vals = pd.to_numeric(roster_df[col], errors="coerce")
@@ -128,6 +155,7 @@ def compute_category_outlook(
         "needs_attention": needs[:6],
         "strengths": strengths[:6],
         "fantasy_format": fantasy_format,
+        "pre_draft_neutral": False,
     }
 
 
