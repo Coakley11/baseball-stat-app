@@ -357,16 +357,19 @@ def save_live_draft_shared_league_context(
                 meta["commissioner_user_id"] = commissioner
                 context["metadata"] = meta
                 context = upsert_league_context(session, context)
+            # Non-commissioner Live Draft seats stay reserved/unclaimed until invite Accept.
+            from fantasy_league_team_ownership import reserve_team_for_invite_claim
+
             for team, owner in owner_map.items():
                 if team == my_team:
                     continue
-                context = assign_team_owner_to_context(
+                context = reserve_team_for_invite_claim(
                     context,
                     team,
-                    user_id=str(owner.get("user_id") or "").strip() or None,
-                    email=str(owner.get("email") or "").strip() or None,
-                    display_name=str(owner.get("display_name") or "").strip() or None,
-                    external_id=str(owner.get("external_id") or "").strip() or None,
+                    user_id=str(owner.get("user_id") or "").strip(),
+                    email=str(owner.get("email") or "").strip(),
+                    display_name=str(owner.get("display_name") or "").strip(),
+                    external_id=str(owner.get("external_id") or "").strip(),
                 )
             context = upsert_league_context(session, context)
         except ImportError:

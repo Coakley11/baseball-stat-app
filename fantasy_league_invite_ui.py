@@ -183,7 +183,7 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
         )
 
         shared = load_shared_league(league_id) or {}
-        teams = unclaimed_teams_for_invite(shared)
+        teams = unclaimed_teams_for_invite(shared, session=session)
         if not teams:
             st.warning("No unclaimed teams remain in this league.")
             if st.button("Decline invite", key=f"{key_base}_decline_no_teams"):
@@ -195,9 +195,12 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
                     st.rerun()
             continue
 
+        suggested = str(invite.get("suggested_team") or invite.get("claimed_team") or "").strip()
+        default_idx = teams.index(suggested) if suggested in teams else 0
         pick = st.selectbox(
             "Choose your team",
             teams,
+            index=default_idx,
             key=f"{key_base}_team_pick",
         )
         accept_col, decline_col = st.columns(2)

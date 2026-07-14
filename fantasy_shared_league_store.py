@@ -542,11 +542,15 @@ def _claimed_teams_from_ownership(ownership: dict[str, Any] | None) -> set[str]:
     claimed: set[str] = set()
     if not isinstance(ownership, dict):
         return claimed
+    try:
+        from fantasy_league_team_ownership import ownership_is_firm_claim
+    except ImportError:
+        ownership_is_firm_claim = lambda record: bool(str((record or {}).get("user_id") or "").strip())  # type: ignore[assignment,misc]
     for team, record in ownership.items():
         team_name = str(team or "").strip()
         if not team_name or not isinstance(record, dict):
             continue
-        if str(record.get("user_id") or "").strip():
+        if ownership_is_firm_claim(record):
             claimed.add(team_name)
     return claimed
 

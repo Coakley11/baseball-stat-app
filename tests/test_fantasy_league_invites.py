@@ -31,6 +31,7 @@ from fantasy_league_invites import (
     resolve_invitee_target,
     scan_pending_invites_from_disk_workflow_hints,
     scan_pending_invites_from_shared_leagues,
+    unclaimed_teams_for_invite,
 )
 from fantasy_league_team_ownership import assign_team_owner_to_context, trades_enabled
 from fantasy_shared_league_store import (
@@ -659,6 +660,65 @@ class TestFantasyLeagueInvites(unittest.TestCase):
             self.assertFalse((sync.get("comparison") or {}).get("local_stale_vs_shared"))
             self.assertIn("Team 2", sync.get("shared_team_ownership") or {})
             self.assertIn("Team 2", sync.get("local_team_ownership") or {})
+
+    def test_unclaimed_teams_include_invitee_preassigned_and_reservations(self) -> None:
+        shared = {
+            "league_rosters": {
+                "Team 1": {"players": []},
+                "Team 2": {"players": []},
+            },
+            "team_ownership": {
+                "Team 1": {"user_id": "user:daniel", "claim_status": "claimed"},
+                # Legacy Live Draft bug: firm user_id stamped before Accept.
+                "Team 2": {
+                    "user_id": "user:coakley",
+                    "external_id": "coakley11",
+                    "claim_status": "claimed",
+                },
+            },
+        }
+        session = {
+            "_suite_cloud_user_id": "user:coakley",
+            "_suite_auth_external_id": "coakley11",
+            "_suite_active_workspace_id": "coakley11",
+        }
+        with _as_user("user:coakley"):
+            teams = unclaimed_teams_for_invite(shared, session=session)
+        self.assertEqual(teams, ["Team 2"])
+
+        shared_reserved = {
+            "league_rosters": {
+                "Team 1": {"players": []},
+                "Team 2": {"players": []},
+            },
+            "team_ownership": {
+                "Team 1": {"user_id": "user:daniel", "claim_status": "claimed"},
+                "Team 2": {
+                    "user_id": "",
+                    "provisional": True,
+                    "claim_status": "reserved_live_draft",
+                    "reserved_for_user_id": "user:coakley",
+                    "reserved_for_external_id": "coakley11",
+                },
+            },
+        }
+        with _as_user("user:coakley"):
+            teams = unclaimed_teams_for_invite(shared_reserved, session=session)
+        self.assertEqual(teams, ["Team 2"])
+
+        # Empty unclaimed only when every non-invitee seat is firmly claimed.
+        shared_full = {
+            "league_rosters": {
+                "Team 1": {"players": []},
+                "Team 2": {"players": []},
+            },
+            "team_ownership": {
+                "Team 1": {"user_id": "user:daniel", "claim_status": "claimed"},
+                "Team 2": {"user_id": "user:other", "claim_status": "claimed"},
+            },
+        }
+        with _as_user("user:coakley"):
+            self.assertEqual(unclaimed_teams_for_invite(shared_full, session=session), [])
 
 
 if __name__ == "__main__":

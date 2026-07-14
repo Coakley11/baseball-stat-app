@@ -180,6 +180,25 @@ def _set_team_ownership(context: dict[str, Any], ownership: dict[str, dict[str, 
     context["metadata"] = meta
 
 
+def ownership_is_provisional(record: dict[str, Any] | None) -> bool:
+    """True when a Live Draft reservation exists but the manager has not accepted/claimed yet."""
+    if not isinstance(record, dict):
+        return False
+    if bool(record.get("provisional")):
+        return True
+    status = str(record.get("claim_status") or "").strip().lower()
+    return status in {"reserved", "reserved_live_draft", "pending_invite", "suggested"}
+
+
+def ownership_is_firm_claim(record: dict[str, Any] | None) -> bool:
+    """True when a team is actually claimed (firm user_id, not a provisional reservation)."""
+    if not isinstance(record, dict):
+        return False
+    if ownership_is_provisional(record):
+        return False
+    return bool(str(record.get("user_id") or "").strip())
+
+
 def assign_team_owner_to_context(
     context: dict[str, Any],
     team_name: str,
@@ -216,6 +235,50 @@ def assign_team_owner_to_context(
         "display_name": str(display_name or _resolve_display_name()).strip(),
         "league_id": league_id,
         "assigned_at": _utc_now_iso(),
+        "provisional": False,
+        "claim_status": "claimed",
+    }
+    _set_team_ownership(context, ownership)
+    return context
+
+
+def reserve_team_for_invite_claim(
+    context: dict[str, Any],
+    team_name: str,
+    *,
+    user_id: str = "",
+    email: str = "",
+    display_name: str = "",
+    external_id: str = "",
+) -> dict[str, Any]:
+    """Reserve a team for a Live Draft participant without counting it as claimed."""
+    team = str(team_name or "").strip()
+    if not team:
+        return context
+    context = ensure_league_identity(context)
+    league_id = resolve_canonical_league_id(context)
+    ownership = get_team_ownership(context)
+    uid = str(user_id or "").strip()
+    resolved_email = str(email or "").strip().lower()
+    resolved_external = str(external_id or "").strip().lower()
+    if not resolved_external and resolved_email and "@" in resolved_email:
+        resolved_external = resolved_email.split("@", 1)[0].strip().lower()
+    ownership[team] = {
+        "team_name": team,
+        "team_id": team,
+        # Keep empty so invite UI treats the team as unclaimed until Accept.
+        "user_id": "",
+        "email": resolved_email,
+        "external_id": "",
+        "display_name": str(display_name or "").strip(),
+        "league_id": league_id,
+        "assigned_at": "",
+        "reserved_at": _utc_now_iso(),
+        "reserved_for_user_id": uid,
+        "reserved_for_external_id": resolved_external,
+        "reserved_for_email": resolved_email,
+        "provisional": True,
+        "claim_status": "reserved_live_draft",
     }
     _set_team_ownership(context, ownership)
     return context
@@ -348,7 +411,7 @@ def distinct_account_owner_count(context: dict[str, Any] | None) -> int:
     user_ids = {
         str(record.get("user_id") or "").strip()
         for record in get_team_ownership(context).values()
-        if str(record.get("user_id") or "").strip()
+        if ownership_is_firm_claim(record if isinstance(record, dict) else None)
     }
     return len(user_ids)
 
@@ -357,7 +420,7 @@ def claimed_team_count(context: dict[str, Any] | None) -> int:
     return sum(
         1
         for record in get_team_ownership(context).values()
-        if str(record.get("user_id") or "").strip()
+        if ownership_is_firm_claim(record if isinstance(record, dict) else None)
     )
 
 

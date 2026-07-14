@@ -114,8 +114,13 @@ def discover_shared_league_memberships_for_session(session: dict[str, Any]) -> l
         ownership = doc.get("team_ownership") or {}
         if isinstance(ownership, dict):
             for team, record in ownership.items():
+                if not isinstance(record, dict):
+                    continue
+                # Provisional Live Draft reservations are not membership until Accept/claim.
+                if record.get("provisional") or str(record.get("claim_status") or "").startswith("reserved"):
+                    continue
                 if _record_matches_account(
-                    record if isinstance(record, dict) else {},
+                    record,
                     user_id=uid,
                     external_id=external,
                     workspace_id=workspace,

@@ -142,9 +142,11 @@ class LiveDraftSharedLeagueOriginVisibilityTests(unittest.TestCase):
         self.assertEqual(str(shared.get("creation_origin") or ""), CREATION_ORIGIN_LIVE_DRAFT_ROOM)
         ownership = shared.get("team_ownership") or {}
         team2 = ownership.get("Team 2") or {}
-        self.assertTrue(str(team2.get("user_id") or ""))
-        self.assertEqual(str(team2.get("external_id") or "").lower(), "coakley11")
-        self.assertIn("@", str(team2.get("email") or ""))
+        # Seat is reserved for coakley11 but stays unclaimed until invite Accept.
+        self.assertFalse(str(team2.get("user_id") or ""))
+        self.assertTrue(bool(team2.get("provisional")))
+        self.assertEqual(str(team2.get("reserved_for_external_id") or "").lower(), "coakley11")
+        self.assertIn("@", str(team2.get("reserved_for_email") or team2.get("email") or ""))
 
         # Commissioner repair must not rewrite Live Draft → Imported League.
         draft_type, reason, _ = resolve_archive_draft_type_with_reason(

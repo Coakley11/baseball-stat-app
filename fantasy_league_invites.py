@@ -996,12 +996,25 @@ def join_shared_league_from_invite(
     ownership = shared.get("team_ownership") or {}
     if not isinstance(ownership, dict):
         ownership = {}
-    team_record = ownership.get(team) or {}
+    team_record = ownership.get(team) if isinstance(ownership.get(team), dict) else {}
+    try:
+        from fantasy_league_team_ownership import account_user_ids_match, ownership_is_firm_claim
+    except ImportError:
+        account_user_ids_match = lambda a, b: str(a or "") == str(b or "")  # type: ignore[assignment,misc]
+        ownership_is_firm_claim = lambda record: bool(str((record or {}).get("user_id") or "").strip())  # type: ignore[assignment,misc]
     owner_uid = str(team_record.get("user_id") or "").strip()
-    if owner_uid and owner_uid != uid:
+    if ownership_is_firm_claim(team_record) and owner_uid and not account_user_ids_match(owner_uid, uid):
         return None, None, f"{team} is already claimed by another account."
     for owned_team, record in ownership.items():
-        if str(record.get("user_id") or "").strip() == uid and str(owned_team) != team:
+        if not isinstance(record, dict):
+            continue
+        other_uid = str(record.get("user_id") or "").strip()
+        if (
+            ownership_is_firm_claim(record)
+            and other_uid
+            and account_user_ids_match(other_uid, uid)
+            and str(owned_team) != team
+        ):
             return None, None, f"Your account already owns {owned_team} in this league."
 
     league_name = str(
@@ -1175,22 +1188,87 @@ def decline_league_invite(
     return True, ""
 
 
-def unclaimed_teams_for_invite(shared: dict[str, Any]) -> list[str]:
+def unclaimed_teams_for_invite(
+    shared: dict[str, Any],
+    *,
+    session: dict[str, Any] | None = None,
+    invitee_user_id: str = "",
+    invitee_external_id: str = "",
+    invitee_workspace_id: str = "",
+) -> list[str]:
+    """Teams available for an invitee to claim.
+
+    A team is unavailable only when another account holds a *firm* claim.
+    Provisional Live Draft reservations and the invitee's own preassignment remain claimable.
+    """
+    from fantasy_league_team_ownership import (
+        account_user_ids_match,
+        ownership_is_firm_claim,
+        ownership_is_provisional,
+    )
+
     rosters = shared.get("league_rosters") or {}
     ownership = shared.get("team_ownership") or {}
     if not isinstance(rosters, dict):
         return []
     if not isinstance(ownership, dict):
         ownership = {}
+
+    uid = str(invitee_user_id or "").strip()
+    external = str(invitee_external_id or "").strip().lower()
+    workspace = str(invitee_workspace_id or "").strip().lower()
+    if isinstance(session, dict):
+        if not uid:
+            uid = str(
+                session.get("_suite_cloud_user_id")
+                or session.get("_suite_auth_user_id")
+                or _resolve_user_id()
+                or ""
+            ).strip()
+        if not external:
+            external = str(session.get("_suite_auth_external_id") or _resolve_external_id() or "").strip().lower()
+        if not workspace:
+            workspace = str(session.get("_suite_active_workspace_id") or _resolve_workspace_id(session) or "").strip().lower()
+    if not uid:
+        uid = str(_resolve_user_id() or "").strip()
+    if not external:
+        external = str(_resolve_external_id() or "").strip().lower()
+
+    def _matches_invitee(record: dict[str, Any]) -> bool:
+        owner_uid = str(record.get("user_id") or "").strip()
+        if owner_uid and uid and account_user_ids_match(owner_uid, uid):
+            return True
+        reserved_uid = str(record.get("reserved_for_user_id") or "").strip()
+        if reserved_uid and uid and account_user_ids_match(reserved_uid, uid):
+            return True
+        reserved_ext = str(record.get("reserved_for_external_id") or record.get("external_id") or "").strip().lower()
+        if reserved_ext and external and reserved_ext == external:
+            return True
+        if reserved_ext and workspace and reserved_ext == workspace:
+            return True
+        reserved_email = str(record.get("reserved_for_email") or record.get("email") or "").strip().lower()
+        if reserved_email and "@" in reserved_email:
+            local = reserved_email.split("@", 1)[0]
+            if external and local == external:
+                return True
+            if workspace and local == workspace:
+                return True
+        return False
+
     teams: list[str] = []
     for team_name in sorted(rosters.keys()):
         team = str(team_name or "").strip()
         if not team:
             continue
-        record = ownership.get(team) or {}
-        if str(record.get("user_id") or "").strip():
+        record = ownership.get(team) if isinstance(ownership.get(team), dict) else {}
+        if not ownership_is_firm_claim(record):
+            # Unclaimed or provisional reservation — always selectable.
+            teams.append(team)
             continue
-        teams.append(team)
+        # Firm claim by this invitee (legacy Live Draft preassign) — still allow Accept.
+        if _matches_invitee(record):
+            teams.append(team)
+            continue
     return teams
 
 
