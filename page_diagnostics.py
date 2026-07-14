@@ -226,10 +226,20 @@ def _section_repair_history(session: dict[str, Any]) -> dict[str, Any]:
     origin = session.get("_draft_origin_repair_diag")
     if isinstance(origin, dict):
         out["draft_origin_repair"] = origin
-    decisions = session.get("_draft_origin_repair_decisions")
+    try:
+        from fantasy_league_context import get_origin_repair_decisions
+
+        decisions = get_origin_repair_decisions(session)
+    except ImportError:
+        decisions = session.get("library_origin_repair_decisions") or session.get(
+            "_draft_origin_repair_decisions"
+        )
     if isinstance(decisions, list) and decisions:
         out["draft_origin_repair_decisions"] = decisions
-    repair_trace = session.get("_library_repair_last_trace")
+    repair_trace = (
+        session.get("library_origin_migration_trace")
+        or session.get("_library_repair_last_trace")
+    )
     if isinstance(repair_trace, dict) and repair_trace:
         out["library_repair_last_trace"] = repair_trace
     invite = session.get("_league_invite_flow_diag")

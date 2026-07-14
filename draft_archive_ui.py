@@ -4148,23 +4148,14 @@ def _render_active_draft_section(
     )
     # Always show the active league's origin decision so Cloud sessions can be diagnosed.
     try:
-        from fantasy_league_context import ORIGIN_REPAIR_DECISIONS_KEY
+        from fantasy_league_context import get_origin_repair_decisions
 
         active_id = str(active.get("draft_id") or "").strip()
-        decisions = session.get(ORIGIN_REPAIR_DECISIONS_KEY) or []
+        decisions = get_origin_repair_decisions(session)
         hit = next(
             (row for row in decisions if isinstance(row, dict) and str(row.get("draft_id") or "") == active_id),
             None,
         )
-        if not isinstance(hit, dict):
-            from fantasy_league_context import evaluate_origin_decisions_for_visible_archives
-
-            evaluate_origin_decisions_for_visible_archives(session)
-            decisions = session.get(ORIGIN_REPAIR_DECISIONS_KEY) or []
-            hit = next(
-                (row for row in decisions if isinstance(row, dict) and str(row.get("draft_id") or "") == active_id),
-                None,
-            )
         if isinstance(hit, dict):
             keys = (
                 "draft_id",
@@ -4187,6 +4178,11 @@ def _render_active_draft_section(
                 "Origin decision (active league)\n"
                 + "\n".join(f"{key}: {hit.get(key)}" for key in keys),
                 language="text",
+            )
+        else:
+            st.caption(
+                f"Origin decision missing for active draft_id=`{active_id}` "
+                f"(have {len(decisions)} decision rows in migration payload)."
             )
     except Exception:
         pass
@@ -4708,13 +4704,21 @@ def _render_saved_draft_library_page_body(
 
     # Always-available origin migration log (answers: did repair run / why this league).
     try:
-        from fantasy_league_context import ORIGIN_REPAIR_DECISIONS_KEY
+        from fantasy_league_context import get_origin_repair_decisions
 
-        decisions = session.get(ORIGIN_REPAIR_DECISIONS_KEY)
-        repair_trace = session.get("_library_repair_last_trace") or session.get("_origin_migration_trace")
+        decisions = get_origin_repair_decisions(session)
+        repair_trace = (
+            session.get("library_origin_migration_trace")
+            or session.get("_library_repair_last_trace")
+            or session.get("_origin_migration_trace")
+        )
         gated_trace = session.get("_library_gated_repair_last_trace")
-        has_decisions = isinstance(decisions, list) and bool(decisions)
-        if isinstance(decisions, list) or isinstance(repair_trace, dict):
+        if not decisions and isinstance(repair_trace, dict):
+            raw = repair_trace.get("decisions")
+            if isinstance(raw, list):
+                decisions = [row for row in raw if isinstance(row, dict)]
+        has_decisions = bool(decisions)
+        if has_decisions or isinstance(repair_trace, dict):
             with st.expander("Origin repair log", expanded=True):
                 st.caption(
                     "Per-league decisions from the always-on Saved Draft Library origin migration "
@@ -4726,7 +4730,12 @@ def _render_saved_draft_library_page_body(
                             "origin_migration_ran": bool(repair_trace.get("ran")),
                             "origin_migration_skipped": repair_trace.get("skipped"),
                             "origin_migration_path": repair_trace.get("path"),
-                            "decision_count": repair_trace.get("decision_count"),
+                            "decision_count": int(
+                                repair_trace.get("decision_count")
+                                or len(decisions)
+                                or 0
+                            ),
+                            "decisions_exposed": len(decisions),
                             "steps": repair_trace.get("steps") or [],
                             "failures": repair_trace.get("failures") or [],
                             "gated_repair_ran": bool((gated_trace or {}).get("ran"))
@@ -4742,8 +4751,7 @@ def _render_saved_draft_library_page_body(
                 else:
                     st.caption("No per-league origin decisions recorded on this render.")
     except Exception:
-        pass
-    try:
+        pass    try:
         from fantasy_league_invite_ui import (
             render_commissioner_invite_diagnostics_panel,
             render_commissioner_invite_panel,

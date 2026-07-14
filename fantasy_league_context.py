@@ -2500,7 +2500,11 @@ def _canonical_live_created_from(
     return False
 
 
-ORIGIN_REPAIR_DECISIONS_KEY = "_draft_origin_repair_decisions"
+# Prefer non-underscore keys so Streamlit session_state does not treat them as internal.
+ORIGIN_REPAIR_DECISIONS_KEY = "library_origin_repair_decisions"
+ORIGIN_MIGRATION_TRACE_KEY = "library_origin_migration_trace"
+# Legacy keys (still read for one release).
+_LEGACY_ORIGIN_REPAIR_DECISIONS_KEY = "_draft_origin_repair_decisions"
 
 
 def record_origin_repair_decision(session: dict[str, Any] | None, decision: dict[str, Any]) -> None:
@@ -2514,6 +2518,24 @@ def record_origin_repair_decision(session: dict[str, Any] | None, decision: dict
     session[ORIGIN_REPAIR_DECISIONS_KEY] = rows[-40:]
 
 
+def get_origin_repair_decisions(session: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return per-league decisions from session key or migration trace (never lose UI payload)."""
+    if not isinstance(session, dict):
+        return []
+    for key in (ORIGIN_REPAIR_DECISIONS_KEY, _LEGACY_ORIGIN_REPAIR_DECISIONS_KEY):
+        rows = session.get(key)
+        if isinstance(rows, list) and rows:
+            return [dict(row) for row in rows if isinstance(row, dict)]
+    for key in (ORIGIN_MIGRATION_TRACE_KEY, "_origin_migration_trace", "_library_repair_last_trace"):
+        trace = session.get(key)
+        if not isinstance(trace, dict):
+            continue
+        rows = trace.get("decisions")
+        if isinstance(rows, list) and rows:
+            return [dict(row) for row in rows if isinstance(row, dict)]
+    return []
+
+
 def evaluate_origin_decisions_for_visible_archives(session: dict[str, Any]) -> list[dict[str, Any]]:
     """Always record resolve decisions for visible library cards (even when gated repair skips)."""
     try:
@@ -2522,75 +2544,84 @@ def evaluate_origin_decisions_for_visible_archives(session: dict[str, Any]) -> l
         from draft_archive_state import list_draft_archives as list_visible_draft_archives
     from fantasy_league_identity import resolve_canonical_league_id
 
-    session[ORIGIN_REPAIR_DECISIONS_KEY] = []
+    prior = get_origin_repair_decisions(session)
     decisions: list[dict[str, Any]] = []
-    for entry in list_visible_draft_archives(session):
-        if not isinstance(entry, dict):
-            continue
-        draft_id = str(entry.get("draft_id") or "").strip()
-        if not draft_id:
-            continue
-        ctx = get_league_context_for_archive(session, entry)
-        shared_doc = None
-        league_id = ""
-        if isinstance(ctx, dict):
-            league_id = str(resolve_canonical_league_id(ctx) or "").strip()
-        if not league_id:
-            league_id = str(entry.get("canonical_league_id") or "").strip()
-        if league_id:
-            try:
-                from fantasy_shared_league_store import load_shared_league
+    try:
+        for entry in list_visible_draft_archives(session):
+            if not isinstance(entry, dict):
+                continue
+            draft_id = str(entry.get("draft_id") or "").strip()
+            if not draft_id:
+                continue
+            ctx = get_league_context_for_archive(session, entry)
+            shared_doc = None
+            league_id = ""
+            if isinstance(ctx, dict):
+                league_id = str(resolve_canonical_league_id(ctx) or "").strip()
+            if not league_id:
+                league_id = str(entry.get("canonical_league_id") or "").strip()
+            if league_id:
+                try:
+                    from fantasy_shared_league_store import load_shared_league
 
-                shared_doc = load_shared_league(league_id)
-            except ImportError:
-                shared_doc = None
-        expected, selected_reason, evidence = resolve_archive_draft_type_with_reason(
-            context=ctx if isinstance(ctx, dict) else None,
-            shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
-            archive_entry=entry,
-            session=session,
-        )
-        live_created = _canonical_live_created_from(
-            context=ctx if isinstance(ctx, dict) else None,
-            shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
-            archive_entry=entry,
-        )
-        decision = {
-            "draft_id": draft_id,
-            "draft_name": str(entry.get("draft_name") or "").strip(),
-            "league_id": league_id,
-            "archive_type_before": str(entry.get("draft_type") or "").strip(),
-            "archive_type_after": expected,
-            "creation_origin_before": read_immutable_creation_origin(
+                    shared_doc = load_shared_league(league_id)
+                except ImportError:
+                    shared_doc = None
+            expected, selected_reason, evidence = resolve_archive_draft_type_with_reason(
                 context=ctx if isinstance(ctx, dict) else None,
                 shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
                 archive_entry=entry,
-            ),
-            "selected_draft_type": expected,
-            "selected_reason": selected_reason,
-            "live_created_from_evidence": live_created,
-            "shared_doc_loaded": isinstance(shared_doc, dict),
-            "context_loaded": isinstance(ctx, dict),
-            "shared_league_created_flag": bool(entry.get("shared_league_created")),
-            "shared_created_from": str((shared_doc or {}).get("created_from") or "").strip()
-            if isinstance(shared_doc, dict)
-            else "",
-            "context_created_from": str(((ctx or {}).get("metadata") or {}).get("created_from") or "").strip()
-            if isinstance(ctx, dict)
-            else "",
-            "source": "evaluate_visible_archives",
-            "origin_tokens_found": evidence.get("origin_tokens_found") or [],
-        }
-        record_origin_repair_decision(session, decision)
-        decisions.append(decision)
-        if str(entry.get("draft_type") or "").strip() != expected:
-            repair_archive_draft_type_for_entry(
-                session,
-                entry,
-                context=ctx if isinstance(ctx, dict) else None,
+                session=session,
             )
-            decision["migrated"] = True
-            decision["archive_type_after"] = expected
+            live_created = _canonical_live_created_from(
+                context=ctx if isinstance(ctx, dict) else None,
+                shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
+                archive_entry=entry,
+            )
+            decision = {
+                "draft_id": draft_id,
+                "draft_name": str(entry.get("draft_name") or "").strip(),
+                "league_id": league_id,
+                "archive_type_before": str(entry.get("draft_type") or "").strip(),
+                "archive_type_after": expected,
+                "creation_origin_before": read_immutable_creation_origin(
+                    context=ctx if isinstance(ctx, dict) else None,
+                    shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
+                    archive_entry=entry,
+                ),
+                "selected_draft_type": expected,
+                "selected_reason": selected_reason,
+                "live_created_from_evidence": live_created,
+                "shared_doc_loaded": isinstance(shared_doc, dict),
+                "context_loaded": isinstance(ctx, dict),
+                "shared_league_created_flag": bool(entry.get("shared_league_created")),
+                "shared_created_from": str((shared_doc or {}).get("created_from") or "").strip()
+                if isinstance(shared_doc, dict)
+                else "",
+                "context_created_from": str(((ctx or {}).get("metadata") or {}).get("created_from") or "").strip()
+                if isinstance(ctx, dict)
+                else "",
+                "source": "evaluate_visible_archives",
+                "origin_tokens_found": list(evidence.get("origin_tokens_found") or []),
+            }
+            decisions.append(decision)
+            if str(entry.get("draft_type") or "").strip() != expected:
+                repair_archive_draft_type_for_entry(
+                    session,
+                    entry,
+                    context=ctx if isinstance(ctx, dict) else None,
+                )
+                decision["migrated"] = True
+                decision["archive_type_after"] = expected
+    except Exception:
+        # Never wipe a successful prior payload if re-evaluation fails mid-render.
+        if prior and not decisions:
+            session[ORIGIN_REPAIR_DECISIONS_KEY] = prior
+            return prior
+        raise
+
+    session[ORIGIN_REPAIR_DECISIONS_KEY] = decisions
+    session.pop(_LEGACY_ORIGIN_REPAIR_DECISIONS_KEY, None)
     return decisions
 
 

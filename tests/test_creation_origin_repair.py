@@ -211,6 +211,29 @@ class CreationOriginRepairTests(unittest.TestCase):
         self.assertGreaterEqual(int(origin.get("decision_count") or 0), 1)
         self.assertEqual(session[DRAFT_ARCHIVE_KEY][0]["draft_type"], DRAFT_TYPE_LIVE)
 
+    def test_get_origin_repair_decisions_falls_back_to_trace(self) -> None:
+        from fantasy_league_context import get_origin_repair_decisions
+
+        session = {
+            "library_origin_migration_trace": {
+                "ran": True,
+                "decision_count": 1,
+                "decisions": [
+                    {
+                        "draft_id": "trace-only-1",
+                        "selected_draft_type": DRAFT_TYPE_IMPORTED,
+                        "selected_reason": "immutable_creation_origin_validated_import",
+                        "archive_type_before": DRAFT_TYPE_IMPORTED,
+                        "archive_type_after": DRAFT_TYPE_IMPORTED,
+                        "live_created_from_evidence": False,
+                    }
+                ],
+            }
+        }
+        rows = get_origin_repair_decisions(session)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["draft_id"], "trace-only-1")
+
     def test_repair_reason_recorded(self) -> None:
         self.assertIn("3ce50b4f2e8b", KNOWN_MISCLASSIFIED_IMPORT_DRAFTS)
         self.assertEqual(
@@ -358,9 +381,9 @@ class CreationOriginRepairTests(unittest.TestCase):
             "fantasy_shared_league_store.save_shared_league"
         ):
             repair_archive_draft_types_from_contexts(session)
-        from fantasy_league_context import ORIGIN_REPAIR_DECISIONS_KEY
+        from fantasy_league_context import get_origin_repair_decisions
 
-        decisions = session.get(ORIGIN_REPAIR_DECISIONS_KEY) or []
+        decisions = get_origin_repair_decisions(session)
         self.assertTrue(decisions)
         hit = next((row for row in decisions if row.get("draft_id") == draft_id), None)
         self.assertIsNotNone(hit)

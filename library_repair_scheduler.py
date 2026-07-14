@@ -109,8 +109,10 @@ def run_library_origin_migration(session: dict[str, Any]) -> dict[str, Any]:
     }
     try:
         from fantasy_league_context import (
+            ORIGIN_MIGRATION_TRACE_KEY,
             ORIGIN_REPAIR_DECISIONS_KEY,
             evaluate_origin_decisions_for_visible_archives,
+            get_origin_repair_decisions,
             repair_archive_draft_types_from_contexts,
         )
     except ImportError as exc:
@@ -118,6 +120,7 @@ def run_library_origin_migration(session: dict[str, Any]) -> dict[str, Any]:
         trace["failures"].append(f"import:{exc}")
         session["_library_repair_last_trace"] = dict(trace)
         session["_origin_migration_trace"] = dict(trace)
+        session["library_origin_migration_trace"] = dict(trace)
         return trace
 
     try:
@@ -128,8 +131,16 @@ def run_library_origin_migration(session: dict[str, Any]) -> dict[str, Any]:
 
     try:
         decisions = evaluate_origin_decisions_for_visible_archives(session)
-        if not isinstance(decisions, list):
-            decisions = list(session.get(ORIGIN_REPAIR_DECISIONS_KEY) or [])
+        if not isinstance(decisions, list) or not decisions:
+            decisions = get_origin_repair_decisions(session)
+        # JSON-safe copies for Streamlit rendering
+        safe_decisions = []
+        for row in decisions:
+            if not isinstance(row, dict):
+                continue
+            safe_decisions.append({str(k): v for k, v in row.items()})
+        decisions = safe_decisions
+        session[ORIGIN_REPAIR_DECISIONS_KEY] = decisions
         trace["steps"].append(f"evaluate_visible:{len(decisions)}")
         trace["decisions"] = decisions
         trace["decision_count"] = len(decisions)
@@ -139,4 +150,6 @@ def run_library_origin_migration(session: dict[str, Any]) -> dict[str, Any]:
     trace["ran"] = True
     session["_library_repair_last_trace"] = dict(trace)
     session["_origin_migration_trace"] = dict(trace)
+    session[ORIGIN_MIGRATION_TRACE_KEY] = dict(trace)
+    session["library_origin_migration_trace"] = dict(trace)
     return trace
