@@ -2618,19 +2618,67 @@ def _on_click_set_active_league(
     league_label: str = "",
     button_key: str = "",
 ) -> None:
+    """Set Active League after Create Shared League — same commit path as Library Set Active.
+
+    Must write account fantasy preferences *before* `_persist_archive` / hydration.
+    Otherwise ``reassert_account_preferences_after_hydration`` restores the previous
+    cloud ``active_draft_id`` and the library-only save appears stuck.
+    """
     import streamlit as st
 
     session = st.session_state
     did = str(draft_id or "").strip()
     if not did:
         return
-    loaded_entry, loaded_context = activate_archive_league_context(
-        session,
-        did,
-        defer_activation=False,
-    )
-    if not loaded_entry:
-        return
+    del context_id, button_key  # passed for callback identity / UI only
+
+    loaded_entry = None
+    loaded_context = None
+    try:
+        from account_fantasy_preferences import (
+            activate_library_selection_and_sync_preferences,
+            pop_preference_sync_warning,
+        )
+        from fantasy_context_source import (
+            USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY,
+            USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,
+        )
+        from library_repair_scheduler import mark_library_dirty
+
+        mark_library_dirty(session, reason="set_active_league")
+        # Cleared so Effective Draft Source resolves to the new Active League, not a
+        # leftover temporary Live/Simulator override from the just-finished draft.
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
+        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+
+        activation = activate_library_selection_and_sync_preferences(
+            session,
+            draft_id=did,
+            reason="set_active_league",
+        )
+        loaded_entry = activation.get("entry")
+        loaded_context = activation.get("context")
+        if not loaded_entry:
+            session["_live_draft_shared_league_flash"] = {
+                "level": "warning",
+                "message": "Could not activate that saved league. Try Set Active again from Saved Draft Library.",
+            }
+            return
+        prefs_write = activation.get("prefs_write") or {}
+        if prefs_write and not prefs_write.get("write_verified") and prefs_write.get("skipped") != "unsigned":
+            warn = pop_preference_sync_warning(session) or (
+                "Selection updated on this device, but account sync did not complete."
+            )
+            session["_live_draft_shared_league_flash"] = {"level": "warning", "message": warn}
+    except ImportError:
+        loaded_entry, loaded_context = activate_archive_league_context(
+            session,
+            did,
+            defer_activation=False,
+        )
+        if not loaded_entry:
+            return
+
     _clear_fantasy_caches_on_archive_change(session)
     _persist_archive(session, st, reason="league_context_activated", entry=loaded_entry)
     label = str(
@@ -2639,10 +2687,17 @@ def _on_click_set_active_league(
         or loaded_entry.get("draft_name")
         or "League"
     ).strip()
-    session["_league_context_activation_toast"] = f"✅ {label} is now your Active League."
-    session["_live_draft_shared_league_flash"] = {
-        "level": "success",
-        "message": f"✅ {label} is now your Active League.",
+    toast = f"✅ {label} is now your Active League."
+    session["_league_context_activation_toast"] = toast
+    if not isinstance(session.get("_live_draft_shared_league_flash"), dict) or session[
+        "_live_draft_shared_league_flash"
+    ].get("level") != "warning":
+        session["_live_draft_shared_league_flash"] = {"level": "success", "message": toast}
+    session["_suite_last_set_active_commit"] = {
+        "draft_id": did,
+        "active_draft_archive_id": str(session.get("active_draft_archive_id") or ""),
+        "reason": "set_active_league",
+        "source": "shared_league_success",
     }
 
 

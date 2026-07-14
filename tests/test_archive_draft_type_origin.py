@@ -23,6 +23,7 @@ from fantasy_league_context import (
     SOURCE_DRAFT_SIMULATOR,
     SOURCE_IMPORTED_DRAFT,
     SOURCE_LIVE_DRAFT_ROOM,
+    activate_archive_league_context,
     context_id_for_archive,
     repair_archive_draft_type_for_entry,
     repair_archive_draft_types_from_contexts,
@@ -30,9 +31,8 @@ from fantasy_league_context import (
     upsert_league_context,
     _archive_stub_from_league_context,
 )
-from live_draft_shared_league import CREATED_FROM_LIVE_DRAFT
 from live_draft_completion import apply_live_draft_completion
-from live_draft_shared_league import save_live_draft_shared_league_context
+from live_draft_shared_league import CREATED_FROM_LIVE_DRAFT, save_live_draft_shared_league_context
 from tests.test_imported_shared_league import _as_user
 from tests.test_live_draft_team_identity import _live_robins_fantasy_room
 
@@ -201,16 +201,78 @@ class ArchiveDraftTypeOriginTests(unittest.TestCase):
             self.assertFalse(_saved_archive_is_active(session, draft_id=draft_id, context_id=context_id))
             from draft_archive_ui import _on_click_set_active_league
 
-            class _St:
-                session_state = session
-
             import streamlit as st
+
+            def _activate(sess, *, draft_id="", reason=""):
+                entry, ctx = activate_archive_league_context(sess, draft_id, defer_activation=False)
+                return {
+                    "ok": True,
+                    "entry": entry,
+                    "context": ctx,
+                    "prefs_write": {"write_verified": True, "skipped": "unsigned"},
+                }
 
             with patch.object(st, "session_state", session), patch(
                 "draft_archive_ui._persist_archive", return_value=True
+            ), patch(
+                "account_fantasy_preferences.activate_library_selection_and_sync_preferences",
+                side_effect=_activate,
             ):
                 _on_click_set_active_league(draft_id=draft_id, context_id=context_id, league_label="Robins Fantasy")
             self.assertTrue(_saved_archive_is_active(session, draft_id=draft_id, context_id=context_id))
+            self.assertEqual(session.get("active_draft_archive_id"), draft_id)
+
+    def test_set_active_league_writes_prefs_before_persist(self) -> None:
+        """Regression: persist/hydration must not reassert the previous cloud Active Draft."""
+        session: dict = {"active_draft_archive_id": "old_active"}
+        draft_id = "new_shared_league"
+        context_id = context_id_for_archive(draft_id)
+        upsert_league_context(
+            session,
+            {
+                "league_context_id": context_id,
+                "context_type": CONTEXT_TYPE_REAL_LEAGUE,
+                "source": SOURCE_LIVE_DRAFT_ROOM,
+                "display_name": "New League",
+                "my_team_name": "Team A",
+                "metadata": {"created_from": CREATED_FROM_LIVE_DRAFT, "source_draft_id": draft_id},
+            },
+        )
+        session["draft_archive_teams"] = [
+            {
+                "draft_id": draft_id,
+                "draft_name": "New League",
+                "draft_type": DRAFT_TYPE_LIVE,
+                "league_context_id": context_id,
+                "team_name": "Team A",
+            }
+        ]
+        call_order: list[str] = []
+
+        def _activate(sess, *, draft_id="", reason=""):
+            call_order.append("prefs")
+            entry, ctx = activate_archive_league_context(sess, draft_id, defer_activation=False)
+            return {
+                "ok": True,
+                "entry": entry,
+                "context": ctx,
+                "prefs_write": {"write_verified": True},
+            }
+
+        def _persist(*_a, **_k):
+            call_order.append("persist")
+            return True
+
+        from draft_archive_ui import _on_click_set_active_league
+        import streamlit as st
+
+        with _as_user("user:daniel"), patch.object(st, "session_state", session), patch(
+            "account_fantasy_preferences.activate_library_selection_and_sync_preferences",
+            side_effect=_activate,
+        ), patch("draft_archive_ui._persist_archive", side_effect=_persist):
+            _on_click_set_active_league(draft_id=draft_id, context_id=context_id, league_label="New League")
+        self.assertEqual(call_order, ["prefs", "persist"])
+        self.assertEqual(session.get("active_draft_archive_id"), draft_id)
 
 
 if __name__ == "__main__":
