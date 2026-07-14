@@ -427,10 +427,10 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
     except ImportError:
         pass
     if not is_league_commissioner(context, uid):
-            st.warning(
-                "Invite controls are hidden because you are not recognized as the commissioner "
-                "for this league. Sign in with the commissioner account or open Invite panel diagnostic in Developer Mode."
-            )
+        st.warning(
+            "Invite controls are hidden because you are not recognized as the commissioner "
+            "for this league. Sign in with the commissioner account or open Invite panel diagnostic in Developer Mode."
+        )
         return False
 
     league_name = str(context.get("league_name") or context.get("display_name") or "Shared league").strip()
