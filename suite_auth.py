@@ -45,6 +45,11 @@ AUTH_LAST_LOGIN_OK_KEY = "_suite_auth_last_login_ok"
 AUTH_LAST_RESTORE_ERROR_KEY = "_suite_auth_last_restore_error"
 AUTH_JUST_LOGGED_IN_KEY = "_suite_auth_just_logged_in"
 AUTH_PENDING_LOGIN_KEY = "_suite_pending_login"
+# Set only when the user explicitly picks a workspace (sidebar selector / URL after choose).
+# Unsigned Guest stickiness must not survive authentication without this flag.
+WORKSPACE_USER_SELECTED_KEY = "_suite_workspace_user_selected"
+# Unsigned / demo seats that authenticated owners should leave unless explicitly selected.
+UNSIGNED_DEFAULT_WORKSPACE_IDS = frozenset({"guest"})
 
 AUTH_PROTECTED_SESSION_KEYS = (
     AUTH_SESSION_KEY,
@@ -319,6 +324,19 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
         if owned:
             _seed_owned_workspace_cache(session_state, owned)
 
+        # Leave unsigned Guest (and other demo seats) after sign-in. Admins may still
+        # switch to Guest explicitly via the workspace selector.
+        user_selected = bool(session_state.get(WORKSPACE_USER_SELECTED_KEY))
+        just_logged_in = bool(session_state.get(AUTH_JUST_LOGGED_IN_KEY))
+        if (
+            owned
+            and owned != active
+            and active in UNSIGNED_DEFAULT_WORKSPACE_IDS
+            and (just_logged_in or not user_selected)
+        ):
+            set_active_workspace_id(st, owned)
+            return
+
         # Admin (daniel) retains multi-workspace switching, but cannot remain on
         # a workspace outside the allowed set.
         if owned and active != owned and not workspace_access_allowed(active, session_state=session_state):
@@ -567,6 +585,10 @@ def _persist_auth_session(
         preserve_page_through_auth(session_state, app_id="baseball")
     except ImportError:
         pass
+    # Fresh sign-in always prefers the owned workspace over sticky unsigned Guest.
+    session_state.pop(WORKSPACE_USER_SELECTED_KEY, None)
+    session_state["_suite_workspace_force_sync"] = True
+    session_state["_suite_workspace_refresh_needed"] = True
     try:
         from suite_workspace_registry import ensure_owned_workspace_for_session
 
@@ -696,6 +718,7 @@ def logout(session_state: dict[str, Any], *, st: Any | None = None) -> None:
     except Exception:
         pass
     _clear_auth_session(session_state, st=st)
+    session_state.pop(WORKSPACE_USER_SELECTED_KEY, None)
     try:
         from suite_user import reset_account_cache
 
@@ -706,6 +729,10 @@ def logout(session_state: dict[str, Any], *, st: Any | None = None) -> None:
         sk = str(key)
         if sk.startswith("_suite_workspace_synced::") or sk.startswith("_suite_disk_state_restored::"):
             session_state.pop(key, None)
+    # Signed-out browsers attach to Guest — not an owned workspace.
+    session_state["_suite_active_workspace_id"] = "guest"
+    session_state["suite_workspace_id"] = "guest"
+    session_state.pop("_suite_owned_workspace_id", None)
 
 
 def _read_profile_settings(email: str) -> dict[str, Any]:

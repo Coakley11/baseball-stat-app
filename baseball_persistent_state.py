@@ -1239,6 +1239,7 @@ def prepare_baseball_workspace(st: Any) -> bool:
             ss.get("_suite_workspace_force_sync")
             or ss.get("_suite_workspace_refresh_needed")
             or ss.get("_suite_auth_just_signed_in")
+            or ss.get("_suite_auth_just_logged_in")
         )
         fp = warm_startup_fingerprint(ss)
         prev_fp = str(ss.get("_baseball_warm_startup_fp") or "")

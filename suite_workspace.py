@@ -168,8 +168,9 @@ def resolve_workspace_id(*, st: Any | None = None, explicit: str | None = None) 
                     ws = "guest"
                     ss[SESSION_KEY] = "guest"
                     try:
-                        ss["_suite_owned_workspace_id"] = "guest"
+                        # Active only — do not poison owned-workspace cache as Guest.
                         ss["_suite_active_workspace_id"] = "guest"
+                        ss.pop("_suite_owned_workspace_id", None)
                     except Exception:
                         pass
         except ImportError:
@@ -507,7 +508,16 @@ def init_suite_workspace(st: Any) -> str:
         if allowed_incoming and incoming != current:
             set_active_workspace_id(st, incoming)
             st.session_state[_INITIALIZED_KEY] = True
-            return incoming
+            try:
+                from suite_auth import enforce_workspace_ownership, is_auth_enabled, is_authenticated
+
+                # Re-clamp after URL apply so sticky ?suite_workspace=guest from an
+                # unsigned browse cannot keep a signed-in owner off their workspace.
+                if is_auth_enabled() and is_authenticated(st.session_state):
+                    enforce_workspace_ownership(st.session_state)
+            except ImportError:
+                pass
+            return get_active_workspace_id(st)
         if not allowed_incoming:
             try:
                 from suite_auth import enforce_workspace_ownership
@@ -639,6 +649,7 @@ def render_workspace_selector_sidebar(st: Any) -> str:
     )
     selected = ids[labels.index(choice)]
     if selected != current:
+        st.session_state["_suite_workspace_user_selected"] = True
         set_active_workspace_id(st, selected)
         current = selected
         try:

@@ -391,6 +391,94 @@ class TestWorkspaceAccountOwnership(unittest.TestCase):
             self.assertTrue(ok)
             self.assertTrue(session.get(AUTH_SESSION_KEY))
 
+    def test_unsigned_guest_becomes_owned_daniel_after_enforce(self) -> None:
+        """Signed-in Daniel must leave sticky Guest from an unsigned browse."""
+        from suite_auth import AUTH_JUST_LOGGED_IN_KEY, WORKSPACE_USER_SELECTED_KEY
+
+        session = _auth_session(
+            user_id="uuid-daniel",
+            email="daniel.cohen11@yahoo.com",
+            external_id="daniel",
+        )
+        session["_suite_active_workspace_id"] = "guest"
+        session["_suite_owned_workspace_id"] = "daniel"
+        session[AUTH_JUST_LOGGED_IN_KEY] = True
+        st = _FakeSt(session)
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", return_value=True
+        ), patch(
+            "suite_auth.allowed_workspaces_for_session",
+            return_value=("daniel", "ariel", "guest", "test_user"),
+        ), patch(
+            "suite_workspace_registry.ensure_owned_workspace_for_session",
+            return_value={"workspace_id": "daniel", "owner_user_id": "uuid-daniel"},
+        ), patch(
+            "suite_workspace_registry.resolve_owned_workspace_id", return_value="daniel"
+        ), patch(
+            "suite_workspace_registry.is_admin_account", return_value=True
+        ), patch(
+            "suite_workspace_registry.workspace_access_allowed", return_value=True
+        ), patch("suite_workspace.persist_active_workspace_id", return_value=True):
+            enforce_workspace_ownership(st.session_state)
+            self.assertEqual(get_active_workspace_id(st), "daniel")
+            self.assertNotEqual(get_active_workspace_id(st), "guest")
+            self.assertFalse(st.session_state.get(WORKSPACE_USER_SELECTED_KEY))
+
+    def test_unsigned_guest_becomes_owned_coakley11_after_enforce(self) -> None:
+        session = _auth_session(
+            user_id="uuid-coakley",
+            email="coakley11@aol.com",
+            external_id="coakley11",
+        )
+        session["_suite_active_workspace_id"] = "guest"
+        st = _FakeSt(session)
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", return_value=True
+        ), patch(
+            "suite_auth.allowed_workspaces_for_session", return_value=("coakley11",)
+        ), patch(
+            "suite_auth.account_scoped_workspace_target", return_value="coakley11"
+        ), patch(
+            "suite_workspace_registry.ensure_owned_workspace_for_session",
+            return_value={"workspace_id": "coakley11", "owner_user_id": "uuid-coakley"},
+        ), patch(
+            "suite_workspace_registry.resolve_owned_workspace_id", return_value="coakley11"
+        ), patch(
+            "suite_workspace_registry.is_admin_account", return_value=False
+        ), patch("suite_workspace.persist_active_workspace_id", return_value=True):
+            enforce_workspace_ownership(st.session_state)
+            self.assertEqual(get_active_workspace_id(st), "coakley11")
+
+    def test_admin_explicit_guest_selection_is_preserved(self) -> None:
+        from suite_auth import WORKSPACE_USER_SELECTED_KEY
+
+        session = _auth_session(
+            user_id="uuid-daniel",
+            email="daniel.cohen11@yahoo.com",
+            external_id="daniel",
+        )
+        session["_suite_active_workspace_id"] = "guest"
+        session["_suite_owned_workspace_id"] = "daniel"
+        session[WORKSPACE_USER_SELECTED_KEY] = True
+        st = _FakeSt(session)
+        with patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", return_value=True
+        ), patch(
+            "suite_auth.allowed_workspaces_for_session",
+            return_value=("daniel", "ariel", "guest", "test_user"),
+        ), patch(
+            "suite_workspace_registry.ensure_owned_workspace_for_session",
+            return_value={"workspace_id": "daniel", "owner_user_id": "uuid-daniel"},
+        ), patch(
+            "suite_workspace_registry.resolve_owned_workspace_id", return_value="daniel"
+        ), patch(
+            "suite_workspace_registry.is_admin_account", return_value=True
+        ), patch(
+            "suite_workspace_registry.workspace_access_allowed", return_value=True
+        ), patch("suite_workspace.persist_active_workspace_id", return_value=True):
+            enforce_workspace_ownership(st.session_state)
+            self.assertEqual(get_active_workspace_id(st), "guest")
+
 
 if __name__ == "__main__":
     unittest.main()
