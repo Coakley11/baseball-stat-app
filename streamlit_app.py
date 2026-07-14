@@ -21725,12 +21725,24 @@ if active_page == "Live Draft Room":
         ldr_section_done(st.session_state, "header_and_guide", st=st)
     except ImportError:
         pass
+    try:
+        from live_draft_render_trace import ldr_section
+
+        ldr_section(st.session_state, "shared_settings", st=st)
+    except ImportError:
+        pass
     _prepare_and_show_draft_shared_settings(
         active_page,
         lookback_key="live_draft_proj_window",
         style_key="live_draft_proj_style",
         format_key="live_draft_scoring",
     )
+    try:
+        from live_draft_render_trace import ldr_section_done
+
+        ldr_section_done(st.session_state, "shared_settings", st=st)
+    except ImportError:
+        pass
     _pending_pick_result: dict = {"processed": False}
     try:
         from draft_ui import process_pending_manual_draft_pick
@@ -21749,6 +21761,12 @@ if active_page == "Live Draft Room":
         _skip_live_prep = should_skip_live_draft_state_prep(st.session_state)
     except ImportError:
         pass
+    try:
+        from live_draft_render_trace import ldr_section
+
+        ldr_section(st.session_state, "prepare_live_draft_state", st=st, skipped=bool(_skip_live_prep))
+    except ImportError:
+        pass
     if not _skip_live_prep:
         try:
             from live_draft_perf import PHASE_SETUP_PREPARE_LIVE_STATE, live_draft_perf_action
@@ -21757,6 +21775,12 @@ if active_page == "Live Draft Room":
                 prepare_live_draft_state(st.session_state)
         except ImportError:
             prepare_live_draft_state(st.session_state)
+    try:
+        from live_draft_render_trace import ldr_section_done
+
+        ldr_section_done(st.session_state, "prepare_live_draft_state", st=st, skipped=bool(_skip_live_prep))
+    except ImportError:
+        pass
     try:
         if _setup_prep_ctx is not None:
             _setup_prep_ctx.__exit__(None, None, None)
@@ -21795,6 +21819,12 @@ if active_page == "Live Draft Room":
             except ImportError:
                 pass
             render_live_draft_poll_fragment(st, st.session_state)
+            try:
+                from live_draft_render_trace import ldr_section_done
+
+                ldr_section_done(st.session_state, "poll_fragment", st=st)
+            except ImportError:
+                pass
             import time
 
             interval = shared_draft_poll_interval_sec(st.session_state)
@@ -21827,6 +21857,12 @@ if active_page == "Live Draft Room":
                     except ImportError:
                         st.session_state.pop("_live_draft_rec_cache", None)
                     try:
+                        from live_draft_render_trace import ldr_rerun
+
+                        ldr_rerun(st.session_state, "poll_fragment", reason="poll_changed", st=st)
+                    except ImportError:
+                        pass
+                    try:
                         from live_draft_safe_mode import request_poll_apply_rerun
 
                         request_poll_apply_rerun(
@@ -21836,7 +21872,19 @@ if active_page == "Live Draft Room":
                         )
                     except ImportError:
                         st.rerun()
+        try:
+            from live_draft_render_trace import ldr_section
+
+            ldr_section(st.session_state, "shared_draft_panel", st=st)
+        except ImportError:
+            pass
         if render_shared_draft_room_panel(st, st.session_state):
+            try:
+                from live_draft_render_trace import ldr_rerun
+
+                ldr_rerun(st.session_state, "shared_draft_panel", reason="panel_requested_rerun", st=st)
+            except ImportError:
+                pass
             try:
                 from live_draft_safe_mode import request_live_draft_rerun
 
@@ -21848,6 +21896,12 @@ if active_page == "Live Draft Room":
                 )
             except ImportError:
                 st.rerun()
+        try:
+            from live_draft_render_trace import ldr_section_done
+
+            ldr_section_done(st.session_state, "shared_draft_panel", st=st)
+        except ImportError:
+            pass
         try:
             from draft_room_runtime_diagnostics import render_runtime_diagnostic_table
 
@@ -22681,6 +22735,12 @@ if active_page == "Live Draft Room":
         except ImportError:
             _render_live_draft_styles()
         try:
+            from live_draft_render_trace import ldr_section
+
+            ldr_section(st.session_state, "room_reconcile", st=st)
+        except ImportError:
+            pass
+        try:
             from live_draft_safe_mode import reconcile_live_draft_room
 
             _reconcile = reconcile_live_draft_room(st.session_state, room)
@@ -22701,6 +22761,18 @@ if active_page == "Live Draft Room":
         except ImportError:
             pass
         try:
+            from live_draft_render_trace import ldr_section_done
+
+            ldr_section_done(st.session_state, "room_reconcile", st=st)
+        except ImportError:
+            pass
+        try:
+            from live_draft_render_trace import ldr_section
+
+            ldr_section(st.session_state, "room_lobby", st=st)
+        except ImportError:
+            pass
+        try:
             from live_draft_setup_mode import is_shared_lobby, is_shared_multiplayer_intent, setup_is_read_only
             from live_draft_setup_ui import (
                 _is_room_host,
@@ -22718,8 +22790,20 @@ if active_page == "Live Draft Room":
                 st.error(str(_lobby_err))
             if st.session_state.pop("_live_draft_lobby_left", False):
                 st.success("Left shared draft room.")
+                try:
+                    from live_draft_render_trace import ldr_rerun
+
+                    ldr_rerun(st.session_state, "room_lobby", reason="lobby_left", st=st)
+                except ImportError:
+                    pass
                 st.rerun()
             if st.session_state.pop("_live_draft_lobby_refresh", False):
+                try:
+                    from live_draft_render_trace import ldr_rerun
+
+                    ldr_rerun(st.session_state, "room_lobby", reason="lobby_refresh", st=st)
+                except ImportError:
+                    pass
                 st.rerun()
 
             if is_shared_multiplayer_intent(st.session_state, room=room):
@@ -22801,6 +22885,12 @@ if active_page == "Live Draft Room":
                         st.caption("Draft setup is read-only after the first pick.")
         except ImportError:
             pass
+        try:
+            from live_draft_render_trace import ldr_section_done
+
+            ldr_section_done(st.session_state, "room_lobby", st=st)
+        except ImportError:
+            pass
         cfg = dict(room.get("config", {}))
         try:
             from live_draft_roster_slots import normalize_draft_slot_config
@@ -22844,6 +22934,12 @@ if active_page == "Live Draft Room":
             _multiplayer_draft = is_multiplayer_draft_active(st.session_state)
         except ImportError:
             _multiplayer_draft = False
+        try:
+            from live_draft_render_trace import ldr_section
+
+            ldr_section(st.session_state, "room_team_identity", st=st)
+        except ImportError:
+            pass
         # Identity sync must run BEFORE the live_draft_my_team selectbox is created.
         try:
             from fantasy_workspace_team_identity import (
@@ -22920,6 +23016,24 @@ if active_page == "Live Draft Room":
                 room["config"]["user_team"] = user_team
                 room["config"]["your_team"] = user_team
                 st.session_state["room_your_team"] = user_team
+        try:
+            from live_draft_render_trace import ldr_section_done
+
+            ldr_section_done(
+                st.session_state,
+                "room_team_identity",
+                st=st,
+                user_team=str(user_team or ""),
+                multiplayer=bool(_multiplayer_draft),
+            )
+        except ImportError:
+            pass
+        try:
+            from live_draft_render_trace import ldr_section
+
+            ldr_section(st.session_state, "room_headers", st=st)
+        except ImportError:
+            pass
         room_label = str(room.get("draft_room_id") or "")
         internal_id = room_label
         try:
@@ -23032,6 +23146,18 @@ if active_page == "Live Draft Room":
                 )
             except ImportError:
                 pass
+        try:
+            from live_draft_render_trace import ldr_section_done
+
+            ldr_section_done(st.session_state, "room_headers", st=st)
+        except ImportError:
+            pass
+        try:
+            from live_draft_render_trace import ldr_section
+
+            ldr_section(st.session_state, "room_controls_timer", st=st)
+        except ImportError:
+            pass
 
         st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
         st.markdown('<div class="ld-controls-title">Draft Control Center</div>', unsafe_allow_html=True)
@@ -23192,6 +23318,18 @@ if active_page == "Live Draft Room":
                 except ImportError:
                     pass
         st.markdown("</div>", unsafe_allow_html=True)
+        try:
+            from live_draft_render_trace import ldr_section_done
+
+            ldr_section_done(st.session_state, "room_controls_timer", st=st)
+        except ImportError:
+            pass
+        try:
+            from live_draft_render_trace import ldr_section
+
+            ldr_section(st.session_state, "room_board_column", st=st)
+        except ImportError:
+            pass
 
         board_col, rec_col = st.columns([1.45, 1.0])
 
@@ -23245,8 +23383,20 @@ if active_page == "Live Draft Room":
                         highlight_last_row=_highlight_board_row,
                     )
             st.markdown("</div>", unsafe_allow_html=True)
+            try:
+                from live_draft_render_trace import ldr_section_done
+
+                ldr_section_done(st.session_state, "room_board_column", st=st)
+            except ImportError:
+                pass
 
         with rec_col:
+            try:
+                from live_draft_render_trace import ldr_section
+
+                ldr_section(st.session_state, "room_recommendations", st=st)
+            except ImportError:
+                pass
             _manual_recovery = bool(_reconcile is not None and _reconcile.manual_recovery_available)
             if not _draft_is_complete and slot is None:
                 if picks_done < total_picks:
@@ -23377,10 +23527,32 @@ if active_page == "Live Draft Room":
                     record_scoring_pipeline_stage(st.session_state, "displayed", _available_cached)
                 except Exception:
                     pass
+                try:
+                    from live_draft_render_trace import ldr_section_done
+
+                    ldr_section_done(
+                        st.session_state,
+                        "room_recommendations",
+                        st=st,
+                        deferred=bool(_defer_recs),
+                    )
+                except ImportError:
+                    pass
                 _tracker_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
                 _gaps: list[str] = []
                 _category_needs: list[str] = []
                 if _tracker_team and _tracker_team != "—":
+                    try:
+                        from live_draft_render_trace import ldr_section
+
+                        ldr_section(
+                            st.session_state,
+                            "room_decision_panels",
+                            st=st,
+                            tracker_team=str(_tracker_team),
+                        )
+                    except ImportError:
+                        pass
                     try:
                         from live_draft_category_outlook import compute_category_outlook
                         from live_draft_roster_tracker import build_team_roster_tracker, roster_df_for_team
@@ -23485,8 +23657,25 @@ if active_page == "Live Draft Room":
                                 gaps=_gaps,
                                 room=room,
                             )
-                    except ImportError:
-                        pass
+                        try:
+                            from live_draft_render_trace import ldr_section_done
+
+                            ldr_section_done(st.session_state, "room_decision_panels", st=st)
+                        except ImportError:
+                            pass
+                    except Exception as _ldr_decision_exc:
+                        try:
+                            from live_draft_render_trace import ldr_exception
+
+                            ldr_exception(
+                                st.session_state,
+                                "room_decision_panels",
+                                _ldr_decision_exc,
+                                st=st,
+                            )
+                        except ImportError:
+                            pass
+                        raise
                 try:
                     from applied_math_context import cache_live_draft_ami_context
 
@@ -23943,6 +24132,12 @@ if active_page == "Live Draft Room":
                 later be mirrored to a database or websocket service without rewriting the UI.
                 """
             )
+        try:
+            from live_draft_render_trace import ldr_section_done
+
+            ldr_section_done(st.session_state, "room_body", st=st)
+        except ImportError:
+            pass
 
     try:
         from live_draft_state import flush_deferred_live_draft_pick_effects

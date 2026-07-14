@@ -181,6 +181,12 @@ def render_live_draft_poll_fragment(st: Any, session: dict[str, Any]) -> None:
                 invalidate_live_draft_ui_caches(session)
             except ImportError:
                 session.pop("_live_draft_rec_cache", None)
+            try:
+                from live_draft_render_trace import ldr_rerun
+
+                ldr_rerun(session, "poll_fragment", reason="fragment_poll_changed", st=st)
+            except ImportError:
+                pass
             _rerun_after_poll(st, session)
 
     _poll_tick()
