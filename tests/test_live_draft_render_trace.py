@@ -59,6 +59,23 @@ class LiveDraftRenderTraceTests(unittest.TestCase):
             format_next_behavior_label(stall["next_behavior"], terminal=stall.get("terminal")),
         )
 
+    def test_render_static_step_names_in_order(self) -> None:
+        ss = {"_live_draft_render_trace_force": True, "active_page": "Live Draft Room"}
+        for name in (
+            "render_static_enter",
+            "load_timer_display",
+            "build_status_text",
+            "record_timer_diagnostics",
+            "record_mp_diagnostics",
+            "mp_diag_shared_store_load",
+            "render_static_exit",
+        ):
+            with ldr_step(ss, name, ui_marker=False):
+                pass
+        text = format_ldr_trace_text(ss)
+        self.assertIn("LAST TIMER/STEP: render_static_exit", text)
+        self.assertIn("mp_diag_shared_store_load", text)
+
     def test_ldr_step_records_elapsed_and_stall_point(self) -> None:
         ss = {"_live_draft_render_trace_force": True, "active_page": "Live Draft Room"}
         ldr_section_done(ss, "room_headers")
