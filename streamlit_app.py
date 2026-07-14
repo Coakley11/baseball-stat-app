@@ -21658,10 +21658,10 @@ if active_page == DRAFT_LAB_PAGE:
 if active_page == "Live Draft Room":
     _page_perf_start(active_page)
     try:
-        from live_draft_render_trace import ldr_section, ldr_section_done, render_live_draft_render_trace
+        from live_draft_render_trace import begin_live_draft_render_trace, ldr_section
 
+        begin_live_draft_render_trace(st, st.session_state)
         ldr_section(st.session_state, "page_entry", st=st)
-        render_live_draft_render_trace(st)
     except ImportError:
         pass
     _maybe_render_account_pref_sync(active_page)

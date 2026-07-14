@@ -5,10 +5,12 @@ from __future__ import annotations
 import unittest
 
 from live_draft_render_trace import (
+    LDR_TRACE_UNCONDITIONAL,
     analyze_ldr_stall,
     build_ldr_workspace_compare_snapshot,
     format_ldr_trace_text,
     format_next_behavior_label,
+    is_ldr_trace_enabled,
     ldr_rerun,
     ldr_section,
     ldr_section_done,
@@ -16,6 +18,10 @@ from live_draft_render_trace import (
 
 
 class LiveDraftRenderTraceTests(unittest.TestCase):
+    def test_unconditional_debug_enabled(self) -> None:
+        self.assertTrue(LDR_TRACE_UNCONDITIONAL)
+        self.assertTrue(is_ldr_trace_enabled({}))
+
     def test_records_last_successful_section(self) -> None:
         ss = {
             "_suite_active_workspace_id": "daniel",

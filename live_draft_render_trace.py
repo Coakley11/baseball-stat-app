@@ -13,6 +13,10 @@ LDR_TRACE_ENABLED_KEY = "_live_draft_render_trace_enabled"
 LDR_TRACE_LAST_SECTION_KEY = "_live_draft_render_last_section"
 LDR_TRACE_MAX = 400
 
+# Temporary debug for Daniel-only LDR incomplete paint — show for everyone on Live Draft Room.
+# Flip to False once the stall section is identified.
+LDR_TRACE_UNCONDITIONAL = True
+
 # Canonical LDR page pipeline order (sparse markers may skip some).
 LDR_SECTION_ORDER = (
     "page_entry",
@@ -37,6 +41,10 @@ LDR_SECTION_ORDER = (
 
 
 def is_ldr_trace_enabled(session: dict[str, Any] | None, st: Any | None = None) -> bool:
+    if LDR_TRACE_UNCONDITIONAL:
+        if isinstance(session, dict):
+            session[LDR_TRACE_ENABLED_KEY] = True
+        return True
     if not isinstance(session, dict):
         return False
     if session.get(LDR_TRACE_ENABLED_KEY) or session.get("_live_draft_render_trace_force"):
@@ -252,10 +260,12 @@ def ldr_trace(
 
 def ldr_section(session: dict[str, Any], name: str, *, st: Any | None = None, **extra: Any) -> None:
     ldr_trace(session, section=name, reason="enter", kind="section", st=st, extra=extra or None)
+    refresh_live_draft_render_trace(st, session)
 
 
 def ldr_section_done(session: dict[str, Any], name: str, *, st: Any | None = None, **extra: Any) -> None:
     ldr_trace(session, section=name, reason="complete", kind="section_end", st=st, extra=extra or None)
+    refresh_live_draft_render_trace(st, session)
 
 
 def ldr_early_return(session: dict[str, Any], name: str, *, reason: str, st: Any | None = None) -> None:
@@ -339,10 +349,11 @@ def _format_poll_state(snap: dict[str, Any]) -> str:
     return " | ".join(str(p) for p in parts)
 
 
-def render_live_draft_render_trace(st: Any, session: dict[str, Any] | None = None) -> None:
-    ss = session if isinstance(session, dict) else st.session_state
-    if not is_ldr_trace_enabled(ss, st):
-        return
+_LDR_MAIN_SLOT_KEY = "_live_draft_render_trace_main_slot"
+_LDR_SIDEBAR_SLOT_KEY = "_live_draft_render_trace_sidebar_slot"
+
+
+def _write_ldr_trace_panel_body(st: Any, ss: dict[str, Any]) -> None:
     snap = build_ldr_workspace_compare_snapshot(ss)
     stall = analyze_ldr_stall(ss)
     effective_source = (
@@ -350,27 +361,75 @@ def render_live_draft_render_trace(st: Any, session: dict[str, Any] | None = Non
         f"(origin={snap.get('effective_source_origin') or '—'}; "
         f"team={snap.get('effective_my_team') or '—'})"
     )
-    with st.sidebar.expander("Live Draft render trace", expanded=True):
-        st.caption("Section-by-section LDR pipeline — find the last section before paint stalls.")
-        behavior_label = format_next_behavior_label(
-            str(stall.get("next_behavior") or ""),
-            terminal=stall.get("terminal") if isinstance(stall.get("terminal"), dict) else None,
-        )
-        st.markdown(f"**Last successful section:** `{stall.get('last_successful_section') or '—'}`")
-        st.markdown(f"**Next section entered:** `{stall.get('next_section_begun') or '—'}`")
-        st.markdown(f"**Next behavior:** `{behavior_label}`")
-        st.markdown("---")
-        st.markdown(f"**Effective Draft Source:** `{effective_source}`")
-        st.markdown(f"**Workspace ID:** `{snap.get('workspace_id') or '—'}`")
-        st.markdown(f"**Active Draft ID:** `{snap.get('active_draft_id') or '—'}`")
-        st.markdown(f"**Temporary Draft ID:** `{snap.get('temporary_draft_id') or '—'}`")
-        st.markdown(f"**Room Code:** `{snap.get('room_code') or '—'}`")
-        st.markdown(
-            f"**My Team:** `{snap.get('live_draft_my_team') or snap.get('effective_my_team') or '—'}`"
-        )
-        st.markdown(f"**Shared League ID:** `{snap.get('shared_league_context_id') or '—'}`")
-        st.markdown(f"**Poll state:** `{_format_poll_state(snap)}`")
-        st.caption("Raw section log (paste if lower half stalls):")
-        st.code(format_ldr_trace_text(ss), language="text")
-        st.caption("Full workspace / draft compare JSON (Daniel vs coakley11):")
-        st.code(json.dumps(snap, indent=2, default=str), language="json")
+    behavior_label = format_next_behavior_label(
+        str(stall.get("next_behavior") or ""),
+        terminal=stall.get("terminal") if isinstance(stall.get("terminal"), dict) else None,
+    )
+    st.caption("Temporary unconditional debug panel — paste this when LDR lower half stalls.")
+    st.markdown(f"**Last successful section:** `{stall.get('last_successful_section') or '—'}`")
+    st.markdown(f"**Next section entered:** `{stall.get('next_section_begun') or '—'}`")
+    st.markdown(f"**Next behavior:** `{behavior_label}`")
+    st.markdown("---")
+    st.markdown(f"**Effective Draft Source:** `{effective_source}`")
+    st.markdown(f"**Workspace ID:** `{snap.get('workspace_id') or '—'}`")
+    st.markdown(f"**Active Draft ID:** `{snap.get('active_draft_id') or '—'}`")
+    st.markdown(f"**Temporary Draft ID:** `{snap.get('temporary_draft_id') or '—'}`")
+    st.markdown(f"**Room Code:** `{snap.get('room_code') or '—'}`")
+    st.markdown(
+        f"**My Team:** `{snap.get('live_draft_my_team') or snap.get('effective_my_team') or '—'}`"
+    )
+    st.markdown(f"**Shared League ID:** `{snap.get('shared_league_context_id') or '—'}`")
+    st.markdown(f"**Poll state:** `{_format_poll_state(snap)}`")
+    st.caption("Raw section log:")
+    st.code(format_ldr_trace_text(ss), language="text")
+    st.caption("Full workspace / draft compare JSON (Daniel vs coakley11):")
+    st.code(json.dumps(snap, indent=2, default=str), language="json")
+
+
+def refresh_live_draft_render_trace(st: Any | None, session: dict[str, Any] | None = None) -> None:
+    """Rewrite updatable main/sidebar slots with the latest stall diagnosis."""
+    if st is None or not isinstance(session, dict):
+        return
+    if not is_ldr_trace_enabled(session, st):
+        return
+    title = "### Live Draft render trace (debug — always on)"
+    for key in (_LDR_MAIN_SLOT_KEY, _LDR_SIDEBAR_SLOT_KEY):
+        slot = session.get(key)
+        if slot is None:
+            continue
+        try:
+            with slot.container():
+                st.markdown(title)
+                _write_ldr_trace_panel_body(st, session)
+        except Exception:
+            pass
+
+
+def begin_live_draft_render_trace(st: Any, session: dict[str, Any] | None = None) -> None:
+    """Create updatable main + sidebar slots (call once at Live Draft page entry)."""
+    ss = session if isinstance(session, dict) else st.session_state
+    if not is_ldr_trace_enabled(ss, st):
+        return
+    # Clear stale slot refs from prior runs — Empty handles are run-scoped.
+    ss.pop(_LDR_MAIN_SLOT_KEY, None)
+    ss.pop(_LDR_SIDEBAR_SLOT_KEY, None)
+    try:
+        ss[_LDR_MAIN_SLOT_KEY] = st.empty()
+    except Exception:
+        ss.pop(_LDR_MAIN_SLOT_KEY, None)
+    try:
+        ss[_LDR_SIDEBAR_SLOT_KEY] = st.sidebar.empty()
+    except Exception:
+        ss.pop(_LDR_SIDEBAR_SLOT_KEY, None)
+    refresh_live_draft_render_trace(st, ss)
+
+
+def render_live_draft_render_trace(st: Any, session: dict[str, Any] | None = None) -> None:
+    """Backward-compatible entry: begin slots if missing, otherwise refresh."""
+    ss = session if isinstance(session, dict) else st.session_state
+    if not is_ldr_trace_enabled(ss, st):
+        return
+    if ss.get(_LDR_MAIN_SLOT_KEY) is None and ss.get(_LDR_SIDEBAR_SLOT_KEY) is None:
+        begin_live_draft_render_trace(st, ss)
+        return
+    refresh_live_draft_render_trace(st, ss)
