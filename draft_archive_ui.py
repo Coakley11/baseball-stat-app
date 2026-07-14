@@ -4751,7 +4751,9 @@ def _render_saved_draft_library_page_body(
                 else:
                     st.caption("No per-league origin decisions recorded on this render.")
     except Exception:
-        pass    try:
+        pass
+
+    try:
         from fantasy_league_invite_ui import (
             render_commissioner_invite_diagnostics_panel,
             render_commissioner_invite_panel,
