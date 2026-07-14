@@ -152,19 +152,10 @@ def _detect_contradictions(session: dict[str, Any], room: dict[str, Any]) -> lis
     if total > 0 and idx > total:
         reasons.append(f"current_pick_index={idx} > total_expected_picks={total}")
 
-    try:
-        from live_draft_expired_pick import autopick_failure_backoff_active, RERUN_LOOP_PREVENTED_KEY
-
-        if autopick_failure_backoff_active(session, room) and session.get("_live_draft_last_rerun_source") in (
-            "timer_fragment",
-            "page_autopick",
-            "poll_shared_draft",
-        ):
-            reasons.append("autopick_failure_backoff_active but rerun source still firing")
-        if session.get(RERUN_LOOP_PREVENTED_KEY) and session.get("_live_draft_rerun_count", 0) > 3:
-            reasons.append("rerun_loop_prevented but excessive reruns detected")
-    except ImportError:
-        pass
+    # Soft rerun/throttle bookkeeping (_live_draft_rerun_loop_prevented, backoff flags) must
+    # never escalate into draft safe_mode. That previously froze the engine at 0s:
+    # safe_mode → timer_should_run=False → page skipped handle_expired_pick_on_page →
+    # pick never committed while the UI kept reporting "draft state recovery".
 
     return reasons
 
@@ -420,7 +411,8 @@ def is_rerun_allowed(session: dict[str, Any], source: str, *, room: dict[str, An
 
     count = int(session.get("_live_draft_rerun_count") or 0)
     if count > 8 and source in _BLOCKED_RERUN_SOURCES:
-        session["_live_draft_rerun_loop_prevented"] = True
+        # Soft throttle only. Never latch permanent RERUN_LOOP_PREVENTED here — that flag
+        # used to activate safe_mode and stop expired-pick commits while the clock sat at 0.
         return False, "excessive_reruns_blocked"
 
     return True, ""

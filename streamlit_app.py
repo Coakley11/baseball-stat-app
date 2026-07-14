@@ -23321,7 +23321,28 @@ if active_page == "Live Draft Room":
             _poll_ts = st.session_state.get("_shared_draft_poll_ts")
             _poll_pending = bool(st.session_state.get("_live_draft_poll_apply_pending"))
 
-        if _timer_ok and not _autopick_off:
+        _clock_expired = False
+        try:
+            from live_draft_timer_logic import live_draft_timer_expired_for_pick as _timer_expired_fn
+
+            _clock_expired = bool(
+                room.get("status") == "in_progress"
+                and slot is not None
+                and (
+                    _timer_expired_fn(room)
+                    or live_draft_seconds_remaining(room) <= 0
+                    or st.session_state.get("_live_draft_timer_expired_pending")
+                )
+            )
+        except ImportError:
+            _clock_expired = bool(st.session_state.get("_live_draft_timer_expired_pending"))
+
+        # Engine must still commit at 0s even when reconcile paused the timer UI
+        # (safe_mode / rerun throttle / recovery caption). Missing this gate left the
+        # clock stuck at 0 while page_complete kept firing.
+        _process_expired_or_timer = bool(not _autopick_off and (_timer_ok or _clock_expired))
+
+        if _process_expired_or_timer:
             try:
                 from live_draft_expired_pick import autopick_error_message, handle_expired_pick_on_page
                 from live_draft_safe_mode import request_live_draft_rerun

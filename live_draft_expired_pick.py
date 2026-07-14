@@ -125,6 +125,7 @@ def format_expired_pick_perf(session: dict[str, Any]) -> str:
     if not isinstance(perf, dict) or not perf:
         return ""
     keys = (
+        "stage",
         "total_ms",
         "host_check_ms",
         "sync_revision_ms",
@@ -137,6 +138,7 @@ def format_expired_pick_perf(session: dict[str, Any]) -> str:
         "cache_invalidate_ms",
         "poll_diag_ms",
         "ui_rerun_ms",
+        "error",
     )
     parts = [f"{k}={perf.get(k)}" for k in keys if perf.get(k) is not None]
     return " | ".join(parts)
@@ -216,6 +218,8 @@ def clear_autopick_state_for_pick_advance(session: dict[str, Any], new_index: in
     session.pop(EXPIRED_PICK_PENDING_KEY, None)
     session.pop(AUTOPICK_LOCK_KEY, None)
     session.pop(TIMER_ZERO_RERUN_LATCH_KEY, None)
+    # Fresh pick = fresh rerun budget so page_autopick can refresh the UI after commit.
+    session.pop("_live_draft_rerun_count", None)
     if new_index is not None:
         record_autopick_diagnostics(
             session,
@@ -411,7 +415,15 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
         msg = select_msg or commit.message
         t0 = time.perf_counter()
         _mark_autopick_success(session, room, msg)
-        record_expired_pick_perf(session, cache_invalidate_ms=_perf_ms(t0), total_ms=_perf_ms(t_total), ok=True)
+        record_expired_pick_perf(
+            session,
+            stage="committed",
+            cache_invalidate_ms=_perf_ms(t0),
+            total_ms=_perf_ms(t_total),
+            ok=True,
+            pick_index_after=_pick_index(room),
+            board_size_after=len(room.get("draft_board") or []),
+        )
         return ExpiredPickPageResult(handled=True, ok=True, should_rerun=True, message=msg, error="")
     finally:
         session.pop(AUTOPICK_LOCK_KEY, None)
@@ -421,18 +433,26 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
 
 
 def handle_expired_pick_on_page(session: dict[str, Any], room: dict[str, Any], *, source: str = "page_autopick") -> ExpiredPickPageResult:
-    """Process expired pick on full page render — never loops reruns on failure."""
+    """Process expired pick on full page render — never loops reruns on failure.
+
+    State machine (must not stall):
+      timer expired → select pick → persist/commit → revision++ → next pick → timer restart
+    Soft gates (rerun budget / timer_should_run UI pause) must not skip the commit step.
+    """
     room = resolve_live_room(session, room) or room
+    record_expired_pick_perf(session, stage="handle_entered", source=source)
 
     try:
         from draft_ui import live_draft_autopick_disabled
 
         if live_draft_autopick_disabled(session):
+            record_expired_pick_perf(session, stage="blocked_autopick_disabled")
             return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
     except ImportError:
         pass
 
     if session.get("_live_draft_manual_pick_in_flight") or session.get("_pending_manual_draft_pick"):
+        record_expired_pick_perf(session, stage="blocked_manual_pick_in_flight")
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
 
     if autopick_failure_backoff_active(session, room):
@@ -444,18 +464,28 @@ def handle_expired_pick_on_page(session: dict[str, Any], room: dict[str, Any], *
             rerun_loop_prevented=True,
             autopick_error=err,
         )
+        record_expired_pick_perf(session, stage="blocked_backoff", error=err)
         return ExpiredPickPageResult(handled=True, ok=False, should_rerun=False, message="", error=err)
 
-    try:
-        from live_draft_safe_mode import is_safe_mode_active, timer_should_run
+    clock_expired = expired_pick_detected(room) or bool(session.get(EXPIRED_PICK_PENDING_KEY))
+    if not clock_expired:
+        try:
+            from live_draft_safe_mode import is_safe_mode_active, timer_should_run
 
-        if is_safe_mode_active(session) or not timer_should_run(session, room):
-            return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
-    except ImportError:
-        pass
-
-    if not expired_pick_detected(room) and not session.get(EXPIRED_PICK_PENDING_KEY):
+            # UI-only pause: only skip when the clock is *not* demanding a commit.
+            if is_safe_mode_active(session) or not timer_should_run(session, room):
+                record_expired_pick_perf(session, stage="blocked_timer_ui_gate")
+                return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
+        except ImportError:
+            pass
+        record_expired_pick_perf(session, stage="not_expired")
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
+
+    # Soft rerun lockout stops st.rerun thrash, not the draft engine. Clear before commit so
+    # a successful pick can request one UI refresh afterward.
+    session.pop(RERUN_LOOP_PREVENTED_KEY, None)
+    session.pop("_live_draft_rerun_count", None)
+    record_expired_pick_perf(session, stage="commit_attempt", pick_index=_pick_index(room))
 
     return run_expired_autopick_once(session, room, source=source)
 

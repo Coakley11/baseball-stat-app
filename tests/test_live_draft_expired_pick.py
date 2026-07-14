@@ -13,6 +13,7 @@ from live_draft_expired_pick import (
     AUTOPICK_BACKOFF_INDEX_KEY,
     RERUN_LOOP_PREVENTED_KEY,
     TIMER_ZERO_RERUN_LATCH_KEY,
+    ExpiredPickPageResult,
     autopick_failure_backoff_active,
     claim_timer_zero_rerun,
     clear_autopick_backoff_for_manual,
@@ -274,6 +275,30 @@ class SharedDocSoftCacheTests(unittest.TestCase):
         self.assertEqual(doc2.get("revision"), 3)
         self.assertEqual(store.load.call_count, 1)
         self.assertEqual(session[SHARED_DOC_SOFT_CACHE_KEY]["room_code"], "ABC123")
+
+
+class ExpiredPickStateMachineTests(unittest.TestCase):
+    @patch("live_draft_expired_pick.run_expired_autopick_once")
+    def test_handle_commits_even_when_timer_ui_paused(self, mock_run: MagicMock) -> None:
+        """Recovery / timer_should_run=False must not skip the commit transition."""
+        from live_draft_expired_pick import RERUN_LOOP_PREVENTED_KEY
+
+        mock_run.return_value = ExpiredPickPageResult(
+            handled=True, ok=True, should_rerun=True, message="ok", error=""
+        )
+        session: dict = {
+            "live_draft_room": _room(),
+            RERUN_LOOP_PREVENTED_KEY: True,
+            "_live_draft_rerun_count": 20,
+            "_live_draft_safe_mode_active": True,
+            "_live_draft_safe_mode_diag": {"timer_should_run": False},
+        }
+        result = handle_expired_pick_on_page(session, session["live_draft_room"])
+        self.assertTrue(result.ok)
+        mock_run.assert_called_once()
+        self.assertIsNone(session.get(RERUN_LOOP_PREVENTED_KEY))
+        self.assertIsNone(session.get("_live_draft_rerun_count"))
+        self.assertEqual(session.get("_live_draft_expired_pick_perf", {}).get("stage"), "commit_attempt")
 
 
 if __name__ == "__main__":

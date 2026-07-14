@@ -52,6 +52,23 @@ class ReconcileTests(unittest.TestCase):
         self.assertFalse(progress["draft_complete"])
         self.assertEqual(progress["on_clock_team"], "Daniel")
 
+    def test_rerun_loop_bookkeeping_does_not_activate_safe_mode(self) -> None:
+        """Soft throttle flags must not freeze the draft engine at 0s."""
+        from live_draft_expired_pick import RERUN_LOOP_PREVENTED_KEY
+
+        room = _room(status="in_progress", current_pick_index=4, timer_started_at=None)
+        session: dict = {
+            "live_draft_room": room,
+            RERUN_LOOP_PREVENTED_KEY: True,
+            "_live_draft_rerun_count": 20,
+            "_live_draft_last_rerun_source": "page_autopick",
+        }
+        result = reconcile_live_draft_room(session, room)
+        self.assertFalse(result.safe_mode_active)
+        self.assertFalse(is_safe_mode_active(session))
+        self.assertNotIn("rerun_loop_prevented", result.draft_state_error_reason or "")
+        self.assertTrue(result.timer_should_run)
+
 
 class RerunGateTests(unittest.TestCase):
     def test_safe_mode_blocks_timer_fragment_rerun(self) -> None:
@@ -71,6 +88,15 @@ class RerunGateTests(unittest.TestCase):
         ok = request_live_draft_rerun(st, session, "poll_shared_draft")
         self.assertFalse(ok)
         st.rerun.assert_not_called()
+
+    def test_excessive_reruns_soft_block_does_not_latch_loop_prevented(self) -> None:
+        from live_draft_expired_pick import RERUN_LOOP_PREVENTED_KEY
+
+        session: dict = {"_live_draft_rerun_count": 20}
+        allowed, reason = is_rerun_allowed(session, "page_autopick")
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "excessive_reruns_blocked")
+        self.assertFalse(bool(session.get(RERUN_LOOP_PREVENTED_KEY)))
 
 
 class ManualRecoveryTests(unittest.TestCase):
