@@ -1414,6 +1414,12 @@ def prepare_baseball_workspace(st: Any) -> bool:
         pass
     except Exception as exc:
         ss["_simulator_ownership_scrub_trace"] = {"error": str(exc)}
+    # One post-auth cold hydrate is enough — do not defeat warm_skip forever.
+    if not warm_skip:
+        ss.pop("_suite_workspace_refresh_needed", None)
+        ss.pop("_suite_workspace_force_sync", None)
+        ss.pop("_suite_auth_just_logged_in", None)
+        ss.pop("_suite_auth_just_signed_in", None)
     return result
 
 

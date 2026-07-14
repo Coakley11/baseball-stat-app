@@ -8,11 +8,14 @@ LIBRARY_REPAIR_VERSION = 5
 LIBRARY_REPAIR_DONE_KEY = "_library_repair_scheduler_done_v"
 LIBRARY_DIRTY_KEY = "_library_repair_dirty"
 LIBRARY_MANIFEST_REV_KEY = "_library_manifest_revision"
+ORIGIN_MIGRATION_VERSION = 2
+ORIGIN_MIGRATION_DONE_KEY = "_library_origin_migration_done_v"
 
 
 def mark_library_dirty(session: dict[str, Any], *, reason: str = "") -> None:
     session[LIBRARY_DIRTY_KEY] = True
     session.pop(f"{LIBRARY_REPAIR_DONE_KEY}{LIBRARY_REPAIR_VERSION}", None)
+    session.pop(f"{ORIGIN_MIGRATION_DONE_KEY}{ORIGIN_MIGRATION_VERSION}", None)
     trace = session.get("_library_repair_dirty_trace")
     if not isinstance(trace, list):
         trace = []
@@ -92,11 +95,19 @@ def run_gated_library_repairs(session: dict[str, Any], *, user_mutated: bool = F
     return trace
 
 
-def run_library_origin_migration(session: dict[str, Any]) -> dict[str, Any]:
-    """Always-on Live/Imported origin repair + per-league decision log.
+def origin_migration_required(session: dict[str, Any]) -> bool:
+    """True when origin repair has not completed for this library dirty cycle."""
+    if session.get(LIBRARY_DIRTY_KEY):
+        return True
+    done_key = f"{ORIGIN_MIGRATION_DONE_KEY}{ORIGIN_MIGRATION_VERSION}"
+    return not bool(session.get(done_key))
 
-    Not subject to read_only_render gating — Saved Draft Library must diagnose and
-    migrate origin labels every open after shared-league materialize.
+
+def run_library_origin_migration(session: dict[str, Any]) -> dict[str, Any]:
+    """Live/Imported origin repair + decision log (gated after first successful pass).
+
+    Replays cached decisions on warm renders so Origin diagnostics stay visible
+    without re-loading every shared-league document on each Streamlit rerun.
     """
     trace: dict[str, Any] = {
         "ran": False,
@@ -120,6 +131,21 @@ def run_library_origin_migration(session: dict[str, Any]) -> dict[str, Any]:
         trace["failures"].append(f"import:{exc}")
         session["_library_repair_last_trace"] = dict(trace)
         session["_origin_migration_trace"] = dict(trace)
+        session["library_origin_migration_trace"] = dict(trace)
+        return trace
+
+    if not origin_migration_required(session):
+        decisions = get_origin_repair_decisions(session)
+        if not isinstance(decisions, list):
+            decisions = []
+        safe_decisions = [{str(k): v for k, v in row.items()} for row in decisions if isinstance(row, dict)]
+        trace["skipped"] = "warm_render"
+        trace["decisions"] = safe_decisions
+        trace["decision_count"] = len(safe_decisions)
+        trace["steps"].append("reuse_cached_decisions")
+        session["_library_repair_last_trace"] = dict(trace)
+        session["_origin_migration_trace"] = dict(trace)
+        session[ORIGIN_MIGRATION_TRACE_KEY] = dict(trace)
         session["library_origin_migration_trace"] = dict(trace)
         return trace
 
@@ -148,6 +174,7 @@ def run_library_origin_migration(session: dict[str, Any]) -> dict[str, Any]:
         trace["failures"].append(f"evaluate_visible:{type(exc).__name__}:{exc}")
 
     trace["ran"] = True
+    session[f"{ORIGIN_MIGRATION_DONE_KEY}{ORIGIN_MIGRATION_VERSION}"] = True
     session["_library_repair_last_trace"] = dict(trace)
     session["_origin_migration_trace"] = dict(trace)
     session[ORIGIN_MIGRATION_TRACE_KEY] = dict(trace)

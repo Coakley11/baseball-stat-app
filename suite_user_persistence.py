@@ -1219,6 +1219,7 @@ def sync_workspace_protocol(
     st.session_state[f"{_SESSION_RESTORED_PREFIX}{app_id}"] = True
     st.session_state[dirty_key] = False
     st.session_state.pop("_suite_workspace_force_sync", None)
+    st.session_state.pop("_suite_workspace_refresh_needed", None)
     st.session_state[_autosave_block_key(app_id)] = True
     st.session_state["_suite_autosave_block_reason"] = "post-restore cooldown"
     st.session_state["_cloud_workspace_restored"] = picked.source == "cloud"
@@ -1704,6 +1705,7 @@ def sync_cloud_workspace_before_sidebar(
     st.session_state[applied_key] = cloud_ts or _utc_now_iso()
     st.session_state[dirty_key] = False
     st.session_state.pop("_suite_workspace_force_sync", None)
+    st.session_state.pop("_suite_workspace_refresh_needed", None)
     st.session_state["_suite_persist_last_restore_at"] = _utc_now_iso()
     st.session_state["_suite_persist_last_restore_source"] = picked.source
     st.session_state["_suite_persist_last_restore_reason"] = picked.reason

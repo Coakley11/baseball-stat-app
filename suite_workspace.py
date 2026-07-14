@@ -259,6 +259,11 @@ def _on_active_workspace_changed(st: Any) -> None:
             ss.pop(key, None)
         elif sk.startswith(("_suite_ai_", "ps_")) or sk in ("view_mode", "ps_library_problem"):
             ss.pop(key, None)
+    # Re-run account-scoped shared-league discovery for the new profile once.
+    ss.pop("_suite_startup_canonical_sync_complete", None)
+    ss.pop("_suite_startup_canonical_identity_fp", None)
+    ss["_suite_shared_league_startup_force"] = True
+    ss["_suite_workspace_refresh_needed"] = True
     for key in DEVELOPER_SESSION_FLAG_KEYS:
         if key == DEVELOPER_MODE_WIDGET_KEY:
             continue

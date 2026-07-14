@@ -141,12 +141,13 @@ def sync_uploaded_league_contexts_on_library_render(session: dict[str, Any]) -> 
         from library_repair_scheduler import LIBRARY_DIRTY_KEY
     except ImportError:
         LIBRARY_DIRTY_KEY = "_library_repair_dirty"  # type: ignore[misc,assignment]
+    # Identity + cloud revision only — archive count changes during materialize/origin
+    # repair and must not defeat warm skip (matches warm_startup_fingerprint).
     warm_fp = "|".join(
         [
             str(session.get("_suite_auth_user_id") or ""),
             str(session.get("_suite_active_workspace_id") or ""),
             str(session.get("_suite_cloud_session_revision") or ""),
-            str(len(session.get("draft_archive_teams") or [])),
         ]
     )
     if (
@@ -158,9 +159,10 @@ def sync_uploaded_league_contexts_on_library_render(session: dict[str, Any]) -> 
         prior["skipped"] = "warm_render"
         return prior
 
-    materialize_owned_shared_leagues_for_session(session)
+    materialize_trace = materialize_owned_shared_leagues_for_session(session)
     results: list[dict[str, Any]] = []
     leagues_synced = 0
+    materialized_n = len((materialize_trace or {}).get("materialized") or []) if isinstance(materialize_trace, dict) else 0
 
     for ctx in _real_league_contexts_for_library(session):
         league_id = str(resolve_canonical_league_id(ctx) or "").strip()
@@ -236,6 +238,10 @@ def sync_uploaded_league_contexts_on_library_render(session: dict[str, Any]) -> 
         "updated_at": _utc_now_iso(),
         "leagues_checked": len(results),
         "leagues_synced": leagues_synced,
+        "materialized": materialized_n,
+        "materialize_errors": list((materialize_trace or {}).get("errors") or [])
+        if isinstance(materialize_trace, dict)
+        else [],
         "results": results,
     }
     session[_LIBRARY_SYNC_TRACE_KEY] = trace

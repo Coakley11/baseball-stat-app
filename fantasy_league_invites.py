@@ -779,6 +779,22 @@ def scan_pending_invites_from_shared_leagues(
     ws = _resolve_workspace_id(session)
     if not uid and not ext and not ws:
         return []
+    warm_fp = "|".join(
+        [
+            str(uid or ""),
+            str(ext or ""),
+            str(ws or ""),
+            str(session.get("_suite_cloud_session_revision") or ""),
+        ]
+    )
+    cached = session.get("_suite_pending_invite_scan_cache")
+    if (
+        isinstance(cached, dict)
+        and cached.get("fp") == warm_fp
+        and isinstance(cached.get("invites"), list)
+        and not session.get("_suite_pending_invite_scan_force")
+    ):
+        return [dict(row) for row in cached["invites"] if isinstance(row, dict)]
     pending: list[dict[str, Any]] = []
     seen: set[str] = set()
     for doc in list_shared_league_documents():
@@ -811,6 +827,11 @@ def scan_pending_invites_from_shared_leagues(
             invite["lookup_source"] = "shared_league_scan"
             pending.append(invite)
     pending.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    session["_suite_pending_invite_scan_cache"] = {
+        "fp": warm_fp,
+        "invites": [dict(row) for row in pending],
+    }
+    session.pop("_suite_pending_invite_scan_force", None)
     return pending
 
 

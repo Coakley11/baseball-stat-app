@@ -22093,6 +22093,14 @@ if active_page == "Live Draft Room":
 
     elif room is None:
         try:
+            from live_draft_completion import SESSION_ENDED_NOTICE_KEY
+
+            _ended = st.session_state.pop(SESSION_ENDED_NOTICE_KEY, None)
+            if isinstance(_ended, dict) and _ended.get("message"):
+                st.success(str(_ended["message"]))
+        except ImportError:
+            pass
+        try:
             from live_draft_perf import PHASE_SETUP_RENDER, live_draft_perf_action
 
             _setup_render_ctx = live_draft_perf_action(st.session_state, "setup_render", phase=PHASE_SETUP_RENDER)

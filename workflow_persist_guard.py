@@ -3411,6 +3411,33 @@ def startup_read_only_blocked_reason(st: Any, app_id: str, save_reason: str = ""
 def run_consolidated_startup_workflow(st: Any, app_id: str = "baseball") -> dict[str, Any]:
     """Canonical shared-league rebuild and startup gate finalization."""
     session = st.session_state
+    force = bool(
+        session.get("_suite_workspace_force_sync")
+        or session.get("_suite_workspace_refresh_needed")
+        or session.get("_suite_auth_just_logged_in")
+        or session.get("_suite_shared_league_startup_force")
+    )
+    identity_fp = "|".join(
+        [
+            str(session.get("_suite_auth_user_id") or ""),
+            str(session.get("_suite_active_workspace_id") or session.get("_suite_owned_workspace_id") or ""),
+            str(session.get("_suite_cloud_session_revision") or ""),
+            str(app_id or "baseball"),
+        ]
+    )
+    prior = session.get("_suite_shared_league_startup_sync_trace")
+    if (
+        not force
+        and session.get(STARTUP_CANONICAL_SYNC_COMPLETE_KEY)
+        and session.get("_suite_startup_canonical_identity_fp") == identity_fp
+        and isinstance(prior, dict)
+    ):
+        skipped = dict(prior)
+        skipped["skipped"] = "already_complete"
+        skipped["rerun_requested"] = False
+        session["_suite_consolidated_startup_trace"] = skipped
+        return skipped
+
     trace: dict[str, Any] = {"canonical_sync": {}, "readiness": {}, "rerun_requested": False}
     try:
         from fantasy_shared_league_startup_sync import rebuild_workflow_from_canonical_shared_leagues
@@ -3419,6 +3446,9 @@ def run_consolidated_startup_workflow(st: Any, app_id: str = "baseball") -> dict
     except ImportError as exc:
         trace["canonical_sync"] = {"error": str(exc)}
     session[STARTUP_CANONICAL_SYNC_COMPLETE_KEY] = True
+    session["_suite_startup_canonical_identity_fp"] = identity_fp
+    session["_suite_shared_league_startup_sync_trace"] = dict(trace)
+    session.pop("_suite_shared_league_startup_force", None)
     trace["readiness"] = finalize_startup_read_only_gate(st, app_id)
     if trace["canonical_sync"].get("rebuilt"):
         try:

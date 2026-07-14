@@ -117,3 +117,106 @@ def is_live_draft_explicitly_complete(room: dict[str, Any] | None) -> bool:
         return bool(is_draft_truly_complete(room))
     except ImportError:
         return str(room.get("status") or "").strip() == "complete"
+
+
+SESSION_ENDED_NOTICE_KEY = "_live_draft_session_ended_notice"
+
+
+def end_live_draft_session(
+    session: dict[str, Any],
+    *,
+    st: Any | None = None,
+    reason: str = "end_live_draft_session",
+    start_new: bool = False,
+) -> dict[str, Any]:
+    """Close the active Live Draft runtime session without deleting archives/shared leagues.
+
+    Clears the in-room/session hydrate path so Live Draft Room returns to Create/Join.
+    Saved drafts, Shared Leagues, and historical results are left untouched.
+    """
+    room = session.get("live_draft_room")
+    if not isinstance(room, dict):
+        room = {}
+    cfg = dict(room.get("config") or {})
+    draft_label = str(
+        cfg.get("league_name") or room.get("league_name") or cfg.get("draft_name") or "Live Draft"
+    ).strip()
+    shared_code = str(session.get("active_shared_draft_room_code") or "").strip()
+
+    if shared_code:
+        try:
+            from draft_room_context import leave_shared_draft_room
+
+            leave_shared_draft_room(session)
+        except Exception:
+            shared_code = ""
+    if not shared_code:
+        try:
+            from draft_room_state import delete_live_draft_only
+
+            delete_live_draft_only(session)
+        except Exception:
+            try:
+                from live_draft_state import clear_live_draft_state
+
+                clear_live_draft_state(session, reason=reason)
+            except Exception:
+                session.pop("live_draft_room", None)
+                session.pop("live_draft_state", None)
+
+    for key in (
+        "active_shared_draft_room_code",
+        "draft_room_shared_meta",
+        "draft_room_participant_team",
+        "draft_room_participant_id",
+        "draft_room_participant_notes",
+        "room_your_team",
+        "_live_draft_shared_league_confirm_open",
+        "_live_draft_browsing_away",
+        "_live_draft_force_sync_on_return",
+        "_shared_draft_poll_ts",
+        "_draft_room_publish_error",
+        "_draft_room_conflict_notice",
+        "_draft_room_membership_notice",
+    ):
+        session.pop(key, None)
+
+    session[SESSION_ENDED_NOTICE_KEY] = {
+        "message": (
+            f"Ended the Live Draft session for **{draft_label}**. "
+            "Saved drafts and Shared Leagues were preserved."
+        ),
+        "start_new": bool(start_new),
+        "ended_at": _utc_now_iso(),
+    }
+    if start_new:
+        session["_start_live_draft_pending"] = True
+
+    try:
+        from live_draft_state import commit_live_draft_room
+
+        if st is not None:
+            commit_live_draft_room(st, session, None, reason=reason)
+        else:
+            from live_draft_state import clear_live_draft_state
+
+            clear_live_draft_state(session, reason=reason)
+    except Exception:
+        session.pop("live_draft_room", None)
+        session.pop("live_draft_state", None)
+
+    return {"ok": True, "reason": reason, "start_new": bool(start_new), "draft_label": draft_label}
+
+
+def on_end_live_draft_session(*, start_new: bool = False) -> None:
+    """Streamlit on_click handler for End / Start New Live Draft."""
+    try:
+        import streamlit as st_mod
+    except Exception:
+        return
+    end_live_draft_session(
+        st_mod.session_state,
+        st=st_mod,
+        reason="start_new_live_draft" if start_new else "end_live_draft_session",
+        start_new=bool(start_new),
+    )

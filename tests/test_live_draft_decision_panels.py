@@ -297,6 +297,7 @@ class DraftNavigationTests(unittest.TestCase):
         self.assertNotEqual(ctx.get("kind"), "simulator")
 
     def test_completed_draft_context(self) -> None:
+        """Completed drafts are not resumable — End Live Draft returns to landing."""
         session = {
             "live_draft_room": _room(
                 status="complete",
@@ -308,9 +309,7 @@ class DraftNavigationTests(unittest.TestCase):
         }
         with mock.patch("live_draft_state.has_active_live_draft", return_value=False):
             ctx = get_draft_return_context(session)
-        self.assertIsNotNone(ctx)
-        assert ctx is not None
-        self.assertEqual(ctx.get("kind"), "live_complete")
+        self.assertIsNone(ctx)
 
     def test_browse_preserves_room_code(self) -> None:
         session = {

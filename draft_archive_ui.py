@@ -3562,7 +3562,15 @@ def render_live_draft_completion_panel(
         key=f"{key_prefix}_league_name_input",
     )
 
-    st.markdown("#### Draft Complete")
+    draft_label = str(
+        league_name
+        or draft_name
+        or cfg.get("league_name")
+        or cfg.get("draft_name")
+        or "Live Draft"
+    ).strip()
+    st.markdown(f"#### Current Live Draft — {draft_label}")
+    st.markdown("**Status:** Draft Complete")
     st.caption("Review the final board, save the completed draft, analyze results, or create a shared league.")
     review_col, save_col, analyze_col, league_col, export_col = st.columns(5)
     with review_col:
@@ -3606,6 +3614,39 @@ def render_live_draft_completion_panel(
         )
     with export_col:
         export_clicked = st.button("Export Draft", key=f"{key_prefix}_export_btn", use_container_width=True)
+
+    divider = getattr(st, "divider", None)
+    if callable(divider):
+        divider()
+    else:
+        st.markdown("---")
+    st.caption(
+        "Ending the Live Draft session returns you to Create / Join. "
+        "Saved drafts and Shared Leagues are preserved."
+    )
+    try:
+        from live_draft_completion import on_end_live_draft_session
+    except ImportError:
+        on_end_live_draft_session = None  # type: ignore[assignment]
+    if callable(on_end_live_draft_session):
+        end_col, start_col = st.columns(2)
+        with end_col:
+            st.button(
+                "End Live Draft",
+                key=f"{key_prefix}_end_session_btn",
+                use_container_width=True,
+                on_click=on_end_live_draft_session,
+                kwargs={"start_new": False},
+            )
+        with start_col:
+            st.button(
+                "Start New Live Draft",
+                key=f"{key_prefix}_start_new_session_btn",
+                use_container_width=True,
+                type="primary",
+                on_click=on_end_live_draft_session,
+                kwargs={"start_new": True},
+            )
 
     _merge_shared_league_diag(
         session,
@@ -4567,14 +4608,21 @@ def _render_saved_draft_library_page_body(
             run_library_origin_migration,
         )
 
-        # Optional heavy gated repairs (legacy migrate / missing archives). Origin
-        # migration is always-on below and must not depend on this gate.
-        if not (isinstance(library_sync_trace, dict) and library_sync_trace.get("skipped") == "warm_render"):
-            mark_library_dirty(session, reason="post_shared_league_library_sync")
+        # Dirty only when library sync actually materialized/synced ownership changes.
+        sync_changed = False
+        if isinstance(library_sync_trace, dict) and library_sync_trace.get("skipped") != "warm_render":
+            sync_changed = bool(
+                int(library_sync_trace.get("leagues_synced") or 0) > 0
+                or int(library_sync_trace.get("materialized") or 0) > 0
+                or library_sync_trace.get("errors")
+                or library_sync_trace.get("changed")
+            )
+            if sync_changed:
+                mark_library_dirty(session, reason="post_shared_league_library_sync")
         gated_trace = run_gated_library_repairs(session, user_mutated=False)
         session["_library_gated_repair_last_trace"] = dict(gated_trace or {})
 
-        # ALWAYS run origin migration after materialize — never skip as read_only_render.
+        # Origin migration runs when dirty / first pass; warm renders reuse decisions.
         origin_trace = run_library_origin_migration(session)
         session["_library_repair_last_trace"] = dict(origin_trace or {})
 
@@ -4718,11 +4766,18 @@ def _render_saved_draft_library_page_body(
             if isinstance(raw, list):
                 decisions = [row for row in raw if isinstance(row, dict)]
         has_decisions = bool(decisions)
-        if has_decisions or isinstance(repair_trace, dict):
-            with st.expander("Origin repair log", expanded=True):
+        show_origin_log = False
+        try:
+            from suite_workspace import developer_ui_visible_from_session
+
+            show_origin_log = bool(developer_ui_visible_from_session(session))
+        except ImportError:
+            show_origin_log = False
+        if show_origin_log and (has_decisions or isinstance(repair_trace, dict)):
+            with st.expander("Origin repair log", expanded=False):
                 st.caption(
-                    "Per-league decisions from the always-on Saved Draft Library origin migration "
-                    "(not the gated read_only_render path)."
+                    "Per-league decisions from Saved Draft Library origin migration "
+                    "(runs once per dirty library cycle)."
                 )
                 if isinstance(repair_trace, dict):
                     st.write(

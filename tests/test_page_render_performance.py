@@ -22,14 +22,18 @@ class LibraryRepairSchedulerTests(unittest.TestCase):
         second = run_gated_library_repairs(session, user_mutated=False)
         self.assertEqual(second.get("skipped"), "read_only_render")
 
-    def test_origin_migration_not_gated_by_read_only_render(self) -> None:
+    def test_origin_migration_runs_once_then_warm_skips(self) -> None:
         session: dict = {"draft_archive_teams": [{"draft_id": "abc", "draft_name": "T"}]}
         mark_library_repairs_complete(session)
         gated = run_gated_library_repairs(session, user_mutated=False)
         self.assertEqual(gated.get("skipped"), "read_only_render")
-        origin = run_library_origin_migration(session)
-        self.assertTrue(origin.get("ran"))
-        self.assertNotEqual(origin.get("skipped"), "read_only_render")
+        first = run_library_origin_migration(session)
+        self.assertTrue(first.get("ran"))
+        second = run_library_origin_migration(session)
+        self.assertEqual(second.get("skipped"), "warm_render")
+        mark_library_dirty(session, reason="ownership_sync")
+        third = run_library_origin_migration(session)
+        self.assertTrue(third.get("ran"))
 
     def test_user_mutation_marks_dirty(self) -> None:
         session: dict = {}
