@@ -88,15 +88,58 @@ def _multiplayer_autopick_allowed(session: dict[str, Any]) -> bool:
     try:
         from draft_room_context import is_multiplayer_draft_active
         from draft_room_membership import is_room_host
-        from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY, get_shared_room_store
+        from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY, load_shared_room_document
 
         if not is_multiplayer_draft_active(session):
             return True
+        # Reuse recent mp diag host flag when available (avoids a network load on every expire).
+        mp_diag = session.get("_live_draft_mp_diag")
+        if isinstance(mp_diag, dict) and mp_diag.get("is_host") is not None:
+            return bool(mp_diag.get("is_host"))
         room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
-        document = get_shared_room_store().load(room_code) if room_code else None
+        document = load_shared_room_document(session, room_code) if room_code else None
         return bool(is_room_host(session, document))
     except ImportError:
         return True
+
+
+EXPIRED_PICK_PERF_KEY = "_live_draft_expired_pick_perf"
+
+
+def _perf_ms(t0: float) -> int:
+    import time
+
+    return int((time.perf_counter() - t0) * 1000)
+
+
+def record_expired_pick_perf(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    """Always-on timing breakdown for timer_handle_expired_pick (ms)."""
+    prev = dict(session.get(EXPIRED_PICK_PERF_KEY) or {})
+    prev.update({k: v for k, v in fields.items() if v is not None})
+    session[EXPIRED_PICK_PERF_KEY] = prev
+    return prev
+
+
+def format_expired_pick_perf(session: dict[str, Any]) -> str:
+    perf = session.get(EXPIRED_PICK_PERF_KEY)
+    if not isinstance(perf, dict) or not perf:
+        return ""
+    keys = (
+        "total_ms",
+        "host_check_ms",
+        "sync_revision_ms",
+        "recommendation_ms",
+        "recommendation_cache_hit",
+        "shared_commit_ms",
+        "board_save_ms",
+        "cloud_write_ms",
+        "activity_ms",
+        "cache_invalidate_ms",
+        "poll_diag_ms",
+        "ui_rerun_ms",
+    )
+    parts = [f"{k}={perf.get(k)}" for k in keys if perf.get(k) is not None]
+    return " | ".join(parts)
 
 
 def timer_zero_rerun_already_latched(session: dict[str, Any], room: dict[str, Any]) -> bool:
@@ -256,8 +299,12 @@ def _mark_autopick_success(session: dict[str, Any], room: dict[str, Any], messag
 
 def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, source: str = "page_autopick") -> ExpiredPickPageResult:
     """Attempt auto-pick exactly once for the current expired pick index."""
+    import time
+
+    t_total = time.perf_counter()
     room = resolve_live_room(session, room) or room
     idx = _pick_index(room)
+    record_expired_pick_perf(session, source=source, pick_index=idx)
 
     record_autopick_diagnostics(
         session,
@@ -280,7 +327,10 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
         err = str(session.get(AUTOPICK_ERROR_KEY) or "Auto-pick failed for this pick.")
         return ExpiredPickPageResult(handled=True, ok=False, should_rerun=False, message="", error=err)
 
-    if not _multiplayer_autopick_allowed(session):
+    t0 = time.perf_counter()
+    host_ok = _multiplayer_autopick_allowed(session)
+    record_expired_pick_perf(session, host_check_ms=_perf_ms(t0))
+    if not host_ok:
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
 
     if autopick_attempted_for_index(session, room):
@@ -294,12 +344,21 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
 
     board_before = len(room.get("draft_board") or [])
     idx_before = idx
+    t0 = time.perf_counter()
     expected_revision = sync_expected_revision(session)
+    record_expired_pick_perf(session, sync_revision_ms=_perf_ms(t0))
 
     try:
+        t0 = time.perf_counter()
         ok_select, select_msg = run_autopick_selection(room, session)
+        record_expired_pick_perf(
+            session,
+            recommendation_ms=_perf_ms(t0),
+            recommendation_cache_hit=bool(session.get("_live_draft_autopick_used_rec_cache")),
+        )
         if not ok_select:
             _mark_autopick_failed(session, room, select_msg or "Auto-pick selection failed.")
+            record_expired_pick_perf(session, total_ms=_perf_ms(t_total), ok=False)
             return ExpiredPickPageResult(
                 handled=True,
                 ok=False,
@@ -308,6 +367,7 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
                 error=select_msg or "Auto-pick selection failed.",
             )
 
+        t0 = time.perf_counter()
         commit = persist_applied_pick(
             session,
             room,
@@ -315,6 +375,19 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
             expected_revision=expected_revision,
             board_size_before=board_before,
             idx_before=idx_before,
+            fast_path=True,
+        )
+        persist_ms = _perf_ms(t0)
+        # persist_applied_pick records sub-bucket keys when fast_path/profiling enabled
+        sub = dict(session.get("_live_draft_persist_perf") or {})
+        record_expired_pick_perf(
+            session,
+            shared_commit_ms=sub.get("shared_commit_ms"),
+            board_save_ms=sub.get("board_save_ms"),
+            cloud_write_ms=sub.get("cloud_write_ms"),
+            activity_ms=sub.get("activity_ms"),
+            poll_diag_ms=sub.get("poll_diag_ms"),
+            persist_total_ms=persist_ms,
         )
 
         record_autopick_diagnostics(
@@ -326,6 +399,7 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
 
         if not commit.ok:
             _mark_autopick_failed(session, room, commit.message)
+            record_expired_pick_perf(session, total_ms=_perf_ms(t_total), ok=False)
             return ExpiredPickPageResult(
                 handled=True,
                 ok=False,
@@ -335,11 +409,15 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
             )
 
         msg = select_msg or commit.message
+        t0 = time.perf_counter()
         _mark_autopick_success(session, room, msg)
+        record_expired_pick_perf(session, cache_invalidate_ms=_perf_ms(t0), total_ms=_perf_ms(t_total), ok=True)
         return ExpiredPickPageResult(handled=True, ok=True, should_rerun=True, message=msg, error="")
     finally:
         session.pop(AUTOPICK_LOCK_KEY, None)
         record_autopick_diagnostics(session, autopick_in_progress_lock=False)
+        if session.get(EXPIRED_PICK_PERF_KEY) and "total_ms" not in (session.get(EXPIRED_PICK_PERF_KEY) or {}):
+            record_expired_pick_perf(session, total_ms=_perf_ms(t_total))
 
 
 def handle_expired_pick_on_page(session: dict[str, Any], room: dict[str, Any], *, source: str = "page_autopick") -> ExpiredPickPageResult:

@@ -21658,6 +21658,19 @@ if active_page == DRAFT_LAB_PAGE:
 if active_page == "Live Draft Room":
     _page_perf_start(active_page)
     try:
+        _ui_rerun_t0 = st.session_state.pop("_expired_pick_ui_rerun_requested_at", None)
+        if _ui_rerun_t0 is not None:
+            import time as _time_ui_rerun
+
+            from live_draft_expired_pick import record_expired_pick_perf
+
+            record_expired_pick_perf(
+                st.session_state,
+                ui_rerun_ms=int((_time_ui_rerun.perf_counter() - float(_ui_rerun_t0)) * 1000),
+            )
+    except Exception:
+        pass
+    try:
         from live_draft_render_trace import (
             force_render_live_draft_trace_banner,
             ldr_post_rerun_checkpoint,
@@ -23322,6 +23335,14 @@ if active_page == "Live Draft Room":
                     expired_result = handle_expired_pick_on_page(
                         st.session_state, room, source="page_autopick"
                     )
+                    try:
+                        from live_draft_expired_pick import format_expired_pick_perf
+
+                        _expired_perf = format_expired_pick_perf(st.session_state)
+                        if _expired_perf:
+                            st.caption(f"Expired-pick perf: {_expired_perf}")
+                    except ImportError:
+                        pass
                     if expired_result.error:
                         st.error(expired_result.error)
                     else:
@@ -23331,6 +23352,18 @@ if active_page == "Live Draft Room":
                     if expired_result.ok and expired_result.message:
                         st.success(expired_result.message)
                     if expired_result.should_rerun:
+                        try:
+                            import time as _time
+
+                            from live_draft_expired_pick import record_expired_pick_perf
+
+                            st.session_state["_expired_pick_ui_rerun_requested_at"] = _time.perf_counter()
+                            record_expired_pick_perf(
+                                st.session_state,
+                                ui_rerun_requested=True,
+                            )
+                        except Exception:
+                            pass
                         try:
                             from live_draft_render_trace import ldr_rerun
 

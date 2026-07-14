@@ -940,7 +940,14 @@ def commit_shared_room_state(
 
     room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
     backend = store or get_shared_room_store()
-    shared_doc = backend.load(room_code) if room_code else None
+    try:
+        from draft_room_shared_state import load_shared_room_document
+
+        shared_doc = (
+            load_shared_room_document(session, room_code, store=backend) if room_code else None
+        )
+    except ImportError:
+        shared_doc = backend.load(room_code) if room_code else None
     head_rev = int(shared_doc.get("revision") or 0) if isinstance(shared_doc, dict) else 0
     meta_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
     if expected_revision is None:

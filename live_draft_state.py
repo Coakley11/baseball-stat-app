@@ -19,6 +19,7 @@ LIVE_DRAFT_PREPARE_FP_KEY = "_live_draft_prepare_fingerprint"
 LIVE_DRAFT_FORCE_PREPARE_KEY = "_live_draft_force_prepare"
 LIVE_DRAFT_BOARD_SYNC_PENDING_KEY = "_live_draft_board_sync_pending"
 LIVE_DRAFT_DEFERRED_PICK_ACTIVITY_KEY = "_live_draft_deferred_pick_activity"
+LIVE_DRAFT_DEFERRED_CANONICAL_WRITE_KEY = "_live_draft_deferred_canonical_write"
 LIVE_DRAFT_PAGE_BLOCK = "Live Draft Room"
 LIVE_DRAFT_OWNER_AUTH_KEY = "owner_auth_user_id"
 LIVE_DRAFT_OWNER_EXTERNAL_KEY = "owner_external_id"
@@ -868,10 +869,46 @@ def flush_deferred_live_draft_pick_activity(session: dict[str, Any]) -> bool:
     return True
 
 
+def defer_live_draft_canonical_write(
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    reason: str = "",
+    local_edit: bool = False,
+) -> None:
+    """Queue a full canonical live_draft_state write for the next page flush."""
+    session[LIVE_DRAFT_DEFERRED_CANONICAL_WRITE_KEY] = {
+        "room_id": str(room.get("draft_room_id") or ""),
+        "pick_index": int(room.get("current_pick_index") or 0),
+        "board_len": live_draft_board_len(room),
+        "reason": str(reason or ""),
+        "local_edit": bool(local_edit),
+    }
+
+
+def flush_deferred_live_draft_canonical_write(session: dict[str, Any]) -> bool:
+    pending = session.get(LIVE_DRAFT_DEFERRED_CANONICAL_WRITE_KEY)
+    if not isinstance(pending, dict):
+        return False
+    room = session.get(LIVE_DRAFT_ROOM_KEY)
+    if not isinstance(room, dict):
+        session.pop(LIVE_DRAFT_DEFERRED_CANONICAL_WRITE_KEY, None)
+        return False
+    reason = str(pending.get("reason") or "deferred_pick")
+    local_edit = bool(pending.get("local_edit"))
+    try:
+        write_canonical_live_draft_state(session, room, reason=reason, local_edit=local_edit)
+    except Exception:
+        pass
+    session.pop(LIVE_DRAFT_DEFERRED_CANONICAL_WRITE_KEY, None)
+    return True
+
+
 def flush_deferred_live_draft_pick_effects(session: dict[str, Any]) -> None:
-    """Run board sync + activity logging deferred from the hot pick-commit path."""
+    """Run board sync + activity + canonical write deferred from the hot pick-commit path."""
     flush_deferred_live_draft_board_sync(session)
     flush_deferred_live_draft_pick_activity(session)
+    flush_deferred_live_draft_canonical_write(session)
 
 
 def mark_live_draft_local_edit(session: dict[str, Any]) -> None:

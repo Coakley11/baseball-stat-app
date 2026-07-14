@@ -28,6 +28,7 @@ ROOM_CODE_ALPHABET = string.ascii_uppercase + string.digits
 SHARED_ROOM_META_KEY = "draft_room_shared_meta"
 ACTIVE_SHARED_ROOM_CODE_KEY = "active_shared_draft_room_code"
 PARTICIPANT_MEMBERSHIP_KEY = "draft_room_participant_membership"
+SHARED_DOC_SOFT_CACHE_KEY = "_shared_room_doc_soft_cache"
 
 _PRIVATE_DOCUMENT_KEYS = frozenset(
     {
@@ -365,6 +366,48 @@ def get_shared_room_store() -> SharedRoomStore:
     return _DEFAULT_STORE
 
 
+def load_shared_room_document(
+    session: dict[str, Any] | None,
+    room_code: str,
+    *,
+    force: bool = False,
+    max_age_sec: float = 2.0,
+    store: SharedRoomStore | None = None,
+) -> dict[str, Any] | None:
+    """Load shared room doc with a short session soft-cache to avoid triple network reads on autopick."""
+    code = str(room_code or "").strip().upper()
+    if not code:
+        return None
+    now = datetime.now(timezone.utc).timestamp()
+    if isinstance(session, dict) and not force:
+        cache = session.get(SHARED_DOC_SOFT_CACHE_KEY)
+        if isinstance(cache, dict) and str(cache.get("room_code") or "") == code:
+            try:
+                age = now - float(cache.get("loaded_at") or 0)
+            except (TypeError, ValueError):
+                age = max_age_sec + 1
+            if age <= max_age_sec and isinstance(cache.get("document"), dict):
+                return cache["document"]
+    backend = store or get_shared_room_store()
+    document = backend.load(code)
+    if isinstance(session, dict):
+        session[SHARED_DOC_SOFT_CACHE_KEY] = {
+            "room_code": code,
+            "loaded_at": now,
+            "document": document if isinstance(document, dict) else None,
+        }
+    return document if isinstance(document, dict) else None
+
+
+def invalidate_shared_room_document_cache(session: dict[str, Any] | None, room_code: str = "") -> None:
+    if not isinstance(session, dict):
+        return
+    code = str(room_code or "").strip().upper()
+    cache = session.get(SHARED_DOC_SOFT_CACHE_KEY)
+    if not code or (isinstance(cache, dict) and str(cache.get("room_code") or "") == code):
+        session.pop(SHARED_DOC_SOFT_CACHE_KEY, None)
+
+
 def reset_shared_room_store_for_tests(store: SharedRoomStore | None = None) -> None:
     """Test helper — inject store backend or reset factory cache."""
     global _DEFAULT_STORE
@@ -592,16 +635,30 @@ def commit_shared_room_pick(
     if not code:
         return False, None
     backend = store or get_shared_room_store()
-    current = backend.load(code)
+    # Prefer soft-cached document (same revision head recently loaded by sync_expected_revision /
+    # commit_shared_room_state) so autopick does not pay a second network round-trip.
+    current = load_shared_room_document(session, code, store=backend)
     if not isinstance(current, dict):
         return False, None
     head_rev = int(current.get("revision") or 0)
     use_rev = head_rev if expected_revision is None else int(expected_revision)
     updated = bump_revision(current, live_room=live_room)
     ok, saved = backend.save_if_revision(updated, expected_revision=use_rev)
+    invalidate_shared_room_document_cache(session, code)
     if not ok or saved is None:
         if isinstance(saved, dict):
             publish_shared_room_runtime(session, saved, reason="shared_room_conflict")
+            # Cache the conflict head so the next sync/revisit doesn't reload immediately.
+            session[SHARED_DOC_SOFT_CACHE_KEY] = {
+                "room_code": code,
+                "loaded_at": datetime.now(timezone.utc).timestamp(),
+                "document": saved,
+            }
         return False, saved
     publish_shared_room_runtime(session, saved, reason="shared_room_pick")
+    session[SHARED_DOC_SOFT_CACHE_KEY] = {
+        "room_code": code,
+        "loaded_at": datetime.now(timezone.utc).timestamp(),
+        "document": saved,
+    }
     return True, saved

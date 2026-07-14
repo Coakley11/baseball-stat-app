@@ -171,6 +171,110 @@ class PersistAppliedPickTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.current_pick_index_after, 5)
 
+    @patch("live_draft_state.write_canonical_live_draft_state")
+    @patch("draft_room_context.commit_shared_room_state", return_value=(True, "ok", {"revision": 2}))
+    @patch("draft_room_context.is_multiplayer_draft_active", return_value=True)
+    def test_mp_fast_path_defers_board_activity_and_cloud(
+        self,
+        _mp: MagicMock,
+        mock_commit: MagicMock,
+        mock_write: MagicMock,
+    ) -> None:
+        from live_draft_state import (
+            LIVE_DRAFT_BOARD_SYNC_PENDING_KEY,
+            LIVE_DRAFT_DEFERRED_CANONICAL_WRITE_KEY,
+            LIVE_DRAFT_DEFERRED_PICK_ACTIVITY_KEY,
+            LIVE_DRAFT_ROOM_KEY,
+        )
+
+        session: dict = {
+            LIVE_DRAFT_ROOM_KEY: _room(),
+            "active_shared_draft_room_code": "ABC123",
+            "_live_draft_mp_diag": {"is_host": True},
+        }
+        room = session[LIVE_DRAFT_ROOM_KEY]
+        room["draft_board"].append({"playerID": "p2", "fullName": "Jose Ramirez"})
+        room["current_pick_index"] = 5
+        room["timer_started_at"] = time.time()
+        room["timer_handled_index"] = -1
+
+        with patch(
+            "draft_room_state.sync_live_draft_room_to_canonical_board"
+        ) as mock_board, patch(
+            "baseball_draft_activity.after_live_draft_pick_committed"
+        ) as mock_act:
+            result = persist_applied_pick(
+                session,
+                room,
+                source="timer_autopick:page_autopick",
+                board_size_before=4,
+                idx_before=4,
+                expected_revision=1,
+                fast_path=True,
+            )
+            self.assertTrue(result.ok, result.message)
+            mock_commit.assert_called_once()
+            mock_board.assert_not_called()
+            mock_act.assert_not_called()
+            mock_write.assert_not_called()
+            self.assertTrue(session.get(LIVE_DRAFT_BOARD_SYNC_PENDING_KEY))
+            self.assertIsInstance(session.get(LIVE_DRAFT_DEFERRED_PICK_ACTIVITY_KEY), dict)
+            self.assertIsInstance(session.get(LIVE_DRAFT_DEFERRED_CANONICAL_WRITE_KEY), dict)
+            self.assertEqual(session.get("_live_draft_persist_perf", {}).get("board_save_ms"), 0)
+            self.assertEqual(session.get("_live_draft_persist_perf", {}).get("cloud_write_ms"), 0)
+
+
+class ExpiredPickPerfTests(unittest.TestCase):
+    @patch("live_draft_expired_pick.persist_applied_pick")
+    @patch("live_draft_expired_pick.run_autopick_selection", return_value=(True, "Drafted Aaron Judge."))
+    @patch("live_draft_expired_pick.sync_expected_revision", return_value=None)
+    @patch("live_draft_expired_pick._multiplayer_autopick_allowed", return_value=True)
+    def test_records_perf_breakdown(
+        self,
+        _host: MagicMock,
+        _rev: MagicMock,
+        _sel: MagicMock,
+        mock_persist: MagicMock,
+    ) -> None:
+        from live_draft_expired_pick import EXPIRED_PICK_PERF_KEY, format_expired_pick_perf
+
+        mock_persist.return_value = PickCommitResult(
+            ok=True,
+            message="Drafted Aaron Judge.",
+            error="",
+            commit_path="single_user",
+            board_size_before=4,
+            board_size_after=5,
+            current_pick_index_before=4,
+            current_pick_index_after=5,
+        )
+        session: dict = {"live_draft_room": _room(), "_live_draft_persist_perf": {"shared_commit_ms": 12}}
+        result = run_expired_autopick_once(session, session["live_draft_room"])
+        self.assertTrue(result.ok)
+        mock_persist.assert_called_once()
+        self.assertTrue(mock_persist.call_args.kwargs.get("fast_path"))
+        perf = session.get(EXPIRED_PICK_PERF_KEY) or {}
+        self.assertIn("total_ms", perf)
+        self.assertIn("recommendation_ms", perf)
+        self.assertIn("host_check_ms", perf)
+        line = format_expired_pick_perf(session)
+        self.assertIn("total_ms=", line)
+
+
+class SharedDocSoftCacheTests(unittest.TestCase):
+    def test_load_shared_room_document_hits_soft_cache(self) -> None:
+        from draft_room_shared_state import SHARED_DOC_SOFT_CACHE_KEY, load_shared_room_document
+
+        store = MagicMock()
+        store.load.return_value = {"room_code": "ABC123", "revision": 3, "live_room": {}}
+        session: dict = {}
+        doc1 = load_shared_room_document(session, "ABC123", store=store)
+        doc2 = load_shared_room_document(session, "ABC123", store=store)
+        self.assertEqual(doc1.get("revision"), 3)
+        self.assertEqual(doc2.get("revision"), 3)
+        self.assertEqual(store.load.call_count, 1)
+        self.assertEqual(session[SHARED_DOC_SOFT_CACHE_KEY]["room_code"], "ABC123")
+
 
 if __name__ == "__main__":
     unittest.main()

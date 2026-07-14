@@ -42,7 +42,7 @@ def sync_expected_revision(session: dict[str, Any]) -> int | None:
         from draft_room_shared_state import (
             ACTIVE_SHARED_ROOM_CODE_KEY,
             SHARED_ROOM_META_KEY,
-            get_shared_room_store,
+            load_shared_room_document,
             publish_shared_room_runtime,
             shared_document_room_blob,
         )
@@ -51,8 +51,7 @@ def sync_expected_revision(session: dict[str, Any]) -> int | None:
         if not is_multiplayer_draft_active(session):
             return None
         room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
-        backend = get_shared_room_store()
-        shared_doc = backend.load(room_code) if room_code else None
+        shared_doc = load_shared_room_document(session, room_code) if room_code else None
         head_rev = int(shared_doc.get("revision") or 0) if isinstance(shared_doc, dict) else 0
         meta_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
         if head_rev > meta_rev and isinstance(shared_doc, dict):
@@ -87,8 +86,17 @@ def persist_applied_pick(
     expected_revision: int | None = None,
     board_size_before: int | None = None,
     idx_before: int | None = None,
+    fast_path: bool = False,
 ) -> PickCommitResult:
-    """Persist a pick already applied to the in-memory room (make_pick already ran)."""
+    """Persist a pick already applied to the in-memory room (make_pick already ran).
+
+    fast_path=True (timer autopick): keep shared-room commit synchronous; defer board sync,
+    activity, and local canonical cloud write to the next page flush.
+    """
+    import time
+
+    persist_perf: dict[str, Any] = {}
+    session["_live_draft_persist_perf"] = persist_perf
     try:
         from live_draft_perf import (
             PHASE_PICK_CANONICAL_FULL,
@@ -138,6 +146,7 @@ def persist_applied_pick(
 
         if mp:
             rev = expected_revision if expected_revision is not None else sync_expected_revision(session)
+            t_shared = time.perf_counter()
             if live_draft_perf_action is not None:
                 with live_draft_perf_action(session, "shared_commit", phase=PHASE_PICK_SHARED_COMMIT):
                     ok_commit, commit_msg, _saved = commit_shared_room_state(
@@ -153,6 +162,7 @@ def persist_applied_pick(
                     pick_already_applied=True,
                     expected_revision=rev,
                 )
+            persist_perf["shared_commit_ms"] = int((time.perf_counter() - t_shared) * 1000)
             if not ok_commit:
                 return PickCommitResult(
                     ok=False,
@@ -170,25 +180,40 @@ def persist_applied_pick(
 
         try:
             from live_draft_state import (
+                defer_live_draft_canonical_write,
                 defer_live_draft_pick_activity,
                 invalidate_live_draft_prepare_cache,
                 mark_live_draft_board_sync_pending,
             )
 
             invalidate_live_draft_prepare_cache(session, reason=f"pick:{source}")
-            if mp:
+            if mp and fast_path:
+                # Shared room is authority; defer local board/activity/canonical cloud write.
+                t_defer = time.perf_counter()
+                mark_live_draft_board_sync_pending(session, reason=source)
+                defer_live_draft_pick_activity(session, room, source=source)
+                defer_live_draft_canonical_write(session, room, reason=source, local_edit=False)
+                persist_perf["board_save_ms"] = 0
+                persist_perf["activity_ms"] = 0
+                persist_perf["cloud_write_ms"] = 0
+                persist_perf["deferred_ms"] = int((time.perf_counter() - t_defer) * 1000)
+            elif mp:
+                t_board = time.perf_counter()
                 try:
                     from draft_room_state import sync_live_draft_room_to_canonical_board
 
                     sync_live_draft_room_to_canonical_board(session, room)
                 except ImportError:
                     pass
+                persist_perf["board_save_ms"] = int((time.perf_counter() - t_board) * 1000)
+                t_act = time.perf_counter()
                 try:
                     from baseball_draft_activity import after_live_draft_pick_committed
 
                     after_live_draft_pick_committed(session, room)
                 except Exception:
                     pass
+                persist_perf["activity_ms"] = int((time.perf_counter() - t_act) * 1000)
             else:
                 if live_draft_perf_action is not None:
                     with live_draft_perf_action(session, "defer_flags", phase=PHASE_PICK_DEFER_FLAGS):
@@ -211,27 +236,33 @@ def persist_applied_pick(
             except Exception:
                 pass
 
-        if mp:
+        if mp and not fast_path:
+            t_cloud = time.perf_counter()
             if live_draft_perf_action is not None:
                 with live_draft_perf_action(session, "canonical_full", phase=PHASE_PICK_CANONICAL_FULL):
                     write_canonical_live_draft_state(session, room, reason=source, local_edit=False)
             else:
                 write_canonical_live_draft_state(session, room, reason=source, local_edit=False)
-        else:
+            persist_perf["cloud_write_ms"] = int((time.perf_counter() - t_cloud) * 1000)
+        elif not mp:
             try:
                 from live_draft_state import patch_canonical_live_draft_pick_fields
 
+                t_cloud = time.perf_counter()
                 if live_draft_perf_action is not None:
                     with live_draft_perf_action(session, "canonical_patch", phase=PHASE_PICK_CANONICAL_PATCH):
                         patch_canonical_live_draft_pick_fields(session, room, reason=source, local_edit=True)
                 else:
                     patch_canonical_live_draft_pick_fields(session, room, reason=source, local_edit=True)
+                persist_perf["cloud_write_ms"] = int((time.perf_counter() - t_cloud) * 1000)
             except ImportError:
+                t_cloud = time.perf_counter()
                 if live_draft_perf_action is not None:
                     with live_draft_perf_action(session, "canonical_full", phase=PHASE_PICK_CANONICAL_FULL):
                         write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
                 else:
                     write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
+                persist_perf["cloud_write_ms"] = int((time.perf_counter() - t_cloud) * 1000)
         if mp:
             try:
                 from live_draft_state import clear_live_draft_local_edit
@@ -239,17 +270,27 @@ def persist_applied_pick(
                 clear_live_draft_local_edit(session)
             except ImportError:
                 pass
-            try:
-                from live_draft_mp_diagnostics import record_multiplayer_sync_diagnostics
+            if not fast_path:
+                t_diag = time.perf_counter()
+                try:
+                    from live_draft_mp_diagnostics import record_multiplayer_sync_diagnostics
 
-                record_multiplayer_sync_diagnostics(
-                    session,
-                    room=room,
-                    last_pick_source=source,
-                    last_shared_write_ok=True,
-                )
-            except ImportError:
-                pass
+                    record_multiplayer_sync_diagnostics(
+                        session,
+                        room=room,
+                        last_pick_source=source,
+                        last_shared_write_ok=True,
+                    )
+                except ImportError:
+                    pass
+                persist_perf["poll_diag_ms"] = int((time.perf_counter() - t_diag) * 1000)
+            else:
+                # Lightweight mp diag update — no shared-store reload.
+                diag = dict(session.get("_live_draft_mp_diag") or {})
+                diag["last_pick_source"] = source
+                diag["last_shared_write_ok"] = True
+                session["_live_draft_mp_diag"] = diag
+                persist_perf["poll_diag_ms"] = 0
 
         return PickCommitResult(
             ok=True,

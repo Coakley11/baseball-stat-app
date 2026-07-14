@@ -68,9 +68,30 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
     target_counts = live_draft_target_counts(cfg)
     configured_rule = str(cfg.get("auto_pick_rule", "balanced recommendation") or "balanced recommendation")
 
-    rec_scored, gaps = score_available_for_rule(
-        available, roster_df, "balanced recommendation", target_counts, config=cfg
-    )
+    rec_scored = pd.DataFrame()
+    gaps: list[str] = []
+    used_rec_cache = False
+    if session is not None:
+        try:
+            from live_draft_ui_cache import REC_CACHE_KEY, live_draft_ui_cache_key
+
+            cache_key = live_draft_ui_cache_key(session, room, top_n=8, team=None)
+            entry = session.get(REC_CACHE_KEY)
+            if isinstance(entry, dict) and entry.get("key") == cache_key:
+                top_rec = entry.get("top_rec")
+                if isinstance(top_rec, pd.DataFrame) and not top_rec.empty:
+                    rec_scored = top_rec
+                    used_rec_cache = True
+                    session["_live_draft_autopick_used_rec_cache"] = True
+        except ImportError:
+            pass
+    if session is not None and not used_rec_cache:
+        session["_live_draft_autopick_used_rec_cache"] = False
+
+    if not used_rec_cache:
+        rec_scored, gaps = score_available_for_rule(
+            available, roster_df, "balanced recommendation", target_counts, config=cfg
+        )
     if rec_scored.empty:
         return False, "No eligible recommendation for auto-pick."
 
@@ -80,7 +101,9 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
     skip_reason = ""
     rule_pick_name = ""
 
-    if configured_rule.strip().lower() != "balanced recommendation":
+    # Prefer the #1 cached balanced recommendation for timer autopick; only score a
+    # secondary configured rule when the operator did not use balanced recommendation.
+    if configured_rule.strip().lower() != "balanced recommendation" and not used_rec_cache:
         rule_scored, _ = score_available_for_rule(
             available, roster_df, configured_rule, target_counts, config=cfg
         )

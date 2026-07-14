@@ -455,6 +455,16 @@ def _write_ldr_trace_panel_body(st: Any, ss: dict[str, Any]) -> None:
     st.markdown(f"**Next section entered:** `{stall.get('next_section_begun') or '—'}`")
     st.markdown(f"**Next behavior:** `{behavior_label}`")
     st.markdown(f"**Last timer/step:** `{ss.get(LDR_TRACE_LAST_STEP_KEY) or '—'}`")
+    try:
+        from live_draft_expired_pick import format_expired_pick_perf
+
+        perf_line = format_expired_pick_perf(ss)
+    except ImportError:
+        perf_line = ""
+    if perf_line:
+        st.markdown(f"**Expired-pick perf (ms):** `{perf_line}`")
+    else:
+        st.markdown("**Expired-pick perf (ms):** `—`")
     st.markdown("---")
     st.markdown(f"**Effective Draft Source:** `{effective_source}`")
     st.markdown(f"**Workspace ID:** `{snap.get('workspace_id') or '—'}`")
