@@ -360,23 +360,24 @@ class FantasyContextRoutingTests(unittest.TestCase):
         session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
         return session
 
-    def test_active_draft_feeds_management_not_das_without_research_sync(self) -> None:
+    def test_active_draft_feeds_das_without_research_sync(self) -> None:
+        """Fantasy tools (DAS) follow Effective Source — Research Mode is not required."""
         session = _saved_context_session()
         session.update(_simulator_board_session())
         session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
         session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
         session[FANTASY_RESEARCH_SYNC_KEY] = False
         self.assertTrue(fantasy_context_applies_to_page(session, "Waiver Wire"))
-        self.assertFalse(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
+        self.assertTrue(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
         self.assertFalse(fantasy_drafted_pool_filter_applies(session, "Trend Value"))
-        self.assertEqual(draft_assistant_context_mode(session), "none")
+        self.assertEqual(draft_assistant_context_mode(session), "active_draft")
 
-    def test_active_draft_feeds_das_with_research_sync(self) -> None:
+    def test_active_draft_research_pages_require_research_sync(self) -> None:
         session = _saved_context_session()
         session[FANTASY_RESEARCH_SYNC_KEY] = True
         self.assertTrue(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
         self.assertTrue(fantasy_drafted_pool_filter_applies(session, "Valuation"))
-        self.assertEqual(draft_assistant_context_mode(session), "research_context")
+        self.assertEqual(draft_assistant_context_mode(session), "active_draft")
 
     def test_simulator_override_management_only_without_research_sync(self) -> None:
         session = _saved_context_session()

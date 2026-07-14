@@ -343,7 +343,7 @@ def resolve_draft_assistant_board(
     if isinstance(active_archive, dict):
         candidates.append(("active_archive", board_from_archive(active_archive, session)))
 
-    if not isinstance(active_archive, dict) and mode in ("", "none", "research_context"):
+    if not isinstance(active_archive, dict) and mode in ("", "none", "research_context", "active_draft"):
         try:
             from draft_archive_state import get_active_draft_archive
 

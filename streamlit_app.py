@@ -1910,7 +1910,14 @@ def format_fantasy_table(df):
     for col in score_cols:
         if col in df.columns:
             if col == "Player Grade":
-                df[col] = pd.to_numeric(df[col], errors="coerce").round(1)
+                try:
+                    from draft_score_display import fmt_player_grade
+
+                    df[col] = pd.to_numeric(df[col], errors="coerce").apply(
+                        lambda v: fmt_player_grade(v) if pd.notna(v) else v
+                    )
+                except ImportError:
+                    df[col] = pd.to_numeric(df[col], errors="coerce").apply(format_trimmed_2dp)
             else:
                 df[col] = pd.to_numeric(df[col], errors="coerce").apply(format_trimmed_2dp)
     for col in rate_cols:
@@ -16164,6 +16171,29 @@ if active_page == "Comparison Tool":
     clean_label_map_compare = get_clean_player_label_map_yearly(yearly_df)
     pid_to_clean_label_compare = {pid: lbl for lbl, pid in clean_label_map_compare.items()}
     compare_player_options = list(clean_label_map_compare.keys())
+    try:
+        from fantasy_context_source import fantasy_drafted_pool_filter_applies
+        from fantasy_waiver_wire import filter_unrostered_players
+
+        if fantasy_drafted_pool_filter_applies(st.session_state, "Comparison Tool"):
+            _cmp_pool = pd.DataFrame(
+                {
+                    "fullName": [str(lbl).split(" (")[0].strip() for lbl in compare_player_options],
+                    "label": compare_player_options,
+                }
+            )
+            _cmp_kept = filter_unrostered_players(
+                st.session_state,
+                _cmp_pool,
+                name_col="fullName",
+                page_name="Comparison Tool",
+            )
+            if isinstance(_cmp_kept, pd.DataFrame) and not _cmp_kept.empty:
+                compare_player_options = [
+                    str(v) for v in _cmp_kept["label"].astype(str).tolist() if str(v).strip()
+                ]
+    except ImportError:
+        pass
 
     from comparison_state import (
         ensure_compare_multiselect,
@@ -17842,12 +17872,19 @@ if active_page == "Fantasy Sleepers & Busts":
                 st.caption("Active draft — always synced to the canonical Draft Room board.")
     sleeper_sync_enabled = st.session_state.get("sleeper_use_draft_room_needs", True)
     try:
-        from draft_room_state import get_active_draft_status
+        from fantasy_context_source import fantasy_drafted_pool_filter_applies
 
-        if get_active_draft_status(st.session_state).get("active"):
-            sleeper_sync_enabled = True
-    except Exception:
-        pass
+        # Research Mode owns draft filtering on Sleepers — when OFF, show full MLB pool.
+        if not fantasy_drafted_pool_filter_applies(st.session_state, "Fantasy Sleepers & Busts"):
+            sleeper_sync_enabled = False
+    except ImportError:
+        try:
+            from draft_room_state import get_active_draft_status
+
+            if get_active_draft_status(st.session_state).get("active"):
+                sleeper_sync_enabled = True
+        except Exception:
+            pass
     sleeper_max_market_rank = st.session_state.get("sleeper_max_market_rank", 350)
     sleeper_max_model_rank = st.session_state.get("sleeper_max_model_rank", 350)
     sleeper_min_proj_hr = st.session_state.get("sleeper_min_proj_hr", 0)
@@ -17941,6 +17978,7 @@ if active_page == "Fantasy Sleepers & Busts":
             fantasy_df,
             score_col="Fantasy Edge",
             name_col="fullName",
+            page_name="Fantasy Sleepers & Busts",
         )
     except ImportError:
         pass
@@ -18798,7 +18836,7 @@ if active_page == "Draft Assistant Simulator":
                     )
                     if not assistant_team_names:
                         assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
-            elif _da_context_mode == "research_context":
+            elif _da_context_mode in ("active_draft", "research_context"):
                 try:
                     from active_team_context import resolve_active_team_context
 
@@ -18825,7 +18863,12 @@ if active_page == "Draft Assistant Simulator":
                     pass
                 if not my_roster and not drafted_players:
                     st.info(
-                        "Research Mode Sync is on, but no drafted players were found in the active fantasy context."
+                        "Active Saved Draft is selected, but no drafted players were found yet."
+                    )
+                else:
+                    st.caption(
+                        "Excluding drafted players from your Active Saved Draft / Shared League. "
+                        "Team-needs stay at page defaults (Live Draft strategy is not applied)."
                     )
             elif _da_context_mode == "simulator_board":
                 if not board_has_players:
@@ -18847,14 +18890,14 @@ if active_page == "Draft Assistant Simulator":
                 if board_has_players:
                     st.info(
                         "Draft Assistant is not syncing drafted players from this board. "
-                        "Turn on **Research Mode Sync** for Saved Active Draft / Simulator practice, "
-                        "or use an **in-progress Live Draft** override."
+                        "Set an **Active Saved Draft**, enable **Simulator Override**, "
+                        "or join an **in-progress Live Draft**."
                     )
                 else:
                     st.info(
                         "Draft Assistant is showing the full player pool. "
-                        "Turn on **Research Mode Sync** or start an **in-progress Live Draft** "
-                        "to exclude drafted players and update team needs."
+                        "Set an **Active Saved Draft**, enable **Simulator Override**, "
+                        "or start an **in-progress Live Draft** to exclude drafted players."
                     )
 
             default_team_name = get_active_fantasy_team(st.session_state) or (
@@ -18903,7 +18946,7 @@ if active_page == "Draft Assistant Simulator":
             drafted_players = sorted(list(dict.fromkeys([p for p in drafted_players if str(p).strip()])))
             drafted_or_owned_players = (
                 set(drafted_players).union(set(my_roster))
-                if _da_context_mode in ("live_board", "research_context", "simulator_board")
+                if _da_context_mode in ("live_board", "active_draft", "research_context", "simulator_board")
                 else set()
             )
             board_has_players_for_summary = board_has_players
@@ -19079,27 +19122,29 @@ if active_page == "Draft Assistant Simulator":
 
             _slot_cfg = resolve_draft_slot_config_from_session(st.session_state)
             _draft_ctx = resolve_draft_context(st.session_state)
-            if _da_context_mode in ("none", "simulator_board"):
-                _draft_ctx = type(_draft_ctx)(
-                    active=False,
-                    fantasy_format=getattr(_draft_ctx, "fantasy_format", "5x5 Roto"),
-                )
-            elif _da_context_mode == "research_context":
-                try:
-                    from active_team_context import resolve_active_team_context
-                    from draft_context import DraftContext
+            if _da_context_mode in ("none", "simulator_board", "active_draft", "research_context"):
+                # Saved Active / Simulator: drafted exclusions only — default needs, not Live strategy.
+                if _da_context_mode in ("active_draft", "research_context"):
+                    try:
+                        from active_team_context import resolve_active_team_context
+                        from draft_context import DraftContext
 
-                    _atc = resolve_active_team_context(st.session_state)
-                    _draft_ctx = DraftContext(
-                        active=bool(_atc.drafted_keys),
-                        active_team=_atc.active_team,
-                        drafted_names=list(_atc.drafted_names),
-                        drafted_keys=_atc.drafted_keys,
-                        fantasy_format=_atc.fantasy_format,
-                        draft_complete=bool(_atc.draft_complete),
-                        source="research_context",
-                    )
-                except Exception:
+                        _atc = resolve_active_team_context(st.session_state)
+                        _draft_ctx = DraftContext(
+                            active=bool(_atc.drafted_keys),
+                            active_team=_atc.active_team,
+                            drafted_names=list(_atc.drafted_names),
+                            drafted_keys=_atc.drafted_keys,
+                            fantasy_format=_atc.fantasy_format,
+                            draft_complete=bool(_atc.draft_complete),
+                            source="active_draft",
+                        )
+                    except Exception:
+                        _draft_ctx = type(_draft_ctx)(
+                            active=False,
+                            fantasy_format=getattr(_draft_ctx, "fantasy_format", "5x5 Roto"),
+                        )
+                else:
                     _draft_ctx = type(_draft_ctx)(
                         active=False,
                         fantasy_format=getattr(_draft_ctx, "fantasy_format", "5x5 Roto"),
@@ -19121,7 +19166,7 @@ if active_page == "Draft Assistant Simulator":
                 config=_slot_cfg,
                 draft_complete=bool(_draft_ctx.draft_complete),
             )
-            if _da_context_mode == "simulator_board":
+            if _da_context_mode in ("simulator_board", "active_draft", "research_context"):
                 auto_needed_positions = []
                 auto_category_needs = []
         except ImportError:
@@ -19291,8 +19336,8 @@ if active_page == "Draft Assistant Simulator":
             if _slot_cfg.get("slots") and _da_context_mode == "live_board"
             else (_live_draft_room if isinstance(_live_draft_room, dict) and _da_context_mode == "live_board" else None)
         )
-        _da_rec_mode = "draft_fit" if _da_context_mode in ("live_board", "research_context") else "decision"
-        if _da_context_mode == "simulator_board":
+        _da_rec_mode = "draft_fit" if _da_context_mode == "live_board" else "decision"
+        if _da_context_mode in ("simulator_board", "active_draft", "research_context"):
             needed_positions = []
             category_needs = []
             target_position_counts = {}
@@ -19440,6 +19485,27 @@ if active_page == "Draft Assistant Simulator":
             available,
             limit=int(draft_top_n),
         )
+        try:
+            from live_draft_ux import REC_TABLE_SORT_OPTIONS, sort_recommendation_table
+
+            _da_sort_labels = list(REC_TABLE_SORT_OPTIONS.keys())
+            _da_sort_choice = st.selectbox(
+                "Sort recommendations by",
+                _da_sort_labels,
+                index=0,
+                key="draft_assistant_rec_card_sort",
+                help=(
+                    "Reorders the same recommendation cards. "
+                    "It does not change which players were recommended."
+                ),
+            )
+            st.caption(
+                "Sort changes display order only — the recommendation pool stays the same."
+            )
+            _da_sort_col = REC_TABLE_SORT_OPTIONS.get(_da_sort_choice, "Decision Score")
+            recs = sort_recommendation_table(recs, _da_sort_col)
+        except ImportError:
+            pass
         try:
             from recommendation_player_diagnostics import (
                 diagnose_recommendation_players,
@@ -23119,6 +23185,13 @@ if active_page == "Live Draft Room":
                         _rec_sort_labels,
                         index=0,
                         key="live_draft_rec_table_sort",
+                        help=(
+                            "Reorders the same recommendation pool. "
+                            "It does not run a different recommendation algorithm."
+                        ),
+                    )
+                    st.caption(
+                        "Sort changes display order only — the recommended player set stays the same."
                     )
                     _rec_sort_col = REC_TABLE_SORT_OPTIONS.get(_rec_sort_choice, "Decision Score")
 

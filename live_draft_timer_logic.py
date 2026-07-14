@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -46,16 +47,17 @@ def _timer_seconds(room: dict[str, Any]) -> int:
 
 
 def live_draft_seconds_remaining(room: dict[str, Any]) -> int:
+    """Whole seconds left on the clock (ceil) — matches client-side countdown."""
     if room.get("status") != "in_progress":
         return _timer_seconds(room)
     deadline = room.get("timer_deadline")
     if deadline is not None:
-        return max(0, int(float(deadline) - time.time()))
+        return max(0, int(math.ceil(float(deadline) - time.time())))
     started = room.get("timer_started_at")
     if started is None:
         return _timer_seconds(room)
-    elapsed = max(0.0, time.time() - float(started))
-    return max(0, _timer_seconds(room) - int(elapsed))
+    remaining = float(_timer_seconds(room)) - max(0.0, time.time() - float(started))
+    return max(0, int(math.ceil(remaining)))
 
 
 def live_draft_reset_timer(room: dict[str, Any]) -> None:

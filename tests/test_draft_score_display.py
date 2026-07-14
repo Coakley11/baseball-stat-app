@@ -105,7 +105,7 @@ class DraftScoreDisplayTests(unittest.TestCase):
         self.assertIn(DISPLAY_PICK_SCORE, out.columns)
         self.assertIn(DISPLAY_ROSTER_FIT, out.columns)
         self.assertIn(DISPLAY_RELATIVE_GRADE, out.columns)
-        self.assertEqual(float(out.iloc[0][DISPLAY_PLAYER_GRADE]), 90.0)
+        self.assertEqual(str(out.iloc[0][DISPLAY_PLAYER_GRADE]), "90")
         self.assertEqual(float(out.iloc[0][DISPLAY_PICK_SCORE]), 85.0)
         self.assertEqual(float(out.iloc[0][DISPLAY_ROSTER_FIT]), 1.42)
         self.assertEqual(float(out.iloc[0][DISPLAY_RELATIVE_GRADE]), 73.0)

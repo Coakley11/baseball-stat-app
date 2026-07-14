@@ -757,6 +757,24 @@ class WorkflowPersistGuardTests(unittest.TestCase):
         self.assertEqual(trace.get("active_source"), "cloud")
         self.assertEqual(trace.get("restore_reason"), "matched_cloud_active_to_visible_archive")
 
+    def test_restore_prefers_session_active_over_stale_cloud(self) -> None:
+        session = {
+            DRAFT_ARCHIVE_KEY: [
+                {"draft_id": "a1", "draft_name": "A"},
+                {"draft_id": "a2", "draft_name": "B"},
+            ],
+            ACTIVE_DRAFT_ARCHIVE_KEY: "a2",
+        }
+        cloud = {ACTIVE_DRAFT_ARCHIVE_KEY: "a1"}
+        trace = restore_active_draft_archive_selection(
+            session,
+            cloud_state=cloud,
+            disk_state={},
+            phase="test",
+        )
+        self.assertEqual(session.get(ACTIVE_DRAFT_ARCHIVE_KEY), "a2")
+        self.assertEqual(trace.get("active_source"), "session")
+
     def test_restore_active_auto_sets_single_visible_draft(self) -> None:
         session = {DRAFT_ARCHIVE_KEY: [{"draft_id": "only01", "draft_name": "Only"}]}
         trace = restore_active_draft_archive_selection(session, cloud_state={}, disk_state={}, phase="test")

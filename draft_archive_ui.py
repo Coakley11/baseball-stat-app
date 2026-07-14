@@ -1531,21 +1531,35 @@ def _render_post_save_actions(
     context = context or get_league_context_for_archive(session, entry)
     team_count = archive_card_team_count(entry)
     player_count = archive_card_player_count(entry)
+    draft_id = str(entry.get("draft_id") or "").strip()
     if league_save and context:
         st.success(
             f"Saved **{entry.get('draft_name')}** as a **{league_context_coverage_badge(context)}** "
-            f"({team_count} teams, {player_count} players on your roster). "
-            "Set active for Standings and Lineup analysis."
+            f"({team_count} teams, {player_count} players on your roster)."
         )
     else:
-        st.success(
-            f"Saved **{entry.get('draft_name')}** ({player_count} players). "
-            "Set active for Standings and Lineup analysis."
-        )
+        st.success(f"Saved **{entry.get('draft_name')}** ({player_count} players).")
+    st.caption("Saved to Saved Draft Library. Saving does not change your Active Draft unless you choose Set Active.")
+    if draft_id:
+        st.info("Would you like to make this your Active Draft?")
+        yes_col, no_col = st.columns(2)
+        with yes_col:
+            if st.button(
+                "⭐ Yes — Set Active",
+                key=f"post_save_set_active_{draft_id}",
+                type="primary",
+            ):
+                _activate_archive_entry(st, session, draft_id)
+                return
+        with no_col:
+            st.button(
+                "No — Keep current Active Draft",
+                key=f"post_save_skip_active_{draft_id}",
+            )
     view_col, standings_col = st.columns(2)
     with view_col:
         st.button(
-            _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "View in Saved Draft Library", page_label_fn),
+            _nav_label(SAVED_DRAFT_LIBRARY_PAGE, "Manage Saved Drafts", page_label_fn),
             key=f"view_library_{entry.get('draft_id')}_btn",
             type="primary",
             on_click=_on_click_saved_draft_library,
@@ -4065,7 +4079,7 @@ def _activate_archive_entry(st: Any, session: dict[str, Any], draft_id: str) -> 
     except ImportError:
         pass
     _clear_fantasy_caches_on_archive_change(session)
-    _persist_archive(session, st, reason="league_context_activated")
+    _persist_archive(session, st, reason="league_context_activated", entry=loaded_entry)
     try:
         from baseball_archive_activity import log_saved_draft_activated
 

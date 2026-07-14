@@ -18,24 +18,23 @@ SOURCE_SIMULATOR_BOARD = "simulator_board"
 SOURCE_ACTIVE_DRAFT = "active_draft"
 SOURCE_GENERIC = "generic"
 
+DRAFT_ASSISTANT_PAGE = "Draft Assistant Simulator"
+
 CORE_FANTASY_PAGES: frozenset[str] = frozenset({
     "Fantasy Standings Tracker",
     "Fantasy Lineup Assistant",
     "Waiver Wire",
+    "Waiver Wire / Add-Drop Center",
     "Trades",
+    DRAFT_ASSISTANT_PAGE,
 })
 
-DRAFT_ASSISTANT_PAGE = "Draft Assistant Simulator"
-
-# Broader research/recommendation pages — require Research Mode Sync.
+# Draft-related research pages — Research Mode Sync only (never historical pages).
 BROADER_RESEARCH_FANTASY_PAGES: frozenset[str] = frozenset({
     "Comparison Tool",
     "Trend Value",
     "Valuation",
     "Fantasy Sleepers & Busts",
-    "Rankings",
-    "Leaderboards",
-    "Player Search",
 })
 
 RESEARCH_FANTASY_PAGES: frozenset[str] = BROADER_RESEARCH_FANTASY_PAGES | {DRAFT_ASSISTANT_PAGE}
@@ -372,28 +371,38 @@ def simulator_feeds_draft_assistant(session: dict[str, Any]) -> bool:
     return resolve_fantasy_context_source(session).kind == SOURCE_SIMULATOR_BOARD
 
 
+def active_saved_draft_feeds_draft_assistant(session: dict[str, Any]) -> bool:
+    """Saved Active Draft feeds DAS with drafted exclusions (default needs — not Live strategy)."""
+    if live_draft_feeds_draft_assistant(session) or simulator_feeds_draft_assistant(session):
+        return False
+    source = resolve_fantasy_context_source(session)
+    return source.kind == SOURCE_ACTIVE_DRAFT and saved_active_draft_available(session)
+
+
 def fantasy_drafted_pool_filter_applies(session: dict[str, Any], page_name: str) -> bool:
     """Whether drafted/rostered players should be removed from this page's player pool.
 
     Routing matrix:
-    - Core management pages: never via this filter (they use league context directly).
-    - Draft Assistant: in-progress Live Draft always; Simulator board always (exclusions only);
-      Saved Active Draft when Research Mode Sync ON.
-    - Broader research pages: when Research Mode Sync ON and a filterable source exists
-      (saved draft, simulator board, or live draft board).
+    - Draft Assistant (fantasy tool): Active Live, Simulator override, or Saved Active Draft
+      always remove drafted players (needs policy decided by ``draft_assistant_context_mode``).
+    - Broader research pages: only when Research Mode Sync is ON and a filterable source exists.
+    - Historical pages: never.
     """
     page = str(page_name or "").strip()
     research_on = _research_sync_enabled(session)
-
-    if page in CORE_FANTASY_PAGES:
-        return False
 
     if page == DRAFT_ASSISTANT_PAGE:
         if live_draft_feeds_draft_assistant(session):
             return True
         if simulator_feeds_draft_assistant(session):
             return True
-        return research_on and _has_filterable_fantasy_source(session)
+        if active_saved_draft_feeds_draft_assistant(session):
+            return True
+        return False
+
+    # Core management pages use league context directly — not this pool filter gate.
+    if page in CORE_FANTASY_PAGES:
+        return False
 
     if page in BROADER_RESEARCH_FANTASY_PAGES:
         return research_on and _has_filterable_fantasy_source(session)
@@ -407,24 +416,27 @@ def draft_assistant_context_mode(session: dict[str, Any]) -> str:
     Returns one of:
     - ``live_board`` — sync picks and needs from the in-progress live draft board.
     - ``simulator_board`` — exclude simulator-board picks only (no team-needs scoring).
-    - ``research_context`` — filter via unified active-team / league context (Research Mode).
+    - ``active_draft`` — exclude Saved Active Draft picks; keep default needs.
+    - ``research_context`` — legacy alias for ``active_draft`` (Saved Active exclusions).
     - ``none`` — no fantasy-context filtering on Draft Assistant.
     """
     if live_draft_feeds_draft_assistant(session):
         return "live_board"
     if simulator_feeds_draft_assistant(session):
         return "simulator_board"
-    if fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE):
-        return "research_context"
+    if active_saved_draft_feeds_draft_assistant(session):
+        return "active_draft"
     return "none"
 
 
 def fantasy_context_applies_to_page(session: dict[str, Any], page_name: str) -> bool:
     """Whether fantasy context should drive this page's recommendations."""
     page = str(page_name or "").strip()
+    if page == DRAFT_ASSISTANT_PAGE:
+        return draft_assistant_context_mode(session) != "none"
     if page in CORE_FANTASY_PAGES:
         return True
-    if page in RESEARCH_FANTASY_PAGES:
+    if page in BROADER_RESEARCH_FANTASY_PAGES:
         return fantasy_drafted_pool_filter_applies(session, page)
     return False
 
@@ -505,10 +517,18 @@ def fantasy_context_using_caption(session: dict[str, Any]) -> str:
         return f"{heading}: {name}"
     if display["kind"] == "temporary_live":
         team = str(display.get("team") or "").strip()
-        return f"Temporary Live Draft Board — unsaved — Team {team}" if team else "Temporary Live Draft Board — unsaved"
+        return (
+            f"Temporary Draft Board (Unsaved) — Live Draft — Team {team}"
+            if team
+            else "Temporary Draft Board (Unsaved) — Live Draft"
+        )
     if display["kind"] == "temporary_simulator":
         team = str(display.get("team") or "").strip()
-        return f"Temporary Simulator Board — unsaved — Team {team}" if team else "Temporary Simulator Board — unsaved"
+        return (
+            f"Temporary Draft Board (Unsaved) — Simulator — Team {team}"
+            if team
+            else "Temporary Draft Board (Unsaved)"
+        )
     return "General MLB (no draft context)"
 
 
@@ -533,7 +553,7 @@ def fantasy_context_using_display(session: dict[str, Any]) -> dict[str, str]:
         return {
             "kind": "temporary_live",
             "draft_name": "",
-            "board_label": "Live Draft Room — unsaved",
+            "board_label": "Temporary Draft Board (Unsaved) — Live Draft",
             "team": team,
         }
 
@@ -541,7 +561,7 @@ def fantasy_context_using_display(session: dict[str, Any]) -> dict[str, str]:
         return {
             "kind": "temporary_simulator",
             "draft_name": "",
-            "board_label": "Draft Room Simulator — unsaved",
+            "board_label": "Temporary Draft Board (Unsaved)",
             "team": team,
         }
 
@@ -574,10 +594,10 @@ def fantasy_context_using_html(session: dict[str, Any]) -> str:
 </div>"""
 
     if kind in ("temporary_live", "temporary_simulator"):
-        board = _html_esc(display.get("board_label") or "Unsaved board")
+        board = _html_esc(display.get("board_label") or "Temporary Draft Board (Unsaved)")
         return f"""
 <div class="fantasy-source-card fantasy-source-card-temporary">
-  <div class="fantasy-source-kicker">Temporary Practice Board</div>
+  <div class="fantasy-source-kicker">Temporary Draft Board (Unsaved)</div>
   <div class="fantasy-source-sub">{board}</div>
   {team_row}
 </div>"""
@@ -605,13 +625,13 @@ def fantasy_context_using_markdown(session: dict[str, Any]) -> str:
         return "\n\n".join(lines)
 
     if display["kind"] == "temporary_live":
-        lines = ["**Temporary Live Draft Board** — unsaved"]
+        lines = ["**Temporary Draft Board (Unsaved)** — Live Draft"]
         if team_line:
             lines.append(team_line)
         return "\n\n".join(lines)
 
     if display["kind"] == "temporary_simulator":
-        lines = ["**Temporary Simulator Board** — unsaved"]
+        lines = ["**Temporary Draft Board (Unsaved)**"]
         if team_line:
             lines.append(team_line)
         return "\n\n".join(lines)

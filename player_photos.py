@@ -717,6 +717,14 @@ def roster_fit_display(row: Any) -> str:
         val = _row_get(row, "Roster Fit Score")
     if val is None or (isinstance(val, float) and pd.isna(val)):
         val = _row_get(row, "roster_fit_score_at_pick")
+    # Scored recommendation rows can carry 0.0 legitimately — treat missing only.
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        # Prefer a numeric zero when Decision/Player Grade exist (score ran without fit).
+        if any(
+            _row_get(row, key) is not None and not (isinstance(_row_get(row, key), float) and pd.isna(_row_get(row, key)))
+            for key in ("Decision Score", "Expected Fantasy Value", "Player Grade")
+        ):
+            val = 0.0
     result = fmt_roster_fit_score(val)
     return result if result else "Not available"
 

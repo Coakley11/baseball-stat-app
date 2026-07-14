@@ -316,8 +316,9 @@ def prepare_draft_scores_for_display(df: pd.DataFrame | None) -> pd.DataFrame:
     ):
         if col in out.columns:
             if col == DISPLAY_PLAYER_GRADE:
+                # Store trimmed display strings so tables never show 91.300000.
                 out[col] = pd.to_numeric(out[col], errors="coerce").apply(
-                    lambda v: round(float(v), 1) if pd.notna(v) else v
+                    lambda v: _fmt_hundred_scale(v) if pd.notna(v) else v
                 )
             else:
                 out[col] = pd.to_numeric(out[col], errors="coerce").apply(

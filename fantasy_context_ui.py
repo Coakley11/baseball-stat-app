@@ -23,11 +23,10 @@ FANTASY_RESEARCH_SYNC_KEY = "use_active_league_context_waiver_filter"
 
 FANTASY_RESEARCH_SYNC_LABEL = "Research Mode — treat drafted players as unavailable"
 FANTASY_RESEARCH_SYNC_HELP = (
-    "When enabled, broader research pages treat players already drafted in the active fantasy "
-    "context as **unavailable** and recalculate rankings using only remaining players. "
-    "Also enables Draft Assistant Simulator for Saved Active Draft and Simulator override "
-    "contexts. Source follows your **Fantasy Source** priority (Live Draft, Simulator "
-    "board, or Saved Draft Library Active Draft)."
+    "When enabled, draft research pages (Sleepers, Trends, Valuation, Comparison) hide players "
+    "already drafted from the Effective Draft Source. Historical pages are never filtered. "
+    "Fantasy tools (Draft Assistant, Lineup, Standings, Waiver, Needs) always follow Effective "
+    "Draft Source and do not require Research Mode."
 )
 
 USE_LIVE_DRAFT_CONTEXT_LABEL = "Live Draft Room override"
@@ -51,8 +50,9 @@ FANTASY_CONTEXT_INTRO = (
 FANTASY_CONTEXT_OVERRIDE_FOOTER = "Turn the override off to go back to your Active Draft."
 
 RESEARCH_SYNC_INTRO = (
-    "Research Mode Sync removes players from your current draft context on research pages too, "
-    "so recommendations recalculate without already-drafted players."
+    "Research Mode only affects draft research pages (Sleepers, Trends, Valuation, Comparison). "
+    "Historical pages always show the full database. Fantasy tools follow Effective Draft Source "
+    "without requiring Research Mode."
 )
 
 RESEARCH_SYNC_PAGES: tuple[str, ...] = (
@@ -60,10 +60,6 @@ RESEARCH_SYNC_PAGES: tuple[str, ...] = (
     "Trend Value",
     "Valuation",
     "Fantasy Sleepers & Busts",
-    "Draft Assistant Simulator",
-    "Rankings",
-    "Leaderboards",
-    "Player Search",
 )
 
 FANTASY_CONTEXT_PAGES: tuple[str, ...] = (
@@ -74,6 +70,7 @@ FANTASY_CONTEXT_PAGES: tuple[str, ...] = (
     "Valuation",
     "Fantasy Sleepers & Busts",
     "Waiver Wire",
+    "Waiver Wire / Add-Drop Center",
     "Fantasy Lineup Assistant",
     "Fantasy Standings Tracker",
     "Trades",

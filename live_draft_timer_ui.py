@@ -371,7 +371,19 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                 return
         elif _guest_waiting_for_host_autopick(session, tick_room):
             st.caption("Waiting for host to auto-pick…")
-        if should_fragment_trigger_full_rerun(session, tick_room):
+        remaining = live_draft_display_seconds(tick_room)
+        if remaining <= 0 and tick_room.get("status") == "in_progress":
+            session[EXPIRED_PICK_PENDING_KEY] = True
+            if should_fragment_trigger_full_rerun(session, tick_room):
+                try:
+                    from live_draft_safe_mode import request_live_draft_rerun
+
+                    if request_live_draft_rerun(st, session, "timer_fragment_zero", room=tick_room):
+                        return
+                except ImportError:
+                    st.rerun()
+                    return
+        elif should_fragment_trigger_full_rerun(session, tick_room):
             session[EXPIRED_PICK_PENDING_KEY] = True
             try:
                 from live_draft_safe_mode import request_live_draft_rerun

@@ -103,6 +103,13 @@ def _has_shared_league_membership(
     owned = str(owned_team_for_user(context, user_id) or "").strip()
     if owned:
         return True
+    meta = dict(context.get("metadata") or {})
+    # Live-draft preassigned owners / accepted invitees keep library visibility even
+    # when local ownership rows lag behind the shared document.
+    if meta.get("joined_via_invite") or meta.get("joined_via_live_draft") or meta.get("preassigned_live_draft_owner"):
+        my_team = str(context.get("my_team_name") or "").strip()
+        if my_team:
+            return True
     try:
         from fantasy_league_identity import resolve_canonical_league_id
         from fantasy_shared_league_store import load_shared_league
@@ -113,6 +120,26 @@ def _has_shared_league_membership(
             shared = load_shared_league(league_id)
             if isinstance(shared, dict) and owned_team_from_shared_doc(shared, session):
                 return True
+            # Accepted invites count as membership even before claim metadata lands locally.
+            try:
+                from fantasy_league_invites import INVITE_STATUS_ACCEPTED
+                from fantasy_shared_league_startup_sync import _record_matches_account, _resolve_startup_identity
+
+                uid, external, workspace = _resolve_startup_identity(session)
+                for invite in list(shared.get("league_invites") or []):
+                    if not isinstance(invite, dict):
+                        continue
+                    if str(invite.get("status") or "").strip() != INVITE_STATUS_ACCEPTED:
+                        continue
+                    if _record_matches_account(
+                        invite,
+                        user_id=uid or user_id,
+                        external_id=external,
+                        workspace_id=workspace,
+                    ):
+                        return True
+            except ImportError:
+                pass
     except ImportError:
         pass
     return False

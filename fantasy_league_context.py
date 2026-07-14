@@ -1240,6 +1240,7 @@ def stash_league_context_save_flash(
         "player_count": archive_my_team_player_count(entry, context=context),
         "league_save": bool(league_save),
         "coverage": league_context_coverage_badge(context),
+        "offer_set_active": True,
     }
 
 

@@ -1356,11 +1356,33 @@ def restore_active_draft_archive_selection(
     if not isinstance(merged_archives, list):
         merged_archives = []
 
+    # Prefer a visible session active id before cloud/disk. Immediately after Set Active,
+    # cloud may still hold a stale selection; preferring cloud would silently undo activation.
+    session_active = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    if session_active:
+        if session_active not in visible_ids and _repair_canonical_archive_if_needed(session_active):
+            visible_ids = _refresh_visible()
+        if session_active in visible_ids:
+            session[ACTIVE_DRAFT_ARCHIVE_KEY] = session_active
+            trace["active_source"] = "session"
+            trace["restore_reason"] = "matched_session_active_to_visible_archive"
+            trace["session_active_after"] = session_active
+            session.pop("_suite_active_draft_restore_prompt", None)
+            session[ACTIVE_DRAFT_RESTORE_TRACE_KEY] = trace
+            return trace
+        if respect_canonical_membership and session_active in canonical_draft_ids:
+            session[ACTIVE_DRAFT_ARCHIVE_KEY] = session_active
+            trace["active_source"] = "session"
+            trace["restore_reason"] = "canonical_membership_preserved_active_archive"
+            trace["session_active_after"] = session_active
+            session.pop("_suite_active_draft_restore_prompt", None)
+            session[ACTIVE_DRAFT_RESTORE_TRACE_KEY] = trace
+            return trace
+
     for source_name, candidate in (
         ("cloud", cloud_state.get(ACTIVE_DRAFT_ARCHIVE_KEY)),
         ("disk", disk_state.get(ACTIVE_DRAFT_ARCHIVE_KEY)),
         ("incoming", incoming_state.get(ACTIVE_DRAFT_ARCHIVE_KEY)),
-        ("session", session.get(ACTIVE_DRAFT_ARCHIVE_KEY)),
     ):
         cid = str(candidate or "").strip()
         if not cid:
