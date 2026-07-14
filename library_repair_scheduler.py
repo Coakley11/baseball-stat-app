@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-LIBRARY_REPAIR_VERSION = 2
+LIBRARY_REPAIR_VERSION = 3
+
 LIBRARY_REPAIR_DONE_KEY = "_library_repair_scheduler_done_v"
 LIBRARY_DIRTY_KEY = "_library_repair_dirty"
 LIBRARY_MANIFEST_REV_KEY = "_library_manifest_revision"

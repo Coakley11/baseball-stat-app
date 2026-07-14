@@ -7,10 +7,12 @@ import unittest
 from unittest.mock import patch
 
 from draft_archive_state import DRAFT_ARCHIVE_KEY, DRAFT_TYPE_IMPORTED, DRAFT_TYPE_LIVE
+from draft_archive_state import draft_type_display
 from fantasy_creation_origin_repair import (
     KNOWN_MISCLASSIFIED_IMPORT_DRAFTS,
     repair_incorrect_creation_origin,
     repair_known_misclassified_import_origins,
+    repair_poisoned_live_draft_creation_origins,
 )
 from fantasy_league_context import (
     CREATION_ORIGIN_LIVE_DRAFT_ROOM,
@@ -18,6 +20,7 @@ from fantasy_league_context import (
     FANTASY_LEAGUE_CONTEXT_STATE_KEY,
     apply_draft_origin_to_context,
     context_id_for_archive,
+    repair_archive_draft_types_from_contexts,
     resolve_archive_draft_type_with_reason,
     stamp_immutable_creation_origin,
     upsert_league_context,
@@ -170,6 +173,89 @@ class CreationOriginRepairTests(unittest.TestCase):
             KNOWN_MISCLASSIFIED_IMPORT_DRAFTS["3ce50b4f2e8b"]["repair_reason"],
             "known_legacy_import_misclassified_as_live",
         )
+
+    def test_poisoned_live_created_from_overrides_validated_import_origin(self) -> None:
+        """Legacy Live Draft Shared League: creation_origin poisoned, created_from intact."""
+        draft_id = "a1b2c3d4e5f6"  # not in KNOWN_LIVE_DRAFT_DRAFTS
+        ctx = {
+            "league_context_id": context_id_for_archive(draft_id),
+            "context_type": "real_league",
+            "source": "imported_draft",
+            "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+            "display_name": "Ten Pick Live League",
+            "my_team_name": "Team 1",
+            "metadata": {
+                "source_draft_id": draft_id,
+                "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+                "created_from": "live_draft",
+                "source_draft_type": "imported_draft",
+                "source_room_code": "ROOM10",
+                "league_id": f"league:{draft_id}",
+            },
+            "league_rosters": {
+                "Team 1": {"players": [{"player_name": "P1"}]},
+                "Team 2": {"players": [{"player_name": "P2"}]},
+            },
+        }
+        archive = {
+            "draft_id": draft_id,
+            "draft_type": DRAFT_TYPE_IMPORTED,
+            "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+            "draft_name": "Ten Pick Live League",
+            "league_context_id": context_id_for_archive(draft_id),
+        }
+        draft_type, reason, _ = resolve_archive_draft_type_with_reason(
+            context=ctx, archive_entry=archive
+        )
+        self.assertEqual(draft_type, DRAFT_TYPE_LIVE)
+        self.assertEqual(reason, "poisoned_import_origin_overridden_by_live_created_from")
+
+        session = _session()
+        session[DRAFT_ARCHIVE_KEY] = [copy.deepcopy(archive)]
+        upsert_league_context(session, copy.deepcopy(ctx))
+        traces = repair_poisoned_live_draft_creation_origins(session)
+        self.assertTrue(traces)
+        entry = session[DRAFT_ARCHIVE_KEY][0]
+        self.assertEqual(entry["draft_type"], DRAFT_TYPE_LIVE)
+        self.assertEqual(entry["creation_origin"], CREATION_ORIGIN_LIVE_DRAFT_ROOM)
+        self.assertEqual(draft_type_display(entry), "Live Draft")
+
+    def test_library_repair_flips_legacy_live_badge_without_known_id(self) -> None:
+        draft_id = "f6e5d4c3b2a1"
+        session = _session()
+        session[DRAFT_ARCHIVE_KEY] = [
+            {
+                "draft_id": draft_id,
+                "draft_type": DRAFT_TYPE_IMPORTED,
+                "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+                "league_context_id": context_id_for_archive(draft_id),
+                "draft_name": "Fresh Live Shared League",
+            }
+        ]
+        upsert_league_context(
+            session,
+            {
+                "league_context_id": context_id_for_archive(draft_id),
+                "context_type": "real_league",
+                "source": "imported_draft",
+                "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+                "my_team_name": "Team 1",
+                "metadata": {
+                    "source_draft_id": draft_id,
+                    "creation_origin": CREATION_ORIGIN_VALIDATED_IMPORT,
+                    "created_from": "live_draft",
+                    "source_draft_type": "imported_draft",
+                },
+                "league_rosters": {"Team 1": {"players": []}, "Team 2": {"players": []}},
+            },
+        )
+        with patch("fantasy_shared_league_store.load_shared_league", return_value=None), patch(
+            "fantasy_shared_league_store.save_shared_league"
+        ):
+            repair_archive_draft_types_from_contexts(session)
+        entry = session[DRAFT_ARCHIVE_KEY][0]
+        self.assertEqual(entry["draft_type"], DRAFT_TYPE_LIVE)
+        self.assertEqual(draft_type_display(entry), "Live Draft")
 
 
 if __name__ == "__main__":

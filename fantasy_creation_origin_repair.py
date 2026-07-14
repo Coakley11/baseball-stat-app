@@ -158,8 +158,107 @@ def repair_known_canonical_live_draft_origins(session: dict[str, Any]) -> list[d
     return traces
 
 
+def repair_poisoned_live_draft_creation_origins(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """Correct Live Draft leagues whose creation_origin/draft_type were poisoned as import.
+
+    Detects `created_from=live_draft` (or source_room_code) while archive/context still
+    carries validated_import / imported_draft labels. Generic — not draft-id hardcoding.
+    """
+    from draft_archive_state import DRAFT_ARCHIVE_KEY, DRAFT_TYPE_IMPORTED, get_draft_archive
+    from fantasy_league_context import (
+        CREATION_ORIGIN_LIVE_DRAFT_ROOM,
+        CREATION_ORIGIN_VALIDATED_IMPORT,
+        _canonical_live_created_from,
+        context_id_for_archive,
+        get_league_context,
+        list_league_contexts,
+        read_immutable_creation_origin,
+    )
+
+    traces: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _maybe_repair(draft_id: str, *, context: dict | None, archive: dict | None, shared: dict | None) -> None:
+        draft_id = str(draft_id or "").strip()
+        if not draft_id or draft_id in seen:
+            return
+        if not _canonical_live_created_from(context=context, shared_doc=shared, archive_entry=archive):
+            return
+        origin = read_immutable_creation_origin(
+            context=context, shared_doc=shared, archive_entry=archive
+        )
+        archive_type = str((archive or {}).get("draft_type") or "").strip()
+        poisoned = origin == CREATION_ORIGIN_VALIDATED_IMPORT or archive_type == DRAFT_TYPE_IMPORTED
+        if not poisoned:
+            return
+        seen.add(draft_id)
+        traces.append(
+            repair_incorrect_creation_origin(
+                session,
+                draft_id=draft_id,
+                verified_origin=CREATION_ORIGIN_LIVE_DRAFT_ROOM,
+                repair_reason="poisoned_import_origin_live_created_from",
+            )
+        )
+
+    for ctx in list_league_contexts(session):
+        if not isinstance(ctx, dict):
+            continue
+        meta = dict(ctx.get("metadata") or {})
+        draft_id = str(meta.get("source_draft_id") or "").strip()
+        if not draft_id:
+            cid = str(ctx.get("league_context_id") or "")
+            if cid.startswith("archive:"):
+                draft_id = cid.split(":", 1)[-1].strip()
+        archive = get_draft_archive(session, draft_id) if draft_id else None
+        shared = None
+        try:
+            from fantasy_league_identity import resolve_canonical_league_id
+            from fantasy_shared_league_store import load_shared_league
+
+            league_id = str(resolve_canonical_league_id(ctx) or "").strip()
+            if league_id:
+                shared = load_shared_league(league_id)
+        except ImportError:
+            shared = None
+        _maybe_repair(
+            draft_id,
+            context=ctx,
+            archive=archive if isinstance(archive, dict) else None,
+            shared=shared if isinstance(shared, dict) else None,
+        )
+
+    entries = session.get(DRAFT_ARCHIVE_KEY)
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            draft_id = str(entry.get("draft_id") or "").strip()
+            linked = str(entry.get("league_context_id") or "").strip() or context_id_for_archive(draft_id)
+            ctx = get_league_context(session, linked)
+            shared = None
+            if isinstance(ctx, dict):
+                try:
+                    from fantasy_league_identity import resolve_canonical_league_id
+                    from fantasy_shared_league_store import load_shared_league
+
+                    league_id = str(resolve_canonical_league_id(ctx) or "").strip()
+                    if league_id:
+                        shared = load_shared_league(league_id)
+                except ImportError:
+                    shared = None
+            _maybe_repair(
+                draft_id,
+                context=ctx if isinstance(ctx, dict) else None,
+                archive=entry,
+                shared=shared if isinstance(shared, dict) else None,
+            )
+    return traces
+
+
 def repair_known_canonical_creation_origins(session: dict[str, Any]) -> list[dict[str, Any]]:
     """Run all guarded canonical provenance repairs."""
     traces = repair_known_misclassified_import_origins(session)
     traces.extend(repair_known_canonical_live_draft_origins(session))
+    traces.extend(repair_poisoned_live_draft_creation_origins(session))
     return traces

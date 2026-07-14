@@ -214,7 +214,15 @@ class DraftOriginDiagnosticsImportTests(unittest.TestCase):
             self.assertEqual(draft_type_display(entry), "Live Draft")
             self.assertEqual(entry.get("team_name"), "Team B")
             diag = session.get(DRAFT_ORIGIN_REPAIR_DIAG_KEY) or {}
-            self.assertEqual(diag.get("selected_reason"), "strong_live_draft_membership")
+            self.assertIn(
+                diag.get("selected_reason"),
+                {
+                    "strong_live_draft_membership",
+                    "immutable_creation_origin_live_draft_room",
+                    "canonical_created_from_live_draft",
+                    "poisoned_import_origin_overridden_by_live_created_from",
+                },
+            )
             repair_archive_draft_types_from_contexts(session)
             self.assertEqual(draft_type_display(entry), "Live Draft")
             st = _mock_st()
@@ -241,7 +249,15 @@ class DraftOriginDiagnosticsImportTests(unittest.TestCase):
         archive = {"draft_id": DRAFT_ID, "draft_type": DRAFT_TYPE_LIVE, "team_name": "Donny"}
         draft_type, reason, _ = resolve_archive_draft_type_with_reason(context=context, archive_entry=archive)
         self.assertEqual(draft_type, DRAFT_TYPE_LIVE)
-        self.assertIn(reason, {"context_explicit_live_origin", "canonical_shared_live_origin", "strong_live_draft_membership"})
+        self.assertIn(
+            reason,
+            {
+                "context_explicit_live_origin",
+                "canonical_shared_live_origin",
+                "strong_live_draft_membership",
+                "canonical_created_from_live_draft",
+            },
+        )
 
 
 if __name__ == "__main__":

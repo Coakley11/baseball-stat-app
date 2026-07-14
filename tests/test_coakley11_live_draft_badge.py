@@ -247,7 +247,14 @@ class Coakley11LiveDraftBadgeTests(unittest.TestCase):
             session=session,
         )
         self.assertEqual(draft_type, DRAFT_TYPE_LIVE)
-        self.assertEqual(selected_reason, "immutable_creation_origin_live_draft_room")
+        self.assertIn(
+            selected_reason,
+            {
+                "immutable_creation_origin_live_draft_room",
+                "canonical_created_from_live_draft",
+                "poisoned_import_origin_overridden_by_live_created_from",
+            },
+        )
 
     def test_poisoned_production_state_repairs_all_layers_in_place(self) -> None:
         session = _cio11_session()
@@ -276,7 +283,12 @@ class Coakley11LiveDraftBadgeTests(unittest.TestCase):
         diag = session.get("_draft_origin_repair_diag") or {}
         self.assertIn(
             diag.get("selected_reason"),
-            {"immutable_creation_origin_live_draft_room", "strong_live_draft_membership"},
+            {
+                "immutable_creation_origin_live_draft_room",
+                "strong_live_draft_membership",
+                "canonical_created_from_live_draft",
+                "poisoned_import_origin_overridden_by_live_created_from",
+            },
         )
 
     def test_existing_coakley11_archive_repaired_in_place(self) -> None:

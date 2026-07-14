@@ -2447,6 +2447,35 @@ def _strong_live_draft_membership(evidence: dict[str, Any]) -> bool:
     )
 
 
+def _canonical_live_created_from(
+    *,
+    context: dict[str, Any] | None = None,
+    shared_doc: dict[str, Any] | None = None,
+    archive_entry: dict[str, Any] | None = None,
+) -> bool:
+    """True when a Live Draft creation event is still present (`created_from=live_draft`)."""
+    blobs: list[dict[str, Any]] = []
+    if isinstance(shared_doc, dict):
+        blobs.append(shared_doc)
+        meta = shared_doc.get("metadata")
+        if isinstance(meta, dict):
+            blobs.append(meta)
+    if isinstance(context, dict):
+        blobs.append(context)
+        meta = context.get("metadata")
+        if isinstance(meta, dict):
+            blobs.append(meta)
+    if isinstance(archive_entry, dict):
+        blobs.append(archive_entry)
+    for blob in blobs:
+        created_from = str(blob.get("created_from") or "").strip().lower()
+        if created_from == "live_draft":
+            return True
+        if str(blob.get("source_room_code") or "").strip():
+            return True
+    return False
+
+
 def resolve_archive_draft_type_with_reason(
     *,
     context: dict[str, Any] | None = None,
@@ -2467,6 +2496,12 @@ def resolve_archive_draft_type_with_reason(
     if context_type == CONTEXT_TYPE_LIVE_DRAFT_RESULT:
         return DRAFT_TYPE_LIVE, "live_draft_result_context", evidence
     creation_origin = str(evidence.get("creation_origin") or "").strip()
+    # Live Draft Shared Leagues keep created_from=live_draft even when a bad
+    # repair stamped creation_origin/source as import. Prefer the creation event.
+    if _canonical_live_created_from(context=context, shared_doc=shared_doc, archive_entry=archive_entry):
+        if creation_origin == CREATION_ORIGIN_VALIDATED_IMPORT:
+            return DRAFT_TYPE_LIVE, "poisoned_import_origin_overridden_by_live_created_from", evidence
+        return DRAFT_TYPE_LIVE, "canonical_created_from_live_draft", evidence
     if creation_origin == CREATION_ORIGIN_VALIDATED_IMPORT:
         return DRAFT_TYPE_IMPORTED, "immutable_creation_origin_validated_import", evidence
     if creation_origin == CREATION_ORIGIN_LIVE_DRAFT_ROOM:
@@ -2517,7 +2552,9 @@ def repair_canonical_shared_doc_origin_in_place(
     draft_type: str,
 ) -> dict[str, Any] | None:
     """Repair canonical shared origin metadata when Live Draft evidence is confirmed."""
-    if read_immutable_creation_origin(context=context, shared_doc=shared_doc) == CREATION_ORIGIN_VALIDATED_IMPORT:
+    existing_origin = read_immutable_creation_origin(context=context, shared_doc=shared_doc)
+    live_created = _canonical_live_created_from(context=context, shared_doc=shared_doc)
+    if existing_origin == CREATION_ORIGIN_VALIDATED_IMPORT and not live_created:
         return None
     if draft_type != DRAFT_TYPE_LIVE:
         return None
@@ -2526,9 +2563,12 @@ def repair_canonical_shared_doc_origin_in_place(
         "context_explicit_live_origin",
         "canonical_shared_live_origin",
         "immutable_creation_origin_live_draft_room",
+        "canonical_created_from_live_draft",
+        "poisoned_import_origin_overridden_by_live_created_from",
     }:
         return None
-    if _shared_origin_fields_are_live(shared_doc):
+    already_live = _shared_origin_fields_are_live(shared_doc) and existing_origin == CREATION_ORIGIN_LIVE_DRAFT_ROOM
+    if already_live:
         return shared_doc
     try:
         from fantasy_shared_league_store import get_shared_league_store
@@ -2549,14 +2589,17 @@ def repair_canonical_shared_doc_origin_in_place(
         "created_from": str(repaired.get("created_from") or "").strip(),
         "source_draft_type": str(repaired.get("source_draft_type") or "").strip(),
         "source": str(repaired.get("source") or "").strip(),
+        "creation_origin": existing_origin,
     }
     repaired["created_from"] = "live_draft"
     repaired["source_draft_type"] = DRAFT_TYPE_LIVE
     repaired["source"] = SOURCE_LIVE_DRAFT_ROOM
+    repaired["creation_origin"] = CREATION_ORIGIN_LIVE_DRAFT_ROOM
     repaired_meta = dict(repaired.get("metadata") or {})
     repaired_meta["created_from"] = "live_draft"
     repaired_meta["source_draft_type"] = DRAFT_TYPE_LIVE
     repaired_meta["source"] = SOURCE_LIVE_DRAFT_ROOM
+    repaired_meta["creation_origin"] = CREATION_ORIGIN_LIVE_DRAFT_ROOM
     repaired["metadata"] = repaired_meta
     backend = get_shared_league_store()
     saved = backend.save(repaired)
@@ -2566,6 +2609,7 @@ def repair_canonical_shared_doc_origin_in_place(
         "created_from": "live_draft",
         "source_draft_type": DRAFT_TYPE_LIVE,
         "source": SOURCE_LIVE_DRAFT_ROOM,
+        "creation_origin": CREATION_ORIGIN_LIVE_DRAFT_ROOM,
     }
     session["_draft_origin_repair_diag"] = trace
     return saved if isinstance(saved, dict) else repaired
@@ -2682,6 +2726,27 @@ def apply_draft_origin_to_context(
         out["source"] = SOURCE_LIVE_DRAFT_ROOM
         meta["created_from"] = "live_draft"
         meta["source_draft_type"] = DRAFT_TYPE_LIVE
+        # Force-correct poisoned immutable origin left by earlier repair/backfill.
+        if (
+            str(meta.get("creation_origin") or out.get("creation_origin") or "").strip()
+            == CREATION_ORIGIN_VALIDATED_IMPORT
+            and (
+                selected_reason
+                in {
+                    "poisoned_import_origin_overridden_by_live_created_from",
+                    "canonical_created_from_live_draft",
+                }
+                or _canonical_live_created_from(
+                    context=out, shared_doc=shared_doc, archive_entry=archive_entry
+                )
+            )
+        ):
+            meta["creation_origin"] = CREATION_ORIGIN_LIVE_DRAFT_ROOM
+            out["creation_origin"] = CREATION_ORIGIN_LIVE_DRAFT_ROOM
+        else:
+            meta = stamp_immutable_creation_origin(meta, CREATION_ORIGIN_LIVE_DRAFT_ROOM)
+            if not str(out.get("creation_origin") or "").strip():
+                out["creation_origin"] = str(meta.get("creation_origin") or "") or CREATION_ORIGIN_LIVE_DRAFT_ROOM
     elif draft_type == DRAFT_TYPE_IMPORTED:
         out["source"] = SOURCE_IMPORTED_DRAFT
         meta["source_draft_type"] = DRAFT_TYPE_IMPORTED
@@ -2742,10 +2807,29 @@ def repair_archive_draft_type_for_entry(
         session=session,
     )
     current = str(entry.get("draft_type") or "").strip()
-    if current == expected:
-        return entry
     repaired = dict(entry)
-    repaired["draft_type"] = expected
+    changed = False
+    if current != expected:
+        repaired["draft_type"] = expected
+        changed = True
+    if expected == DRAFT_TYPE_LIVE:
+        origin = read_immutable_creation_origin(
+            context=ctx if isinstance(ctx, dict) else None,
+            shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
+            archive_entry=repaired,
+        )
+        if origin == CREATION_ORIGIN_VALIDATED_IMPORT and _canonical_live_created_from(
+            context=ctx if isinstance(ctx, dict) else None,
+            shared_doc=shared_doc if isinstance(shared_doc, dict) else None,
+            archive_entry=repaired,
+        ):
+            repaired["creation_origin"] = CREATION_ORIGIN_LIVE_DRAFT_ROOM
+            changed = True
+        elif not str(repaired.get("creation_origin") or "").strip():
+            repaired["creation_origin"] = CREATION_ORIGIN_LIVE_DRAFT_ROOM
+            changed = True
+    if not changed:
+        return entry
     entries = session.get(DRAFT_ARCHIVE_KEY)
     if isinstance(entries, list):
         session[DRAFT_ARCHIVE_KEY] = [
@@ -2833,15 +2917,19 @@ def repair_archive_draft_types_from_contexts(session: dict[str, Any]) -> int:
             "archive_type_after": expected,
             **dict(session.get(DRAFT_ORIGIN_REPAIR_DIAG_KEY) or {}),
         }
-        if str(entry.get("draft_type") or "").strip() == expected:
-            continue
-        repair_archive_draft_type_for_entry(
+        before_type = str(entry.get("draft_type") or "").strip()
+        updated_entry = repair_archive_draft_type_for_entry(
             session,
             entry,
             context=ctx if isinstance(ctx, dict) else None,
         )
         session[DRAFT_ORIGIN_REPAIR_DIAG_KEY]["archive_type_after"] = expected
-        repaired += 1
+        if before_type != expected or (
+            expected == DRAFT_TYPE_LIVE
+            and str(updated_entry.get("creation_origin") or "") == CREATION_ORIGIN_LIVE_DRAFT_ROOM
+            and str(entry.get("creation_origin") or "") == CREATION_ORIGIN_VALIDATED_IMPORT
+        ):
+            repaired += 1
     if repaired:
         try:
             from workflow_persist_guard import mark_workflow_persist_authoritative
