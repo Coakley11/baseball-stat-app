@@ -334,20 +334,36 @@ def apply_draft_pick_scoring(
         available = ensure_draft_scoring_pool_columns(available)
     except ImportError:
         pass
-    scored = available.copy()
     roster_df = roster_df if roster_df is not None else pd.DataFrame()
     target_counts = target_counts or {}
     try:
-        from live_draft_roster_slots import get_active_position_codes, get_league_remaining_demand
+        from live_draft_roster_slots import (
+            exclude_pitchers_when_no_pitcher_slots,
+            filter_candidates_to_legal_roster_positions,
+            get_active_position_codes,
+            get_league_remaining_demand,
+        )
 
         slot_cfg = {"slots": target_counts}
         if room and isinstance(room.get("config"), dict):
             slot_cfg = dict(room["config"])
+        # Hard gate: illegal / exhausted positions never enter scoring, survival, or auto-pick.
+        available = filter_candidates_to_legal_roster_positions(
+            available,
+            config=slot_cfg,
+            room=room,
+            respect_league_remaining_demand=True,
+        )
+        available = exclude_pitchers_when_no_pitcher_slots(available, config=slot_cfg)
         active_positions = get_active_position_codes(slot_cfg)
         league_demand = get_league_remaining_demand(room, slot_cfg)
     except ImportError:
+        slot_cfg = {"slots": target_counts}
         active_positions = {p for p, n in target_counts.items() if int(n or 0) > 0 and p != "BN"}
         league_demand = {}
+    scored = available.copy() if available is not None else pd.DataFrame()
+    if scored.empty:
+        return (scored, []) if not return_position_summary else (scored, [], [])
     gaps = _live_draft_roster_needs(roster_df, target_counts, config={"slots": target_counts})
     if needed_positions is None:
         needed_positions = gaps if gaps else []
@@ -535,6 +551,7 @@ def score_available_for_rule(available, roster_df, rule, target_counts, config=N
         needed_positions=config.get("needed_positions"),
         use_ml_blend=bool(config.get("use_ml_blend", False)),
         ml_blend_weight=float(config.get("ml_blend_weight", 0) or 0),
+        room=config.get("room") if isinstance(config.get("room"), dict) else None,
     )
     scored = enrich_player_survival_metrics(
         scored,

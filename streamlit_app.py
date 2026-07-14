@@ -22727,9 +22727,10 @@ if active_page == "Live Draft Room":
             st.markdown(f"**Time on clock:** {remaining}s *(timer paused — draft state recovery)*")
 
         st.markdown('<div class="live-draft-action-row">', unsafe_allow_html=True)
-        ctrl1, ctrl2 = st.columns(2)
+        _status = str(room.get("status") or "")
+        ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
         with ctrl1:
-            if st.button("⏸ Pause Draft", disabled=room.get("status") != "in_progress", key="live_draft_pause"):
+            if st.button("⏸ Pause Draft", disabled=_status != "in_progress", key="live_draft_pause"):
                 from live_draft_timer_logic import live_draft_clear_timer
 
                 room["paused_remaining_seconds"] = live_draft_seconds_remaining(room)
@@ -22743,7 +22744,7 @@ if active_page == "Live Draft Room":
                 except ImportError:
                     st.rerun()
         with ctrl2:
-            if st.button("▶ Resume Draft", disabled=room.get("status") != "paused", key="live_draft_resume", type="primary"):
+            if st.button("▶ Resume Draft", disabled=_status != "paused", key="live_draft_resume", type="primary"):
                 from live_draft_timer_logic import live_draft_resume_timer
 
                 room["status"] = "in_progress"
@@ -22756,14 +22757,53 @@ if active_page == "Live Draft Room":
                     request_live_draft_rerun(st, st.session_state, "resume_draft", room=room)
                 except ImportError:
                     st.rerun()
+        with ctrl3:
+            if st.button(
+                "🗑 Delete Draft",
+                key="live_draft_delete_btn",
+                help="Delete this Live Draft session and return to Create / Join.",
+            ):
+                st.session_state["_live_draft_delete_confirm"] = True
+        with ctrl4:
+            try:
+                from live_draft_completion import on_end_live_draft_session
+
+                st.button(
+                    "End Draft",
+                    key="live_draft_end_btn",
+                    help="End this Live Draft session. Saved drafts and Shared Leagues are preserved.",
+                    on_click=on_end_live_draft_session,
+                )
+            except ImportError:
+                pass
+        if st.session_state.get("_live_draft_delete_confirm"):
+            st.warning("Delete this Live Draft session? The in-progress room will be cleared. Saved Draft Library and Shared Leagues are not deleted.")
+            confirm_col, cancel_col = st.columns(2)
+            with confirm_col:
+                if st.button("Yes, delete this draft", key="live_draft_delete_confirm_btn", type="primary"):
+                    from draft_room_membership import reset_live_draft_with_membership_guard
+
+                    st.session_state.pop("_live_draft_delete_confirm", None)
+                    ok, msg = reset_live_draft_with_membership_guard(
+                        st.session_state, st_obj=st, reason="abandon_live_draft"
+                    )
+                    if ok:
+                        st.success("Live draft deleted.")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            with cancel_col:
+                if st.button("Cancel", key="live_draft_delete_cancel_btn"):
+                    st.session_state.pop("_live_draft_delete_confirm", None)
+                    st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
         with st.expander("Advanced draft controls", expanded=False):
             adv1, adv2 = st.columns(2)
             with adv1:
-                if st.button("↻ Reset Timer", disabled=room.get("status") != "in_progress", key="live_draft_reset_timer"):
+                if st.button("↻ Reset Timer", disabled=_status != "in_progress", key="live_draft_reset_timer"):
                     live_draft_reset_timer(room)
                     _persist_live_draft_room(room, reason="reset_timer")
-                if st.button("⚡ Auto Pick Now", disabled=room.get("status") not in ("in_progress", "paused"), key="live_draft_auto_now"):
+                if st.button("⚡ Auto Pick Now", disabled=_status not in ("in_progress", "paused"), key="live_draft_auto_now"):
                     if room.get("status") == "paused":
                         room["status"] = "in_progress"
                     ok, msg = live_draft_auto_pick(room, st.session_state)
@@ -22789,22 +22829,6 @@ if active_page == "Live Draft Room":
                         st.warning(msg)
                     _persist_live_draft_room(room, reason="auto_pick")
             with adv2:
-                if room.get("status") in ("in_progress", "paused", "not_started"):
-                    if st.button(
-                        "🗑 Delete Draft",
-                        key="live_draft_abandon_btn",
-                        help="Abandon this live draft and return ownership to the Draft Room Simulator.",
-                    ):
-                        from draft_room_membership import reset_live_draft_with_membership_guard
-
-                        ok, msg = reset_live_draft_with_membership_guard(
-                            st.session_state, st_obj=st, reason="abandon_live_draft"
-                        )
-                        if ok:
-                            st.success("Live draft deleted.")
-                            st.rerun()
-                        else:
-                            st.error(msg)
                 try:
                     from draft_room_context import leave_shared_draft_room
 

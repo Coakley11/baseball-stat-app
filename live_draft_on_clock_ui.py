@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from live_draft_timer_logic import live_draft_current_slot, live_draft_display_seconds, live_draft_timer_deadline
-from live_draft_timer_ui import _mount_js_countdown, _resolve_live_room, record_timer_diagnostics
+from live_draft_timer_ui import _resolve_live_room, record_timer_diagnostics
 
 
 def _team_accent(team: str) -> str:
@@ -16,11 +16,39 @@ def _team_accent(team: str) -> str:
     return f"#{digest[:6]}"
 
 
-def _emit_banner_html(st: Any, html: str, *, height: int = 210) -> None:
-    """Render banner HTML via components.html so fragments do not show escaped markup."""
+def _emit_banner_html(
+    st: Any,
+    html: str,
+    *,
+    height: int = 210,
+    deadline: float | None = None,
+    timer_id: str = "",
+) -> None:
+    """Render banner + countdown in one iframe (Control Center pattern).
+
+    A separate script iframe cannot update the timer node via parent.document —
+    that left the blue card stuck on ``--`` while Draft Control Center counted down.
+    """
     try:
         import streamlit.components.v1 as components
 
+        countdown_script = ""
+        if deadline is not None and timer_id:
+            countdown_script = f"""
+            <script>
+            (function() {{
+              const deadline = {float(deadline)};
+              const el = document.getElementById("{timer_id}");
+              if (!el) return;
+              function tick() {{
+                const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
+                el.textContent = String(rem);
+                if (rem > 0) window.setTimeout(tick, 250);
+              }}
+              tick();
+            }})();
+            </script>
+            """
         components.html(
             f"""
             <style>
@@ -73,9 +101,10 @@ def _emit_banner_html(st: Any, html: str, *, height: int = 210) -> None:
                 opacity: 0.8;
               }}
               .live-draft-on-clock .live-draft-timer {{
-                font-size: 28px;
-                font-weight: 800;
+                font-size: 36px;
+                font-weight: 900;
                 font-variant-numeric: tabular-nums;
+                line-height: 1;
               }}
               .live-draft-on-clock.ld-on-clock-flash {{
                 animation: ldFlash 0.9s ease-in-out 2;
@@ -86,6 +115,7 @@ def _emit_banner_html(st: Any, html: str, *, height: int = 210) -> None:
               }}
             </style>
             {html}
+            {countdown_script}
             """,
             height=height,
         )
@@ -116,10 +146,12 @@ def _render_on_clock_banner_html(
     next_txt = f'<div class="ld-next-pick">Your next pick: #{next_pick}</div>' if next_pick else ""
     accent = _team_accent(str(team))
     timer_id = f"ld-banner-timer-{pick_index}"
+    # Seed with current remaining so the card never shows a stuck "--".
+    seed = max(0, int(remaining))
     timer_html = (
-        f'<span id="{timer_id}" class="live-draft-timer">--</span>'
+        f'<span id="{timer_id}" class="live-draft-timer">{seed}</span>'
         if deadline is not None
-        else f'<span class="live-draft-timer">{int(remaining)}s</span>'
+        else f'<span class="live-draft-timer">{seed}</span>'
     )
     flash_class = " ld-on-clock-flash" if flash else ""
     html = f"""
@@ -137,16 +169,13 @@ def _render_on_clock_banner_html(
             </div>
         </div>
         """
-    _emit_banner_html(st, html, height=220 if next_pick else 190)
-    if deadline is not None:
-        _mount_js_countdown(
-            st,
-            float(deadline),
-            pick_index=pick_index,
-            element_id=timer_id,
-            height=0,
-            source="on_clock_banner",
-        )
+    _emit_banner_html(
+        st,
+        html,
+        height=220 if next_pick else 190,
+        deadline=float(deadline) if deadline is not None else None,
+        timer_id=timer_id if deadline is not None else "",
+    )
 
 
 def render_live_on_clock_banner(

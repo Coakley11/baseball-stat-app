@@ -455,8 +455,8 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
             mark_live_draft_timer_tick,
         )
 
-        if source == "timer_fragment":
-            # Pure timer ticks skip expensive recommendation recompute.
+        if source in ("timer_fragment", "timer_fragment_zero"):
+            # Timer / zero-cross ticks stay light; page_autopick forces rebuild after pick.
             mark_live_draft_timer_tick(session)
         elif source == "poll_fragment":
             # Shared-board poll changed state — must rebuild recommendations.
@@ -464,6 +464,7 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
         elif source in (
             "manual_pick",
             "auto_pick",
+            "page_autopick",
             "live_draft_queue",
             "pause_draft",
             "resume_draft",

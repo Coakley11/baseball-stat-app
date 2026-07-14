@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from live_draft_pick_scoring import _draft_compute_position_replacement
+from live_draft_pick_scoring import _draft_compute_position_replacement, apply_draft_pick_scoring
 from live_draft_roster_slots import (
+    filter_candidates_to_legal_roster_positions,
     freeze_slot_instances_on_config,
     format_open_position_needs,
     get_active_draft_roster_slots,
@@ -418,6 +419,56 @@ class LiveDraftRosterSlotsTests(unittest.TestCase):
         util_line = next(ln for ln in checklist["lines"] if ln["label"] == "UTIL")
         self.assertTrue(util_line["filled"])
         self.assertEqual(checklist["filled"], 5)
+
+    def test_illegal_of_excluded_when_slots_are_1b_3b_only(self) -> None:
+        cfg = freeze_slot_instances_on_config(
+            {"slots": {"C": 0, "1B": 1, "2B": 0, "3B": 1, "SS": 0, "OF": 0, "DH": 0, "P": 0, "BN": 0}}
+        )
+        pool = pd.DataFrame(
+            [
+                {"fullName": "Aaron Judge", "Primary Position": "OF", "Expected Fantasy Value": 0.99},
+                {"fullName": "Matt Olson", "Primary Position": "1B", "Expected Fantasy Value": 0.80},
+                {"fullName": "Austin Riley", "Primary Position": "3B", "Expected Fantasy Value": 0.78},
+                {"fullName": "Jose Ramirez", "Primary Position": "3B", "Expected Fantasy Value": 0.85},
+            ]
+        )
+        filtered = filter_candidates_to_legal_roster_positions(pool, config=cfg, room=None)
+        names = set(filtered["fullName"].astype(str))
+        self.assertNotIn("Aaron Judge", names)
+        self.assertIn("Matt Olson", names)
+        self.assertIn("Austin Riley", names)
+        self.assertIn("Jose Ramirez", names)
+
+        scored, _gaps = apply_draft_pick_scoring(
+            pool,
+            pd.DataFrame(),
+            target_counts=get_required_position_counts(cfg),
+            room={"config": cfg, "teams": ["Team 1"], "rosters": {"Team 1": []}},
+        )
+        scored_names = set(scored["fullName"].astype(str)) if not scored.empty else set()
+        self.assertNotIn("Aaron Judge", scored_names)
+        self.assertTrue({"Matt Olson", "Austin Riley", "Jose Ramirez"} & scored_names)
+
+    def test_of_stopped_when_league_demand_exhausted(self) -> None:
+        cfg = freeze_slot_instances_on_config(
+            {"slots": {"C": 0, "1B": 0, "2B": 0, "3B": 0, "SS": 0, "OF": 1, "DH": 0, "P": 0, "BN": 0}}
+        )
+        room = {
+            "config": cfg,
+            "teams": ["Team 1", "Team 2"],
+            "rosters": {
+                "Team 1": [{"fullName": "OF1", "Primary Position": "OF"}],
+                "Team 2": [{"fullName": "OF2", "Primary Position": "OF"}],
+            },
+        }
+        pool = pd.DataFrame(
+            [
+                {"fullName": "Aaron Judge", "Primary Position": "OF", "Expected Fantasy Value": 0.99},
+                {"fullName": "Extra 1B", "Primary Position": "1B", "Expected Fantasy Value": 0.50},
+            ]
+        )
+        filtered = filter_candidates_to_legal_roster_positions(pool, config=cfg, room=room)
+        self.assertTrue(filtered.empty)
 
 
 if __name__ == "__main__":

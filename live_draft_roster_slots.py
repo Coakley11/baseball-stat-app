@@ -573,3 +573,70 @@ def exclude_pitchers_when_no_pitcher_slots(
         return df.copy()
     mask = ~df.apply(_is_pitcher_only_player_row, axis=1)
     return df.loc[mask].copy()
+
+
+def filter_candidates_to_legal_roster_positions(
+    df: pd.DataFrame | None,
+    *,
+    config: dict[str, Any] | None = None,
+    room: dict[str, Any] | None = None,
+    respect_league_remaining_demand: bool = True,
+) -> pd.DataFrame:
+    """Hard-drop players who cannot fill any configured (or still-open) roster slot.
+
+    - Positions with target 0 (e.g. OF=0) never appear in recommendations/auto-pick.
+    - When league-wide remaining demand for a position is 0, that position is also dropped
+      (every team's OF slots filled → stop recommending OF).
+    - BN>0 keeps BPA open for any non-illegal position via BN eligibility.
+    """
+    if df is None or getattr(df, "empty", True):
+        return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    cfg = dict(config or {})
+    if room and isinstance(room.get("config"), dict) and not cfg.get("slots"):
+        cfg = dict(room.get("config") or {})
+    if not cfg.get("slots") and not cfg.get("slot_instances"):
+        return df.copy()
+
+    active = get_active_position_codes(cfg, include_bench=True)
+    if not active:
+        return df.copy()
+
+    legal_positions = set(active)
+    demand: dict[str, int] = {}
+    demand_applied = False
+    if respect_league_remaining_demand and room is not None:
+        try:
+            demand = get_league_remaining_demand(room, cfg)
+        except Exception:
+            demand = {}
+        if demand:
+            demand_applied = True
+            # Keep BN always if configured; for non-bench slots require remaining demand > 0.
+            kept: set[str] = set()
+            for pos in legal_positions:
+                if pos == "BN":
+                    kept.add(pos)
+                    continue
+                if int(demand.get(pos, 0) or 0) > 0:
+                    kept.add(pos)
+            legal_positions = kept
+
+    if not legal_positions:
+        return df.iloc[0:0].copy()
+
+    def _row_legal(row: pd.Series) -> bool:
+        tokens = _player_position_tokens(row)
+        return any(_eligible_for_draft_slot(tokens, pos) for pos in legal_positions)
+
+    mask = df.apply(_row_legal, axis=1)
+    filtered = df.loc[mask].copy()
+    # Fall back only when demand map was unavailable/unusable — not when every
+    # configured slot is genuinely exhausted across the league.
+    if filtered.empty and not df.empty and respect_league_remaining_demand and not demand_applied:
+        return filter_candidates_to_legal_roster_positions(
+            df,
+            config=cfg,
+            room=room,
+            respect_league_remaining_demand=False,
+        )
+    return filtered

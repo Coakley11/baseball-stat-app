@@ -12,7 +12,9 @@ AUTOPICK_DIAG_KEY = "_live_draft_autopick_diag"
 AUTOPICK_ATTEMPTED_INDEX_KEY = "_live_draft_autopick_attempted_for_index"
 AUTOPICK_LOCK_KEY = "_live_draft_autopick_in_progress_lock"
 AUTOPICK_BACKOFF_INDEX_KEY = "_live_draft_autopick_failure_backoff_index"
+AUTOPICK_BACKOFF_UNTIL_KEY = "_live_draft_autopick_failure_backoff_until"
 AUTOPICK_ERROR_KEY = "_live_draft_autopick_error"
+AUTOPICK_RETRY_SECONDS = 5.0
 RERUN_LOOP_PREVENTED_KEY = "_live_draft_rerun_loop_prevented"
 EXPIRED_PICK_PENDING_KEY = "_live_draft_timer_expired_pending"
 
@@ -48,10 +50,28 @@ def autopick_attempted_for_index(session: dict[str, Any], room: dict[str, Any]) 
 
 
 def autopick_failure_backoff_active(session: dict[str, Any], room: dict[str, Any]) -> bool:
-    if not session.get(RERUN_LOOP_PREVENTED_KEY):
-        return False
+    """True while a short cooldown after a failed auto-pick is still in effect.
+
+    Permanent stall at 0s is not allowed — retries resume after AUTOPICK_RETRY_SECONDS.
+    """
+    import time
+
     backoff_idx = session.get(AUTOPICK_BACKOFF_INDEX_KEY)
-    return backoff_idx is not None and int(backoff_idx) == _pick_index(room)
+    if backoff_idx is None or int(backoff_idx) != _pick_index(room):
+        return False
+    until = session.get(AUTOPICK_BACKOFF_UNTIL_KEY)
+    if until is None:
+        # Legacy permanent backoff — convert to a short retry window.
+        session[AUTOPICK_BACKOFF_UNTIL_KEY] = time.time() + AUTOPICK_RETRY_SECONDS
+        return True
+    if float(until) > time.time():
+        return True
+    # Cooldown elapsed — allow another attempt for this pick index.
+    session.pop(AUTOPICK_BACKOFF_INDEX_KEY, None)
+    session.pop(AUTOPICK_BACKOFF_UNTIL_KEY, None)
+    session.pop(AUTOPICK_ATTEMPTED_INDEX_KEY, None)
+    session.pop(RERUN_LOOP_PREVENTED_KEY, None)
+    return False
 
 
 def should_suppress_expired_rerun(session: dict[str, Any], room: dict[str, Any]) -> bool:
@@ -114,6 +134,7 @@ def clear_autopick_state_for_pick_advance(session: dict[str, Any], new_index: in
     """Clear backoff/attempt locks after manual pick or successful auto-pick."""
     session.pop(AUTOPICK_ATTEMPTED_INDEX_KEY, None)
     session.pop(AUTOPICK_BACKOFF_INDEX_KEY, None)
+    session.pop(AUTOPICK_BACKOFF_UNTIL_KEY, None)
     session.pop(AUTOPICK_ERROR_KEY, None)
     session.pop(RERUN_LOOP_PREVENTED_KEY, None)
     session.pop(EXPIRED_PICK_PENDING_KEY, None)
@@ -145,9 +166,12 @@ def clear_autopick_backoff_for_manual(session: dict[str, Any], room: dict[str, A
 
 
 def _mark_autopick_failed(session: dict[str, Any], room: dict[str, Any], error: str) -> None:
+    import time
+
     idx = _pick_index(room)
     session[AUTOPICK_ATTEMPTED_INDEX_KEY] = idx
     session[AUTOPICK_BACKOFF_INDEX_KEY] = idx
+    session[AUTOPICK_BACKOFF_UNTIL_KEY] = time.time() + AUTOPICK_RETRY_SECONDS
     session[RERUN_LOOP_PREVENTED_KEY] = True
     session[AUTOPICK_ERROR_KEY] = error
     session.pop(EXPIRED_PICK_PENDING_KEY, None)
