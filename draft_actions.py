@@ -230,7 +230,11 @@ def _post_draft_side_effects(
     st_obj: Any = None,
     save_reason: str = "draft_player",
 ) -> dict[str, Any]:
-    """Queue cleanup, AMI cache invalidation, pending sync, optional force-save."""
+    """Queue cleanup, AMI cache invalidation, pending sync, optional force-save.
+
+    Phase 2 Live Draft: skip force_save / commit_live_draft_room on the critical path —
+    durable write is owned by live_draft_pick_persist deferred flush.
+    """
     trace: dict[str, Any] = {"saved": False, "queue_after": []}
     try:
         from draft_state import mark_draft_pending_sync, remove_player_from_draft_queue
@@ -243,6 +247,20 @@ def _post_draft_side_effects(
         trace["queue_after"] = list(session.get("draft_queue") or [])
 
     _clear_ami_draft_cache(session)
+
+    live_optimistic = False
+    try:
+        from draft_room_state import ACTIVE_DRAFT_SOURCE_LIVE, resolve_active_draft_source
+
+        live_optimistic = resolve_active_draft_source(session) == ACTIVE_DRAFT_SOURCE_LIVE
+    except ImportError:
+        live_optimistic = False
+
+    if live_optimistic:
+        # Defer workspace serialization — local board already advanced.
+        trace["saved"] = False
+        trace["deferred"] = True
+        return trace
 
     if st_obj is not None:
         try:
@@ -1244,6 +1262,7 @@ def _draft_live(
                 player_row,
                 source=source,
                 verdict=f"Draft ({source})",
+                optimistic=True,
             )
     except ImportError:
         commit = commit_manual_live_pick(
@@ -1252,6 +1271,7 @@ def _draft_live(
             player_row,
             source=source,
             verdict=f"Draft ({source})",
+            optimistic=True,
         )
     try:
         from live_draft_state import check_manual_commit_overwrite, is_live_draft_locally_dirty, record_manual_pick_snapshot
@@ -1302,7 +1322,7 @@ def _draft_live(
 
     room = session.get(LIVE_DRAFT_ROOM_KEY) or room
     result["ok"] = True
-    result["message"] = commit.message if commit.message != "Pick saved." else f"Drafted {player_name}."
+    result["message"] = commit.message if commit.message not in ("Pick saved.", "Pick applied.") else f"Drafted {player_name}."
     session.pop("_live_draft_manual_pick_in_flight", None)
     if clear_safe_mode_after_successful_pick is not None:
         clear_safe_mode_after_successful_pick(session, room)
@@ -1322,16 +1342,12 @@ def _draft_live(
         )
     except ImportError:
         pass
-    try:
-        from live_draft_rerun_scope import force_live_draft_expensive_recompute
-
-        force_live_draft_expensive_recompute(session)
-    except ImportError:
-        pass
+    # Phase 2: do NOT force_live_draft_expensive_recompute — optimistic pick tick keeps patched recs.
     if record_draft_commit_diagnostics is not None:
         record_draft_commit_diagnostics(
             session,
             pick_saved_to_room=True,
+            optimistic_local_commit=commit.commit_path == "optimistic_local",
         )
     return result
 

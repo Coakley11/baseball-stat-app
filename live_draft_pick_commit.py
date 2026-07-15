@@ -87,11 +87,15 @@ def persist_applied_pick(
     board_size_before: int | None = None,
     idx_before: int | None = None,
     fast_path: bool = False,
+    allow_shared_failure: bool = False,
 ) -> PickCommitResult:
     """Persist a pick already applied to the in-memory room (make_pick already ran).
 
     fast_path=True (timer autopick): keep shared-room commit synchronous; defer board sync,
     activity, and local canonical cloud write to the next page flush.
+
+    allow_shared_failure=True (Phase 2 deferred flush): shared write errors return ok=False
+    without rolling back the caller's local room mutation.
     """
     import time
 
@@ -172,11 +176,15 @@ def persist_applied_pick(
                     board_size_before=board_before,
                     board_size_after=len((session.get(LIVE_DRAFT_ROOM_KEY) or {}).get("draft_board") or []),
                     current_pick_index_before=idx_b,
-                    current_pick_index_after=int((session.get(LIVE_DRAFT_ROOM_KEY) or {}).get("current_pick_index") or idx_b),
+                    current_pick_index_after=int(
+                        (session.get(LIVE_DRAFT_ROOM_KEY) or {}).get("current_pick_index") or idx_b
+                    ),
                     expected_revision=rev,
                 )
         else:
             pass
+
+        _ = allow_shared_failure  # caller owns rollback policy (Phase 2 never rolls back local room)
 
         try:
             from live_draft_state import (
@@ -317,8 +325,14 @@ def commit_manual_live_pick(
     *,
     source: str,
     verdict: str | None = None,
+    optimistic: bool = False,
 ) -> PickCommitResult:
-    """Apply make_pick then persist — manual draft path."""
+    """Apply make_pick then persist — manual draft path.
+
+    optimistic=True (Phase 2): mutate local board/roster/timer immediately, patch
+    recommendation caches, defer durable/shared persistence. Never blocks paint on
+    force_save or shared sync.
+    """
     try:
         from live_draft_perf import (
             PHASE_PICK_CACHE_INVALIDATE,
@@ -351,9 +365,35 @@ def commit_manual_live_pick(
     _diag(
         commit_function_entered=True,
         manual_pick_commit_path="commit_manual_live_pick",
+        optimistic_manual_pick=bool(optimistic),
     )
     board_before = len(room.get("draft_board") or [])
     idx_before = int(room.get("current_pick_index") or 0)
+    player_id = str(player_row.get("playerID") or player_row.get("player_id") or "").strip()
+    player_name = str(player_row.get("fullName") or player_row.get("Player") or "").strip()
+
+    try:
+        from live_draft_pick_persist import (
+            already_applied_pick_guard,
+            mark_applied_pick_guard,
+            mark_pick_persist_dirty,
+            pick_guard_token,
+        )
+
+        guard = pick_guard_token(room, player_id=player_id, player_name=player_name)
+        if already_applied_pick_guard(session, guard):
+            return PickCommitResult(
+                ok=True,
+                message="Pick already applied.",
+                error="",
+                commit_path="idempotent_guard",
+                board_size_before=board_before,
+                board_size_after=board_before,
+                current_pick_index_before=idx_before,
+                current_pick_index_after=idx_before,
+            )
+    except ImportError:
+        guard = ""
 
     if live_draft_perf_action is not None:
         with live_draft_perf_action(session, "verdict_prep", phase=PHASE_PICK_VERDICT_PREP):
@@ -375,11 +415,13 @@ def commit_manual_live_pick(
             source_label = str(source or "Manual Pick")
             verdict_text = verdict or f"Draft ({source})"
 
-    if live_draft_perf_action is not None:
-        with live_draft_perf_action(session, "sync_revision", phase=PHASE_PICK_SYNC_REVISION):
+    expected_revision = None
+    if not optimistic:
+        if live_draft_perf_action is not None:
+            with live_draft_perf_action(session, "sync_revision", phase=PHASE_PICK_SYNC_REVISION):
+                expected_revision = sync_expected_revision(session)
+        else:
             expected_revision = sync_expected_revision(session)
-    else:
-        expected_revision = sync_expected_revision(session)
 
     if live_draft_perf_action is not None:
         with live_draft_perf_action(session, "make_pick", phase=PHASE_PICK_MAKE_PICK):
@@ -419,23 +461,44 @@ def commit_manual_live_pick(
         from live_draft_state import LIVE_DRAFT_ROOM_KEY
 
         session[LIVE_DRAFT_ROOM_KEY] = room
+        if guard:
+            mark_applied_pick_guard(session, guard)
         if live_draft_perf_action is not None:
-            with live_draft_perf_action(session, "cache_invalidate", phase=PHASE_PICK_CACHE_INVALIDATE):
+            with live_draft_perf_action(session, "cache_patch", phase=PHASE_PICK_CACHE_INVALIDATE):
                 try:
-                    from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
+                    from live_draft_ui_cache import patch_live_draft_caches_after_pick
 
-                    invalidate_live_draft_ui_caches(session)
-                    invalidate_draft_assistant_scoring_cache(session)
+                    patch_live_draft_caches_after_pick(
+                        session,
+                        room,
+                        player_id=player_id,
+                        player_name=player_name,
+                    )
                 except ImportError:
-                    session.pop("_live_draft_rec_cache", None)
+                    try:
+                        from live_draft_ui_cache import invalidate_live_draft_ui_caches
+
+                        invalidate_live_draft_ui_caches(session)
+                    except ImportError:
+                        session.pop("_live_draft_rec_cache", None)
         else:
             try:
-                from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
+                from live_draft_ui_cache import patch_live_draft_caches_after_pick
 
-                invalidate_live_draft_ui_caches(session)
-                invalidate_draft_assistant_scoring_cache(session)
+                patch_live_draft_caches_after_pick(
+                    session,
+                    room,
+                    player_id=player_id,
+                    player_name=player_name,
+                )
             except ImportError:
                 session.pop("_live_draft_rec_cache", None)
+        try:
+            from live_draft_rerun_scope import mark_live_draft_optimistic_pick_tick
+
+            mark_live_draft_optimistic_pick_tick(session)
+        except ImportError:
+            pass
         _diag(
             local_optimistic_update_applied=True,
             board_size_after=len(room.get("draft_board") or []),
@@ -445,6 +508,36 @@ def commit_manual_live_pick(
             _diag(rec_card_commit_started=True)
     except ImportError:
         pass
+
+    if optimistic:
+        try:
+            from live_draft_pick_persist import mark_pick_persist_dirty
+
+            mark_pick_persist_dirty(
+                session,
+                room,
+                source=source,
+                expected_revision=expected_revision,
+            )
+        except Exception:
+            pass
+        result = PickCommitResult(
+            ok=True,
+            message=msg or "Pick applied.",
+            error="",
+            commit_path="optimistic_local",
+            board_size_before=board_before,
+            board_size_after=len(room.get("draft_board") or []),
+            current_pick_index_before=idx_before,
+            current_pick_index_after=int(room.get("current_pick_index") or 0),
+            expected_revision=expected_revision,
+        )
+        _diag(
+            commit_function_returned=True,
+            manual_pick_success=True,
+            manual_pick_commit_path="optimistic_local",
+        )
+        return result
 
     persisted = persist_applied_pick(
         session,

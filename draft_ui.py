@@ -475,25 +475,18 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
         pass
 
     session.pop("_live_draft_manual_pick_in_flight", None)
-    try:
-        from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
-
-        invalidate_live_draft_ui_caches(session)
-        invalidate_draft_assistant_scoring_cache(session)
-    except ImportError:
-        session.pop("_live_draft_rec_cache", None)
+    # Phase 2: keep patched recommendation caches (commit_manual_live_pick already patched).
+    # Do not wipe _live_draft_rec_cache here.
     session.pop("_rec_card_commit_in_flight", None)
     try:
         from live_draft_pick_timer import clear_pick_submit_state
 
-        if ok:
-            clear_pick_submit_state(session)
-        else:
-            clear_pick_submit_state(session)
+        clear_pick_submit_state(session)
     except ImportError:
         pass
 
-    should_rerun = bool(ok)
+    # Phase 2: paint board on this same Streamlit run — no second full-page rerun.
+    should_rerun = False
     if ok:
         try:
             from live_draft_room_ui import record_rec_card_diagnostics
@@ -989,6 +982,12 @@ def render_draft_queue_panel(
             sorted_queue = sort_items(list(queue), key=f"{key_prefix}_sortable")
             if list(sorted_queue) != list(queue):
                 sync_draft_queue(session, list(sorted_queue), reason="drag_reorder_queue")
+                try:
+                    from live_draft_queue_persist import note_queue_mutation
+
+                    note_queue_mutation(session, reason="drag_reorder_queue")
+                except ImportError:
+                    pass
                 queue = list(sorted_queue)
                 rerun = True
         except ImportError:

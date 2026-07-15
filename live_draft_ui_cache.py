@@ -25,6 +25,68 @@ def invalidate_live_draft_ui_caches(session: dict[str, Any] | None) -> None:
     session.pop(WHY_COLUMN_CACHE_KEY, None)
 
 
+def _filter_player_from_df(df: Any, *, player_id: str = "", player_name: str = "") -> Any:
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    out = df
+    pid = str(player_id or "").strip()
+    name = str(player_name or "").strip().lower()
+    if pid and "playerID" in out.columns:
+        out = out[out["playerID"].astype(str).str.strip() != pid]
+    elif pid and "player_id" in out.columns:
+        out = out[out["player_id"].astype(str).str.strip() != pid]
+    name_col = "fullName" if "fullName" in out.columns else ("Player" if "Player" in out.columns else "")
+    if name and name_col:
+        out = out[out[name_col].astype(str).str.strip().str.lower() != name]
+    return out
+
+
+def patch_live_draft_caches_after_pick(
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    player_id: str = "",
+    player_name: str = "",
+    top_n: int = 10,
+) -> None:
+    """Keep prior recommendations visible minus the drafted player (Phase 2/4 bridge).
+
+    Updates the cache key to the post-pick board fingerprint so the next paint hits
+    without a full rescoring pass.
+    """
+    if not isinstance(session, dict) or not isinstance(room, dict):
+        return
+    entry = session.get(REC_CACHE_KEY)
+    if isinstance(entry, dict):
+        patched = {
+            "key": live_draft_ui_cache_key(session, room, top_n=top_n, team=None),
+            "top_rec": _filter_player_from_df(entry.get("top_rec"), player_id=player_id, player_name=player_name),
+            "best_avail": _filter_player_from_df(entry.get("best_avail"), player_id=player_id, player_name=player_name),
+            "pos_fit": _filter_player_from_df(entry.get("pos_fit"), player_id=player_id, player_name=player_name),
+            "value_sleep": _filter_player_from_df(
+                entry.get("value_sleep"), player_id=player_id, player_name=player_name
+            ),
+            "optimistic_hold": True,
+        }
+        session[REC_CACHE_KEY] = patched
+    else:
+        # No prior tables — leave miss path for a later deferred refresh.
+        session.pop(REC_CACHE_KEY, None)
+
+    avail = session.get(AVAILABLE_CACHE_KEY)
+    if isinstance(avail, dict) and isinstance(avail.get("df"), pd.DataFrame):
+        session[AVAILABLE_CACHE_KEY] = {
+            "key": available_pool_cache_key(room),
+            "df": _filter_player_from_df(avail.get("df"), player_id=player_id, player_name=player_name),
+        }
+    else:
+        session.pop(AVAILABLE_CACHE_KEY, None)
+
+    # Decision / why stale relative to new roster — drop without forcing full score now.
+    session.pop(DECISION_CACHE_KEY, None)
+    session.pop(WHY_COLUMN_CACHE_KEY, None)
+
+
 def invalidate_draft_assistant_scoring_cache(session: dict[str, Any] | None) -> None:
     if session:
         session.pop(DA_SCORING_CACHE_KEY, None)

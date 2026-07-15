@@ -52,6 +52,7 @@ class PendingManualDraftPickTests(unittest.TestCase):
         result = process_pending_manual_draft_pick(self.st, self.session)
         self.assertTrue(result.get("processed"))
         self.assertTrue(result.get("ok"))
+        self.assertFalse(result.get("should_rerun"))
         mock_draft.assert_called_once()
         self.assertNotIn(PENDING_MANUAL_PICK_KEY, self.session)
         self.assertNotIn("_live_draft_manual_pick_in_flight", self.session)

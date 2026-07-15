@@ -347,17 +347,34 @@ def inject_draft_animation_styles() -> str:
 
 
 def inject_draft_queue_sortable_styles() -> str:
+    """Red sliding drag-queue styles for streamlit-sortables (Live Draft UX).
+
+    Preserve this interaction model during performance work — do not replace with
+    a static list. Drag handles stay visually loud and grab-friendly.
+    """
     return """
     .sortable-item {
-        padding: 10px 12px;
-        margin: 4px 0;
-        border-radius: 8px;
-        border: 1px solid rgba(11, 61, 110, 0.25);
-        background: rgba(238, 244, 251, 0.85);
-        font-weight: 600;
+        padding: 10px 14px;
+        margin: 6px 0;
+        border-radius: 10px;
+        border: 1px solid rgba(185, 28, 28, 0.35);
+        background: linear-gradient(180deg, #fff5f5 0%, #fee2e2 100%);
+        color: #7f1d1d;
+        font-weight: 700;
         cursor: grab;
+        box-shadow: 0 1px 4px rgba(127, 29, 29, 0.12);
+        transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
     }
-    .sortable-item:active { cursor: grabbing; }
+    .sortable-item:hover {
+        border-color: rgba(185, 28, 28, 0.65);
+        box-shadow: 0 2px 8px rgba(127, 29, 29, 0.18);
+    }
+    .sortable-item:active {
+        cursor: grabbing;
+        transform: translateX(4px) scale(1.01);
+        border-color: #b91c1c;
+        box-shadow: 0 4px 14px rgba(185, 28, 28, 0.28);
+    }
     """
 
 

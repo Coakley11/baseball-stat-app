@@ -505,16 +505,22 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
         elif source == "live_draft_queue":
             # Queue add/remove/reorder must not rebuild recommendations or analytics.
             mark_live_draft_queue_tick(session)
+        elif source in ("manual_pick", "manual_pick_complete", "pick_commit"):
+            # Optimistic pick already painted locally — keep patched recs.
+            try:
+                from live_draft_rerun_scope import mark_live_draft_optimistic_pick_tick
+
+                mark_live_draft_optimistic_pick_tick(session)
+            except ImportError:
+                mark_live_draft_timer_tick(session)
         elif source == "poll_fragment":
             # Shared-board poll changed state — must rebuild recommendations.
             force_live_draft_expensive_recompute(session)
         elif source in (
-            "manual_pick",
             "auto_pick",
             "page_autopick",
             "pause_draft",
             "resume_draft",
-            "pick_commit",
             "auto_pick_complete",
         ):
             force_live_draft_expensive_recompute(session)

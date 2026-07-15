@@ -14422,18 +14422,13 @@ try:
 
         if st.session_state.get(PENDING_MANUAL_PICK_KEY):
             _early_pending_pick = process_pending_manual_draft_pick(st, st.session_state)
-            if _early_pending_pick.get("should_rerun"):
-                try:
-                    from live_draft_safe_mode import request_live_draft_rerun
-
-                    request_live_draft_rerun(
-                        st,
-                        st.session_state,
-                        "manual_pick_complete",
-                        room=st.session_state.get("live_draft_room"),
-                    )
-                except ImportError:
-                    st.rerun()
+            # Phase 2: do not request a second full-page rerun — continue into page paint.
+            if _early_pending_pick.get("ok"):
+                st.session_state["_live_draft_pending_pick_painted"] = True
+            elif _early_pending_pick.get("processed") and not _early_pending_pick.get("ok"):
+                st.session_state["_live_draft_pick_flash_error"] = str(
+                    _early_pending_pick.get("error") or _early_pending_pick.get("message") or "Manual pick failed."
+                )
     except ImportError:
         pass
 
@@ -14488,6 +14483,12 @@ if _page_changed or _user_nav:
                     from live_draft_queue_persist import flush_draft_queue_persist
 
                     flush_draft_queue_persist(st, st.session_state, reason="page_change")
+                except ImportError:
+                    pass
+                try:
+                    from live_draft_pick_persist import flush_deferred_pick_persist
+
+                    flush_deferred_pick_persist(st.session_state, st_obj=st)
                 except ImportError:
                     pass
             if str(_prev_persisted_page or "") == "Draft Assistant Simulator":
@@ -21992,6 +21993,8 @@ if active_page == "Live Draft Room":
     except ImportError:
         pass
     if _pending_pick_result.get("should_rerun"):
+        # Phase 2: should_rerun is always False for optimistic manual picks.
+        # Keep branch for compatibility with older callers.
         try:
             from live_draft_safe_mode import request_live_draft_rerun
 
@@ -22003,6 +22006,14 @@ if active_page == "Live Draft Room":
             )
         except ImportError:
             st.rerun()
+    try:
+        from live_draft_pick_persist import consume_pick_sync_warning
+
+        _pick_sync_warn = consume_pick_sync_warning(st.session_state)
+        if _pick_sync_warn:
+            st.warning(_pick_sync_warn)
+    except ImportError:
+        pass
     apply_pending_page_transfer(active_page)
     from draft_ui import on_open_simulator_convert_panel, on_start_new_live_draft
     from live_draft_state import render_live_draft_save_diagnostics
@@ -24373,6 +24384,14 @@ if active_page == "Live Draft Room":
         from live_draft_queue_persist import maybe_flush_deferred_draft_queue_autosave
 
         maybe_flush_deferred_draft_queue_autosave(st, st.session_state)
+    except ImportError:
+        pass
+
+    try:
+        from live_draft_pick_persist import flush_deferred_pick_persist
+
+        # Phase 2: flush durable/shared pick sync at end of the paint pass (after local board advance).
+        flush_deferred_pick_persist(st.session_state, st_obj=st)
     except ImportError:
         pass
 

@@ -318,7 +318,7 @@ class RecCardDraftCommitTests(unittest.TestCase):
         }
         result = process_pending_manual_draft_pick(self.st, self.session)
         self.assertTrue(result.get("ok"))
-        self.assertTrue(result.get("should_rerun"))
+        self.assertFalse(result.get("should_rerun"))
         mock_draft.assert_called_once_with(self.session, "Juan Soto", source="live_draft_room", st_obj=self.st)
         diag = self.session.get(LIVE_DRAFT_REC_DIAG_KEY) or {}
         self.assertTrue(diag.get("rec_card_commit_success"))
