@@ -409,25 +409,17 @@ def record_developer_mode_diagnostics(
 
 
 def developer_tools_workspace_eligible(*, st: Any | None = None) -> bool:
-    """Profiles that may show the Developer Mode toggle and dev-only panels."""
-    if is_developer_workspace(st=st):
-        return True
-    try:
-        from suite_auth import is_auth_enabled, is_authenticated, resolve_auth_external_id
+    """Developer Mode toggle is a global settings control — always eligible.
 
-        ss = st.session_state if st is not None else __import__("streamlit").session_state
-        if is_auth_enabled() and is_authenticated(ss):
-            ws = normalize_workspace_id(get_active_workspace_id(st=st))
-            ext = normalize_workspace_id(resolve_auth_external_id(ss))
-            if ext and ws == ext:
-                return True
-    except Exception:
-        pass
-    return False
+    Auth / workspace no longer hide the toggle (users were trapped after sign-in
+    when the workspace clamp left the control unmountable). Panel visibility
+    still follows the checkbox via ``can_show_developer_tools``.
+    """
+    return True
 
 
 def can_show_developer_tools(*, st: Any | None = None) -> bool:
-    """Developer UI gate: eligible workspace + Developer Mode checkbox (not ?dev=1 alone).
+    """Developer UI gate: Developer Mode checkbox on (not ?dev=1 alone).
 
     Portfolio Screenshot/Demo Mode always hides developer tools.
     """
@@ -439,7 +431,7 @@ def can_show_developer_tools(*, st: Any | None = None) -> bool:
                 return False
         except Exception:
             pass
-    return developer_tools_workspace_eligible(st=st) and developer_mode_checkbox_enabled(st=st)
+    return developer_mode_checkbox_enabled(st=st)
 
 
 def developer_ui_visible_from_session(session: dict[str, Any]) -> bool:
@@ -458,8 +450,6 @@ def developer_mode_checkbox_enabled(*, st: Any | None = None) -> bool:
 
         ss = st.session_state if st is not None else st_module.session_state
         sync_developer_mode_widget(ss, source="developer_mode_checkbox_gate")
-        if not developer_tools_workspace_eligible(st=st):
-            return False
         return bool(ss.get(DEVELOPER_MODE_WIDGET_KEY, False))
     except Exception:
         return False

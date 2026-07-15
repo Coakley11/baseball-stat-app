@@ -85,11 +85,15 @@ def _clear_demo_flags(st) -> None:
 
 
 def portfolio_sidebar_ui_enabled() -> bool:
-    """Portfolio capture toggles are hidden unless PORTFOLIO_CAPTURE_UI is set."""
-    return os.environ.get("PORTFOLIO_CAPTURE_UI", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
+    """Portfolio capture toggles are visible by default in the sidebar.
+
+    Set ``PORTFOLIO_CAPTURE_UI=0`` (or false/off/no) to hide them.
+    """
+    return os.environ.get("PORTFOLIO_CAPTURE_UI", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
     )
 
 

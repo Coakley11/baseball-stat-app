@@ -1,4 +1,14 @@
-"""Per-script-run guards for sidebar chrome (idempotent render)."""
+"""Per-script-run guards for sidebar chrome (idempotent render).
+
+Streamlit 1.59+ has no ``script_run_id`` on ScriptRunContext. Falling back to
+``session_id`` incorrectly treated an entire browser session as one execution,
+so after the first rerun (e.g. sign-in) module-level claims stuck and the
+Command Center / Saved session / Developer Mode controls never re-rendered.
+
+Reset therefore always clears module claims. Call ``reset_sidebar_run_guards``
+once near app startup each script run; mid-run duplicate protection uses
+session_state flags only.
+"""
 
 from __future__ import annotations
 
@@ -16,45 +26,16 @@ ALL_GUARDS: tuple[str, ...] = (
     GUARD_DEV_TOGGLE,
 )
 
-# Module-level claims survive session_state restore mid-run (persistence sync).
+# Module-level claims are valid only between reset_sidebar_run_guards() calls.
 _CLAIMED_THIS_EXECUTION: set[str] = set()
-_EXECUTION_TOKEN: object | None = object()
 _DEV_MODE_CHECKBOX_MATERIALIZED: bool = False
 
 
-def _execution_token() -> object | None:
-    try:
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
-
-        ctx = get_script_run_ctx()
-        if ctx is None:
-            return None
-        return (
-            getattr(ctx, "script_run_id", None)
-            or getattr(ctx, "session_id", None)
-            or id(ctx)
-        )
-    except Exception:
-        return None
-
-
-def _sync_execution_claims() -> None:
-    global _CLAIMED_THIS_EXECUTION, _EXECUTION_TOKEN
-    token = _execution_token()
-    if token != _EXECUTION_TOKEN:
-        _EXECUTION_TOKEN = token
-        _CLAIMED_THIS_EXECUTION = set()
-
-
 def reset_sidebar_run_guards(session_state: dict[str, Any]) -> None:
-    """Call once near app startup — clears per-run claims and session flags."""
-    global _CLAIMED_THIS_EXECUTION, _EXECUTION_TOKEN, _DEV_MODE_CHECKBOX_MATERIALIZED
+    """Call once near app startup — clears per-run claims for a new script run."""
+    global _CLAIMED_THIS_EXECUTION, _DEV_MODE_CHECKBOX_MATERIALIZED
     for key in ALL_GUARDS:
         session_state[key] = False
-    token = _execution_token()
-    if token == _EXECUTION_TOKEN and (_CLAIMED_THIS_EXECUTION or _DEV_MODE_CHECKBOX_MATERIALIZED):
-        return
-    _EXECUTION_TOKEN = token
     _CLAIMED_THIS_EXECUTION = set()
     _DEV_MODE_CHECKBOX_MATERIALIZED = False
 
@@ -71,8 +52,7 @@ def mark_dev_mode_checkbox_materialized() -> None:
 
 
 def claim_sidebar_render(session_state: dict[str, Any], guard: str) -> bool:
-    """Return True the first time a guard is claimed this script execution."""
-    _sync_execution_claims()
+    """Return True the first time a guard is claimed this script run."""
     if guard in _CLAIMED_THIS_EXECUTION:
         return False
     if session_state.get(guard):
@@ -84,7 +64,6 @@ def claim_sidebar_render(session_state: dict[str, Any], guard: str) -> bool:
 
 def reset_sidebar_run_guards_for_tests() -> None:
     """Test helper — clear module-level execution claims."""
-    global _CLAIMED_THIS_EXECUTION, _EXECUTION_TOKEN, _DEV_MODE_CHECKBOX_MATERIALIZED
+    global _CLAIMED_THIS_EXECUTION, _DEV_MODE_CHECKBOX_MATERIALIZED
     _CLAIMED_THIS_EXECUTION = set()
-    _EXECUTION_TOKEN = object()
     _DEV_MODE_CHECKBOX_MATERIALIZED = False

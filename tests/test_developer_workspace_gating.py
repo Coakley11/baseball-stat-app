@@ -1,4 +1,4 @@
-"""Regression: developer UI on eligible workspace with dev mode enabled."""
+"""Regression: developer UI follows Developer Mode checkbox (any workspace)."""
 
 from __future__ import annotations
 
@@ -9,71 +9,46 @@ from suite_workspace import (
     can_show_developer_tools,
     developer_tools_workspace_eligible,
     set_active_workspace_id,
+    set_developer_mode_user,
 )
 
 
 class _FakeSt:
-    def __init__(self, workspace: str, *, dev_query: bool = False, session: dict | None = None) -> None:
+    def __init__(self, workspace: str, *, session: dict | None = None) -> None:
         self.session_state: dict = dict(session or {})
-        self.query_params = {"dev": "1"} if dev_query else {}
+        self.query_params: dict = {}
         set_active_workspace_id(self, workspace)  # type: ignore[arg-type]
 
 
 class TestDeveloperWorkspaceGating(unittest.TestCase):
-    def test_ariel_dev_query_hidden(self) -> None:
-        st = _FakeSt("ariel", dev_query=True)
-        self.assertFalse(can_show_developer_tools(st=st))  # type: ignore[arg-type]
+    def test_toggle_eligible_on_any_workspace(self) -> None:
+        for workspace in ("daniel", "ariel", "guest", "coakley11"):
+            st = _FakeSt(workspace)
+            self.assertTrue(developer_tools_workspace_eligible(st=st))  # type: ignore[arg-type]
 
     def test_daniel_dev_query_alone_hidden(self) -> None:
-        st = _FakeSt("daniel", dev_query=True)
+        st = _FakeSt("daniel")
+        st.query_params = {"dev": "1"}
         self.assertFalse(can_show_developer_tools(st=st))  # type: ignore[arg-type]
 
-    def test_daniel_dev_query_with_checkbox_visible(self) -> None:
-        from suite_workspace import set_developer_mode_user
-
-        st = _FakeSt("daniel", dev_query=True)
+    def test_checkbox_shows_tools_on_any_workspace(self) -> None:
+        st = _FakeSt("coakley11")
         set_developer_mode_user(st.session_state, True, source="test")
         self.assertTrue(can_show_developer_tools(st=st))  # type: ignore[arg-type]
 
-    def test_guest_dev_query_hidden(self) -> None:
-        st = _FakeSt("guest", dev_query=True)
+    def test_checkbox_off_hides_tools(self) -> None:
+        st = _FakeSt("daniel")
+        set_developer_mode_user(st.session_state, False, source="test")
         self.assertFalse(can_show_developer_tools(st=st))  # type: ignore[arg-type]
 
-    def test_auth_own_workspace_eligible(self) -> None:
-        from suite_workspace import set_developer_mode_user
-
-        st = _FakeSt(
-            "coakley11",
-            session={
-                "_suite_auth_session": True,
-                "_suite_auth_user_id": "uuid-coakley",
-                "_suite_auth_user_email": "coakley11@aol.com",
-            },
-        )
+    def test_screenshot_mode_hides_tools_even_when_dev_on(self) -> None:
+        st = _FakeSt("daniel")
         set_developer_mode_user(st.session_state, True, source="test")
-        with patch("suite_auth.is_auth_enabled", return_value=True):
-            with patch("suite_auth.is_authenticated", return_value=True):
-                with patch("suite_auth.resolve_auth_external_id", return_value="coakley11"):
-                    self.assertTrue(developer_tools_workspace_eligible(st=st))  # type: ignore[arg-type]
-                    self.assertTrue(can_show_developer_tools(st=st))  # type: ignore[arg-type]
-
-    def test_auth_own_workspace_dev_off_hidden(self) -> None:
-        st = _FakeSt(
-            "coakley11",
-            session={
-                "_suite_auth_session": True,
-                "_suite_auth_user_id": "uuid-coakley",
-            },
-        )
-        with patch("suite_auth.is_auth_enabled", return_value=True):
-            with patch("suite_auth.is_authenticated", return_value=True):
-                with patch("suite_auth.resolve_auth_external_id", return_value="coakley11"):
-                    self.assertTrue(developer_tools_workspace_eligible(st=st))  # type: ignore[arg-type]
-                    self.assertFalse(can_show_developer_tools(st=st))  # type: ignore[arg-type]
+        st.session_state["portfolio_screenshot_mode"] = True
+        self.assertFalse(can_show_developer_tools(st=st))  # type: ignore[arg-type]
 
     def test_join_trace_follows_developer_mode_gate(self) -> None:
         from draft_room_join_trace import join_trace_visible
-        from suite_workspace import set_developer_mode_user
 
         st = _FakeSt(
             "coakley11",
@@ -88,10 +63,6 @@ class TestDeveloperWorkspaceGating(unittest.TestCase):
                     self.assertFalse(join_trace_visible(st.session_state))
                     set_developer_mode_user(st.session_state, True, source="test")
                     self.assertTrue(join_trace_visible(st.session_state))
-
-        guest_st = _FakeSt("guest", session={})
-        set_developer_mode_user(guest_st.session_state, True, source="test")
-        self.assertFalse(join_trace_visible(guest_st.session_state))
 
 
 if __name__ == "__main__":

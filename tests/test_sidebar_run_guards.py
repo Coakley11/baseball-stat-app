@@ -38,27 +38,27 @@ class SidebarRunGuardTests(unittest.TestCase):
         self.assertFalse(claim_sidebar_render(ss, GUARD_DEV_TOGGLE))
 
     def test_reset_allows_next_run(self) -> None:
+        """Regression: after sign-in / next script run, chrome must remount."""
         ss: dict = {}
         reset_sidebar_run_guards(ss)
-        self.assertTrue(claim_sidebar_render(ss, GUARD_ACCOUNT))
-        self.assertFalse(claim_sidebar_render(ss, GUARD_ACCOUNT))
-
-    def test_reset_skips_second_call_same_execution(self) -> None:
-        ss: dict = {}
-        reset_sidebar_run_guards(ss)
+        self.assertTrue(claim_sidebar_render(ss, GUARD_COMMAND_CENTER))
         self.assertTrue(claim_sidebar_render(ss, GUARD_DEV_TOGGLE))
+        # Simulate next script run (same process / same browser session).
         reset_sidebar_run_guards(ss)
-        self.assertFalse(claim_sidebar_render(ss, GUARD_DEV_TOGGLE))
+        self.assertTrue(claim_sidebar_render(ss, GUARD_COMMAND_CENTER))
+        self.assertTrue(claim_sidebar_render(ss, GUARD_DEV_TOGGLE))
 
-    def test_dev_checkbox_materialized_blocks_second_claim(self) -> None:
-        from suite_sidebar_run import mark_dev_mode_checkbox_materialized
+    def test_reset_clears_dev_checkbox_materialized(self) -> None:
+        from suite_sidebar_run import mark_dev_mode_checkbox_materialized, dev_mode_checkbox_materialized
 
         ss: dict = {}
         reset_sidebar_run_guards(ss)
         self.assertTrue(claim_sidebar_render(ss, GUARD_DEV_TOGGLE))
         mark_dev_mode_checkbox_materialized()
+        self.assertTrue(dev_mode_checkbox_materialized())
         reset_sidebar_run_guards(ss)
-        self.assertFalse(claim_sidebar_render(ss, GUARD_DEV_TOGGLE))
+        self.assertFalse(dev_mode_checkbox_materialized())
+        self.assertTrue(claim_sidebar_render(ss, GUARD_DEV_TOGGLE))
 
 
 if __name__ == "__main__":

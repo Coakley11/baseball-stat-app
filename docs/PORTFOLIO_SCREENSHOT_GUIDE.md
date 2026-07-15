@@ -29,7 +29,7 @@
 ### Pre-flight (clean UI)
 
 1. Sidebar → **Developer Mode = OFF**
-2. Sidebar → **Portfolio Screenshot Mode = ON** (requires `PORTFOLIO_CAPTURE_UI=1` if the toggle is hidden)
+2. Sidebar → **Portfolio Screenshot Mode = ON** (visible by default; set `PORTFOLIO_CAPTURE_UI=0` to hide the toggle)
 3. Hard-refresh once after pulling these LDR cleanup changes (clears leftover debug session flags)
 4. Confirm the main area does **not** show banners like “Live Draft render trace”, LDR step captions, or sidebar workflow/nav traces
 

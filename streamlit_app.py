@@ -555,13 +555,14 @@ try:
 except Exception:
     pass
 
-if __name__ == "__main__":
-    try:
-        from suite_sidebar_run import reset_sidebar_run_guards
+# Always reset sidebar chrome guards each script run (not only __main__).
+# Sticky guards after sign-in previously hid Command Center / Saved session / Dev Mode.
+try:
+    from suite_sidebar_run import reset_sidebar_run_guards
 
-        reset_sidebar_run_guards(st.session_state)
-    except Exception:
-        pass
+    reset_sidebar_run_guards(st.session_state)
+except Exception:
+    pass
 
 try:
     from suite_egress_trace import reset_run_egress_summary
@@ -12707,7 +12708,10 @@ def _page_perf_end(page: str) -> None:
 
 
 def render_developer_mode_sidebar_toggle():
-    """Single sidebar switch for all developer-only tools (default OFF)."""
+    """Single sidebar switch for all developer-only tools (default OFF).
+
+    Always mounted — auth/workspace must never hide this control.
+    """
     try:
         from suite_sidebar_run import (
             GUARD_DEV_TOGGLE,
@@ -12721,19 +12725,16 @@ def render_developer_mode_sidebar_toggle():
         if not claim_sidebar_render(st.session_state, GUARD_DEV_TOGGLE):
             return
     except ImportError:
-        return
+        pass
 
     try:
         from suite_workspace import (
             DEVELOPER_MODE_DIAG_KEY,
-            developer_tools_workspace_eligible,
             record_developer_mode_diagnostics,
             sync_developer_mode_widget,
         )
 
         sync_developer_mode_widget(st.session_state, source="pre_toggle_render")
-        if not developer_tools_workspace_eligible(st=st):
-            return
     except ImportError:
         pass
 
