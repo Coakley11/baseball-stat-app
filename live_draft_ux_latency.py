@@ -48,13 +48,27 @@ FIRST_VISIBLE_BY_ACTION: dict[str, tuple[str, ...]] = {
 }
 
 
-def ux_latency_enabled(session: dict[str, Any], st: Any | None = None) -> bool:
-    if not isinstance(session, dict):
+def _session_mapping_ok(session: Any) -> bool:
+    """True for dicts and Streamlit SessionState / SessionStateProxy."""
+    return session is not None and callable(getattr(session, "get", None))
+
+
+def ux_latency_enabled(session: Any, st: Any | None = None) -> bool:
+    """Recording ON when Developer Mode checkbox is on, or ``?ux_latency=1``.
+
+    Session keys (any one is enough):
+    - ``app_developer_mode`` — Developer Mode sidebar checkbox widget key
+    - ``_suite_developer_mode_user`` — persisted user intent
+    - ``_live_draft_ux_latency_force`` — set by ``?ux_latency=1``
+    """
+    if not _session_mapping_ok(session):
         return False
     if session.get("_live_draft_ux_latency_force"):
         return True
     # Prefer session flags first (works in unit tests without ScriptRunContext).
-    if session.get("app_developer_mode") or session.get("_suite_developer_mode_user"):
+    # NOTE: must NOT require isinstance(session, dict) — Streamlit's session_state
+    # is a SessionStateProxy, not a dict (that bug kept Recording OFF forever).
+    if bool(session.get("app_developer_mode")) or bool(session.get("_suite_developer_mode_user")):
         return True
     if st is not None:
         try:
@@ -73,6 +87,21 @@ def ux_latency_enabled(session: dict[str, Any], st: Any | None = None) -> bool:
         except Exception:
             pass
     return False
+
+
+def ux_latency_enable_debug(session: Any, st: Any | None = None) -> dict[str, Any]:
+    """Why recording is on/off — shown in the sidebar panel."""
+    return {
+        "recording_on": ux_latency_enabled(session, st),
+        "session_type": type(session).__name__,
+        "app_developer_mode": bool(session.get("app_developer_mode")) if _session_mapping_ok(session) else None,
+        "_suite_developer_mode_user": bool(session.get("_suite_developer_mode_user"))
+        if _session_mapping_ok(session)
+        else None,
+        "_live_draft_ux_latency_force": bool(session.get("_live_draft_ux_latency_force"))
+        if _session_mapping_ok(session)
+        else None,
+    }
 
 
 def _now() -> float:
@@ -250,15 +279,23 @@ def render_ux_latency_panel(st: Any, session: dict[str, Any]) -> None:
             "Location: left sidebar, under **Developer Mode**, above **Account & Sign In** / **Choose Page**. "
             "Available on every Baseball page (not only Live Draft Room)."
         )
+        dbg = ux_latency_enable_debug(session, st)
         if show_howto_only:
             st.warning(
                 "Recording is OFF. Turn **Developer Mode** ON (checkbox above), "
                 "or open the app with `?ux_latency=1` in the URL, then click "
                 "Add/Remove/Draft in Live Draft Room."
             )
+            st.caption(
+                f"Debug: session_type=`{dbg.get('session_type')}` · "
+                f"app_developer_mode=`{dbg.get('app_developer_mode')}` · "
+                f"persist=`{dbg.get('_suite_developer_mode_user')}` · "
+                f"force=`{dbg.get('_live_draft_ux_latency_force')}`"
+            )
             return
+        st.success("Recording ON")
         st.caption(
-            "Recording ON — first_visible_ms = first painted surface after click; "
+            "first_visible_ms = first painted surface after click; "
             "settled_ms = fragment/page end."
         )
         if not log:

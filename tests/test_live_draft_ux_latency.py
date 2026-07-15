@@ -43,6 +43,24 @@ class LiveDraftUxLatencyTests(unittest.TestCase):
         session: dict = {}
         self.assertIsNone(note_ux_action(session, ACTION_ADD_QUEUE, source="test"))
 
+    def test_enabled_for_session_state_proxy_like_mapping(self) -> None:
+        """Streamlit session_state is not a dict — Recording must still turn ON."""
+        from live_draft_ux_latency import ux_latency_enabled
+
+        class _Proxy:
+            def __init__(self) -> None:
+                self._data = {"app_developer_mode": True}
+
+            def get(self, key, default=None):
+                return self._data.get(key, default)
+
+            def __setitem__(self, key, value) -> None:
+                self._data[key] = value
+
+        proxy = _Proxy()
+        self.assertFalse(isinstance(proxy, dict))
+        self.assertTrue(ux_latency_enabled(proxy))
+
 
 if __name__ == "__main__":
     unittest.main()
