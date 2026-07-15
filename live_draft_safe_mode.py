@@ -495,12 +495,16 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
     try:
         from live_draft_rerun_scope import (
             force_live_draft_expensive_recompute,
+            mark_live_draft_queue_tick,
             mark_live_draft_timer_tick,
         )
 
         if source in ("timer_fragment", "timer_fragment_zero"):
             # Timer / zero-cross ticks stay light; page_autopick forces rebuild after pick.
             mark_live_draft_timer_tick(session)
+        elif source == "live_draft_queue":
+            # Queue add/remove/reorder must not rebuild recommendations or analytics.
+            mark_live_draft_queue_tick(session)
         elif source == "poll_fragment":
             # Shared-board poll changed state — must rebuild recommendations.
             force_live_draft_expensive_recompute(session)
@@ -508,7 +512,6 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
             "manual_pick",
             "auto_pick",
             "page_autopick",
-            "live_draft_queue",
             "pause_draft",
             "resume_draft",
             "pick_commit",

@@ -1614,13 +1614,8 @@ def render_live_draft_rec_cards(
                     try:
                         from draft_state import add_player_to_draft_queue
 
+                        # Phase 1: mutate session immediately; durable save is deferred.
                         add_player_to_draft_queue(_session, _name)
-                        try:
-                            from baseball_persistent_state import force_save_baseball_state
-
-                            force_save_baseball_state(st, reason="draft_edit")
-                        except Exception:
-                            pass
                     except ImportError:
                         pass
 

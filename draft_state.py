@@ -341,6 +341,16 @@ def sync_draft_queue(session: dict[str, Any], queue: Any, *, reason: str = "queu
     return q
 
 
+def _note_queue_mutation_deferred(session: dict[str, Any], *, reason: str = "queue_change") -> None:
+    """Schedule durable workspace save off the interactive queue critical path."""
+    try:
+        from live_draft_queue_persist import note_queue_mutation
+
+        note_queue_mutation(session, reason=reason)
+    except ImportError:
+        mark_draft_pending_sync(session)
+
+
 def sync_watchlist(
     session: dict[str, Any],
     *,
@@ -373,9 +383,11 @@ def add_player_to_draft_queue(session: dict[str, Any], player_name: str) -> tupl
         with live_draft_perf_action(session, "queue_add", phase=PHASE_QUEUE_ADD):
             q.append(name)
             sync_draft_queue(session, q, reason="add_to_queue")
+            _note_queue_mutation_deferred(session, reason="add_to_queue")
     except ImportError:
         q.append(name)
         sync_draft_queue(session, q, reason="add_to_queue")
+        _note_queue_mutation_deferred(session, reason="add_to_queue")
     try:
         from draft_ui import cache_queue_player_meta
 
@@ -425,9 +437,11 @@ def remove_player_from_draft_queue(
         with live_draft_perf_action(session, "queue_remove", phase=PHASE_QUEUE_REMOVE):
             q = [p for p in q if p != name]
             sync_draft_queue(session, q, reason=reason)
+            _note_queue_mutation_deferred(session, reason=reason)
     except ImportError:
         q = [p for p in q if p != name]
         sync_draft_queue(session, q, reason=reason)
+        _note_queue_mutation_deferred(session, reason=reason)
     return q, True
 
 
@@ -487,6 +501,7 @@ def add_player_to_watchlist(session: dict[str, Any], player_name: str) -> tuple[
 
 def clear_draft_queue(session: dict[str, Any], *, reason: str = "clear_queue") -> None:
     sync_draft_queue(session, [], reason=reason)
+    _note_queue_mutation_deferred(session, reason=reason)
 
 
 def move_queue_item(
@@ -514,8 +529,15 @@ def move_queue_item(
         new_q.insert(0, item)
     else:
         return q, False
-    sync_draft_queue(session, new_q, reason=f"reorder_queue_{direction}")
-    mark_draft_pending_sync(session)
+    try:
+        from live_draft_perf import PHASE_QUEUE_REORDER, live_draft_perf_action
+
+        with live_draft_perf_action(session, "queue_reorder", phase=PHASE_QUEUE_REORDER):
+            sync_draft_queue(session, new_q, reason=f"reorder_queue_{direction}")
+            _note_queue_mutation_deferred(session, reason=f"reorder_queue_{direction}")
+    except ImportError:
+        sync_draft_queue(session, new_q, reason=f"reorder_queue_{direction}")
+        _note_queue_mutation_deferred(session, reason=f"reorder_queue_{direction}")
     return new_q, True
 
 

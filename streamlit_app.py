@@ -8214,12 +8214,7 @@ def add_player_to_queue(player_name):
     _, added = add_player_to_draft_queue(st.session_state, player_name)
     if not added:
         return f"{player_name} is already in your Draft Queue."
-    try:
-        from baseball_persistent_state import force_save_baseball_state
-
-        force_save_baseball_state(st, reason="draft_edit")
-    except Exception:
-        pass
+    # Phase 1 real-time: no force_save on queue critical path (deferred dirty flush).
     return f"Queued {player_name}."
 
 
@@ -12209,24 +12204,23 @@ def _auto_remove_drafted_from_queue():
     if removed:
         sync_draft_queue(st.session_state, kept, reason="auto_remove_drafted")
         try:
-            from baseball_persistent_state import force_save_baseball_state
+            from live_draft_queue_persist import note_queue_mutation
 
-            force_save_baseball_state(st, reason="draft_edit")
-        except Exception:
-            pass
+            note_queue_mutation(st.session_state, reason="auto_remove_drafted")
+        except ImportError:
+            from draft_state import mark_draft_pending_sync
+
+            mark_draft_pending_sync(st.session_state)
     return removed
 
 
 def _move_queue_item(idx, delta):
-    from draft_state import mark_draft_pending_sync, sync_draft_queue
+    from draft_state import move_queue_item_down, move_queue_item_up
 
-    q = list(st.session_state.get("draft_queue", []) or [])
-    new_idx = idx + delta
-    if idx < 0 or idx >= len(q) or new_idx < 0 or new_idx >= len(q):
-        return
-    q[idx], q[new_idx] = q[new_idx], q[idx]
-    sync_draft_queue(st.session_state, q, reason="reorder_queue")
-    mark_draft_pending_sync(st.session_state)
+    if delta < 0:
+        move_queue_item_up(st.session_state, idx)
+    elif delta > 0:
+        move_queue_item_down(st.session_state, idx)
 
 
 def _clear_workflow_list(key):
@@ -12234,7 +12228,9 @@ def _clear_workflow_list(key):
 
     if key == "draft_queue":
         clear_draft_queue(st.session_state, reason="clear_queue")
-    elif key in ("draft_assistant_focus_players", "workflow_favorite_targets"):
+        # Durable save deferred (Phase 1 queue critical path).
+        return
+    if key in ("draft_assistant_focus_players", "workflow_favorite_targets"):
         clear_watchlist(st.session_state, reason="clear_watchlist")
     else:
         st.session_state[key] = []
@@ -12333,12 +12329,7 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
             show_subheader=False,
             compact=True,
         ):
-            try:
-                from baseball_persistent_state import force_save_baseball_state
-
-                force_save_baseball_state(st, reason="draft_edit")
-            except Exception:
-                pass
+            # Phase 1: queue mutate already marked deferred persist — do not force_save here.
             st.rerun()
     except NameError:
         pass
@@ -14493,6 +14484,12 @@ if _page_changed or _user_nav:
                 from live_draft_setup_persist import flush_live_draft_setup_persist
 
                 flush_live_draft_setup_persist(st, st.session_state, reason="live_draft_setup_page_leave")
+                try:
+                    from live_draft_queue_persist import flush_draft_queue_persist
+
+                    flush_draft_queue_persist(st, st.session_state, reason="page_change")
+                except ImportError:
+                    pass
             if str(_prev_persisted_page or "") == "Draft Assistant Simulator":
                 from draft_assistant_setup_persist import flush_draft_assistant_settings_persist
 
@@ -20639,12 +20636,7 @@ if active_page == "Draft Room Simulator":
                 show_subheader=True,
                 compact=False,
             ):
-                try:
-                    from baseball_persistent_state import force_save_baseball_state
-
-                    force_save_baseball_state(st, reason="draft_edit")
-                except Exception:
-                    pass
+                # Phase 1: queue mutate already marked deferred persist — do not force_save here.
                 st.rerun()
         except ImportError:
             pass
@@ -24374,6 +24366,13 @@ if active_page == "Live Draft Room":
         from live_draft_setup_persist import maybe_flush_deferred_live_draft_setup_autosave
 
         maybe_flush_deferred_live_draft_setup_autosave(st, st.session_state)
+    except ImportError:
+        pass
+
+    try:
+        from live_draft_queue_persist import maybe_flush_deferred_draft_queue_autosave
+
+        maybe_flush_deferred_draft_queue_autosave(st, st.session_state)
     except ImportError:
         pass
 
