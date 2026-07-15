@@ -14326,8 +14326,13 @@ try:
     from live_draft_ux_latency import render_ux_latency_panel
 
     render_ux_latency_panel(st, st.session_state)
-except Exception:
-    pass
+except Exception as _ux_lat_exc:
+    try:
+        st.sidebar.error(
+            f"UX latency panel failed: {type(_ux_lat_exc).__name__}: {_ux_lat_exc}"
+        )
+    except Exception:
+        pass
 
 try:
     from baseball_account_sidebar import render_baseball_account_sidebar

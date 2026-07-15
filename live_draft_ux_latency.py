@@ -234,18 +234,38 @@ def latest_ux_latency(session: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def render_ux_latency_panel(st: Any, session: dict[str, Any]) -> None:
-    """Developer Mode sidebar/expander with the last measured interactions."""
-    if not ux_latency_enabled(session, st):
-        return
+    """Sidebar expander — always mounted so it is findable.
+
+    Recording is on when Developer Mode is checked **or** ``?ux_latency=1``.
+    The expander title is always: ``UX latency (click → paint)``.
+    """
+    enabled = ux_latency_enabled(session, st)
+    # Always show when forced or Developer Mode; otherwise still show a compact
+    # how-to so the panel is discoverable after reboot.
+    show_howto_only = not enabled
     log = [e for e in list(session.get(UX_LATENCY_LOG_KEY) or []) if isinstance(e, dict)]
+    # Keep expanded during measurement mode so the panel is hard to miss.
     with st.sidebar.expander("UX latency (click → paint)", expanded=True):
         st.caption(
-            "Measures Streamlit paint path. first_visible_ms = first painted "
-            "surface after click; settled_ms = fragment/page end. "
-            "Add `?ux_latency=1` to force on."
+            "Location: left sidebar, under **Developer Mode**, above **Account & Sign In** / **Choose Page**. "
+            "Available on every Baseball page (not only Live Draft Room)."
+        )
+        if show_howto_only:
+            st.warning(
+                "Recording is OFF. Turn **Developer Mode** ON (checkbox above), "
+                "or open the app with `?ux_latency=1` in the URL, then click "
+                "Add/Remove/Draft in Live Draft Room."
+            )
+            return
+        st.caption(
+            "Recording ON — first_visible_ms = first painted surface after click; "
+            "settled_ms = fragment/page end."
         )
         if not log:
-            st.caption("No interactions recorded yet — click Add/Remove/Draft in Live Draft Room.")
+            st.info(
+                "No interactions recorded yet. Go to **Live Draft Room** and click "
+                "⭐ Add to Queue, Remove, or Draft — timings appear here after each click."
+            )
             return
         rows = []
         for e in log[-12:]:
@@ -264,7 +284,14 @@ def render_ux_latency_panel(st: Any, session: dict[str, Any]) -> None:
         try:
             import pandas as pd
 
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        except TypeError:
+            try:
+                import pandas as pd
+
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            except Exception:
+                st.json(rows[-5:])
         except Exception:
             st.json(rows[-5:])
         latest = log[-1]
