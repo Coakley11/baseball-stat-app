@@ -23542,6 +23542,19 @@ if active_page == "Live Draft Room":
         except ImportError:
             pass
 
+        # Phase 1 Live Draft Chat — fragment-scoped; does not touch timer/board revision.
+        try:
+            from live_draft_chat_ui import render_live_draft_chat_panel
+
+            render_live_draft_chat_panel(st, st.session_state)
+        except ImportError:
+            pass
+        except Exception as _ld_chat_exc:
+            try:
+                st.caption(f"Draft chat unavailable: {type(_ld_chat_exc).__name__}")
+            except Exception:
+                pass
+
         board_col, rec_col = st.columns([1.45, 1.0])
 
         with board_col:

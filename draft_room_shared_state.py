@@ -188,6 +188,38 @@ def bump_revision(document: dict[str, Any], *, live_room: dict[str, Any] | None 
     return out
 
 
+def preserve_shared_room_chat(
+    outgoing: dict[str, Any],
+    existing: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Keep the newer chat sidecar when board/settings writers use a stale soft-cached doc.
+
+    Live Draft Chat updates ``chat`` / ``chat_revision`` without bumping board ``revision``.
+    Soft-cached pick commits must not wipe messages.
+    """
+    if not isinstance(outgoing, dict):
+        return {}
+    if not isinstance(existing, dict):
+        return outgoing
+    existing_chat = existing.get("chat")
+    if not isinstance(existing_chat, dict):
+        return outgoing
+    out_chat = outgoing.get("chat")
+    try:
+        existing_rev = int(existing_chat.get("chat_revision") or 0)
+    except (TypeError, ValueError):
+        existing_rev = 0
+    try:
+        out_rev = int(out_chat.get("chat_revision") or 0) if isinstance(out_chat, dict) else 0
+    except (TypeError, ValueError):
+        out_rev = 0
+    if existing_rev > out_rev or (existing_rev == out_rev and not isinstance(out_chat, dict)):
+        merged = copy.deepcopy(outgoing)
+        merged["chat"] = copy.deepcopy(existing_chat)
+        return merged
+    return outgoing
+
+
 @runtime_checkable
 class SharedRoomStore(Protocol):
     def exists(self, room_code: str) -> bool: ...
@@ -295,10 +327,17 @@ class LocalFileSharedRoomStore:
         code = str(document.get("room_code") or "").strip().upper()
         if not code:
             raise ValueError("shared room document missing room_code")
-        payload = sanitize_shared_room_document(document)
+        existing = None
+        path = self._path(code)
+        if path.is_file():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                existing = raw if isinstance(raw, dict) else None
+            except (OSError, json.JSONDecodeError):
+                existing = None
+        payload = sanitize_shared_room_document(preserve_shared_room_chat(document, existing))
         payload["_storage_backend"] = "local_file"
         self.root.mkdir(parents=True, exist_ok=True)
-        path = self._path(code)
         path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         return payload
 
@@ -312,13 +351,13 @@ class LocalFileSharedRoomStore:
         code = str(document.get("room_code") or "").strip().upper()
         current = self.load(code)
         if current is None:
-            self.save(document)
-            return True, document
+            saved = self.save(document)
+            return True, saved
         current_rev = int(current.get("revision") or 0)
         if expected_revision is not None and current_rev != int(expected_revision):
             return False, current
-        self.save(document)
-        return True, document
+        saved = self.save(preserve_shared_room_chat(document, current))
+        return True, saved
 
 
 _DEFAULT_STORE: SharedRoomStore | None = None

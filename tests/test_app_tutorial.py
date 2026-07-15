@@ -10,10 +10,24 @@ import app_tutorial as tut
 
 def test_tutorial_has_action_first_steps():
     steps = tut.get_tutorial_steps()
-    assert len(steps) >= 15
+    assert len(steps) >= 6
+    ids = [s["id"] for s in steps]
+    assert ids == ["welcome", "historical", "draft_prep", "live_draft", "fantasy_mgmt", "finish"]
     hist = next(s for s in steps if s["id"] == "historical")
-    assert hist["steps"][0].startswith("Open")
-    assert any("Try" in t or "try" in t.lower() for s in steps for t in s.get("tries", []))
+    assert "Hank Aaron" in hist["headline"] or "Willie Mays" in hist["headline"]
+    assert any(s.get("tries") for s in steps if s["kind"] == "normal")
+    assert any("Aaron" in t or "mock" in t.lower() or "steals" in t.lower() for s in steps for t in s.get("tries", []))
+
+
+def test_tutorial_covers_current_workflows():
+    blob = json.dumps(tut.get_tutorial_steps()).lower()
+    assert "live draft" in blob
+    assert "waiver" in blob
+    assert "trade center" in blob
+    assert "draft lab" in blob
+    assert "hall of fame" in blob
+    assert "draft simulation test mode" not in blob
+    assert "research mode" not in blob
 
 
 def test_metrics_mostly_in_advanced():
@@ -24,8 +38,6 @@ def test_metrics_mostly_in_advanced():
     assert "normalized" not in main_blob
     assert "unified" not in main_blob
     assert "session state" not in main_blob
-    trends = next(s for s in steps if s["id"] == "trends")
-    assert trends.get("advanced")
 
 
 def test_hide_button_prefs_roundtrip():
