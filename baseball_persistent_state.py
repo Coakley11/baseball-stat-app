@@ -584,6 +584,36 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             skip_draft_workflow = is_draft_queue_persist_dirty(ss)
         except ImportError:
             skip_draft_workflow = bool(ss.get("_draft_queue_persist_dirty"))
+    # Later-pass wipe: dirty may already be cleared after flush, but session still
+    # has a populated queue while the blob carries []. Prefer live session.
+    if not skip_draft_workflow:
+        sess_q = [str(x).strip() for x in (ss.get("draft_queue") or []) if str(x).strip()]
+        blob_q = [str(x).strip() for x in (state.get("draft_queue") or []) if str(x).strip()]
+        ds = state.get("draft_state") if isinstance(state.get("draft_state"), dict) else {}
+        blob_ds_q = [str(x).strip() for x in (ds.get("queue") or []) if str(x).strip()]
+        if sess_q and not blob_q and not blob_ds_q:
+            skip_draft_workflow = True
+            ss["_live_draft_queue_blob_restore_skipped"] = "refuse_empty_blob_over_session"
+            try:
+                from live_draft_queue_survival import note_queue_survival, record_queue_write
+
+                record_queue_write(
+                    ss,
+                    function="apply_baseball_disk_state",
+                    reason="refuse_empty_blob_over_session",
+                    old_session_queue=sess_q,
+                    new_session_queue=sess_q,
+                    blocked=True,
+                    source="workspace_blob",
+                )
+                note_queue_survival(
+                    ss,
+                    "blob_restore_skip",
+                    detail="refused empty blob overwrite of populated session queue",
+                    st=st,
+                )
+            except ImportError:
+                pass
     _DRAFT_WORKFLOW_RESTORE_KEYS = frozenset(
         {
             "draft_state",
@@ -596,7 +626,8 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         }
     )
     if skip_draft_workflow:
-        ss["_live_draft_queue_blob_restore_skipped"] = "local_dirty_or_pending"
+        if not ss.get("_live_draft_queue_blob_restore_skipped"):
+            ss["_live_draft_queue_blob_restore_skipped"] = "local_dirty_or_pending"
         try:
             from live_draft_queue_survival import note_queue_survival
 

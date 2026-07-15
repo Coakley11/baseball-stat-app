@@ -1624,6 +1624,12 @@ def render_live_draft_rec_cards(
                 ) -> None:
                     before = [str(x).strip() for x in (_session.get("draft_queue") or []) if str(x).strip()]
                     try:
+                        from live_draft_queue_survival import begin_queue_action
+
+                        begin_queue_action(_session, name=_name)
+                    except ImportError:
+                        pass
+                    try:
                         from live_draft_ux_latency import ACTION_ADD_QUEUE, note_ux_action
 
                         note_ux_action(

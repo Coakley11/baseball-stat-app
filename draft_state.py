@@ -43,8 +43,25 @@ def mark_draft_local_edit(session: dict[str, Any]) -> None:
 
 
 def clear_draft_local_edit(session: dict[str, Any]) -> None:
+    was_dirty = bool(session.get(DRAFT_DIRTY_KEY))
     session.pop(DRAFT_DIRTY_KEY, None)
     session.pop(DRAFT_LOCAL_EDIT_TS_KEY, None)
+    if was_dirty:
+        try:
+            from live_draft_queue_survival import note_queue_survival, record_queue_write
+
+            layers = session.get("draft_queue") or []
+            record_queue_write(
+                session,
+                function="clear_draft_local_edit",
+                reason="clear_dirty_flag",
+                old_session_queue=list(layers) if isinstance(layers, list) else [],
+                new_session_queue=list(layers) if isinstance(layers, list) else [],
+                source="dirty_cleared",
+            )
+            note_queue_survival(session, "DIRTY_CLEARED", detail="clear_draft_local_edit")
+        except ImportError:
+            pass
 
 
 def _read_widget_lists(session: dict[str, Any]) -> dict[str, list[str]]:
@@ -116,6 +133,9 @@ def write_canonical_draft_state(
 ) -> dict[str, Any]:
     """Write canonical draft_state; mirror queue + watchlist widget keys."""
     widget = _read_widget_lists(session)
+    old_q = list(widget["queue"])
+    ds_before = session.get("draft_state") if isinstance(session.get("draft_state"), dict) else {}
+    old_ds_q = _normalize_player_list(ds_before.get("queue"))
     q = _normalize_player_list(queue if queue is not None else widget["queue"])
     focus = _normalize_player_list(
         watchlist_focus if watchlist_focus is not None else widget["watchlist_focus"]
@@ -123,17 +143,63 @@ def write_canonical_draft_state(
     favorites = _normalize_player_list(
         watchlist_favorites if watchlist_favorites is not None else widget["watchlist_favorites"]
     )
+    reason_s = str(reason or "")
+    blocked = False
+    try:
+        from live_draft_queue_survival import record_queue_write, should_block_empty_queue_write
+
+        if should_block_empty_queue_write(
+            session, old_queue=old_q or old_ds_q, new_queue=q, reason=reason_s
+        ):
+            blocked = True
+            session["_live_draft_queue_empty_write_blocked"] = {
+                "function": "write_canonical_draft_state",
+                "reason": reason_s,
+                "old": list(old_q or old_ds_q)[:12],
+                "attempted_new": list(q)[:12],
+            }
+            q = list(old_q or old_ds_q)
+            record_queue_write(
+                session,
+                function="write_canonical_draft_state",
+                reason=reason_s or "canonical",
+                old_session_queue=old_q,
+                new_session_queue=q,
+                old_draft_state_queue=old_ds_q,
+                new_draft_state_queue=q,
+                blocked=True,
+                source="empty_overwrite_blocked",
+            )
+    except ImportError:
+        pass
     meta = {
         "queue": list(q),
         "watchlist_focus": list(focus),
         "watchlist_favorites": list(favorites),
-        "last_write_reason": reason or None,
+        "last_write_reason": reason_s or None,
     }
     session["draft_state"] = meta
     if sync_widget_keys:
         session[DRAFT_QUEUE_KEY] = list(q)
         session[DRAFT_WATCHLIST_FOCUS_KEY] = list(focus)
         session[DRAFT_WATCHLIST_FAVORITES_KEY] = list(favorites)
+    if not blocked:
+        try:
+            from live_draft_queue_survival import record_queue_write
+
+            record_queue_write(
+                session,
+                function="write_canonical_draft_state",
+                reason=reason_s or "canonical",
+                old_session_queue=old_q,
+                new_session_queue=list(q) if sync_widget_keys else old_q,
+                old_draft_state_queue=old_ds_q,
+                new_draft_state_queue=list(q),
+                blocked=False,
+                source="canonical",
+            )
+        except ImportError:
+            pass
     payload = {
         "queue": list(q),
         "watchlist_focus": list(focus),
@@ -141,9 +207,9 @@ def write_canonical_draft_state(
     }
     session["_suite_last_cloud_payload_draft_workflow"] = copy.deepcopy(payload)
     _sync_page_filter_draft_block(session, data=payload)
-    record_draft_field_write(session, "draft_workflow", reason or "canonical", new=payload)
+    record_draft_field_write(session, "draft_workflow", reason_s or "canonical", new=payload)
     if sync_participant:
-        _sync_participant_workflow_if_multiplayer(session, reason=reason or "canonical")
+        _sync_participant_workflow_if_multiplayer(session, reason=reason_s or "canonical")
     if local_edit:
         mark_draft_local_edit(session)
     return meta

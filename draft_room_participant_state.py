@@ -652,10 +652,64 @@ def load_participant_workflow_into_session(session: dict[str, Any], room_code: s
     """Hydrate widget/canonical queue keys from participant-private storage."""
     slot = participant_workflow_slot(session, room_code)
     workflow = dict(slot.get("workflow") or {})
+    old_q = [str(x).strip() for x in (session.get(DRAFT_QUEUE_KEY) or []) if str(x).strip()]
+    new_q = [str(x).strip() for x in (workflow.get("queue") or []) if str(x).strip()]
+    # Do not wipe a populated local queue with an empty participant slot on a later pass.
+    try:
+        from live_draft_queue_survival import record_queue_write, should_block_empty_queue_write
+
+        if should_block_empty_queue_write(
+            session,
+            old_queue=old_q,
+            new_queue=new_q,
+            reason="participant_hydrate",
+        ):
+            record_queue_write(
+                session,
+                function="load_participant_workflow_into_session",
+                reason="participant_hydrate",
+                old_session_queue=old_q,
+                new_session_queue=old_q,
+                blocked=True,
+                source=f"room={room_code}",
+            )
+            session["_live_draft_queue_empty_write_blocked"] = {
+                "function": "load_participant_workflow_into_session",
+                "reason": "participant_hydrate",
+                "old": old_q[:12],
+                "attempted_new": new_q[:12],
+            }
+            notes = slot.get("notes")
+            if isinstance(notes, str):
+                session[PARTICIPANT_NOTES_KEY] = notes
+            pid = resolve_participant_id(session)
+            team = membership_team_for_participant(session, room_code, participant_id=pid)
+            if not team:
+                team = str(slot.get("assigned_team") or "").strip()
+            if team:
+                session[ACTIVE_PARTICIPANT_ID_KEY] = pid
+                session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
+            return participant_state_for_room(session, room_code)
+    except ImportError:
+        pass
     # Always scope session widgets to this participant — never leave a prior user's queue visible.
     session[DRAFT_QUEUE_KEY] = copy.deepcopy(workflow.get("queue") or [])
     session[DRAFT_WATCHLIST_FOCUS_KEY] = copy.deepcopy(workflow.get("watchlist_focus") or [])
     session[DRAFT_WATCHLIST_FAVORITES_KEY] = copy.deepcopy(workflow.get("watchlist_favorites") or [])
+    try:
+        from live_draft_queue_survival import record_queue_write
+
+        record_queue_write(
+            session,
+            function="load_participant_workflow_into_session",
+            reason="participant_hydrate",
+            old_session_queue=old_q,
+            new_session_queue=new_q,
+            blocked=False,
+            source=f"room={room_code}",
+        )
+    except ImportError:
+        pass
     notes = slot.get("notes")
     if isinstance(notes, str):
         session[PARTICIPANT_NOTES_KEY] = notes

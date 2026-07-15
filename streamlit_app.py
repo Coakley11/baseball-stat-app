@@ -14072,6 +14072,13 @@ except Exception:
 try:
     from baseball_persistent_state import prepare_baseball_workspace
 
+    try:
+        from live_draft_queue_survival import begin_queue_script_pass
+
+        # Pass ID before workspace hydrate so later-pass wipes are attributable.
+        begin_queue_script_pass(st.session_state, st=st)
+    except Exception:
+        pass
     prepare_baseball_workspace(st)
 except Exception:
     pass
