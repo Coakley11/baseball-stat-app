@@ -14,9 +14,9 @@ LDR_TRACE_ENABLED_KEY = "_live_draft_render_trace_enabled"
 LDR_TRACE_LAST_SECTION_KEY = "_live_draft_render_last_section"
 LDR_TRACE_MAX = 400
 
-# Temporary debug for Daniel-only LDR incomplete paint — show for everyone on Live Draft Room.
-# Flip to False once the stall section is identified.
-LDR_TRACE_UNCONDITIONAL = True
+# Temporary unconditional on-page LDR stall debug. Keep False for portfolio / normal users.
+# Re-enable only for short local debugging sessions; prefer ?ldr_trace=1 + Developer Mode.
+LDR_TRACE_UNCONDITIONAL = False
 
 # Canonical LDR page pipeline order (sparse markers may skip some).
 LDR_SECTION_ORDER = (
@@ -61,7 +61,55 @@ LDR_SECTION_ORDER = (
 LDR_TRACE_LAST_STEP_KEY = "_live_draft_render_last_step"
 
 
+def _is_capture_mode_hard(st: Any | None) -> bool:
+    """Hard portfolio capture check — never raise into callers."""
+    if st is None:
+        return False
+    try:
+        from portfolio_polish import is_capture_mode
+
+        return bool(is_capture_mode(st))
+    except Exception:
+        try:
+            ss = getattr(st, "session_state", None)
+            if ss is None:
+                return False
+            return bool(ss.get("portfolio_screenshot_mode") or ss.get("portfolio_demo_mode"))
+        except Exception:
+            return False
+
+
+def clear_ldr_trace_ui_state(session: dict[str, Any] | None, st: Any | None = None) -> None:
+    """Drop sticky LDR UI flags and ldr_trace query params (used by Screenshot Mode)."""
+    if isinstance(session, dict):
+        session.pop("_live_draft_render_trace_force", None)
+        session[LDR_TRACE_ENABLED_KEY] = False
+    if st is None:
+        return
+    try:
+        qp = getattr(st, "query_params", None)
+        if qp is None:
+            return
+        raw = qp.get("ldr_trace")
+        if raw is None:
+            return
+        try:
+            del qp["ldr_trace"]
+        except Exception:
+            try:
+                qp["ldr_trace"] = "0"
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def is_ldr_trace_enabled(session: dict[str, Any] | None, st: Any | None = None) -> bool:
+    """Silent logging / disk markers — may be on for forced debug without painting UI."""
+    if _is_capture_mode_hard(st):
+        # Capture mode: keep UI off; do not auto-enable sticky session logging from query/DM.
+        clear_ldr_trace_ui_state(session if isinstance(session, dict) else None, st)
+        return False
     if LDR_TRACE_UNCONDITIONAL:
         if isinstance(session, dict):
             session[LDR_TRACE_ENABLED_KEY] = True
@@ -88,6 +136,55 @@ def is_ldr_trace_enabled(session: dict[str, Any] | None, st: Any | None = None) 
         except Exception:
             pass
     return False
+
+
+def should_show_ldr_trace_ui(session: dict[str, Any] | None, st: Any | None = None) -> bool:
+    """On-page LDR banners/captions/JSON.
+
+    Hard rules:
+    1) Portfolio Screenshot/Demo Mode → NEVER show (clears query/force flags).
+    2) Developer Mode must be ON.
+    3) Explicit ?ldr_trace=1 or force flag (or temporary LDR_TRACE_UNCONDITIONAL).
+    """
+    if st is None:
+        return False
+    # Hard override #1 — capture mode wins over env, query, session flags, unconditional.
+    if _is_capture_mode_hard(st):
+        clear_ldr_trace_ui_state(session if isinstance(session, dict) else None, st)
+        return False
+    try:
+        from portfolio_polish import allow_developer_diagnostic_ui
+
+        if not allow_developer_diagnostic_ui(st):
+            return False
+    except ImportError:
+        return False
+    # Require an explicit force / ?ldr_trace / unconditional — do not paint merely because
+    # a sticky session key was left on from an older unconditional debug window.
+    if LDR_TRACE_UNCONDITIONAL:
+        return True
+    if not isinstance(session, dict):
+        return False
+    if session.get("_live_draft_render_trace_force"):
+        return True
+    try:
+        raw = st.query_params.get("ldr_trace")
+        if isinstance(raw, (list, tuple)):
+            raw = raw[0] if raw else ""
+        if str(raw or "").strip() in {"1", "true", "yes"}:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def suppress_live_draft_diagnostics_for_page(st: Any, session: dict[str, Any] | None = None) -> bool:
+    """Call at Live Draft page entry. Returns True when diagnostics must stay hidden."""
+    ss = session if isinstance(session, dict) else (getattr(st, "session_state", None) if st is not None else None)
+    if _is_capture_mode_hard(st):
+        clear_ldr_trace_ui_state(ss if isinstance(ss, dict) else None, st)
+        return True
+    return not should_show_ldr_trace_ui(ss if isinstance(ss, dict) else None, st)
 
 
 def _append(session: dict[str, Any], entry: dict[str, Any]) -> None:
@@ -336,7 +433,8 @@ def ldr_step(
     )
     if ui_marker and st is not None:
         try:
-            st.caption(f"⏱ LDR step enter: `{name}`")
+            if should_show_ldr_trace_ui(session, st):
+                st.caption(f"⏱ LDR step enter: `{name}`")
         except Exception:
             pass
     try:
@@ -353,7 +451,8 @@ def ldr_step(
         )
         if ui_marker and st is not None:
             try:
-                st.error(f"⏱ LDR step exception: `{name}` ({elapsed_ms}ms) {type(exc).__name__}: {exc}")
+                if should_show_ldr_trace_ui(session, st):
+                    st.error(f"⏱ LDR step exception: `{name}` ({elapsed_ms}ms) {type(exc).__name__}: {exc}")
             except Exception:
                 pass
         raise
@@ -369,7 +468,8 @@ def ldr_step(
         )
         if ui_marker and st is not None:
             try:
-                st.caption(f"⏱ LDR step done: `{name}` ({elapsed_ms}ms)")
+                if should_show_ldr_trace_ui(session, st):
+                    st.caption(f"⏱ LDR step done: `{name}` ({elapsed_ms}ms)")
             except Exception:
                 pass
 
@@ -450,7 +550,7 @@ def _write_ldr_trace_panel_body(st: Any, ss: dict[str, Any]) -> None:
         str(stall.get("next_behavior") or ""),
         terminal=stall.get("terminal") if isinstance(stall.get("terminal"), dict) else None,
     )
-    st.caption("Temporary unconditional debug panel — paste this when LDR lower half stalls.")
+    st.caption("Stall-debug panel — paste this when LDR lower half stalls.")
     st.markdown(f"**Last successful section:** `{stall.get('last_successful_section') or '—'}`")
     st.markdown(f"**Next section entered:** `{stall.get('next_section_begun') or '—'}`")
     st.markdown(f"**Next behavior:** `{behavior_label}`")
@@ -482,6 +582,19 @@ def _write_ldr_trace_panel_body(st: Any, ss: dict[str, Any]) -> None:
     st.code(json.dumps(snap, indent=2, default=str), language="json")
 
 
+def report_ldr_ui_error(st: Any, session: dict[str, Any] | None, label: str, exc: BaseException) -> None:
+    """Surface LDR instrumentation failures only when diagnostic UI is allowed."""
+    if st is None:
+        return
+    ss = session if isinstance(session, dict) else None
+    if not should_show_ldr_trace_ui(ss, st):
+        return
+    try:
+        st.error(f"LDR TRACE {label}: {type(exc).__name__}: {exc}")
+    except Exception:
+        pass
+
+
 def ldr_post_rerun_checkpoint(
     st: Any,
     session: dict[str, Any],
@@ -493,15 +606,16 @@ def ldr_post_rerun_checkpoint(
     last_rerun = str(session.get("_live_draft_last_rerun_source") or "")
     last_step = str(session.get(LDR_TRACE_LAST_STEP_KEY) or "")
     last_section = str(session.get(LDR_TRACE_LAST_SECTION_KEY) or "")
-    try:
-        st.info(
-            f"LDR post-rerun checkpoint `{label}` · "
-            f"last_rerun=`{last_rerun or '—'}` · "
-            f"last_section=`{last_section or '—'}` · "
-            f"last_step=`{last_step or '—'}`"
-        )
-    except Exception:
-        pass
+    if should_show_ldr_trace_ui(session, st):
+        try:
+            st.info(
+                f"LDR post-rerun checkpoint `{label}` · "
+                f"last_rerun=`{last_rerun or '—'}` · "
+                f"last_section=`{last_section or '—'}` · "
+                f"last_step=`{last_step or '—'}`"
+            )
+        except Exception:
+            pass
     ldr_trace(
         session,
         section=label,
@@ -518,13 +632,19 @@ def force_render_live_draft_trace_banner(
     *,
     label: str = "top",
 ) -> None:
-    """Direct widgets only — never st.empty(). Always paint something visible."""
+    """Developer-only stall panel. No-op for normal users and portfolio captures."""
     ss = session if isinstance(session, dict) else st.session_state
-    # Force-enable for this debug window regardless of prior gates.
+    # Hard capture override before any force-flag mutation.
+    if _is_capture_mode_hard(st):
+        clear_ldr_trace_ui_state(ss if isinstance(ss, dict) else None, st)
+        return
+    if not should_show_ldr_trace_ui(ss if isinstance(ss, dict) else None, st):
+        return
+    # Force-enable logging for this debug window when intentionally visible.
     if isinstance(ss, dict):
         ss[LDR_TRACE_ENABLED_KEY] = True
         ss["_live_draft_render_trace_force"] = True
-    title = f"Live Draft render trace (debug — always on) [{label}]"
+    title = f"Live Draft render trace (debug) [{label}]"
     try:
         st.warning(
             f"🔎 {title} — temporary stall-debug instrumentation. "
@@ -533,7 +653,7 @@ def force_render_live_draft_trace_banner(
         with st.expander(title, expanded=True):
             _write_ldr_trace_panel_body(st, ss)
         try:
-            with st.sidebar.expander(title, expanded=True):
+            with st.sidebar.expander(title, expanded=False):
                 _write_ldr_trace_panel_body(st, ss)
         except Exception as sidebar_exc:
             st.caption(f"(Sidebar trace unavailable: {type(sidebar_exc).__name__})")

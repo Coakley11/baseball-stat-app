@@ -284,9 +284,16 @@ def render_fantasy_workflow_trace(st: Any, session: dict[str, Any] | None = None
     ss = session if isinstance(session, dict) else st.session_state
     if not is_wf_trace_enabled(ss, st):
         return
+    try:
+        from portfolio_polish import allow_developer_diagnostic_ui
+
+        if not allow_developer_diagnostic_ui(st):
+            return
+    except ImportError:
+        return
     if str(ss.get("active_page") or "") not in FANTASY_WF_PAGES and not ss.get(WF_TRACE_LOG_KEY):
         return
-    with st.sidebar.expander("Fantasy workflow init trace", expanded=True):
+    with st.sidebar.expander("Fantasy workflow init trace", expanded=False):
         st.caption(
             "Logs fantasy/draft page enter, restores, and any rerun/stop that can abort render."
         )

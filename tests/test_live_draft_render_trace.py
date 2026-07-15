@@ -20,9 +20,37 @@ from live_draft_render_trace import (
 
 
 class LiveDraftRenderTraceTests(unittest.TestCase):
-    def test_unconditional_debug_enabled(self) -> None:
-        self.assertTrue(LDR_TRACE_UNCONDITIONAL)
-        self.assertTrue(is_ldr_trace_enabled({}))
+    def test_unconditional_debug_disabled_by_default(self) -> None:
+        self.assertFalse(LDR_TRACE_UNCONDITIONAL)
+        self.assertFalse(is_ldr_trace_enabled({}))
+
+    def test_force_flag_enables_logging(self) -> None:
+        ss = {"_live_draft_render_trace_force": True}
+        self.assertTrue(is_ldr_trace_enabled(ss))
+
+    def test_screenshot_mode_hard_suppresses_ui_and_clears_force(self) -> None:
+        from live_draft_render_trace import should_show_ldr_trace_ui
+
+        class _SS(dict):
+            pass
+
+        class _St:
+            def __init__(self) -> None:
+                self.session_state = _SS(
+                    {
+                        "portfolio_screenshot_mode": True,
+                        "_live_draft_render_trace_force": True,
+                        "_live_draft_render_trace_enabled": True,
+                    }
+                )
+                self.query_params = {"ldr_trace": "1"}
+
+        st = _St()
+        ss = st.session_state
+        self.assertFalse(should_show_ldr_trace_ui(ss, st))
+        self.assertFalse(ss.get("_live_draft_render_trace_force"))
+        self.assertFalse(ss.get("_live_draft_render_trace_enabled"))
+        self.assertNotIn("ldr_trace", st.query_params)
 
     def test_records_last_successful_section(self) -> None:
         ss = {

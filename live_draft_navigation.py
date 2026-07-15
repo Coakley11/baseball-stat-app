@@ -1123,8 +1123,11 @@ def _render_return_card(
 
         try:
             from suite_workspace import developer_mode_checkbox_enabled
+            from portfolio_polish import allow_developer_diagnostic_ui
 
-            _show_resume_diag = bool(developer_mode_checkbox_enabled(st=st))
+            _show_resume_diag = bool(
+                developer_mode_checkbox_enabled(st=st) and allow_developer_diagnostic_ui(st)
+            )
         except ImportError:
             _show_resume_diag = False
         if _show_resume_diag:

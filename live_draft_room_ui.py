@@ -644,7 +644,7 @@ def render_live_draft_room_header(
         except TypeError:
             st.code(code)
         st.caption(f"Invite players with this room code: **{code}**")
-    else:
+    elif not code:
         st.error("Could not create shared room. This draft cannot be joined by others.")
 
 

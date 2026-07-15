@@ -384,7 +384,7 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
             with ldr_step(session, "timer_skip_fragment_expired", st=st):
                 session[EXPIRED_PICK_PENDING_KEY] = True
                 _render_timer_static(st, session, live_room, source="static_expired_no_fragment")
-                st.caption("Clock at 0s — processing expired pick on page (fragment detached).")
+                st.caption("Processing expired pick…")
             return
 
         try:

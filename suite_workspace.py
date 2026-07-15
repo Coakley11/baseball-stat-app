@@ -427,7 +427,18 @@ def developer_tools_workspace_eligible(*, st: Any | None = None) -> bool:
 
 
 def can_show_developer_tools(*, st: Any | None = None) -> bool:
-    """Developer UI gate: eligible workspace + Developer Mode checkbox (not ?dev=1 alone)."""
+    """Developer UI gate: eligible workspace + Developer Mode checkbox (not ?dev=1 alone).
+
+    Portfolio Screenshot/Demo Mode always hides developer tools.
+    """
+    if st is not None:
+        try:
+            from portfolio_polish import is_capture_mode
+
+            if is_capture_mode(st):
+                return False
+        except Exception:
+            pass
     return developer_tools_workspace_eligible(st=st) and developer_mode_checkbox_enabled(st=st)
 
 

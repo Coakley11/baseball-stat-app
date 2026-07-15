@@ -14,6 +14,7 @@ __all__ = (
     "is_screenshot_mode",
     "is_demo_mode",
     "is_capture_mode",
+    "allow_developer_diagnostic_ui",
     "skip_heavy_work",
     "prefer_cached_demo",
     "skip_api_refresh",
@@ -41,6 +42,24 @@ def is_demo_mode(st) -> bool:
 
 def is_capture_mode(st) -> bool:
     return is_screenshot_mode(st) or is_demo_mode(st)
+
+
+def allow_developer_diagnostic_ui(st) -> bool:
+    """True only when developer diagnostic expanders/captions may render.
+
+    Portfolio Screenshot/Demo Mode always hides diagnostics, even if Developer Mode
+    is on — so capture frames stay end-user clean.
+    """
+    if st is None:
+        return False
+    if is_capture_mode(st):
+        return False
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        return bool(developer_mode_checkbox_enabled(st=st))
+    except Exception:
+        return False
 
 
 def skip_heavy_work(st) -> bool:

@@ -364,8 +364,15 @@ def render_nav_assignment_trace(st: Any, session: dict[str, Any] | None = None) 
     ss = session if isinstance(session, dict) else st.session_state
     if not is_nav_page_trace_enabled(ss, st):
         return
+    try:
+        from portfolio_polish import allow_developer_diagnostic_ui
+
+        if not allow_developer_diagnostic_ui(st):
+            return
+    except ImportError:
+        return
     text = format_nav_trace_text(ss)
-    with st.sidebar.expander("Daniel nav assignment trace", expanded=True):
+    with st.sidebar.expander("Daniel nav assignment trace", expanded=False):
         st.caption(
             "Live page-resolution log (Daniel / ?nav_trace=1). "
             "Shows every assignment that can force Historical Explorer."
