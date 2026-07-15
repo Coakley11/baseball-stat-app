@@ -970,6 +970,17 @@ def render_trade_center_tab(
     scope_key = _trade_scope_state_key(scope_fingerprint)
     ws = _trade_workspace(session, my_team=my_team)
 
+    try:
+        from baseball_fantasy_activity import emit_incoming_trade_offers_once
+        from fantasy_league_context import get_active_league_context
+        from fantasy_trade_proposals import get_incoming_trade_proposals
+
+        ctx = get_active_league_context(session)
+        if ctx and my_team:
+            emit_incoming_trade_offers_once(session, ctx, get_incoming_trade_proposals(session, my_team))
+    except Exception:
+        pass
+
     if ws["roster_stats"] is None or ws["roster_stats"].empty:
         missing_team = ""
         try:

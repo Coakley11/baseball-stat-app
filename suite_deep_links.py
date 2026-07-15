@@ -54,6 +54,15 @@ _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("bb:proj", "ML Projections"),
     ("baseball:trade", "Fantasy Lineup Assistant"),
     ("bb:trade", "Fantasy Lineup Assistant"),
+    ("bb:trade_center:", "Trade Center"),
+    ("bb:trade_center", "Trade Center"),
+    ("bb:waiver:", "Waiver Wire / Add-Drop Center"),
+    ("bb:waiver", "Waiver Wire / Add-Drop Center"),
+    ("bb:lineup:", "Fantasy Lineup Assistant"),
+    ("bb:lineup", "Fantasy Lineup Assistant"),
+    ("bb:invite:", "Saved Draft Library"),
+    ("bb:library:", "Saved Draft Library"),
+    ("bb:library", "Saved Draft Library"),
     ("baseball:roster", "Draft Room"),
     ("baseball:sleepers", "Fantasy Market"),
     ("baseball:trends", "Trend Value"),
@@ -285,6 +294,31 @@ def build_resume_action_url(
             saved_draft = rk.split(":", 2)[-1].strip()
         if saved_draft:
             params["suite_saved_draft"] = saved_draft[:80]
+        proposal_id = str(m.get("proposal_id") or "").strip()
+        if not proposal_id and rk.startswith("bb:trade_center:"):
+            proposal_id = rk.split(":", 2)[-1].strip()
+        if proposal_id:
+            params["suite_trade_proposal"] = proposal_id[:80]
+        league_id = str(m.get("league_id") or m.get("league_context_id") or "").strip()
+        if not league_id and rk.startswith("bb:library:"):
+            league_id = rk.split(":", 2)[-1].strip()
+        if league_id:
+            params["suite_league"] = league_id[:80]
+        invite_id = str(m.get("invite_id") or "").strip()
+        if not invite_id and rk.startswith("bb:invite:"):
+            invite_id = rk.split(":", 2)[-1].strip()
+        if invite_id:
+            params["suite_invite"] = invite_id[:80]
+        week = m.get("week")
+        if week is None and rk.startswith("bb:lineup:") and ":w" in rk:
+            week = rk.rsplit(":w", 1)[-1].strip()
+        if week is not None and str(week).strip():
+            params["suite_lineup_week"] = str(week).strip()[:8]
+        waiver_tx = str(m.get("waiver_tx_id") or m.get("transaction_id") or "").strip()
+        if not waiver_tx and rk.startswith("bb:waiver:"):
+            waiver_tx = rk.split(":", 2)[-1].strip()
+        if waiver_tx:
+            params["suite_waiver_tx"] = waiver_tx[:80]
         hist_stat = str(m.get("sort_stat") or "").strip()
         if not hist_stat and rk.startswith("historical:"):
             parts = rk.split(":", 2)

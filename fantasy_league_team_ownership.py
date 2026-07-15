@@ -372,6 +372,12 @@ def claim_team_in_league_context(
         push_league_context_to_shared(session, saved)
     except ImportError:
         pass
+    try:
+        from baseball_fantasy_activity import log_team_claimed
+
+        log_team_claimed(saved, team=team)
+    except Exception:
+        pass
     return saved, ""
 
 

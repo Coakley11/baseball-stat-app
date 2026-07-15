@@ -33,9 +33,31 @@ DRAFT_ACTIVITY_EVENT_TYPES: frozenset[str] = frozenset(
     }
 )
 
+FANTASY_LIFECYCLE_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "trade_offer_sent",
+        "trade_offer_received",
+        "trade_accepted",
+        "trade_declined",
+        "trade_canceled",
+        "trade_expired",
+        "waiver_transaction",
+        "waiver_add",
+        "waiver_drop",
+        "shared_league_created",
+        "shared_league_invite",
+        "team_claimed",
+        "active_draft_changed",
+        "draft_saved",
+        "lineup_saved",
+        "lineup_locked",
+    }
+)
+
 BASEBALL_WORKFLOW_EVENT_TYPES: frozenset[str] = frozenset(
     {
         *DRAFT_ACTIVITY_EVENT_TYPES,
+        *FANTASY_LIFECYCLE_EVENT_TYPES,
         "player_comparison",
         "trend_comparison_viewed",
         "historical_analysis",

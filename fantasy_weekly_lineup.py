@@ -344,6 +344,16 @@ def persist_weekly_lineup_draft(
         pass
     result["ok"] = True
     result["lineup"] = payload
+    # Emit at most once per team/week until locked (auto-save is otherwise very noisy).
+    debounce_key = f"_cc_lineup_saved:{team}:{int(week)}"
+    if not session.get(debounce_key):
+        try:
+            from baseball_fantasy_activity import log_lineup_saved
+
+            log_lineup_saved(context, week=week, team=team)
+            session[debounce_key] = True
+        except Exception:
+            pass
     return result
 
 
@@ -712,4 +722,10 @@ def save_weekly_lineup(
 
     result["ok"] = True
     result["lineup"] = payload
+    try:
+        from baseball_fantasy_activity import log_lineup_locked
+
+        log_lineup_locked(context, week=week, team=team_name)
+    except Exception:
+        pass
     return result

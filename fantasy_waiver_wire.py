@@ -1848,6 +1848,16 @@ def apply_waiver_move_pairs(
     result["ok"] = True
     result["added_players"] = [str(m.get("add_player") or "") for m in result["moves"]]
     result["dropped_players"] = [str(m.get("drop_player") or "") for m in result["moves"]]
+    try:
+        from baseball_fantasy_activity import log_waiver_transaction
+
+        log_waiver_transaction(
+            context,
+            added=list(result["added_players"]),
+            dropped=list(result["dropped_players"]),
+        )
+    except Exception:
+        pass
     return result
 
 
@@ -1881,6 +1891,13 @@ def add_pending_move_pair(
     session[WAIVER_PENDING_PAIRS_KEY] = pairs[-20:]
     add_pending_move(session, TRADE_MODE_ADD, add_name)
     add_pending_move(session, TRADE_MODE_DROP, drop_name)
+    try:
+        from baseball_fantasy_activity import log_waiver_recommendation
+        from fantasy_league_context import get_active_league_context
+
+        log_waiver_recommendation(get_active_league_context(session), add_player=add_name)
+    except Exception:
+        pass
     try:
         import streamlit as st
         from baseball_persistent_state import force_save_baseball_state

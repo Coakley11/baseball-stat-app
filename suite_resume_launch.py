@@ -329,6 +329,66 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
         draft_section = "team_analysis"
     if draft_section:
         st.session_state["_suite_resume_draft_section"] = draft_section
+    proposal_id = _qp_get(st, "suite_trade_proposal")
+    if not proposal_id and resume.startswith("bb:trade_center:"):
+        proposal_id = resume.split(":", 2)[-1].strip()
+    if proposal_id:
+        st.session_state["_suite_resume_trade_proposal"] = proposal_id
+        try:
+            from fantasy_trade_proposals import set_trade_proposal_handoff
+
+            set_trade_proposal_handoff(st.session_state, proposal_id=proposal_id, view_as_team="")
+            st.session_state["_lineup_focus_trade_offers"] = True
+        except ImportError:
+            pass
+    my_team = _qp_get(st, "suite_my_team")
+    if my_team:
+        st.session_state["_suite_resume_my_team"] = my_team
+    league_context = _qp_get(st, "suite_league_context")
+    if league_context:
+        st.session_state["_suite_resume_league_context"] = league_context
+        try:
+            from fantasy_league_context import schedule_league_context_activation
+
+            schedule_league_context_activation(st.session_state, league_context)
+        except ImportError:
+            pass
+    league_id = _qp_get(st, "suite_league")
+    if not league_id and resume.startswith("bb:library:"):
+        league_id = resume.split(":", 2)[-1].strip()
+    if league_id:
+        st.session_state["_suite_resume_league_id"] = league_id
+    invite_id = _qp_get(st, "suite_invite")
+    if not invite_id and resume.startswith("bb:invite:"):
+        invite_id = resume.split(":", 2)[-1].strip()
+    if invite_id:
+        st.session_state["_suite_resume_invite_id"] = invite_id
+        st.session_state["_saved_draft_library_focus_invite_id"] = invite_id
+    lineup_week = _qp_get(st, "suite_lineup_week")
+    if not lineup_week and resume.startswith("bb:lineup:") and ":w" in resume:
+        lineup_week = resume.rsplit(":w", 1)[-1].strip()
+    if lineup_week:
+        st.session_state["_suite_resume_lineup_week"] = lineup_week
+        try:
+            st.session_state["fantasy_lineup_week"] = int(lineup_week)
+        except (TypeError, ValueError):
+            st.session_state["fantasy_lineup_week"] = lineup_week
+    waiver_tx = _qp_get(st, "suite_waiver_tx")
+    if not waiver_tx and resume.startswith("bb:waiver:"):
+        waiver_tx = resume.split(":", 2)[-1].strip()
+    if waiver_tx:
+        st.session_state["_suite_resume_waiver_tx"] = waiver_tx
+    if not target_page and resume.startswith("bb:trade_center"):
+        target_page = "Trade Center"
+    if not target_page and resume.startswith("bb:waiver"):
+        target_page = "Waiver Wire / Add-Drop Center"
+    if not target_page and resume.startswith("bb:lineup"):
+        target_page = "Fantasy Lineup Assistant"
+    if not target_page and (
+        resume.startswith("bb:library")
+        or resume.startswith("bb:invite:")
+    ):
+        target_page = "Saved Draft Library"
     saved_draft = _qp_get(st, "suite_saved_draft")
     if not saved_draft and resume.startswith("bb:saved_draft:"):
         saved_draft = resume.split(":", 2)[-1].strip()

@@ -202,6 +202,25 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
                 break
 
     pending = list_pending_invites_for_session(session)
+    if pending:
+        try:
+            from baseball_fantasy_activity import log_shared_league_invite
+
+            seen_key = "_cc_shared_league_invite_ids"
+            seen_raw = session.get(seen_key)
+            seen = set(str(x) for x in seen_raw) if isinstance(seen_raw, (list, set, tuple)) else set()
+            changed = False
+            for invite in pending:
+                iid = str(invite.get("invite_id") or "").strip()
+                if not iid or iid in seen:
+                    continue
+                log_shared_league_invite(None, invite, as_invitee=True)
+                seen.add(iid)
+                changed = True
+            if changed:
+                session[seen_key] = sorted(seen)[-200:]
+        except Exception:
+            pass
     if not pending:
         stranded = session.get("_suite_stranded_foreign_disk_draft")
         if stranded:

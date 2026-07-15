@@ -495,6 +495,12 @@ def create_league_invite(
         mark_workflow_persist_authoritative(session)
     except ImportError:
         pass
+    try:
+        from baseball_fantasy_activity import log_shared_league_invite
+
+        log_shared_league_invite(saved, invite, as_invitee=False)
+    except Exception:
+        pass
     return invite, ""
 
 
@@ -1211,6 +1217,12 @@ def join_shared_league_from_invite(
         team_name=team,
         league_name=league_name,
     )
+    try:
+        from baseball_fantasy_activity import log_team_claimed
+
+        log_team_claimed(saved_context, team=team, invite_id=invite_id)
+    except Exception:
+        pass
     return entry, saved_context, ""
 
 
@@ -1349,6 +1361,12 @@ def decline_league_invite(
         status=INVITE_STATUS_DECLINED,
         league_name=str(invite.get("league_name") or shared.get("league_name") or ""),
     )
+    try:
+        from baseball_fantasy_activity import log_shared_league_invite_declined
+
+        log_shared_league_invite_declined(None, invite)
+    except Exception:
+        pass
     return True, ""
 
 

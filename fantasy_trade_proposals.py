@@ -467,6 +467,12 @@ def _record_trade_activity(context: dict[str, Any], proposal: dict[str, Any], ac
     )
     workflow["league_activity"] = activity[-100:]
     context["workflow"] = workflow
+    try:
+        from baseball_fantasy_activity import log_trade_terminal
+
+        log_trade_terminal(context, proposal, status=action_norm)
+    except Exception:
+        pass
 
 
 def is_trade_proposal_expired(proposal: dict[str, Any], *, now: datetime | None = None) -> bool:
@@ -882,6 +888,12 @@ def create_trade_proposal(
         save_shared_league_ok=save_shared_ok,
         save_shared_league_error=save_shared_error,
     )
+    try:
+        from baseball_fantasy_activity import log_trade_offer_sent
+
+        log_trade_offer_sent(reloaded, created)
+    except Exception:
+        pass
     return created, ""
 
 

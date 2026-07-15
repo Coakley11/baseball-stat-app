@@ -434,4 +434,13 @@ def save_live_draft_shared_league_context(
                 entry = {**existing, **entry, "draft_type": DRAFT_TYPE_LIVE}
     except ImportError:
         pass
+    try:
+        from baseball_fantasy_activity import log_shared_league_created
+
+        log_shared_league_created(
+            context,
+            draft_id=str(entry.get("draft_id") or context.get("source_draft_id") or ""),
+        )
+    except Exception:
+        pass
     return entry, context
