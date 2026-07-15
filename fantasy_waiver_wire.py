@@ -237,8 +237,22 @@ def rostered_identity_keys(context: dict[str, Any] | None) -> set[str]:
     """All identity keys for every rostered player across every league team."""
     if not context:
         return set()
-    ownership = build_ownership_map(context)
     keys: set[str] = set()
+    # Prefer walking league_rosters directly so stale ownership_map cannot leak FAs.
+    league_rosters = context.get("league_rosters") or {}
+    if isinstance(league_rosters, dict):
+        for team_entry in league_rosters.values():
+            if not isinstance(team_entry, dict):
+                continue
+            for player in team_entry.get("players") or []:
+                if not isinstance(player, dict):
+                    continue
+                for field in ("player_name", "Player", "fullName", "name", "player_key"):
+                    keys |= _player_identity_keys(player.get(field))
+                pid = str(player.get("player_id") or player.get("mlbam_id") or "").strip()
+                if pid:
+                    keys.add(pid.lower())
+    ownership = build_ownership_map(context)
     for player_key, rec in ownership.items():
         pk = str(player_key or "").strip().lower()
         if pk:
@@ -246,7 +260,105 @@ def rostered_identity_keys(context: dict[str, Any] | None) -> set[str]:
             keys |= _player_identity_keys(pk)
         if isinstance(rec, dict):
             keys |= _player_identity_keys(rec.get("player_name"))
+            pid = str(rec.get("player_id") or "").strip()
+            if pid:
+                keys.add(pid.lower())
     return keys
+
+
+def resolve_waiver_league_context(session: dict[str, Any]) -> dict[str, Any] | None:
+    """Active League context with current shared rosters + reconciled accepted trades.
+
+    Waiver Wire must never read a pre-trade snapshot. Force-pull shared league
+    state, apply any accepted-but-not-swapped trades, rebuild ownership, and
+    drop roster/waiver view caches when rosters change.
+    """
+    from fantasy_league_context import (
+        build_ownership_map,
+        get_active_league_context,
+        upsert_league_context,
+    )
+
+    context = get_active_league_context(session)
+    if not isinstance(context, dict):
+        return None
+
+    before_fp = ""
+    try:
+        from fantasy_trade_roster_sync import roster_content_fingerprint
+
+        before_fp = roster_content_fingerprint(context)
+    except ImportError:
+        before_fp = ""
+
+    try:
+        from fantasy_league_identity import resolve_canonical_league_id
+        from fantasy_shared_league_store import (
+            invalidate_shared_league_doc_cache,
+            sync_context_with_shared_store,
+        )
+
+        league_id = str(resolve_canonical_league_id(context) or "").strip()
+        if league_id:
+            invalidate_shared_league_doc_cache(league_id)
+            soft = session.get("_shared_ctx_sync_soft")
+            if isinstance(soft, dict):
+                for key in list(soft.keys()):
+                    if str(key).startswith(f"{league_id}|"):
+                        soft.pop(key, None)
+            context = (
+                sync_context_with_shared_store(
+                    session,
+                    context,
+                    force=True,
+                    allow_push=False,
+                )
+                or context
+            )
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    try:
+        from fantasy_trade_roster_sync import (
+            invalidate_fantasy_roster_view_caches,
+            reconcile_accepted_trades_in_context,
+        )
+
+        reconciled, changed, _traces = reconcile_accepted_trades_in_context(context)
+        if changed and isinstance(reconciled, dict):
+            context = upsert_league_context(session, reconciled, mark_persist_authoritative=False)
+            invalidate_fantasy_roster_view_caches(session, context=context)
+            try:
+                from fantasy_shared_league_store import push_league_context_to_shared
+
+                push_league_context_to_shared(session, context)
+            except Exception:
+                pass
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    context = dict(context)
+    context["ownership_map"] = build_ownership_map(context)
+    try:
+        from fantasy_trade_roster_sync import (
+            invalidate_fantasy_roster_view_caches,
+            roster_content_fingerprint,
+        )
+
+        after_fp = roster_content_fingerprint(context)
+        if before_fp and after_fp and before_fp != after_fp:
+            invalidate_fantasy_roster_view_caches(session, context=context)
+            _clear_waiver_transaction_caches(session)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    return upsert_league_context(session, context, mark_persist_authoritative=False)
 
 
 def _player_name_col(df: pd.DataFrame) -> str:
@@ -260,6 +372,10 @@ def _filter_pool_to_league_positions(pool: pd.DataFrame, context: dict[str, Any]
     """Drop players who cannot fill any configured roster slot (e.g. OF when league is 1B/3B only)."""
     if pool is None or getattr(pool, "empty", True) or not context:
         return pool if isinstance(pool, pd.DataFrame) else pd.DataFrame()
+    # Name-only frames (e.g. unit tests / handoffs) have no position columns — skip.
+    pos_cols = {"Primary Position", "Pos", "positions", "eligible_positions", "Position"}
+    if not any(c in pool.columns for c in pos_cols):
+        return pool
     try:
         from fantasy_league_context import resolve_context_draft_slot_config
         from live_draft_roster_slots import filter_candidates_to_legal_roster_positions
@@ -288,6 +404,12 @@ def build_waiver_pool(
     league_rosters = context.get("league_rosters") or {}
     if not isinstance(league_rosters, dict) or len(league_rosters) < 1:
         return pd.DataFrame()
+    # Always rebuild ownership from current league_rosters before excluding.
+    try:
+        context = dict(context)
+        context["ownership_map"] = build_ownership_map(context)
+    except Exception:
+        pass
     pool = player_pool.copy()
     name_col = _player_name_col(pool)
     if name_col not in pool.columns:
@@ -1699,6 +1821,12 @@ def apply_waiver_move_pairs(
     if not context:
         result["errors"].append("No active league context.")
         return result
+    try:
+        hydrated = resolve_waiver_league_context(session)
+        if isinstance(hydrated, dict):
+            context = hydrated
+    except Exception:
+        pass
     if not pairs:
         result["errors"].append("Select at least one add/drop pair.")
         return result

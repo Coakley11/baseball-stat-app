@@ -548,10 +548,16 @@ def merge_shared_into_context(context: dict[str, Any], shared: dict[str, Any]) -
     local_rosters = out.get("league_rosters") or {}
     shared_fp = _roster_content_fingerprint(shared_rosters)
     local_fp = _roster_content_fingerprint(local_rosters)
-    if isinstance(shared_rosters, dict) and shared_rosters and (
-        shared_revision > local_revision or shared_fp != local_fp
-    ):
-        out["league_rosters"] = copy.deepcopy(shared_rosters)
+    # Shared rosters are the league truth when shared is at least as new as local.
+    # Never overwrite a newer local revision with an older soft-cached shared doc
+    # just because fingerprints differ.
+    if isinstance(shared_rosters, dict) and shared_rosters:
+        if shared_revision > local_revision:
+            out["league_rosters"] = copy.deepcopy(shared_rosters)
+        elif shared_revision == local_revision and shared_fp and shared_fp != local_fp:
+            out["league_rosters"] = copy.deepcopy(shared_rosters)
+        elif local_revision <= 0 and shared_fp:
+            out["league_rosters"] = copy.deepcopy(shared_rosters)
     shared_roster_settings = shared.get("roster_settings")
     local_roster_settings = out.get("roster_settings") or {}
     shared_format = (
@@ -797,6 +803,15 @@ def sync_context_with_shared_store(
     )
     if not isinstance(merged, dict):
         merged = context
+    if roster_changed:
+        try:
+            from fantasy_trade_roster_sync import invalidate_fantasy_roster_view_caches
+
+            invalidate_fantasy_roster_view_caches(session, context=merged)
+        except ImportError:
+            pass
+        except Exception:
+            pass
     if roster_changed and allow_push:
         try:
             from fantasy_trade_roster_sync import finalize_trade_roster_persistence

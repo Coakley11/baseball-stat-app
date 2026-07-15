@@ -577,6 +577,15 @@ def render_waiver_wire_page(
         return
 
     try:
+        from fantasy_waiver_wire import resolve_waiver_league_context
+
+        hydrated = resolve_waiver_league_context(session)
+        if isinstance(hydrated, dict):
+            context = hydrated
+    except ImportError:
+        pass
+
+    try:
         from fantasy_league_identity import resolve_canonical_league_id
         from player_waiver_handoff import consume_waiver_wire_handoff_into_planner
 

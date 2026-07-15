@@ -219,8 +219,19 @@ def _utc_now_iso() -> str:
 
 
 def normalize_player_key(name: Any) -> str:
-    """Stable lowercase key for ownership map lookups."""
-    return str(name or "").strip().lower()
+    """Stable ownership key — accent-folded so José / Jose share one identity."""
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    try:
+        from player_name_normalization import normalize_player_name_for_merge
+
+        folded = str(normalize_player_name_for_merge(raw) or "").strip()
+        if folded:
+            return folded.lower()
+    except ImportError:
+        pass
+    return raw.lower()
 
 
 def context_id_for_archive(draft_id: str) -> str:
@@ -372,14 +383,24 @@ def build_ownership_map(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for player in team_entry.get("players") or []:
             if not isinstance(player, dict):
                 continue
-            player_name = str(player.get("player_name") or "").strip()
+            player_name = str(
+                player.get("player_name")
+                or player.get("Player")
+                or player.get("fullName")
+                or player.get("name")
+                or ""
+            ).strip()
             player_key = str(player.get("player_key") or normalize_player_key(player_name)).strip()
+            if not player_key and player_name:
+                player_key = normalize_player_key(player_name)
             if not player_key:
                 continue
-            ownership[player_key] = {
-                "player_key": player_key,
+            # Index under folded key so accent variants always hit the same owner.
+            folded_key = normalize_player_key(player_name) or player_key.lower()
+            ownership[folded_key] = {
+                "player_key": folded_key,
                 "player_name": player_name,
-                "player_id": str(player.get("player_id") or "").strip(),
+                "player_id": str(player.get("player_id") or player.get("mlbam_id") or "").strip(),
                 "owner_team": owner_team,
                 "is_user_team": is_user_team,
             }
