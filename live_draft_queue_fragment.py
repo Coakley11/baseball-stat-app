@@ -84,6 +84,16 @@ def render_live_draft_queue_fragment(
         session.pop(QUEUE_FRAGMENT_MUTATE_KEY, None)
         # Do not clear PICK_KEY here — it is set before app escalate.
 
+        try:
+            from live_draft_ux_latency import mark_ux_milestone, note_ux_pass_begin, note_ux_rerun_scope, settle_ux_action
+
+            note_ux_pass_begin(session, st=st)
+            mark_ux_milestone(session, "queue_fragment_begin", rebuild="queue_fragment", st=st)
+        except ImportError:
+            mark_ux_milestone = None  # type: ignore[assignment]
+            note_ux_rerun_scope = None  # type: ignore[assignment]
+            settle_ux_action = None  # type: ignore[assignment]
+
         before_q = list(session.get("draft_queue") or [])
         board_before = _board_len(session)
 
@@ -91,6 +101,8 @@ def render_live_draft_queue_fragment(
         with target:
             from draft_ui import render_draft_queue_panel
 
+            if mark_ux_milestone:
+                mark_ux_milestone(session, "queue_paint_start", rebuild="queue_panel", st=st)
             panel_rerun = render_draft_queue_panel(
                 st,
                 session,
@@ -99,10 +111,20 @@ def render_live_draft_queue_fragment(
                 show_subheader=True,
                 compact=False,
             )
+            if mark_ux_milestone:
+                mark_ux_milestone(session, "queue_paint_done", rebuild="queue_panel", st=st)
 
         if render_cards is not None:
             try:
+                if mark_ux_milestone:
+                    mark_ux_milestone(
+                        session, "rec_cards_paint_start", rebuild="rec_cards", st=st
+                    )
                 render_cards()
+                if mark_ux_milestone:
+                    mark_ux_milestone(
+                        session, "rec_cards_paint_done", rebuild="rec_cards", st=st
+                    )
             except Exception:
                 # Never block queue mutations if cards fail to paint.
                 try:
@@ -115,12 +137,28 @@ def render_live_draft_queue_fragment(
 
         if _pick_escalation_needed(session, board_before=board_before):
             session[QUEUE_FRAGMENT_PICK_KEY] = True
+            if note_ux_rerun_scope:
+                note_ux_rerun_scope(session, "app", st=st)
+            if settle_ux_action:
+                # App escalate — settled after full script page_complete, not here.
+                mark_ux_milestone(session, "escalate_app_rerun", rebuild="full_app", st=st)
             _app_rerun(st)
             return
 
         if queue_mutated:
             session[QUEUE_FRAGMENT_MUTATE_KEY] = True
+            if note_ux_rerun_scope:
+                note_ux_rerun_scope(session, "fragment", st=st)
+            if settle_ux_action:
+                # Explicit second fragment pass after widget-driven pass — record it.
+                mark_ux_milestone(
+                    session, "explicit_fragment_rerun", rebuild="queue_fragment_rerun", st=st
+                )
             _fragment_rerun(st)
+            return
+
+        if settle_ux_action:
+            settle_ux_action(session, where="fragment_settled", st=st)
 
     if not callable(fragment):
         _body()

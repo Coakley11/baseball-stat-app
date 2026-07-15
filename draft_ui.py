@@ -981,6 +981,18 @@ def render_draft_queue_panel(
             container.caption("Drag players to set queue priority.")
             sorted_queue = sort_items(list(queue), key=f"{key_prefix}_sortable")
             if list(sorted_queue) != list(queue):
+                try:
+                    from live_draft_ux_latency import ACTION_REORDER_QUEUE, note_ux_action
+
+                    note_ux_action(
+                        session,
+                        ACTION_REORDER_QUEUE,
+                        source="sortable",
+                        detail="drag_reorder_queue",
+                        st=st,
+                    )
+                except ImportError:
+                    pass
                 sync_draft_queue(session, list(sorted_queue), reason="drag_reorder_queue")
                 try:
                     from live_draft_queue_persist import note_queue_mutation
@@ -1100,15 +1112,51 @@ def render_draft_queue_panel(
             with ctrl[0]:
                 b1, b2, b3, b4 = st.columns(4)
                 if b1.button("Up", key=f"{key_prefix}_up_{idx}", disabled=idx == 0):
+                    if str(key_prefix).startswith("live"):
+                        try:
+                            from live_draft_ux_latency import ACTION_REORDER_QUEUE, note_ux_action
+
+                            note_ux_action(
+                                session, ACTION_REORDER_QUEUE, source="queue_up", detail=pname, st=st
+                            )
+                        except ImportError:
+                            pass
                     move_queue_item_up(session, idx)
                     rerun = True
                 if b2.button("Down", key=f"{key_prefix}_dn_{idx}", disabled=idx >= len(queue) - 1):
+                    if str(key_prefix).startswith("live"):
+                        try:
+                            from live_draft_ux_latency import ACTION_REORDER_QUEUE, note_ux_action
+
+                            note_ux_action(
+                                session, ACTION_REORDER_QUEUE, source="queue_down", detail=pname, st=st
+                            )
+                        except ImportError:
+                            pass
                     move_queue_item_down(session, idx)
                     rerun = True
                 if b3.button("Top", key=f"{key_prefix}_top_{idx}", disabled=idx == 0):
+                    if str(key_prefix).startswith("live"):
+                        try:
+                            from live_draft_ux_latency import ACTION_REORDER_QUEUE, note_ux_action
+
+                            note_ux_action(
+                                session, ACTION_REORDER_QUEUE, source="queue_top", detail=pname, st=st
+                            )
+                        except ImportError:
+                            pass
                     move_queue_item_to_top(session, idx)
                     rerun = True
                 if b4.button("Remove", key=f"{key_prefix}_rm_{idx}"):
+                    if str(key_prefix).startswith("live"):
+                        try:
+                            from live_draft_ux_latency import ACTION_REMOVE_QUEUE, note_ux_action
+
+                            note_ux_action(
+                                session, ACTION_REMOVE_QUEUE, source="queue_remove", detail=pname, st=st
+                            )
+                        except ImportError:
+                            pass
                     remove_player_from_draft_queue(session, pname)
                     rerun = True
             if render_draft_button(
@@ -1122,6 +1170,15 @@ def render_draft_queue_panel(
                 extra_disabled=paused,
                 extra_disabled_reason="Draft is paused — resume to pick.",
             ):
+                if str(key_prefix).startswith("live"):
+                    try:
+                        from live_draft_ux_latency import ACTION_DRAFT_QUEUE, note_ux_action
+
+                        note_ux_action(
+                            session, ACTION_DRAFT_QUEUE, source="queue_draft", detail=pname, st=st
+                        )
+                    except ImportError:
+                        pass
                 rerun = True
 
     if len(queue) > max_rows:

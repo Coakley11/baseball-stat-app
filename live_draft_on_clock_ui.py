@@ -189,6 +189,13 @@ def render_live_on_clock_banner(
     """Render blue On-the-Clock banner with client-side 1 Hz countdown."""
     if not isinstance(slot, dict):
         return
+    try:
+        from live_draft_ux_latency import mark_ux_milestone
+    except ImportError:
+        mark_ux_milestone = None  # type: ignore[assignment]
+    if mark_ux_milestone:
+        mark_ux_milestone(session, "on_clock_paint_start", rebuild="on_clock", st=st)
+
     live_room = _resolve_live_room(session, room)
     slot_view = dict(slot)
     next_pick_view = next_pick
@@ -200,12 +207,17 @@ def render_live_on_clock_banner(
     except ImportError:
         clock_flash = False
 
+    def _mark_on_clock_done() -> None:
+        if mark_ux_milestone:
+            mark_ux_milestone(session, "on_clock_paint_done", rebuild="on_clock", st=st)
+
     if str(live_room.get("status") or "") == "paused":
         remaining = live_draft_display_seconds(live_room)
         _render_on_clock_banner_html(
             st, slot_view, remaining, next_pick=next_pick_view, pick_index=pick_idx, deadline=None, flash=clock_flash
         )
         st.caption("Draft paused — timer stopped")
+        _mark_on_clock_done()
         return
 
     try:
@@ -218,6 +230,7 @@ def render_live_on_clock_banner(
                 st, slot_view, remaining, next_pick=next_pick_view, pick_index=pick_idx, deadline=deadline, flash=clock_flash
             )
             st.caption("Submitting pick…")
+            _mark_on_clock_done()
             return
     except ImportError:
         pass
@@ -252,6 +265,7 @@ def render_live_on_clock_banner(
             deadline=deadline,
             flash=clock_flash,
         )
+        _mark_on_clock_done()
         return
 
     try:
@@ -266,6 +280,7 @@ def render_live_on_clock_banner(
             deadline=deadline,
             flash=clock_flash,
         )
+        _mark_on_clock_done()
         return
 
     @fragment(run_every=1)
@@ -297,3 +312,4 @@ def render_live_on_clock_banner(
         )
 
     _banner_tick()
+    _mark_on_clock_done()

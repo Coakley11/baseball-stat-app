@@ -14322,6 +14322,12 @@ _render_baseball_sidebar_chrome(st)
 
 pp.render_sidebar_toggle(st)
 render_developer_mode_sidebar_toggle()
+try:
+    from live_draft_ux_latency import render_ux_latency_panel
+
+    render_ux_latency_panel(st, st.session_state)
+except Exception:
+    pass
 
 try:
     from baseball_account_sidebar import render_baseball_account_sidebar
@@ -22827,6 +22833,12 @@ if active_page == "Live Draft Room":
                 team=str((room.get("config") or {}).get("user_team") or ""),
             )
             try:
+                from live_draft_ux_latency import begin_script_run_mark
+
+                begin_script_run_mark(st.session_state, st=st)
+            except ImportError:
+                pass
+            try:
                 st.caption(
                     "⏱ LDR step enter: `room_body` "
                     f"(last_rerun=`{st.session_state.get('_live_draft_last_rerun_source') or '—'}`)"
@@ -24236,6 +24248,14 @@ if active_page == "Live Draft Room":
         # Phase 6A: board stays outside the queue fragment so queue mutates do not
         # rebuild the board table (or roster / totals below).
         with board_col:
+            try:
+                from live_draft_ux_latency import mark_ux_milestone
+
+                mark_ux_milestone(
+                    st.session_state, "board_paint_start", rebuild="board_table", st=st
+                )
+            except ImportError:
+                pass
             st.markdown('<div class="live-draft-board-panel">', unsafe_allow_html=True)
             st.subheader("Draft Board")
             board_df = live_draft_build_board_df(room)
@@ -24278,6 +24298,14 @@ if active_page == "Live Draft Room":
                         highlight_last_row=_highlight_board_row,
                     )
             st.markdown("</div>", unsafe_allow_html=True)
+            try:
+                from live_draft_ux_latency import mark_ux_milestone
+
+                mark_ux_milestone(
+                    st.session_state, "board_paint_done", rebuild="board_table", st=st
+                )
+            except ImportError:
+                pass
             try:
                 from live_draft_render_trace import ldr_section_done
 
@@ -24509,6 +24537,13 @@ if active_page == "Live Draft Room":
         st.error(
             f"LDR TRACE END ERROR: {type(_ldr_trace_end_exc).__name__}: {_ldr_trace_end_exc}"
         )
+    try:
+        from live_draft_ux_latency import mark_ux_milestone, settle_ux_action
+
+        mark_ux_milestone(st.session_state, "page_complete", rebuild="full_page", st=st)
+        settle_ux_action(st.session_state, where="app_settled", st=st)
+    except ImportError:
+        pass
 
     _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)

@@ -1568,6 +1568,17 @@ def render_live_draft_rec_cards(
                     _pid: str = player_id,
                     _stable: str = stable_key,
                 ) -> None:
+                    try:
+                        from live_draft_ux_latency import ACTION_DRAFT_REC, note_ux_action
+
+                        note_ux_action(
+                            _session,
+                            ACTION_DRAFT_REC,
+                            source="rec_card_draft",
+                            detail=_name,
+                        )
+                    except ImportError:
+                        pass
                     record_rec_card_diagnostics(
                         _session,
                         rec_card_draft_click_received=True,
@@ -1611,6 +1622,17 @@ def render_live_draft_rec_cards(
                     _session: dict[str, Any] = session,
                     _name: str = name,
                 ) -> None:
+                    try:
+                        from live_draft_ux_latency import ACTION_ADD_QUEUE, note_ux_action
+
+                        note_ux_action(
+                            _session,
+                            ACTION_ADD_QUEUE,
+                            source="rec_card_add",
+                            detail=_name,
+                        )
+                    except ImportError:
+                        pass
                     try:
                         from draft_state import add_player_to_draft_queue
 

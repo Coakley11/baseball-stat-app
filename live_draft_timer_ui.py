@@ -123,6 +123,18 @@ def sync_live_draft_timer_state(session: dict[str, Any], room: dict[str, Any]) -
                 pass
 
     if ensure_live_draft_timer_for_pick(live_room):
+        try:
+            from live_draft_ux_latency import ACTION_TIMER_RESET, mark_ux_milestone, note_ux_action
+
+            note_ux_action(
+                session,
+                ACTION_TIMER_RESET,
+                source="ensure_timer_for_pick",
+                detail=f"pick={live_room.get('current_pick_index')}",
+            )
+            mark_ux_milestone(session, "timer_paint_start", rebuild="timer", st=None)
+        except ImportError:
+            pass
         if mp:
             try:
                 room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
@@ -306,6 +318,12 @@ def _render_js_countdown(st: Any, deadline: float, *, pick_index: int, session: 
 
 def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
     """Countdown that refreshes every second via Streamlit fragment when available."""
+    try:
+        from live_draft_ux_latency import mark_ux_milestone
+
+        mark_ux_milestone(session, "timer_paint_start", rebuild="timer", st=st)
+    except ImportError:
+        pass
     try:
         from live_draft_render_trace import ldr_rerun, ldr_step
     except ImportError:
