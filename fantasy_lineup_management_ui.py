@@ -633,6 +633,8 @@ def render_lineup_management_page(
                     rec_df.to_dict(orient="records"),
                     _waiver_pool,
                     needs=_needs,
+                    league_context=_ctx,
+                    my_roster=_my_team_df if isinstance(_my_team_df, pd.DataFrame) else None,
                 )
                 rec_df = pd.DataFrame(enriched)
             except ImportError:
@@ -655,6 +657,8 @@ def render_lineup_management_page(
                     rec_df.to_dict(orient="records"),
                     _waiver_pool,
                     needs=_needs,
+                    league_context=_ctx,
+                    my_roster=_my_roster if isinstance(_my_roster, pd.DataFrame) else None,
                 )
                 rec_df = pd.DataFrame(enriched)
             except ImportError:

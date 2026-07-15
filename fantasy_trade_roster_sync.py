@@ -53,9 +53,23 @@ def invalidate_fantasy_roster_view_caches(
     *,
     context: dict[str, Any] | None = None,
 ) -> None:
-    """Drop persisted roster/standings view caches so lineup rebuilds from league context."""
+    """Drop persisted roster/standings/waiver view caches so rebuilds use league context."""
     session.pop("fantasy_current_roster_stats", None)
     session.pop("fantasy_current_standings", None)
+    try:
+        from fantasy_perf_cache import (
+            LINEUP_DIAGNOSIS_CACHE_KEY,
+            LINEUP_SCORES_CACHE_KEY,
+            STANDINGS_ROSTER_CACHE_KEY,
+            WAIVER_ANALYSIS_CACHE_KEY,
+        )
+
+        session.pop(STANDINGS_ROSTER_CACHE_KEY, None)
+        session.pop(LINEUP_SCORES_CACHE_KEY, None)
+        session.pop(WAIVER_ANALYSIS_CACHE_KEY, None)
+        session.pop(LINEUP_DIAGNOSIS_CACHE_KEY, None)
+    except ImportError:
+        pass
     blob = session.get("fantasy_in_season_state")
     if isinstance(blob, dict):
         cleaned = dict(blob)

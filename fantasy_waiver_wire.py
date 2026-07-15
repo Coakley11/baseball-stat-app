@@ -197,14 +197,15 @@ def waiver_filter_enabled(session: dict[str, Any]) -> bool:
 def rostered_player_keys(context: dict[str, Any] | None) -> set[str]:
     if not context:
         return set()
-    ownership = context.get("ownership_map") or build_ownership_map(context)
+    # Always rebuild from league_rosters — stale ownership_map can keep traded players "available".
+    ownership = build_ownership_map(context)
     return {str(k).strip() for k in ownership.keys() if str(k).strip()}
 
 
 def rostered_player_names(context: dict[str, Any] | None) -> set[str]:
     if not context:
         return set()
-    ownership = context.get("ownership_map") or build_ownership_map(context)
+    ownership = build_ownership_map(context)
     names: set[str] = set()
     for rec in ownership.values():
         if not isinstance(rec, dict):
@@ -215,6 +216,39 @@ def rostered_player_names(context: dict[str, Any] | None) -> set[str]:
     return names
 
 
+def _player_identity_keys(name: Any) -> set[str]:
+    """Matching keys that absorb accent / spacing differences (José vs Jose)."""
+    raw = str(name or "").strip()
+    if not raw:
+        return set()
+    keys = {raw.lower(), normalize_player_key(raw)}
+    try:
+        from player_name_normalization import normalize_player_name_for_merge
+
+        folded = str(normalize_player_name_for_merge(raw) or "").strip().lower()
+        if folded:
+            keys.add(folded)
+    except ImportError:
+        pass
+    return {k for k in keys if k}
+
+
+def rostered_identity_keys(context: dict[str, Any] | None) -> set[str]:
+    """All identity keys for every rostered player across every league team."""
+    if not context:
+        return set()
+    ownership = build_ownership_map(context)
+    keys: set[str] = set()
+    for player_key, rec in ownership.items():
+        pk = str(player_key or "").strip().lower()
+        if pk:
+            keys.add(pk)
+            keys |= _player_identity_keys(pk)
+        if isinstance(rec, dict):
+            keys |= _player_identity_keys(rec.get("player_name"))
+    return keys
+
+
 def _player_name_col(df: pd.DataFrame) -> str:
     for col in ("fullName", "Player", "player_name", "name"):
         if col in df.columns:
@@ -222,11 +256,31 @@ def _player_name_col(df: pd.DataFrame) -> str:
     return "fullName"
 
 
+def _filter_pool_to_league_positions(pool: pd.DataFrame, context: dict[str, Any] | None) -> pd.DataFrame:
+    """Drop players who cannot fill any configured roster slot (e.g. OF when league is 1B/3B only)."""
+    if pool is None or getattr(pool, "empty", True) or not context:
+        return pool if isinstance(pool, pd.DataFrame) else pd.DataFrame()
+    try:
+        from fantasy_league_context import resolve_context_draft_slot_config
+        from live_draft_roster_slots import filter_candidates_to_legal_roster_positions
+
+        cfg = resolve_context_draft_slot_config(context)
+        if not (cfg.get("slots") or cfg.get("slot_instances")):
+            return pool
+        return filter_candidates_to_legal_roster_positions(
+            pool,
+            config=cfg,
+            respect_league_remaining_demand=False,
+        )
+    except Exception:
+        return pool
+
+
 def build_waiver_pool(
     player_pool: pd.DataFrame,
     context: dict[str, Any] | None,
 ) -> pd.DataFrame:
-    """Available players = active pool minus anyone rostered in the league context."""
+    """Available players = active pool minus anyone rostered on ANY team in the league."""
     if player_pool is None or getattr(player_pool, "empty", True):
         return pd.DataFrame()
     if not context:
@@ -238,17 +292,13 @@ def build_waiver_pool(
     name_col = _player_name_col(pool)
     if name_col not in pool.columns:
         return pool
-    rostered = rostered_player_names(context)
-    if not rostered:
-        rostered_keys = rostered_player_keys(context)
-        if rostered_keys:
-            pool["_waiver_key"] = pool[name_col].astype(str).str.strip().str.lower()
-            pool = pool[~pool["_waiver_key"].isin(rostered_keys)].drop(columns=["_waiver_key"])
-        pool = _exclude_pitchers_for_context(pool, context)
-        return pool.reset_index(drop=True)
-    pool = pool[~pool[name_col].astype(str).str.strip().isin(rostered)].reset_index(drop=True)
+    rostered = rostered_identity_keys(context)
+    if rostered:
+        mask = pool[name_col].astype(str).map(lambda n: bool(_player_identity_keys(n) & rostered))
+        pool = pool.loc[~mask].copy()
     pool = _exclude_pitchers_for_context(pool, context)
-    return pool
+    pool = _filter_pool_to_league_positions(pool, context)
+    return pool.reset_index(drop=True)
 
 
 def _exclude_pitchers_for_context(pool: pd.DataFrame, context: dict[str, Any] | None) -> pd.DataFrame:
@@ -1107,11 +1157,20 @@ def recommend_adds_personalized(
     if waiver_pool is None or getattr(waiver_pool, "empty", True):
         return pd.DataFrame()
     pool = _exclude_pitchers_for_context(waiver_pool.copy(), context)
+    pool = _filter_pool_to_league_positions(pool, context)
     if pool.empty:
         return pd.DataFrame()
     targets = list(needs.get("targets") or needs.get("weaknesses") or [])
     position_weights = compute_position_need_weights(context, my_roster)
     roster_grade_med = _roster_grade_median(my_roster) if my_roster is not None else None
+
+    # When the league has explicit slots, do not rank players who can't fill any of them.
+    if position_weights:
+        eligible_mask = pool.apply(lambda r: _player_position_weight(r, position_weights) > 0, axis=1)
+        if eligible_mask.any():
+            pool = pool.loc[eligible_mask].copy()
+        if pool.empty:
+            return pd.DataFrame()
 
     pos_component = pd.Series(0.0, index=pool.index)
     cat_component = pd.Series(0.0, index=pool.index)

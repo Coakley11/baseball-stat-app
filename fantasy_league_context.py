@@ -446,7 +446,10 @@ def build_roster_stats_from_league_context(
 
 
 def league_rosters_cache_sig(context: dict[str, Any] | None) -> str:
-    """Stable signature for league_rosters used in standings cache keys."""
+    """Stable signature for league_rosters used in standings/waiver cache keys.
+
+    Includes player identity (not just counts) so trades invalidate caches.
+    """
     if not context:
         return ""
     league_context_id = str(context.get("league_context_id") or "")
@@ -458,8 +461,16 @@ def league_rosters_cache_sig(context: dict[str, Any] | None) -> str:
         team_entry = rosters.get(team_name)
         if not isinstance(team_entry, dict):
             continue
-        players = team_entry.get("players") or []
-        parts.append(f"{team_name}:{len(players)}")
+        player_keys: list[str] = []
+        for player in team_entry.get("players") or []:
+            if not isinstance(player, dict):
+                continue
+            name = str(player.get("player_name") or "").strip()
+            key = str(player.get("player_key") or normalize_player_key(name)).strip().lower()
+            if key:
+                player_keys.append(key)
+        player_keys.sort()
+        parts.append(f"{team_name}:{','.join(player_keys)}")
     raw = f"{league_context_id}|{'|'.join(parts)}"
     return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
 

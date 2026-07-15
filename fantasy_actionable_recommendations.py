@@ -169,26 +169,43 @@ def _waiver_target_rows(
     *,
     limit: int = 3,
     context: dict[str, Any] | None = None,
+    my_roster: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     if waiver_pool is None or getattr(waiver_pool, "empty", True):
         return pd.DataFrame()
     pool = waiver_pool.copy()
     if context:
         try:
-            from fantasy_waiver_wire import rostered_player_names
+            from fantasy_waiver_wire import build_waiver_pool, rostered_identity_keys
 
-            rostered = rostered_player_names(context)
+            # Re-apply league-wide FA exclusion in case the incoming pool is stale.
+            rostered = rostered_identity_keys(context)
             name_col = "Player" if "Player" in pool.columns else "fullName"
             if rostered and name_col in pool.columns:
-                pool = pool[~pool[name_col].astype(str).str.strip().isin(rostered)]
+                from fantasy_waiver_wire import _player_identity_keys
+
+                mask = pool[name_col].astype(str).map(lambda n: bool(_player_identity_keys(n) & rostered))
+                pool = pool.loc[~mask].copy()
+            else:
+                pool = build_waiver_pool(pool, context)
         except ImportError:
             pass
     if pool.empty:
         return pd.DataFrame()
     try:
-        from fantasy_waiver_wire import recommend_adds_current
+        from fantasy_waiver_wire import recommend_adds_current, recommend_adds_personalized
 
-        adds = recommend_adds_current(pool, needs or {}, limit=int(limit))
+        if context is not None:
+            roster = my_roster if isinstance(my_roster, pd.DataFrame) else pd.DataFrame()
+            adds = recommend_adds_personalized(
+                pool,
+                needs or {},
+                context=context,
+                my_roster=roster,
+                limit=int(limit),
+            )
+        else:
+            adds = recommend_adds_current(pool, needs or {}, limit=int(limit))
         return adds.copy() if adds is not None and not adds.empty else pd.DataFrame()
     except ImportError:
         return pd.DataFrame()
@@ -200,10 +217,17 @@ def _waiver_target_names(
     *,
     limit: int = 3,
     context: dict[str, Any] | None = None,
+    my_roster: pd.DataFrame | None = None,
 ) -> list[str]:
     if waiver_pool is None or getattr(waiver_pool, "empty", True):
         return []
-    adds = _waiver_target_rows(waiver_pool, needs, limit=int(limit), context=context)
+    adds = _waiver_target_rows(
+        waiver_pool,
+        needs,
+        limit=int(limit),
+        context=context,
+        my_roster=my_roster,
+    )
     if adds.empty:
         return []
     for col in ("Player", "fullName"):
@@ -269,10 +293,17 @@ def build_waiver_strategy_cards(
     needs: dict[str, Any] | None = None,
     waiver_pool: pd.DataFrame | None = None,
     league_context: dict[str, Any] | None = None,
+    my_roster: pd.DataFrame | None = None,
     limit: int = 3,
 ) -> list[dict[str, str]]:
     """Structured top waiver targets for card rendering."""
-    adds = _waiver_target_rows(waiver_pool, needs, limit=int(limit), context=league_context)
+    adds = _waiver_target_rows(
+        waiver_pool,
+        needs,
+        limit=int(limit),
+        context=league_context,
+        my_roster=my_roster,
+    )
     if adds.empty:
         return []
     name_col = "Player" if "Player" in adds.columns else "fullName"
@@ -602,9 +633,16 @@ def build_actionable_position_weakness_note(
     gain_bits: list[str] = []
     if waiver_pool is not None and not getattr(waiver_pool, "empty", True):
         try:
-            from fantasy_waiver_wire import recommend_adds_current
+            from fantasy_waiver_wire import recommend_adds_personalized
 
-            adds = recommend_adds_current(waiver_pool, needs or {}, limit=5)
+            roster = starter_df if isinstance(starter_df, pd.DataFrame) else pd.DataFrame()
+            adds = recommend_adds_personalized(
+                waiver_pool,
+                needs or {},
+                context=league_context,
+                my_roster=roster,
+                limit=5,
+            )
             if not adds.empty:
                 pos_col = "Primary Position" if "Primary Position" in adds.columns else "Position"
                 if pos_col in adds.columns:
@@ -637,12 +675,19 @@ def enrich_recommendations_with_waiver_targets(
     *,
     needs: dict[str, Any] | None = None,
     league_context: dict[str, Any] | None = None,
+    my_roster: pd.DataFrame | None = None,
     limit: int = 3,
 ) -> list[dict[str, Any]]:
     """Attach specific waiver player names to category-repair recommendations."""
     if not recs or waiver_pool is None or getattr(waiver_pool, "empty", True):
         return recs
-    names = _waiver_target_names(waiver_pool, needs, limit=limit, context=league_context)
+    names = _waiver_target_names(
+        waiver_pool,
+        needs,
+        limit=limit,
+        context=league_context,
+        my_roster=my_roster,
+    )
     if not names:
         return recs
     names_text = ", ".join(names)
