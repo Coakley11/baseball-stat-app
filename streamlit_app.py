@@ -14333,6 +14333,17 @@ except Exception as _ux_lat_exc:
         )
     except Exception:
         pass
+try:
+    from live_draft_queue_survival import render_queue_survival_panel
+
+    render_queue_survival_panel(st, st.session_state)
+except Exception as _qsurv_exc:
+    try:
+        st.sidebar.error(
+            f"Queue survival panel failed: {type(_qsurv_exc).__name__}: {_qsurv_exc}"
+        )
+    except Exception:
+        pass
 
 try:
     from baseball_account_sidebar import render_baseball_account_sidebar
@@ -14704,7 +14715,29 @@ if _streamlit_script_run_ctx_active():
 try:
     from draft_state import flush_draft_workflow_edits, prepare_draft_workflow, render_draft_state_debug
 
+    try:
+        from live_draft_queue_survival import note_queue_survival
+
+        note_queue_survival(
+            st.session_state,
+            "B",
+            detail="immediately before prepare_draft_workflow",
+            st=st,
+        )
+    except ImportError:
+        pass
     prepare_draft_workflow(st.session_state)
+    try:
+        from live_draft_queue_survival import note_queue_survival
+
+        note_queue_survival(
+            st.session_state,
+            "C",
+            detail="immediately after prepare_draft_workflow",
+            st=st,
+        )
+    except ImportError:
+        pass
 except ImportError:
     prepare_draft_workflow = None  # type: ignore[misc, assignment]
     flush_draft_workflow_edits = None  # type: ignore[misc, assignment]

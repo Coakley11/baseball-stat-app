@@ -144,12 +144,24 @@ def render_live_draft_queue_fragment(st: Any, session: dict[str, Any]) -> None:
 
         before_q = _queue_names(session)
         board_before = _board_len(session)
+        try:
+            from live_draft_queue_survival import note_queue_survival
+
+            note_queue_survival(
+                session,
+                "D",
+                detail="immediately before queue paint",
+                st=st,
+            )
+        except ImportError:
+            pass
         record_queue_paint_diag(
             session,
             stage="before_panel",
             queue=before_q,
             extra={
                 "hydrate_skipped": session.get("_live_draft_queue_hydrate_skipped"),
+                "blob_restore_skipped": session.get("_live_draft_queue_blob_restore_skipped"),
                 "draft_state_queue_len": len(
                     ((session.get("draft_state") or {}) if isinstance(session.get("draft_state"), dict) else {}).get(
                         "queue"

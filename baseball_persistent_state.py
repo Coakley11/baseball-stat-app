@@ -568,6 +568,49 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         DRAFT_ROOM_STATE_KEY = "draft_room_state"
         DRAFT_ROOM_TABLE_KEY = "draft_room_table"
 
+    # Add-to-Queue mutates session in on_click before this restore runs. Stale disk/cloud
+    # blobs with empty draft_queue were wiping the just-added player on every rerun.
+    skip_draft_workflow = False
+    try:
+        from draft_state import is_draft_locally_dirty
+
+        skip_draft_workflow = bool(is_draft_locally_dirty(ss) or ss.get("_draft_workflow_pending_sync"))
+    except ImportError:
+        skip_draft_workflow = bool(ss.get("draft_state_dirty") or ss.get("_draft_workflow_pending_sync"))
+    if not skip_draft_workflow:
+        try:
+            from live_draft_queue_persist import is_draft_queue_persist_dirty
+
+            skip_draft_workflow = is_draft_queue_persist_dirty(ss)
+        except ImportError:
+            skip_draft_workflow = bool(ss.get("_draft_queue_persist_dirty"))
+    _DRAFT_WORKFLOW_RESTORE_KEYS = frozenset(
+        {
+            "draft_state",
+            "draft_queue",
+            "draft_assistant_focus_players",
+            "watchlist_focus",
+            "watchlist_favorites",
+            "_queue_player_meta",
+            "_suite_last_cloud_payload_draft_workflow",
+        }
+    )
+    if skip_draft_workflow:
+        ss["_live_draft_queue_blob_restore_skipped"] = "local_dirty_or_pending"
+        try:
+            from live_draft_queue_survival import note_queue_survival
+
+            note_queue_survival(
+                ss,
+                "blob_restore_skip",
+                detail="apply_baseball_disk_state skipped draft_queue/draft_state overwrite",
+                st=st,
+            )
+        except ImportError:
+            pass
+    else:
+        ss.pop("_live_draft_queue_blob_restore_skipped", None)
+
     preserve_insight = bool(ss.get("_ami_insight_return_preserve"))
     multiplayer_restore = _multiplayer_restore_active(ss, state)
     foreign_blob = False
@@ -599,16 +642,24 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
 
     pf = state.get("page_filter_state")
     if isinstance(pf, dict):
-        if skip_draft_room:
-            new_pf = copy.deepcopy(pf)
-            existing_pf = ss.get("page_filter_state")
-            if isinstance(existing_pf, dict):
+        new_pf = copy.deepcopy(pf)
+        existing_pf = ss.get("page_filter_state")
+        if isinstance(existing_pf, dict):
+            if skip_draft_room:
                 dr_block = existing_pf.get("Draft Room Simulator")
                 if isinstance(dr_block, dict):
                     new_pf["Draft Room Simulator"] = copy.deepcopy(dr_block)
-            ss["page_filter_state"] = new_pf
-        else:
-            ss["page_filter_state"] = copy.deepcopy(pf)
+            if skip_draft_workflow:
+                # Preserve local Draft Workflow block (queue) over stale blob empty.
+                try:
+                    from draft_state import DRAFT_WORKFLOW_BLOCK
+
+                    dw_block = existing_pf.get(DRAFT_WORKFLOW_BLOCK)
+                except ImportError:
+                    dw_block = existing_pf.get("Draft Workflow")
+                if isinstance(dw_block, dict):
+                    new_pf["Draft Workflow"] = copy.deepcopy(dw_block)
+        ss["page_filter_state"] = new_pf
         if foreign_blob and isinstance(ss.get("page_filter_state"), dict):
             pf_live = ss["page_filter_state"].get("Live Draft Room")
             if isinstance(pf_live, dict):
@@ -648,6 +699,8 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         if skip_draft_room and key in (DRAFT_ROOM_TABLE_KEY, DRAFT_ROOM_STATE_KEY):
             continue
         if skip_draft_room and key in _DRAFT_ROOM_SETTINGS_GLOBALS:
+            continue
+        if skip_draft_workflow and key in _DRAFT_WORKFLOW_RESTORE_KEYS:
             continue
         if auth_nav_lock and key in (
             "active_page",

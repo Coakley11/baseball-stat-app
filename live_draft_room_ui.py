@@ -1662,6 +1662,16 @@ def render_live_draft_rec_cards(
                             "added": bool(added),
                             "mutated": before != after,
                         }
+                    try:
+                        from live_draft_queue_survival import note_queue_survival
+
+                        note_queue_survival(
+                            _session,
+                            "A",
+                            detail=f"after rec_card_add name={_name} added={bool(added)}",
+                        )
+                    except ImportError:
+                        pass
 
                 if already_queued:
                     st.button(
