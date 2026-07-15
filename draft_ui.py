@@ -923,6 +923,57 @@ def render_draft_sidebar_timer(
     _sidebar_timer_tick()
 
 
+def _resolve_visible_draft_queue(
+    session: dict[str, Any],
+    *,
+    qkey: str,
+) -> tuple[list[str], str]:
+    """Resolve the list the visible Draft Queue UI will paint.
+
+    Prefers session widget key, then draft_state / page_filter / last-good snapshot.
+    Returns (names, source_label).
+    """
+    def _norm(raw: Any) -> list[str]:
+        if not isinstance(raw, (list, tuple)):
+            return []
+        return [str(x).strip() for x in raw if str(x).strip()]
+
+    widget = _norm(session.get(qkey))
+    if widget:
+        session["_live_draft_queue_last_good"] = list(widget)
+        return widget, qkey
+
+    ds = session.get("draft_state") if isinstance(session.get("draft_state"), dict) else {}
+    canon = _norm(ds.get("queue"))
+    if canon:
+        return canon, "draft_state.queue"
+
+    pf = session.get("page_filter_state")
+    if isinstance(pf, dict):
+        block = pf.get("Draft Workflow")
+        if isinstance(block, dict):
+            pf_q = _norm(block.get(qkey) or (block.get("draft_state") or {}).get("queue"))
+            if pf_q:
+                return pf_q, "page_filter_state.Draft Workflow"
+
+    last_good = _norm(session.get("_live_draft_queue_last_good"))
+    if last_good:
+        return last_good, "_live_draft_queue_last_good"
+
+    # Survival write log: last non-empty new_session_queue.
+    try:
+        writes = list(session.get("_live_draft_queue_write_log") or [])
+        for entry in reversed(writes):
+            if not isinstance(entry, dict):
+                continue
+            names = _norm(entry.get("new_session_queue"))
+            if names:
+                return names, f"write_log:{entry.get('function')}"
+    except Exception:
+        pass
+    return [], "empty"
+
+
 def render_draft_queue_panel(
     st: Any,
     session: dict[str, Any],
@@ -953,11 +1004,28 @@ def render_draft_queue_panel(
         _qkey = DRAFT_QUEUE_KEY
     except ImportError:
         _qkey = "draft_queue"
-    before_prune = [str(x).strip() for x in (session.get(_qkey) or []) if str(x).strip()]
-    _prune_drafted_from_queue(session)
-    queue = [str(x).strip() for x in (session.get(_qkey) or []) if str(x).strip()]
-    rerun = False
     _is_live = str(key_prefix).startswith("live")
+    raw_widget = [str(x).strip() for x in (session.get(_qkey) or []) if str(x).strip()]
+    before_prune = list(raw_widget)
+    if raw_widget:
+        _prune_drafted_from_queue(session)
+    widget_after_prune = [str(x).strip() for x in (session.get(_qkey) or []) if str(x).strip()]
+    queue, queue_source = _resolve_visible_draft_queue(session, qkey=_qkey)
+    # If widget was empty but another source has names, repair session for this paint.
+    if queue and not widget_after_prune:
+        try:
+            from draft_state import sync_draft_queue
+
+            sync_draft_queue(session, queue, reason=f"paint_recover_from_{queue_source}")
+            widget_after_prune = list(queue)
+            session["_live_draft_queue_paint_repaired"] = {
+                "from": queue_source,
+                "names": list(queue)[:12],
+            }
+        except ImportError:
+            session[_qkey] = list(queue)
+            widget_after_prune = list(queue)
+    rerun = False
     if _is_live:
         try:
             from live_draft_queue_fragment import record_queue_paint_diag
@@ -968,10 +1036,14 @@ def render_draft_queue_panel(
                 queue=queue,
                 extra={
                     "session_key": _qkey,
+                    "queue_source": queue_source,
+                    "raw_widget": list(raw_widget)[:12],
                     "before_prune_len": len(before_prune),
                     "before_prune": list(before_prune)[:12],
-                    "pruned": before_prune != queue,
+                    "widget_after_prune": list(widget_after_prune)[:12],
+                    "pruned": before_prune != widget_after_prune,
                     "rendered_len": len(queue),
+                    "id_session": id(session),
                 },
             )
         except ImportError:
@@ -981,12 +1053,15 @@ def render_draft_queue_panel(
         container.subheader("Draft Queue")
         if session.pop("_live_draft_focus_queue", None):
             container.info("Draft Queue — reorder and draft from here while you’re on the clock.")
-        # ALWAYS show what this paint will put on screen (source of truth for the bug).
-        # Do not wrap later widgets in an unclosed HTML <div> — that can orphan
-        # Streamlit elements from the visible "Draft Queue" block in the browser.
+        # Unmistakable: exact list this paint uses (not sidebar diagnostics).
+        container.markdown(
+            f"**VISIBLE RENDER INPUT:** `{queue}`  \n"
+            f"source=`{queue_source}` · widget=`{widget_after_prune}` · key=`{_qkey}`"
+        )
         if queue:
             _lines = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(queue[:max_rows]))
             container.markdown(f"**In queue ({len(queue)}):**\n\n{_lines}")
+            session["_live_draft_queue_last_good"] = list(queue)
         else:
             container.markdown("**In queue (0):** empty")
         if _is_live:
@@ -996,10 +1071,11 @@ def render_draft_queue_panel(
                 _canon = [str(x).strip() for x in (_ds.get("queue") or []) if str(x).strip()]
             container.caption(
                 f"Paint key=`{_qkey}` · panel={len(queue)} · "
-                f"before_prune={len(before_prune)} · canonical={len(_canon)}"
+                f"before_prune={len(before_prune)} · canonical={len(_canon)} · "
+                f"source={queue_source}"
                 + (
-                    f" · hydrate_skipped={session.get('_live_draft_queue_hydrate_skipped')}"
-                    if session.get("_live_draft_queue_hydrate_skipped")
+                    f" · repaired={session.get('_live_draft_queue_paint_repaired')}"
+                    if session.get("_live_draft_queue_paint_repaired")
                     else ""
                 )
             )
@@ -1010,7 +1086,11 @@ def render_draft_queue_panel(
                     session,
                     stage="screen_list",
                     queue=queue,
-                    extra={"visible_markdown_names": list(queue)[:12]},
+                    extra={
+                        "visible_markdown_names": list(queue)[:12],
+                        "queue_source": queue_source,
+                        "visible_render_input": list(queue)[:12],
+                    },
                 )
             except ImportError:
                 pass
@@ -1019,7 +1099,9 @@ def render_draft_queue_panel(
         container.caption("Empty — add players with **⭐ Add to Queue** on recommendation cards.")
         return False
 
-    if not compact and not use_sidebar and len(queue) >= 2:
+    # Live Draft: skip streamlit_sortables for now — it has swallowed / mismatched paint
+    # while session diagnostics looked healthy. Button reorder remains.
+    if not _is_live and not compact and not use_sidebar and len(queue) >= 2:
         try:
             from streamlit_sortables import sort_items
 
@@ -1036,35 +1118,8 @@ def render_draft_queue_panel(
                 pass
             container.caption("Drag players to set queue priority.")
             _sortable_in = list(queue)
-            if _is_live:
-                try:
-                    from live_draft_queue_fragment import record_queue_paint_diag
-
-                    record_queue_paint_diag(
-                        session,
-                        stage="sortable_in",
-                        queue=_sortable_in,
-                    )
-                except ImportError:
-                    pass
             sorted_queue = sort_items(list(queue), key=f"{key_prefix}_sortable")
-            if _is_live:
-                try:
-                    from live_draft_queue_fragment import record_queue_paint_diag
-
-                    record_queue_paint_diag(
-                        session,
-                        stage="sortable_out",
-                        queue=[str(x).strip() for x in (sorted_queue or []) if str(x).strip()],
-                        extra={
-                            "in_len": len(_sortable_in),
-                            "out_len": len(list(sorted_queue or [])),
-                        },
-                    )
-                except ImportError:
-                    pass
             if list(sorted_queue) != list(queue):
-                # Guard: a stale/empty sortable return must not wipe a filled queue.
                 if len(queue) >= 2 and not list(sorted_queue):
                     session["_live_draft_queue_sortable_wipe_blocked"] = True
                 else:
@@ -1091,6 +1146,19 @@ def render_draft_queue_panel(
                     rerun = True
         except ImportError:
             pass
+    elif _is_live and len(queue) >= 2:
+        container.caption("Reorder with Up / Down / Top (drag temporarily disabled while paint is repaired).")
+        try:
+            from live_draft_queue_fragment import record_queue_paint_diag
+
+            record_queue_paint_diag(
+                session,
+                stage="sortable_skipped",
+                queue=queue,
+                extra={"reason": "live_paint_reliability"},
+            )
+        except ImportError:
+            pass
 
     ctx = draft_action_context(session)
     if ctx.get("is_your_pick") and ctx.get("current_pick"):
@@ -1108,7 +1176,7 @@ def render_draft_queue_panel(
     except ImportError:
         paused = False
 
-    if not compact and not use_sidebar:
+    if not compact and not use_sidebar and not _is_live:
         header = container.columns([0.06, 0.30, 0.10, 0.14, 0.22, 0.18])
         header[0].caption("**Photo**")
         header[1].caption("**Player**")
@@ -1125,6 +1193,9 @@ def render_draft_queue_panel(
     except ImportError:
         _queue_photos = False
 
+    # Live Draft: force compact control rows so names cannot vanish into column layout.
+    _use_compact_rows = bool(compact or use_sidebar or _is_live)
+
     for idx, pname in enumerate(queue[:max_rows]):
         meta = lookup_player_draft_meta(session, pname)
         pool_row = lookup_player_pool_row(session, pname)
@@ -1138,7 +1209,9 @@ def render_draft_queue_panel(
                 )
             except Exception:
                 photo_info = {}
-        if compact or use_sidebar:
+        if _use_compact_rows:
+            if _is_live:
+                container.markdown(f"**{idx + 1}. {pname}**")
             c_ctrl, c_name, c_draft = container.columns([0.38, 0.42, 0.20])
             u, d, t, r = c_ctrl.columns(4)
             if u.button("↑", key=f"{key_prefix}_up_{idx}", disabled=idx == 0):

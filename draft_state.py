@@ -183,6 +183,8 @@ def write_canonical_draft_state(
         session[DRAFT_QUEUE_KEY] = list(q)
         session[DRAFT_WATCHLIST_FOCUS_KEY] = list(focus)
         session[DRAFT_WATCHLIST_FAVORITES_KEY] = list(favorites)
+    if q:
+        session["_live_draft_queue_last_good"] = list(q)
     if not blocked:
         try:
             from live_draft_queue_survival import record_queue_write
