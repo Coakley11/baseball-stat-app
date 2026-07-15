@@ -23559,63 +23559,9 @@ if active_page == "Live Draft Room":
                 pass
 
         board_col, rec_col = st.columns([1.45, 1.0])
-
-        with board_col:
-            from draft_ui import render_live_draft_queue_panel
-
-            if render_live_draft_queue_panel(st, st.session_state):
-                try:
-                    from live_draft_safe_mode import request_live_draft_rerun
-
-                    request_live_draft_rerun(st, st.session_state, "live_draft_queue", room=room)
-                except ImportError:
-                    st.rerun()
-            st.markdown('<div class="live-draft-board-panel">', unsafe_allow_html=True)
-            st.subheader("Draft Board")
-            board_df = live_draft_build_board_df(room)
-            if board_df.empty:
-                st.caption("No picks yet.")
-            else:
-                _highlight_board_row = False
-                try:
-                    from live_draft_ux import (
-                        consume_latest_board_row_highlight,
-                        note_live_draft_board_pick_flash,
-                    )
-
-                    note_live_draft_board_pick_flash(st.session_state, st, len(board_df))
-                    _highlight_board_row = consume_latest_board_row_highlight(st.session_state)
-                except ImportError:
-                    pass
-                _board_display = format_fantasy_table(clean_ui_columns(board_df))
-                try:
-                    from live_draft_perf import PHASE_BOARD_TABLE, live_draft_perf_action
-
-                    with live_draft_perf_action(st.session_state, "board_table", phase=PHASE_BOARD_TABLE):
-                        render_output_table(
-                            _board_display,
-                            key="live_draft_board",
-                            file_name="live_draft_board.csv",
-                            display_rows=80,
-                            style_cols=["Fantasy Edge", "Player Grade"],
-                            highlight_last_row=_highlight_board_row,
-                        )
-                except ImportError:
-                    render_output_table(
-                        _board_display,
-                        key="live_draft_board",
-                        file_name="live_draft_board.csv",
-                        display_rows=80,
-                        style_cols=["Fantasy Edge", "Player Grade"],
-                        highlight_last_row=_highlight_board_row,
-                    )
-            st.markdown("</div>", unsafe_allow_html=True)
-            try:
-                from live_draft_render_trace import ldr_section_done
-
-                ldr_section_done(st.session_state, "room_board_column", st=st)
-            except ImportError:
-                pass
+        # Phase 6A: queue (+ rec cards) are fragment-scoped further below so add/remove
+        # does not rebuild board / rec tables / roster tabs / category outlook.
+        # Board paints after the fragment so queue stays above board in board_col.
 
         with rec_col:
             try:
@@ -23643,6 +23589,24 @@ if active_page == "Live Draft Room":
                         request_live_draft_rerun(st, st.session_state, "manual_pick", room=room)
                     except ImportError:
                         pass
+                try:
+                    from live_draft_queue_fragment import render_live_draft_queue_fragment
+
+                    render_live_draft_queue_fragment(
+                        st, st.session_state, queue_container=board_col, render_cards=None
+                    )
+                except ImportError:
+                    from draft_ui import render_live_draft_queue_panel
+
+                    if render_live_draft_queue_panel(st, st.session_state):
+                        try:
+                            from live_draft_safe_mode import request_live_draft_rerun
+
+                            request_live_draft_rerun(
+                                st, st.session_state, "live_draft_queue", room=room
+                            )
+                        except ImportError:
+                            st.rerun()
             elif not _draft_is_complete:
                 next_user_pick = live_draft_next_pick_for_team(room, user_team)
                 try:
@@ -23941,6 +23905,24 @@ if active_page == "Live Draft Room":
 
                     if _defer_recs and (top_rec is None or getattr(top_rec, "empty", True)):
                         st.caption("Loading recommendations…")
+                        try:
+                            from live_draft_queue_fragment import render_live_draft_queue_fragment
+
+                            render_live_draft_queue_fragment(
+                                st, st.session_state, queue_container=board_col, render_cards=None
+                            )
+                        except ImportError:
+                            from draft_ui import render_live_draft_queue_panel
+
+                            if render_live_draft_queue_panel(st, st.session_state):
+                                try:
+                                    from live_draft_safe_mode import request_live_draft_rerun
+
+                                    request_live_draft_rerun(
+                                        st, st.session_state, "live_draft_queue", room=room
+                                    )
+                                except ImportError:
+                                    st.rerun()
                     else:
                         try:
                             from live_draft_ux import FANTASY_EDGE_TOOLTIP, ROSTER_FIT_TOOLTIP
@@ -23957,20 +23939,70 @@ if active_page == "Live Draft Room":
                                 "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
                             )
                         render_live_draft_rec_summary_banner(st, top_rec, gaps=_gaps)
-                        render_live_draft_rec_cards(
+
+                        def _render_ld_rec_cards() -> None:
+                            render_live_draft_rec_cards(
+                                st,
+                                st.session_state,
+                                room,
+                                top_rec,
+                                max_cards=6,
+                                multiplayer=_multiplayer_draft,
+                                fmt_rate_4=fmt_rate_4,
+                                fmt_int=fmt_int,
+                                gaps=_gaps,
+                                category_needs=_category_needs,
+                            )
+
+                        try:
+                            from live_draft_queue_fragment import render_live_draft_queue_fragment
+
+                            # Phase 6A: queue + cards share a fragment. Add/Remove/Reorder
+                            # update only this island — not board, tables, roster, outlook.
+                            render_live_draft_queue_fragment(
+                                st,
+                                st.session_state,
+                                queue_container=board_col,
+                                render_cards=_render_ld_rec_cards,
+                            )
+                        except ImportError:
+                            from draft_ui import render_live_draft_queue_panel
+
+                            if render_live_draft_queue_panel(st, st.session_state):
+                                try:
+                                    from live_draft_safe_mode import request_live_draft_rerun
+
+                                    request_live_draft_rerun(
+                                        st, st.session_state, "live_draft_queue", room=room
+                                    )
+                                except ImportError:
+                                    st.rerun()
+                            _render_ld_rec_cards()
+                except ImportError:
+                    # Fallback path: keep queue usable even without room_ui helpers.
+                    try:
+                        from live_draft_queue_fragment import render_live_draft_queue_fragment
+
+                        render_live_draft_queue_fragment(
                             st,
                             st.session_state,
-                            room,
-                            top_rec,
-                            max_cards=6,
-                            multiplayer=_multiplayer_draft,
-                            fmt_rate_4=fmt_rate_4,
-                            fmt_int=fmt_int,
-                            gaps=_gaps,
-                            category_needs=_category_needs,
+                            queue_container=board_col,
+                            render_cards=lambda: _render_live_draft_rec_cards(top_rec, max_cards=6),
                         )
-                except ImportError:
-                    _render_live_draft_rec_cards(top_rec, max_cards=6)
+                    except ImportError:
+                        from draft_ui import render_live_draft_queue_panel
+
+                        if render_live_draft_queue_panel(st, st.session_state):
+                            try:
+                                from live_draft_safe_mode import request_live_draft_rerun
+
+                                request_live_draft_rerun(
+                                    st, st.session_state, "live_draft_queue", room=room
+                                )
+                            except ImportError:
+                                st.rerun()
+                        _render_live_draft_rec_cards(top_rec, max_cards=6)
+
                 rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
                 rec_cols = [
                     "fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank",
@@ -24179,6 +24211,78 @@ if active_page == "Live Draft Room":
                         request_live_draft_rerun(st, st.session_state, "manual_pick", room=room)
                     except ImportError:
                         st.rerun()
+            else:
+                # Draft complete — still show the queue island (fragment-scoped).
+                try:
+                    from live_draft_queue_fragment import render_live_draft_queue_fragment
+
+                    render_live_draft_queue_fragment(
+                        st, st.session_state, queue_container=board_col, render_cards=None
+                    )
+                except ImportError:
+                    from draft_ui import render_live_draft_queue_panel
+
+                    if render_live_draft_queue_panel(st, st.session_state):
+                        try:
+                            from live_draft_safe_mode import request_live_draft_rerun
+
+                            request_live_draft_rerun(
+                                st, st.session_state, "live_draft_queue", room=room
+                            )
+                        except ImportError:
+                            st.rerun()
+
+        # Phase 6A: board stays outside the queue fragment so queue mutates do not
+        # rebuild the board table (or roster / totals below).
+        with board_col:
+            st.markdown('<div class="live-draft-board-panel">', unsafe_allow_html=True)
+            st.subheader("Draft Board")
+            board_df = live_draft_build_board_df(room)
+            if board_df.empty:
+                st.caption("No picks yet.")
+            else:
+                _highlight_board_row = False
+                try:
+                    from live_draft_ux import (
+                        consume_latest_board_row_highlight,
+                        note_live_draft_board_pick_flash,
+                    )
+
+                    note_live_draft_board_pick_flash(st.session_state, st, len(board_df))
+                    _highlight_board_row = consume_latest_board_row_highlight(st.session_state)
+                except ImportError:
+                    pass
+                _board_display = format_fantasy_table(clean_ui_columns(board_df))
+                try:
+                    from live_draft_perf import PHASE_BOARD_TABLE, live_draft_perf_action
+
+                    with live_draft_perf_action(
+                        st.session_state, "board_table", phase=PHASE_BOARD_TABLE
+                    ):
+                        render_output_table(
+                            _board_display,
+                            key="live_draft_board",
+                            file_name="live_draft_board.csv",
+                            display_rows=80,
+                            style_cols=["Fantasy Edge", "Player Grade"],
+                            highlight_last_row=_highlight_board_row,
+                        )
+                except ImportError:
+                    render_output_table(
+                        _board_display,
+                        key="live_draft_board",
+                        file_name="live_draft_board.csv",
+                        display_rows=80,
+                        style_cols=["Fantasy Edge", "Player Grade"],
+                        highlight_last_row=_highlight_board_row,
+                    )
+            st.markdown("</div>", unsafe_allow_html=True)
+            try:
+                from live_draft_render_trace import ldr_section_done
+
+                ldr_section_done(st.session_state, "room_board_column", st=st)
+            except ImportError:
+                pass
 
         if _draft_in_progress and not _pending_manual_pick:
             render_contextual_page_nav(
