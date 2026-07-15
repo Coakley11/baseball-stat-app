@@ -332,6 +332,20 @@ def render_ux_latency_panel(st: Any, session: dict[str, Any]) -> None:
         except Exception:
             st.json(rows[-5:])
         latest = log[-1]
+        add_diag = session.get("_live_draft_queue_add_diag")
+        if isinstance(add_diag, dict):
+            with st.expander("Queue Add diag (session mutate)", expanded=True):
+                q_now = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+                st.json(
+                    {
+                        **add_diag,
+                        "draft_queue_now_len": len(q_now),
+                        "draft_queue_now": q_now[:12],
+                        "sortable_wipe_blocked": bool(
+                            session.get("_live_draft_queue_sortable_wipe_blocked")
+                        ),
+                    }
+                )
         with st.expander("Latest milestones", expanded=False):
             st.json(
                 {

@@ -1622,6 +1622,7 @@ def render_live_draft_rec_cards(
                     _session: dict[str, Any] = session,
                     _name: str = name,
                 ) -> None:
+                    before = [str(x).strip() for x in (_session.get("draft_queue") or []) if str(x).strip()]
                     try:
                         from live_draft_ux_latency import ACTION_ADD_QUEUE, note_ux_action
 
@@ -1629,17 +1630,38 @@ def render_live_draft_rec_cards(
                             _session,
                             ACTION_ADD_QUEUE,
                             source="rec_card_add",
-                            detail=_name,
+                            detail=f"{_name}|before={len(before)}",
                         )
                     except ImportError:
                         pass
+                    added = False
+                    after = list(before)
                     try:
                         from draft_state import add_player_to_draft_queue
 
                         # Phase 1: mutate session immediately; durable save is deferred.
-                        add_player_to_draft_queue(_session, _name)
+                        after, added = add_player_to_draft_queue(_session, _name)
                     except ImportError:
                         pass
+                    after = [str(x).strip() for x in (_session.get("draft_queue") or []) if str(x).strip()]
+                    try:
+                        from live_draft_queue_fragment import record_queue_add_diag
+
+                        record_queue_add_diag(
+                            _session,
+                            name=_name,
+                            before=before,
+                            after=after,
+                            added=bool(added),
+                        )
+                    except ImportError:
+                        _session["_live_draft_queue_add_diag"] = {
+                            "name": _name,
+                            "before_len": len(before),
+                            "after_len": len(after),
+                            "added": bool(added),
+                            "mutated": before != after,
+                        }
 
                 if already_queued:
                     st.button(

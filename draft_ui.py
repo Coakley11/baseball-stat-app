@@ -981,27 +981,31 @@ def render_draft_queue_panel(
             container.caption("Drag players to set queue priority.")
             sorted_queue = sort_items(list(queue), key=f"{key_prefix}_sortable")
             if list(sorted_queue) != list(queue):
-                try:
-                    from live_draft_ux_latency import ACTION_REORDER_QUEUE, note_ux_action
+                # Guard: a stale/empty sortable return must not wipe a filled queue.
+                if len(queue) >= 2 and not list(sorted_queue):
+                    session["_live_draft_queue_sortable_wipe_blocked"] = True
+                else:
+                    try:
+                        from live_draft_ux_latency import ACTION_REORDER_QUEUE, note_ux_action
 
-                    note_ux_action(
-                        session,
-                        ACTION_REORDER_QUEUE,
-                        source="sortable",
-                        detail="drag_reorder_queue",
-                        st=st,
-                    )
-                except ImportError:
-                    pass
-                sync_draft_queue(session, list(sorted_queue), reason="drag_reorder_queue")
-                try:
-                    from live_draft_queue_persist import note_queue_mutation
+                        note_ux_action(
+                            session,
+                            ACTION_REORDER_QUEUE,
+                            source="sortable",
+                            detail="drag_reorder_queue",
+                            st=st,
+                        )
+                    except ImportError:
+                        pass
+                    sync_draft_queue(session, list(sorted_queue), reason="drag_reorder_queue")
+                    try:
+                        from live_draft_queue_persist import note_queue_mutation
 
-                    note_queue_mutation(session, reason="drag_reorder_queue")
-                except ImportError:
-                    pass
-                queue = list(sorted_queue)
-                rerun = True
+                        note_queue_mutation(session, reason="drag_reorder_queue")
+                    except ImportError:
+                        pass
+                    queue = list(sorted_queue)
+                    rerun = True
         except ImportError:
             pass
 

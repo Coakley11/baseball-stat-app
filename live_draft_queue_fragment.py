@@ -1,23 +1,22 @@
-"""Phase 6A — Live Draft queue fragment isolation.
+"""Live Draft queue fragment — queue UI only (Phase 6A corrected).
 
-Queue add / remove / reorder / drag update only this fragment via Streamlit
-fragment-scoped reruns (and explicit ``st.rerun(scope=\"fragment\")`` when the
-panel reports a mutate). Recommendation cards share the fragment so
-**Add to Queue** paints the queue without rebuilding the board, rec tables,
-roster tabs, or category outlook.
+CRITICAL: The fragment must be declared **in the same Streamlit container** that
+displays the queue. Writing the queue into ``board_col`` from a fragment mounted
+under ``rec_col`` does not update on fragment-scoped reruns — Add/Remove appear
+to no-op even though ``draft_queue`` mutates in session.
 
-Draft-from-queue / Draft-from-card still escalate to a full app rerun so the
-board can advance (Phase 6B).
-
-Preserves the red sliding drag-queue UI (``streamlit_sortables`` + styles).
+Rec cards stay **outside** this fragment. Add-from-card uses a full-app paint
+(widget outside fragment), which remounts this fragment with the new queue.
+Remove/reorder stay fragment-scoped inside ``board_col``.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
 
 QUEUE_FRAGMENT_MUTATE_KEY = "_live_draft_queue_fragment_mutate"
 QUEUE_FRAGMENT_PICK_KEY = "_live_draft_queue_fragment_pick"
+QUEUE_ADD_DIAG_KEY = "_live_draft_queue_add_diag"
 
 
 def _fragment_rerun(st: Any) -> None:
@@ -47,7 +46,6 @@ def _board_len(session: dict[str, Any]) -> int:
 
 
 def _pick_escalation_needed(session: dict[str, Any], *, board_before: int) -> bool:
-    """Draft-from-queue/card must refresh board/on-clock (full app, Phase 6B)."""
     if board_before < _board_len(session):
         return True
     if session.get("_pending_manual_draft_pick"):
@@ -64,28 +62,40 @@ def _pick_escalation_needed(session: dict[str, Any], *, board_before: int) -> bo
     return bool(session.get(QUEUE_FRAGMENT_PICK_KEY))
 
 
-def render_live_draft_queue_fragment(
-    st: Any,
+def record_queue_add_diag(
     session: dict[str, Any],
     *,
-    queue_container: Any | None = None,
-    render_cards: Callable[[], None] | None = None,
+    name: str,
+    before: list[str],
+    after: list[str],
+    added: bool,
 ) -> None:
-    """Fragment-scoped queue (+ optional cards) — mutates stay off full-page paint.
+    """Dev diagnostics: prove Add mutated session draft_queue."""
+    session[QUEUE_ADD_DIAG_KEY] = {
+        "name": str(name or ""),
+        "before_len": len(before),
+        "after_len": len(after),
+        "before": list(before)[:12],
+        "after": list(after)[:12],
+        "added": bool(added),
+        "mutated": list(before) != list(after),
+    }
 
-    ``queue_container`` — typically ``board_col`` so the queue stays left of cards.
-    ``render_cards`` — optional callable that paints rec cards in the current
-    Streamlit container (usually ``rec_col``). Sharing the fragment with cards
-    lets Add to Queue update the queue list without rebuilding the room.
-    """
+
+def render_live_draft_queue_fragment(st: Any, session: dict[str, Any]) -> None:
+    """Fragment-scoped Draft Queue — call from inside ``board_col`` only."""
     fragment = getattr(st, "fragment", None)
 
     def _body() -> None:
         session.pop(QUEUE_FRAGMENT_MUTATE_KEY, None)
-        # Do not clear PICK_KEY here — it is set before app escalate.
 
         try:
-            from live_draft_ux_latency import mark_ux_milestone, note_ux_pass_begin, note_ux_rerun_scope, settle_ux_action
+            from live_draft_ux_latency import (
+                mark_ux_milestone,
+                note_ux_pass_begin,
+                note_ux_rerun_scope,
+                settle_ux_action,
+            )
 
             note_ux_pass_begin(session, st=st)
             mark_ux_milestone(session, "queue_fragment_begin", rebuild="queue_fragment", st=st)
@@ -97,65 +107,55 @@ def render_live_draft_queue_fragment(
         before_q = list(session.get("draft_queue") or [])
         board_before = _board_len(session)
 
-        target = queue_container if queue_container is not None else st
-        with target:
-            from draft_ui import render_draft_queue_panel
+        from draft_ui import render_draft_queue_panel
 
-            if mark_ux_milestone:
-                mark_ux_milestone(session, "queue_paint_start", rebuild="queue_panel", st=st)
-            panel_rerun = render_draft_queue_panel(
-                st,
-                session,
-                key_prefix="live_queue",
-                max_rows=20,
-                show_subheader=True,
-                compact=False,
-            )
-            if mark_ux_milestone:
-                mark_ux_milestone(session, "queue_paint_done", rebuild="queue_panel", st=st)
-
-        if render_cards is not None:
-            try:
-                if mark_ux_milestone:
-                    mark_ux_milestone(
-                        session, "rec_cards_paint_start", rebuild="rec_cards", st=st
-                    )
-                render_cards()
-                if mark_ux_milestone:
-                    mark_ux_milestone(
-                        session, "rec_cards_paint_done", rebuild="rec_cards", st=st
-                    )
-            except Exception:
-                # Never block queue mutations if cards fail to paint.
-                try:
-                    st.caption("Recommendation cards temporarily unavailable.")
-                except Exception:
-                    pass
+        if mark_ux_milestone:
+            mark_ux_milestone(session, "queue_paint_start", rebuild="queue_panel", st=st)
+        # Render into the fragment's own container (must be board_col at call site).
+        panel_rerun = render_draft_queue_panel(
+            st,
+            session,
+            key_prefix="live_queue",
+            max_rows=20,
+            show_subheader=True,
+            compact=False,
+        )
+        if mark_ux_milestone:
+            mark_ux_milestone(session, "queue_paint_done", rebuild="queue_panel", st=st)
 
         after_q = list(session.get("draft_queue") or [])
+        # Sortable wipe is guarded inside render_draft_queue_panel (drag path only).
+        # Do not restore here — a Remove that empties the queue is a valid mutate.
+
         queue_mutated = after_q != before_q or bool(panel_rerun)
 
         if _pick_escalation_needed(session, board_before=board_before):
             session[QUEUE_FRAGMENT_PICK_KEY] = True
             if note_ux_rerun_scope:
                 note_ux_rerun_scope(session, "app", st=st)
-            if settle_ux_action:
-                # App escalate — settled after full script page_complete, not here.
+            if mark_ux_milestone:
                 mark_ux_milestone(session, "escalate_app_rerun", rebuild="full_app", st=st)
             _app_rerun(st)
             return
 
         if queue_mutated:
-            session[QUEUE_FRAGMENT_MUTATE_KEY] = True
-            if note_ux_rerun_scope:
-                note_ux_rerun_scope(session, "fragment", st=st)
-            if settle_ux_action:
-                # Explicit second fragment pass after widget-driven pass — record it.
-                mark_ux_milestone(
-                    session, "explicit_fragment_rerun", rebuild="queue_fragment_rerun", st=st
-                )
-            _fragment_rerun(st)
-            return
+            # Widget interaction already re-ran this fragment once. An extra
+            # st.rerun(scope="fragment") doubles paint — only use when the first
+            # pass still shows a stale empty panel while session has names.
+            painted = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+            if painted and not before_q and panel_rerun:
+                session[QUEUE_FRAGMENT_MUTATE_KEY] = True
+                if note_ux_rerun_scope:
+                    note_ux_rerun_scope(session, "fragment", st=st)
+                if mark_ux_milestone:
+                    mark_ux_milestone(
+                        session,
+                        "explicit_fragment_rerun",
+                        rebuild="queue_fragment_rerun",
+                        st=st,
+                    )
+                _fragment_rerun(st)
+                return
 
         if settle_ux_action:
             settle_ux_action(session, where="fragment_settled", st=st)
