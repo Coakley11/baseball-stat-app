@@ -947,20 +947,76 @@ def render_draft_queue_panel(
     )
 
     container = st.sidebar if use_sidebar else st
+    try:
+        from draft_state import DRAFT_QUEUE_KEY
+
+        _qkey = DRAFT_QUEUE_KEY
+    except ImportError:
+        _qkey = "draft_queue"
+    before_prune = [str(x).strip() for x in (session.get(_qkey) or []) if str(x).strip()]
     _prune_drafted_from_queue(session)
-    queue = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+    queue = [str(x).strip() for x in (session.get(_qkey) or []) if str(x).strip()]
     rerun = False
+    _is_live = str(key_prefix).startswith("live")
+    if _is_live:
+        try:
+            from live_draft_queue_fragment import record_queue_paint_diag
+
+            record_queue_paint_diag(
+                session,
+                stage="inside_panel",
+                queue=queue,
+                extra={
+                    "session_key": _qkey,
+                    "before_prune_len": len(before_prune),
+                    "before_prune": list(before_prune)[:12],
+                    "pruned": before_prune != queue,
+                    "rendered_len": len(queue),
+                },
+            )
+        except ImportError:
+            pass
 
     if show_subheader and not use_sidebar:
         container.subheader("Draft Queue")
         if session.pop("_live_draft_focus_queue", None):
             container.info("Draft Queue — reorder and draft from here while you’re on the clock.")
-        container.markdown('<div class="live-draft-queue-panel">', unsafe_allow_html=True)
+        # ALWAYS show what this paint will put on screen (source of truth for the bug).
+        # Do not wrap later widgets in an unclosed HTML <div> — that can orphan
+        # Streamlit elements from the visible "Draft Queue" block in the browser.
+        if queue:
+            _lines = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(queue[:max_rows]))
+            container.markdown(f"**In queue ({len(queue)}):**\n\n{_lines}")
+        else:
+            container.markdown("**In queue (0):** empty")
+        if _is_live:
+            _canon = []
+            _ds = session.get("draft_state")
+            if isinstance(_ds, dict):
+                _canon = [str(x).strip() for x in (_ds.get("queue") or []) if str(x).strip()]
+            container.caption(
+                f"Paint key=`{_qkey}` · panel={len(queue)} · "
+                f"before_prune={len(before_prune)} · canonical={len(_canon)}"
+                + (
+                    f" · hydrate_skipped={session.get('_live_draft_queue_hydrate_skipped')}"
+                    if session.get("_live_draft_queue_hydrate_skipped")
+                    else ""
+                )
+            )
+            try:
+                from live_draft_queue_fragment import record_queue_paint_diag
+
+                record_queue_paint_diag(
+                    session,
+                    stage="screen_list",
+                    queue=queue,
+                    extra={"visible_markdown_names": list(queue)[:12]},
+                )
+            except ImportError:
+                pass
 
     if not queue:
         container.caption("Empty — add players with **⭐ Add to Queue** on recommendation cards.")
-        if show_subheader and not use_sidebar:
-            container.markdown("</div>", unsafe_allow_html=True)
         return False
 
     if not compact and not use_sidebar and len(queue) >= 2:
@@ -979,7 +1035,34 @@ def render_draft_queue_panel(
             except ImportError:
                 pass
             container.caption("Drag players to set queue priority.")
+            _sortable_in = list(queue)
+            if _is_live:
+                try:
+                    from live_draft_queue_fragment import record_queue_paint_diag
+
+                    record_queue_paint_diag(
+                        session,
+                        stage="sortable_in",
+                        queue=_sortable_in,
+                    )
+                except ImportError:
+                    pass
             sorted_queue = sort_items(list(queue), key=f"{key_prefix}_sortable")
+            if _is_live:
+                try:
+                    from live_draft_queue_fragment import record_queue_paint_diag
+
+                    record_queue_paint_diag(
+                        session,
+                        stage="sortable_out",
+                        queue=[str(x).strip() for x in (sorted_queue or []) if str(x).strip()],
+                        extra={
+                            "in_len": len(_sortable_in),
+                            "out_len": len(list(sorted_queue or [])),
+                        },
+                    )
+                except ImportError:
+                    pass
             if list(sorted_queue) != list(queue):
                 # Guard: a stale/empty sortable return must not wipe a filled queue.
                 if len(queue) >= 2 and not list(sorted_queue):
@@ -1187,8 +1270,18 @@ def render_draft_queue_panel(
 
     if len(queue) > max_rows:
         container.caption(f"+{len(queue) - max_rows} more in queue")
-    if show_subheader and not use_sidebar:
-        container.markdown("</div>", unsafe_allow_html=True)
+    if _is_live:
+        try:
+            from live_draft_queue_fragment import record_queue_paint_diag
+
+            record_queue_paint_diag(
+                session,
+                stage="rows_rendered",
+                queue=queue,
+                extra={"rows_looped": min(len(queue), max_rows)},
+            )
+        except ImportError:
+            pass
     return rerun
 
 

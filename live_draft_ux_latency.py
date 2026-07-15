@@ -333,17 +333,34 @@ def render_ux_latency_panel(st: Any, session: dict[str, Any]) -> None:
             st.json(rows[-5:])
         latest = log[-1]
         add_diag = session.get("_live_draft_queue_add_diag")
-        if isinstance(add_diag, dict):
-            with st.expander("Queue Add diag (session mutate)", expanded=True):
-                q_now = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+        paint_diag = session.get("_live_draft_queue_paint_diag")
+        q_now = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+        canonical_q = []
+        ds = session.get("draft_state")
+        if isinstance(ds, dict):
+            canonical_q = [str(x).strip() for x in (ds.get("queue") or []) if str(x).strip()]
+        if isinstance(add_diag, dict) or isinstance(paint_diag, dict):
+            with st.expander("Queue session vs paint", expanded=True):
+                st.caption(
+                    "Note: this sidebar panel runs *before* prepare_draft_workflow. "
+                    "Trust **paint** stages / visible Draft Queue over click-time after_len."
+                )
                 st.json(
                     {
-                        **add_diag,
+                        "add_diag": add_diag if isinstance(add_diag, dict) else None,
+                        "paint_diag": paint_diag if isinstance(paint_diag, dict) else None,
                         "draft_queue_now_len": len(q_now),
                         "draft_queue_now": q_now[:12],
+                        "canonical_queue_len": len(canonical_q),
+                        "canonical_queue": canonical_q[:12],
+                        "hydrate_skipped": session.get("_live_draft_queue_hydrate_skipped"),
+                        "draft_state_dirty": bool(session.get("draft_state_dirty")),
+                        "queue_persist_dirty": bool(session.get("_draft_queue_persist_dirty")),
                         "sortable_wipe_blocked": bool(
                             session.get("_live_draft_queue_sortable_wipe_blocked")
                         ),
+                        "keys_match": q_now == canonical_q,
+                        "session_key": "draft_queue",
                     }
                 )
         with st.expander("Latest milestones", expanded=False):

@@ -1,13 +1,9 @@
-"""Live Draft queue fragment — queue UI only (Phase 6A corrected).
+"""Live Draft queue panel mount (Phase 6A corrected — fragment disabled).
 
-CRITICAL: The fragment must be declared **in the same Streamlit container** that
-displays the queue. Writing the queue into ``board_col`` from a fragment mounted
-under ``rec_col`` does not update on fragment-scoped reruns — Add/Remove appear
-to no-op even though ``draft_queue`` mutates in session.
-
-Rec cards stay **outside** this fragment. Add-from-card uses a full-app paint
-(widget outside fragment), which remounts this fragment with the new queue.
-Remove/reorder stay fragment-scoped inside ``board_col``.
+Phase 6A originally used ``@st.fragment``. That path produced a session/UI
+mismatch: Add mutated ``draft_queue`` (diagnostics green) while the visible
+Draft Queue stayed on a stale Empty caption. Until fragment paint is proven,
+the queue renders on the full-app path inside ``board_col``.
 """
 
 from __future__ import annotations
@@ -17,6 +13,11 @@ from typing import Any
 QUEUE_FRAGMENT_MUTATE_KEY = "_live_draft_queue_fragment_mutate"
 QUEUE_FRAGMENT_PICK_KEY = "_live_draft_queue_fragment_pick"
 QUEUE_ADD_DIAG_KEY = "_live_draft_queue_add_diag"
+QUEUE_PAINT_DIAG_KEY = "_live_draft_queue_paint_diag"
+
+# Keep False until Add→visible-queue is verified on Cloud. Fragment isolation
+# can return after that gate.
+USE_QUEUE_FRAGMENT = False
 
 
 def _fragment_rerun(st: Any) -> None:
@@ -62,6 +63,16 @@ def _pick_escalation_needed(session: dict[str, Any], *, board_before: int) -> bo
     return bool(session.get(QUEUE_FRAGMENT_PICK_KEY))
 
 
+def _queue_names(session: dict[str, Any]) -> list[str]:
+    try:
+        from draft_state import DRAFT_QUEUE_KEY
+
+        key = DRAFT_QUEUE_KEY
+    except ImportError:
+        key = "draft_queue"
+    return [str(x).strip() for x in (session.get(key) or []) if str(x).strip()]
+
+
 def record_queue_add_diag(
     session: dict[str, Any],
     *,
@@ -79,12 +90,39 @@ def record_queue_add_diag(
         "after": list(after)[:12],
         "added": bool(added),
         "mutated": list(before) != list(after),
+        "session_key": "draft_queue",
     }
 
 
+def record_queue_paint_diag(
+    session: dict[str, Any],
+    *,
+    stage: str,
+    queue: list[str],
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Dev diagnostics: session queue at each paint stage (source of truth for UI)."""
+    entry = dict(session.get(QUEUE_PAINT_DIAG_KEY) or {})
+    if not isinstance(entry, dict):
+        entry = {}
+    snap = {
+        "len": len(queue),
+        "names": list(queue)[:12],
+    }
+    if extra:
+        snap.update(extra)
+    entry[str(stage)] = snap
+    entry["session_key"] = "draft_queue"
+    entry["last_stage"] = str(stage)
+    entry["mismatch"] = bool(
+        (entry.get("before_panel") or {}).get("len")
+        != (entry.get("inside_panel") or {}).get("len")
+    ) if entry.get("before_panel") and entry.get("inside_panel") else False
+    session[QUEUE_PAINT_DIAG_KEY] = entry
+
+
 def render_live_draft_queue_fragment(st: Any, session: dict[str, Any]) -> None:
-    """Fragment-scoped Draft Queue — call from inside ``board_col`` only."""
-    fragment = getattr(st, "fragment", None)
+    """Draft Queue mount — call from inside ``board_col`` only."""
 
     def _body() -> None:
         session.pop(QUEUE_FRAGMENT_MUTATE_KEY, None)
@@ -98,20 +136,33 @@ def render_live_draft_queue_fragment(st: Any, session: dict[str, Any]) -> None:
             )
 
             note_ux_pass_begin(session, st=st)
-            mark_ux_milestone(session, "queue_fragment_begin", rebuild="queue_fragment", st=st)
+            mark_ux_milestone(session, "queue_mount_begin", rebuild="queue_panel", st=st)
         except ImportError:
             mark_ux_milestone = None  # type: ignore[assignment]
             note_ux_rerun_scope = None  # type: ignore[assignment]
             settle_ux_action = None  # type: ignore[assignment]
 
-        before_q = list(session.get("draft_queue") or [])
+        before_q = _queue_names(session)
         board_before = _board_len(session)
+        record_queue_paint_diag(
+            session,
+            stage="before_panel",
+            queue=before_q,
+            extra={
+                "hydrate_skipped": session.get("_live_draft_queue_hydrate_skipped"),
+                "draft_state_queue_len": len(
+                    ((session.get("draft_state") or {}) if isinstance(session.get("draft_state"), dict) else {}).get(
+                        "queue"
+                    )
+                    or []
+                ),
+            },
+        )
 
         from draft_ui import render_draft_queue_panel
 
         if mark_ux_milestone:
             mark_ux_milestone(session, "queue_paint_start", rebuild="queue_panel", st=st)
-        # Render into the fragment's own container (must be board_col at call site).
         panel_rerun = render_draft_queue_panel(
             st,
             session,
@@ -123,9 +174,13 @@ def render_live_draft_queue_fragment(st: Any, session: dict[str, Any]) -> None:
         if mark_ux_milestone:
             mark_ux_milestone(session, "queue_paint_done", rebuild="queue_panel", st=st)
 
-        after_q = list(session.get("draft_queue") or [])
-        # Sortable wipe is guarded inside render_draft_queue_panel (drag path only).
-        # Do not restore here — a Remove that empties the queue is a valid mutate.
+        after_q = _queue_names(session)
+        record_queue_paint_diag(
+            session,
+            stage="after_panel",
+            queue=after_q,
+            extra={"panel_rerun": bool(panel_rerun)},
+        )
 
         queue_mutated = after_q != before_q or bool(panel_rerun)
 
@@ -138,11 +193,8 @@ def render_live_draft_queue_fragment(st: Any, session: dict[str, Any]) -> None:
             _app_rerun(st)
             return
 
-        if queue_mutated:
-            # Widget interaction already re-ran this fragment once. An extra
-            # st.rerun(scope="fragment") doubles paint — only use when the first
-            # pass still shows a stale empty panel while session has names.
-            painted = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+        if USE_QUEUE_FRAGMENT and queue_mutated:
+            painted = _queue_names(session)
             if painted and not before_q and panel_rerun:
                 session[QUEUE_FRAGMENT_MUTATE_KEY] = True
                 if note_ux_rerun_scope:
@@ -158,22 +210,12 @@ def render_live_draft_queue_fragment(st: Any, session: dict[str, Any]) -> None:
                 return
 
         if settle_ux_action:
-            settle_ux_action(session, where="fragment_settled", st=st)
+            settle_ux_action(session, where="queue_settled", st=st)
 
+    fragment = getattr(st, "fragment", None) if USE_QUEUE_FRAGMENT else None
     if not callable(fragment):
+        # Non-fragment path: _body() already calls st.rerun when escalating a pick.
         _body()
-        if session.get(QUEUE_FRAGMENT_MUTATE_KEY) or session.get(QUEUE_FRAGMENT_PICK_KEY):
-            try:
-                from live_draft_safe_mode import request_live_draft_rerun
-
-                request_live_draft_rerun(
-                    st,
-                    session,
-                    "live_draft_queue",
-                    room=session.get("live_draft_room"),
-                )
-            except ImportError:
-                st.rerun()
         return
 
     @fragment

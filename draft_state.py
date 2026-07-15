@@ -164,6 +164,20 @@ def _sync_participant_workflow_if_multiplayer(session: dict[str, Any], *, reason
         pass
 
 
+def _queue_session_protected_from_hydrate(session: dict[str, Any]) -> bool:
+    """True when local queue edits must not be overwritten by hydrate/load."""
+    if is_draft_locally_dirty(session) or session.get(DRAFT_PENDING_SYNC_KEY):
+        return True
+    try:
+        from live_draft_queue_persist import is_draft_queue_persist_dirty
+
+        if is_draft_queue_persist_dirty(session):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
 def _load_participant_workflow_if_multiplayer(session: dict[str, Any]) -> None:
     try:
         from draft_room_context import is_multiplayer_draft_active
@@ -172,9 +186,16 @@ def _load_participant_workflow_if_multiplayer(session: dict[str, Any]) -> None:
 
         if not is_multiplayer_draft_active(session):
             return
+        # Add-to-Queue marks dirty / pending before the next full script run. Loading
+        # an empty participant slot here would wipe draft_queue while canonical still
+        # holds the new player (and sync_widget_keys=False would leave UI empty).
+        if _queue_session_protected_from_hydrate(session):
+            session["_live_draft_queue_hydrate_skipped"] = "local_dirty_or_pending"
+            return
         code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
         if code:
             load_participant_workflow_into_session(session, code)
+            session.pop("_live_draft_queue_hydrate_skipped", None)
     except ImportError:
         pass
 
@@ -272,6 +293,9 @@ def prepare_draft_workflow(session: dict[str, Any]) -> dict[str, Any]:
     drift = _draft_widget_drift(session) or bool(session.get(DRAFT_PENDING_SYNC_KEY))
     if is_draft_locally_dirty(session) or drift:
         canonical = canonical_draft_workflow(session) or {}
+        # Always mirror merged values back onto widget keys. A prior participant
+        # hydrate can leave draft_queue=[] while draft_state.queue still has names;
+        # sync_widget_keys=False made the panel paint Empty despite "successful" Add.
         return write_canonical_draft_state(
             session,
             queue=widget["queue"] or canonical.get("queue"),
@@ -279,7 +303,7 @@ def prepare_draft_workflow(session: dict[str, Any]) -> dict[str, Any]:
             watchlist_favorites=widget["watchlist_favorites"] or canonical.get("watchlist_favorites"),
             reason="local_edit_preserve" if is_draft_locally_dirty(session) else "widget_drift",
             local_edit=True,
-            sync_widget_keys=False,
+            sync_widget_keys=True,
         )
     canonical = canonical_draft_workflow(session)
     if canonical and any(canonical.get(k) for k in ("queue", "watchlist_focus", "watchlist_favorites")):
