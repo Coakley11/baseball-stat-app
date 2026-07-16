@@ -6,9 +6,13 @@ Query params (read by suite_resume_launch in each app):
   suite_page    — target page/tab label
   suite_workspace — active workspace profile (daniel, ariel, guest, test_user)
   suite_pick_key, suite_song, suite_display_key, suite_instrument, suite_section_focus — music shortcuts
+  suite_resume_kind, suite_resume_payload — typed Music Continue restore envelope (base64url JSON)
+  suite_bpm, suite_backing_scope, suite_backing_sections, suite_groove, suite_mood, suite_intensity — music scalars
+  suite_multitrack_id, suite_creative_mode, suite_entry_mode — music task shortcuts
   suite_holdings_fp — investment portfolio fingerprint
   suite_player_a, suite_player_b — baseball comparison players
   suite_draft_room, suite_draft_section — live draft / draft lab resume
+  suite_trade_proposal, suite_league, suite_invite, suite_lineup_week, suite_waiver_tx — fantasy workflow resume
   suite_team — NBA favorite team
   suite_sim, suite_fl_domain, suite_fl_area, suite_fl_timeline_year, suite_fl_sim_year — Future Lens
 """
@@ -16,7 +20,14 @@ Query params (read by suite_resume_launch in each app):
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qs, quote, urlencode, urlparse
+
+from music_resume_payload import (
+    decode_payload_b64,
+    encode_payload_b64,
+    legacy_resume_key_for_payload,
+    normalize_resume_kind,
+)
 
 from suite_workspace import append_suite_workspace_param, normalize_workspace_id, resolve_workspace_id
 
@@ -47,15 +58,14 @@ _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("baseball:draft_prep", "Draft Simulation"),
     ("bb:draft", "Draft Simulation"),
     ("bb:live_draft:", "Live Draft Room"),
-    ("bb:draft_lab:", "Draft Lab / Simulation"),
-    ("bb:draft_lab", "Draft Lab / Simulation"),
-    ("bb:hof_case:", "Career Totals"),
+    ("bb:draft_lab:", "Draft Simulation Test Mode"),
+    ("bb:draft_lab", "Draft Simulation Test Mode"),
     ("baseball:projections", "ML Projections"),
     ("bb:proj", "ML Projections"),
-    ("baseball:trade", "Fantasy Lineup Assistant"),
-    ("bb:trade", "Fantasy Lineup Assistant"),
     ("bb:trade_center:", "Trade Center"),
     ("bb:trade_center", "Trade Center"),
+    ("baseball:trade", "Fantasy Lineup Assistant"),
+    ("bb:trade", "Fantasy Lineup Assistant"),
     ("bb:waiver:", "Waiver Wire / Add-Drop Center"),
     ("bb:waiver", "Waiver Wire / Add-Drop Center"),
     ("bb:lineup:", "Fantasy Lineup Assistant"),
@@ -63,15 +73,11 @@ _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("bb:invite:", "Saved Draft Library"),
     ("bb:library:", "Saved Draft Library"),
     ("bb:library", "Saved Draft Library"),
+    ("bb:saved_draft:", "Saved Draft Library"),
     ("baseball:roster", "Draft Room"),
     ("baseball:sleepers", "Fantasy Market"),
     ("baseball:trends", "Trend Value"),
     ("baseball:breakouts", "Trend Value"),
-    ("historical:", "Historical Explorer"),
-    ("bb:saved_draft:", "Saved Draft Library"),
-    ("bb:standings:", "Fantasy Standings Tracker"),
-    ("bb:draft_assistant", "Draft Assistant Simulator"),
-    ("bb:simulator_draft", "Draft Room Simulator"),
 )
 
 _INVESTMENT_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
@@ -227,6 +233,9 @@ def build_resume_action_url(
         params["suite_page"] = page_resolved
 
     if app_key == "music":
+        payload = m.get("resume_payload")
+        if isinstance(payload, dict) and payload.get("resume_kind"):
+            return build_music_continue_url(payload, base_url=base)
         pick = str(m.get("pick_key") or "").strip()
         if not pick and rk.startswith("song:"):
             pick = rk.split(":", 1)[-1].strip()
@@ -282,18 +291,6 @@ def build_resume_action_url(
             draft_section = "team_analysis"
         if draft_section:
             params["suite_draft_section"] = draft_section[:40]
-        hof_target = str(m.get("target_player") or m.get("hof_case_target") or "").strip()
-        if not hof_target and rk.startswith("bb:hof_case:"):
-            hof_target = rk.split(":", 2)[-1].strip()
-        if hof_target:
-            params["suite_hof_target"] = hof_target[:120]
-        if rk.startswith("bb:hof_case:") or m.get("hof_case_mode"):
-            params["suite_hof_case"] = "1"
-        saved_draft = str(m.get("draft_id") or "").strip()
-        if not saved_draft and rk.startswith("bb:saved_draft:"):
-            saved_draft = rk.split(":", 2)[-1].strip()
-        if saved_draft:
-            params["suite_saved_draft"] = saved_draft[:80]
         proposal_id = str(m.get("proposal_id") or "").strip()
         if not proposal_id and rk.startswith("bb:trade_center:"):
             proposal_id = rk.split(":", 2)[-1].strip()
@@ -304,38 +301,36 @@ def build_resume_action_url(
             league_id = rk.split(":", 2)[-1].strip()
         if league_id:
             params["suite_league"] = league_id[:80]
+        my_team = str(m.get("my_team") or m.get("team") or m.get("claimed_team") or "").strip()
+        if my_team:
+            params["suite_my_team"] = my_team[:80]
+        league_context_id = str(m.get("league_context_id") or "").strip()
+        if league_context_id:
+            params["suite_league_context"] = league_context_id[:80]
         invite_id = str(m.get("invite_id") or "").strip()
         if not invite_id and rk.startswith("bb:invite:"):
             invite_id = rk.split(":", 2)[-1].strip()
         if invite_id:
             params["suite_invite"] = invite_id[:80]
+        saved_draft = str(m.get("draft_id") or "").strip()
+        if not saved_draft and rk.startswith("bb:saved_draft:"):
+            saved_draft = rk.split(":", 2)[-1].strip()
+        if saved_draft:
+            params["suite_saved_draft"] = saved_draft[:80]
         week = m.get("week")
-        if week is None and rk.startswith("bb:lineup:") and ":w" in rk:
-            week = rk.rsplit(":w", 1)[-1].strip()
+        if week is None and rk.startswith("bb:lineup:"):
+            tail = rk.split(":", 2)[-1].strip()
+            if tail.startswith("w") and tail[1:].isdigit():
+                week = tail[1:]
+            elif ":w" in rk:
+                week = rk.rsplit(":w", 1)[-1].strip()
         if week is not None and str(week).strip():
             params["suite_lineup_week"] = str(week).strip()[:8]
         waiver_tx = str(m.get("waiver_tx_id") or m.get("transaction_id") or "").strip()
         if not waiver_tx and rk.startswith("bb:waiver:"):
             waiver_tx = rk.split(":", 2)[-1].strip()
-        if waiver_tx:
+        if waiver_tx and waiver_tx not in {"", "bb"}:
             params["suite_waiver_tx"] = waiver_tx[:80]
-        hist_stat = str(m.get("sort_stat") or "").strip()
-        if not hist_stat and rk.startswith("historical:"):
-            parts = rk.split(":", 2)
-            if len(parts) >= 2:
-                hist_stat = parts[1].strip()
-        if hist_stat:
-            params["suite_historical_stat"] = hist_stat[:40]
-        ys = str(m.get("year_start") or "").strip()
-        ye = str(m.get("year_end") or "").strip()
-        if not ys and rk.startswith("historical:"):
-            parts = rk.split(":", 2)
-            if len(parts) >= 3 and "-" in parts[2]:
-                ys, ye = parts[2].split("-", 1)
-        if ys:
-            params["suite_historical_year_start"] = ys[:8]
-        if ye:
-            params["suite_historical_year_end"] = ye[:8]
     elif app_key == "investment":
         hfp = str(m.get("holdings_fingerprint") or m.get("holdings_fp") or "").strip()
         if hfp:
@@ -393,15 +388,6 @@ def build_resume_action_url(
         area = str(m.get("quant_area") or m.get("area") or "").strip()
         if area:
             params["suite_ai_area"] = area[:40]
-        if (
-            area == "hall_of_fame_case"
-            or str(m.get("app_context_type") or "").strip() == "baseball_hof_case"
-            or m.get("hof_case_mode")
-        ):
-            params["suite_hof_case"] = "1"
-            target = str(m.get("hof_case_target") or m.get("target_player") or "").strip()
-            if target:
-                params["suite_hof_target"] = target[:80]
         ctx = str(m.get("context_summary") or "").strip()
         ctx_json = str(m.get("context_json") or "").strip()
         if qid:
@@ -448,20 +434,46 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
         elif key.startswith("bb:draft_lab:team:"):
             metrics["draft_room_id"] = key.split(":", 3)[-1].strip()
             metrics["draft_section"] = "team_analysis"
-            page = "Draft Lab / Simulation"
+            page = "Draft Simulation Test Mode"
         elif key.startswith("bb:draft_lab:"):
             metrics["draft_room_id"] = key.split(":", 2)[-1].strip()
-            page = "Draft Lab / Simulation"
-        elif key.startswith("bb:hof_case:"):
-            slug = key.split(":", 2)[-1].strip()
-            metrics["hof_case_mode"] = True
-            metrics["hof_case_target_slug"] = slug
-            if subtitle and subtitle != "Career Totals":
-                metrics["target_player"] = subtitle
-            page = "Career Totals"
+            page = "Draft Simulation Test Mode"
+        elif key.startswith("bb:trade_center:"):
+            metrics["proposal_id"] = key.split(":", 2)[-1].strip()
+            page = "Trade Center"
+        elif key.startswith("bb:trade_center"):
+            page = "Trade Center"
+        elif key.startswith("bb:waiver:"):
+            metrics["waiver_tx_id"] = key.split(":", 2)[-1].strip()
+            page = "Waiver Wire / Add-Drop Center"
+        elif key.startswith("bb:waiver"):
+            page = "Waiver Wire / Add-Drop Center"
+        elif key.startswith("bb:lineup:"):
+            page = "Fantasy Lineup Assistant"
+            tail = key.split(":", 2)[-1].strip()
+            if ":w" in key:
+                parts = key.split(":")
+                if parts and parts[-1].startswith("w"):
+                    metrics["week"] = parts[-1][1:]
+                if len(parts) >= 3 and parts[2] and not parts[2].startswith("w"):
+                    metrics["league_id"] = parts[2]
+            elif tail.startswith("w"):
+                metrics["week"] = tail[1:]
+        elif key.startswith("bb:lineup"):
+            page = "Fantasy Lineup Assistant"
+        elif key.startswith("bb:invite:"):
+            metrics["invite_id"] = key.split(":", 2)[-1].strip()
+            page = "Saved Draft Library"
+        elif key.startswith("bb:library:"):
+            metrics["league_id"] = key.split(":", 2)[-1].strip()
+            page = "Saved Draft Library"
+        elif key.startswith("bb:library") or key.startswith("bb:saved_draft:"):
+            if key.startswith("bb:saved_draft:"):
+                metrics["draft_id"] = key.split(":", 2)[-1].strip()
+            page = "Saved Draft Library"
         elif "draft" in key.lower():
             page = "Draft Simulation"
-        elif "trade" in key.lower():
+        elif key.startswith("bb:trade") or "trade" in key.lower():
             page = "Fantasy Lineup Assistant"
         elif key.startswith("trend:"):
             metrics["player"] = key.split(":", 1)[-1].strip()
@@ -510,14 +522,28 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
         elif key.startswith("future:"):
             page = page or "skills"
     elif app_key == "applied_intelligence":
-        if key.startswith("ai:question:"):
+        if key.startswith("ai:question:") or key.startswith("ai:practice_log_analysis:"):
             page = "Solve a Problem"
             qid = key.split(":", 2)[-1].strip() if key.count(":") >= 2 else ""
             if qid:
                 metrics["question_id"] = qid
                 metrics["dedupe_fingerprint"] = qid
+            if key.startswith("ai:practice_log_analysis:"):
+                metrics.setdefault("source_app", "music")
+                metrics.setdefault("handoff_kind", "practice_log_analysis")
+                metrics.setdefault("display_category", "analysis_handoff")
+                metrics.setdefault(
+                    "context",
+                    {
+                        "user_request": "analyze_practice",
+                        "handoff_kind": "practice_log_analysis",
+                        "display_category": "analysis_handoff",
+                    },
+                )
             if subtitle:
-                if "__ctx_json__:" in subtitle:
+                if key.startswith("ai:practice_log_analysis:") and subtitle.startswith("Updated"):
+                    metrics["context_summary"] = subtitle
+                elif "__ctx_json__:" in subtitle:
                     q_part, _, ctx_part = subtitle.partition("\n__ctx_json__:")
                     metrics["question"] = q_part.strip()
                     try:
@@ -542,7 +568,7 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
                     first_line, _, rest = subtitle.partition("\n")
                     metrics["question"] = first_line.replace("Question:", "", 1).strip()
                     metrics["context_summary"] = rest.strip() or subtitle
-                else:
+                elif not key.startswith("ai:practice_log_analysis:"):
                     metrics["question"] = subtitle.split("\n", 1)[0].strip()[:500]
                     if "\n" in subtitle:
                         metrics["context_summary"] = subtitle
@@ -572,3 +598,128 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
                         pass
 
     return page, metrics
+
+
+def merge_handoff_metrics_from_action_url(metrics: dict[str, Any], action_url: str) -> dict[str, Any]:
+    """Pull latest handoff ids from stored Continue URLs (practice log analysis)."""
+    out = dict(metrics or {})
+    url = str(action_url or "").strip()
+    if not url:
+        return out
+    try:
+        qs = parse_qs(urlparse(url).query)
+        run_id = str((qs.get("suite_practice_analysis_run_id") or [""])[0] or "").strip()
+        insight = str((qs.get("suite_ami_insight") or [""])[0] or "").strip()
+        qid = str((qs.get("suite_ai_question_id") or [""])[0] or "").strip()
+        if run_id:
+            out["analysis_run_id"] = run_id
+        if insight:
+            out["ami_insight"] = insight
+        if qid:
+            out.setdefault("question_id", qid)
+        out.setdefault("continue_action_url", url)
+    except Exception:
+        pass
+    return out
+
+
+def _music_scalar_params_from_payload(payload: dict[str, Any]) -> dict[str, str]:
+    """Flatten common Music resume scalars into query params."""
+    params: dict[str, str] = {}
+    pick = str(payload.get("pick_key") or "").strip()
+    if pick:
+        params["suite_pick_key"] = pick
+    song = str(payload.get("song") or "").strip()
+    if song:
+        params["suite_song"] = song[:120]
+    display_key = str(payload.get("display_key") or "").strip()
+    if display_key:
+        params["suite_display_key"] = display_key[:40]
+    instrument = str(payload.get("instrument") or "").strip()
+    if instrument:
+        params["suite_instrument"] = instrument[:40]
+    section = str(payload.get("practice_focus_section") or "").strip()
+    if section:
+        params["suite_section_focus"] = section[:80]
+    bpm = payload.get("bpm") or payload.get("backing_track_bpm")
+    if bpm is not None:
+        try:
+            params["suite_bpm"] = str(int(bpm))
+        except (TypeError, ValueError):
+            pass
+    kind = normalize_resume_kind(str(payload.get("resume_kind") or ""))
+    params["suite_resume_kind"] = kind
+    params["suite_entry_mode"] = "continue"
+    if kind == "backing":
+        scope = str(payload.get("backing_track_scope") or "").strip()
+        if scope:
+            params["suite_backing_scope"] = scope[:40]
+        multi = payload.get("backing_track_multi_sections")
+        if isinstance(multi, list) and multi:
+            params["suite_backing_sections"] = "|".join(str(s) for s in multi[:8])[:240]
+        groove = str(payload.get("backing_groove_style") or payload.get("style") or "").strip()
+        if groove:
+            params["suite_groove"] = groove[:40]
+        mood = str(payload.get("mood") or "").strip()
+        if mood:
+            params["suite_mood"] = mood[:40]
+        intensity = str(payload.get("intensity") or "").strip()
+        if intensity:
+            params["suite_intensity"] = intensity[:40]
+    elif kind == "creative":
+        mode = str(payload.get("improv_entry_mode") or "").strip()
+        if mode:
+            params["suite_creative_mode"] = mode[:80]
+    elif kind == "multitrack":
+        mt = str(payload.get("multitrack_id") or "").strip()
+        if mt:
+            params["suite_multitrack_id"] = mt[:80]
+    elif kind == "tone":
+        params["suite_open_tone"] = "1"
+    return params
+
+
+def build_music_continue_url(
+    payload: dict[str, Any],
+    *,
+    base_url: str = "",
+) -> str:
+    """Deep link that restores a specific Music task (Continue card)."""
+    base = (base_url or app_base_url("music")).strip().rstrip("/")
+    if not base or not payload:
+        return ""
+    rk = legacy_resume_key_for_payload(payload)
+    page = str(payload.get("studio_page") or "practice").strip()
+    page = _normalize_music_page(page, rk)
+    params: dict[str, str] = {"suite_entry_mode": "continue"}
+    if rk:
+        params["suite_resume"] = rk
+    if page:
+        params["suite_page"] = page
+    params.update(_music_scalar_params_from_payload(payload))
+    encoded = encode_payload_b64(payload)
+    if encoded:
+        params["suite_resume_payload"] = encoded
+    ws = normalize_workspace_id(str(payload.get("workspace_id") or resolve_workspace_id()))
+    params["suite_workspace"] = ws
+    return append_suite_workspace_param(f"{base}/?{urlencode(params, quote_via=quote)}", workspace_id=ws)
+
+
+def build_music_workstream_url(
+    page: str,
+    *,
+    workspace_id: str = "",
+    base_url: str = "",
+) -> str:
+    """Soft Music entry for App Directory — current workspace, no stale song restore."""
+    base = (base_url or app_base_url("music")).strip().rstrip("/")
+    if not base:
+        return ""
+    page_norm = _normalize_music_page(str(page or "practice"), "")
+    ws = normalize_workspace_id(workspace_id or resolve_workspace_id())
+    params = {
+        "suite_entry_mode": "workstream",
+        "suite_page": page_norm,
+        "suite_workspace": ws,
+    }
+    return append_suite_workspace_param(f"{base}/?{urlencode(params, quote_via=quote)}", workspace_id=ws)

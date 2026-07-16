@@ -26,7 +26,6 @@ _SESSION_RESTORED_PREFIX = "_suite_disk_state_restored::"
 _SESSION_BANNER_KEY = "_suite_persist_banner"
 _SESSION_SAVED_FLASH_KEY = "_suite_persist_saved_flash"
 SESSION_USER_OWNED_PAGE_KEY = "_suite_user_owned_page"
-AUTH_PAGE_PRESERVE_KEY = "_suite_auth_preserve_page"
 _SESSION_INVALID_WARN_KEY = "_suite_persist_invalid_warn"
 _SESSION_CLOUD_BANNER_KEY = "_suite_persist_cloud_banner"
 _LOCAL_DIRTY_PREFIX = "_suite_persist_local_dirty::"
@@ -126,33 +125,9 @@ def load_user_state(app_id: str) -> tuple[dict[str, Any], str | None]:
     return state, warning
 
 
-def _maybe_backup_disk_state_before_draft_erase(
-    app_id: str,
-    state: dict[str, Any],
-    *,
-    workspace_id: str | None = None,
-) -> None:
-    """Write a sibling .draft_archive_backup.json before shrinking draft_archive_teams on disk."""
-    path = state_file_path(app_id, workspace_id)
-    raw = _read_json(path)
-    if not isinstance(raw, dict):
-        return
-    old_state = raw.get("state") if isinstance(raw.get("state"), dict) else {}
-    try:
-        from workflow_persist_guard import DRAFT_ARCHIVE_KEY, count_draft_archives
-    except ImportError:
-        return
-    old_n = count_draft_archives(old_state.get(DRAFT_ARCHIVE_KEY))
-    new_n = count_draft_archives(state.get(DRAFT_ARCHIVE_KEY))
-    if old_n > 0 and new_n < old_n:
-        backup_path = path.with_name(f"{path.stem}.draft_archive_backup.json")
-        _write_json(backup_path, raw)
-
-
 def save_user_state(app_id: str, state: dict[str, Any], *, workspace_id: str | None = None) -> bool:
     if not isinstance(state, dict):
         return False
-    _maybe_backup_disk_state_before_draft_erase(app_id, state, workspace_id=workspace_id)
     payload = {
         "version": STATE_VERSION,
         "app": app_id,
@@ -280,7 +255,7 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "projections_edit",
     "leaderboards_edit",
     "fantasy_edit",
-    # page_change intentionally omitted — warm nav must fingerprint-skip when clean
+    "page_change",
     "insight_persist",
     "insight_hydrate",
     "applied_math_send",
@@ -289,66 +264,7 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "practice_edit",
     "team_change",
     "nba_settings_change",
-    "simulator_league_context_saved",
-    "live_draft_league_context_saved",
-    "imported_league_context_saved",
-    "manual_save_library_sync",
-    "league_context_activated",
-    "draft_archive_saved",
-    "draft_archive_renamed",
-    "draft_archive_duplicated",
-    "draft_archive_deleted",
-    "draft_archive_cleared",
-    "draft_room_settings_changed",
-    "live_draft_setting_changed",
-    "draft_sim_settings_changed",
-    "draft_assistant_settings_changed",
-    "fantasy_context_source_changed",
-    "global_settings_changed",
-    "historical_chart_save",
-    "career_chart_save",
-    "probe_test_draft_saved",
-    "workflow_library_sanitized",
-    "authenticated_migration_writeback",
-    "team_claimed",
-    "league_invite_sent",
-    "admin_draft_archive_repair",
 })
-
-
-def _normalize_force_save_reason(reason: str) -> str:
-    raw = str(reason or "").strip()
-    if raw.endswith("_retry"):
-        return raw[:-6]
-    return raw
-
-
-def _is_force_save_cloud_reason(reason: str) -> bool:
-    return _normalize_force_save_reason(reason) in _FORCE_SAVE_CLOUD_REASONS
-
-
-def _egress_cloud_autosave_block(
-    st: Any,
-    app_id: str,
-    state: dict[str, Any],
-    *,
-    save_reason: str,
-) -> str | None:
-    force_save = _is_force_save_cloud_reason(save_reason)
-    cloud_block = _cloud_autosave_blocked_reason(st, app_id, state, save_reason=save_reason)
-    if cloud_block:
-        return cloud_block
-    if force_save:
-        return None
-    try:
-        from suite_egress_policy import cloud_autosave_allowed, poll_sync_defer_active
-
-        allowed, throttle_reason = cloud_autosave_allowed(st, app_id, save_reason=save_reason)
-        if not allowed or poll_sync_defer_active(st.session_state):
-            return throttle_reason or "autosave_throttled"
-    except ImportError:
-        pass
-    return None
 
 
 def _cloud_autosave_blocked_reason(
@@ -358,127 +274,32 @@ def _cloud_autosave_blocked_reason(
     *,
     save_reason: str = "",
 ) -> str | None:
-    if app_id == "baseball":
-        try:
-            from workflow_persist_guard import startup_read_only_blocked_reason
-
-            startup_block = startup_read_only_blocked_reason(st, app_id, save_reason)
-            if startup_block:
-                return startup_block
-        except ImportError:
-            pass
-    try:
-        from workflow_persist_guard import workflow_empty_save_blocked_reason
-
-        gated = workflow_empty_save_blocked_reason(
-            st, app_id, state, save_reason=save_reason, scope="cloud"
-        )
-        if gated:
-            return gated
-    except ImportError:
-        pass
-    if app_id == "baseball":
-        try:
-            from workflow_persist_guard import (
-                WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
-                count_draft_archives,
-                draft_archive_shrink_blocked_reason,
-                read_live_cloud_draft_probe,
-            )
-
-            local_draft_count = count_draft_archives(state.get("draft_archive_teams"))
-            if local_draft_count <= 0 and not st.session_state.get(WORKFLOW_PERSIST_ALLOW_CLEAR_KEY):
-                live_probe = read_live_cloud_draft_probe(st, app_id)
-                if int(live_probe.get("draft_archive_count") or 0) > 0:
-                    shrink = draft_archive_shrink_blocked_reason(
-                        st, app_id, state, save_reason=save_reason, scope="cloud"
-                    )
-                    if shrink:
-                        return shrink
-        except ImportError:
-            pass
-    if _is_force_save_cloud_reason(save_reason):
-        return None
-    if st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
+    if save_reason in _FORCE_SAVE_CLOUD_REASONS:
+        if save_reason == "page_change":
+            return None
+        if st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
+            return None
+    elif st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
         return "workspace_sync_not_applied"
     if app_id != "baseball":
         return None
     local_players = _workspace_comparison_players(state)
-    local_draft_count = 0
-    try:
-        from workflow_persist_guard import count_draft_archives
-
-        local_draft_count = count_draft_archives(state.get("draft_archive_teams"))
-    except ImportError:
-        pass
-    if not local_draft_count:
-        try:
-            from workflow_persist_guard import probe_cloud_workflow_for_app_key, probe_cloud_workflow_for_workspace
-
-            cloud_draft_count = 0
-            cloud_app_key = str(st.session_state.get("_suite_last_cloud_app_key") or "").strip()
-            if st.session_state.get("_suite_draft_library_readback_ok") or st.session_state.get(
-                "_suite_draft_library_cloud_verified_at"
-            ):
-                if cloud_app_key:
-                    probe = probe_cloud_workflow_for_app_key(cloud_app_key)
-                else:
-                    from suite_workspace import get_active_workspace_id
-
-                    ws = str(get_active_workspace_id(st))
-                    probe = probe_cloud_workflow_for_workspace(ws)
-                cloud_draft_count = int(probe.get("draft_archive_count") or 0)
-                if cloud_draft_count > 0:
-                    return "post_draft_save_empty_session_would_erase_cloud"
-        except ImportError:
-            pass
-    if local_players or local_draft_count:
+    if local_players:
         return None
-    try:
-        from live_draft_state import live_draft_envelope_summary
-
-        if live_draft_envelope_summary(state):
-            return None
-    except ImportError:
-        pass
     try:
         from suite_cloud_state import load_cloud_full_session
 
         cloud_state, _ = load_cloud_full_session(app_id)
-        if not isinstance(cloud_state, dict):
-            cloud_state = {}
-        if not local_players and cloud_state:
-            cloud_players = _workspace_comparison_players(cloud_state)
-            if cloud_players and not _comparison_user_explicitly_cleared(st):
-                return "blank_comparison_would_erase_cloud"
-        if not local_draft_count:
-            try:
-                from workflow_persist_guard import (
-                    WORKFLOW_PERSIST_ALLOW_CLEAR_KEY,
-                    count_draft_archives,
-                    probe_cloud_workflow_for_workspace,
-                    read_live_cloud_draft_probe,
-                )
-
-                cloud_draft_count = 0
-                live_probe = read_live_cloud_draft_probe(st, app_id)
-                cloud_draft_count = int(live_probe.get("draft_archive_count") or 0)
-                if cloud_draft_count <= 0:
-                    try:
-                        from suite_workspace import get_active_workspace_id
-
-                        ws = str(get_active_workspace_id(st))
-                        probe = probe_cloud_workflow_for_workspace(ws)
-                        cloud_draft_count = int(probe.get("draft_archive_count") or 0)
-                    except Exception:
-                        cloud_draft_count = count_draft_archives(cloud_state.get("draft_archive_teams"))
-                if cloud_draft_count and not st.session_state.get(WORKFLOW_PERSIST_ALLOW_CLEAR_KEY):
-                    return "blank_draft_archive_would_erase_cloud"
-            except ImportError:
-                pass
+        if not isinstance(cloud_state, dict) or not cloud_state:
+            return None
+        cloud_players = _workspace_comparison_players(cloud_state)
+        if not cloud_players:
+            return None
+        if _comparison_user_explicitly_cleared(st):
+            return None
+        return "blank_comparison_would_erase_cloud"
     except Exception:
         return None
-    return None
 
 
 def _preserve_cloud_widget_fields_on_page_change(
@@ -493,28 +314,7 @@ def _preserve_cloud_widget_fields_on_page_change(
     except ImportError:
         return state
     cloud_state, _ = load_cloud_full_session(app_id)
-    if not isinstance(cloud_state, dict):
-        cloud_state = {}
-    if not cloud_state:
-        try:
-            from workflow_persist_guard import _full_session_blob_from_storage_app_key, probe_cloud_workflow_for_workspace
-            from suite_workspace import DEFAULT_WORKSPACE_ID, normalize_workspace_id, scoped_cloud_app_id
-
-            ws = normalize_workspace_id(
-                str(
-                    state.get("_suite_owned_workspace_id")
-                    or state.get("_suite_active_workspace_id")
-                    or DEFAULT_WORKSPACE_ID
-                )
-            )
-            probe = probe_cloud_workflow_for_workspace(ws, max_attempts=2)
-            if int(probe.get("draft_archive_count") or 0) > 0:
-                live_blob = _full_session_blob_from_storage_app_key(scoped_cloud_app_id(app_id, ws))
-                if isinstance(live_blob, dict) and live_blob:
-                    cloud_state = live_blob
-        except Exception:
-            pass
-    if not cloud_state:
+    if not isinstance(cloud_state, dict) or not cloud_state:
         return state
     out = copy.deepcopy(state)
     if not _workspace_comparison_players(out) and _workspace_comparison_players(cloud_state):
@@ -550,33 +350,6 @@ def _preserve_cloud_widget_fields_on_page_change(
                     pf = {}
                     out["page_filter_state"] = pf
                 pf["Trend Value"] = copy.deepcopy(trend_block)
-    try:
-        from workflow_persist_guard import (
-            ACTIVE_DRAFT_ARCHIVE_KEY,
-            DRAFT_ARCHIVE_KEY,
-            LEAGUE_CONTEXT_STATE_KEY,
-            count_draft_archives,
-            count_league_contexts,
-            protected_workflow_nonempty,
-        )
-    except ImportError:
-        return out
-    local_drafts = count_draft_archives(out.get(DRAFT_ARCHIVE_KEY))
-    cloud_drafts = count_draft_archives(cloud_state.get(DRAFT_ARCHIVE_KEY))
-    if local_drafts == 0 and cloud_drafts > 0 and protected_workflow_nonempty(
-        DRAFT_ARCHIVE_KEY, cloud_state.get(DRAFT_ARCHIVE_KEY)
-    ):
-        out[DRAFT_ARCHIVE_KEY] = copy.deepcopy(cloud_state.get(DRAFT_ARCHIVE_KEY))
-    local_contexts = count_league_contexts(out.get(LEAGUE_CONTEXT_STATE_KEY))
-    cloud_contexts = count_league_contexts(cloud_state.get(LEAGUE_CONTEXT_STATE_KEY))
-    if local_contexts == 0 and cloud_contexts > 0 and protected_workflow_nonempty(
-        LEAGUE_CONTEXT_STATE_KEY, cloud_state.get(LEAGUE_CONTEXT_STATE_KEY)
-    ):
-        out[LEAGUE_CONTEXT_STATE_KEY] = copy.deepcopy(cloud_state.get(LEAGUE_CONTEXT_STATE_KEY))
-    local_active = str(out.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
-    cloud_active = str(cloud_state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
-    if not local_active and cloud_active:
-        out[ACTIVE_DRAFT_ARCHIVE_KEY] = cloud_active
     return out
 
 
@@ -596,118 +369,12 @@ def claim_user_page_ownership(st: Any, app_id: str, page: str) -> None:
         reconcile_stale_page_navigation(st, app_id)
     except Exception:
         pass
-    # Own the skip target after reconcile clears AMI leftovers — prevents a
-    # workspace blob's Historical Explorer skip from winning on the next apply.
-    try:
-        from nav_page_trace import assign_nav_key
-
-        assign_nav_key(
-            ss,
-            "_skip_page_restore_for",
-            selected,
-            function="claim_user_page_ownership",
-            reason="sidebar ownership",
-            st=st,
-        )
-        assign_nav_key(
-            ss,
-            SESSION_USER_OWNED_PAGE_KEY,
-            selected,
-            function="claim_user_page_ownership",
-            reason="sidebar ownership",
-            st=st,
-        )
-    except ImportError:
-        ss["_skip_page_restore_for"] = selected
-        ss[SESSION_USER_OWNED_PAGE_KEY] = selected
-    ss.pop("_suite_cloud_target_page", None)
-
-
-def resolve_session_active_page(session: dict[str, Any]) -> str:
-    """Best available active page from session navigation keys."""
-    for key in (
-        "active_page",
-        "main_sidebar_page",
-        AUTH_PAGE_PRESERVE_KEY,
-        SESSION_USER_OWNED_PAGE_KEY,
-        "_suite_last_persisted_page",
-        "_navigate_to_page",
-        "_skip_page_restore_for",
-    ):
-        page = str(session.get(key) or "").strip()
-        if page:
-            return page
-    return ""
-
-
-def preserve_page_through_auth(session: dict[str, Any], *, app_id: str = "baseball") -> str:
-    """
-    Keep the page the user was on when sign-in finishes.
-
-    Login may switch workspace and re-sync cloud (needed for drafts) but must not
-    bounce the user back to Historical Explorer / cloud active_page.
-    """
-    page = resolve_session_active_page(session)
-    if not page:
-        return ""
-    session[AUTH_PAGE_PRESERVE_KEY] = page
-    session[SESSION_USER_OWNED_PAGE_KEY] = page
-    session["active_page"] = page
-    session["main_sidebar_page"] = page
-    session["_suite_last_persisted_page"] = page
-    session["_navigate_to_page"] = page
-    session["_skip_page_restore_for"] = page
-    session["requested_page"] = page
-    session["active_page_source"] = "auth_preserve"
-    session["_suite_workspace_force_sync"] = True
-    session.pop(_workspace_synced_key(app_id), None)
-    session.pop(f"{_SESSION_RESTORED_PREFIX}{app_id}", None)
-    session.pop(_applied_cloud_ts_key(app_id), None)
-    try:
-        from suite_cloud_state import invalidate_cloud_full_session_cache
-
-        invalidate_cloud_full_session_cache(app_id)
-    except Exception:
-        pass
-    return page
-
-
-def consume_auth_page_preserve(session: dict[str, Any]) -> str:
-    """Return and clear the one-shot auth page preserve target."""
-    page = str(session.pop(AUTH_PAGE_PRESERVE_KEY, None) or "").strip()
-    if page:
-        return page
-    return str(session.get(SESSION_USER_OWNED_PAGE_KEY) or "").strip()
-
-
-def _apply_auth_page_preserve_after_restore(session: dict[str, Any]) -> str:
-    """Re-apply page captured at sign-in after cloud/disk workspace restore."""
-    page = str(session.get(AUTH_PAGE_PRESERVE_KEY) or "").strip()
-    if not page:
-        page = str(session.get(SESSION_USER_OWNED_PAGE_KEY) or "").strip()
-        if session.get("active_page_source") != "auth_preserve":
-            return ""
-    if not page:
-        return ""
-    session["active_page"] = page
-    session["main_sidebar_page"] = page
-    session["_suite_last_persisted_page"] = page
-    session["_navigate_to_page"] = page
-    session["_skip_page_restore_for"] = page
-    session[SESSION_USER_OWNED_PAGE_KEY] = page
-    session["_suite_page_overwrite_source"] = "auth_page_preserved"
-    session.pop(AUTH_PAGE_PRESERVE_KEY, None)
-    return page
 
 
 def _user_page_blocks_cloud_overwrite(st: Any, cloud_page: str) -> bool:
-    ss = st.session_state
-    auth_preserve = str(ss.get(AUTH_PAGE_PRESERVE_KEY) or "").strip()
-    owned = str(ss.get(SESSION_USER_OWNED_PAGE_KEY) or auth_preserve or "").strip()
-    current = _session_workspace_page(st) or auth_preserve or owned
+    owned = str(st.session_state.get(SESSION_USER_OWNED_PAGE_KEY) or "").strip()
+    current = _session_workspace_page(st)
     cloud = str(cloud_page or "").strip()
-    if auth_preserve and cloud and cloud != auth_preserve:
-        return True
     if not owned or not current:
         return False
     return bool(owned == current and cloud and cloud != owned)
@@ -882,29 +549,11 @@ def _record_startup_restore_diagnostics(
 
     diag = probe_cloud_restore_diagnostics(st, app_id) if probe_cloud_restore_diagnostics else {}
     cloud_players = _workspace_comparison_players(cloud_state) if cloud_state else []
-    cloud_uid = str(diag.get("suite_user_id") or "")
-    cloud_app_key = ""
-    try:
-        from suite_auth import is_auth_enabled, is_authenticated, resolve_auth_external_id
-
-        if is_auth_enabled() and is_authenticated(st.session_state):
-            cloud_uid = str(resolve_auth_external_id(st.session_state) or cloud_uid)
-    except ImportError:
-        pass
-    try:
-        from suite_workspace import scoped_cloud_app_id, get_active_workspace_id
-
-        cloud_app_key = scoped_cloud_app_id(app_id, get_active_workspace_id(st=st))
-    except ImportError:
-        pass
     st.session_state["_suite_cloud_fetch_attempted"] = True
     st.session_state["_suite_cloud_fetch_success"] = bool(cloud_state) or bool(
         diag.get("cloud_has_full_session")
     )
-    st.session_state["_suite_cloud_fetch_error"] = str(diag.get("cloud_load_error") or "") or None
-    st.session_state["_suite_cloud_fetch_row_found"] = bool(diag.get("cloud_row_found"))
-    st.session_state["_suite_cloud_fetch_user_id"] = (cloud_uid or "")[:32] or None
-    st.session_state["_suite_cloud_fetch_app_key"] = cloud_app_key or None
+    st.session_state["_suite_cloud_fetch_user_id"] = (diag.get("suite_user_id") or "")[:32] or None
     st.session_state["_suite_cloud_fetch_updated_at"] = cloud_ts or diag.get("cloud_updated_at")
     st.session_state["_suite_cloud_fetch_active_page"] = (
         cloud_state.get("active_page")
@@ -921,17 +570,6 @@ def _record_startup_restore_diagnostics(
     st.session_state["_suite_disk_restore_after_cloud"] = picked_source == "disk" and bool(cloud_state)
     st.session_state["_suite_post_restore_active_page"] = st.session_state.get("active_page")
     st.session_state["_suite_post_restore_comparison_players"] = _session_comparison_players(st) or None
-    try:
-        from workflow_persist_guard import record_startup_restore_snapshot
-
-        record_startup_restore_snapshot(
-            st,
-            cloud_state=cloud_state if isinstance(cloud_state, dict) else None,
-            disk_state=disk_state if isinstance(disk_state, dict) else None,
-            phase="during_sync",
-        )
-    except ImportError:
-        pass
 
 
 def sync_workspace_protocol(
@@ -951,12 +589,6 @@ def sync_workspace_protocol(
     st.session_state["_suite_persist_app_id"] = app_id
     st.session_state["_suite_workspace_sync_attempted"] = True
     st.session_state.pop("_suite_persist_restore_skip_reason", None)
-    try:
-        from suite_auth import enforce_workspace_ownership
-
-        enforce_workspace_ownership(st.session_state)
-    except ImportError:
-        pass
     record_page_navigation_startup_diagnostics(st, app_id)
     try:
         from applied_math_return_insight import reconcile_stale_page_navigation
@@ -1018,34 +650,7 @@ def sync_workspace_protocol(
     dirty_key = _local_dirty_key(app_id)
     st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
 
-    synced_key = _workspace_synced_key(app_id)
-    already_synced = bool(st.session_state.get(synced_key))
-    if already_synced and not st.session_state.get("_suite_workspace_force_sync"):
-        try:
-            from suite_egress_policy import lightweight_workspace_meta_check, workspace_cloud_fetch_needed
-
-            if not workspace_cloud_fetch_needed(st, app_id):
-                skip_reason = "workspace synced — skipped cloud full_session fetch (egress save)"
-                st.session_state["_suite_persist_restore_skip_reason"] = skip_reason
-                _record_workspace_sync_trace(
-                    st, app_id, cloud_state={}, cloud_ts=None, disk_state={}, disk_ts=None,
-                    winner="none", reason=skip_reason, applied=False,
-                )
-                return False
-            if not lightweight_workspace_meta_check(st, app_id):
-                skip_reason = "workspace synced — cloud meta unchanged (egress save)"
-                st.session_state["_suite_persist_restore_skip_reason"] = skip_reason
-                return False
-        except ImportError:
-            pass
-
     cloud_state, cloud_ts = load_cloud_full_session(app_id)
-    try:
-        from workflow_persist_guard import enrich_cloud_restore_state
-
-        cloud_state = enrich_cloud_restore_state(app_id, st, cloud_state)
-    except ImportError:
-        pass
     disk_state, disk_warn, disk_ts = _load_raw(app_id)
     if disk_warn:
         st.session_state[_SESSION_INVALID_WARN_KEY] = disk_warn
@@ -1067,13 +672,7 @@ def sync_workspace_protocol(
         )
         return False
 
-    force_sync = bool(st.session_state.get("_suite_workspace_force_sync"))
-    auth_page_preserve = str(st.session_state.get(AUTH_PAGE_PRESERVE_KEY) or "").strip()
-    if (
-        (st.session_state.get("_suite_page_user_nav") or st.session_state.get("_suite_nav_consumed_this_run"))
-        and not force_sync
-        and not auth_page_preserve
-    ):
+    if st.session_state.get("_suite_page_user_nav"):
         reason = "user page navigation — workspace sync skipped"
         _mark_user_nav_sync_skipped(st, reason)
         _record_startup_restore_diagnostics(
@@ -1201,32 +800,10 @@ def sync_workspace_protocol(
             picked_source=picked.source, picked_reason=picked.reason,
             should_apply=False, apply_reason=apply_reason, skip_reason=skip_reason,
         )
-        try:
-            from workflow_persist_guard import ensure_session_workflow_hydrated
-
-            ensure_session_workflow_hydrated(st, app_id, cloud_state=cloud_state)
-        except ImportError:
-            pass
         return False
 
     try:
-        from suite_identity_guard import apply_state_with_identity_guard
-
-        apply_state_with_identity_guard(
-            st,
-            apply_state,
-            picked.state,
-            reason="sync_workspace_protocol",
-            last_mutator="sync_workspace_protocol.apply_state",
-        )
-    except ImportError:
         apply_state(st, picked.state)
-        try:
-            from suite_auth import enforce_workspace_ownership
-
-            enforce_workspace_ownership(st.session_state)
-        except ImportError:
-            pass
     except Exception as exc:
         reason = f"apply_state failed: {exc}"
         st.session_state["_suite_persist_restore_skip_reason"] = reason
@@ -1238,13 +815,10 @@ def sync_workspace_protocol(
         )
         return False
 
-    _apply_auth_page_preserve_after_restore(st.session_state)
     _lock_fingerprint_after_restore(st, app_id, picked.state)
     st.session_state[synced_key] = True
     st.session_state[f"{_SESSION_RESTORED_PREFIX}{app_id}"] = True
     st.session_state[dirty_key] = False
-    st.session_state.pop("_suite_workspace_force_sync", None)
-    st.session_state.pop("_suite_workspace_refresh_needed", None)
     st.session_state[_autosave_block_key(app_id)] = True
     st.session_state["_suite_autosave_block_reason"] = "post-restore cooldown"
     st.session_state["_cloud_workspace_restored"] = picked.source == "cloud"
@@ -1703,34 +1277,15 @@ def sync_cloud_workspace_before_sidebar(
         return False
 
     try:
-        from suite_identity_guard import apply_state_with_identity_guard
-
-        apply_state_with_identity_guard(
-            st,
-            apply_state,
-            picked.state,
-            reason="sync_workspace_protocol",
-            last_mutator="sync_workspace_protocol.apply_state",
-        )
-    except ImportError:
         apply_state(st, picked.state)
-        try:
-            from suite_auth import enforce_workspace_ownership
-
-            enforce_workspace_ownership(st.session_state)
-        except ImportError:
-            pass
     except Exception as exc:
         st.session_state["_suite_persist_restore_skip_reason"] = f"apply_state failed: {exc}"
         return False
 
-    _apply_auth_page_preserve_after_restore(st.session_state)
     flag = f"{_SESSION_RESTORED_PREFIX}{app_id}"
     st.session_state[flag] = True
     st.session_state[applied_key] = cloud_ts or _utc_now_iso()
     st.session_state[dirty_key] = False
-    st.session_state.pop("_suite_workspace_force_sync", None)
-    st.session_state.pop("_suite_workspace_refresh_needed", None)
     st.session_state["_suite_persist_last_restore_at"] = _utc_now_iso()
     st.session_state["_suite_persist_last_restore_source"] = picked.source
     st.session_state["_suite_persist_last_restore_reason"] = picked.reason
@@ -1784,31 +1339,25 @@ def force_autosave(
 
         from suite_cloud_state import load_cloud_full_session, save_cloud_full_session, session_page_summary
 
-        try:
-            from workflow_persist_guard import startup_read_only_blocked_reason
-
-            startup_block = startup_read_only_blocked_reason(st, app_id, reason)
-            if startup_block:
-                st.session_state["_suite_empty_startup_write_blocked"] = startup_block
-                try:
-                    from persist_write_audit import record_persist_write_audit
-
-                    record_persist_write_audit(
-                        st,
-                        app_id,
-                        source_function="force_autosave",
-                        save_reason=reason or "force_autosave",
-                        blocked=True,
-                        block_reason=startup_block,
-                    )
-                except ImportError:
-                    pass
-                return False
-        except ImportError:
-            pass
-
         block_key = _autosave_block_key(app_id)
-        bypass_block = _is_force_save_cloud_reason(reason)
+        bypass_block = reason in (
+            "comparison_edit",
+            "trend_edit",
+            "career_edit",
+            "draft_edit",
+            "historical_edit",
+            "valuation_edit",
+            "projections_edit",
+            "leaderboards_edit",
+            "fantasy_edit",
+            "page_change",
+            "insight_persist",
+            "insight_hydrate",
+            "applied_math_send",
+            "music_coach_send",
+            "team_change",
+            "nba_settings_change",
+        )
         if st.session_state.get(block_key) and not bypass_block:
             st.session_state["_suite_autosave_blocked_after_restore"] = True
             st.session_state["_suite_autosave_block_reason"] = st.session_state.get(
@@ -1821,62 +1370,16 @@ def force_autosave(
         state = build_state(st)
         if reason == "page_change":
             state = _preserve_cloud_widget_fields_on_page_change(app_id, state)
-        try:
-            from workflow_persist_guard import workflow_empty_save_blocked_reason
-
-            empty_block = workflow_empty_save_blocked_reason(
-                st, app_id, state, save_reason=reason or "", scope="all"
-            )
-            if empty_block:
-                st.session_state["_suite_empty_startup_write_blocked"] = empty_block
-                st.session_state["_suite_persist_last_save_reason"] = reason or "force_autosave"
-                return False
-        except ImportError:
-            pass
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
-        fp_key = f"_suite_autosave_fp::{app_id}"
-        bypass_fp = _is_force_save_cloud_reason(reason)
-        if st.session_state.get(fp_key) == fp and not bypass_fp:
-            return False
         saved_disk = save_user_state(app_id, state)
         page, summary = session_page_summary(app_id, state)
-        cloud_block = _egress_cloud_autosave_block(st, app_id, state, save_reason=reason or "force_autosave")
+        cloud_block = _cloud_autosave_blocked_reason(st, app_id, state, save_reason=reason)
         saved_cloud = False
-        cloud_error = ""
         if cloud_block:
-            cloud_error = str(cloud_block)
             st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
-            st.session_state["_suite_persist_last_cloud_error"] = cloud_error
         else:
-            try:
-                from suite_cloud_state import (
-                    is_draft_library_cloud_save_reason,
-                    save_cloud_draft_library_with_details,
-                    save_cloud_full_session_with_details,
-                )
-
-                if is_draft_library_cloud_save_reason(reason):
-                    saved_cloud, cloud_error, cloud_app_key = save_cloud_draft_library_with_details(
-                        app_id, state, page=page, summary=summary
-                    )
-                else:
-                    saved_cloud, cloud_error, cloud_app_key = save_cloud_full_session_with_details(
-                        app_id, state, page=page, summary=summary
-                    )
-                if cloud_app_key:
-                    st.session_state["_suite_last_cloud_app_key"] = cloud_app_key
-            except ImportError:
-                from suite_cloud_state import save_cloud_full_session
-
-                saved_cloud = bool(save_cloud_full_session(app_id, state, page=page, summary=summary))
-                if not saved_cloud:
-                    cloud_error = "save_cloud_full_session_unavailable"
-            if not saved_cloud:
-                st.session_state["_suite_persist_last_cloud_error"] = cloud_error or "cloud_save_failed"
-                st.session_state["_draft_archive_persist_error"] = cloud_error or "cloud_save_failed"
-            else:
-                st.session_state.pop("_suite_persist_last_cloud_error", None)
+            saved_cloud = bool(save_cloud_full_session(app_id, state, page=page, summary=summary))
         if saved_disk or saved_cloud:
             st.session_state[f"_suite_autosave_fp::{app_id}"] = fp
             st.session_state[_restored_fp_key(app_id)] = fp
@@ -1884,13 +1387,8 @@ def force_autosave(
             if reason == "page_change":
                 _release_user_page_ownership_after_save(st, str(state.get("active_page") or ""))
             if saved_cloud:
-                try:
-                    from suite_egress_policy import mark_cloud_autosave
-
-                    mark_cloud_autosave(st)
-                except ImportError:
-                    pass
-                st.session_state[_applied_cloud_ts_key(app_id)] = _utc_now_iso()
+                _, cloud_ts = load_cloud_full_session(app_id)
+                st.session_state[_applied_cloud_ts_key(app_id)] = cloud_ts or _utc_now_iso()
             st.session_state["_suite_persist_last_save_at"] = _utc_now_iso()
             st.session_state["_suite_persist_last_save_disk"] = saved_disk
             st.session_state["_suite_persist_last_save_cloud"] = saved_cloud
@@ -1939,48 +1437,9 @@ def autosave_if_changed(
             st.session_state["_suite_autosave_block_reason"] = st.session_state.get(
                 "_suite_autosave_block_reason", "post-restore cooldown"
             )
-            try:
-                from persist_write_audit import record_persist_write_audit
-
-                record_persist_write_audit(
-                    st,
-                    app_id,
-                    source_function="autosave_if_changed",
-                    save_reason="autosave",
-                    blocked=True,
-                    block_reason=str(st.session_state.get("_suite_autosave_block_reason") or ""),
-                )
-            except ImportError:
-                pass
             return
 
         state = build_state(st)
-        try:
-            from workflow_persist_guard import workflow_empty_save_blocked_reason
-
-            empty_block = workflow_empty_save_blocked_reason(
-                st, app_id, state, save_reason="autosave", scope="all"
-            )
-            if empty_block:
-                st.session_state["_suite_empty_startup_write_blocked"] = empty_block
-                st.session_state["_suite_persist_last_save_reason"] = "autosave"
-                try:
-                    from persist_write_audit import record_persist_write_audit
-
-                    record_persist_write_audit(
-                        st,
-                        app_id,
-                        source_function="autosave_if_changed",
-                        save_reason="autosave",
-                        outgoing_state=state,
-                        blocked=True,
-                        block_reason=empty_block,
-                    )
-                except ImportError:
-                    pass
-                return
-        except ImportError:
-            pass
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
         key = f"_suite_autosave_fp::{app_id}"
@@ -2002,7 +1461,7 @@ def autosave_if_changed(
             from suite_cloud_state import save_cloud_full_session, session_page_summary
 
             page, summary = session_page_summary(app_id, state)
-            cloud_block = _egress_cloud_autosave_block(st, app_id, state, save_reason="autosave")
+            cloud_block = _cloud_autosave_blocked_reason(st, app_id, state, save_reason="autosave")
             if cloud_block:
                 st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
             else:
@@ -2010,13 +1469,11 @@ def autosave_if_changed(
                     save_cloud_full_session(app_id, state, page=page, summary=summary)
                 )
                 if saved_cloud:
-                    try:
-                        from suite_egress_policy import mark_cloud_autosave
+                    from suite_cloud_state import load_cloud_full_session
 
-                        mark_cloud_autosave(st)
-                    except ImportError:
-                        pass
-                    st.session_state[_applied_cloud_ts_key(app_id)] = _utc_now_iso()
+                    _, cloud_ts_after = load_cloud_full_session(app_id)
+                    if cloud_ts_after:
+                        st.session_state[_applied_cloud_ts_key(app_id)] = cloud_ts_after
         except Exception as exc:
             cloud_err = str(exc)
         if saved_disk or saved_cloud:
@@ -2035,20 +1492,6 @@ def autosave_if_changed(
             _record_autosave_trace(
                 st, app_id, reason="autosave", wrote_cloud=saved_cloud, state=state
             )
-            try:
-                from persist_write_audit import record_persist_write_audit
-
-                record_persist_write_audit(
-                    st,
-                    app_id,
-                    source_function="autosave_if_changed",
-                    save_reason="autosave",
-                    outgoing_state=state,
-                    wrote_disk=saved_disk,
-                    wrote_cloud=saved_cloud,
-                )
-            except ImportError:
-                pass
             st.session_state["_suite_last_cloud_payload_comparison_players"] = _workspace_comparison_players(
                 state
             ) or None
@@ -2130,13 +1573,6 @@ def render_reset_controls(
         _RESTORED_FP_PREFIX,
     ),
 ) -> None:
-    try:
-        from suite_sidebar_run import GUARD_SAVED_SESSION, claim_sidebar_render
-
-        if not claim_sidebar_render(st.session_state, GUARD_SAVED_SESSION):
-            return
-    except ImportError:
-        pass
     pending = bool(st.session_state.get(reset_confirm_session_key(app_id)))
     with st.sidebar.expander("Saved session", expanded=pending):
         st.caption("Your last page, filters, and inputs reload automatically.")

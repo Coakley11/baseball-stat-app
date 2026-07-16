@@ -51,16 +51,6 @@ def get_external_user_id() -> str:
 
 
 def get_user_email() -> str:
-    try:
-        import streamlit as st  # noqa: WPS433
-        from suite_auth import current_auth_email, is_auth_enabled, is_authenticated
-
-        if is_auth_enabled() and is_authenticated(st.session_state):
-            email = str(current_auth_email(st.session_state) or "").strip()
-            if email:
-                return email
-    except Exception:
-        pass
     env = os.environ.get("SUITE_USER_EMAIL", "").strip()
     if env:
         return env
@@ -128,37 +118,32 @@ def _read_secret(block: Any, name: str) -> str:
 
 def reset_account_cache() -> None:
     reset_cloud_config_cache()
-    _resolve_account_user_id_cached.cache_clear()
+    _resolve_account_user_id.cache_clear()
 
 
-@lru_cache(maxsize=16)
-def _resolve_account_user_id_cached(external_id: str, email: str) -> str:
+@lru_cache(maxsize=1)
+def _resolve_account_user_id() -> str:
     """
-    Return Supabase suite_users UUID for one external account key.
-
-    Keyed by external_id + email so switching accounts on a shared Streamlit worker
-    cannot reuse another user's cached cloud row id.
+    Return Supabase user UUID when cloud is configured, else ``local:{external_id}``.
     """
-    ext = str(external_id or "default").strip() or "default"
+    external = get_external_user_id()
     cfg = get_cloud_config()
     if cfg is None:
-        return f"local:{ext}"
+        return f"local:{external}"
     try:
         from suite_storage_supabase import ensure_user_row
 
         return ensure_user_row(
-            ext,
-            email=str(email or "").strip(),
+            external,
+            email=get_user_email(),
             display_name=get_display_name(),
         )
     except Exception:
-        return f"local:{ext}"
+        return f"local:{external}"
 
 
 def get_account_user_id() -> str:
-    external = get_external_user_id()
-    email = get_user_email()
-    return _resolve_account_user_id_cached(external, email)
+    return _resolve_account_user_id()
 
 
 def account_mode() -> str:

@@ -16,19 +16,18 @@ from datetime import datetime, timezone
 from collections.abc import Callable
 from typing import Any
 
-from activity_time import parse_activity_timestamp, utc_now_iso
+from activity_time import format_eastern_time_label, parse_activity_timestamp, utc_now_iso
 
 log = logging.getLogger(__name__)
 
 AMI_SIDEBAR_DEPLOY_LABEL = "Applied Math question sender live"
-AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-23-baseball-insight-label-v2"
-AMI_SIDEBAR_RENDER_MODULE = "suite_analytical_question.render_analyze_with_applied_math_sidebar"
+AMI_SIDEBAR_DEPLOY_VERSION = "2026-06-08-return-insight-restore-v12"
 _CTX_JSON_SUBTITLE_LIMIT = 8000
 _CONTEXT_ITEM_TYPE = "analytical_question_context"
 ANALYTICAL_QUESTION_CONTINUE_PRIORITY = 64
 ANALYTICAL_QUESTION_BUTTON_LABEL = "Continue in Applied Mathematics →"
-BASEBALL_INSIGHT_BUTTON_LABEL = "⚾ Baseball Insight"
-BASEBALL_INSIGHT_SECTION_TITLE = "Baseball Insight"
+PRACTICE_LOG_ANALYSIS_TITLE = "Music Practice Log Analysis"
+PRACTICE_LOG_ANALYSIS_CONTINUE_PRIORITY = 65
 _SEND_COOLDOWN_SECONDS = 120
 
 _SOURCE_AREA: dict[str, str] = {
@@ -150,9 +149,6 @@ _PUBLIC_CONTEXT_KEYS = (
     "ami_guidance",
     "projection",
     "watchlist",
-    "hof_case_summary",
-    "cohort_selectivity",
-    "primary_position",
 )
 
 _CONTEXT_LABELS = {
@@ -207,9 +203,6 @@ _CONTEXT_LABELS = {
     "rebalance_recommendation": "Rebalance recommendation",
     "total_drift": "Total drift",
     "historical_comparison": "Historical comparison",
-    "hof_case_summary": "Hall of Fame case",
-    "cohort_selectivity": "Cohort selectivity",
-    "primary_position": "Primary position",
 }
 
 
@@ -224,81 +217,13 @@ def source_app_label(source_app: str) -> str:
     return _SOURCE_LABELS.get(key, key.replace("_", " ").title())
 
 
-def infer_runtime_suite_app_id(session: dict[str, Any] | None = None) -> str:
-    """Suite app id set by hosting app entrypoint (e.g. streamlit_app.py)."""
-    ss = session or {}
-    explicit = str(ss.get("_suite_runtime_app_id") or "").strip()
-    if explicit:
-        return normalize_source_app_id(explicit)
-    return ""
-
-
-def resolve_ami_sidebar_app_id(
-    source_app: str,
-    session: dict[str, Any] | None = None,
-) -> str:
-    """Canonical app id for AMI sidebar labels — prefers explicit baseball runtime."""
-    passed = normalize_source_app_id(source_app)
-    runtime = infer_runtime_suite_app_id(session)
-    if passed == "baseball" or runtime == "baseball":
-        return "baseball"
-    if passed:
-        return passed
-    return runtime
-
-
-def ami_sidebar_submit_label(
-    source_app: str,
-    session: dict[str, Any] | None = None,
-) -> str:
-    """Primary sidebar button label — baseball uses Baseball Insight; routing unchanged."""
-    app = resolve_ami_sidebar_app_id(source_app, session)
-    if app == "music":
-        return "Ask the Music Coach"
-    if app == "nba":
-        return "Get NBA Insight"
-    if app == "baseball":
-        return BASEBALL_INSIGHT_BUTTON_LABEL
-    return "Send to Command Center"
-
-
-def ami_sidebar_build_marker() -> str:
-    """Git/build stamp for AMI sidebar debug."""
-    try:
-        from suite_deploy_marker import GIT_BRANCH, GIT_COMMIT_SHORT, SUITE_BUILD_LABEL
-
-        return f"{SUITE_BUILD_LABEL} · commit `{GIT_COMMIT_SHORT}` · branch `{GIT_BRANCH}`"
-    except ImportError:
-        return "build marker unavailable"
-
-
-def _ami_sidebar_debug_visible(st: Any, session_state: dict[str, Any]) -> bool:
-    """True only when the Developer Mode sidebar checkbox is on."""
-    try:
-        from suite_workspace import developer_mode_checkbox_enabled
-
-        return developer_mode_checkbox_enabled(st=st)
-    except ImportError:
-        return bool(session_state.get("app_developer_mode"))
-
-
-def render_ami_sidebar_submit_debug(
-    st: Any,
-    *,
-    source_app_raw: str,
-    source_app_resolved: str,
-    submit_label: str,
-    session_state: dict[str, Any],
-) -> None:
-    """Dev-only marker beside the AMI submit button."""
-    if not _ami_sidebar_debug_visible(st, session_state):
-        return
-    st.sidebar.caption(
-        "🛠 **AMI submit debug** · "
-        f"module `{AMI_SIDEBAR_RENDER_MODULE}` · "
-        f"source_app={source_app_raw!r} → {source_app_resolved!r} · "
-        f"label={submit_label!r} · "
-        f"{AMI_SIDEBAR_DEPLOY_VERSION} · {ami_sidebar_build_marker()}"
+def is_practice_log_analysis_context(context: dict[str, Any] | None) -> bool:
+    ctx = dict(context or {})
+    return (
+        str(ctx.get("user_request") or "") == "analyze_practice"
+        or str(ctx.get("intent") or "") in {"practice_history_analysis", "practice_log_analysis"}
+        or str(ctx.get("display_category") or "") == "analysis_handoff"
+        or str(ctx.get("handoff_kind") or "") == "practice_log_analysis"
     )
 
 
@@ -307,7 +232,10 @@ def source_question_card_title(
     context: dict[str, Any] | None = None,
 ) -> str:
     """Normalized Continue / activity title for cross-app questions."""
-    app = normalize_source_app_id(source_app, context)
+    ctx = dict(context or {})
+    app = normalize_source_app_id(source_app, ctx)
+    if is_practice_log_analysis_context(ctx):
+        return PRACTICE_LOG_ANALYSIS_TITLE
     if app == "music":
         return "Music Coach question from Music"
     label = _SOURCE_LABELS.get(app, app.replace("_", " ").title())
@@ -429,101 +357,20 @@ def _parse_context_from_resume_subtitle(subtitle: str) -> dict[str, Any]:
         return {}
 
 
-def _hof_case_player_name(payload: dict[str, Any]) -> str:
-    ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    packet = ctx.get("hof_case_packet") if isinstance(ctx.get("hof_case_packet"), dict) else {}
-    if not isinstance(packet, dict) or not packet:
-        top = payload.get("hof_case_packet")
-        packet = top if isinstance(top, dict) else {}
-    for candidate in (payload.get("player"), payload.get("target_player"), ctx.get("player"), packet.get("target_player")):
-        name = str(candidate or "").strip()
-        if name:
-            return name
-    return ""
-
-
-def _blob_payload_richness(payload: dict[str, Any]) -> int:
-    diag = payload.get("blob_diagnostics") if isinstance(payload.get("blob_diagnostics"), dict) else {}
-    count = 0
-    try:
-        count = int(diag.get("available_players_count") or 0)
-    except (TypeError, ValueError):
-        count = 0
-    ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    avail = ctx.get("available_players")
-    if isinstance(avail, list):
-        count = max(count, len(avail))
-    return count
-
-
-def _select_best_blob_payload(
-    candidates: list[tuple[str, str, dict[str, Any]]],
-) -> dict[str, Any] | None:
-    """Pick the richest blob payload; break ties by newest timestamp."""
-    best: dict[str, Any] | None = None
-    best_ts = ""
-    best_richness = -1
-    for ts, app, payload in candidates:
-        if not isinstance(payload, dict):
-            continue
-        richness = _blob_payload_richness(payload)
-        ts_s = str(ts or "")
-        if ts_s > best_ts or (ts_s == best_ts and richness > best_richness):
-            best = dict(payload)
-            best["blob_store_app"] = app
-            best["blob_load_candidates"] = [c[1] for c in candidates]
-            best_ts = ts_s
-            best_richness = richness
-    return best
-
-
 def _store_question_context_blob(payload: dict[str, Any]) -> None:
     """Persist full context server-side keyed by question_id (survives URL truncation)."""
     qid = str(payload.get("question_id") or "").strip()
     if not qid:
         return
-    ctx = dict(payload.get("context") or {})
-    hof_case = _is_hof_case_submission(str(payload.get("quant_area") or ""), ctx)
     blob = {
         "question": payload.get("question"),
         "question_id": qid,
         "source_app": payload.get("source_app"),
         "source_page": payload.get("source_page"),
         "quant_area": payload.get("quant_area"),
-        "context": ctx,
+        "context": dict(payload.get("context") or {}),
         "source_state": dict(payload.get("source_state") or {}),
-        "action_url": str(payload.get("action_url") or "").strip(),
-        "blob_type": "baseball_hof_case" if hof_case else "analytical_question",
-        "app_context_type": str(payload.get("app_context_type") or ("baseball_hof_case" if hof_case else "")).strip(),
     }
-    if hof_case:
-        player = _hof_case_player_name(payload)
-        if player:
-            blob["player"] = player
-        packet = ctx.get("hof_case_packet")
-        if not isinstance(packet, dict) or not packet:
-            packet = payload.get("hof_case_packet")
-        if isinstance(packet, dict) and packet:
-            blob["hof_case_packet"] = copy.deepcopy(packet)
-        for extra_key in (
-            "context_type",
-            "ami_source_app",
-            "ami_source_page",
-            "hof_ami_audit",
-            "target_player",
-            "target_player_name",
-            "player_id",
-            "resume_key",
-            "workspace_snapshot_present",
-            "workspace_snapshot_ref",
-            "verdict_context",
-        ):
-            if extra_key in payload and payload[extra_key] not in (None, "", {}):
-                blob[extra_key] = copy.deepcopy(payload[extra_key])
-    if isinstance(payload.get("workspace_snapshot"), dict) and payload.get("workspace_snapshot"):
-        blob["workspace_snapshot"] = dict(payload["workspace_snapshot"])
-    if isinstance(payload.get("insight"), dict) and payload.get("insight"):
-        blob["insight"] = dict(payload["insight"])
     try:
         from suite_account import remember_saved_item
 
@@ -554,164 +401,48 @@ def load_analytical_question_context(question_id: str) -> dict[str, Any]:
     return load_analytical_question_payload(question_id).get("context") or {}
 
 
-_CONTEXT_SEARCH_APPS = ("applied_intelligence", "baseball", "baseball_analytics")
-_HOF_RESUME_ITEM_TYPE = "hof_case_resume"
-
-
-def _payload_from_saved_row(row: dict[str, Any], *, load_source: str) -> dict[str, Any]:
-    payload = row.get("payload")
-    if not isinstance(payload, dict):
-        return {}
-    out = copy.deepcopy(payload)
-    out["blob_load_source"] = load_source
-    out["blob_store_app"] = str(row.get("storage_app") or row.get("app") or "")
-    return out
-
-
-def _hof_resume_bundle_to_payload(bundle: dict[str, Any]) -> dict[str, Any]:
-    packet = bundle.get("hof_case_packet") if isinstance(bundle.get("hof_case_packet"), dict) else {}
-    target = str(bundle.get("target_player") or packet.get("target_player") or "").strip()
-    ctx = {
-        "hof_case_packet": copy.deepcopy(packet),
-        "player": target,
-        "app_context_type": "baseball_hof_case",
-        "routing_hint": "hof_case_analysis",
-        "intent": "hof_case_analysis",
-    }
-    insight = bundle.get("insight") if isinstance(bundle.get("insight"), dict) else {}
-    display_q = ""
-    if insight.get("question"):
-        display_q = str(insight.get("question") or "").strip()
-    if not display_q:
-        display_q = str(packet.get("hof_case_display_question") or "").strip()
-    if not display_q:
-        try:
-            from hall_of_fame_data import build_hof_case_display_question
-
-            display_q = build_hof_case_display_question(target, packet)
-        except ImportError:
-            display_q = f"Hall of Fame case — {target}" if target else "Hall of Fame case"
-    return {
-        "question_id": str(bundle.get("question_id") or "").strip(),
-        "question": display_q,
-        "source_app": "baseball",
-        "source_page": "Career Totals",
-        "quant_area": "hall_of_fame_case",
-        "app_context_type": "baseball_hof_case",
-        "context": ctx,
-        "hof_case_packet": copy.deepcopy(packet),
-        "player": target,
-        "target_player": target,
-        "source_state": copy.deepcopy(bundle.get("source_state") or {}),
-        "insight": copy.deepcopy(insight) if insight else {},
-        "blob_load_source": "hof_case_resume_bundle",
-    }
-
-
-def _load_hof_resume_bundle_fallback(
-    question_id: str,
-    *,
-    hof_target_slug: str = "",
-) -> dict[str, Any]:
-    qid = str(question_id or "").strip()
-    if not qid:
-        return {}
-    try:
-        from suite_account import fetch_saved_item, load_saved_items
-    except ImportError:
-        return {}
-
-    slug = str(hof_target_slug or "").strip().lower()
-    if slug:
-        row = fetch_saved_item("baseball", _HOF_RESUME_ITEM_TYPE, f"bb:hof_case:{slug}")
-        if row:
-            bundle = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-            if isinstance(bundle, dict) and str(bundle.get("question_id") or qid) == qid:
-                return _hof_resume_bundle_to_payload(bundle)
-
-    for row in load_saved_items(app="baseball", item_type=_HOF_RESUME_ITEM_TYPE, limit=120):
-        bundle = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-        if isinstance(bundle, dict) and str(bundle.get("question_id") or "") == qid:
-            return _hof_resume_bundle_to_payload(bundle)
-    return {}
-
-
-def load_analytical_question_payload(
-    question_id: str,
-    *,
-    hof_target_slug: str = "",
-) -> dict[str, Any]:
+def load_analytical_question_payload(question_id: str) -> dict[str, Any]:
     """Load full question blob (context + source_state) by question_id."""
     qid = str(question_id or "").strip()
     if not qid:
         return {}
-    load_attempts: list[str] = []
     resume_key = f"ai:question:{qid}"
-    hof_resume_key = f"hof:ami:{qid}"
-
-    try:
-        from suite_account import fetch_saved_item, fetch_saved_item_any_app
-
-        for app_name in _CONTEXT_SEARCH_APPS:
-            load_attempts.append(f"saved_item:{app_name}")
-            row = fetch_saved_item(app_name, _CONTEXT_ITEM_TYPE, qid)
-            if row:
-                payload = _payload_from_saved_row(row, load_source=f"saved_item:{app_name}")
-                payload["blob_load_candidates"] = load_attempts
-                return payload
-        load_attempts.append("saved_item:any_app")
-        row = fetch_saved_item_any_app(_CONTEXT_ITEM_TYPE, qid)
-        if row:
-            payload = _payload_from_saved_row(row, load_source="saved_item:any_app")
-            payload["blob_load_candidates"] = load_attempts
-            return payload
-    except Exception as exc:
-        log.warning("direct saved-item lookup failed for question context: %s", exc)
-
-    bundle_payload = _load_hof_resume_bundle_fallback(qid, hof_target_slug=hof_target_slug)
-    if bundle_payload:
-        bundle_payload["blob_load_candidates"] = load_attempts + ["hof_case_resume_bundle"]
-        return bundle_payload
-
+    search_apps = ["applied_intelligence"]
     try:
         from suite_account import load_saved_items
 
-        for app_name in _CONTEXT_SEARCH_APPS:
-            load_attempts.append(f"scan:{app_name}")
-            rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=200)
+        for app_name in search_apps:
+            rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=80)
             for row in rows:
                 if str(row.get("item_key") or "") == qid:
                     payload = row.get("payload")
                     if isinstance(payload, dict):
-                        out = copy.deepcopy(payload)
-                        out["blob_load_source"] = f"scan:{app_name}"
-                        out["blob_load_candidates"] = load_attempts
-                        return out
+                        return copy.deepcopy(payload)
+        for app_name in ("investment", "baseball", "nba", "music"):
+            if app_name in search_apps:
+                continue
+            rows = load_saved_items(app=app_name, item_type=_CONTEXT_ITEM_TYPE, limit=80)
+            for row in rows:
+                if str(row.get("item_key") or "") == qid:
+                    payload = row.get("payload")
+                    if isinstance(payload, dict):
+                        return copy.deepcopy(payload)
     except Exception as exc:
-        log.warning("load_saved_items scan failed for question context: %s", exc)
-
+        log.warning("load_saved_items failed for question context: %s", exc)
     try:
         from suite_storage_supabase import load_active_resume_items
 
-        for app_filter in ("applied_intelligence", "baseball", None):
-            load_attempts.append(f"resume:{app_filter or 'any'}")
-            rows = load_active_resume_items(limit=40, app=app_filter)
-            for row in rows:
-                item_key = str(row.get("item_key") or "")
-                if item_key not in (resume_key, hof_resume_key):
-                    continue
-                ctx = _parse_context_from_resume_subtitle(str(row.get("subtitle") or ""))
-                if ctx:
-                    return {
-                        "context": ctx,
-                        "question_id": qid,
-                        "blob_load_source": f"resume_subtitle:{item_key}",
-                        "blob_load_candidates": load_attempts,
-                    }
+        for row in load_active_resume_items(limit=40):
+            if str(row.get("app") or "") != "applied_intelligence":
+                continue
+            if str(row.get("item_key") or "") != resume_key:
+                continue
+            ctx = _parse_context_from_resume_subtitle(str(row.get("subtitle") or ""))
+            if ctx:
+                return {"context": ctx, "question_id": qid}
     except Exception:
         pass
-
-    return {"blob_load_candidates": load_attempts, "question_id": qid}
+    return {}
 
 
 def load_analytical_question_source_state(question_id: str) -> dict[str, Any]:
@@ -719,128 +450,6 @@ def load_analytical_question_source_state(question_id: str) -> dict[str, Any]:
     payload = load_analytical_question_payload(question_id)
     ss = payload.get("source_state")
     return dict(ss) if isinstance(ss, dict) else {}
-
-
-def _normalize_hof_question_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Ensure HOF submissions store the short display question, not the internal AMI prompt."""
-    ctx = dict(payload.get("context") or {})
-    if not _is_hof_case_submission(str(payload.get("quant_area") or ""), ctx):
-        return payload
-    try:
-        from hall_of_fame_data import (
-            build_hof_case_display_question,
-            is_hof_ami_internal_prompt,
-        )
-    except ImportError:
-        return payload
-
-    packet = ctx.get("hof_case_packet") if isinstance(ctx.get("hof_case_packet"), dict) else {}
-    target = str(
-        packet.get("target_player")
-        or ctx.get("player")
-        or payload.get("player")
-        or ""
-    ).strip()
-    display_q = str(
-        ctx.get("display_question")
-        or ctx.get("user_question")
-        or payload.get("display_question")
-        or packet.get("hof_case_display_question")
-        or ""
-    ).strip()
-    ami_prompt = str(
-        ctx.get("ami_prompt")
-        or payload.get("ami_prompt")
-        or packet.get("hof_case_ami_prompt")
-        or ""
-    ).strip()
-    raw_q = str(payload.get("question") or "").strip()
-    if not display_q and raw_q and not is_hof_ami_internal_prompt(raw_q):
-        display_q = raw_q
-    if not display_q and target:
-        display_q = build_hof_case_display_question(target, packet)
-    if not ami_prompt and raw_q and is_hof_ami_internal_prompt(raw_q):
-        ami_prompt = raw_q
-    if display_q:
-        payload["question"] = display_q
-        payload["display_question"] = display_q
-        ctx["display_question"] = display_q
-        ctx["user_question"] = display_q
-    if ami_prompt:
-        payload["ami_prompt"] = ami_prompt
-        ctx["ami_prompt"] = ami_prompt
-    payload["context"] = ctx
-    return payload
-
-
-def _enrich_hof_packet_for_full_memo(
-    packet: dict[str, Any],
-    verdict: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Ensure staged HOF packet carries a fresh composed memo from packet data."""
-    out = copy.deepcopy(packet) if isinstance(packet, dict) else {}
-    if not out:
-        return out
-    try:
-        from hall_of_fame_data import rehydrate_hof_case_packet_awards
-
-        out = rehydrate_hof_case_packet_awards(out)
-    except ImportError:
-        pass
-    try:
-        from hof_case_analysis import compose_hof_statistical_case
-
-        composed = compose_hof_statistical_case(out)
-        if composed.get("case_memo"):
-            out["hof_case_analysis"] = composed
-            return out
-    except Exception:
-        pass
-    verdict_dict = verdict if isinstance(verdict, dict) else {}
-    existing = out.get("hof_case_analysis") if isinstance(out.get("hof_case_analysis"), dict) else {}
-    if isinstance(existing, dict) and existing.get("case_memo"):
-        return out
-    if verdict_dict.get("case_memo"):
-        merged = dict(verdict_dict)
-        merged.setdefault("thesis", verdict_dict.get("thesis") or verdict_dict.get("recommendation"))
-        out["hof_case_analysis"] = merged
-    return out
-
-
-def _hof_handoff_analysis_present(
-    packet: dict[str, Any] | None,
-    verdict: dict[str, Any] | None,
-) -> bool:
-    verdict_dict = verdict if isinstance(verdict, dict) else {}
-    if verdict_dict.get("case_memo"):
-        return True
-    packet_dict = packet if isinstance(packet, dict) else {}
-    analysis = packet_dict.get("hof_case_analysis") if isinstance(packet_dict.get("hof_case_analysis"), dict) else {}
-    return bool(analysis.get("case_memo"))
-
-
-def should_prefer_hof_full_memo_renderer(st: Any) -> bool:
-    """True when AMI should render the full HOF memo instead of a compact insight card."""
-    ss = st.session_state
-    if ss.get("_suite_hof_case"):
-        return True
-    packet = ss.get("_hof_case_packet")
-    if not isinstance(packet, dict) or not packet:
-        return False
-    if str(ss.get("_suite_ai_area") or "").strip() == "hall_of_fame_case":
-        return True
-    try:
-        raw_ctx = ss.get("_suite_ai_context")
-        ctx = json.loads(raw_ctx) if isinstance(raw_ctx, str) and raw_ctx.strip().startswith("{") else {}
-    except json.JSONDecodeError:
-        ctx = {}
-    if not isinstance(ctx, dict):
-        ctx = {}
-    return bool(
-        str(ctx.get("routing_hint") or "") == "hof_case_analysis"
-        or str(ctx.get("intent") or "") == "hof_case_analysis"
-        or isinstance(ctx.get("hof_case_packet"), dict)
-    )
 
 
 def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | None = None) -> None:
@@ -869,11 +478,10 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
     ctx: dict[str, Any] = {}
     source_state: dict[str, Any] = {}
     hydrate_source = "none"
-    blob_payload: dict[str, Any] = {}
 
     # Blob-first: full context by question_id before metrics/URL (avoids truncated deep links).
     if qid:
-        blob_payload = load_analytical_question_payload(qid, hof_target_slug=_qp("suite_hof_target"))
+        blob_payload = load_analytical_question_payload(qid)
         blob_ctx = blob_payload.get("context") if isinstance(blob_payload.get("context"), dict) else {}
         if blob_ctx:
             ctx = copy.deepcopy(blob_ctx)
@@ -881,14 +489,6 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
         blob_ss = blob_payload.get("source_state") if isinstance(blob_payload.get("source_state"), dict) else {}
         if blob_ss:
             source_state = copy.deepcopy(blob_ss)
-        if not area:
-            area = str(blob_payload.get("quant_area") or "").strip()
-        if not question:
-            question = str(blob_payload.get("question") or "").strip()
-        if not source_app:
-            source_app = str(blob_payload.get("source_app") or "").strip()
-        if not source_page:
-            source_page = str(blob_payload.get("source_page") or "").strip()
 
     metrics_ctx: dict[str, Any] = {}
     if isinstance(m.get("context"), dict):
@@ -938,224 +538,9 @@ def hydrate_applied_intelligence_session(st: Any, *, metrics: dict[str, Any] | N
     if source_state:
         ss["_suite_ai_source_state"] = copy.deepcopy(source_state)
     ss["_suite_ai_hydrate_source"] = hydrate_source
-    url_params = {
-        "suite_ai_question_id": qid or _qp("suite_ai_question_id"),
-        "suite_ai_question": question or _qp("suite_ai_question"),
-        "suite_ai_source_app": source_app or _qp("suite_ai_source_app"),
-        "suite_ai_source_page": source_page or _qp("suite_ai_source_page"),
-        "suite_ai_area": area or _qp("suite_ai_area"),
-        "suite_page": page or _qp("suite_page"),
-        "suite_hof_case": _qp("suite_hof_case"),
-        "suite_hof_target": _qp("suite_hof_target"),
-        "suite_ai_context_len": str(len(_qp("suite_ai_context") or "")),
-    }
-
-    is_hof = (
-        area == "hall_of_fame_case"
-        or str(blob_payload.get("app_context_type") or "").strip() == "baseball_hof_case"
-        or str((ctx or {}).get("app_context_type") or "").strip() == "baseball_hof_case"
-        or _qp("suite_hof_case") == "1"
-        or str((ctx or {}).get("routing_hint") or "") == "hof_case_analysis"
-        or str((ctx or {}).get("intent") or "") == "hof_case_analysis"
-    )
-    selected_renderer = "default_homepage"
-    fallback_reason = ""
-    packet_staged = False
-    insight_staged = False
-    verdict_staged = False
-    analysis_present = False
-    target = ""
-
-    if is_hof:
-        ss["_suite_hof_case"] = True
-        ss["_suite_ai_area"] = "hall_of_fame_case"
-        ss["view_mode"] = "Solve a Problem"
-        ss["_suite_ai_page"] = "Solve a Problem"
-        selected_renderer = "render_hof_case_full_analysis"
-        ss.pop("_ami_force_insight_render", None)
-        ss.pop("_ami_submit_render_insight_this_run", None)
-        packet = blob_payload.get("hof_case_packet")
-        if not isinstance(packet, dict):
-            packet = ctx.get("hof_case_packet")
-        verdict = blob_payload.get("verdict_context")
-        if isinstance(verdict, dict) and verdict:
-            ss["_hof_case_verdict"] = copy.deepcopy(verdict)
-            verdict_staged = True
-        if isinstance(packet, dict) and packet:
-            enriched = _enrich_hof_packet_for_full_memo(
-                packet,
-                verdict if isinstance(verdict, dict) else ss.get("_hof_case_verdict"),
-            )
-            ss["_hof_case_packet"] = enriched
-            packet = enriched
-            packet_staged = True
-            analysis_present = _hof_handoff_analysis_present(packet, verdict if isinstance(verdict, dict) else None)
-        insight_blob = blob_payload.get("insight")
-        if isinstance(insight_blob, dict) and insight_blob:
-            ss["_hof_case_insight"] = copy.deepcopy(insight_blob)
-            insight_staged = True
-        target = str(
-            blob_payload.get("target_player")
-            or blob_payload.get("player")
-            or (ctx or {}).get("player")
-            or _qp("suite_hof_target")
-            or (packet or {}).get("target_player")
-            or ""
-        ).strip()
-        if target:
-            ss["_suite_hof_target"] = target
-        if not packet_staged:
-            fallback_reason = "hof_case_packet_missing_after_hydrate"
-            selected_renderer = "hof_case_fallback_error"
-        elif not analysis_present:
-            fallback_reason = "hof_case_analysis_missing_compose_on_render"
-    elif qid and not (blob_payload.get("context") or blob_payload.get("hof_case_packet")):
-        fallback_reason = "question_id_blob_not_found"
-    elif not ctx:
-        fallback_reason = "no_context_from_blob_url_or_metrics"
-
-    try:
-        from suite_deploy_marker import resolve_git_branch, resolve_git_commit_short
-    except ImportError:
-        resolve_git_commit_short = lambda: "unknown"  # noqa: E731
-        resolve_git_branch = lambda: "unknown"  # noqa: E731
-
-    ss["_suite_ai_selected_renderer"] = selected_renderer
-    ss["_suite_ai_hydrate_diag"] = {
-        "incoming_url_params": url_params,
-        "question_id": qid,
-        "suite_ai_question_id": qid,
-        "hydrate_source": hydrate_source,
-        "quant_area": area,
-        "source_page": source_page,
-        "source_app": source_app,
-        "page": page,
-        "blob_found": bool(blob_payload.get("context") or blob_payload.get("hof_case_packet")) if qid else False,
-        "blob_keys": sorted(blob_payload.keys()) if isinstance(blob_payload, dict) else [],
-        "blob_load_source": str(blob_payload.get("blob_load_source") or ""),
-        "blob_store_app": str(blob_payload.get("blob_store_app") or ""),
-        "blob_load_candidates": list(blob_payload.get("blob_load_candidates") or []),
-        "context_keys": sorted(ctx.keys()) if isinstance(ctx, dict) else [],
-        "hof_case_packet_present": packet_staged or isinstance((ctx or {}).get("hof_case_packet"), dict),
-        "hof_case_packet_staged": packet_staged,
-        "hof_insight_staged": insight_staged,
-        "verdict_context_present": verdict_staged,
-        "insight_present": insight_staged,
-        "target_player_present": bool(target),
-        "hof_case_analysis_present": analysis_present,
-        "routing_hint": str((ctx or {}).get("routing_hint") or ""),
-        "app_context_type": str(blob_payload.get("app_context_type") or (ctx or {}).get("app_context_type") or ""),
-        "player": str((ctx or {}).get("player") or blob_payload.get("player") or ss.get("_suite_hof_target") or target or ""),
-        "is_hof": bool(is_hof),
-        "selected_renderer": selected_renderer,
-        "fallback_reason": fallback_reason,
-        "deploy_commit": resolve_git_commit_short(),
-        "deploy_branch": resolve_git_branch(),
-        "ami_handoff_fix_marker": "hof_full_memo_renderer_v1",
-    }
-    ss["_suite_ai_show_landing_diag"] = True
-
-
-def _developer_tools_enabled(st: Any) -> bool:
-    try:
-        from suite_workspace import developer_mode_checkbox_enabled
-
-        return developer_mode_checkbox_enabled(st=st)
-    except ImportError:
-        return False
-
-
-def render_applied_intelligence_landing_diagnostics(
-    st: Any,
-    *,
-    expanded: bool | None = None,
-    developer_mode: bool = False,
-) -> None:
-    """AMI landing diagnostics — developer mode only."""
-    if not developer_mode:
-        return
-    ss = st.session_state
-    diag = dict(ss.get("_suite_ai_hydrate_diag") or {})
-    if not diag and not ss.get("_suite_ai_show_landing_diag"):
-        return
-    with st.expander("AMI landing diagnostics", expanded=False if expanded is None else bool(expanded)):
-        st.caption("Handoff hydration status for Baseball → AMI deep links.")
-        st.json(diag)
-        if diag.get("fallback_reason"):
-            st.error(f"Handoff fallback: {diag['fallback_reason']}")
-        qid = str(diag.get("question_id") or "").strip()
-        if qid and not diag.get("blob_found"):
-            st.warning(
-                f"No analytical_question_context blob found for question_id `{qid}`. "
-                "Check cloud saved items for applied_intelligence and baseball apps."
-            )
-
-
-def render_hof_case_solve_problem_handoff(st: Any) -> bool:
-    """Render Hall of Fame case analysis when hydrated from Baseball. Returns True if content shown."""
-    ss = st.session_state
-    packet = ss.get("_hof_case_packet")
-    if not ss.get("_suite_hof_case"):
-        if not (isinstance(packet, dict) and packet):
-            return False
-    verdict = ss.get("_hof_case_verdict")
-    dev_mode = _developer_tools_enabled(st)
-
-    if dev_mode:
-        render_applied_intelligence_landing_diagnostics(st, developer_mode=True)
-
-    if not isinstance(packet, dict) or not packet:
-        st.error(
-            "Hall of Fame case handoff failed: no `hof_case_packet` in session."
-            + (" Enable Developer Mode for hydration diagnostics." if not dev_mode else "")
-        )
-        return False
-
-    packet = _enrich_hof_packet_for_full_memo(
-        packet,
-        verdict if isinstance(verdict, dict) else None,
-    )
-    ss["_hof_case_packet"] = packet
-    ss["_suite_ai_selected_renderer"] = "render_hof_case_full_analysis"
-
-    try:
-        from hof_case_analysis import render_hof_case_full_analysis
-
-        return render_hof_case_full_analysis(st, packet, verdict=verdict if isinstance(verdict, dict) else None)
-    except ImportError:
-        target = str(ss.get("_suite_hof_target") or packet.get("target_player") or "").strip()
-        st.markdown(f"## Hall of Fame Case — {target}" if target else "## Hall of Fame Case Analysis")
-        summary = str(packet.get("hof_case_summary") or "").strip()
-        if summary:
-            st.markdown(summary)
-            return True
-        return False
-
-
-def render_applied_intelligence_solve_problem_content(st: Any) -> bool:
-    """Primary AMI Solve-a-Problem renderer — prefers full HOF memo over compact insight cards."""
-    return render_applied_intelligence_handoff_page(st)
-
-
-def render_applied_intelligence_handoff_page(st: Any) -> bool:
-    """AMI Solve a Problem preamble — diagnostics + HOF case when present."""
-    ss = st.session_state
-    if should_prefer_hof_full_memo_renderer(st):
-        return render_hof_case_solve_problem_handoff(st)
-    dev_mode = _developer_tools_enabled(st)
-    if dev_mode and (ss.get("_suite_ai_show_landing_diag") or ss.get("_suite_ai_hydrate_diag")):
-        render_applied_intelligence_landing_diagnostics(st, developer_mode=True)
-    if ss.get("_suite_ai_hydrate_error"):
-        st.error(f"AMI URL hydrate error: {ss['_suite_ai_hydrate_error']}")
-    return False
 
 
 def _format_context_value(key: str, val: Any) -> str:
-    if key == "cohort_selectivity" and isinstance(val, dict):
-        notes = val.get("threshold_notes") if isinstance(val.get("threshold_notes"), list) else []
-        if notes:
-            return "; ".join(str(n) for n in notes[:4])
-        return str(val.get("selectivity") or "")
     if key == "trend_summary" and isinstance(val, dict):
         parts = []
         for sub, label in (
@@ -1196,18 +581,90 @@ def format_context_lines(context: dict[str, Any] | None) -> list[str]:
     return lines[:16]
 
 
-def _hof_case_card_subtitle(payload: dict[str, Any]) -> str:
-    """Short cohort summary for Command Center cards — not the full model prompt."""
-    ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    packet = ctx.get("hof_case_packet") if isinstance(ctx.get("hof_case_packet"), dict) else {}
-    if not packet:
-        top = payload.get("hof_case_packet")
-        packet = top if isinstance(top, dict) else {}
-    summary = str(packet.get("hof_case_summary") or payload.get("context_summary") or "").strip()
-    if summary:
-        return summary
-    player = _hof_case_player_name(payload)
-    return f"Statistical case — {player}" if player else "Statistical case"
+def format_practice_analysis_updated_label(generated_at: str) -> str:
+    """Human-readable updated timestamp for Command Center cards (America/New_York, ET)."""
+    raw = str(generated_at or "").strip()
+    if not raw:
+        return ""
+    dt = parse_activity_timestamp(raw)
+    if dt is None:
+        return raw[:19].replace("T", " ")
+    return format_eastern_time_label(dt)
+
+
+def _practice_log_top_song(payload: dict[str, Any]) -> str:
+    ctx = dict(payload.get("context") or {})
+    pl = ctx.get("practice_log_summary") if isinstance(ctx.get("practice_log_summary"), dict) else {}
+    by_song = pl.get("practice_time_by_song") if isinstance(pl.get("practice_time_by_song"), dict) else {}
+    if by_song:
+        top_key = max(by_song, key=lambda k: int(by_song.get(k) or 0))
+        return str(top_key or "").strip()
+    songs = pl.get("most_practiced_songs")
+    if isinstance(songs, list) and songs:
+        return str(songs[0] or "").strip()
+    return ""
+
+
+def _practice_log_instrument_label(payload: dict[str, Any]) -> str:
+    ctx = dict(payload.get("context") or {})
+    pl = ctx.get("practice_log_summary") if isinstance(ctx.get("practice_log_summary"), dict) else {}
+    by_inst = pl.get("practice_time_by_instrument") if isinstance(pl.get("practice_time_by_instrument"), dict) else {}
+    if not by_inst:
+        return ""
+    items = [(str(k), int(v or 0)) for k, v in by_inst.items() if str(k).strip()]
+    if not items:
+        return ""
+    items.sort(key=lambda row: -row[1])
+    total = sum(mins for _, mins in items) or 1
+    fmt = lambda key: str(key).replace("_", " ").title()
+    if len(items) == 1:
+        return f"Main instrument: {fmt(items[0][0])}"
+    top_key, top_mins = items[0]
+    if top_mins / total >= 0.6:
+        return f"Main instrument: {fmt(top_key)}"
+    return "Multiple instruments"
+
+
+def practice_log_analysis_instrument_song_line(payload: dict[str, Any]) -> str:
+    parts: list[str] = []
+    top_song = _practice_log_top_song(payload)
+    if top_song:
+        parts.append(f"Top song: {top_song}")
+    inst = _practice_log_instrument_label(payload)
+    if inst:
+        parts.append(inst)
+    return " · ".join(parts)
+
+
+def practice_log_analysis_card_subtitle(payload: dict[str, Any]) -> str:
+    generated = str(
+        payload.get("report_generated_at")
+        or (payload.get("context") or {}).get("report_generated_at")
+        or ""
+    ).strip()
+    parts: list[str] = []
+    top_song = _practice_log_top_song(payload)
+    if top_song:
+        parts.append(f"Top song: {top_song}")
+    inst = _practice_log_instrument_label(payload)
+    if inst:
+        parts.append(inst)
+    updated = format_practice_analysis_updated_label(generated)
+    if updated:
+        parts.append(f"Updated {updated}")
+    if parts:
+        return " · ".join(parts)
+    ctx = dict(payload.get("context") or {})
+    pl = ctx.get("practice_log_summary") if isinstance(ctx.get("practice_log_summary"), dict) else {}
+    count = int(pl.get("session_count") or 0)
+    mins = int(pl.get("total_minutes") or 0)
+    if count > 0:
+        return f"{count} session(s), {mins} min logged — review patterns and next focus"
+    return "Practice history analysis from Music Practice Coach"
+
+
+def practice_log_analysis_resume_subtitle(payload: dict[str, Any]) -> str:
+    return practice_log_analysis_card_subtitle(payload)
 
 
 def analytical_question_continue_copy(payload: dict[str, Any]) -> tuple[str, str, str]:
@@ -1215,10 +672,14 @@ def analytical_question_continue_copy(payload: dict[str, Any]) -> tuple[str, str
     ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     app = normalize_source_app_id(str(payload.get("source_app") or ""), ctx)
     question = str(payload.get("question") or "").strip()
-    if _is_hof_case_submission(str(payload.get("quant_area") or ""), ctx):
-        player = _hof_case_player_name(payload)
-        title = f"Open full Hall of Fame analysis — {player}" if player else "Open full Hall of Fame analysis"
-        return (title, _hof_case_card_subtitle(payload), "Open analysis →")
+    if is_practice_log_analysis_context(ctx):
+        card_payload = {
+            "source_app": payload.get("source_app") or app,
+            "context": ctx,
+            "report_generated_at": payload.get("report_generated_at") or ctx.get("report_generated_at"),
+        }
+        subtitle = practice_log_analysis_card_subtitle(card_payload)
+        return (PRACTICE_LOG_ANALYSIS_TITLE, subtitle, "Continue Practice Log Analysis →")
     title = source_question_card_title(app, ctx)
     if app == "music":
         return (title, question, "Continue with Music Coach →")
@@ -1227,10 +688,10 @@ def analytical_question_continue_copy(payload: dict[str, Any]) -> tuple[str, str
 
 def analytical_question_storage_subtitle(payload: dict[str, Any]) -> str:
     """Resume-item subtitle for storage/rebuild — question only on CC cards; context stays in metrics/URL."""
-    if _is_hof_case_submission(str(payload.get("quant_area") or ""), dict(payload.get("context") or {})):
-        return _hof_case_card_subtitle(payload)
-    question = str(payload.get("question") or "").strip()
     ctx = dict(payload.get("context") or {})
+    if is_practice_log_analysis_context(ctx):
+        return practice_log_analysis_resume_subtitle(payload)
+    question = str(payload.get("question") or "").strip()
     ctx_json = json.dumps(ctx, ensure_ascii=False) if ctx else ""
     if ctx_json:
         return f"{question}\n__ctx_json__:{ctx_json[:_CTX_JSON_SUBTITLE_LIMIT]}"
@@ -1255,17 +716,6 @@ def metrics_for_applied_math_resume(payload: dict[str, Any]) -> dict[str, Any]:
         "saved_item_type": _CONTEXT_ITEM_TYPE,
         "saved_item_key": payload.get("question_id"),
     }
-    app_context_type = str(payload.get("app_context_type") or ctx.get("app_context_type") or "").strip()
-    if app_context_type:
-        metrics["app_context_type"] = app_context_type
-    if _is_hof_case_submission(str(payload.get("quant_area") or ""), ctx):
-        metrics["hof_case_mode"] = True
-        metrics["activity_kind"] = "hof_case"
-        metrics["exclude_from_recent_ami"] = True
-        player = _hof_case_player_name(payload)
-        if player:
-            metrics["hof_case_target"] = player
-            metrics["target_player"] = player
     try:
         from suite_workspace import get_active_workspace_id
 
@@ -1406,93 +856,6 @@ def _recent_duplicate_send(
     return age < _SEND_COOLDOWN_SECONDS
 
 
-def _is_hof_case_submission(
-    quant_area: str,
-    context: dict[str, Any] | None,
-) -> bool:
-    if str(quant_area or "").strip() == "hall_of_fame_case":
-        return True
-    ctx = context if isinstance(context, dict) else {}
-    return ctx.get("routing_hint") == "hof_case_analysis" or ctx.get("intent") == "hof_case_analysis"
-
-
-HOF_CASE_ACTIVITY_EVENTS = frozenset({"hof_case_analysis_submitted"})
-
-
-def should_exclude_from_recent_ami_questions(
-    *,
-    event: str = "",
-    metrics: dict[str, Any] | None = None,
-    resume_key: str = "",
-    title: str = "",
-    quant_area: str = "",
-    app_context_type: str = "",
-) -> bool:
-    """True when an activity/resume row is a HOF statistical case, not a user-typed AMI question."""
-    m = dict(metrics or {})
-    if m.get("exclude_from_recent_ami") is True:
-        return True
-    if str(m.get("activity_kind") or "") == "hof_case":
-        return True
-    ctx = m.get("context") if isinstance(m.get("context"), dict) else {}
-    actx = str(app_context_type or m.get("app_context_type") or ctx.get("app_context_type") or "").strip()
-    if actx == "baseball_hof_case":
-        return True
-    qarea = str(quant_area or m.get("quant_area") or m.get("area") or "").strip()
-    if qarea == "hall_of_fame_case":
-        return True
-    evt = str(event or m.get("event") or "").strip()
-    if evt in HOF_CASE_ACTIVITY_EVENTS:
-        return True
-    rk = str(resume_key or m.get("resume_key") or "").strip()
-    if rk.startswith("bb:hof_case:") or rk.startswith("hof:ami:"):
-        return True
-    if str(m.get("resume_key") or "").startswith("ai:question:") and _is_hof_case_submission(qarea, ctx):
-        return True
-    title_l = str(title or m.get("title") or m.get("summary") or "").strip().lower()
-    if "hall of fame" in title_l and any(x in title_l for x in ("analysis", "case", "open full", "review")):
-        return True
-    if _is_hof_case_submission(qarea, ctx):
-        return True
-    return False
-
-
-def load_recent_ami_questions(limit: int = 10) -> list[dict[str, Any]]:
-    """Recent user-typed analytical_question events — excludes HOF statistical cases."""
-    try:
-        from suite_storage_supabase import load_events
-    except ImportError:
-        return []
-    rows = load_events(limit=max(limit * 5, 40))
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        evt = str(row.get("event") or "")
-        if evt != "analytical_question":
-            continue
-        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
-        if should_exclude_from_recent_ami_questions(event=evt, metrics=metrics):
-            continue
-        out.append(row)
-        if len(out) >= limit:
-            break
-    return out
-
-
-def filter_resume_items_for_recent_ami(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop HOF case resume rows from a generic resume-item list."""
-    out: list[dict[str, Any]] = []
-    for row in items:
-        if not isinstance(row, dict):
-            continue
-        if should_exclude_from_recent_ami_questions(
-            resume_key=str(row.get("item_key") or ""),
-            title=str(row.get("title") or ""),
-        ):
-            continue
-        out.append(row)
-    return out
-
-
 def submit_analytical_question(
     *,
     source_app: str,
@@ -1503,7 +866,6 @@ def submit_analytical_question(
     quant_area: str = "",
     source_state: dict[str, Any] | None = None,
     session_state: dict[str, Any] | None = None,
-    defer_blob_save: bool = False,
 ) -> dict[str, Any]:
     """Log event on source app and upsert Applied Intelligence resume item."""
     payload = build_question_payload(
@@ -1515,83 +877,39 @@ def submit_analytical_question(
         quant_area=quant_area,
         source_state=source_state,
     )
-    payload = _normalize_hof_question_payload(payload)
     action_url = build_applied_math_resume_url(payload)
     duplicate = _recent_duplicate_send(session_state, payload["question_id"])
-    hof_case = _is_hof_case_submission(quant_area, context)
-    source_app_norm = normalize_source_app_id(
-        str(payload.get("source_app") or ""),
-        dict(payload.get("context") or {}),
-    )
-    record_activity_for_send = (not duplicate) or (not hof_case and source_app_norm == "baseball")
-    if record_activity_for_send:
+    if not duplicate:
         metrics = metrics_for_applied_math_resume(payload)
-        metrics["source_app"] = source_app_norm
-        if not hof_case:
-            if metrics["source_app"] == "music":
-                summary = f"Asked Music Coach: {payload['question'][:80]}"
-            else:
-                summary = f"Asked Applied Math: {payload['question'][:80]}"
-            try:
-                from suite_activity_client import record_activity
+        metrics["source_app"] = normalize_source_app_id(
+            str(payload.get("source_app") or ""),
+            dict(payload.get("context") or {}),
+        )
+        if metrics["source_app"] == "music":
+            summary = f"Asked Music Coach: {payload['question'][:80]}"
+        else:
+            summary = f"Asked Applied Math: {payload['question'][:80]}"
+        try:
+            from suite_activity_client import record_activity
 
-                record_activity(
-                    payload["source_app"],
-                    "analytical_question",
-                    page=payload["source_page"],
-                    metrics=metrics,
-                    summary=summary,
-                )
-            except Exception as exc:
-                log.warning("record_activity failed for analytical_question: %s", exc)
-    if hof_case:
-        player = _hof_case_player_name(payload)
-        hof_payload = {
-            **payload,
-            "action_url": action_url,
-            "app_context_type": "baseball_hof_case",
-        }
-        _store_question_context_blob(hof_payload)
-        if not duplicate:
-            metrics = metrics_for_applied_math_resume(hof_payload)
-            metrics["source_app"] = normalize_source_app_id(
-                str(hof_payload.get("source_app") or ""),
-                dict(hof_payload.get("context") or {}),
+            record_activity(
+                payload["source_app"],
+                "analytical_question",
+                page=payload["source_page"],
+                metrics=metrics,
+                summary=summary,
             )
-            metrics["app_context_type"] = "baseball_hof_case"
-            if player:
-                metrics["hof_case_target"] = player
-                metrics["target_player"] = player
-            hof_resume_key = f"hof:ami:{payload['question_id']}"
-            try:
-                from suite_activity_client import record_activity
-                from baseball_hof_activity import HOF_CASE_ACTIVITY_EVENT
-
-                record_activity(
-                    "applied_intelligence",
-                    HOF_CASE_ACTIVITY_EVENT,
-                    page=str(hof_payload.get("source_page") or "Career Totals"),
-                    metrics=metrics,
-                    summary=f"Open full Hall of Fame analysis — {player}" if player else "Open full Hall of Fame analysis",
-                    resume_key=hof_resume_key,
-                    resume_title=f"Open full Hall of Fame analysis — {player}" if player else "Open full Hall of Fame analysis",
-                    resume_subtitle=_hof_case_card_subtitle(hof_payload),
-                    action_url=action_url,
-                )
-            except Exception as exc:
-                log.warning("record_activity failed for HOF case analysis: %s", exc)
-    else:
-        _upsert_applied_intelligence_resume(payload, action_url=action_url)
+        except Exception as exc:
+            log.warning("record_activity failed for analytical_question: %s", exc)
+    _upsert_applied_intelligence_resume(payload, action_url=action_url)
     ss = payload.get("source_state")
     refresh_blob = not duplicate or (
         str(payload.get("source_app") or "").strip().lower() == "investment"
         and isinstance(ss, dict)
         and bool(ss.get("entity_params"))
     )
-    if refresh_blob and not hof_case and not defer_blob_save:
+    if refresh_blob:
         _store_question_context_blob(payload)
-    if defer_blob_save and session_state is not None and not duplicate and not hof_case:
-        session_state["_ami_pending_blob_save"] = dict(payload)
     if session_state is not None:
         session_state["_ami_last_send"] = {
             "question_id": payload["question_id"],
@@ -1630,29 +948,6 @@ def build_submit_context(
         extra = context_extra
     if extra:
         ctx = merge_analytical_context(ctx, extra)
-    if str(source_app or "").strip().lower() == "baseball":
-        try:
-            from baseball_ami_pages import promote_page_ami_context_at_send
-
-            question = ""
-            if context_extra and isinstance(context_extra.get("question"), str):
-                question = context_extra["question"]
-            promote_page_ami_context_at_send(
-                ctx,
-                session_state,
-                source_page=source_page,
-                question=question,
-            )
-        except ImportError:
-            try:
-                from applied_math_context import build_baseball_applied_math_context
-
-                ctx = merge_analytical_context(
-                    ctx,
-                    build_baseball_applied_math_context(source_page, session_state),
-                )
-            except ImportError:
-                pass
     return ctx
 
 
@@ -1677,46 +972,29 @@ def render_analyze_with_applied_math_sidebar(
     question_key = f"ami_question_{source_app}_{page_suffix}_{send_gen}"
     submit_key = f"ami_submit_{source_app}_{page_suffix}"
 
-    app_id = resolve_ami_sidebar_app_id(source_app, ss)
-    is_baseball = app_id == "baseball"
-    is_music = app_id == "music"
-    is_nba = app_id == "nba"
-    submit_label = ami_sidebar_submit_label(source_app, ss)
-    debug_on = _ami_sidebar_debug_visible(st, ss)
-    if debug_on:
-        ss["_ami_sidebar_render_debug"] = {
-            "module": AMI_SIDEBAR_RENDER_MODULE,
-            "source_app_raw": str(source_app or ""),
-            "source_app_resolved": app_id,
-            "submit_label": submit_label,
-            "deploy_version": AMI_SIDEBAR_DEPLOY_VERSION,
-            "build_marker": ami_sidebar_build_marker(),
-        }
+    is_music = str(source_app or "").strip().lower() == "music"
+    is_nba = str(source_app or "").strip().lower() == "nba"
     if is_music:
         st.sidebar.markdown("### Ask the Music Coach")
         st.sidebar.caption(
             "Get help with practice, theory, navigation, backing tracks, karaoke, or this app."
         )
+        submit_label = "Ask the Music Coach"
     elif is_nba:
         st.sidebar.markdown("### Get Basketball Insight")
         st.sidebar.caption(
             "Ask an NBA or playoff question about the team, matchup, or page you're viewing."
         )
-    elif is_baseball:
-        st.sidebar.markdown(f"### {BASEBALL_INSIGHT_SECTION_TITLE}")
-        st.sidebar.caption(
-            "Ask about players, trades, sleepers, roster weaknesses, strategy, draft picks, "
-            "projections, or team decisions."
-        )
+        submit_label = "Get NBA Insight"
     else:
         st.sidebar.markdown("### Analyze with Applied Math")
         st.sidebar.caption("Ask a math question about what you are viewing.")
+        submit_label = "Send to Command Center"
 
     last = ss.get("_ami_last_send")
-    effective_source_app = app_id or str(source_app or "").strip()
     if (
         isinstance(last, dict)
-        and str(last.get("source_app") or "").strip().lower() == str(effective_source_app).strip().lower()
+        and last.get("source_app") == source_app
         and _recent_duplicate_send(ss, str(last.get("question_id") or ""))
     ):
         sent_msg = (
@@ -1725,11 +1003,7 @@ def render_analyze_with_applied_math_sidebar(
             else (
                 "NBA insight request saved. Open Command Center when you're ready to review it."
                 if is_nba
-                else (
-                    "Baseball insight request saved. Open Command Center when you're ready to review it."
-                    if is_baseball
-                    else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
-                )
+                else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
             )
         )
         st.sidebar.success(sent_msg)
@@ -1751,15 +1025,6 @@ def render_analyze_with_applied_math_sidebar(
         label_visibility="visible",
     )
 
-    if debug_on:
-        render_ami_sidebar_submit_debug(
-            st,
-            source_app_raw=str(source_app or ""),
-            source_app_resolved=app_id,
-            submit_label=submit_label,
-            session_state=ss,
-        )
-
     if st.sidebar.button(
         submit_label,
         key=submit_key,
@@ -1771,7 +1036,7 @@ def render_analyze_with_applied_math_sidebar(
             st.sidebar.warning("Enter a question first.")
         else:
             submit_ctx = build_submit_context(
-                effective_source_app,
+                source_app,
                 source_page,
                 ss,
                 context_extra_builder=context_extra_builder,
@@ -1784,7 +1049,7 @@ def render_analyze_with_applied_math_sidebar(
                 except Exception:
                     log.exception("AMI source_state builder failed for %s (%s)", source_app, source_page)
             result = submit_analytical_question(
-                source_app=app_id or source_app,
+                source_app=source_app,
                 source_page=source_page,
                 question=q,
                 context=submit_ctx,
@@ -1800,11 +1065,7 @@ def render_analyze_with_applied_math_sidebar(
                 else (
                     "That NBA insight was already requested recently. Open Command Center to review it."
                     if is_nba
-                    else (
-                        "That baseball insight was already requested recently. Open Command Center to review it."
-                        if is_baseball
-                        else "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
-                    )
+                    else "That question was already sent recently. Open Command Center to continue in Applied Intelligence."
                 )
             )
             ok_msg = (
@@ -1813,11 +1074,7 @@ def render_analyze_with_applied_math_sidebar(
                 else (
                     "NBA insight request saved. Open Command Center when you're ready to review it."
                     if is_nba
-                    else (
-                        "Baseball insight request saved. Open Command Center when you're ready to review it."
-                        if is_baseball
-                        else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
-                    )
+                    else "Question sent to Command Center. Open Command Center to continue in Applied Intelligence."
                 )
             )
             if result.get("duplicate"):
@@ -1831,7 +1088,7 @@ def render_analyze_with_applied_math_sidebar(
                     log.exception("on_after_send hook failed for %s (%s)", source_app, source_page)
             st.rerun()
 
-    if debug_on and developer_mode:
+    if developer_mode:
         st.sidebar.caption(f"🛠 {AMI_SIDEBAR_DEPLOY_LABEL} · {AMI_SIDEBAR_DEPLOY_VERSION}")
     st.sidebar.divider()
 
@@ -1850,18 +1107,6 @@ def render_applied_math_sidebar_entry(
     **kwargs: Any,
 ) -> None:
     """Render AMI sidebar near the top; log and surface failures in Developer Mode."""
-    if normalize_source_app_id(source_app) == "baseball":
-        from baseball_ami_sidebar import render_baseball_insight_sidebar
-
-        render_baseball_insight_sidebar(
-            st,
-            source_page=source_page,
-            session_state=session_state,
-            context_extra_builder=context_extra_builder,
-            source_state_builder=source_state_builder,
-            on_after_send=on_after_send,
-        )
-        return
     if context_extra_builder is None:
         legacy_builder = kwargs.pop("context_builder", None)
         if callable(legacy_builder):
@@ -1985,31 +1230,11 @@ def build_context_from_session(
                     ctx["trend_window"] = f"{lag} seasons"
         elif "trade" in low_page:
             ctx["workflow"] = "Trade analysis"
-            acquire: list[str] = []
-            away: list[str] = []
-            try:
-                from fantasy_league_context import (
-                    TRADE_MODE_ACQUIRE,
-                    TRADE_MODE_TRADE_AWAY,
-                    get_active_league_context,
-                    workflow_target_player_names,
-                )
-
-                active_ctx = get_active_league_context(session_state)
-                if active_ctx:
-                    acquire = workflow_target_player_names(active_ctx, TRADE_MODE_ACQUIRE)
-                    away = workflow_target_player_names(active_ctx, TRADE_MODE_TRADE_AWAY)
-            except ImportError:
-                pass
-            if not acquire:
-                acquire_raw = session_state.get("pending_trade_acquire_players") or []
-                acquire = [str(x) for x in acquire_raw if str(x).strip()] if isinstance(acquire_raw, list) else []
-            if not away:
-                away_raw = session_state.get("pending_trade_away_players") or []
-                away = [str(x) for x in away_raw if str(x).strip()] if isinstance(away_raw, list) else []
-            if acquire:
+            acquire = session_state.get("pending_trade_acquire_players") or []
+            away = session_state.get("pending_trade_away_players") or []
+            if isinstance(acquire, list) and acquire:
                 ctx["players"] = [_player_name(x) for x in acquire[:4]]
-            if away:
+            if isinstance(away, list) and away:
                 ctx["player_a"] = _player_name(away[0]) if away else ""
                 ctx["player_b"] = _player_name(acquire[0]) if acquire else ""
         elif "lineup" in low_page or "fantasy" in low_page:
@@ -2203,9 +1428,6 @@ def render_suite_applied_math_insight(
 ) -> bool:
     """Source apps: show pending Applied Math insight card on eligible pages."""
     try:
-        app = str(source_app or "").strip().lower()
-        if app != "baseball" and should_prefer_hof_full_memo_renderer(st):
-            return render_applied_intelligence_solve_problem_content(st)
         from applied_math_return_insight import render_suite_applied_math_insight_for_page
 
         return render_suite_applied_math_insight_for_page(
@@ -2213,7 +1435,5 @@ def render_suite_applied_math_insight(
             source_app=source_app,
             source_page=source_page,
         )
-    except Exception as exc:
-        st.session_state["_ami_insight_render_success"] = False
-        st.session_state["_ami_insight_render_skipped_reason"] = f"render_exception:{type(exc).__name__}"
+    except Exception:
         return False

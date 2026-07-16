@@ -40,30 +40,6 @@ AUTH_RECOVERY_VERIFY_ATTEMPTED_KEY = "_suite_auth_recovery_verify_attempted"
 AUTH_RECOVERY_QUERY_PROMOTED_PARAM = "suite_auth_recovery_promoted"
 AUTH_BROWSER_QUERY_KEYS_PARAM = "suite_auth_browser_keys"
 AUTH_RESET_EXPECTED_HREF_PREFIX_KEY = "_suite_auth_reset_expected_href_prefix"
-AUTH_LAST_LOGIN_ERROR_KEY = "_suite_auth_last_login_error"
-AUTH_LAST_LOGIN_OK_KEY = "_suite_auth_last_login_ok"
-AUTH_LAST_RESTORE_ERROR_KEY = "_suite_auth_last_restore_error"
-AUTH_JUST_LOGGED_IN_KEY = "_suite_auth_just_logged_in"
-AUTH_PENDING_LOGIN_KEY = "_suite_pending_login"
-# Set only when the user explicitly picks a workspace (sidebar selector / URL after choose).
-# Unsigned Guest stickiness must not survive authentication without this flag.
-WORKSPACE_USER_SELECTED_KEY = "_suite_workspace_user_selected"
-# Unsigned / demo seats that authenticated owners should leave unless explicitly selected.
-UNSIGNED_DEFAULT_WORKSPACE_IDS = frozenset({"guest"})
-
-AUTH_PROTECTED_SESSION_KEYS = (
-    AUTH_SESSION_KEY,
-    AUTH_USER_EMAIL_KEY,
-    AUTH_USER_ID_KEY,
-    AUTH_EXTERNAL_ID_KEY,
-    AUTH_TOKENS_KEY,
-    AUTH_PROFILE_KEY,
-    "_suite_cloud_user_id",
-    AUTH_JUST_LOGGED_IN_KEY,
-    AUTH_LAST_LOGIN_ERROR_KEY,
-    AUTH_LAST_RESTORE_ERROR_KEY,
-    AUTH_LAST_LOGIN_OK_KEY,
-)
 
 # Workspace ownership v1 — map external/auth user to allowed preset profiles.
 # Daniel (admin) may switch into child/guest profiles from Command Center (W1–W6).
@@ -74,19 +50,6 @@ _DEFAULT_ALLOWED_WORKSPACES: dict[str, tuple[str, ...]] = {
     "guest": ("guest",),
     "test_user": ("test_user",),
 }
-# Admin login aliases — map real account emails/local-parts to the shared Daniel admin profile.
-_ADMIN_EXTERNAL_ALIASES: dict[str, str] = {
-    "daniel.cohen11": "daniel",
-    "daniel_cohen11": "daniel",
-}
-
-
-def normalize_account_external_id(external_id: str) -> str:
-    """Map known admin aliases (e.g. daniel.cohen11) to canonical profile ids."""
-    key = str(external_id or "").strip().lower()
-    if not key:
-        return ""
-    return _ADMIN_EXTERNAL_ALIASES.get(key, key)
 
 
 def is_auth_enabled() -> bool:
@@ -122,78 +85,20 @@ def is_authenticated(session_state: dict[str, Any]) -> bool:
     return bool(session_state.get(AUTH_SESSION_KEY))
 
 
-def auth_session_complete(session_state: dict[str, Any]) -> bool:
-    """True when Supabase auth session flag, user id, and refreshable tokens are all present."""
-    if not is_auth_enabled():
-        return True
-    if not session_state.get(AUTH_SESSION_KEY):
-        return False
-    if not str(session_state.get(AUTH_USER_ID_KEY) or "").strip():
-        return False
-    tokens = dict(session_state.get(AUTH_TOKENS_KEY) or {})
-    return bool(tokens.get("access_token") and tokens.get("refresh_token"))
-
-
-def snapshot_auth_session(session_state: dict[str, Any]) -> dict[str, Any]:
-    """Capture auth keys before workspace blob apply so restore cannot clobber login."""
-    snap: dict[str, Any] = {}
-    for key in AUTH_PROTECTED_SESSION_KEYS:
-        if key not in session_state:
-            continue
-        val = session_state[key]
-        if isinstance(val, dict):
-            snap[key] = dict(val)
-        else:
-            snap[key] = val
-    return snap
-
-
-def restore_auth_session_snapshot(session_state: dict[str, Any], snapshot: dict[str, Any]) -> None:
-    """Re-apply auth keys saved before workspace blob apply."""
-    if not snapshot:
-        return
-    for key, val in snapshot.items():
-        if isinstance(val, dict):
-            session_state[key] = dict(val)
-        else:
-            session_state[key] = val
-
-
-def build_auth_session_diagnostics(session_state: dict[str, Any], *, st: Any | None = None) -> dict[str, Any]:
-    """Read-only auth session probe fields — no secret token values."""
-    tokens = dict(session_state.get(AUTH_TOKENS_KEY) or {})
-    out: dict[str, Any] = {
-        "auth_enabled": bool(is_auth_enabled()),
-        "session_flag": bool(session_state.get(AUTH_SESSION_KEY)),
-        "session_complete": bool(auth_session_complete(session_state)),
-        "auth_user_id": str(session_state.get(AUTH_USER_ID_KEY) or "").strip(),
-        "auth_email": str(session_state.get(AUTH_USER_EMAIL_KEY) or "").strip(),
-        "external_id": str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip(),
-        "cloud_user_id": str(session_state.get("_suite_cloud_user_id") or "").strip(),
-        "tokens_present": bool(tokens.get("access_token") and tokens.get("refresh_token")),
-        "just_logged_in": bool(session_state.get(AUTH_JUST_LOGGED_IN_KEY)),
-        "last_login_ok": bool(session_state.get(AUTH_LAST_LOGIN_OK_KEY)),
-        "last_login_error": str(session_state.get(AUTH_LAST_LOGIN_ERROR_KEY) or "").strip(),
-        "last_restore_error": str(session_state.get(AUTH_LAST_RESTORE_ERROR_KEY) or "").strip(),
-        "browser_storage": {},
-    }
-    if st is not None:
-        try:
-            from suite_auth_browser import browser_auth_storage_status
-
-            out["browser_storage"] = browser_auth_storage_status(st)
-        except ImportError:
-            pass
-    return out
-
-
 def current_auth_email(session_state: dict[str, Any]) -> str:
     return str(session_state.get(AUTH_USER_EMAIL_KEY) or "").strip()
 
 
 def allowed_workspaces_for_user(external_user_id: str) -> tuple[str, ...]:
-    """Owned workspace(s) allowed for this account — one workspace unless admin demo."""
-    key = normalize_account_external_id(str(external_user_id or "").strip().lower())
+    """Owned workspace(s) allowed for this account — one workspace unless admin."""
+    key = str(external_user_id or "").strip().lower()
+    try:
+        from suite_workspace_registry import admin_allowed_workspaces, is_admin_account
+
+        if is_admin_account(external_id=key):
+            return admin_allowed_workspaces(external_id=key)
+    except ImportError:
+        pass
     if key in _DEFAULT_ALLOWED_WORKSPACES:
         if key == "daniel":
             return _DEFAULT_ALLOWED_WORKSPACES[key]
@@ -207,10 +112,10 @@ def allowed_workspaces_for_user(external_user_id: str) -> tuple[str, ...]:
 
 def resolve_auth_external_id(session_state: dict[str, Any]) -> str:
     """Best-effort suite profile id for the signed-in account."""
-    ext = normalize_account_external_id(str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip().lower())
+    ext = str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip().lower()
     if ext:
         return ext
-    inferred = normalize_account_external_id(_infer_external_id_from_email(current_auth_email(session_state)))
+    inferred = _infer_external_id_from_email(current_auth_email(session_state))
     if inferred:
         return inferred
     return "daniel"
@@ -242,51 +147,6 @@ def _infer_external_id_from_email(email: str) -> str:
     return local or "daniel"
 
 
-def account_scoped_workspace_target(session_state: dict[str, Any]) -> str:
-    """
-    Single allowed workspace for a signed-in non-admin account.
-
-    Used to hard-clamp active workspace even when owned-workspace registry
-    resolution is empty (e.g. ephemeral/read-only cloud disk).
-    """
-    if not is_auth_enabled() or not is_authenticated(session_state):
-        return ""
-    try:
-        from suite_workspace import normalize_workspace_id
-        from suite_workspace_registry import is_admin_account
-
-        if is_admin_account(session_state=session_state):
-            return ""
-        allowed = allowed_workspaces_for_session(session_state)
-        if len(allowed) == 1:
-            return normalize_workspace_id(allowed[0])
-    except ImportError:
-        pass
-    return ""
-
-
-def _seed_owned_workspace_cache(session_state: dict[str, Any], workspace_id: str) -> None:
-    """Ensure owned-workspace session keys are set for diagnostics and cloud scoping."""
-    ws = str(workspace_id or "").strip()
-    if not ws:
-        return
-    try:
-        from suite_workspace_registry import (
-            SESSION_OWNED_WORKSPACE_KEY,
-            SESSION_OWNED_WORKSPACE_LABEL_KEY,
-            derive_workspace_label,
-        )
-
-        session_state[SESSION_OWNED_WORKSPACE_KEY] = ws
-        if not str(session_state.get(SESSION_OWNED_WORKSPACE_LABEL_KEY) or "").strip():
-            session_state[SESSION_OWNED_WORKSPACE_LABEL_KEY] = derive_workspace_label(
-                slug=ws,
-                email=current_auth_email(session_state),
-            )
-    except ImportError:
-        session_state["_suite_owned_workspace_id"] = ws
-
-
 def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
     """Clamp active workspace to the signed-in account's owned workspace."""
     if not is_auth_enabled() or not is_authenticated(session_state):
@@ -297,53 +157,31 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
         from suite_workspace import get_active_workspace_id, normalize_workspace_id, set_active_workspace_id
         from suite_workspace_registry import (
             ensure_owned_workspace_for_session,
-            is_admin_account,
-            resolve_owned_workspace_id,
+            get_owned_workspace_id,
             workspace_access_allowed,
         )
 
         st = SimpleNamespace(session_state=session_state)
         ensure_owned_workspace_for_session(session_state)
+        owned = normalize_workspace_id(get_owned_workspace_id(session_state))
         allowed = tuple(
             normalize_workspace_id(w)
             for w in allowed_workspaces_for_session(session_state)
         )
         active = normalize_workspace_id(get_active_workspace_id(st))
-        admin = is_admin_account(session_state=session_state)
-
-        # Non-admin: hard-clamp to the single allowed workspace even when owned
-        # registry resolution is empty (production: scope=coakley11 but active=daniel).
-        scoped_target = account_scoped_workspace_target(session_state)
-        if scoped_target and not admin:
-            _seed_owned_workspace_cache(session_state, scoped_target)
-            if active != scoped_target:
-                set_active_workspace_id(st, scoped_target)
-            return
-
-        owned = normalize_workspace_id(resolve_owned_workspace_id(session_state))
-        if owned:
-            _seed_owned_workspace_cache(session_state, owned)
-
-        # Leave unsigned Guest (and other demo seats) after sign-in. Admins may still
-        # switch to Guest explicitly via the workspace selector.
-        user_selected = bool(session_state.get(WORKSPACE_USER_SELECTED_KEY))
-        just_logged_in = bool(session_state.get(AUTH_JUST_LOGGED_IN_KEY))
-        if (
-            owned
-            and owned != active
-            and active in UNSIGNED_DEFAULT_WORKSPACE_IDS
-            and (just_logged_in or not user_selected)
-        ):
-            set_active_workspace_id(st, owned)
-            return
-
-        # Admin (daniel) retains multi-workspace switching, but cannot remain on
-        # a workspace outside the allowed set.
         if owned and active != owned and not workspace_access_allowed(active, session_state=session_state):
             set_active_workspace_id(st, owned)
             return
+        if owned and len(allowed) == 1 and active != owned:
+            set_active_workspace_id(st, owned)
+            return
+        if preferred := normalize_workspace_id(resolve_auth_external_id(session_state)):
+            if preferred in allowed and active != preferred and len(allowed) == 1:
+                set_active_workspace_id(st, preferred)
+                return
         if active not in allowed and allowed:
-            set_active_workspace_id(st, owned or allowed[0])
+            target = owned or allowed[0]
+            set_active_workspace_id(st, target)
     except ImportError:
         pass
 
@@ -455,7 +293,7 @@ def _apply_authenticated_user(
     session_state[AUTH_SESSION_KEY] = True
     email = str(getattr(user, "email", None) or (user.get("email") if isinstance(user, dict) else None) or email_fallback).strip()
     session_state[AUTH_USER_EMAIL_KEY] = email
-    session_state[AUTH_EXTERNAL_ID_KEY] = normalize_account_external_id(_infer_external_id_from_email(email))
+    session_state[AUTH_EXTERNAL_ID_KEY] = _infer_external_id_from_email(email)
     uid = str(getattr(user, "id", None) or (user.get("id") if isinstance(user, dict) else None) or "").strip()
     if uid:
         session_state[AUTH_USER_ID_KEY] = uid
@@ -464,12 +302,6 @@ def _apply_authenticated_user(
 
 
 def _clear_auth_session(session_state: dict[str, Any], *, st: Any | None = None) -> None:
-    try:
-        from live_draft_navigation import clear_private_baseball_simulator_runtime
-
-        clear_private_baseball_simulator_runtime(session_state, reason="auth_sign_out")
-    except ImportError:
-        pass
     for key in (
         AUTH_SESSION_KEY,
         AUTH_USER_EMAIL_KEY,
@@ -479,8 +311,6 @@ def _clear_auth_session(session_state: dict[str, Any], *, st: Any | None = None)
         AUTH_EXTERNAL_ID_KEY,
         AUTH_TOKENS_KEY,
         AUTH_CLIENT_KEY,
-        AUTH_JUST_LOGGED_IN_KEY,
-        AUTH_LAST_LOGIN_OK_KEY,
     ):
         session_state.pop(key, None)
     if st is not None:
@@ -492,41 +322,6 @@ def _clear_auth_session(session_state: dict[str, Any], *, st: Any | None = None)
             pass
 
 
-def _sync_auth_account_identity(session_state: dict[str, Any], *, st: Any | None = None) -> str:
-    """Resolve suite_users cloud row for the signed-in account; refresh account cache."""
-    suite_user_id = ""
-    try:
-        from suite_user import get_account_user_id, reset_account_cache
-
-        reset_account_cache()
-        from suite_storage_supabase import ensure_user_row
-
-        suite_user_id = ensure_user_row(
-            resolve_auth_external_id(session_state),
-            email=str(session_state.get(AUTH_USER_EMAIL_KEY) or ""),
-        )
-        reset_account_cache()
-        suite_user_id = str(get_account_user_id() or suite_user_id or "").strip()
-        if suite_user_id:
-            session_state["_suite_cloud_user_id"] = suite_user_id
-    except Exception:
-        pass
-    if st is not None and session_state.get(AUTH_TOKENS_KEY):
-        browser_uid = suite_user_id or str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
-        if browser_uid:
-            try:
-                from suite_auth_browser import save_browser_auth_tokens
-
-                save_browser_auth_tokens(
-                    st,
-                    dict(session_state.get(AUTH_TOKENS_KEY) or {}),
-                    auth_user_id=browser_uid,
-                )
-            except ImportError:
-                pass
-    return suite_user_id
-
-
 def _persist_auth_session(
     session_state: dict[str, Any],
     *,
@@ -535,79 +330,27 @@ def _persist_auth_session(
     email_fallback: str = "",
     st: Any | None = None,
 ) -> None:
-    old_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
-    old_ext = str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip()
-    old_cloud = str(session_state.get("_suite_cloud_user_id") or "").strip()
     _apply_authenticated_user(session_state, user, tokens=tokens, email_fallback=email_fallback)
-    new_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
-    session_state[AUTH_JUST_LOGGED_IN_KEY] = True
-    session_state[AUTH_LAST_LOGIN_OK_KEY] = True
-    session_state.pop(AUTH_LAST_LOGIN_ERROR_KEY, None)
-    session_state.pop(AUTH_LAST_RESTORE_ERROR_KEY, None)
     suite_user_id = ""
     try:
-        suite_user_id = _sync_auth_account_identity(session_state, st=st)
+        from suite_storage_supabase import ensure_user_row
+
+        suite_user_id = ensure_user_row(
+            external_id=session_state.get(AUTH_USER_EMAIL_KEY) or session_state.get(AUTH_USER_ID_KEY) or ""
+        )
+        try:
+            from suite_user import reset_account_cache
+
+            reset_account_cache()
+        except ImportError:
+            pass
     except Exception:
         pass
-    new_ext = str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip()
-    new_cloud = str(suite_user_id or session_state.get("_suite_cloud_user_id") or "").strip()
-    scope_changed = bool(
-        (old_uid and new_uid and old_uid != new_uid)
-        or (old_ext and new_ext and old_ext != new_ext)
-        or (old_cloud and new_cloud and old_cloud != new_cloud)
-    )
-    if scope_changed:
+    if st is not None and tokens and suite_user_id:
         try:
-            from workflow_persist_guard import clear_draft_library_on_account_scope_change
+            from suite_auth_browser import save_browser_auth_tokens
 
-            clear_draft_library_on_account_scope_change(session_state)
-        except ImportError:
-            pass
-        try:
-            from live_draft_navigation import clear_private_baseball_simulator_runtime
-
-            clear_private_baseball_simulator_runtime(
-                session_state,
-                reason="auth_account_scope_changed",
-            )
-        except ImportError:
-            pass
-    if old_uid != new_uid:
-        try:
-            from draft_room_participant_state import on_auth_user_switch
-
-            on_auth_user_switch(session_state, from_user_id=old_uid, to_user_id=new_uid)
-        except ImportError:
-            pass
-    try:
-        from suite_user_persistence import preserve_page_through_auth
-
-        preserve_page_through_auth(session_state, app_id="baseball")
-    except ImportError:
-        pass
-    # Fresh sign-in always prefers the owned workspace over sticky unsigned Guest.
-    session_state.pop(WORKSPACE_USER_SELECTED_KEY, None)
-    session_state["_suite_workspace_force_sync"] = True
-    session_state["_suite_workspace_refresh_needed"] = True
-    try:
-        from suite_workspace_registry import ensure_owned_workspace_for_session
-
-        ensure_owned_workspace_for_session(session_state)
-    except ImportError:
-        pass
-    enforce_workspace_ownership(session_state)
-    try:
-        from suite_user_persistence import preserve_page_through_auth
-
-        # Re-apply after workspace ownership clamp — clamp must not drop the page.
-        preserve_page_through_auth(session_state, app_id="baseball")
-    except ImportError:
-        pass
-    if is_authenticated(session_state):
-        try:
-            from draft_archive_visibility import sanitize_workflow_library_for_account
-
-            sanitize_workflow_library_for_account(session_state, st=st, persist_cleanup=True)
+            save_browser_auth_tokens(st, tokens, auth_user_id=suite_user_id)
         except ImportError:
             pass
 
@@ -621,26 +364,7 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
     if not is_auth_enabled():
         return True
     if is_authenticated(session_state):
-        if auth_session_complete(session_state):
-            try:
-                _sync_auth_account_identity(session_state, st=st)
-            except Exception:
-                pass
-            try:
-                enforce_workspace_ownership(session_state)
-            except Exception:
-                pass
-            try:
-                from draft_archive_visibility import sanitize_workflow_library_for_account
-
-                sanitize_workflow_library_for_account(session_state, st=st, persist_cleanup=True)
-            except ImportError:
-                pass
-            session_state.pop(AUTH_JUST_LOGGED_IN_KEY, None)
-            session_state.pop(AUTH_LAST_RESTORE_ERROR_KEY, None)
-            return True
-        # Stale/partial session flag without tokens — fall through to token restore.
-        session_state.pop(AUTH_SESSION_KEY, None)
+        return True
 
     tokens = dict(session_state.get(AUTH_TOKENS_KEY) or {})
     if not tokens.get("access_token") and st is not None:
@@ -671,30 +395,23 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
         if refreshed:
             tokens = refreshed
         _apply_authenticated_user(session_state, user, tokens=tokens)
-        try:
-            _sync_auth_account_identity(session_state, st=st)
-        except Exception:
-            pass
-    except Exception as exc:
-        session_state[AUTH_LAST_RESTORE_ERROR_KEY] = str(exc)
-        if session_state.get(AUTH_JUST_LOGGED_IN_KEY):
-            # Workspace sync must not undo a login that just succeeded this session.
-            return bool(auth_session_complete(session_state))
+        if st is not None and session_state.get(AUTH_USER_EMAIL_KEY):
+            try:
+                from suite_auth_browser import save_browser_auth_tokens
+                from suite_user import get_account_user_id
+
+                save_browser_auth_tokens(
+                    st,
+                    tokens,
+                    auth_user_id=get_account_user_id(),
+                )
+            except ImportError:
+                pass
+        enforce_workspace_ownership(session_state)
+        return True
+    except Exception:
         _clear_auth_session(session_state, st=st)
         return False
-    # Clamp workspace outside the session-clearing try: a workspace resolution
-    # failure must never invalidate an otherwise-valid authenticated session.
-    try:
-        enforce_workspace_ownership(session_state)
-    except Exception:
-        pass
-    try:
-        from draft_archive_visibility import sanitize_workflow_library_for_account
-
-        sanitize_workflow_library_for_account(session_state, st=st, persist_cleanup=True)
-    except ImportError:
-        pass
-    return True
 
 
 def logout(session_state: dict[str, Any], *, st: Any | None = None) -> None:
@@ -706,33 +423,12 @@ def logout(session_state: dict[str, Any], *, st: Any | None = None) -> None:
         except Exception:
             st = None
     try:
-        from draft_room_participant_state import on_auth_logout_save_workflow
-
-        on_auth_logout_save_workflow(session_state)
-    except ImportError:
-        pass
-    try:
         if session_state.get(AUTH_TOKENS_KEY) or session_state.get(AUTH_CLIENT_KEY):
             auth = _auth_api(session_state)
             auth.sign_out()
     except Exception:
         pass
     _clear_auth_session(session_state, st=st)
-    session_state.pop(WORKSPACE_USER_SELECTED_KEY, None)
-    try:
-        from suite_user import reset_account_cache
-
-        reset_account_cache()
-    except ImportError:
-        pass
-    for key in list(session_state.keys()):
-        sk = str(key)
-        if sk.startswith("_suite_workspace_synced::") or sk.startswith("_suite_disk_state_restored::"):
-            session_state.pop(key, None)
-    # Signed-out browsers attach to Guest — not an owned workspace.
-    session_state["_suite_active_workspace_id"] = "guest"
-    session_state["suite_workspace_id"] = "guest"
-    session_state.pop("_suite_owned_workspace_id", None)
 
 
 def _read_profile_settings(email: str) -> dict[str, Any]:
@@ -1481,15 +1177,15 @@ def auth_recovery_diagnostics(st: Any | None = None) -> dict[str, Any]:
 
 
 def render_auth_recovery_diagnostics(st: Any, *, expanded: bool = False, force: bool = False) -> None:
-    """Developer-only recovery landing diagnostics (force=True during recovery wait screen)."""
-    if not force:
-        try:
-            from suite_workspace import can_show_developer_tools
+    """Admin-only recovery landing diagnostics (``force`` kept for call-site compat; still gated)."""
+    del force  # never bypass admin gate
+    try:
+        from suite_workspace_registry import is_admin_user
 
-            if not can_show_developer_tools(st=st):
-                return
-        except ImportError:
+        if not is_admin_user(session_state=getattr(st, "session_state", None)):
             return
+    except ImportError:
+        return
     with st.expander("Auth recovery (dev)", expanded=expanded):
         st.json(auth_recovery_diagnostics(st=st))
         st.caption(
@@ -1849,81 +1545,32 @@ def signup_with_email(session_state: dict[str, Any], *, email: str, password: st
         return False, str(exc)
 
 
-def process_pending_auth_login(st: Any) -> bool:
-    """
-    Complete a sidebar login before workspace sync.
-
-    Sidebar form submit stores credentials in session and reruns; this runs on the
-    next script pass before cloud/disk restore so auth keys survive force-sync.
-    """
-    session = st.session_state
-    pending = session.pop(AUTH_PENDING_LOGIN_KEY, None)
-    if not isinstance(pending, dict):
-        return False
-    email = str(pending.get("email") or "").strip()
-    password = str(pending.get("password") or "")
-    session["_baseball_account_expander_open"] = True
-    ok, _msg = login_with_email(session, email=email, password=password, st=st)
-    return ok
-
-
-def login_with_email(
-    session_state: dict[str, Any],
-    *,
-    email: str,
-    password: str,
-    st: Any | None = None,
-) -> tuple[bool, str]:
-    email_clean = str(email or "").strip()
-    password_clean = str(password or "")
-    if not email_clean or not password_clean:
-        msg = "Enter both email and password."
-        session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
-        session_state[AUTH_LAST_LOGIN_OK_KEY] = False
-        return False, msg
-    if st is None:
-        try:
-            import streamlit as st_mod  # noqa: WPS433
-
-            st = st_mod
-        except Exception:
-            pass
+def login_with_email(session_state: dict[str, Any], *, email: str, password: str) -> tuple[bool, str]:
     try:
         auth = _auth_api(session_state)
     except Exception:
         return False, _auth_not_configured_message()
+    st = None
     try:
-        resp = auth.sign_in_with_password({"email": email_clean, "password": password_clean})
+        import streamlit as st_mod  # noqa: WPS433
+
+        st = st_mod
+    except Exception:
+        pass
+    try:
+        resp = auth.sign_in_with_password({"email": email.strip(), "password": password})
         user = _user_from_auth_response(resp)
         if user is None:
-            msg = "Invalid email or password."
-            session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
-            session_state[AUTH_LAST_LOGIN_OK_KEY] = False
-            return False, msg
+            return False, "Invalid email or password."
         tokens = _tokens_from_auth_response(resp)
         if not tokens:
-            msg = "Login succeeded but no session tokens returned."
-            session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
-            session_state[AUTH_LAST_LOGIN_OK_KEY] = False
-            return False, msg
-        _persist_auth_session(session_state, user=user, tokens=tokens, email_fallback=email_clean, st=st)
+            return False, "Login succeeded but no session tokens returned."
+        _persist_auth_session(session_state, user=user, tokens=tokens, email_fallback=email.strip(), st=st)
         enforce_workspace_ownership(session_state)
-        if not auth_session_complete(session_state):
-            msg = "Login incomplete — missing user id or session tokens. Try again."
-            session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
-            session_state[AUTH_LAST_LOGIN_OK_KEY] = False
-            _clear_auth_session(session_state, st=st)
-            return False, msg
         session_state[AUTH_NOTICE_KEY] = "Signed in."
-        session_state[AUTH_LAST_LOGIN_OK_KEY] = True
-        session_state.pop(AUTH_LAST_LOGIN_ERROR_KEY, None)
-        session_state["_baseball_account_expander_open"] = True
         return True, "Signed in."
     except Exception as exc:
-        msg = str(exc)
-        session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
-        session_state[AUTH_LAST_LOGIN_OK_KEY] = False
-        return False, msg
+        return False, str(exc)
 
 
 def request_password_reset(email: str, *, redirect_to: str | None = None) -> tuple[bool, str]:
@@ -1964,13 +1611,7 @@ def request_password_reset(email: str, *, redirect_to: str | None = None) -> tup
         return False, str(exc)
 
 
-def render_auth_panel(
-    st: Any,
-    *,
-    expanded: bool = False,
-    show_signed_in_status: bool = True,
-    flat_sidebar: bool = False,
-) -> None:
+def render_auth_panel(st: Any, *, expanded: bool = False) -> None:
     """Login / sign-up panel when Real Accounts are enabled."""
     if not is_auth_enabled():
         return
@@ -1978,31 +1619,24 @@ def render_auth_panel(
     notice = session.pop(AUTH_NOTICE_KEY, None)
     if notice:
         st.info(str(notice))
-    last_login_error = str(session.get(AUTH_LAST_LOGIN_ERROR_KEY) or "").strip()
-    if last_login_error and not auth_session_complete(session):
-        st.error(last_login_error)
-    if auth_session_complete(session):
-        if show_signed_in_status:
-            st.success(f"Signed in as **{current_auth_email(session) or 'account'}**")
+    if is_authenticated(session):
+        st.success(f"Signed in as **{current_auth_email(session) or 'account'}**")
         if st.button("Log out", key="suite_auth_logout_btn", use_container_width=True):
             logout(session, st=st)
             st.rerun()
         return
-
-    def _render_login_tabs() -> None:
+    title = "Sign in"
+    with st.expander(title, expanded=expanded):
         tab_login, tab_signup, tab_reset = st.tabs(["Log in", "Create account", "Reset password"])
         with tab_login:
-            with st.form("suite_auth_login_form", clear_on_submit=False):
-                email = st.text_input("Email", key="suite_auth_login_email")
-                password = st.text_input("Password", type="password", key="suite_auth_login_password")
-                submitted = st.form_submit_button("Log in", use_container_width=True)
-            if submitted:
-                session[AUTH_PENDING_LOGIN_KEY] = {
-                    "email": email,
-                    "password": password,
-                }
-                session["_baseball_account_expander_open"] = True
-                st.rerun()
+            email = st.text_input("Email", key="suite_auth_login_email")
+            password = st.text_input("Password", type="password", key="suite_auth_login_password")
+            if st.button("Log in", key="suite_auth_login_btn", use_container_width=True):
+                ok, msg = login_with_email(session, email=email, password=password)
+                if ok:
+                    st.rerun()
+                else:
+                    st.error(msg)
         with tab_signup:
             su_email = st.text_input("Email", key="suite_auth_signup_email")
             su_password = st.text_input("Password", type="password", key="suite_auth_signup_password")
@@ -2020,14 +1654,6 @@ def render_auth_panel(
                     st.success(msg)
                 else:
                     st.error(msg)
-
-    if flat_sidebar:
-        _render_login_tabs()
-        return
-
-    title = "Sign in"
-    with st.expander(title, expanded=expanded):
-        _render_login_tabs()
 
 
 def render_auth_gate(st: Any) -> bool:

@@ -36,13 +36,6 @@ def render_command_center_sidebar_link(
 ) -> None:
     """Top-of-sidebar link back to the suite homepage."""
     try:
-        from suite_sidebar_run import GUARD_COMMAND_CENTER, claim_sidebar_render
-
-        if not claim_sidebar_render(st.session_state, GUARD_COMMAND_CENTER):
-            return
-    except ImportError:
-        pass
-    try:
         from suite_workspace import get_active_workspace_id
 
         url = command_center_url(workspace_id=get_active_workspace_id(st))

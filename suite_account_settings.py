@@ -71,12 +71,23 @@ def build_scoped_cloud_key_preview(workspace_id: str | None = None) -> dict[str,
 
 def build_account_settings_context(*, st: Any | None = None) -> dict[str, Any]:
     """Structured account + workspace summary for UI and tests."""
+    ss = st.session_state if st is not None else None
     if st is not None:
-        init_suite_workspace(st)
+        try:
+            from suite_workspace import bootstrap_suite_workspace
+
+            bootstrap_suite_workspace(st)
+        except ImportError:
+            try:
+                from suite_workspace import init_suite_workspace
+
+                init_suite_workspace(st)
+            except ImportError:
+                pass
     ws = get_active_workspace_id(st)
     acct = account_summary()
     email = get_user_email()
-    persisted = load_persisted_workspace_id(session_state=st.session_state if st is not None else None)
+    persisted = load_persisted_workspace_id(session_state=ss)
     query_ws = normalize_workspace_id(_qp_get(st, _QUERY_PARAM)) if st is not None else persisted
     query_raw = _qp_get(st, _QUERY_PARAM) if st is not None else ""
     namespace_keys = sorted(workspace_storage_app_keys(ws))
@@ -130,7 +141,10 @@ def detect_workspace_namespace_issues(*, st: Any | None = None) -> list[dict[str
         if query_raw and not st.session_state.get(_INITIALIZED_KEY):
             query_ws = normalize_workspace_id(query_raw)
             session_ws = normalize_workspace_id(
-                str(st.session_state.get(SESSION_KEY) or load_persisted_workspace_id())
+                str(
+                    st.session_state.get(SESSION_KEY)
+                    or load_persisted_workspace_id(session_state=st.session_state)
+                )
             )
             if query_ws != session_ws:
                 issues.append(
@@ -145,7 +159,12 @@ def detect_workspace_namespace_issues(*, st: Any | None = None) -> list[dict[str
                         ),
                     }
                 )
-        init_suite_workspace(st)
+        try:
+            from suite_workspace import bootstrap_suite_workspace
+
+            bootstrap_suite_workspace(st)
+        except ImportError:
+            init_suite_workspace(st)
 
     ws = get_active_workspace_id(st)
     persisted = load_persisted_workspace_id(session_state=st.session_state if st is not None else None)
@@ -407,6 +426,14 @@ def _render_account_settings_body(st: Any, ctx: dict[str, Any], issues: list[dic
     st.markdown("#### Deep links")
     st.caption("Apps opened from Command Center include your active workspace in the URL.")
     st.code(ctx["sample_app_url"] or "(no sample URL)", language="text")
+
+    try:
+        from suite_workspace import can_show_developer_tools, render_workspace_ownership_diagnostics
+
+        if st is not None and can_show_developer_tools(st=st):
+            render_workspace_ownership_diagnostics(st, sidebar=False)
+    except ImportError:
+        pass
     if ctx["active_workspace_id"] != DEFAULT_WORKSPACE_ID:
         st.caption(
             f"Direct app URL pattern: append `?suite_workspace={ctx['active_workspace_id']}` "

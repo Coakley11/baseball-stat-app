@@ -29,8 +29,121 @@ UPDATED_AT_KEY = "updated_at"
 SESSION_OWNED_WORKSPACE_KEY = "_suite_owned_workspace_id"
 SESSION_OWNED_WORKSPACE_LABEL_KEY = "_suite_owned_workspace_label"
 
-_ADMIN_EXTERNAL_IDS = frozenset({"daniel"})
+# Authorized admin accounts — email local-part is the immutable identity key.
+# Resolved suite external_id ``daniel`` is NOT an admin grant by itself; it only
+# describes the workspace/profile id inferred for daniel.cohen11@… emails.
+ADMIN_EMAIL_LOCAL_PARTS = frozenset({"coakley11", "daniel.cohen11"})
+ADMIN_ACCOUNTS = ADMIN_EMAIL_LOCAL_PARTS  # public alias used by tests/docs
+_ADMIN_EXTERNAL_IDS = ADMIN_EMAIL_LOCAL_PARTS  # backward-compatible alias
+_COAKLEY_EXTERNAL_ID = "coakley11"
+_DANIEL_RESOLVED_EXTERNAL_ID = "daniel"
 _DEMO_WORKSPACE_IDS = frozenset({"guest", "test_user"})
+_ADMIN_DEMO_WORKSPACES = ("daniel", "ariel", "guest", "test_user")
+
+
+def _normalize_identity(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def _email_local_part(email: str) -> str:
+    text = _normalize_identity(email)
+    if "@" in text:
+        return text.split("@", 1)[0]
+    return text
+
+
+def _admin_locals_from_email(email: str) -> set[str]:
+    local = _email_local_part(email)
+    return {local} if local else set()
+
+
+def _is_admin_from_verified_locals(locals_: set[str]) -> bool:
+    cleaned = {x for x in locals_ if x and x not in ("default",)}
+    return bool(cleaned & ADMIN_EMAIL_LOCAL_PARTS)
+
+
+def _session_mapping(session_state: Any) -> Any | None:
+    """Accept dicts and Streamlit SessionState (mapping-like); reject None."""
+    if session_state is None:
+        return None
+    if hasattr(session_state, "get"):
+        return session_state
+    return None
+
+
+def is_admin_user(
+    *,
+    session_state: dict[str, Any] | None = None,
+    external_id: str = "",
+    email: str = "",
+) -> bool:
+    """
+    Server-side admin authorization for developer / diagnostics / ops tools.
+
+    Grants access only when a **verified email local-part** is ``coakley11`` or
+    ``daniel.cohen11``. Fail-safe: returns False when identity cannot be
+    determined — never defaults to admin.
+
+    Workspace ids, display names, account slugs, query params, unsigned/demo
+    workspaces, and forged session ``external_id`` values never grant admin.
+    Bare external_id ``daniel`` is never sufficient without the daniel.cohen11 email.
+    """
+    verified_locals: set[str] = set()
+    auth_resolved = False
+    ss = _session_mapping(session_state)
+
+    if email:
+        verified_locals |= _admin_locals_from_email(email)
+
+    if ss is not None:
+        try:
+            from suite_auth import (
+                current_auth_email,
+                is_auth_enabled,
+                is_authenticated,
+            )
+
+            if is_auth_enabled():
+                if not is_authenticated(ss):
+                    return False
+                sess_email = current_auth_email(ss)
+                if not sess_email:
+                    return False
+                # Auth path: email is authoritative. Ignore session external_id /
+                # workspace / display-name fields — those are not immutable identity.
+                verified_locals |= _admin_locals_from_email(sess_email)
+                auth_resolved = True
+        except Exception:
+            if not verified_locals:
+                return False
+
+    if auth_resolved:
+        return _is_admin_from_verified_locals(verified_locals)
+
+    if verified_locals:
+        return _is_admin_from_verified_locals(verified_locals)
+
+    # Programmatic / secrets fallback — never treat bare ``daniel`` as admin.
+    ext = _normalize_identity(external_id)
+    if ext == _COAKLEY_EXTERNAL_ID:
+        return True
+    if ext == _DANIEL_RESOLVED_EXTERNAL_ID:
+        return False
+
+    if not ext:
+        try:
+            from suite_user import get_external_user_id, get_user_email
+
+            secrets_email = get_user_email()
+            if secrets_email:
+                return _is_admin_from_verified_locals(_admin_locals_from_email(secrets_email))
+            secrets_ext = _normalize_identity(get_external_user_id())
+            # Secrets suite_user_id may be ``coakley11``; never elevate on ``daniel`` alone.
+            return secrets_ext == _COAKLEY_EXTERNAL_ID
+        except Exception:
+            return False
+
+    return False
 
 
 def _utc_now_iso() -> str:
@@ -94,30 +207,39 @@ def derive_workspace_label(*, slug: str, email: str = "", display_name: str = ""
     return workspace_label(slug)
 
 
-def is_admin_account(*, external_id: str = "", session_state: dict[str, Any] | None = None) -> bool:
-    ext = str(external_id or "").strip().lower()
-    if not ext and isinstance(session_state, dict):
-        try:
-            from suite_auth import resolve_auth_external_id
+def is_admin_account(
+    *,
+    external_id: str = "",
+    email: str = "",
+    session_state: dict[str, Any] | None = None,
+) -> bool:
+    """Backward-compatible alias for :func:`is_admin_user`."""
+    return is_admin_user(session_state=session_state, external_id=external_id, email=email)
 
-            ext = str(resolve_auth_external_id(session_state) or "").strip().lower()
-        except ImportError:
-            ext = ""
-    return ext in _ADMIN_EXTERNAL_IDS
+
+def admin_allowed_workspaces(*, external_id: str = "") -> tuple[str, ...]:
+    """Demo presets plus the account's own slug when it is not already a preset."""
+    key = _normalize_identity(external_id)
+    base = list(_ADMIN_DEMO_WORKSPACES)
+    if key and key not in base and key not in ("default",):
+        base.append(key)
+    return tuple(base)
 
 
 def can_switch_workspaces(*, session_state: dict[str, Any] | None = None) -> bool:
-    """True when multi-workspace picker is allowed (admin demo / Daniel dev)."""
+    """True when multi-workspace picker is allowed (authorized admin only when auth is on)."""
     try:
         from suite_auth import is_auth_enabled, is_authenticated
 
         if not is_auth_enabled():
+            # Shared secrets / local multi-profile mode — picker stays available.
             return True
-        if not isinstance(session_state, dict) or not is_authenticated(session_state):
-            return True
-        return is_admin_account(session_state=session_state)
-    except ImportError:
-        return True
+        ss = _session_mapping(session_state)
+        if ss is None or not is_authenticated(ss):
+            return False
+        return is_admin_user(session_state=ss)
+    except Exception:
+        return False
 
 
 def get_registry_record(owner_user_id: str) -> dict[str, Any] | None:
@@ -201,49 +323,29 @@ def ensure_owned_workspace_for_session(session_state: dict[str, Any]) -> dict[st
         display_name=ctx["display_name"],
     )
     label = derive_workspace_label(slug=slug, email=ctx["email"], display_name=ctx["display_name"])
-    try:
-        from suite_auth import is_auth_enabled, is_authenticated
-        from suite_workspace import DEFAULT_WORKSPACE_ID, workspace_label
-
-        if (
-            is_auth_enabled()
-            and is_authenticated(session_state)
-            and is_admin_account(session_state=session_state)
-        ):
-            slug = DEFAULT_WORKSPACE_ID
-            label = workspace_label(slug)
-    except ImportError:
-        pass
     existing = get_registry_record(owner_user_id)
     if existing and str(existing.get(WORKSPACE_ID_KEY) or "").strip():
         slug = str(existing[WORKSPACE_ID_KEY]).strip()
         label = str(existing.get(WORKSPACE_LABEL_KEY) or label)
-    # Cache identity on the session BEFORE any disk I/O so callers always get a
-    # non-empty owned slug even if the registry/workspace dir is read-only
-    # (Streamlit Cloud ephemeral disk). A silent empty here previously let the
-    # ownership clamp no-op and leak the shared "daniel" workspace.
+    else:
+        reg = _read_registry()
+        by_owner = dict(reg.get("by_owner") or {})
+        now = _utc_now_iso()
+        by_owner[owner_user_id] = {
+            OWNER_USER_ID_KEY: owner_user_id,
+            OWNER_EXTERNAL_ID_KEY: ctx["owner_external_id"],
+            WORKSPACE_ID_KEY: slug,
+            WORKSPACE_LABEL_KEY: label,
+            CREATED_AT_KEY: now,
+            UPDATED_AT_KEY: now,
+        }
+        reg["by_owner"] = by_owner
+        _write_registry(reg)
+        from suite_workspace import workspace_dir
+
+        workspace_dir(slug).mkdir(parents=True, exist_ok=True)
     session_state[SESSION_OWNED_WORKSPACE_KEY] = slug
     session_state[SESSION_OWNED_WORKSPACE_LABEL_KEY] = label
-    if not (existing and str(existing.get(WORKSPACE_ID_KEY) or "").strip()):
-        try:
-            reg = _read_registry()
-            by_owner = dict(reg.get("by_owner") or {})
-            now = _utc_now_iso()
-            by_owner[owner_user_id] = {
-                OWNER_USER_ID_KEY: owner_user_id,
-                OWNER_EXTERNAL_ID_KEY: ctx["owner_external_id"],
-                WORKSPACE_ID_KEY: slug,
-                WORKSPACE_LABEL_KEY: label,
-                CREATED_AT_KEY: now,
-                UPDATED_AT_KEY: now,
-            }
-            reg["by_owner"] = by_owner
-            _write_registry(reg)
-            from suite_workspace import workspace_dir
-
-            workspace_dir(slug).mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
     return {
         OWNER_USER_ID_KEY: owner_user_id,
         OWNER_EXTERNAL_ID_KEY: ctx["owner_external_id"],
@@ -268,56 +370,6 @@ def get_owned_workspace_id(session_state: dict[str, Any] | None = None) -> str:
         return ""
     record = ensure_owned_workspace_for_session(session_state)
     return str(record.get(WORKSPACE_ID_KEY) or "").strip()
-
-
-def resolve_owned_workspace_id(session_state: dict[str, Any] | None = None) -> str:
-    """
-    Best-effort owned workspace slug for a signed-in session.
-
-    Unlike ``get_owned_workspace_id``, this never returns empty for an authenticated
-    account: if the registry lookup/write fails (e.g. ephemeral cloud disk), it
-    derives the slug directly from account identity so persistence diagnostics and
-    canonical cloud keys stay consistent across reboots.
-    """
-    if not isinstance(session_state, dict):
-        return ""
-    resolved = get_owned_workspace_id(session_state)
-    if resolved:
-        return resolved
-    try:
-        from suite_auth import is_auth_enabled, is_authenticated
-
-        if not is_auth_enabled() or not is_authenticated(session_state):
-            return ""
-    except ImportError:
-        return ""
-    ctx = _account_context(session_state)
-    slug = derive_workspace_slug(
-        external_id=ctx["owner_external_id"],
-        email=ctx["email"],
-        display_name=ctx["display_name"],
-    )
-    slug = str(slug or "").strip()
-    if slug:
-        session_state[SESSION_OWNED_WORKSPACE_KEY] = slug
-        if not str(session_state.get(SESSION_OWNED_WORKSPACE_LABEL_KEY) or "").strip():
-            session_state[SESSION_OWNED_WORKSPACE_LABEL_KEY] = derive_workspace_label(
-                slug=slug, email=ctx["email"], display_name=ctx["display_name"]
-            )
-    if not slug:
-        try:
-            from suite_auth import account_scoped_workspace_target
-
-            slug = str(account_scoped_workspace_target(session_state) or "").strip()
-            if slug:
-                session_state[SESSION_OWNED_WORKSPACE_KEY] = slug
-                if not str(session_state.get(SESSION_OWNED_WORKSPACE_LABEL_KEY) or "").strip():
-                    session_state[SESSION_OWNED_WORKSPACE_LABEL_KEY] = derive_workspace_label(
-                        slug=slug, email=ctx["email"], display_name=ctx["display_name"]
-                    )
-        except ImportError:
-            pass
-    return slug
 
 
 def active_workspace_persist_path(*, owner_user_id: str = "") -> Path:

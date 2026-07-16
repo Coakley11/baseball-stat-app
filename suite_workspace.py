@@ -87,9 +87,7 @@ def load_persisted_workspace_id(*, session_state: dict[str, Any] | None = None) 
 
     Authenticated: delegates once to the account-owned path (which reads the
     account file directly and does NOT call back here). Unauthenticated/demo:
-    resolves the legacy global workspace file with no delegation — but when
-    Real Accounts auth is enabled and the user is signed out, always return
-    ``guest`` so unsigned browsers never inherit daniel's workspace.
+    resolves the legacy global workspace file with no delegation.
     """
     try:
         from suite_auth import is_auth_enabled, is_authenticated
@@ -99,12 +97,6 @@ def load_persisted_workspace_id(*, session_state: dict[str, Any] | None = None) 
             and is_auth_enabled()
             and is_authenticated(session_state)
         )
-        if (
-            isinstance(session_state, dict)
-            and is_auth_enabled()
-            and not is_authenticated(session_state)
-        ):
-            return "guest"
     except ImportError:
         account_aware = False
 
@@ -138,81 +130,22 @@ def resolve_workspace_id(*, st: Any | None = None, explicit: str | None = None) 
     if explicit not in (None, ""):
         return normalize_workspace_id(explicit)
     ss: dict[str, Any] | None = None
-    ws = ""
     if st is not None:
         ss = st.session_state
         raw = ss.get(SESSION_KEY)
         if raw not in (None, ""):
-            ws = normalize_workspace_id(str(raw))
-    if not ws:
-        try:
-            import streamlit as st_module  # noqa: WPS433
-
-            if ss is None:
-                ss = st_module.session_state
-            raw = ss.get(SESSION_KEY)
-            if raw not in (None, ""):
-                ws = normalize_workspace_id(str(raw))
-        except Exception:
-            ss = None
-    if not ws:
-        ws = load_persisted_workspace_id(session_state=ss)
-    if ss is not None:
-        ws = _sync_account_scoped_workspace(ws, session_state=ss, st=st)
-        # Auth-enabled but unsigned: never attach to daniel (or any owned) workspace.
-        try:
-            from suite_auth import is_auth_enabled, is_authenticated
-
-            if is_auth_enabled() and not is_authenticated(ss):
-                if ws != "guest":
-                    ws = "guest"
-                    ss[SESSION_KEY] = "guest"
-                    try:
-                        # Active only — do not poison owned-workspace cache as Guest.
-                        ss["_suite_active_workspace_id"] = "guest"
-                        ss.pop("_suite_owned_workspace_id", None)
-                    except Exception:
-                        pass
-        except ImportError:
-            pass
-    return ws
-
-
-def _sync_account_scoped_workspace(
-    workspace_id: str,
-    *,
-    session_state: dict[str, Any],
-    st: Any | None = None,
-) -> str:
-    """
-    Hard-clamp resolved workspace to the signed-in account's single allowed workspace.
-
-    Runs on every resolve so a stale daniel SESSION_KEY cannot survive after auth
-    scope resolves to coakley11, even when owned-workspace registry is empty.
-    """
+            return normalize_workspace_id(str(raw))
     try:
-        from suite_auth import account_scoped_workspace_target, _seed_owned_workspace_cache
+        import streamlit as st_module  # noqa: WPS433
 
-        target = account_scoped_workspace_target(session_state)
-        if not target:
-            return normalize_workspace_id(workspace_id)
-        ws = normalize_workspace_id(workspace_id)
-        if ws == target:
-            _seed_owned_workspace_cache(session_state, target)
-            return ws
-        if st is not None:
-            set_active_workspace_id(st, target)
-        else:
-            session_state[SESSION_KEY] = target
-            persist_active_workspace_id(target, session_state=session_state)
-        try:
-            session_state[SESSION_KEY] = target
-        except Exception:
-            pass
-        _seed_owned_workspace_cache(session_state, target)
-        return target
-    except ImportError:
-        return normalize_workspace_id(workspace_id)
+        if ss is None:
+            ss = st_module.session_state
+        raw = ss.get(SESSION_KEY)
+        if raw not in (None, ""):
+            return normalize_workspace_id(str(raw))
+    except Exception:
+        ss = None
+    return load_persisted_workspace_id(session_state=ss)
 
 
 def get_active_workspace_id(st: Any | None = None) -> str:
@@ -259,21 +192,8 @@ def _on_active_workspace_changed(st: Any) -> None:
             ss.pop(key, None)
         elif sk.startswith(("_suite_ai_", "ps_")) or sk in ("view_mode", "ps_library_problem"):
             ss.pop(key, None)
-    # Re-run account-scoped shared-league discovery for the new profile once.
-    ss.pop("_suite_startup_canonical_sync_complete", None)
-    ss.pop("_suite_startup_canonical_identity_fp", None)
-    ss["_suite_shared_league_startup_force"] = True
-    ss["_suite_workspace_refresh_needed"] = True
     for key in DEVELOPER_SESSION_FLAG_KEYS:
-        if key == DEVELOPER_MODE_WIDGET_KEY:
-            continue
         ss.pop(key, None)
-    try:
-        from live_draft_navigation import clear_private_baseball_simulator_runtime
-
-        clear_private_baseball_simulator_runtime(ss, reason="workspace_changed")
-    except ImportError:
-        pass
     try:
         import streamlit as st_module
 
@@ -305,13 +225,10 @@ def storage_app_in_workspace(storage_app: str, workspace_id: str | None = None) 
 
 
 DEVELOPER_QUERY_PARAM = "dev"
-DEVELOPER_MODE_WIDGET_KEY = "app_developer_mode"
-DEVELOPER_MODE_PERSIST_KEY = "_suite_developer_mode_user"
-DEVELOPER_MODE_DIAG_KEY = "_suite_developer_mode_diag"
 DEVELOPER_SESSION_FLAG_KEYS: tuple[str, ...] = (
     "_suite_dev_mode",
     "cc_developer_mode",
-    DEVELOPER_MODE_WIDGET_KEY,
+    "app_developer_mode",
     "developer_mode",
     "investment_show_dev_diagnostics",
     "investment_pr1_diagnostics_enabled",
@@ -320,9 +237,32 @@ DEVELOPER_SESSION_FLAG_KEYS: tuple[str, ...] = (
 
 
 def is_developer_workspace(*, st: Any | None = None, workspace_id: str | None = None) -> bool:
-    """Daniel is the admin/developer workspace (Phase 1 — not auth)."""
+    """Legacy helper — Daniel workspace id. Prefer :func:`is_admin_session` for auth gates."""
     wid = workspace_id if workspace_id not in (None, "") else resolve_workspace_id(st=st)
     return normalize_workspace_id(wid) == DEFAULT_WORKSPACE_ID
+
+
+def _session_state_from_st(st: Any | None = None) -> Any | None:
+    try:
+        if st is not None and hasattr(st, "session_state"):
+            ss = st.session_state
+            return ss if hasattr(ss, "get") else None
+        import streamlit as st_module  # noqa: WPS433
+
+        ss = st_module.session_state
+        return ss if hasattr(ss, "get") else None
+    except Exception:
+        return None
+
+
+def is_admin_session(*, st: Any | None = None) -> bool:
+    """True when the current Streamlit session is an authorized admin account."""
+    try:
+        from suite_workspace_registry import is_admin_user
+
+        return is_admin_user(session_state=_session_state_from_st(st))
+    except Exception:
+        return False
 
 
 def _developer_query_enabled(st: Any | None = None) -> bool:
@@ -348,8 +288,6 @@ def is_developer_mode_enabled(*, st: Any | None = None) -> bool:
         import streamlit as st_module  # noqa: WPS433
 
         ss = st.session_state if st is not None else st_module.session_state
-        if ss.get(DEVELOPER_MODE_PERSIST_KEY):
-            return True
         for key in DEVELOPER_SESSION_FLAG_KEYS:
             if ss.get(key):
                 return True
@@ -358,101 +296,16 @@ def is_developer_mode_enabled(*, st: Any | None = None) -> bool:
     return False
 
 
-def set_developer_mode_user(
-    session_state: dict[str, Any],
-    enabled: bool,
-    *,
-    source: str = "unknown",
-) -> None:
-    """Canonical user intent for Developer Mode (survives reruns; not cloud-restored)."""
-    session_state[DEVELOPER_MODE_PERSIST_KEY] = bool(enabled)
-    session_state[DEVELOPER_MODE_WIDGET_KEY] = bool(enabled)
-    record_developer_mode_diagnostics(
-        session_state,
-        source=source,
-        reset_reason="" if enabled else "user_off",
-    )
-
-
-def sync_developer_mode_widget(session_state: dict[str, Any], *, source: str = "pre_render") -> None:
-    """Align checkbox session key with persisted user intent before widgets draw."""
-    persist = bool(session_state.get(DEVELOPER_MODE_PERSIST_KEY))
-    widget = bool(session_state.get(DEVELOPER_MODE_WIDGET_KEY))
-    reset_reason = ""
-    if persist and not widget:
-        session_state[DEVELOPER_MODE_WIDGET_KEY] = True
-        reset_reason = "restored_from_persist"
-    elif not persist and widget:
-        session_state[DEVELOPER_MODE_WIDGET_KEY] = False
-        reset_reason = "cleared_without_persist"
-    record_developer_mode_diagnostics(
-        session_state,
-        source=source,
-        reset_reason=reset_reason,
-    )
-
-
-def record_developer_mode_diagnostics(
-    session_state: dict[str, Any],
-    *,
-    source: str = "",
-    reset_reason: str = "",
-) -> None:
-    """Dev diagnostics for checkbox vs session vs persisted developer mode."""
-    session_state[DEVELOPER_MODE_DIAG_KEY] = {
-        "developer_mode_checkbox_value": bool(session_state.get(DEVELOPER_MODE_WIDGET_KEY)),
-        "developer_mode_session_value": bool(session_state.get(DEVELOPER_MODE_WIDGET_KEY)),
-        "developer_mode_restored_value": bool(session_state.get(DEVELOPER_MODE_PERSIST_KEY)),
-        "developer_mode_reset_reason": str(reset_reason or "").strip(),
-        "developer_mode_source": str(source or "").strip(),
-    }
-
-
-def developer_tools_workspace_eligible(*, st: Any | None = None) -> bool:
-    """Developer Mode toggle is a global settings control — always eligible.
-
-    Auth / workspace no longer hide the toggle (users were trapped after sign-in
-    when the workspace clamp left the control unmountable). Panel visibility
-    still follows the checkbox via ``can_show_developer_tools``.
-    """
-    return True
-
-
 def can_show_developer_tools(*, st: Any | None = None) -> bool:
-    """Developer UI gate: Developer Mode checkbox on (not ?dev=1 alone).
-
-    Portfolio Screenshot/Demo Mode always hides developer tools.
     """
-    if st is not None:
-        try:
-            from portfolio_polish import is_capture_mode
+    Admin accounts only, with explicit developer mode enabled.
 
-            if is_capture_mode(st):
-                return False
-        except Exception:
-            pass
-    return developer_mode_checkbox_enabled(st=st)
-
-
-def developer_ui_visible_from_session(session: dict[str, Any]) -> bool:
-    """Session-only developer UI gate (ignores ?dev=1; no Streamlit import required)."""
-    try:
-        st_obj = type("_DevGateSt", (), {"session_state": session, "query_params": {}})()
-        return can_show_developer_tools(st=st_obj)
-    except Exception:
+    Fail-safe: non-admins never see developer / diagnostics / deploy tools,
+    even if ``?dev=1`` or a session toggle is set.
+    """
+    if not is_admin_session(st=st):
         return False
-
-
-def developer_mode_checkbox_enabled(*, st: Any | None = None) -> bool:
-    """True only when the Developer Mode sidebar checkbox is on (not ?dev=1 alone)."""
-    try:
-        import streamlit as st_module  # noqa: WPS433
-
-        ss = st.session_state if st is not None else st_module.session_state
-        sync_developer_mode_widget(ss, source="developer_mode_checkbox_gate")
-        return bool(ss.get(DEVELOPER_MODE_WIDGET_KEY, False))
-    except Exception:
-        return False
+    return is_developer_mode_enabled(st=st)
 
 
 def _qp_get(st: Any, name: str) -> str:
@@ -514,16 +367,7 @@ def init_suite_workspace(st: Any) -> str:
         if allowed_incoming and incoming != current:
             set_active_workspace_id(st, incoming)
             st.session_state[_INITIALIZED_KEY] = True
-            try:
-                from suite_auth import enforce_workspace_ownership, is_auth_enabled, is_authenticated
-
-                # Re-clamp after URL apply so sticky ?suite_workspace=guest from an
-                # unsigned browse cannot keep a signed-in owner off their workspace.
-                if is_auth_enabled() and is_authenticated(st.session_state):
-                    enforce_workspace_ownership(st.session_state)
-            except ImportError:
-                pass
-            return get_active_workspace_id(st)
+            return incoming
         if not allowed_incoming:
             try:
                 from suite_auth import enforce_workspace_ownership
@@ -533,13 +377,6 @@ def init_suite_workspace(st: Any) -> str:
                 pass
 
     if st.session_state.get(_INITIALIZED_KEY):
-        try:
-            from suite_auth import enforce_workspace_ownership, is_auth_enabled, is_authenticated
-
-            if is_auth_enabled() and is_authenticated(st.session_state):
-                enforce_workspace_ownership(st.session_state)
-        except ImportError:
-            pass
         return get_active_workspace_id(st)
 
     if SESSION_KEY not in st.session_state:
@@ -587,15 +424,7 @@ def append_suite_workspace_param(url: str, workspace_id: str | None = None) -> s
     base = str(url or "").strip()
     if not base:
         return ""
-    if workspace_id not in (None, ""):
-        ws = normalize_workspace_id(workspace_id)
-    else:
-        try:
-            import streamlit as st_module  # noqa: WPS433
-
-            ws = load_persisted_workspace_id(session_state=st_module.session_state)
-        except Exception:
-            ws = resolve_workspace_id()
+    ws = normalize_workspace_id(workspace_id if workspace_id not in (None, "") else load_persisted_workspace_id())
     parsed = urlparse(base)
     params = parse_qs(parsed.query, keep_blank_values=True)
     params[_QUERY_PARAM] = [ws]
@@ -609,8 +438,22 @@ def _workspace_presets_for_session(st: Any) -> tuple[dict[str, str], ...]:
         from suite_auth import allowed_workspaces_for_session, is_auth_enabled, is_authenticated
 
         if is_auth_enabled() and is_authenticated(st.session_state):
-            allowed = frozenset(allowed_workspaces_for_session(st.session_state))
+            allowed_ids = allowed_workspaces_for_session(st.session_state)
+            allowed = frozenset(normalize_workspace_id(w) for w in allowed_ids)
             filtered = tuple(p for p in WORKSPACE_PRESETS if p["id"] in allowed)
+            known = {p["id"] for p in filtered}
+            extras = tuple(
+                {"id": normalize_workspace_id(wid), "label": workspace_label(wid)}
+                for wid in allowed_ids
+                if normalize_workspace_id(wid) not in known
+            )
+            if extras:
+                filtered = filtered + extras
+            elif not filtered and allowed_ids:
+                filtered = tuple(
+                    {"id": normalize_workspace_id(wid), "label": workspace_label(wid)}
+                    for wid in allowed_ids
+                )
             if filtered:
                 presets = filtered
     except ImportError:
@@ -618,9 +461,100 @@ def _workspace_presets_for_session(st: Any) -> tuple[dict[str, str], ...]:
     return presets
 
 
+def build_workspace_ownership_diagnostics(*, st: Any) -> dict[str, Any]:
+    """Dev diagnostics for account-owned workspace isolation."""
+    ss = st.session_state
+    diag: dict[str, Any] = {
+        "suite_auth_enabled": False,
+        "signed_in": False,
+        "signed_in_email": "",
+        "auth_external_id": "",
+        "owner_user_id": "",
+        "allowed_workspaces": [],
+        "owned_workspace_id": "",
+        "active_workspace_id": get_active_workspace_id(st),
+        "can_switch_workspaces": True,
+        "workspace_picker_visible": True,
+        "workspace_picker_reason": "Legacy preset picker",
+        "deploy_commit": "unknown",
+        "deploy_branch": "unknown",
+    }
+    try:
+        from suite_auth import (
+            AUTH_USER_ID_KEY,
+            allowed_workspaces_for_session,
+            current_auth_email,
+            is_auth_enabled,
+            is_authenticated,
+            resolve_auth_external_id,
+        )
+
+        diag["suite_auth_enabled"] = is_auth_enabled()
+        if diag["suite_auth_enabled"]:
+            diag["signed_in"] = is_authenticated(ss)
+            if diag["signed_in"]:
+                diag["signed_in_email"] = current_auth_email(ss)
+                diag["auth_external_id"] = resolve_auth_external_id(ss)
+                diag["owner_user_id"] = str(ss.get(AUTH_USER_ID_KEY) or "").strip()
+                diag["allowed_workspaces"] = list(allowed_workspaces_for_session(ss))
+    except ImportError:
+        pass
+    try:
+        from suite_workspace_registry import can_switch_workspaces, get_owned_workspace_id
+
+        diag["owned_workspace_id"] = get_owned_workspace_id(ss)
+        diag["can_switch_workspaces"] = can_switch_workspaces(session_state=ss)
+        diag["workspace_picker_visible"] = bool(diag["can_switch_workspaces"])
+        if diag["workspace_picker_visible"]:
+            diag["workspace_picker_reason"] = "Admin/dev multi-workspace picker enabled"
+        else:
+            diag["workspace_picker_reason"] = (
+                "Account-owned workspace — picker hidden for non-admin accounts"
+            )
+    except ImportError:
+        pass
+    try:
+        from suite_deploy_marker import resolve_git_branch, resolve_git_commit_short
+
+        diag["deploy_commit"] = resolve_git_commit_short()
+        diag["deploy_branch"] = resolve_git_branch()
+    except ImportError:
+        pass
+    return diag
+
+
+def render_workspace_ownership_diagnostics(st: Any, *, sidebar: bool = False) -> None:
+    """Dev panel: auth/workspace ownership state for live isolation debugging."""
+    try:
+        from suite_workspace import can_show_developer_tools
+
+        if not can_show_developer_tools(st=st):
+            return
+    except ImportError:
+        return
+    ui = st.sidebar if sidebar else st
+    diag = build_workspace_ownership_diagnostics(st=st)
+    with ui.expander("Workspace ownership (dev)", expanded=False):
+        ui.markdown(
+            f"| Field | Value |\n|---|---|\n"
+            f"| **suite_auth_enabled** | `{diag.get('suite_auth_enabled')}` |\n"
+            f"| **signed_in** | `{diag.get('signed_in')}` |\n"
+            f"| **signed_in_email** | `{diag.get('signed_in_email') or '—'}` |\n"
+            f"| **auth_external_id** | `{diag.get('auth_external_id') or '—'}` |\n"
+            f"| **owner_user_id** | `{diag.get('owner_user_id') or '—'}` |\n"
+            f"| **allowed_workspaces** | `{diag.get('allowed_workspaces')}` |\n"
+            f"| **owned_workspace_id** | `{diag.get('owned_workspace_id') or '—'}` |\n"
+            f"| **active_workspace_id** | `{diag.get('active_workspace_id') or '—'}` |\n"
+            f"| **workspace_picker_visible** | `{diag.get('workspace_picker_visible')}` |\n"
+            f"| **workspace_picker_reason** | {diag.get('workspace_picker_reason') or '—'} |\n"
+            f"| **deploy_commit** | `{diag.get('deploy_commit')}` |\n"
+            f"| **deploy_branch** | `{diag.get('deploy_branch')}` |"
+        )
+
+
 def render_workspace_selector_sidebar(st: Any) -> str:
     """Command Center sidebar profile selector. Returns active workspace id."""
-    init_suite_workspace(st)
+    bootstrap_suite_workspace(st)
     try:
         from suite_auth import enforce_workspace_ownership
 
@@ -629,16 +563,11 @@ def render_workspace_selector_sidebar(st: Any) -> str:
         pass
     current = get_active_workspace_id(st)
     try:
-        from suite_workspace_registry import can_switch_workspaces, get_owned_workspace_id
+        from suite_workspace_registry import can_switch_workspaces
 
         if not can_switch_workspaces(session_state=st.session_state):
-            owned = get_owned_workspace_id(st.session_state) or current
-            label = workspace_label(owned)
-            st.markdown(f"**Workspace:** {label}")
-            st.caption(f"Your account workspace (`{owned}`). Multi-profile switching is admin-only.")
-            if owned != current:
-                set_active_workspace_id(st, owned)
-                current = owned
+            _sync_workspace_selector_widget(st, current)
+            st.caption(f"Active workspace: **{workspace_label(current)}**")
             return current
     except ImportError:
         pass
@@ -655,7 +584,6 @@ def render_workspace_selector_sidebar(st: Any) -> str:
     )
     selected = ids[labels.index(choice)]
     if selected != current:
-        st.session_state["_suite_workspace_user_selected"] = True
         set_active_workspace_id(st, selected)
         current = selected
         try:
@@ -664,7 +592,10 @@ def render_workspace_selector_sidebar(st: Any) -> str:
             pass
     elif st.session_state.get(WORKSPACE_SELECTOR_WIDGET_KEY) != workspace_label(current):
         _sync_workspace_selector_widget(st, current)
-    st.caption(f"Active profile: **{workspace_label(current)}** (`{current}`)")
+    if can_show_developer_tools(st=st):
+        st.caption(f"Active profile: **{workspace_label(current)}** (`{current}`)")
+    else:
+        st.caption(f"Active profile: **{workspace_label(current)}**")
     return current
 
 

@@ -6,6 +6,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
+
+DISPLAY_TIMEZONE = ZoneInfo("America/New_York")
 # Naive ISO strings from legacy writers are treated as UTC.
 _LEGACY_NAIVE_IS_UTC = True
 
@@ -61,11 +64,15 @@ def parse_activity_timestamp(ts: str | None) -> datetime | None:
 
 
 def get_display_timezone() -> timezone:
-    """Local timezone for feed display (Streamlit host / browser locale)."""
-    try:
-        return datetime.now().astimezone().tzinfo or timezone.utc
-    except Exception:
-        return timezone.utc
+    """Eastern Time for user-facing activity and Practice Analysis labels."""
+    return DISPLAY_TIMEZONE  # type: ignore[return-value]
+
+
+def format_eastern_time_label(dt: datetime) -> str:
+    """Format UTC-aware datetime for display — e.g. Jun 29, 2026, 9:28 AM ET."""
+    local = to_display_local(dt)
+    label = local.strftime("%b %d, %Y, %I:%M %p").replace(" 0", " ")
+    return f"{label} ET"
 
 
 def to_display_local(dt: datetime) -> datetime:

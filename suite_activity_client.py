@@ -25,7 +25,6 @@ LOCAL_FALLBACK_DIR = Path(__file__).resolve().parent / "data"
 
 _LAST_RECORD_TRACE: dict[str, Any] = {}
 _LAST_CLOUD_ERROR: str = ""
-_LAST_CLOUD_EVENT_ID: str = ""
 
 
 def last_record_trace() -> dict[str, Any]:
@@ -59,9 +58,8 @@ def _record_via_cloud(
     resume_subtitle: str = "",
     action_url: str = "",
 ) -> bool:
-    global _LAST_CLOUD_ERROR, _LAST_CLOUD_EVENT_ID
+    global _LAST_CLOUD_ERROR
     _LAST_CLOUD_ERROR = ""
-    _LAST_CLOUD_EVENT_ID = ""
     try:
         from suite_storage_config import cloud_storage_enabled
         from suite_storage_supabase import record_activity as cloud_record
@@ -72,7 +70,7 @@ def _record_via_cloud(
         _LAST_CLOUD_ERROR = "Supabase not configured ([suite_activity] secrets missing)"
         return False
     try:
-        event_id = cloud_record(
+        cloud_record(
             app,
             event,
             page=page,
@@ -83,7 +81,6 @@ def _record_via_cloud(
             resume_subtitle=resume_subtitle,
             action_url=action_url,
         )
-        _LAST_CLOUD_EVENT_ID = str(event_id or "")
         return True
     except Exception as exc:
         _LAST_CLOUD_ERROR = str(exc)
@@ -177,7 +174,7 @@ def record_activity(
     action_url: str = "",
     local_state: dict[str, Any] | None = None,
 ) -> None:
-    global _LAST_RECORD_TRACE, _LAST_CLOUD_EVENT_ID
+    global _LAST_RECORD_TRACE
     metrics = metrics or {}
     try:
         from suite_workspace import get_active_workspace_id
@@ -225,7 +222,6 @@ def record_activity(
                 "supabase_write_ok": True,
                 "write_path": "supabase",
                 "error": "",
-                "event_id": _LAST_CLOUD_EVENT_ID,
             }
         )
         _LAST_RECORD_TRACE = trace
