@@ -23388,7 +23388,6 @@ if active_page == "Live Draft Room":
 
             _clock_expired = bool(
                 room.get("status") == "in_progress"
-                and slot is not None
                 and (
                     _timer_expired_fn(room)
                     or live_draft_seconds_remaining(room) <= 0
@@ -23411,53 +23410,64 @@ if active_page == "Live Draft Room":
 
                 with ldr_step(st.session_state, "timer_note_page_load", st=st):
                     note_live_draft_page_load(st.session_state, room)
-                with ldr_step(st.session_state, "timer_render_countdown", st=st):
-                    render_live_draft_timer_bar(st, st.session_state, room)
+                # Page owns expire commit BEFORE the timer bar mounts any recovery
+                # fragment — otherwise fragment st.rerun() aborts mid-controls.
+                st.session_state["_live_draft_page_owns_expired"] = True
                 with ldr_step(st.session_state, "timer_handle_expired_pick", st=st):
                     expired_result = handle_expired_pick_on_page(
                         st.session_state, room, source="page_autopick"
                     )
-                    try:
-                        from live_draft_expired_pick import format_expired_pick_perf
+                try:
+                    from live_draft_autopick_chain import render_autopick_chain_banner
 
-                        _expired_perf = format_expired_pick_perf(st.session_state)
-                        if _expired_perf:
-                            st.caption(f"Expired-pick perf: {_expired_perf}")
+                    render_autopick_chain_banner(st, st.session_state)
+                except ImportError:
+                    pass
+                try:
+                    from live_draft_expired_pick import format_expired_pick_perf
+
+                    _expired_perf = format_expired_pick_perf(st.session_state)
+                    if _expired_perf:
+                        st.caption(f"Expired-pick perf: {_expired_perf}")
+                except ImportError:
+                    pass
+                if expired_result.error:
+                    st.error(expired_result.error)
+                else:
+                    backoff_err = autopick_error_message(st.session_state, room)
+                    if backoff_err:
+                        st.error(backoff_err)
+                if expired_result.ok and expired_result.message:
+                    st.success(expired_result.message)
+                with ldr_step(st.session_state, "timer_render_countdown", st=st):
+                    # Flag stays set so recovery fragment does not abort this pass.
+                    render_live_draft_timer_bar(st, st.session_state, room)
+                st.session_state.pop("_live_draft_page_owns_expired", None)
+                if expired_result.should_rerun:
+                    try:
+                        import time as _time
+
+                        from live_draft_expired_pick import record_expired_pick_perf
+
+                        st.session_state["_expired_pick_ui_rerun_requested_at"] = _time.perf_counter()
+                        record_expired_pick_perf(
+                            st.session_state,
+                            ui_rerun_requested=True,
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        from live_draft_render_trace import ldr_rerun
+
+                        ldr_rerun(
+                            st.session_state,
+                            "timer_handle_expired_pick",
+                            reason="page_autopick",
+                            st=st,
+                        )
                     except ImportError:
                         pass
-                    if expired_result.error:
-                        st.error(expired_result.error)
-                    else:
-                        backoff_err = autopick_error_message(st.session_state, room)
-                        if backoff_err:
-                            st.error(backoff_err)
-                    if expired_result.ok and expired_result.message:
-                        st.success(expired_result.message)
-                    if expired_result.should_rerun:
-                        try:
-                            import time as _time
-
-                            from live_draft_expired_pick import record_expired_pick_perf
-
-                            st.session_state["_expired_pick_ui_rerun_requested_at"] = _time.perf_counter()
-                            record_expired_pick_perf(
-                                st.session_state,
-                                ui_rerun_requested=True,
-                            )
-                        except Exception:
-                            pass
-                        try:
-                            from live_draft_render_trace import ldr_rerun
-
-                            ldr_rerun(
-                                st.session_state,
-                                "timer_handle_expired_pick",
-                                reason="page_autopick",
-                                st=st,
-                            )
-                        except ImportError:
-                            pass
-                        request_live_draft_rerun(st, st.session_state, "page_autopick", room=room)
+                    request_live_draft_rerun(st, st.session_state, "page_autopick", room=room)
             except ImportError:
                 with ldr_step(st.session_state, "timer_compute_remaining", st=st, fallback=True):
                     remaining = live_draft_seconds_remaining(room)

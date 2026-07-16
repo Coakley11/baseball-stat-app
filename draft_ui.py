@@ -1099,9 +1099,9 @@ def render_draft_queue_panel(
         container.caption("Empty — add players with **⭐ Add to Queue** on recommendation cards.")
         return False
 
-    # Live Draft: skip streamlit_sortables for now — it has swallowed / mismatched paint
-    # while session diagnostics looked healthy. Button reorder remains.
-    if not _is_live and not compact and not use_sidebar and len(queue) >= 2:
+    # Red sliding queue (streamlit_sortables). Wipe guard keeps survival fixes:
+    # never accept an empty sortable result over a populated queue.
+    if not compact and not use_sidebar and len(queue) >= 2:
         try:
             from streamlit_sortables import sort_items
 
@@ -1116,12 +1116,23 @@ def render_draft_queue_panel(
                 )
             except ImportError:
                 pass
-            container.caption("Drag players to set queue priority.")
+            container.caption("Drag the red cards to set queue priority.")
             _sortable_in = list(queue)
             sorted_queue = sort_items(list(queue), key=f"{key_prefix}_sortable")
             if list(sorted_queue) != list(queue):
                 if len(queue) >= 2 and not list(sorted_queue):
                     session["_live_draft_queue_sortable_wipe_blocked"] = True
+                    try:
+                        from live_draft_queue_fragment import record_queue_paint_diag
+
+                        record_queue_paint_diag(
+                            session,
+                            stage="sortable_wipe_blocked",
+                            queue=queue,
+                            extra={"sortable_in": list(_sortable_in)[:12]},
+                        )
+                    except ImportError:
+                        pass
                 else:
                     try:
                         from live_draft_ux_latency import ACTION_REORDER_QUEUE, note_ux_action
@@ -1142,23 +1153,21 @@ def render_draft_queue_panel(
                         note_queue_mutation(session, reason="drag_reorder_queue")
                     except ImportError:
                         pass
+                    try:
+                        from live_draft_queue_survival import note_queue_survival
+
+                        note_queue_survival(
+                            session,
+                            "sortable_reorder",
+                            detail=",".join(list(sorted_queue)[:8]),
+                        )
+                    except ImportError:
+                        pass
                     queue = list(sorted_queue)
                     rerun = True
         except ImportError:
-            pass
-    elif _is_live and len(queue) >= 2:
-        container.caption("Reorder with Up / Down / Top (drag temporarily disabled while paint is repaired).")
-        try:
-            from live_draft_queue_fragment import record_queue_paint_diag
-
-            record_queue_paint_diag(
-                session,
-                stage="sortable_skipped",
-                queue=queue,
-                extra={"reason": "live_paint_reliability"},
-            )
-        except ImportError:
-            pass
+            if _is_live and len(queue) >= 2:
+                container.caption("Reorder with Up / Down / Top (drag component unavailable).")
 
     ctx = draft_action_context(session)
     if ctx.get("is_your_pick") and ctx.get("current_pick"):

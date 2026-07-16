@@ -41,7 +41,12 @@ def _candidate_names(scored: pd.DataFrame, limit: int = 8) -> list[str]:
 
 def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = None) -> tuple[bool, str]:
     """Select and apply auto-pick — always the #1 balanced recommendation for on-clock team."""
-    slot = live_draft_current_slot(room)
+    try:
+        from live_draft_timer_logic import resolve_live_draft_on_clock_slot
+
+        slot = resolve_live_draft_on_clock_slot(room)
+    except ImportError:
+        slot = live_draft_current_slot(room)
     if slot is None:
         total = _total_expected_picks(room)
         board = _board_size(room)

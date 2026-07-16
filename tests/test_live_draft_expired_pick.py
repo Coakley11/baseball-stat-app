@@ -91,17 +91,19 @@ class ExpiredPickDetectionTests(unittest.TestCase):
 
 class AutopickBackoffTests(unittest.TestCase):
     @patch("live_draft_expired_pick.run_autopick_selection", return_value=(False, "No players remain"))
-    def test_failed_autopick_activates_backoff_and_no_rerun(self, _sel: MagicMock) -> None:
+    def test_failed_autopick_activates_backoff_and_requests_rerun(self, _sel: MagicMock) -> None:
         session: dict = {"live_draft_room": _room()}
         result = run_expired_autopick_once(session, session["live_draft_room"])
         self.assertTrue(result.handled)
         self.assertFalse(result.ok)
-        self.assertFalse(result.should_rerun)
+        # Rerun remounts recovery fragment; backoff still blocks immediate re-commit.
+        self.assertTrue(result.should_rerun)
         self.assertTrue(autopick_failure_backoff_active(session, session["live_draft_room"]))
         self.assertEqual(session[AUTOPICK_ATTEMPTED_INDEX_KEY], 4)
+        self.assertIsNone(session.get(TIMER_ZERO_RERUN_LATCH_KEY))
 
     @patch("live_draft_expired_pick.run_autopick_selection", return_value=(False, "No players remain"))
-    def test_second_page_pass_does_not_retry(self, _sel: MagicMock) -> None:
+    def test_second_page_pass_does_not_retry_during_backoff(self, _sel: MagicMock) -> None:
         session: dict = {"live_draft_room": _room()}
         run_expired_autopick_once(session, session["live_draft_room"])
         result2 = handle_expired_pick_on_page(session, session["live_draft_room"])

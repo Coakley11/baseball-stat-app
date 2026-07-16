@@ -171,8 +171,26 @@ def should_attach_timer_fragment(session: dict[str, Any], room: dict[str, Any]) 
     return True
 
 
+def clock_needs_autopick(session: dict[str, Any], room: dict[str, Any]) -> bool:
+    """True when the draft clock demands a commit (expired or pending zero-cross)."""
+    if str(room.get("status") or "") != "in_progress":
+        return False
+    if bool(session.get(EXPIRED_PICK_PENDING_KEY)):
+        return True
+    try:
+        if live_draft_seconds_remaining(room) <= 0:
+            return True
+    except Exception:
+        pass
+    return expired_pick_detected(room)
+
+
 def should_fragment_trigger_full_rerun(session: dict[str, Any], room: dict[str, Any]) -> bool:
-    """At most one full rerun per expired pick index before attempt is recorded."""
+    """Request a full-app rerun so page_autopick can commit an expired pick.
+
+    Soft UI gates (safe_mode / timer_should_run) must not block recovery when the
+    clock is already at 0 — that combination previously froze Solo Drafts at 0s.
+    """
     try:
         from draft_ui import live_draft_autopick_disabled
 
@@ -182,26 +200,26 @@ def should_fragment_trigger_full_rerun(session: dict[str, Any], room: dict[str, 
         pass
     if session.get("_live_draft_manual_pick_in_flight") or session.get("_pending_manual_draft_pick"):
         return False
-    try:
-        from live_draft_safe_mode import is_safe_mode_active, timer_should_run
+    expired = clock_needs_autopick(session, room)
+    if not expired:
+        try:
+            from live_draft_safe_mode import is_safe_mode_active, timer_should_run
 
-        if is_safe_mode_active(session) or not timer_should_run(session, room):
-            return False
-    except ImportError:
-        pass
-    if not _multiplayer_autopick_allowed(session):
-        return False
-    if not expired_pick_detected(room):
+            if is_safe_mode_active(session) or not timer_should_run(session, room):
+                return False
+        except ImportError:
+            pass
         session.pop(EXPIRED_PICK_PENDING_KEY, None)
         return False
-    if timer_zero_rerun_already_latched(session, room):
-        # Fragment already handed control to a full-page path for this pick.
+    if not _multiplayer_autopick_allowed(session):
         return False
     if autopick_failure_backoff_active(session, room):
         return False
-    if autopick_attempted_for_index(session, room):
-        return False
     if session.get(AUTOPICK_LOCK_KEY):
+        return False
+    if timer_zero_rerun_already_latched(session, room):
+        return False
+    if autopick_attempted_for_index(session, room):
         return False
     if session.get(RERUN_LOOP_PREVENTED_KEY) and session.get(AUTOPICK_BACKOFF_INDEX_KEY) == _pick_index(room):
         return False
@@ -255,7 +273,9 @@ def _mark_autopick_failed(session: dict[str, Any], room: dict[str, Any], error: 
     session[AUTOPICK_BACKOFF_UNTIL_KEY] = time.time() + AUTOPICK_RETRY_SECONDS
     session[RERUN_LOOP_PREVENTED_KEY] = True
     session[AUTOPICK_ERROR_KEY] = error
-    session.pop(EXPIRED_PICK_PENDING_KEY, None)
+    # Keep pending + clear zero-rerun latch so a recovery tick can fire after backoff.
+    session[EXPIRED_PICK_PENDING_KEY] = True
+    session.pop(TIMER_ZERO_RERUN_LATCH_KEY, None)
     record_autopick_diagnostics(
         session,
         autopick_success=False,
@@ -265,6 +285,18 @@ def _mark_autopick_failed(session: dict[str, Any], room: dict[str, Any], error: 
         autopick_attempted_for_index=idx,
         autopick_in_progress_lock=False,
     )
+    try:
+        from live_draft_autopick_chain import note_autopick_chain
+
+        note_autopick_chain(
+            session,
+            "auto_pick_applied",
+            ok=False,
+            error=error,
+            pick_index=idx,
+        )
+    except ImportError:
+        pass
     try:
         from draft_commit_diagnostics import set_live_draft_pick_notice
 
@@ -313,6 +345,7 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
     record_autopick_diagnostics(
         session,
         expired_pick_detected=expired_pick_detected(room),
+        clock_needs_autopick=clock_needs_autopick(session, room),
         autopick_attempted_for_index=session.get(AUTOPICK_ATTEMPTED_INDEX_KEY),
         autopick_in_progress_lock=bool(session.get(AUTOPICK_LOCK_KEY)),
         autopick_failure_backoff_active=autopick_failure_backoff_active(session, room),
@@ -324,8 +357,22 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
     if room.get("status") != "in_progress":
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
 
-    if not expired_pick_detected(room):
+    if not clock_needs_autopick(session, room):
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
+
+    try:
+        from live_draft_autopick_chain import note_autopick_chain, reset_autopick_chain
+
+        reset_autopick_chain(session, pick_index=idx)
+        note_autopick_chain(
+            session,
+            "timer_hit_zero",
+            ok=True,
+            detail=f"remaining={live_draft_seconds_remaining(room)}",
+            pick_index=idx,
+        )
+    except ImportError:
+        pass
 
     if autopick_failure_backoff_active(session, room):
         err = str(session.get(AUTOPICK_ERROR_KEY) or "Auto-pick failed for this pick.")
@@ -360,13 +407,34 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
             recommendation_ms=_perf_ms(t0),
             recommendation_cache_hit=bool(session.get("_live_draft_autopick_used_rec_cache")),
         )
+        selected_name = ""
+        try:
+            diag = session.get(AUTOPICK_DIAG_KEY) or {}
+            selected_name = str(diag.get("selected_auto_pick_player") or diag.get("top_recommendation_player") or "")
+        except Exception:
+            selected_name = ""
+        try:
+            from live_draft_autopick_chain import note_autopick_chain
+
+            note_autopick_chain(
+                session,
+                "auto_pick_selected",
+                ok=bool(ok_select),
+                detail=select_msg or "",
+                error=None if ok_select else (select_msg or "selection failed"),
+                selected_player=selected_name or None,
+                pick_index=idx_before,
+            )
+        except ImportError:
+            pass
         if not ok_select:
             _mark_autopick_failed(session, room, select_msg or "Auto-pick selection failed.")
             record_expired_pick_perf(session, total_ms=_perf_ms(t_total), ok=False)
+            # Rerun so UI shows the error and the recovery fragment can remount.
             return ExpiredPickPageResult(
                 handled=True,
                 ok=False,
-                should_rerun=False,
+                should_rerun=True,
                 message="",
                 error=select_msg or "Auto-pick selection failed.",
             )
@@ -407,7 +475,7 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
             return ExpiredPickPageResult(
                 handled=True,
                 ok=False,
-                should_rerun=False,
+                should_rerun=True,
                 message="",
                 error=commit.message,
             )
@@ -415,14 +483,52 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
         msg = select_msg or commit.message
         t0 = time.perf_counter()
         _mark_autopick_success(session, room, msg)
+        idx_after = _pick_index(room)
+        board_after = len(room.get("draft_board") or [])
+        try:
+            from live_draft_autopick_chain import note_autopick_chain
+            from live_draft_timer_logic import live_draft_seconds_remaining as _secs
+
+            note_autopick_chain(
+                session,
+                "auto_pick_applied",
+                ok=True,
+                detail=msg,
+                selected_player=selected_name or None,
+                pick_index=idx_after,
+            )
+            note_autopick_chain(
+                session,
+                "board_advanced",
+                ok=board_after > board_before and idx_after > idx_before,
+                detail=f"board {board_before}→{board_after} idx {idx_before}→{idx_after}",
+                pick_index=idx_after,
+            )
+            timer_ok = bool(
+                room.get("status") == "complete"
+                or (
+                    room.get("timer_deadline") is not None
+                    and _secs(room) > 0
+                )
+            )
+            note_autopick_chain(
+                session,
+                "next_timer_started",
+                ok=timer_ok,
+                detail=f"remaining={_secs(room) if room.get('status') != 'complete' else 'complete'}",
+                pick_index=idx_after,
+                error=None if timer_ok else "timer not restarted after pick",
+            )
+        except ImportError:
+            pass
         record_expired_pick_perf(
             session,
             stage="committed",
             cache_invalidate_ms=_perf_ms(t0),
             total_ms=_perf_ms(t_total),
             ok=True,
-            pick_index_after=_pick_index(room),
-            board_size_after=len(room.get("draft_board") or []),
+            pick_index_after=idx_after,
+            board_size_after=board_after,
         )
         return ExpiredPickPageResult(handled=True, ok=True, should_rerun=True, message=msg, error="")
     finally:
@@ -467,7 +573,7 @@ def handle_expired_pick_on_page(session: dict[str, Any], room: dict[str, Any], *
         record_expired_pick_perf(session, stage="blocked_backoff", error=err)
         return ExpiredPickPageResult(handled=True, ok=False, should_rerun=False, message="", error=err)
 
-    clock_expired = expired_pick_detected(room) or bool(session.get(EXPIRED_PICK_PENDING_KEY))
+    clock_expired = clock_needs_autopick(session, room)
     if not clock_expired:
         try:
             from live_draft_safe_mode import is_safe_mode_active, timer_should_run

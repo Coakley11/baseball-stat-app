@@ -116,7 +116,7 @@ class LiveDraftTimerLogicTests(unittest.TestCase):
         slot = live_draft_current_slot(room)
         self.assertEqual(slot["Team"], "B")
 
-    def test_render_timer_bar_skips_fragment_when_expired(self) -> None:
+    def test_render_timer_bar_mounts_recovery_fragment_when_expired(self) -> None:
         import time
 
         from live_draft_timer_ui import render_live_draft_timer_bar
@@ -126,12 +126,16 @@ class LiveDraftTimerLogicTests(unittest.TestCase):
                 self.captions: list[str] = []
                 self.markdowns: list[str] = []
                 self.fragment_called = False
+                self.rerun_called = False
 
             def caption(self, text: str) -> None:
                 self.captions.append(str(text))
 
             def markdown(self, text: str, **_kwargs: object) -> None:
                 self.markdowns.append(str(text))
+
+            def rerun(self) -> None:
+                self.rerun_called = True
 
             def fragment(self, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
                 self.fragment_called = True
@@ -141,7 +145,10 @@ class LiveDraftTimerLogicTests(unittest.TestCase):
 
                 return deco
 
-        session: dict = {"_live_draft_render_trace_force": True}
+        session: dict = {
+            "_live_draft_render_trace_force": True,
+            "_live_draft_page_owns_expired": True,
+        }
         room = {
             "status": "in_progress",
             "config": {"timer_seconds": 60},
@@ -157,9 +164,10 @@ class LiveDraftTimerLogicTests(unittest.TestCase):
                 return_value=True,
             ):
                 render_live_draft_timer_bar(fake, session, room)
-        self.assertFalse(fake.fragment_called)
+        self.assertTrue(fake.fragment_called)
+        self.assertFalse(fake.rerun_called)
         self.assertTrue(session.get("_live_draft_timer_expired_pending"))
-        self.assertTrue(any("fragment detached" in c for c in fake.captions))
+        self.assertTrue(any("Processing expired pick" in c for c in fake.captions))
 
     def test_grace_skipped_when_timer_expired(self) -> None:
         import time

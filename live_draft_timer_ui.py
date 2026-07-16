@@ -372,7 +372,18 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
 
         with ldr_step(session, "timer_bar_should_run_check", st=st):
             can_run = bool(timer_should_run(session, live_room))
-        if not can_run:
+        # Clock already at 0 must keep a recovery path even when reconcile pauses
+        # the normal timer UI — otherwise the draft freezes with no fragment ticks.
+        _expired_now = False
+        try:
+            _expired_now = bool(
+                live_draft_timer_expired_for_pick(live_room)
+                or live_draft_seconds_remaining(live_room) <= 0
+                or session.get(EXPIRED_PICK_PENDING_KEY)
+            )
+        except Exception:
+            _expired_now = bool(session.get(EXPIRED_PICK_PENDING_KEY))
+        if not can_run and not _expired_now:
             with ldr_step(session, "timer_bar_disabled_countdown", st=st):
                 remaining = live_draft_display_seconds(live_room)
                 record_safe_mode_diagnostics(session, timer_fragment_active=False, timer_should_run=False)
@@ -382,7 +393,13 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                 else:
                     st.markdown(f"**Time on clock:** {remaining}s")
             return
-        record_safe_mode_diagnostics(session, timer_fragment_active=True, timer_should_run=True)
+        if not can_run and _expired_now:
+            session[EXPIRED_PICK_PENDING_KEY] = True
+            record_safe_mode_diagnostics(
+                session, timer_fragment_active=True, timer_should_run=False, timer_expired_recovery=True
+            )
+        else:
+            record_safe_mode_diagnostics(session, timer_fragment_active=True, timer_should_run=True)
     except ImportError:
         pass
     with ldr_step(session, "timer_bar_sync_state", st=st):
@@ -398,17 +415,45 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
         # and immediately invoking it requests timer_fragment_zero → st.rerun() *during*
         # room_controls_timer, aborting the page before handle_expired_pick_on_page runs.
         # Page script owns expiry; fragment only runs while time remains.
+        try:
+            fragment = st.fragment
+        except AttributeError:
+            fragment = None
+
         if not should_attach_timer_fragment(session, live_room):
             with ldr_step(session, "timer_skip_fragment_expired", st=st):
                 session[EXPIRED_PICK_PENDING_KEY] = True
                 _render_timer_static(st, session, live_room, source="static_expired_no_fragment")
                 st.caption("Processing expired pick…")
+            # Recovery fragment: keep ticking while at 0 so backoff → retry does not
+            # require a manual click (previous freeze root cause).
+            if fragment is None:
+                return
+
+            @fragment(run_every=1)
+            def _expired_recovery_tick() -> None:
+                session[TIMER_TICK_COUNT_KEY] = int(session.get(TIMER_TICK_COUNT_KEY) or 0) + 1
+                session[TIMER_LAST_TICK_TS_KEY] = time.time()
+                tick_room, _poll_changed = _sync_room_on_timer_tick(session, room)
+                session[EXPIRED_PICK_PENDING_KEY] = True
+                _render_timer_static(st, session, tick_room, source="fragment_expired_recovery")
+                # Never abort the page script that already owns expire handling.
+                if session.get("_live_draft_page_owns_expired"):
+                    return
+                if should_fragment_trigger_full_rerun(session, tick_room):
+                    try:
+                        from live_draft_safe_mode import request_live_draft_rerun
+
+                        request_live_draft_rerun(
+                            st, session, "timer_fragment_zero", room=tick_room
+                        )
+                    except ImportError:
+                        pass
+
+            with ldr_step(session, "timer_invoke_expired_recovery", st=st):
+                _expired_recovery_tick()
             return
 
-        try:
-            fragment = st.fragment
-        except AttributeError:
-            fragment = None
         if fragment is None:
             with ldr_step(session, "timer_bar_static_no_fragment", st=st):
                 _render_timer_static(st, session, live_room, source="static_no_fragment")

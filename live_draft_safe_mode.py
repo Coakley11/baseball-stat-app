@@ -239,13 +239,9 @@ def reconcile_live_draft_room(session: dict[str, Any], room: dict[str, Any]) -> 
         and board < total
         and idx_after < total
     )
-    try:
-        from live_draft_expired_pick import autopick_failure_backoff_active
-
-        if autopick_failure_backoff_active(session, room):
-            timer_should = False
-    except ImportError:
-        pass
+    # Do NOT disable the timer fragment during autopick backoff. Backoff previously
+    # set timer_should_run=False, which detached the 1 Hz fragment so nothing
+    # re-ran the page after a failed expire — clock sat at 0 forever.
 
     manual_recovery = bool(total > 0 and board < total)
 
