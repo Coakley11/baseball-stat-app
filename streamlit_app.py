@@ -12708,10 +12708,21 @@ def _page_perf_end(page: str) -> None:
 
 
 def render_developer_mode_sidebar_toggle():
-    """Single sidebar switch for all developer-only tools (default OFF).
+    """Sidebar switch for developer-only tools (admin accounts only; default OFF)."""
+    try:
+        from suite_workspace import developer_tools_workspace_eligible
 
-    Always mounted — auth/workspace must never hide this control.
-    """
+        if not developer_tools_workspace_eligible(st=st):
+            return
+    except ImportError:
+        try:
+            from suite_workspace import is_admin_session
+
+            if not is_admin_session(st=st):
+                return
+        except ImportError:
+            return
+
     try:
         from suite_sidebar_run import (
             GUARD_DEV_TOGGLE,

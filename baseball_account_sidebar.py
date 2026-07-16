@@ -241,7 +241,7 @@ def render_baseball_account_sidebar(st: Any) -> None:
                 show_signed_in_status=False,
                 flat_sidebar=True,
             )
-        except ImportError:
+        except Exception:
             st.caption("Sign-in controls unavailable.")
 
         if dev_mode and status.get("auth_user_id"):
