@@ -115,6 +115,18 @@ def format_autopick_chain_banner(session: dict[str, Any]) -> str:
 
 
 def render_autopick_chain_banner(st: Any, session: dict[str, Any]) -> None:
+    """On-page chain banner — Developer Mode only."""
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        if not developer_mode_checkbox_enabled(st=st):
+            return
+    except ImportError:
+        if not (
+            bool(session.get("app_developer_mode"))
+            or bool(session.get("_suite_developer_mode_user"))
+        ):
+            return
     chain = session.get(AUTOPICK_CHAIN_KEY)
     if not isinstance(chain, dict) or not chain.get("stages"):
         return

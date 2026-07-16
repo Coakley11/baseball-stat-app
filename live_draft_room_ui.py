@@ -89,8 +89,19 @@ def render_visible_rec_render_input_diagnostic(
     session: dict[str, Any],
     payload: dict[str, Any],
 ) -> None:
-    """On-page banner: exact recommendation-card render input for this paint pass."""
+    """On-page banner: exact recommendation-card render input (Developer Mode only)."""
     session[VISIBLE_REC_RENDER_INPUT_KEY] = dict(payload)
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        if not developer_mode_checkbox_enabled(st=st):
+            return
+    except ImportError:
+        if not (
+            bool(session.get("app_developer_mode"))
+            or bool(session.get("_suite_developer_mode_user"))
+        ):
+            return
     names = list(payload.get("card_render_input") or payload.get("top_recommendation_names") or [])
     st.markdown(
         f"**VISIBLE REC RENDER INPUT:** `{names}`  \n"

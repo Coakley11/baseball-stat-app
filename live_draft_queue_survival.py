@@ -236,7 +236,18 @@ def should_block_empty_queue_write(
 
 
 def render_queue_survival_panel(st: Any, session: dict[str, Any]) -> None:
-    """Sidebar: multi-pass survival + write audit."""
+    """Sidebar: multi-pass survival + write audit (Developer Mode only)."""
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        if not developer_mode_checkbox_enabled(st=st):
+            return
+    except ImportError:
+        if not (
+            bool(session.get("app_developer_mode"))
+            or bool(session.get("_suite_developer_mode_user"))
+        ):
+            return
     log = [e for e in list(session.get(QUEUE_SURVIVAL_LOG_KEY) or []) if isinstance(e, dict)]
     writes = [e for e in list(session.get(QUEUE_WRITE_LOG_KEY) or []) if isinstance(e, dict)]
     cleared = session.get("_live_draft_queue_cleared_at")

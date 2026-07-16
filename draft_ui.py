@@ -1049,36 +1049,49 @@ def render_draft_queue_panel(
         except ImportError:
             pass
 
+    _dev_queue_diag = False
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        _dev_queue_diag = bool(developer_mode_checkbox_enabled(st=st))
+    except ImportError:
+        _dev_queue_diag = bool(
+            session.get("app_developer_mode") or session.get("_suite_developer_mode_user")
+        )
+
     if show_subheader and not use_sidebar:
         container.subheader("Draft Queue")
         if session.pop("_live_draft_focus_queue", None):
             container.info("Draft Queue — reorder and draft from here while you’re on the clock.")
-        # Unmistakable: exact list this paint uses (not sidebar diagnostics).
-        container.markdown(
-            f"**VISIBLE RENDER INPUT:** `{queue}`  \n"
-            f"source=`{queue_source}` · widget=`{widget_after_prune}` · key=`{_qkey}`"
-        )
         if queue:
-            _lines = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(queue[:max_rows]))
-            container.markdown(f"**In queue ({len(queue)}):**\n\n{_lines}")
             session["_live_draft_queue_last_good"] = list(queue)
-        else:
-            container.markdown("**In queue (0):** empty")
-        if _is_live:
-            _canon = []
-            _ds = session.get("draft_state")
-            if isinstance(_ds, dict):
-                _canon = [str(x).strip() for x in (_ds.get("queue") or []) if str(x).strip()]
-            container.caption(
-                f"Paint key=`{_qkey}` · panel={len(queue)} · "
-                f"before_prune={len(before_prune)} · canonical={len(_canon)} · "
-                f"source={queue_source}"
-                + (
-                    f" · repaired={session.get('_live_draft_queue_paint_repaired')}"
-                    if session.get("_live_draft_queue_paint_repaired")
-                    else ""
-                )
+        # Paint / survival diagnostics — Developer Mode only (screenshot-clean otherwise).
+        if _dev_queue_diag:
+            container.markdown(
+                f"**VISIBLE RENDER INPUT:** `{queue}`  \n"
+                f"source=`{queue_source}` · widget=`{widget_after_prune}` · key=`{_qkey}`"
             )
+            if queue:
+                _lines = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(queue[:max_rows]))
+                container.markdown(f"**In queue ({len(queue)}):**\n\n{_lines}")
+            else:
+                container.markdown("**In queue (0):** empty")
+            if _is_live:
+                _canon = []
+                _ds = session.get("draft_state")
+                if isinstance(_ds, dict):
+                    _canon = [str(x).strip() for x in (_ds.get("queue") or []) if str(x).strip()]
+                container.caption(
+                    f"Paint key=`{_qkey}` · panel={len(queue)} · "
+                    f"before_prune={len(before_prune)} · canonical={len(_canon)} · "
+                    f"source={queue_source}"
+                    + (
+                        f" · repaired={session.get('_live_draft_queue_paint_repaired')}"
+                        if session.get("_live_draft_queue_paint_repaired")
+                        else ""
+                    )
+                )
+        if _is_live:
             try:
                 from live_draft_queue_fragment import record_queue_paint_diag
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+import unittest.mock
 
 import pandas as pd
 
@@ -53,7 +54,7 @@ class VisibleRecRenderInputTests(unittest.TestCase):
 
     def test_empty_paint_flags_caption(self) -> None:
         st = _St()
-        session: dict = {}
+        session: dict = {"app_developer_mode": True, "_suite_developer_mode_user": True}
         payload = build_visible_rec_render_input(
             rec_df=pd.DataFrame(),
             available_df=pd.DataFrame({"fullName": ["A"]}),
@@ -63,12 +64,32 @@ class VisibleRecRenderInputTests(unittest.TestCase):
             expensive_ok=False,
             room_status="in_progress",
         )
-        render_visible_rec_render_input_diagnostic(st, session, payload)
+        with unittest.mock.patch(
+            "suite_workspace.developer_mode_checkbox_enabled",
+            return_value=True,
+        ):
+            render_visible_rec_render_input_diagnostic(st, session, payload)
         self.assertIn(VISIBLE_REC_RENDER_INPUT_KEY, session)
         self.assertTrue(any("VISIBLE REC RENDER INPUT" in m for m in st.markdowns))
         self.assertTrue(any("empty" in c.lower() for c in st.captions))
         self.assertEqual(payload["available_player_count"], 1)
         self.assertEqual(payload["recommendation_count"], 0)
+
+    def test_hidden_when_developer_mode_off(self) -> None:
+        st = _St()
+        session: dict = {}
+        payload = build_visible_rec_render_input(
+            rec_df=pd.DataFrame({"fullName": ["Judge"]}),
+            available_df=pd.DataFrame({"fullName": ["Judge"]}),
+            on_clock_team="Daniel",
+        )
+        with unittest.mock.patch(
+            "suite_workspace.developer_mode_checkbox_enabled",
+            return_value=False,
+        ):
+            render_visible_rec_render_input_diagnostic(st, session, payload)
+        self.assertIn(VISIBLE_REC_RENDER_INPUT_KEY, session)
+        self.assertFalse(st.markdowns)
 
 
 if __name__ == "__main__":

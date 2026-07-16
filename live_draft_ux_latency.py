@@ -263,11 +263,24 @@ def latest_ux_latency(session: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def render_ux_latency_panel(st: Any, session: dict[str, Any]) -> None:
-    """Sidebar expander — always mounted so it is findable.
+    """Sidebar expander — Developer Mode only (screenshot-clean when OFF).
 
     Recording is on when Developer Mode is checked **or** ``?ux_latency=1``.
-    The expander title is always: ``UX latency (click → paint)``.
     """
+    try:
+        from suite_workspace import developer_mode_checkbox_enabled
+
+        if not developer_mode_checkbox_enabled(st=st) and not bool(
+            session.get("_live_draft_ux_latency_force")
+        ):
+            return
+    except ImportError:
+        if not (
+            bool(session.get("app_developer_mode"))
+            or bool(session.get("_suite_developer_mode_user"))
+            or bool(session.get("_live_draft_ux_latency_force"))
+        ):
+            return
     enabled = ux_latency_enabled(session, st)
     # Always show when forced or Developer Mode; otherwise still show a compact
     # how-to so the panel is discoverable after reboot.

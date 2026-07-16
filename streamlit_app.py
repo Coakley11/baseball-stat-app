@@ -14329,28 +14329,29 @@ _render_baseball_sidebar_chrome(st)
 
 pp.render_sidebar_toggle(st)
 render_developer_mode_sidebar_toggle()
-try:
-    from live_draft_ux_latency import render_ux_latency_panel
-
-    render_ux_latency_panel(st, st.session_state)
-except Exception as _ux_lat_exc:
+if developer_mode_enabled():
     try:
-        st.sidebar.error(
-            f"UX latency panel failed: {type(_ux_lat_exc).__name__}: {_ux_lat_exc}"
-        )
-    except Exception:
-        pass
-try:
-    from live_draft_queue_survival import render_queue_survival_panel
+        from live_draft_ux_latency import render_ux_latency_panel
 
-    render_queue_survival_panel(st, st.session_state)
-except Exception as _qsurv_exc:
+        render_ux_latency_panel(st, st.session_state)
+    except Exception as _ux_lat_exc:
+        try:
+            st.sidebar.error(
+                f"UX latency panel failed: {type(_ux_lat_exc).__name__}: {_ux_lat_exc}"
+            )
+        except Exception:
+            pass
     try:
-        st.sidebar.error(
-            f"Queue survival panel failed: {type(_qsurv_exc).__name__}: {_qsurv_exc}"
-        )
-    except Exception:
-        pass
+        from live_draft_queue_survival import render_queue_survival_panel
+
+        render_queue_survival_panel(st, st.session_state)
+    except Exception as _qsurv_exc:
+        try:
+            st.sidebar.error(
+                f"Queue survival panel failed: {type(_qsurv_exc).__name__}: {_qsurv_exc}"
+            )
+        except Exception:
+            pass
 
 try:
     from baseball_account_sidebar import render_baseball_account_sidebar
@@ -23417,20 +23418,21 @@ if active_page == "Live Draft Room":
                     expired_result = handle_expired_pick_on_page(
                         st.session_state, room, source="page_autopick"
                     )
-                try:
-                    from live_draft_autopick_chain import render_autopick_chain_banner
+                if developer_mode_enabled():
+                    try:
+                        from live_draft_autopick_chain import render_autopick_chain_banner
 
-                    render_autopick_chain_banner(st, st.session_state)
-                except ImportError:
-                    pass
-                try:
-                    from live_draft_expired_pick import format_expired_pick_perf
+                        render_autopick_chain_banner(st, st.session_state)
+                    except ImportError:
+                        pass
+                    try:
+                        from live_draft_expired_pick import format_expired_pick_perf
 
-                    _expired_perf = format_expired_pick_perf(st.session_state)
-                    if _expired_perf:
-                        st.caption(f"Expired-pick perf: {_expired_perf}")
-                except ImportError:
-                    pass
+                        _expired_perf = format_expired_pick_perf(st.session_state)
+                        if _expired_perf:
+                            st.caption(f"Expired-pick perf: {_expired_perf}")
+                    except ImportError:
+                        pass
                 if expired_result.error:
                     st.error(expired_result.error)
                 else:
@@ -24073,21 +24075,22 @@ if active_page == "Live Draft Room":
                         _rec_entry_paint = st.session_state.get(REC_CACHE_KEY)
                     except ImportError:
                         _rec_entry_paint = st.session_state.get("_live_draft_rec_cache")
-                    _rec_paint_diag = build_visible_rec_render_input(
-                        rec_df=top_rec,
-                        available_df=_available_cached,
-                        on_clock_team=str(_rec_team or on_clock_team or ""),
-                        max_cards=6,
-                        defer_recs=bool(_defer_recs),
-                        skip_for_setup=bool(_skip_for_setup),
-                        expensive_ok=bool(_expensive_ok),
-                        cache_key=_ui_cache_key,
-                        rec_cache_entry=_rec_entry_paint,
-                        room_status=str(room.get("status") or ""),
-                    )
-                    render_visible_rec_render_input_diagnostic(
-                        st, st.session_state, _rec_paint_diag
-                    )
+                    if developer_mode_enabled():
+                        _rec_paint_diag = build_visible_rec_render_input(
+                            rec_df=top_rec,
+                            available_df=_available_cached,
+                            on_clock_team=str(_rec_team or on_clock_team or ""),
+                            max_cards=6,
+                            defer_recs=bool(_defer_recs),
+                            skip_for_setup=bool(_skip_for_setup),
+                            expensive_ok=bool(_expensive_ok),
+                            cache_key=_ui_cache_key,
+                            rec_cache_entry=_rec_entry_paint,
+                            room_status=str(room.get("status") or ""),
+                        )
+                        render_visible_rec_render_input_diagnostic(
+                            st, st.session_state, _rec_paint_diag
+                        )
 
                     if _defer_recs and (top_rec is None or getattr(top_rec, "empty", True)):
                         st.caption("Loading recommendations…")
