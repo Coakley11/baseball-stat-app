@@ -87,9 +87,19 @@ def resolve_team_on_clock(room: dict[str, Any]) -> tuple[dict[str, Any] | None, 
 def build_live_draft_recommendation_context(
     room: dict[str, Any],
     session: dict[str, Any] | None = None,
+    *,
+    team_override: str | None = None,
 ) -> dict[str, Any]:
     """Build one authoritative recommendation context for the team currently on the clock."""
     slot, team_on_clock = resolve_team_on_clock(room)
+    # Active rooms can briefly lose the on-clock slot; keep scoring usable via override.
+    if (not team_on_clock or slot is None) and str(team_override or "").strip():
+        team_on_clock = str(team_override).strip()
+        pick_n = int(room.get("current_pick_index") or 0) + 1
+        slot = dict(slot or {})
+        slot.setdefault("Team", team_on_clock)
+        slot.setdefault("Pick", pick_n)
+        slot.setdefault("Round", max(1, (pick_n - 1) // max(1, len(room.get("teams") or []) or 12) + 1))
     empty: dict[str, Any] = {
         "draft_id": _draft_id(room),
         "draft_fingerprint": _draft_fingerprint(room),

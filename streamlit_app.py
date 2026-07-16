@@ -23759,6 +23759,14 @@ if active_page == "Live Draft Room":
                         _skip_for_setup = True
                 except ImportError:
                     pass
+                # Active/picking rooms must never stay blank because start_in_flight stuck
+                # or a timer/queue tick deferred scoring with an empty cache.
+                _room_status = str(room.get("status") or "").strip()
+                _room_picking = _room_status in ("in_progress", "paused") or bool(
+                    room.get("draft_board")
+                )
+                if _room_picking:
+                    _skip_for_setup = False
                 _expensive_ok = True
                 try:
                     from live_draft_rerun_scope import live_draft_expensive_recompute_required
@@ -23768,6 +23776,7 @@ if active_page == "Live Draft Room":
                     pass
                 _defer_recs = bool(_skip_for_setup or not _expensive_ok)
                 top_rec = best_avail = pos_fit = value_sleep = None
+                _rec_entry = None
                 if not _defer_recs:
                     top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
                         st.session_state,
@@ -23788,18 +23797,16 @@ if active_page == "Live Draft Room":
                         best_avail = _rec_entry.get("best_avail")
                         pos_fit = _rec_entry.get("pos_fit")
                         value_sleep = _rec_entry.get("value_sleep")
-                    # Timer tick with empty/missing cache would blank the UI — compute once.
-                    if (
-                        not _skip_for_setup
-                        and (top_rec is None or getattr(top_rec, "empty", True))
-                    ):
-                        top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
-                            st.session_state,
-                            room,
-                            top_n=_LIVE_REC_TOP_N,
-                            team=_rec_team,
-                        )
-                        _defer_recs = False
+                    # Empty/missing cache would blank the UI — compute once for active rooms.
+                    if top_rec is None or getattr(top_rec, "empty", True):
+                        if _room_picking or not _skip_for_setup:
+                            top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
+                                st.session_state,
+                                room,
+                                top_n=_LIVE_REC_TOP_N,
+                                team=_rec_team,
+                            )
+                            _defer_recs = False
                 if top_rec is None:
                     top_rec = pd.DataFrame()
                 if best_avail is None:
@@ -23808,6 +23815,23 @@ if active_page == "Live Draft Room":
                     pos_fit = pd.DataFrame()
                 if value_sleep is None:
                     value_sleep = pd.DataFrame()
+                # Last-chance: active room with empty tables after defer path — force recompute.
+                if _room_picking and getattr(top_rec, "empty", True):
+                    top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
+                        st.session_state,
+                        room,
+                        top_n=_LIVE_REC_TOP_N,
+                        team=_rec_team,
+                    )
+                    _defer_recs = False
+                    if top_rec is None:
+                        top_rec = pd.DataFrame()
+                    if best_avail is None:
+                        best_avail = pd.DataFrame()
+                    if pos_fit is None:
+                        pos_fit = pd.DataFrame()
+                    if value_sleep is None:
+                        value_sleep = pd.DataFrame()
                 try:
                     from live_draft_start_progress import flush_pending_live_draft_created_activity, mark_start_step
 
@@ -23987,7 +24011,14 @@ if active_page == "Live Draft Room":
                             )
                         except ImportError:
                             pass
-                        raise
+                        # Never abort recommendation cards when decision panels fail.
+                        try:
+                            st.warning(
+                                "Decision panels unavailable this pass — "
+                                f"{type(_ldr_decision_exc).__name__}: {_ldr_decision_exc}"
+                            )
+                        except Exception:
+                            pass
                 try:
                     from applied_math_context import cache_live_draft_ami_context
 
@@ -24020,8 +24051,32 @@ if active_page == "Live Draft Room":
                 try:
                     from live_draft_room_ui import (
                         add_why_this_pick_column,
+                        build_visible_rec_render_input,
                         render_live_draft_rec_cards,
                         render_live_draft_rec_summary_banner,
+                        render_visible_rec_render_input_diagnostic,
+                    )
+
+                    try:
+                        from live_draft_ui_cache import REC_CACHE_KEY
+
+                        _rec_entry_paint = st.session_state.get(REC_CACHE_KEY)
+                    except ImportError:
+                        _rec_entry_paint = st.session_state.get("_live_draft_rec_cache")
+                    _rec_paint_diag = build_visible_rec_render_input(
+                        rec_df=top_rec,
+                        available_df=_available_cached,
+                        on_clock_team=str(_rec_team or on_clock_team or ""),
+                        max_cards=6,
+                        defer_recs=bool(_defer_recs),
+                        skip_for_setup=bool(_skip_for_setup),
+                        expensive_ok=bool(_expensive_ok),
+                        cache_key=_ui_cache_key,
+                        rec_cache_entry=_rec_entry_paint,
+                        room_status=str(room.get("status") or ""),
+                    )
+                    render_visible_rec_render_input_diagnostic(
+                        st, st.session_state, _rec_paint_diag
                     )
 
                     if _defer_recs and (top_rec is None or getattr(top_rec, "empty", True)):
@@ -24044,18 +24099,24 @@ if active_page == "Live Draft Room":
                         render_live_draft_rec_summary_banner(st, top_rec, gaps=_gaps)
                         # Cards stay outside the queue fragment so Add uses a full-app
                         # paint and remounts the board_col queue (fixes empty-queue bug).
-                        render_live_draft_rec_cards(
-                            st,
-                            st.session_state,
-                            room,
-                            top_rec,
-                            max_cards=6,
-                            multiplayer=_multiplayer_draft,
-                            fmt_rate_4=fmt_rate_4,
-                            fmt_int=fmt_int,
-                            gaps=_gaps,
-                            category_needs=_category_needs,
-                        )
+                        try:
+                            render_live_draft_rec_cards(
+                                st,
+                                st.session_state,
+                                room,
+                                top_rec,
+                                max_cards=6,
+                                multiplayer=_multiplayer_draft,
+                                fmt_rate_4=fmt_rate_4,
+                                fmt_int=fmt_int,
+                                gaps=_gaps,
+                                category_needs=_category_needs,
+                            )
+                        except Exception as _rec_card_exc:
+                            st.error(
+                                f"Recommendation cards failed to paint: "
+                                f"{type(_rec_card_exc).__name__}: {_rec_card_exc}"
+                            )
                 except ImportError:
                     _render_live_draft_rec_cards(top_rec, max_cards=6)
 

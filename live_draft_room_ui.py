@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 LIVE_DRAFT_REC_DIAG_KEY = "_live_draft_rec_diag"
+VISIBLE_REC_RENDER_INPUT_KEY = "_live_draft_visible_rec_render_input"
 
 
 def record_rec_card_diagnostics(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
@@ -16,6 +17,97 @@ def record_rec_card_diagnostics(session: dict[str, Any], **fields: Any) -> dict[
     diag.update(fields)
     session[LIVE_DRAFT_REC_DIAG_KEY] = diag
     return diag
+
+
+def build_visible_rec_render_input(
+    *,
+    rec_df: Any,
+    available_df: Any = None,
+    on_clock_team: str = "",
+    max_cards: int = 6,
+    defer_recs: bool = False,
+    skip_for_setup: bool = False,
+    expensive_ok: bool = True,
+    cache_key: Any = None,
+    rec_cache_entry: Any = None,
+    room_status: str = "",
+) -> dict[str, Any]:
+    """Final paint-pass inputs for recommendation cards (not an earlier sidebar snapshot)."""
+    avail_n = 0
+    if available_df is not None and not getattr(available_df, "empty", True):
+        try:
+            avail_n = int(len(available_df))
+        except Exception:
+            avail_n = 0
+    names: list[str] = []
+    rec_n = 0
+    if rec_df is not None and not getattr(rec_df, "empty", True):
+        try:
+            rec_n = int(len(rec_df))
+            col = "fullName" if "fullName" in rec_df.columns else ("Player" if "Player" in rec_df.columns else None)
+            if col:
+                names = [str(x).strip() for x in rec_df[col].head(max_cards).tolist() if str(x).strip()]
+        except Exception:
+            names = []
+    cache_state = "missing"
+    if isinstance(rec_cache_entry, dict):
+        cached_top = rec_cache_entry.get("top_rec")
+        cached_n = 0
+        if cached_top is not None and not getattr(cached_top, "empty", True):
+            try:
+                cached_n = int(len(cached_top))
+            except Exception:
+                cached_n = 0
+        key_match = rec_cache_entry.get("key") == cache_key if cache_key is not None else None
+        if cached_n <= 0:
+            cache_state = "empty"
+        elif key_match is True:
+            cache_state = f"hit({cached_n})"
+        elif key_match is False:
+            cache_state = f"stale({cached_n})"
+        else:
+            cache_state = f"present({cached_n})"
+    elif defer_recs:
+        cache_state = "deferred_no_entry"
+    return {
+        "available_player_count": avail_n,
+        "recommendation_count": rec_n,
+        "top_recommendation_names": names,
+        "card_render_input": list(names),
+        "on_clock_team": str(on_clock_team or "").strip() or "—",
+        "scoring_cache_state": cache_state,
+        "defer_recs": bool(defer_recs),
+        "skip_for_setup": bool(skip_for_setup),
+        "expensive_ok": bool(expensive_ok),
+        "room_status": str(room_status or "").strip() or "—",
+        "cache_key": str(cache_key)[:120] if cache_key is not None else "",
+    }
+
+
+def render_visible_rec_render_input_diagnostic(
+    st: Any,
+    session: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    """On-page banner: exact recommendation-card render input for this paint pass."""
+    session[VISIBLE_REC_RENDER_INPUT_KEY] = dict(payload)
+    names = list(payload.get("card_render_input") or payload.get("top_recommendation_names") or [])
+    st.markdown(
+        f"**VISIBLE REC RENDER INPUT:** `{names}`  \n"
+        f"available=`{payload.get('available_player_count', 0)}` · "
+        f"recs=`{payload.get('recommendation_count', 0)}` · "
+        f"on_clock=`{payload.get('on_clock_team', '—')}` · "
+        f"scoring_cache=`{payload.get('scoring_cache_state', '—')}` · "
+        f"status=`{payload.get('room_status', '—')}` · "
+        f"defer=`{payload.get('defer_recs')}` · "
+        f"skip_setup=`{payload.get('skip_for_setup')}` · "
+        f"expensive_ok=`{payload.get('expensive_ok')}`"
+    )
+    if not names:
+        st.caption(
+            "Card paint input is empty this pass — cards will not appear until "
+            "recommendation rows are non-empty at this banner."
+        )
 
 
 def inject_live_draft_room_styles(st: Any) -> None:

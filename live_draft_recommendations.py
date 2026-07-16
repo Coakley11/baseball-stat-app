@@ -100,8 +100,13 @@ def live_draft_recommendations(
     session: dict[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Return recommendation tables for the team currently on the clock."""
-    del team  # Live Draft always uses on-clock team; explicit overrides are ignored.
-    context = build_live_draft_recommendation_context(room, session)
+    fallback = str(team or "").strip()
+    if not fallback:
+        cfg0 = dict(room.get("config") or {})
+        fallback = str(cfg0.get("your_team") or cfg0.get("user_team") or "").strip()
+    context = build_live_draft_recommendation_context(
+        room, session, team_override=fallback or None
+    )
     team_on_clock = str(context.get("team_on_clock") or "").strip()
     if not team_on_clock:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
