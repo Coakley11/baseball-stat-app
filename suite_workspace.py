@@ -225,10 +225,13 @@ def storage_app_in_workspace(storage_app: str, workspace_id: str | None = None) 
 
 
 DEVELOPER_QUERY_PARAM = "dev"
+DEVELOPER_MODE_WIDGET_KEY = "app_developer_mode"
+DEVELOPER_MODE_PERSIST_KEY = "_suite_developer_mode_user"
+DEVELOPER_MODE_DIAG_KEY = "_suite_developer_mode_diag"
 DEVELOPER_SESSION_FLAG_KEYS: tuple[str, ...] = (
     "_suite_dev_mode",
     "cc_developer_mode",
-    "app_developer_mode",
+    DEVELOPER_MODE_WIDGET_KEY,
     "developer_mode",
     "investment_show_dev_diagnostics",
     "investment_pr1_diagnostics_enabled",
@@ -298,14 +301,98 @@ def is_developer_mode_enabled(*, st: Any | None = None) -> bool:
 
 def can_show_developer_tools(*, st: Any | None = None) -> bool:
     """
-    Admin accounts only, with explicit developer mode enabled.
+    Admin accounts only, with the Developer Mode sidebar checkbox on.
 
-    Fail-safe: non-admins never see developer / diagnostics / deploy tools,
-    even if ``?dev=1`` or a session toggle is set.
+    Fail-safe: non-admins never see developer / diagnostics / deploy tools.
+    ``?dev=1`` alone does not grant access (checkbox required).
     """
     if not is_admin_session(st=st):
         return False
-    return is_developer_mode_enabled(st=st)
+    try:
+        ss = _session_state_from_st(st)
+        if ss is not None and ss.get("portfolio_screenshot_mode"):
+            return False
+    except Exception:
+        pass
+    return developer_mode_checkbox_enabled(st=st)
+
+
+def set_developer_mode_user(
+    session_state: dict[str, Any],
+    enabled: bool,
+    *,
+    source: str = "unknown",
+) -> None:
+    """Canonical user intent for Developer Mode (survives reruns; not cloud-restored)."""
+    session_state[DEVELOPER_MODE_PERSIST_KEY] = bool(enabled)
+    session_state[DEVELOPER_MODE_WIDGET_KEY] = bool(enabled)
+    record_developer_mode_diagnostics(
+        session_state,
+        source=source,
+        reset_reason="" if enabled else "user_off",
+    )
+
+
+def sync_developer_mode_widget(session_state: dict[str, Any], *, source: str = "pre_render") -> None:
+    """Align checkbox session key with persisted user intent before widgets draw."""
+    persist = bool(session_state.get(DEVELOPER_MODE_PERSIST_KEY))
+    widget = bool(session_state.get(DEVELOPER_MODE_WIDGET_KEY))
+    reset_reason = ""
+    if persist and not widget:
+        session_state[DEVELOPER_MODE_WIDGET_KEY] = True
+        reset_reason = "restored_from_persist"
+    elif not persist and widget:
+        session_state[DEVELOPER_MODE_WIDGET_KEY] = False
+        reset_reason = "cleared_without_persist"
+    record_developer_mode_diagnostics(
+        session_state,
+        source=source,
+        reset_reason=reset_reason,
+    )
+
+
+def record_developer_mode_diagnostics(
+    session_state: dict[str, Any],
+    *,
+    source: str = "",
+    reset_reason: str = "",
+) -> None:
+    """Dev diagnostics for checkbox vs session vs persisted developer mode."""
+    session_state[DEVELOPER_MODE_DIAG_KEY] = {
+        "developer_mode_checkbox_value": bool(session_state.get(DEVELOPER_MODE_WIDGET_KEY)),
+        "developer_mode_session_value": bool(session_state.get(DEVELOPER_MODE_WIDGET_KEY)),
+        "developer_mode_restored_value": bool(session_state.get(DEVELOPER_MODE_PERSIST_KEY)),
+        "developer_mode_reset_reason": str(reset_reason or "").strip(),
+        "developer_mode_source": str(source or "").strip(),
+    }
+
+
+def developer_tools_workspace_eligible(*, st: Any | None = None) -> bool:
+    """True when the signed-in account may see the Developer Mode toggle (admin only)."""
+    return is_admin_session(st=st)
+
+
+def developer_ui_visible_from_session(session: dict[str, Any]) -> bool:
+    """Session-only developer UI gate (ignores ?dev=1; no Streamlit import required)."""
+    try:
+        st_obj = type("_DevGateSt", (), {"session_state": session, "query_params": {}})()
+        return can_show_developer_tools(st=st_obj)
+    except Exception:
+        return False
+
+
+def developer_mode_checkbox_enabled(*, st: Any | None = None) -> bool:
+    """True only for admins when the Developer Mode sidebar checkbox is on (not ?dev=1 alone)."""
+    try:
+        import streamlit as st_module  # noqa: WPS433
+
+        ss = st.session_state if st is not None else st_module.session_state
+        sync_developer_mode_widget(ss, source="developer_mode_checkbox_gate")
+        if not developer_tools_workspace_eligible(st=st):
+            return False
+        return bool(ss.get(DEVELOPER_MODE_WIDGET_KEY, False))
+    except Exception:
+        return False
 
 
 def _qp_get(st: Any, name: str) -> str:

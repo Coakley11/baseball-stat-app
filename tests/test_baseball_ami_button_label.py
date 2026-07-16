@@ -95,6 +95,7 @@ class BaseballAmiButtonLabelTests(unittest.TestCase):
 
     def test_baseball_sidebar_shows_debug_when_developer_mode_checkbox(self) -> None:
         from suite_workspace import set_developer_mode_user
+        from unittest.mock import patch
 
         mock_st = MagicMock()
         mock_st.session_state = {"_suite_runtime_app_id": "baseball"}
@@ -104,11 +105,14 @@ class BaseballAmiButtonLabelTests(unittest.TestCase):
         mock_st.sidebar.text_area.return_value = ""
         mock_st.sidebar.button.return_value = False
 
-        render_baseball_insight_sidebar(
-            mock_st,
-            source_page="Live Draft Room",
-            session_state=mock_st.session_state,
-        )
+        with patch("suite_workspace.is_admin_session", return_value=True), patch(
+            "suite_workspace.developer_tools_workspace_eligible", return_value=True
+        ):
+            render_baseball_insight_sidebar(
+                mock_st,
+                source_page="Live Draft Room",
+                session_state=mock_st.session_state,
+            )
 
         caption_calls = mock_st.sidebar.caption.call_args_list
         self.assertGreaterEqual(len(caption_calls), 1)
