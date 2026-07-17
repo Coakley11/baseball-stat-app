@@ -457,6 +457,14 @@ def finalize_shared_room_create(
     store: Any = None,
 ) -> tuple[str, str]:
     """Create shared room for a not_started live room. Returns (code, error)."""
+    # Drop private simulator runtime so Pick N / simulator source cannot override
+    # this new Live Draft. Saved Draft Library archives are untouched.
+    try:
+        from live_draft_navigation import clear_private_baseball_simulator_runtime
+
+        clear_private_baseball_simulator_runtime(session, reason="shared_room_create")
+    except ImportError:
+        pass
     stamp_room_setup_mode(room, session)
     session["live_draft_room"] = room
     session["room_your_team"] = host_team

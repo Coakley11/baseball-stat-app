@@ -698,10 +698,9 @@ def _started_shared_live_draft_return_context(session: dict[str, Any]) -> dict[s
 
 
 def get_live_draft_lobby_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
-    """Secondary lobby card for created/joined rooms that have not started.
+    """Primary lobby card for created/joined rooms that have not started.
 
-    Must not replace an owned Simulator continuation — use only as an optional
-    secondary control after the primary Simulator card.
+    Bound Live Draft owns UI over leftover simulator runtime (library archives stay).
     """
     phase = resolve_live_draft_activation_phase(session)
     if phase in ("draft_started", "draft_complete", "setup_draft"):
@@ -717,6 +716,26 @@ def get_live_draft_lobby_return_context(session: dict[str, Any]) -> dict[str, An
         team_label, team = _live_room_team_label(room, code=code, team=team)
     if not team:
         team = str(session.get("draft_room_participant_team") or "").strip()
+    pick_no = 1
+    on_clock = None
+    round_no = 1
+    if isinstance(room, dict):
+        try:
+            from live_draft_state import analyze_live_draft_progress
+
+            progress = analyze_live_draft_progress(room)
+            pick_no = progress.get("current_pick") or 1
+            on_clock = progress.get("on_clock_team")
+            slot = progress.get("slot") if isinstance(progress.get("slot"), dict) else {}
+            round_no = slot.get("Round") if slot else 1
+        except ImportError:
+            order = list(room.get("pick_order") or [])
+            if order and isinstance(order[0], dict):
+                on_clock = str(order[0].get("Team") or "").strip() or None
+                try:
+                    pick_no = int(order[0].get("Pick") or 1)
+                except (TypeError, ValueError):
+                    pick_no = 1
     return {
         "kind": "live_lobby",
         "title": "Return to Live Draft Lobby",
@@ -727,11 +746,10 @@ def get_live_draft_lobby_return_context(session: dict[str, Any]) -> dict[str, An
         "picks_label": "Waiting for Start Draft…",
         "shared_room_hydrated": isinstance(room, dict),
         "activation_phase": phase,
-        # Lobby must not advertise Pick 1 / on-clock before Start Draft.
-        "round_no": None,
-        "pick_no": None,
-        "on_clock": None,
-        "secondary": True,
+        "round_no": round_no,
+        "pick_no": pick_no,
+        "on_clock": on_clock,
+        "secondary": False,
     }
 
 
@@ -948,16 +966,13 @@ def _freeze_simulator_resume_identity(session: dict[str, Any], status: dict[str,
 
 
 def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
-    """Primary sidebar card: active Live Draft (in_progress/paused), else owned Simulator.
+    """Primary sidebar card: Live Draft (active or lobby), else owned Simulator.
 
     Priority:
-    1. Live Draft only when status is in_progress / paused (Start Draft pressed)
-       — never mere setup, completed sessions, Create Room, Join, or Claim lobby
-    2. Current-account-owned private Simulator board
-    3. No continuation card
-
-    Lobby membership may still be shown via ``get_live_draft_lobby_return_context``
-    as a secondary control that does not replace Simulator.
+    1. Live Draft in_progress / paused
+    2. Bound Live Draft lobby (Create/Join/Claim) — owns UI over simulator
+    3. Current-account-owned private Simulator board
+    4. No continuation card
     """
     scrub_simulator_runtime_for_current_account(session, reason="sidebar_render_scrub")
 
@@ -978,7 +993,18 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
     if started_ctx is not None:
         return started_ctx
 
-    # Hydrated solo/shared room still not started → fall through to Simulator.
+    lobby_ctx = get_live_draft_lobby_return_context(session)
+    if lobby_ctx is not None:
+        _set_resume_diag(
+            session,
+            resume_source_kind="live_lobby",
+            resume_team=str(lobby_ctx.get("user_team") or ""),
+            active_shared_room_team=str(lobby_ctx.get("user_team") or ""),
+            sidebar_source_selected="live_lobby",
+            sidebar_priority_reason="bound_live_draft_lobby",
+        )
+        return lobby_ctx
+
     # Completed rooms are not resumable sidebar targets (use End Live Draft).
     room = _live_draft_room_for_return(session)
     if isinstance(room, dict):

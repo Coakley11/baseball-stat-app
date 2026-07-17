@@ -935,6 +935,15 @@ def join_shared_draft_room(
             raise
     session[ACTIVE_SHARED_ROOM_CODE_KEY] = code
     set_active_participant(session, room_code=code, participant_id=participant_id, assigned_team=assigned)
+    # Isolate Live Draft UI from leftover private simulator Pick N / source labels.
+    try:
+        from live_draft_navigation import clear_private_baseball_simulator_runtime
+
+        clear_private_baseball_simulator_runtime(session, reason="shared_room_join")
+        # Re-bind participant team aliases cleared with simulator runtime keys.
+        _sync_participant_team_aliases(session, assigned)
+    except ImportError:
+        pass
     presence_ok = True
     try:
         from live_draft_presence import mark_participant_present

@@ -28,8 +28,19 @@ _ALLOWED_EMPTY_REASONS = frozenset(
         "leave_shared_room",
         "delete_active_draft",
         "abandon_live_draft",
+        # Per-(room, user) hydrate must replace a prior user's leaked widget queue.
+        "participant_hydrate",
+        "participant_scope_change",
     }
 )
+
+# Session key: last applied queue scope "ROOM_CODE|canonical_user_id".
+QUEUE_SCOPE_KEY = "_draft_queue_scope_key"
+
+
+def queue_scope_key(room_id: str, user_id: str) -> str:
+    """Canonical storage scope for a participant-private queue."""
+    return f"{str(room_id or '').strip().upper()}|{str(user_id or '').strip()}"
 
 
 def _names(raw: Any) -> list[str]:
@@ -223,6 +234,14 @@ def should_block_empty_queue_write(
         return False
     base = str(reason or "").strip()
     if base in _ALLOWED_EMPTY_REASONS:
+        # Still protect in-flight same-scope edits from a racing empty hydrate.
+        if base == "participant_hydrate" and (
+            session.get("draft_state_dirty")
+            or session.get("_draft_workflow_pending_sync")
+            or session.get("_draft_queue_persist_dirty")
+            or current_action_id(session)
+        ):
+            return True
         return False
     # Always block accidental empties while dirty/pending, and also when wiping
     # a known non-empty widget without an explicit clear reason.

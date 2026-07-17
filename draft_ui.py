@@ -1408,6 +1408,46 @@ def render_active_draft_ownership_dev_panel(
             if val is None or val == "":
                 continue
             st.text(f"{key}: {val}")
+        # Temporary isolation diagnostics: queue owner vs simulator leak.
+        try:
+            from draft_actions import draft_action_context
+            from draft_room_context import resolve_shared_room_code
+            from draft_room_participant_state import resolve_participant_id
+            from live_draft_queue_survival import QUEUE_SCOPE_KEY
+            from live_draft_state import LIVE_DRAFT_ROOM_KEY, analyze_live_draft_progress
+
+            ctx = draft_action_context(session)
+            room = session.get(LIVE_DRAFT_ROOM_KEY)
+            progress = analyze_live_draft_progress(room if isinstance(room, dict) else None)
+            code = str(resolve_shared_room_code(session) or "").strip().upper()
+            uid = resolve_participant_id(session)
+            q = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+            sim_table = session.get("draft_room_table")
+            sim_picks = 0
+            try:
+                from draft_room_state import table_pick_count
+
+                sim_picks = int(table_pick_count(sim_table))
+            except Exception:
+                sim_picks = 0
+            rows = (
+                ("active_draft_source", ctx.get("active_draft_source")),
+                ("active_draft_id", (room or {}).get("draft_room_id") if isinstance(room, dict) else None),
+                ("active_room_id", code or None),
+                ("current_pick_index", progress.get("current_pick_index")),
+                ("current_pick", progress.get("current_pick") or ctx.get("current_pick")),
+                ("current_team", progress.get("on_clock_team") or ctx.get("on_clock_team")),
+                ("queue_owner_user_id", uid or None),
+                ("queue_storage_key", session.get(QUEUE_SCOPE_KEY) or (f"{code}|{uid}" if code else None)),
+                ("queue_player_ids", ", ".join(q[:12]) if q else "[]"),
+                ("simulator_draft_id", "draft_room_table" if sim_table is not None else None),
+                ("simulator_pick_count", sim_picks),
+            )
+            st.caption("Scope isolation")
+            for label, value in rows:
+                st.text(f"{label}: {value if value is not None and value != '' else '—'}")
+        except Exception:
+            pass
 
 
 _START_LIVE_DRAFT_TRACE_KEY = "_start_live_draft_trace"

@@ -34,7 +34,14 @@ def render_command_center_sidebar_link(
     label: str = "← Command Center",
     show_divider: bool = True,
 ) -> None:
-    """Top-of-sidebar link back to the suite homepage."""
+    """Top-of-sidebar link back to the suite homepage (once per script run)."""
+    try:
+        from suite_sidebar_run import GUARD_COMMAND_CENTER, claim_sidebar_render
+
+        if not claim_sidebar_render(st.session_state, GUARD_COMMAND_CENTER):
+            return
+    except ImportError:
+        pass
     try:
         from suite_workspace import get_active_workspace_id
 

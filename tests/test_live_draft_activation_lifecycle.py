@@ -116,7 +116,7 @@ class LiveDraftActivationLifecycleTests(unittest.TestCase):
         self.assertEqual((ctx_c or {}).get("user_team"), "Team B")
         self.assertEqual(resolve_live_draft_activation_phase(coakley), "setup_draft")
 
-    def test_create_room_does_not_auto_join_coakley_or_replace_simulator(self) -> None:
+    def test_create_room_binds_live_source_and_does_not_auto_join_coakley(self) -> None:
         daniel = _acct("daniel", team="Donny")
         stamp_simulator_board_ownership(daniel, origin="programmatic_pick")
         room = _not_started_room(host_team="Team 1")
@@ -129,15 +129,15 @@ class LiveDraftActivationLifecycleTests(unittest.TestCase):
         }
 
         self.assertEqual(resolve_live_draft_activation_phase(daniel), "participant_team_claimed")
-        self.assertFalse(should_resolve_live_draft_source(daniel))
-        self.assertNotEqual(get_active_draft_mode(daniel), ACTIVE_DRAFT_MODE_LIVE)
+        self.assertTrue(should_resolve_live_draft_source(daniel))
+        self.assertEqual(resolve_active_draft_source(daniel), "live")
         primary = get_draft_return_context(daniel)
-        self.assertEqual((primary or {}).get("kind"), "simulator")
-        self.assertEqual((primary or {}).get("user_team"), "Donny")
+        self.assertEqual((primary or {}).get("kind"), "live_lobby")
+        self.assertEqual((primary or {}).get("user_team"), "Team 1")
+        self.assertEqual((primary or {}).get("pick_no"), 1)
         lobby = get_live_draft_lobby_return_context(daniel)
         self.assertEqual((lobby or {}).get("kind"), "live_lobby")
-        self.assertIsNone((lobby or {}).get("pick_no"))
-        self.assertIsNone((lobby or {}).get("on_clock"))
+        self.assertEqual((lobby or {}).get("pick_no"), 1)
 
         coakley = _acct("coakley11", team="Team B")
         stamp_simulator_board_ownership(coakley, origin="programmatic_pick")
@@ -149,7 +149,7 @@ class LiveDraftActivationLifecycleTests(unittest.TestCase):
         self.assertEqual((ctx_c or {}).get("user_team"), "Team B")
         self.assertIsNone(get_live_draft_lobby_return_context(coakley))
 
-    def test_joined_claim_lobby_does_not_flip_effective_source_or_on_clock(self) -> None:
+    def test_joined_claim_lobby_owns_ui_over_simulator_pick_six(self) -> None:
         daniel = _acct("daniel", team="Donny")
         stamp_simulator_board_ownership(daniel, origin="programmatic_pick")
         coakley = _acct("coakley11", team="Team B")
@@ -175,20 +175,23 @@ class LiveDraftActivationLifecycleTests(unittest.TestCase):
             "draft_room_participant_state.resolve_participant_id",
             side_effect=lambda s, *a, **k: str(s.get(AUTH_USER_ID_KEY) or ""),
         ):
-            for ss, sim_team in ((daniel, "Donny"), (coakley, "Team B")):
+            for ss, live_team in ((daniel, "Team 1"), (coakley, "Team 2")):
                 self.assertEqual(resolve_live_draft_activation_phase(ss), "participant_team_claimed")
-                self.assertFalse(should_resolve_live_draft_source(ss))
-                self.assertEqual(resolve_active_draft_source(ss), "simulator")
+                self.assertTrue(should_resolve_live_draft_source(ss))
+                self.assertEqual(resolve_active_draft_source(ss), "live")
                 primary = get_draft_return_context(ss)
-                self.assertEqual((primary or {}).get("kind"), "simulator")
-                self.assertEqual((primary or {}).get("user_team"), sim_team)
+                self.assertEqual((primary or {}).get("kind"), "live_lobby")
+                self.assertEqual((primary or {}).get("user_team"), live_team)
+                self.assertEqual((primary or {}).get("pick_no"), 1)
+                self.assertEqual((primary or {}).get("on_clock"), "Team 1")
                 lobby = get_live_draft_lobby_return_context(ss)
                 self.assertEqual((lobby or {}).get("kind"), "live_lobby")
-                self.assertIsNone((lobby or {}).get("pick_no"))
-                self.assertIsNone((lobby or {}).get("on_clock"))
+                self.assertEqual((lobby or {}).get("pick_no"), 1)
                 sync = ensure_live_draft_synced_to_canonical_board(ss, reason="lobby_guard")
                 self.assertTrue(sync.get("skipped"))
                 self.assertEqual(sync.get("skip_reason"), "live_draft_not_started")
+                # Private simulator table may still be present until create/join clear —
+                # UI ownership must still prefer Live Draft Pick 1.
                 self.assertEqual(table_pick_count(ss.get("draft_room_table")), 20)
 
     def test_start_draft_switches_both_accounts_to_live_board(self) -> None:

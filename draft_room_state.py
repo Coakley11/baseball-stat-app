@@ -391,9 +391,9 @@ def draft_handoff_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
 def should_resolve_live_draft_source(session: dict[str, Any]) -> bool:
     """True when draft buttons/boards should use live_draft_room instead of private Simulator.
 
-    Setup form edits, Create Room, Join, and Claim do **not** flip ownership.
-    Only an in-progress/paused runtime — or a completed live draft that already
-    has picks for assistant handoff — resolves as the live source.
+    Precedence: a bound Live Draft (waiting lobby, ready, active, or paused) owns
+    draft UI over leftover simulator runtime. Setup-form-only edits without a
+    hydrated ``live_draft_room`` still leave ownership on the simulator.
     """
     if is_live_draft_runtime_active(session):
         return True
@@ -405,10 +405,23 @@ def should_resolve_live_draft_source(session: dict[str, Any]) -> bool:
             return False
         status = str(room.get("status") or "").strip()
         picks = live_draft_handoff_pick_count(room)
-        # Completed live boards keep handoff ownership; empty lobby rooms do not.
+        # Bound Shared Live Draft lobby (join code present) — never fall back to
+        # simulator Pick N. Local setup-form rooms without a share code stay on simulator.
+        if status in ("", "not_started", "waiting", "ready"):
+            try:
+                from draft_room_context import resolve_shared_room_code
+
+                if resolve_shared_room_code(session):
+                    return True
+            except ImportError:
+                pass
+            return False
+        # Completed live boards keep handoff ownership when picks exist.
         if status == "complete" and picks > 0:
             return True
         if picks > 0 and status in ("in_progress", "paused", "complete"):
+            return True
+        if status in ("in_progress", "paused"):
             return True
     except Exception:
         return False
@@ -416,7 +429,7 @@ def should_resolve_live_draft_source(session: dict[str, Any]) -> bool:
 
 
 def resolve_active_draft_source(session: dict[str, Any]) -> str:
-    """Single ownership: live when runtime live draft is active, else simulator."""
+    """Active Live Draft (incl. waiting lobby) beats simulator for draft UI ownership."""
     return ACTIVE_DRAFT_SOURCE_LIVE if should_resolve_live_draft_source(session) else ACTIVE_DRAFT_SOURCE_SIMULATOR
 
 

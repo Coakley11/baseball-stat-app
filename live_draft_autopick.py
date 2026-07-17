@@ -171,19 +171,53 @@ def _try_queue_auto_pick(
     available: pd.DataFrame,
     team: str,
 ) -> tuple[bool, str]:
-    """Draft the first still-available queued player for the on-clock team."""
-    your_team = str(
-        room.get("your_team")
-        or (room.get("config") or {}).get("your_team")
-        or session.get("your_team")
-        or ""
-    ).strip()
+    """Draft the first still-available queued player for the on-clock team.
+
+    Uses only the on-clock participant's private queue scoped by (room, user).
+    """
+    your_team = ""
+    try:
+        from draft_room_participant_state import active_participant_team
+
+        your_team = str(active_participant_team(session) or "").strip()
+    except ImportError:
+        pass
+    if not your_team:
+        your_team = str(
+            room.get("your_team")
+            or (room.get("config") or {}).get("your_team")
+            or session.get("draft_room_participant_team")
+            or session.get("room_your_team")
+            or session.get("your_team")
+            or ""
+        ).strip()
     # Queue is personal — only apply when this manager's team is on the clock
     # (or when no your_team is configured, e.g. solo drafts).
     if your_team and your_team.lower() != str(team or "").strip().lower():
         return False, ""
 
-    queue_raw = session.get("draft_queue") or []
+    queue_raw: list[Any] = []
+    try:
+        from draft_room_context import resolve_shared_room_code
+        from draft_room_participant_state import participant_workflow_slot, resolve_participant_id
+
+        code = str(resolve_shared_room_code(session) or "").strip().upper()
+        if code:
+            slot = participant_workflow_slot(session, code)
+            wf = dict(slot.get("workflow") or {})
+            queue_raw = list(wf.get("queue") or [])
+            session["_draft_queue_autopick_scope"] = {
+                "room_code": code,
+                "user_id": resolve_participant_id(session),
+                "team": your_team,
+                "source": "participant_slot",
+            }
+    except ImportError:
+        pass
+    if not queue_raw:
+        queue_raw = session.get("draft_queue") or []
+        if isinstance(session.get("_draft_queue_autopick_scope"), dict):
+            session["_draft_queue_autopick_scope"]["source"] = "session_fallback"
     if not isinstance(queue_raw, list) or not queue_raw:
         return False, ""
 

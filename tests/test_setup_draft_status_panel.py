@@ -31,6 +31,7 @@ class _FakeStreamlit:
     def __init__(self) -> None:
         self.sidebar = _FakeSidebar()
         self.markdowns: list[str] = []
+        self.warnings: list[str] = []
         self._border = False
 
     def caption(self, text: str) -> None:
@@ -38,6 +39,9 @@ class _FakeStreamlit:
 
     def markdown(self, text: str, **_kwargs) -> None:
         self.markdowns.append(str(text))
+
+    def warning(self, text: str) -> None:
+        self.warnings.append(str(text))
 
     def container(self, border: bool = False):
         self._border = border
@@ -89,11 +93,12 @@ def _setup_room_not_started() -> dict:
 
 
 class SetupDraftStatusPanelTests(unittest.TestCase):
-    def test_analyze_not_started_has_no_pick_or_clock(self) -> None:
+    def test_analyze_not_started_previews_pick_one_from_live_room(self) -> None:
         progress = analyze_live_draft_progress(_setup_room_not_started())
-        self.assertIsNone(progress.get("current_pick"))
-        self.assertIsNone(progress.get("on_clock_team"))
+        self.assertEqual(progress.get("current_pick"), 1)
+        self.assertTrue(progress.get("on_clock_team"))
         self.assertEqual(progress.get("draft_complete_reason"), "not_started")
+        self.assertTrue(progress.get("lobby_preview"))
 
     def test_setup_form_only_sidebar_status_panel_hides_pick_and_clock(self) -> None:
         """Daniel opened Live Draft and edited setup — no Create Room / Start Draft."""

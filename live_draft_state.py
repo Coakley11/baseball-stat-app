@@ -510,12 +510,27 @@ def analyze_live_draft_progress(room: dict[str, Any] | None) -> dict[str, Any]:
         base["draft_complete_reason"] = "missing_pick_order"
         return base
 
-    # Setup / lobby: never invent Pick 1 / on-clock before Start Draft.
+    # Lobby / waiting: expose Pick 1 preview from this room so simulator Pick N
+    # cannot leak into Live Draft chrome. Draft buttons stay disabled until start.
     if status not in ("in_progress", "paused", "complete"):
         base["draft_complete"] = False
-        if status == "not_started" and board_count == 0:
+        if status in ("", "not_started", "waiting", "ready") and board_count == 0:
             base["draft_complete_reason"] = "not_started"
-        elif status:
+            slot0 = pick_order[0] if pick_order else None
+            if isinstance(slot0, dict):
+                base["slot"] = slot0
+                try:
+                    base["current_pick"] = int(slot0.get("Pick") or 1)
+                except (TypeError, ValueError):
+                    base["current_pick"] = 1
+                base["on_clock_team"] = str(slot0.get("Team") or "").strip() or None
+                base["lobby_preview"] = True
+            else:
+                base["current_pick"] = 1
+                base["on_clock_team"] = None
+                base["slot"] = None
+            return base
+        if status:
             base["draft_complete_reason"] = f"inactive_status:{status}"
         else:
             base["draft_complete_reason"] = "inactive_status"
