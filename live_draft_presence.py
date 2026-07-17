@@ -298,6 +298,7 @@ def required_human_participant_rows(
 
     rows: list[dict[str, Any]] = []
     seen_uids: set[str] = set()
+    seen_teams: set[str] = set()
     for pid, meta in participants.items():
         if not isinstance(meta, dict):
             continue
@@ -311,10 +312,15 @@ def required_human_participant_rows(
         if str(meta.get("is_cpu") or "").lower() in {"1", "true", "yes"}:
             continue
         uid = str(meta.get("user_id") or meta.get("account_user_id") or pid).strip() or str(pid)
-        if uid in seen_uids:
+        uid_key = uid.strip().lower()
+        team_key = team.strip().lower()
+        # One seat per authenticated identity and per claimed team.
+        if uid_key in seen_uids or (team_key and team_key in seen_teams):
             continue
-        seen_uids.add(uid)
-        presence = joined.get(uid) or {}
+        seen_uids.add(uid_key)
+        if team_key:
+            seen_teams.add(team_key)
+        presence = joined.get(uid_key) or joined.get(uid) or {}
         display = str(
             presence.get("display_name") or meta.get("display_name") or uid
         ).strip()
@@ -324,7 +330,7 @@ def required_human_participant_rows(
         # Legacy fallback: if the room never wrote joined_participants, treat a
         # claimed participant with joined_at as present so older rooms still start.
         if joined:
-            is_joined = uid in joined
+            is_joined = uid_key in joined or uid in joined
         else:
             is_joined = bool(str(meta.get("joined_at") or "").strip())
         rows.append(
@@ -340,7 +346,11 @@ def required_human_participant_rows(
 
     # Include presence-only entries that somehow lack participants (safety).
     for uid, presence in joined.items():
-        if uid in seen_uids:
+        uid_key = str(uid or "").strip().lower()
+        if uid_key in seen_uids:
+            continue
+        team_key = str(presence.get("team_name") or "").strip().lower()
+        if team_key and team_key in seen_teams:
             continue
         if str(uid).startswith(("local:", "anonymous:", "demo:")):
             continue
@@ -348,9 +358,11 @@ def required_human_participant_rows(
         if not team:
             continue
         # Skip if this team is already represented by a claimed participant.
-        if any(str(r.get("team_name") or "") == team for r in rows):
+        if any(str(r.get("team_name") or "").strip().lower() == team.strip().lower() for r in rows):
             continue
-        seen_uids.add(uid)
+        seen_uids.add(uid_key)
+        if team_key:
+            seen_teams.add(team_key)
         display = str(presence.get("display_name") or uid).strip()
         rows.append(
             {
@@ -362,6 +374,22 @@ def required_human_participant_rows(
                 "last_seen_at": presence.get("last_seen_at") or "",
             }
         )
+
+    # Deduplicate by canonical authenticated identity (and one seat per team).
+    try:
+        from live_draft_chat_ui import dedupe_chat_participant_rows
+
+        rows = dedupe_chat_participant_rows(rows)
+    except ImportError:
+        # Local fallback: unique by lowercased user_id then team.
+        deduped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            key = str(row.get("user_id") or "").strip().lower() or str(row.get("team_name") or "").strip().lower()
+            if not key:
+                continue
+            if key not in deduped:
+                deduped[key] = row
+        rows = list(deduped.values())
 
     # Stable order by room team list when possible.
     team_order = {t: i for i, t in enumerate(list_room_teams(room))}

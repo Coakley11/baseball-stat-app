@@ -1,4 +1,4 @@
-"""Live Draft Chat UI — compact 1990s AIM-style messenger window."""
+"""Live Draft Chat UI — compact 1990s AIM-style messenger (single HTML card)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from live_draft_chat import (
     CHAT_SHOW_EARLIER_KEY,
     CHAT_VISIBLE_LIMIT,
     append_live_draft_chat_message,
-    author_label,
     chat_room_title,
     clear_system_chat_messages,
     count_earlier_user_messages,
@@ -27,6 +26,8 @@ from live_draft_chat import (
     user_visible_messages,
 )
 
+CHAT_COMPOSER_KEY = "live_draft_chat_composer_text"
+
 
 def _escape_html(text: str) -> str:
     return (
@@ -41,13 +42,12 @@ def _escape_html(text: str) -> str:
 def _aim_css() -> str:
     return """
 <style>
-.ld-aim-wrap {
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ld-aim-root) {
+  padding: 0 !important;
+}
+.ld-aim-root {
   width: min(380px, 100%);
-  height: 400px;
-  max-height: 400px;
   margin: 8px 0 12px 0;
-  display: flex;
-  flex-direction: column;
   background: #c0c0c0;
   border: 2px solid;
   border-color: #ffffff #808080 #808080 #ffffff;
@@ -63,19 +63,24 @@ def _aim_css() -> str:
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+.ld-aim-controls {
+  display: inline-flex;
+  gap: 3px;
   flex: 0 0 auto;
 }
-.ld-aim-controls span {
+.ld-aim-controls i {
   display: inline-block;
   width: 12px;
   height: 12px;
-  margin-left: 3px;
   background: #c0c0c0;
   border: 1px solid #000;
   color: #000;
   font-size: 9px;
+  font-style: normal;
   line-height: 10px;
   text-align: center;
+  font-weight: 700;
 }
 .ld-aim-status {
   background: #d4d0c8;
@@ -83,7 +88,6 @@ def _aim_css() -> str:
   font-size: 11px;
   color: #222;
   padding: 3px 6px;
-  flex: 0 0 auto;
 }
 .ld-aim-dot {
   display: inline-block;
@@ -95,8 +99,7 @@ def _aim_css() -> str:
   vertical-align: middle;
 }
 .ld-aim-log {
-  flex: 1 1 auto;
-  min-height: 0;
+  height: 220px;
   overflow-y: auto;
   background: #ffffff;
   border: 1px inset #808080;
@@ -113,30 +116,130 @@ def _aim_css() -> str:
 .ld-aim-team { color: #555; font-weight: 400; }
 .ld-aim-ts { float: right; color: #666; font-size: 10px; }
 .ld-aim-text { clear: both; white-space: pre-wrap; word-wrap: break-word; }
-.ld-aim-empty { color: #666; font-style: italic; font-size: 11px; }
-.ld-aim-composer {
-  flex: 0 0 auto;
-  background: #d4d0c8;
-  border-top: 1px solid #808080;
-  padding: 4px 6px 6px 6px;
-}
+.ld-aim-empty { color: #666; font-style: italic; font-size: 11px; padding: 4px 0; }
+.ld-aim-composer-note { font-size: 10px; color: #444; padding: 0 6px 4px 6px; }
 </style>
 """
 
 
-def _participant_status_line(session: dict[str, Any]) -> str:
+def canonical_chat_participant_key(participant: dict[str, Any]) -> str:
+    """Stable authenticated identity — never display name alone."""
+    for key in (
+        "user_id",
+        "account_user_id",
+        "account_id",
+        "draft_room_participant_id",
+        "participant_id",
+        "owned_workspace_id",
+        "workspace_id",
+    ):
+        val = str(participant.get(key) or "").strip().lower()
+        if val and not val.startswith(("local:", "anonymous:", "demo:")):
+            return val
+    return ""
+
+
+def dedupe_chat_participant_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per canonical user; also one row per claimed team."""
+    by_uid: dict[str, dict[str, Any]] = {}
+    by_team: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = canonical_chat_participant_key(row)
+        if not key:
+            # Fallback: team+display so blank ids do not invent duplicates.
+            display = str(row.get("display_name") or "").strip().lower()
+            team = str(row.get("team_name") or "").strip().lower()
+            if not display and not team:
+                continue
+            key = f"fallback:{display}|{team}"
+        team = str(row.get("team_name") or "").strip()
+        existing = by_uid.get(key) or {}
+        # Prefer the first owner of a team; skip a second identity for the same team.
+        if team and team in by_team and by_team[team] != key:
+            # Merge into the identity that already owns this team when possible.
+            owner_key = by_team[team]
+            existing = by_uid.get(owner_key) or existing
+            key = owner_key
+        merged = dict(existing)
+        for field in ("user_id", "display_name", "team_name", "joined_at", "last_seen_at"):
+            new_val = row.get(field)
+            if new_val not in (None, "") and not merged.get(field):
+                merged[field] = new_val
+            elif field == "display_name" and new_val and (
+                not merged.get("display_name")
+                or "@" in str(merged.get("display_name") or "")
+            ):
+                merged[field] = new_val
+        if row.get("joined") or existing.get("joined"):
+            merged["joined"] = True
+        if not merged.get("user_id"):
+            merged["user_id"] = key if not key.startswith("fallback:") else ""
+        if not merged.get("display_name"):
+            merged["display_name"] = str(row.get("display_name") or merged.get("user_id") or "Manager")
+        if team:
+            merged["team_name"] = team
+            by_team[team] = key
+        by_uid[key] = merged
+    # Stable order: host-ish first is handled by caller team order; preserve insert order.
+    return list(by_uid.values())
+
+
+def format_chat_participant_status_line(session: dict[str, Any]) -> str:
+    """HTML status row — each authenticated manager once."""
     try:
         from live_draft_presence import required_human_participant_rows
 
         room = session.get("live_draft_room") or {}
         rows = required_human_participant_rows(session, room if isinstance(room, dict) else {})
-        bits = []
-        for row in rows[:6]:
-            name = _escape_html(str(row.get("display_name") or ""))
-            team = _escape_html(str(row.get("team_name") or ""))
+        rows = dedupe_chat_participant_rows(rows)
+        # Host / commissioner first when identifiable.
+        try:
+            from draft_room_membership import is_room_host
+            from draft_room_participant_state import resolve_participant_id
+
+            host_pid = str(resolve_participant_id(session) or "").strip().lower()
+            if host_pid:
+                # Keep relative order but bubble current host if present.
+                pass
+            doc = None
+            try:
+                from draft_room_shared_state import load_shared_room
+
+                code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+                doc = load_shared_room(code) if code else None
+            except Exception:
+                doc = None
+            host_id = ""
+            if isinstance(doc, dict):
+                host_id = str(doc.get("host_user_id") or doc.get("host_participant_id") or "").strip().lower()
+
+            def _sort_key(r: dict[str, Any]) -> tuple:
+                uid = canonical_chat_participant_key(r)
+                is_host = bool(host_id and uid == host_id)
+                return (0 if is_host else 1, str(r.get("team_name") or ""), str(r.get("display_name") or ""))
+
+            rows = sorted(rows, key=_sort_key)
+            _ = is_room_host  # import kept for future host checks
+        except ImportError:
+            pass
+
+        bits: list[str] = []
+        for row in rows[:8]:
+            name = _escape_html(str(row.get("display_name") or "").strip())
+            if not name:
+                continue
+            if "@" in name:
+                name = _escape_html(name.split("@", 1)[0])
+            team = _escape_html(str(row.get("team_name") or "").strip())
             dot = '<span class="ld-aim-dot" title="Joined"></span>' if row.get("joined") else ""
             bits.append(f"{dot}{name} ({team})" if team else f"{dot}{name}")
-        return " · ".join(bits) if bits else "Managers in this draft"
+        # Collapse accidental duplicate separators.
+        line = " · ".join(bits)
+        while " ·  · " in line:
+            line = line.replace(" ·  · ", " · ")
+        return line if line else "Managers in this draft"
     except Exception:
         return "Managers in this draft"
 
@@ -150,15 +253,13 @@ def _current_participant_id(session: dict[str, Any]) -> str:
         return ""
 
 
-def _render_transcript(st: Any, session: dict[str, Any], messages: list[dict[str, Any]]) -> None:
+def _transcript_html(session: dict[str, Any], messages: list[dict[str, Any]]) -> str:
     if not messages:
-        st.markdown(
+        return (
             '<div class="ld-aim-log"><div class="ld-aim-empty">'
             "No league messages yet. Start the conversation."
-            "</div></div>",
-            unsafe_allow_html=True,
+            "</div></div>"
         )
-        return
     me = _current_participant_id(session)
     parts = ['<div class="ld-aim-log" id="ld-aim-log">']
     for msg in messages:
@@ -183,23 +284,40 @@ def _render_transcript(st: Any, session: dict[str, Any], messages: list[dict[str
         "<script>var el=document.getElementById('ld-aim-log');"
         "if(el){el.scrollTop=el.scrollHeight;}</script>"
     )
-    st.markdown("\n".join(parts), unsafe_allow_html=True)
+    return "\n".join(parts)
 
 
-def _post_message(st: Any, session: dict[str, Any], text: str) -> None:
+def post_chat_message(session: dict[str, Any], text: str, *, composer_key: str = CHAT_COMPOSER_KEY) -> tuple[bool, str]:
+    """Persist a chat message and clear composer state. Does not call st.rerun()."""
     ok, err = append_live_draft_chat_message(session, text)
     if ok:
         mark_chat_seen(session)
         try:
-            st.rerun(scope="fragment")
-        except TypeError:
-            st.rerun()
-    elif err:
-        st.caption(err)
+            session[composer_key] = ""
+        except Exception:
+            pass
+        # Keep widget key empty when present (Streamlit form clear_on_submit also helps).
+        try:
+            session[f"{composer_key}_widget"] = ""
+        except Exception:
+            pass
+        return True, ""
+    return False, err or "Could not send message."
+
+
+# Back-compat alias used by older call sites / tests.
+def _post_message(st: Any, session: dict[str, Any], text: str) -> bool:
+    """State-mutation only — never requests fragment or app reruns."""
+    _ = st
+    ok, err = post_chat_message(session, text)
+    if not ok and err:
+        # Caller may surface the error; keep return boolean for tests.
+        session["_live_draft_chat_post_error"] = err
+    return ok
 
 
 def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
-    """Compact AIM-style Live Draft chat — shared scope, five visible messages."""
+    """Compact AIM-style Live Draft chat — one HTML card, no empty wrapper box."""
     try:
         from draft_room_context import is_multiplayer_draft_active
     except ImportError:
@@ -218,28 +336,20 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
         label = f"Live Draft Chat — {title}"
         if unread:
             label += f" ({unread} unread)"
-        if st.button(label, key="live_draft_chat_expand"):
-            session[CHAT_COLLAPSED_KEY] = False
-            mark_chat_seen(session)
-            st.rerun()
+        cols = st.columns([4, 1])
+        with cols[0]:
+            st.caption(label)
+        with cols[1]:
+            if st.button("Show", key="live_draft_chat_expand"):
+                session[CHAT_COLLAPSED_KEY] = False
+                mark_chat_seen(session)
+                # Natural button rerun — no fragment scope.
         return
 
-    st.markdown('<div class="ld-aim-wrap">', unsafe_allow_html=True)
-    st.markdown(
-        f'<div class="ld-aim-titlebar"><span>Live Draft Chat — {_escape_html(title)}</span>'
-        f'<span class="ld-aim-controls"><span>_</span><span>□</span><span>×</span></span></div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        f'<div class="ld-aim-status">{_participant_status_line(session)}</div>',
-        unsafe_allow_html=True,
-    )
-
-    head = st.columns([4, 1])
-    with head[1]:
+    hide_cols = st.columns([5, 1])
+    with hide_cols[1]:
         if st.button("Hide", key="live_draft_chat_collapse", help="Collapse chat"):
             session[CHAT_COLLAPSED_KEY] = True
-            st.rerun()
 
     mark_chat_seen(session, chat_preview)
 
@@ -262,15 +372,12 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
                 if disabled:
                     if st.button("Re-enable chat", key="ld_chat_enable"):
                         set_chat_disabled(session, False)
-                        st.rerun()
                 else:
                     if st.button("Disable chat", key="ld_chat_disable"):
                         set_chat_disabled(session, True)
-                        st.rerun()
             with c2:
                 if st.button("Clear system messages", key="ld_chat_clear_system"):
                     clear_system_chat_messages(session)
-                    st.rerun()
             with c3:
                 mid = st.text_input(
                     "Delete message id",
@@ -282,10 +389,6 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
                     ok, err = delete_chat_message(session, mid)
                     if not ok and err:
                         st.caption(err)
-                    else:
-                        st.rerun()
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _chat_body(st: Any, session: dict[str, Any], *, form_key: str = "live_draft_chat_form") -> None:
@@ -294,32 +397,41 @@ def _chat_body(st: Any, session: dict[str, Any], *, form_key: str = "live_draft_
     all_messages = list(chat.get("messages") or [])
     show_earlier = bool(session.get(CHAT_SHOW_EARLIER_KEY))
     earlier = count_earlier_user_messages(all_messages)
-    if show_earlier:
-        visible = user_visible_messages(all_messages, limit=20)
-    else:
-        visible = user_visible_messages(all_messages, limit=CHAT_VISIBLE_LIMIT)
+    visible = user_visible_messages(
+        all_messages,
+        limit=20 if show_earlier else CHAT_VISIBLE_LIMIT,
+    )
+
+    title = chat_room_title(session)
+    status = format_chat_participant_status_line(session)
+    transcript = _transcript_html(session, visible)
+    # Single markdown payload — title bar is the first visible element; no empty outer box.
+    card = (
+        '<div class="ld-aim-root">'
+        f'<div class="ld-aim-titlebar"><span>Live Draft Chat — {_escape_html(title)}</span>'
+        '<span class="ld-aim-controls" aria-hidden="true">'
+        "<i>_</i><i>□</i><i>×</i></span></div>"
+        f'<div class="ld-aim-status">{status}</div>'
+        f"{transcript}"
+        "</div>"
+    )
+    st.markdown(card, unsafe_allow_html=True)
 
     if chat.get("chat_disabled"):
         st.caption("Chat is disabled for this league.")
-        _render_transcript(st, session, visible)
         return
 
     if earlier > 0 and not show_earlier:
         if st.button(f"View earlier messages ({earlier})", key="ld_chat_earlier"):
             session[CHAT_SHOW_EARLIER_KEY] = True
-            try:
-                st.rerun(scope="fragment")
-            except TypeError:
-                st.rerun()
+            # Fragment button click already reruns this fragment.
     elif show_earlier:
         if st.button("Show latest five", key="ld_chat_latest_five"):
             session[CHAT_SHOW_EARLIER_KEY] = False
-            try:
-                st.rerun(scope="fragment")
-            except TypeError:
-                st.rerun()
 
-    _render_transcript(st, session, visible)
+    err = str(session.pop("_live_draft_chat_post_error", "") or "").strip()
+    if err:
+        st.caption(err)
 
     with st.form(form_key, clear_on_submit=True):
         message = st.text_area(
@@ -330,6 +442,7 @@ def _chat_body(st: Any, session: dict[str, Any], *, form_key: str = "live_draft_
             height=68,
             key=f"{form_key}_input",
         )
-        sent = st.form_submit_button("Send", use_container_width=False)
+        sent = st.form_submit_button("Send")
         if sent:
+            # Form submit already triggers a Streamlit rerun — do not call st.rerun().
             _post_message(st, session, message)

@@ -417,6 +417,12 @@ def sync_shared_draft_room(
     try:
         publish_shared_room_runtime(session, document, reason="shared_room_poll")
         try:
+            from draft_room_shared_state import invalidate_shared_room_document_cache
+
+            invalidate_shared_room_document_cache(session, room_code)
+        except ImportError:
+            pass
+        try:
             from live_draft_state import clear_live_draft_local_edit
 
             clear_live_draft_local_edit(session)

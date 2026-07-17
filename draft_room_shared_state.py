@@ -489,6 +489,16 @@ def load_shared_room_document(
     if not code:
         return None
     now = datetime.now(timezone.utc).timestamp()
+    # During active expiration, prefer a fresher head so guests do not sit on stale soft cache.
+    try:
+        if isinstance(session, dict):
+            room = session.get("live_draft_room")
+            if isinstance(room, dict) and str(room.get("status") or "") == "in_progress":
+                dl = room.get("timer_deadline")
+                if dl is not None and float(dl) <= now + 1.5:
+                    max_age_sec = min(float(max_age_sec), 0.35)
+    except Exception:
+        pass
     if isinstance(session, dict) and not force:
         cache = session.get(SHARED_DOC_SOFT_CACHE_KEY)
         if isinstance(cache, dict) and str(cache.get("room_code") or "") == code:

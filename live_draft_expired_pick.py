@@ -21,7 +21,7 @@ AUTOPICK_LOCK_KEY = "_live_draft_autopick_in_progress_lock"
 AUTOPICK_BACKOFF_INDEX_KEY = "_live_draft_autopick_failure_backoff_index"
 AUTOPICK_BACKOFF_UNTIL_KEY = "_live_draft_autopick_failure_backoff_until"
 AUTOPICK_ERROR_KEY = "_live_draft_autopick_error"
-AUTOPICK_RETRY_SECONDS = 5.0
+AUTOPICK_RETRY_SECONDS = 1.0
 RERUN_LOOP_PREVENTED_KEY = "_live_draft_rerun_loop_prevented"
 EXPIRED_PICK_PENDING_KEY = "_live_draft_timer_expired_pending"
 # One full-app timer_fragment_zero per pick index — prevents fragment attach → sync tick →

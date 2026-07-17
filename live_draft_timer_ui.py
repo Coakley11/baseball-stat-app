@@ -163,7 +163,17 @@ def _sync_room_on_timer_tick(session: dict[str, Any], room: dict[str, Any]) -> t
         if is_multiplayer_draft_active(session):
             now = time.time()
             last = float(session.get("_live_draft_timer_poll_ts") or 0)
-            interval = min(2.5, float(shared_draft_poll_interval_sec(session)))
+            interval = min(1.0, float(shared_draft_poll_interval_sec(session)))
+            # At expiration, poll every tick so non-hosts converge immediately.
+            try:
+                expired = bool(
+                    live_draft_timer_expired_for_pick(room)
+                    or live_draft_seconds_remaining(room) <= 0
+                )
+            except Exception:
+                expired = False
+            if expired:
+                interval = 0.5
             if now - last >= interval:
                 session["_live_draft_timer_poll_ts"] = now
                 reset_shared_draft_sync_gate(session)
@@ -267,7 +277,8 @@ def _mount_js_countdown(
                 const el = doc.getElementById("{el_id}");
                 if (!el) return;
                 const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
-                el.textContent = rem + "s";
+                // Never leave a frozen 0s label while the server advances the pick.
+                el.textContent = rem > 0 ? (rem + "s") : "Auto-picking…";
                 if (rem > 0) window.setTimeout(tick, 1000);
               }}
               tick();
@@ -294,7 +305,7 @@ def _mount_js_countdown(
           if (!el) return;
           function tick() {{
             const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
-            el.textContent = rem + "s";
+            el.textContent = rem > 0 ? (rem + "s") : "Auto-picking…";
             if (rem > 0) window.setTimeout(tick, 1000);
           }}
           tick();
@@ -424,7 +435,7 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
             with ldr_step(session, "timer_skip_fragment_expired", st=st):
                 session[EXPIRED_PICK_PENDING_KEY] = True
                 _render_timer_static(st, session, live_room, source="static_expired_no_fragment")
-                st.caption("Processing expired pick…")
+                st.caption("Auto-picking…")
             # Recovery fragment: keep ticking while at 0 so backoff → retry does not
             # require a manual click (previous freeze root cause).
             if fragment is None:
@@ -515,7 +526,7 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                         st.rerun()
                         return
                 elif _guest_waiting_for_host_autopick(session, tick_room):
-                    st.caption("Waiting for host to auto-pick…")
+                    st.caption("Auto-picking…")
                 elif should_fragment_trigger_full_rerun(session, tick_room):
                     session[EXPIRED_PICK_PENDING_KEY] = True
                     try:
@@ -548,10 +559,16 @@ def _render_timer_static(st: Any, session: dict[str, Any], room: dict[str, Any],
         record_multiplayer_sync_diagnostics(session, room=room)
     except ImportError:
         pass
+    # Always surface Auto-picking on expired clocks (including fragment ticks).
+    if int(remaining or 0) <= 0 and str(room.get("status") or "") == "in_progress" and not submitting:
+        st.markdown("**Auto-picking…**")
+        session["_live_draft_timer_autopick_ui"] = True
+        return
     if source != "fragment_tick":
         if str(room.get("status") or "") == "paused":
             st.markdown(f"**Draft paused** · {remaining}s on clock")
         elif submitting:
             st.markdown(f"**Submitting pick…** · {remaining}s frozen")
         else:
+            session.pop("_live_draft_timer_autopick_ui", None)
             st.markdown(f"**Time on clock:** {remaining}s")
