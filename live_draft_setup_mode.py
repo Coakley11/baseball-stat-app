@@ -10,6 +10,10 @@ SETUP_MODE_SHARED = "shared_multiplayer"
 DRAFT_SETUP_MODE_CONFIG_KEY = "draft_setup_mode"
 LAST_PERSISTED_SETUP_MODE_KEY = "_live_draft_setup_mode_last_persisted"
 MODE_TRACE_KEY = "_live_draft_setup_mode_trace"
+# Programmatic mode change after st.radio — applied next run before the widget binds.
+PENDING_LIVE_DRAFT_SETUP_MODE_KEY = "_pending_live_draft_setup_mode"
+# True after Draft Mode radio is created in this Streamlit run.
+WIDGET_MODE_LOCKED_KEY = "_live_draft_setup_mode_widget_locked"
 # Legacy competing Streamlit radio key — never write/read this for mode again.
 LEGACY_MODE_RADIO_LABEL_KEY = "_live_draft_mode_radio_label"
 
@@ -67,26 +71,95 @@ def _stamp_room_setup_mode(session: dict[str, Any], normalized: str) -> None:
     room["config"] = cfg
 
 
-def _persist_setup_mode_if_needed(
+def is_setup_mode_widget_locked(session: dict[str, Any]) -> bool:
+    """True after ``st.radio(key=live_draft_setup_mode)`` in the current run."""
+    return bool(session.get(WIDGET_MODE_LOCKED_KEY))
+
+
+def mark_setup_mode_widget_locked(session: dict[str, Any]) -> None:
+    session[WIDGET_MODE_LOCKED_KEY] = True
+
+
+def persist_live_draft_setup_mode_preference(
     session: dict[str, Any],
-    normalized: str,
+    mode: str,
     *,
     st: Any = None,
-) -> None:
+) -> str:
+    """Persist Draft Mode to preferences without assigning the widget session key."""
+    normalized = normalize_setup_mode(mode)
+    _stamp_room_setup_mode(session, normalized)
     if session.get("_live_draft_setup_seeding"):
-        return
+        session[LAST_PERSISTED_SETUP_MODE_KEY] = normalized
+        return normalized
     try:
         from live_draft_setup_persist import mark_live_draft_setup_dirty
-        from user_page_preferences import persist_live_draft_setup_preferences
+        from user_page_preferences import (
+            PAGE_KEY_LIVE_DRAFT_SETUP,
+            collect_live_draft_setup_settings,
+            save_user_page_preferences,
+        )
 
         last_raw = session.get(LAST_PERSISTED_SETUP_MODE_KEY)
-        # Missing marker must not normalize to solo — that skipped Shared→Solo saves.
-        if last_raw is None or normalize_setup_mode(last_raw) != normalized:
-            mark_live_draft_setup_dirty(session)
-            persist_live_draft_setup_preferences(session, st=st, force_disk=bool(st is not None))
-            session[LAST_PERSISTED_SETUP_MODE_KEY] = normalized
+        if last_raw is not None and normalize_setup_mode(last_raw) == normalized:
+            return normalized
+        mark_live_draft_setup_dirty(session)
+        uid = str(session.get("auth_user_id") or "").strip()
+        wid = str(
+            session.get("_suite_active_workspace_id")
+            or session.get("_suite_owned_workspace_id")
+            or session.get("workspace_id")
+            or ""
+        ).strip()
+        settings = collect_live_draft_setup_settings(session)
+        settings[LIVE_DRAFT_SETUP_MODE_KEY] = normalized
+        save_user_page_preferences(
+            uid,
+            wid,
+            PAGE_KEY_LIVE_DRAFT_SETUP,
+            settings,
+            session=session,
+            st=st,
+            force_disk=bool(st is not None),
+        )
+        session[LAST_PERSISTED_SETUP_MODE_KEY] = normalized
     except ImportError:
         session[LAST_PERSISTED_SETUP_MODE_KEY] = normalized
+    return normalized
+
+
+def request_live_draft_setup_mode(
+    session: dict[str, Any],
+    mode: str,
+    *,
+    persist: bool = False,
+    st: Any = None,
+) -> str:
+    """Programmatic mode change that is safe before or after the Draft Mode radio.
+
+    If the radio already owns ``live_draft_setup_mode`` this run, queue a pending
+    value applied at the start of the next rerun (before ``st.radio``).
+    """
+    normalized = normalize_setup_mode(mode)
+    if is_setup_mode_widget_locked(session):
+        session[PENDING_LIVE_DRAFT_SETUP_MODE_KEY] = normalized
+    else:
+        session[LIVE_DRAFT_SETUP_MODE_KEY] = normalized
+    _stamp_room_setup_mode(session, normalized)
+    if persist:
+        persist_live_draft_setup_mode_preference(session, normalized, st=st)
+    return normalized
+
+
+def apply_pending_live_draft_setup_mode(session: dict[str, Any]) -> str | None:
+    """Apply queued mode at the start of a run, before the radio is created."""
+    session.pop(WIDGET_MODE_LOCKED_KEY, None)
+    pending = session.pop(PENDING_LIVE_DRAFT_SETUP_MODE_KEY, None)
+    if pending is None:
+        return None
+    normalized = normalize_setup_mode(pending)
+    session[LIVE_DRAFT_SETUP_MODE_KEY] = normalized
+    return normalized
 
 
 def set_live_draft_setup_mode(
@@ -97,19 +170,28 @@ def set_live_draft_setup_mode(
     st: Any = None,
     write_session: bool = True,
 ) -> str:
-    """Set Draft Mode. Use write_session=False after the Streamlit radio owns the key."""
+    """Set Draft Mode.
+
+    Classification:
+      - pre-widget init: write_session=True (default) while unlocked
+      - radio response: use ``commit_live_draft_mode_from_widget`` (never writes key)
+      - post-widget programmatic: auto-defers via pending when locked
+    """
     normalized = normalize_setup_mode(mode)
     if write_session:
+        if is_setup_mode_widget_locked(session):
+            return request_live_draft_setup_mode(session, normalized, persist=persist, st=st)
         session[LIVE_DRAFT_SETUP_MODE_KEY] = normalized
     _stamp_room_setup_mode(session, normalized)
     if persist:
-        _persist_setup_mode_if_needed(session, normalized, st=st)
+        persist_live_draft_setup_mode_preference(session, normalized, st=st)
     return normalized
 
 
 def seed_live_draft_setup_mode_before_widget(session: dict[str, Any]) -> str:
     """Seed canonical mode once before radio creation. Never overwrites an existing value."""
     session.pop(LEGACY_MODE_RADIO_LABEL_KEY, None)
+    apply_pending_live_draft_setup_mode(session)
 
     existing = session.get(LIVE_DRAFT_SETUP_MODE_KEY)
     if str(existing or "").strip():
@@ -146,8 +228,9 @@ def commit_live_draft_mode_from_widget(
 ) -> str:
     """After radio render: stamp room + persist. Do not reassign the widget key."""
     normalized = normalize_setup_mode(selected)
+    mark_setup_mode_widget_locked(session)
     _stamp_room_setup_mode(session, normalized)
-    _persist_setup_mode_if_needed(session, normalized, st=st)
+    persist_live_draft_setup_mode_preference(session, normalized, st=st)
     return normalized
 
 

@@ -224,10 +224,23 @@ def apply_live_draft_setup_settings(session: dict[str, Any], settings: dict[str,
         if key == LIVE_DRAFT_SETUP_MODE_KEY:
             if str(session.get(key) or "").strip() and not force_mode:
                 continue
-            session[key] = normalize_setup_mode(val)
+            try:
+                from live_draft_setup_mode import request_live_draft_setup_mode
+
+                # Reset Setup / forced apply may run after the radio — never illegal assign.
+                request_live_draft_setup_mode(session, val, persist=False)
+            except ImportError:
+                session[key] = normalize_setup_mode(val)
             continue
         session[key] = val
-    if LIVE_DRAFT_SETUP_MODE_KEY in session:
+    # Normalize only when the widget is not locked (safe pre-radio / unlocked paths).
+    try:
+        from live_draft_setup_mode import is_setup_mode_widget_locked
+
+        locked = is_setup_mode_widget_locked(session)
+    except ImportError:
+        locked = False
+    if not locked and LIVE_DRAFT_SETUP_MODE_KEY in session:
         session[LIVE_DRAFT_SETUP_MODE_KEY] = normalize_setup_mode(session.get(LIVE_DRAFT_SETUP_MODE_KEY))
 
 
@@ -250,7 +263,13 @@ def restore_live_draft_setup_mode_preference(session: dict[str, Any]) -> str:
     uid, wid = _resolve_ids(session)
     settings = get_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session) or {}
     preferred = normalize_setup_mode(settings.get(LIVE_DRAFT_SETUP_MODE_KEY) or session.get(LIVE_DRAFT_SETUP_MODE_KEY))
-    set_live_draft_setup_mode(session, preferred, write_session=True)
+    # End/leave may run after the Draft Mode radio — request() defers when locked.
+    try:
+        from live_draft_setup_mode import request_live_draft_setup_mode
+
+        request_live_draft_setup_mode(session, preferred, persist=False)
+    except ImportError:
+        set_live_draft_setup_mode(session, preferred, write_session=True)
     return preferred
 
 

@@ -22479,9 +22479,17 @@ if active_page == "Live Draft Room":
                             except ImportError:
                                 pass
                     else:
-                        set_live_draft_setup_mode(
-                            st.session_state, SETUP_MODE_SOLO, persist=True, st=st
-                        )
+                        # May run after Draft Mode radio — request() queues if locked.
+                        try:
+                            from live_draft_setup_mode import request_live_draft_setup_mode
+
+                            request_live_draft_setup_mode(
+                                st.session_state, SETUP_MODE_SOLO, persist=True, st=st
+                            )
+                        except ImportError:
+                            set_live_draft_setup_mode(
+                                st.session_state, SETUP_MODE_SOLO, persist=True, st=st
+                            )
                         live_draft_start(new_room)
                         st.session_state["live_draft_room"] = new_room
                         st.session_state["room_your_team"] = user_team

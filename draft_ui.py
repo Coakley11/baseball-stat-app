@@ -1558,9 +1558,10 @@ def on_prepare_shared_draft_room() -> None:
     except ImportError:
         pass
     try:
-        from live_draft_setup_mode import SETUP_MODE_SHARED, set_live_draft_setup_mode
+        from live_draft_setup_mode import SETUP_MODE_SHARED, request_live_draft_setup_mode
 
-        set_live_draft_setup_mode(st.session_state, SETUP_MODE_SHARED)
+        # Create-shared callback can fire after the Draft Mode radio this run.
+        request_live_draft_setup_mode(st.session_state, SETUP_MODE_SHARED, persist=True, st=st)
     except ImportError:
         pass
     try:

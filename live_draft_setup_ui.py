@@ -18,8 +18,8 @@ from live_draft_setup_mode import (
     is_solo_draft_mode,
     normalize_setup_mode,
     record_setup_mode_trace,
+    persist_live_draft_setup_mode_preference,
     seed_live_draft_setup_mode_before_widget,
-    set_live_draft_setup_mode,
     setup_is_read_only,
     shared_room_code,
     shared_room_ready_for_start,
@@ -495,7 +495,9 @@ def render_guest_join_from_setup(st: Any, session: dict[str, Any]) -> bool:
         room_lookup_attempted=True,
     )
     if ok:
-        set_live_draft_setup_mode(session, SETUP_MODE_SHARED, persist=True, st=None)
+        # Radio already owns live_draft_setup_mode this run — never reassign it.
+        # Persist Shared preference only (join implies Shared Multiplayer intent).
+        persist_live_draft_setup_mode_preference(session, SETUP_MODE_SHARED, st=None)
         session["_draft_join_flash"] = display
         return True
     session["_draft_join_error"] = display
