@@ -23052,6 +23052,7 @@ if active_page == "Live Draft Room":
                             st.session_state,
                             multiplayer=True,
                             draft_in_progress=False,
+                            key_prefix="live_draft_waiting_header",
                         )
                     except ImportError:
                         pass
@@ -23347,6 +23348,11 @@ if active_page == "Live Draft Room":
                         st.session_state,
                         multiplayer=_multiplayer_draft,
                         draft_in_progress=_draft_in_progress,
+                        key_prefix=(
+                            "live_draft_active_header"
+                            if _draft_in_progress
+                            else "live_draft_waiting_header"
+                        ),
                     )
                 except ImportError:
                     if _multiplayer_draft:

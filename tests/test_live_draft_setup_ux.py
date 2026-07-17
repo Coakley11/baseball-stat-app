@@ -181,7 +181,8 @@ class ReadyCardRenderTests(unittest.TestCase):
         ]
         self.assertEqual(len(start_calls), 1, st.button.call_args_list)
         self.assertEqual(start_calls[0].kwargs.get("type"), "primary")
-        self.assertTrue(
+        # Canonical Copy lives on the waiting-room header, not the ready card.
+        self.assertFalse(
             any(c.args and c.args[0] == "Copy room code" for c in st.button.call_args_list),
             st.button.call_args_list,
         )

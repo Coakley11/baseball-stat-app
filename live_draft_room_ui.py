@@ -578,21 +578,29 @@ def render_draft_room_code_panel(
     st: Any,
     code: str,
     *,
-    join_url: str = "",
+    join_url: str | None = None,
     show_copy: bool = True,
-    context_label: str = "",
+    context_label: str | None = None,
+    key_prefix: str = "live_draft_room_code",
 ) -> None:
-    """Prominent shareable room code — waiting room and active draft."""
+    """Prominent shareable room code — waiting room and active draft.
+
+    ``key_prefix`` must be unique per call site in a single page run so Copy /
+    code widgets never collide (StreamlitDuplicateElementKey).
+    """
     code = str(code or "").strip().upper()
     if not code:
         return
+    prefix = str(key_prefix or "live_draft_room_code").strip() or "live_draft_room_code"
     label = str(context_label or "Share this code so other managers can join").strip()
+    join = str(join_url or "").strip()
+    value_dom_id = f"{prefix}_value_{code}"
     st.markdown(
         f"""
-        <div class="ld-room-code-panel">
+        <div class="ld-room-code-panel" id="{prefix}_panel_{code}">
             <div>
                 <div class="ld-room-code-label">Room Code</div>
-                <div class="ld-room-code-value" id="ld-room-code-value">{code}</div>
+                <div class="ld-room-code-value" id="{value_dom_id}">{code}</div>
             </div>
         </div>
         """,
@@ -606,7 +614,8 @@ def render_draft_room_code_panel(
     with cols[0]:
         st.caption(label)
     with cols[1]:
-        if show_copy and st.button("Copy room code", key=f"ld_copy_room_code_{code}", use_container_width=True):
+        copy_key = f"{prefix}_copy_{code}"
+        if show_copy and st.button("Copy room code", key=copy_key, use_container_width=True):
             # Best-effort clipboard via components; always leave code selectable above.
             try:
                 import streamlit.components.v1 as components
@@ -627,8 +636,8 @@ def render_draft_room_code_panel(
             except Exception:
                 pass
             st.success(f"Room code **{code}** ready — paste it to invite managers.")
-    if join_url:
-        st.markdown(f"**Join link:** [{join_url}]({join_url})")
+    if join:
+        st.markdown(f"**Join link:** [{join}]({join})")
 
 
 def render_live_draft_room_code_header(
@@ -638,12 +647,13 @@ def render_live_draft_room_code_header(
     multiplayer: bool,
     join_url: str = "",
     draft_in_progress: bool = False,
+    key_prefix: str | None = None,
 ) -> None:
     """Show room code, copy affordance, and missing-code warning near draft header.
 
     Visible in the waiting room and after the draft starts (not invitation-only).
+    Canonical room-code panel for Shared Multiplayer — call at most once per page state.
     """
-    _ = draft_in_progress  # code stays visible during live picks
     code = ""
     try:
         from draft_room_context import resolve_shared_room_code
@@ -658,7 +668,16 @@ def render_live_draft_room_code_header(
             if not draft_in_progress
             else "Room code (same for commissioner and all participants)"
         )
-        render_draft_room_code_panel(st, code, join_url=join_url, context_label=label)
+        prefix = str(key_prefix or "").strip() or (
+            "live_draft_active_header" if draft_in_progress else "live_draft_waiting_header"
+        )
+        render_draft_room_code_panel(
+            st,
+            code,
+            join_url=join_url or None,
+            context_label=label,
+            key_prefix=prefix,
+        )
         return
     if multiplayer:
         st.warning("Room code missing — shared draft may not be joinable.")
@@ -776,11 +795,17 @@ def render_live_draft_room_header(
         unsafe_allow_html=True,
     )
     if code:
-        try:
-            st.code(code, language=None)
-        except TypeError:
-            st.code(code)
-        st.caption(f"Invite players with this room code: **{code}**")
+        # Canonical copyable panel during active (and non-lobby) shared drafts.
+        render_draft_room_code_panel(
+            st,
+            code,
+            context_label=(
+                "Room code (same for commissioner and all participants)"
+                if draft_in_progress
+                else "Share this code so other managers can join"
+            ),
+            key_prefix="live_draft_active_header" if draft_in_progress else "live_draft_room_header",
+        )
     else:
         st.error("Could not create shared room. This draft cannot be joined by others.")
 
