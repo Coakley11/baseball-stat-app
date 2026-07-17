@@ -253,6 +253,57 @@ class TestDraftArchiveVisibility(unittest.TestCase):
         ), patch("suite_workspace_registry.is_admin_account", return_value=False):
             self.assertEqual(_cloud_workflow_fallback_workspace_ids(session), [])
 
+    def test_shared_league_none_load_does_not_crash_membership_check(self) -> None:
+        """Regression: load_shared_league returning None must not AttributeError on .get."""
+        from draft_archive_visibility import _has_shared_league_membership
+
+        session = _auth_session(user_id="user:coakley", external_id="coakley11", workspace="coakley11")
+        context = {
+            "league_context_id": "archive:missing",
+            "my_team_name": "Team B",
+            "metadata": {"canonical_league_id": "league:missing"},
+        }
+        entry = {
+            "draft_id": "missing",
+            "draft_name": "Ghost",
+            "league_context_id": "archive:missing",
+        }
+        with patch(
+            "fantasy_league_identity.resolve_canonical_league_id", return_value="league:missing"
+        ), patch("fantasy_shared_league_store.load_shared_league", return_value=None), patch(
+            "fantasy_workspace_team_identity.owned_team_from_shared_doc", return_value=""
+        ):
+            self.assertFalse(
+                _has_shared_league_membership(
+                    session,
+                    entry,
+                    context=context,
+                    user_id="user:coakley",
+                )
+            )
+
+        # Same path via sanitize must also survive None shared docs.
+        blob = {
+            DRAFT_ARCHIVE_KEY: [
+                {
+                    "draft_id": "missing",
+                    "draft_name": "Ghost",
+                    "league_context_id": "archive:missing",
+                    "draft_type": "live_draft",
+                }
+            ],
+            "fantasy_league_context_state": {"archive:missing": context},
+        }
+        with patch(
+            "fantasy_league_identity.resolve_canonical_league_id", return_value="league:missing"
+        ), patch("fantasy_shared_league_store.load_shared_league", return_value=None), patch(
+            "fantasy_workspace_team_identity.owned_team_from_shared_doc", return_value=""
+        ), patch("suite_auth.is_auth_enabled", return_value=True), patch(
+            "suite_auth.is_authenticated", return_value=True
+        ):
+            cleaned = sanitize_workflow_blob_for_account(session, blob)
+        self.assertIsInstance(cleaned, dict)
+
 
 if __name__ == "__main__":
     unittest.main()
