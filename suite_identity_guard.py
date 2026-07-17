@@ -417,3 +417,156 @@ def render_identity_guard_diagnostic_panel(
             hide_index=True,
         )
         st.caption("Tokens are never shown. Header uses auth session first, not commissioner metadata.")
+
+
+def build_mp_identity_snapshot(
+    session_state: dict[str, Any],
+    *,
+    room: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Temporary Shared Multiplayer / Live Draft identity probe (no secrets)."""
+    snap: dict[str, Any] = {
+        "signed_in_account": "",
+        "auth_user_id": "",
+        "account_email": "",
+        "workspace_id": "",
+        "owned_workspace_id": "",
+        "display_workspace_name": "",
+        "claimed_team": "",
+        "commissioner": "",
+        "participant_id": "",
+        "workspace_enforce_error": "",
+        "workspace_last_clamp": "",
+        "identity_verdict": "",
+    }
+    try:
+        from suite_auth import current_auth_email, resolve_auth_external_id
+
+        snap["account_email"] = current_auth_email(session_state)
+        snap["signed_in_account"] = resolve_auth_external_id(session_state)
+    except ImportError:
+        snap["account_email"] = str(session_state.get("_suite_auth_user_email") or "").strip()
+        snap["signed_in_account"] = str(session_state.get("_suite_auth_external_id") or "").strip()
+    snap["auth_user_id"] = str(session_state.get("_suite_auth_user_id") or "").strip()
+    snap["workspace_id"] = str(session_state.get("_suite_active_workspace_id") or "").strip()
+    snap["owned_workspace_id"] = str(session_state.get("_suite_owned_workspace_id") or "").strip()
+    try:
+        from suite_workspace_registry import get_owned_workspace_id, resolve_owned_workspace_id
+
+        owned = get_owned_workspace_id(session_state) or resolve_owned_workspace_id(session_state)
+        if owned:
+            snap["owned_workspace_id"] = owned
+    except ImportError:
+        pass
+    try:
+        from suite_workspace import workspace_label
+
+        wid = snap["workspace_id"]
+        snap["display_workspace_name"] = workspace_label(wid) if wid else ""
+        owned_label = str(session_state.get("_suite_owned_workspace_label") or "").strip()
+        if owned_label and owned_label != snap["display_workspace_name"]:
+            snap["owned_workspace_label"] = owned_label
+    except ImportError:
+        snap["display_workspace_name"] = snap["workspace_id"]
+    snap["claimed_team"] = str(
+        session_state.get("draft_room_participant_team")
+        or session_state.get("room_your_team")
+        or ""
+    ).strip()
+    snap["participant_id"] = str(session_state.get("draft_room_participant_id") or "").strip()
+    commissioner = ""
+    if isinstance(room, dict):
+        commissioner = str(
+            room.get("host_team")
+            or room.get("commissioner_team")
+            or room.get("host_participant_id")
+            or ""
+        ).strip()
+        teams = room.get("teams") or []
+        if not commissioner and teams:
+            commissioner = str(teams[0] or "").strip()
+    if not commissioner:
+        try:
+            from draft_room_context import get_global_draft_context
+
+            ctx = get_global_draft_context(session_state)
+            if ctx.get("is_room_host"):
+                commissioner = snap["claimed_team"] or "You (host)"
+            else:
+                host_team = str(ctx.get("host_team") or "").strip()
+                if not host_team and isinstance(room, dict):
+                    host_team = str(room.get("host_team") or "").strip()
+                commissioner = host_team or "—"
+        except Exception:
+            commissioner = commissioner or "—"
+    snap["commissioner"] = commissioner or "—"
+    snap["workspace_enforce_error"] = str(session_state.get("_suite_workspace_enforce_error") or "")
+    snap["workspace_last_clamp"] = str(session_state.get("_suite_workspace_last_clamp") or "")
+
+    account = str(snap["signed_in_account"] or "").strip().lower()
+    active = str(snap["workspace_id"] or "").strip().lower()
+    owned = str(snap["owned_workspace_id"] or "").strip().lower()
+    if account and active and account != "daniel" and active == "daniel":
+        snap["identity_verdict"] = (
+            "WORKSPACE_RESOLUTION_BUG: signed-in account is loading Daniel workspace "
+            f"(active=`{active}`, owned=`{owned or '—'}`)"
+        )
+    elif account and owned and account != owned and account != "daniel":
+        snap["identity_verdict"] = (
+            f"OWNED_MISMATCH: account=`{account}` owned=`{owned}` active=`{active}`"
+        )
+    elif account and active and account == active:
+        snap["identity_verdict"] = "OK: active workspace matches signed-in account"
+    elif account == "daniel" and active in ("daniel", "ariel", "guest", "test_user"):
+        snap["identity_verdict"] = "OK: admin/multi-workspace account"
+    else:
+        snap["identity_verdict"] = f"CHECK: account=`{account or '—'}` active=`{active or '—'}` owned=`{owned or '—'}`"
+    return snap
+
+
+def render_mp_identity_diagnostics(
+    st: Any,
+    session_state: dict[str, Any],
+    *,
+    room: dict[str, Any] | None = None,
+    temporary: bool = True,
+) -> None:
+    """Temporary probe for Shared Multiplayer identity regressions — always visible when called."""
+    snap = build_mp_identity_snapshot(session_state, room=room)
+    verdict = str(snap.get("identity_verdict") or "")
+    bad = verdict.startswith("WORKSPACE_RESOLUTION_BUG") or verdict.startswith("OWNED_MISMATCH")
+    title = "Temporary MP identity diagnostics"
+    if temporary:
+        title = f"TEMPORARY · {title}"
+    if bad:
+        title = f"⚠ {title}"
+    with st.expander(title, expanded=bad):
+        if bad:
+            st.error(verdict)
+        else:
+            st.caption(verdict)
+        rows = [
+            ("Signed-in account", snap.get("signed_in_account") or "—"),
+            ("Auth user ID", snap.get("auth_user_id") or "—"),
+            ("Account email", snap.get("account_email") or "—"),
+            ("Workspace ID", snap.get("workspace_id") or "—"),
+            ("Owned workspace ID", snap.get("owned_workspace_id") or "—"),
+            ("Display workspace name", snap.get("display_workspace_name") or "—"),
+            ("Owned workspace label", snap.get("owned_workspace_label") or "—"),
+            ("Claimed team", snap.get("claimed_team") or "—"),
+            ("Commissioner", snap.get("commissioner") or "—"),
+            ("Participant ID", snap.get("participant_id") or "—"),
+            ("Last workspace clamp", snap.get("workspace_last_clamp") or "—"),
+            ("Enforce error", snap.get("workspace_enforce_error") or "—"),
+        ]
+        import pandas as pd
+
+        st.dataframe(
+            pd.DataFrame([{"field": k, "value": v} for k, v in rows]),
+            width="stretch",
+            hide_index=True,
+        )
+        st.caption(
+            "If Display workspace name is Daniel while Account email is Coakley11, "
+            "Workspace ID is wrong (real resolution bug), not a cosmetic label."
+        )

@@ -21715,6 +21715,18 @@ if active_page == DRAFT_LAB_PAGE:
 if active_page == "Live Draft Room":
     _page_perf_start(active_page)
     try:
+        from suite_identity_guard import render_mp_identity_diagnostics
+
+        _mp_room = st.session_state.get("live_draft_room")
+        render_mp_identity_diagnostics(
+            st,
+            st.session_state,
+            room=_mp_room if isinstance(_mp_room, dict) else None,
+            temporary=True,
+        )
+    except Exception:
+        pass
+    try:
         from user_page_preferences import ensure_live_draft_setup_preferences_loaded
 
         ensure_live_draft_setup_preferences_loaded(st.session_state)

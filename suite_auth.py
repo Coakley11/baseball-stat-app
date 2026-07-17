@@ -289,6 +289,7 @@ def _seed_owned_workspace_cache(session_state: dict[str, Any], workspace_id: str
 
 def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
     """Clamp active workspace to the signed-in account's owned workspace."""
+    session_state.pop("_suite_workspace_enforce_error", None)
     if not is_auth_enabled() or not is_authenticated(session_state):
         return
     try:
@@ -297,10 +298,15 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
         from suite_workspace import get_active_workspace_id, normalize_workspace_id, set_active_workspace_id
         from suite_workspace_registry import (
             ensure_owned_workspace_for_session,
+            get_owned_workspace_id,
             is_admin_account,
-            resolve_owned_workspace_id,
             workspace_access_allowed,
         )
+
+        try:
+            from suite_workspace_registry import resolve_owned_workspace_id as _resolve_owned
+        except ImportError:
+            _resolve_owned = get_owned_workspace_id
 
         st = SimpleNamespace(session_state=session_state)
         ensure_owned_workspace_for_session(session_state)
@@ -318,9 +324,10 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
             _seed_owned_workspace_cache(session_state, scoped_target)
             if active != scoped_target:
                 set_active_workspace_id(st, scoped_target)
+                session_state["_suite_workspace_last_clamp"] = f"{active}->{scoped_target}"
             return
 
-        owned = normalize_workspace_id(resolve_owned_workspace_id(session_state))
+        owned = normalize_workspace_id(_resolve_owned(session_state))
         if owned:
             _seed_owned_workspace_cache(session_state, owned)
 
@@ -335,17 +342,39 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
             and (just_logged_in or not user_selected)
         ):
             set_active_workspace_id(st, owned)
+            session_state["_suite_workspace_last_clamp"] = f"{active}->{owned}:unsigned"
             return
 
-        # Admin (daniel) retains multi-workspace switching, but cannot remain on
-        # a workspace outside the allowed set.
+        # Prefer owned home when active seat is outside this account's allowed set.
+        # Coakley11 is admin for developer tools but allowed workspaces is still only
+        # ``coakley11`` — do not linger on Daniel's workspace.
         if owned and active != owned and not workspace_access_allowed(active, session_state=session_state):
             set_active_workspace_id(st, owned)
+            session_state["_suite_workspace_last_clamp"] = f"{active}->{owned}:access"
             return
         if active not in allowed and allowed:
-            set_active_workspace_id(st, owned or allowed[0])
-    except ImportError:
-        pass
+            target = owned or allowed[0]
+            set_active_workspace_id(st, target)
+            session_state["_suite_workspace_last_clamp"] = f"{active}->{target}:allowed"
+            return
+
+        # Home preference: without an explicit picker selection, stay on owned workspace
+        # rather than another account's primary seat (daniel) after login/restore.
+        user_selected = bool(session_state.get(WORKSPACE_USER_SELECTED_KEY))
+        just_logged_in = bool(session_state.get(AUTH_JUST_LOGGED_IN_KEY))
+        if (
+            owned
+            and owned != active
+            and not user_selected
+            and (just_logged_in or (owned != "daniel" and active == "daniel"))
+        ):
+            set_active_workspace_id(st, owned)
+            session_state["_suite_workspace_last_clamp"] = f"{active}->{owned}:home"
+            return
+    except ImportError as exc:
+        session_state["_suite_workspace_enforce_error"] = f"ImportError: {exc}"
+    except Exception as exc:
+        session_state["_suite_workspace_enforce_error"] = f"{type(exc).__name__}: {exc}"
 
 
 def _create_fresh_supabase_client() -> Any:

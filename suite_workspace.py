@@ -134,7 +134,7 @@ def resolve_workspace_id(*, st: Any | None = None, explicit: str | None = None) 
         ss = st.session_state
         raw = ss.get(SESSION_KEY)
         if raw not in (None, ""):
-            return normalize_workspace_id(str(raw))
+            return _maybe_clamp_resolved_workspace(ss, normalize_workspace_id(str(raw)))
     try:
         import streamlit as st_module  # noqa: WPS433
 
@@ -142,10 +142,71 @@ def resolve_workspace_id(*, st: Any | None = None, explicit: str | None = None) 
             ss = st_module.session_state
         raw = ss.get(SESSION_KEY)
         if raw not in (None, ""):
-            return normalize_workspace_id(str(raw))
+            return _maybe_clamp_resolved_workspace(ss, normalize_workspace_id(str(raw)))
     except Exception:
         ss = None
     return load_persisted_workspace_id(session_state=ss)
+
+
+def _maybe_clamp_resolved_workspace(session_state: dict[str, Any], workspace_id: str) -> str:
+    """Hard-clamp accounts stuck on a workspace they are not allowed to use.
+
+    Intentionally does not call ``get_active_workspace_id`` / ``enforce_workspace_ownership``
+    (those call back into resolve and would recurse).
+
+    Coakley11 is an admin for developer tools but ``allowed_workspaces`` is still
+    only ``coakley11`` — lingering on ``daniel`` must be corrected on every read.
+    """
+    ws = normalize_workspace_id(workspace_id)
+    try:
+        from suite_auth import (
+            account_scoped_workspace_target,
+            allowed_workspaces_for_session,
+            is_auth_enabled,
+            is_authenticated,
+        )
+
+        if not is_auth_enabled() or not is_authenticated(session_state):
+            return ws
+
+        target = account_scoped_workspace_target(session_state)
+        if not target:
+            allowed = tuple(
+                normalize_workspace_id(w) for w in allowed_workspaces_for_session(session_state)
+            )
+            if ws in allowed:
+                return ws
+            try:
+                from suite_workspace_registry import get_owned_workspace_id
+
+                target = normalize_workspace_id(get_owned_workspace_id(session_state) or "")
+            except ImportError:
+                target = ""
+            if not target and allowed:
+                target = allowed[0]
+        if target and target != ws:
+            session_state[SESSION_KEY] = target
+            try:
+                from suite_workspace_registry import (
+                    SESSION_OWNED_WORKSPACE_KEY,
+                    SESSION_OWNED_WORKSPACE_LABEL_KEY,
+                    derive_workspace_label,
+                )
+
+                session_state[SESSION_OWNED_WORKSPACE_KEY] = target
+                label = str(session_state.get(SESSION_OWNED_WORKSPACE_LABEL_KEY) or "").strip()
+                if (not label) or (label.lower() == "daniel" and target != "daniel"):
+                    session_state[SESSION_OWNED_WORKSPACE_LABEL_KEY] = derive_workspace_label(
+                        slug=target,
+                        email=str(session_state.get("_suite_auth_user_email") or ""),
+                    )
+            except ImportError:
+                session_state["_suite_owned_workspace_id"] = target
+            session_state["_suite_workspace_last_clamp"] = f"{ws}->{target}:resolve"
+            return target
+    except ImportError:
+        pass
+    return ws
 
 
 def get_active_workspace_id(st: Any | None = None) -> str:
@@ -671,6 +732,12 @@ def render_workspace_selector_sidebar(st: Any) -> str:
     )
     selected = ids[labels.index(choice)]
     if selected != current:
+        try:
+            from suite_auth import WORKSPACE_USER_SELECTED_KEY
+
+            st.session_state[WORKSPACE_USER_SELECTED_KEY] = True
+        except ImportError:
+            st.session_state["_suite_workspace_user_selected"] = True
         set_active_workspace_id(st, selected)
         current = selected
         try:

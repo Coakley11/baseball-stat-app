@@ -121,6 +121,8 @@ def _has_shared_league_membership(
             if isinstance(shared, dict) and owned_team_from_shared_doc(shared, session):
                 return True
             # Accepted invites count as membership even before claim metadata lands locally.
+            if not isinstance(shared, dict):
+                return False
             try:
                 from fantasy_league_invites import INVITE_STATUS_ACCEPTED
                 from fantasy_shared_league_startup_sync import _record_matches_account, _resolve_startup_identity

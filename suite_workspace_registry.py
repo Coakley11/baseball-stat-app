@@ -207,6 +207,26 @@ def derive_workspace_label(*, slug: str, email: str = "", display_name: str = ""
     return workspace_label(slug)
 
 
+def _owned_label_needs_repair(*, slug: str, label: str, expected_label: str) -> bool:
+    """True when registry label belongs to a different account than the workspace slug."""
+    slug_n = str(slug or "").strip().lower()
+    label_n = str(label or "").strip().lower()
+    if not slug_n or not label_n:
+        return False
+    if slug_n == "daniel":
+        return False
+    # Classic contamination: coakley11 (etc.) row still labeled "Daniel".
+    if label_n == "daniel":
+        return True
+    expected_n = str(expected_label or "").strip().lower()
+    if expected_n and label_n == expected_n:
+        return False
+    slug_as_label = slug_n.replace("_", " ")
+    if label_n.replace("_", " ") == slug_as_label:
+        return False
+    return False
+
+
 def is_admin_account(
     *,
     external_id: str = "",
@@ -323,10 +343,26 @@ def ensure_owned_workspace_for_session(session_state: dict[str, Any]) -> dict[st
         display_name=ctx["display_name"],
     )
     label = derive_workspace_label(slug=slug, email=ctx["email"], display_name=ctx["display_name"])
+    email_label = derive_workspace_label(slug=slug, email=ctx["email"], display_name="")
+    if _owned_label_needs_repair(slug=slug, label=label, expected_label=email_label):
+        label = email_label
     existing = get_registry_record(owner_user_id)
     if existing and str(existing.get(WORKSPACE_ID_KEY) or "").strip():
         slug = str(existing[WORKSPACE_ID_KEY]).strip()
-        label = str(existing.get(WORKSPACE_LABEL_KEY) or label)
+        stored_label = str(existing.get(WORKSPACE_LABEL_KEY) or "").strip()
+        # Repair cross-account labels (e.g. coakley11 row labeled "Daniel").
+        if _owned_label_needs_repair(slug=slug, label=stored_label, expected_label=label):
+            label = derive_workspace_label(slug=slug, email=ctx["email"], display_name="")
+            reg = _read_registry()
+            by_owner = dict(reg.get("by_owner") or {})
+            row = dict(by_owner.get(owner_user_id) or existing)
+            row[WORKSPACE_LABEL_KEY] = label
+            row[UPDATED_AT_KEY] = _utc_now_iso()
+            by_owner[owner_user_id] = row
+            reg["by_owner"] = by_owner
+            _write_registry(reg)
+        else:
+            label = stored_label or label
     else:
         reg = _read_registry()
         by_owner = dict(reg.get("by_owner") or {})
@@ -370,6 +406,11 @@ def get_owned_workspace_id(session_state: dict[str, Any] | None = None) -> str:
         return ""
     record = ensure_owned_workspace_for_session(session_state)
     return str(record.get(WORKSPACE_ID_KEY) or "").strip()
+
+
+def resolve_owned_workspace_id(session_state: dict[str, Any] | None = None) -> str:
+    """Alias used by suite_auth.enforce_workspace_ownership and persist diagnostics."""
+    return get_owned_workspace_id(session_state)
 
 
 def active_workspace_persist_path(*, owner_user_id: str = "") -> Path:
