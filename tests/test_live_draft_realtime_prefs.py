@@ -280,7 +280,7 @@ class PreferencePersistenceTests(unittest.TestCase):
         applied = ensure_live_draft_setup_preferences_loaded(session_b)
         self.assertTrue(applied)
         self.assertEqual(get_live_draft_setup_mode(session_b), SETUP_MODE_SHARED)
-        self.assertIn("Shared Multiplayer", str(session_b.get("_live_draft_mode_radio_label") or ""))
+        self.assertEqual(session_b.get("live_draft_setup_mode"), SETUP_MODE_SHARED)
 
     def test_draft_mode_solo_survives_new_session(self) -> None:
         session_a = {"auth_user_id": "user:daniel", "workspace_id": "ws1"}
@@ -352,7 +352,6 @@ class PreferencePersistenceTests(unittest.TestCase):
         session = {"auth_user_id": "user:daniel", "workspace_id": "ws1"}
         set_live_draft_setup_mode(session, SETUP_MODE_SHARED, persist=True, st=None)
         session.pop("live_draft_setup_mode", None)
-        session.pop("_live_draft_mode_radio_label", None)
         mode = restore_live_draft_setup_mode_preference(session)
         self.assertEqual(mode, SETUP_MODE_SHARED)
         self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
@@ -388,7 +387,6 @@ class PreferencePersistenceTests(unittest.TestCase):
 
         # Navigate away and back (prefs already initialized; mode key missing).
         session.pop("live_draft_setup_mode", None)
-        session.pop("_live_draft_mode_radio_label", None)
         ensure_live_draft_setup_preferences_loaded(session)
         self.assertEqual(get_live_draft_setup_mode(session), preferred)
 
@@ -401,10 +399,7 @@ class PreferencePersistenceTests(unittest.TestCase):
         }
         ensure_live_draft_setup_preferences_loaded(session_refresh)
         self.assertEqual(get_live_draft_setup_mode(session_refresh), preferred)
-        self.assertIn(
-            "Shared Multiplayer" if preferred == SETUP_MODE_SHARED else "Solo Draft",
-            str(session_refresh.get("_live_draft_mode_radio_label") or ""),
-        )
+        self.assertEqual(session_refresh.get("live_draft_setup_mode"), preferred)
 
         # Leave path also preserves preference.
         session_leave = {
@@ -447,10 +442,9 @@ class PreferencePersistenceTests(unittest.TestCase):
             "config": {"draft_setup_mode": SETUP_MODE_SOLO},
         }
         self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
-        # Starting/viewing an in-progress old room uses room stamp for that draft only.
+        # In-progress old room stamp must not overwrite the user's session preference.
         session["live_draft_room"]["status"] = "in_progress"
-        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SOLO)
-        # After clearing the old room, saved preference returns to Shared.
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
         session.pop("live_draft_room", None)
         restore_live_draft_setup_mode_preference(session)
         self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
@@ -541,11 +535,165 @@ class PreferencePersistenceTests(unittest.TestCase):
         applied = ensure_live_draft_setup_preferences_loaded(session)
         self.assertTrue(applied)
         self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
-        self.assertIn("Shared Multiplayer", str(session.get("_live_draft_mode_radio_label") or ""))
+        self.assertEqual(session.get("live_draft_setup_mode"), SETUP_MODE_SHARED)
         # Seeding flag cleared; a subsequent set during load must not have wiped prefs.
         self.assertFalse(session.get("_live_draft_setup_seeding"))
         prefs = get_user_page_preferences("user:daniel", "ws1", PAGE_KEY_LIVE_DRAFT_SETUP, session=session)
         self.assertEqual(prefs.get("live_draft_setup_mode"), SETUP_MODE_SHARED)
+
+
+class DraftModeSnapBackRegressionTests(unittest.TestCase):
+    """Exact Solo ↔ Shared snap-back bug: competing radio key / pre-widget overwrite."""
+
+    def _fake_st(self, session: dict) -> mock.MagicMock:
+        st = mock.Mock()
+        st.session_state = session
+
+        def radio(label, options, **kwargs):
+            key = kwargs.get("key") or "radio"
+            # Streamlit: widget value already in session from the user click.
+            if key in session:
+                return session[key]
+            session[key] = options[0]
+            return options[0]
+
+        st.radio = mock.Mock(side_effect=radio)
+        st.info = mock.Mock()
+        st.markdown = mock.Mock()
+        st.caption = mock.Mock()
+        return st
+
+    def test_shared_click_not_snapped_back_to_solo_same_rerun(self) -> None:
+        from live_draft_setup_ui import render_live_draft_mode_selector
+        from user_page_preferences import get_user_page_preferences
+
+        session = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws1",
+            "_suite_active_workspace_id": "ws1",
+            # Persisted/default Solo + leftover solo lobby (old overwrite source).
+            "live_draft_setup_mode": SETUP_MODE_SOLO,
+            "live_draft_room": {
+                "draft_room_id": "LOBBY1",
+                "status": "not_started",
+                "config": {"draft_setup_mode": SETUP_MODE_SOLO},
+            },
+            "page_filter_state": {
+                "_user_page_preferences": {
+                    PAGE_KEY_LIVE_DRAFT_SETUP: {
+                        "user_id": "user:daniel",
+                        "workspace_id": "ws1",
+                        "settings": {"live_draft_setup_mode": SETUP_MODE_SOLO},
+                    }
+                }
+            },
+            # Legacy competing key that previously forced Solo before radio.
+            "_live_draft_mode_radio_label": "Solo Draft — you control all teams (no room code)",
+        }
+        # User click: Streamlit updates the canonical key before the script body runs.
+        session["live_draft_setup_mode"] = SETUP_MODE_SHARED
+
+        ensure_live_draft_setup_preferences_loaded(session)
+        st = self._fake_st(session)
+        with mock.patch("suite_workspace.can_show_developer_tools", return_value=False):
+            mode = render_live_draft_mode_selector(st, session)
+
+        self.assertEqual(mode, SETUP_MODE_SHARED)
+        self.assertEqual(session.get("live_draft_setup_mode"), SETUP_MODE_SHARED)
+        prefs = get_user_page_preferences("user:daniel", "ws1", PAGE_KEY_LIVE_DRAFT_SETUP, session=session)
+        self.assertEqual(prefs.get("live_draft_setup_mode"), SETUP_MODE_SHARED)
+        self.assertNotIn("_live_draft_mode_radio_label", session)
+
+        # Next rerun remains Shared — no room-restore / default path snaps back.
+        ensure_live_draft_setup_preferences_loaded(session)
+        with mock.patch("suite_workspace.can_show_developer_tools", return_value=False):
+            mode2 = render_live_draft_mode_selector(st, session)
+        self.assertEqual(mode2, SETUP_MODE_SHARED)
+        self.assertEqual(session.get("live_draft_setup_mode"), SETUP_MODE_SHARED)
+
+    def test_solo_click_not_snapped_back_to_shared(self) -> None:
+        from live_draft_setup_ui import render_live_draft_mode_selector
+        from user_page_preferences import get_user_page_preferences
+
+        session = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws1",
+            "_suite_active_workspace_id": "ws1",
+            "live_draft_setup_mode": SETUP_MODE_SHARED,
+            "live_draft_room": {
+                "status": "not_started",
+                "config": {"draft_setup_mode": SETUP_MODE_SHARED},
+            },
+            "page_filter_state": {
+                "_user_page_preferences": {
+                    PAGE_KEY_LIVE_DRAFT_SETUP: {
+                        "user_id": "user:daniel",
+                        "workspace_id": "ws1",
+                        "settings": {"live_draft_setup_mode": SETUP_MODE_SHARED},
+                    }
+                }
+            },
+        }
+        session["live_draft_setup_mode"] = SETUP_MODE_SOLO
+        ensure_live_draft_setup_preferences_loaded(session)
+        st = self._fake_st(session)
+        with mock.patch("suite_workspace.can_show_developer_tools", return_value=False):
+            mode = render_live_draft_mode_selector(st, session)
+        self.assertEqual(mode, SETUP_MODE_SOLO)
+        self.assertEqual(session.get("live_draft_setup_mode"), SETUP_MODE_SOLO)
+        prefs = get_user_page_preferences("user:daniel", "ws1", PAGE_KEY_LIVE_DRAFT_SETUP, session=session)
+        self.assertEqual(prefs.get("live_draft_setup_mode"), SETUP_MODE_SOLO)
+
+    def test_seed_before_widget_does_not_overwrite_user_click(self) -> None:
+        from live_draft_setup_mode import seed_live_draft_setup_mode_before_widget
+
+        session = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws1",
+            "live_draft_setup_mode": SETUP_MODE_SHARED,
+            "page_filter_state": {
+                "_user_page_preferences": {
+                    PAGE_KEY_LIVE_DRAFT_SETUP: {
+                        "user_id": "user:daniel",
+                        "workspace_id": "ws1",
+                        "settings": {"live_draft_setup_mode": SETUP_MODE_SOLO},
+                    }
+                }
+            },
+            "_live_draft_mode_radio_label": "Solo Draft — you control all teams (no room code)",
+        }
+        seeded = seed_live_draft_setup_mode_before_widget(session)
+        self.assertEqual(seeded, SETUP_MODE_SHARED)
+        self.assertEqual(session["live_draft_setup_mode"], SETUP_MODE_SHARED)
+        self.assertNotIn("_live_draft_mode_radio_label", session)
+
+    def test_not_started_room_stamp_does_not_override_session_choice(self) -> None:
+        session = {
+            "live_draft_setup_mode": SETUP_MODE_SHARED,
+            "live_draft_room": {
+                "status": "not_started",
+                "config": {"draft_setup_mode": SETUP_MODE_SOLO},
+            },
+        }
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
+
+    def test_legacy_pre_widget_label_overwrite_pattern_is_gone(self) -> None:
+        """Document the old bug: assigning radio label from get_mode() before st.radio."""
+        from live_draft_setup_mode import LEGACY_MODE_RADIO_LABEL_KEY, seed_live_draft_setup_mode_before_widget
+
+        session = {
+            "live_draft_setup_mode": SETUP_MODE_SHARED,
+            LEGACY_MODE_RADIO_LABEL_KEY: "Solo Draft — you control all teams (no room code)",
+            "live_draft_room": {
+                "status": "not_started",
+                "config": {"draft_setup_mode": SETUP_MODE_SOLO},
+            },
+        }
+        # Old code: desired = solo label from get_mode(room); session[radio_key] = desired
+        # New code: seed never rewrites an existing canonical mode; drops legacy key.
+        seed_live_draft_setup_mode_before_widget(session)
+        self.assertEqual(session["live_draft_setup_mode"], SETUP_MODE_SHARED)
+        self.assertNotIn(LEGACY_MODE_RADIO_LABEL_KEY, session)
 
 
 class ProjectionCacheTests(unittest.TestCase):

@@ -194,33 +194,41 @@ def collect_live_draft_setup_settings(session: dict[str, Any]) -> dict[str, Any]
 
 
 def apply_live_draft_setup_settings(session: dict[str, Any], settings: dict[str, Any]) -> None:
-    """Seed session keys from persisted setup before widgets render."""
+    """Seed session keys from persisted setup before widgets render.
+
+    Never overwrites an existing ``live_draft_setup_mode`` unless seeding/reset —
+    the Streamlit radio owns that key after the user clicks.
+    """
     if not isinstance(settings, dict):
         return
+    try:
+        from live_draft_setup_mode import (
+            LEGACY_MODE_RADIO_LABEL_KEY,
+            LIVE_DRAFT_SETUP_MODE_KEY,
+            normalize_setup_mode,
+        )
+    except ImportError:
+        LIVE_DRAFT_SETUP_MODE_KEY = "live_draft_setup_mode"
+        LEGACY_MODE_RADIO_LABEL_KEY = "_live_draft_mode_radio_label"
+
+        def normalize_setup_mode(mode: str | None) -> str:  # type: ignore[misc]
+            return str(mode or "solo")
+
+    session.pop(LEGACY_MODE_RADIO_LABEL_KEY, None)
+    # Only Reset Setup may replace an existing Draft Mode. Preference seeding must
+    # never clobber a widget/session value already set (Shared click → Solo prefs).
+    force_mode = bool(session.get("_live_draft_setup_force_mode_apply"))
     for key, val in settings.items():
         if key.startswith("_"):
             continue
+        if key == LIVE_DRAFT_SETUP_MODE_KEY:
+            if str(session.get(key) or "").strip() and not force_mode:
+                continue
+            session[key] = normalize_setup_mode(val)
+            continue
         session[key] = val
-    # Keep Streamlit Draft Mode radio aligned with restored preference.
-    try:
-        from live_draft_setup_mode import (
-            LIVE_DRAFT_SETUP_MODE_KEY,
-            SETUP_MODE_SHARED,
-            SETUP_MODE_SOLO,
-            normalize_setup_mode,
-        )
-
-        mode = normalize_setup_mode(session.get(LIVE_DRAFT_SETUP_MODE_KEY))
-        session[LIVE_DRAFT_SETUP_MODE_KEY] = mode
-        label = (
-            "Shared Multiplayer Draft Room — room code, other users join"
-            if mode == SETUP_MODE_SHARED
-            else "Solo Draft — you control all teams (no room code)"
-        )
-        session["_live_draft_mode_radio_label"] = label
-        _ = SETUP_MODE_SOLO
-    except ImportError:
-        pass
+    if LIVE_DRAFT_SETUP_MODE_KEY in session:
+        session[LIVE_DRAFT_SETUP_MODE_KEY] = normalize_setup_mode(session.get(LIVE_DRAFT_SETUP_MODE_KEY))
 
 
 def restore_live_draft_setup_mode_preference(session: dict[str, Any]) -> str:
@@ -230,24 +238,19 @@ def restore_live_draft_setup_mode_preference(session: dict[str, Any]) -> str:
     """
     try:
         from live_draft_setup_mode import (
+            LEGACY_MODE_RADIO_LABEL_KEY,
             LIVE_DRAFT_SETUP_MODE_KEY,
-            SETUP_MODE_SHARED,
             normalize_setup_mode,
             set_live_draft_setup_mode,
         )
     except ImportError:
         return str(session.get("live_draft_setup_mode") or "solo")
 
+    session.pop(LEGACY_MODE_RADIO_LABEL_KEY, None)
     uid, wid = _resolve_ids(session)
     settings = get_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session) or {}
     preferred = normalize_setup_mode(settings.get(LIVE_DRAFT_SETUP_MODE_KEY) or session.get(LIVE_DRAFT_SETUP_MODE_KEY))
-    set_live_draft_setup_mode(session, preferred)
-    label = (
-        "Shared Multiplayer Draft Room — room code, other users join"
-        if preferred == SETUP_MODE_SHARED
-        else "Solo Draft — you control all teams (no room code)"
-    )
-    session["_live_draft_mode_radio_label"] = label
+    set_live_draft_setup_mode(session, preferred, write_session=True)
     return preferred
 
 
@@ -356,7 +359,11 @@ def reset_live_draft_setup_to_defaults(
 ) -> dict[str, Any]:
     """Reset persisted + session setup to defaults (does not wipe an active draft board)."""
     defaults = default_live_draft_setup_settings()
-    apply_live_draft_setup_settings(session, defaults)
+    session["_live_draft_setup_force_mode_apply"] = True
+    try:
+        apply_live_draft_setup_settings(session, defaults)
+    finally:
+        session.pop("_live_draft_setup_force_mode_apply", None)
     # Clear dynamic team-name / slot widgets so defaults re-seed cleanly.
     for key in list(session.keys()):
         if str(key).startswith("live_draft_team_name_") or str(key).startswith("live_slot_"):

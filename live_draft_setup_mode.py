@@ -8,26 +8,85 @@ LIVE_DRAFT_SETUP_MODE_KEY = "live_draft_setup_mode"
 SETUP_MODE_SOLO = "solo"
 SETUP_MODE_SHARED = "shared_multiplayer"
 DRAFT_SETUP_MODE_CONFIG_KEY = "draft_setup_mode"
+LAST_PERSISTED_SETUP_MODE_KEY = "_live_draft_setup_mode_last_persisted"
+MODE_TRACE_KEY = "_live_draft_setup_mode_trace"
+# Legacy competing Streamlit radio key — never write/read this for mode again.
+LEGACY_MODE_RADIO_LABEL_KEY = "_live_draft_mode_radio_label"
+
+SETUP_MODE_OPTIONS = (SETUP_MODE_SOLO, SETUP_MODE_SHARED)
+SETUP_MODE_LABELS = {
+    SETUP_MODE_SOLO: "Solo Draft — you control all teams (no room code)",
+    SETUP_MODE_SHARED: "Shared Multiplayer Draft Room — room code, other users join",
+}
 
 
 def normalize_setup_mode(mode: str | None) -> str:
     raw = str(mode or "").strip().lower()
     if raw in (SETUP_MODE_SHARED, "multiplayer", "shared"):
         return SETUP_MODE_SHARED
+    if "shared" in raw and "multiplayer" in raw:
+        return SETUP_MODE_SHARED
+    if raw.startswith("shared"):
+        return SETUP_MODE_SHARED
     return SETUP_MODE_SOLO
 
 
 def get_live_draft_setup_mode(session: dict[str, Any], *, room: dict[str, Any] | None = None) -> str:
+    """Return Draft Mode with setup-safe precedence.
+
+    1) Explicit session/widget ``live_draft_setup_mode`` (user click wins)
+    2) Active picking room stamp (in_progress / paused only)
+    3) Default solo
+
+    Lobby/not_started/completed room stamps must not override the widget —
+    that caused Shared → Solo snap-back when a leftover solo lobby existed.
+    """
+    session_mode = session.get(LIVE_DRAFT_SETUP_MODE_KEY)
+    if str(session_mode or "").strip():
+        return normalize_setup_mode(session_mode)
+
     live = room if isinstance(room, dict) else session.get("live_draft_room")
     if isinstance(live, dict):
         status = str(live.get("status") or "").strip()
         cfg = live.get("config") or {}
         stored = str(cfg.get(DRAFT_SETUP_MODE_CONFIG_KEY) or "").strip()
-        # Active/lobby rooms keep the stamped mode for this draft. Completed rooms
-        # defer to the user's persistent preference so the next draft keeps Shared/Solo.
-        if stored and status in ("not_started", "in_progress", "paused"):
+        if stored and status in ("in_progress", "paused"):
             return normalize_setup_mode(stored)
-    return normalize_setup_mode(session.get(LIVE_DRAFT_SETUP_MODE_KEY))
+    return SETUP_MODE_SOLO
+
+
+def _stamp_room_setup_mode(session: dict[str, Any], normalized: str) -> None:
+    room = session.get("live_draft_room")
+    if not isinstance(room, dict):
+        return
+    status = str(room.get("status") or "").strip()
+    if status not in ("", "not_started", "in_progress", "paused"):
+        return
+    cfg = dict(room.get("config") or {})
+    cfg[DRAFT_SETUP_MODE_CONFIG_KEY] = normalized
+    room["config"] = cfg
+
+
+def _persist_setup_mode_if_needed(
+    session: dict[str, Any],
+    normalized: str,
+    *,
+    st: Any = None,
+) -> None:
+    if session.get("_live_draft_setup_seeding"):
+        return
+    try:
+        from live_draft_setup_persist import mark_live_draft_setup_dirty
+        from user_page_preferences import persist_live_draft_setup_preferences
+
+        last_raw = session.get(LAST_PERSISTED_SETUP_MODE_KEY)
+        # Missing marker must not normalize to solo — that skipped Shared→Solo saves.
+        if last_raw is None or normalize_setup_mode(last_raw) != normalized:
+            mark_live_draft_setup_dirty(session)
+            persist_live_draft_setup_preferences(session, st=st, force_disk=bool(st is not None))
+            session[LAST_PERSISTED_SETUP_MODE_KEY] = normalized
+    except ImportError:
+        session[LAST_PERSISTED_SETUP_MODE_KEY] = normalized
 
 
 def set_live_draft_setup_mode(
@@ -36,30 +95,69 @@ def set_live_draft_setup_mode(
     *,
     persist: bool = False,
     st: Any = None,
+    write_session: bool = True,
 ) -> str:
+    """Set Draft Mode. Use write_session=False after the Streamlit radio owns the key."""
     normalized = normalize_setup_mode(mode)
-    previous = normalize_setup_mode(session.get(LIVE_DRAFT_SETUP_MODE_KEY))
-    session[LIVE_DRAFT_SETUP_MODE_KEY] = normalized
-    room = session.get("live_draft_room")
-    if isinstance(room, dict):
-        status = str(room.get("status") or "").strip()
-        if status in ("", "not_started", "in_progress", "paused"):
-            cfg = dict(room.get("config") or {})
-            cfg[DRAFT_SETUP_MODE_CONFIG_KEY] = normalized
-            room["config"] = cfg
-    if persist and not session.get("_live_draft_setup_seeding"):
-        try:
-            from live_draft_setup_persist import mark_live_draft_setup_dirty
-            from user_page_preferences import persist_live_draft_setup_preferences
-
-            # Always write when caller requests persist (join / explicit mode change)
-            # so Shared is saved even if session already matched before prefs existed.
-            if previous != normalized:
-                mark_live_draft_setup_dirty(session)
-            persist_live_draft_setup_preferences(session, st=st, force_disk=bool(st is not None))
-        except ImportError:
-            pass
+    if write_session:
+        session[LIVE_DRAFT_SETUP_MODE_KEY] = normalized
+    _stamp_room_setup_mode(session, normalized)
+    if persist:
+        _persist_setup_mode_if_needed(session, normalized, st=st)
     return normalized
+
+
+def seed_live_draft_setup_mode_before_widget(session: dict[str, Any]) -> str:
+    """Seed canonical mode once before radio creation. Never overwrites an existing value."""
+    session.pop(LEGACY_MODE_RADIO_LABEL_KEY, None)
+
+    existing = session.get(LIVE_DRAFT_SETUP_MODE_KEY)
+    if str(existing or "").strip():
+        if existing not in SETUP_MODE_OPTIONS:
+            # Migrate legacy display-label values into canonical tokens before bind.
+            session[LIVE_DRAFT_SETUP_MODE_KEY] = normalize_setup_mode(existing)
+        return normalize_setup_mode(session.get(LIVE_DRAFT_SETUP_MODE_KEY))
+
+    preferred = SETUP_MODE_SOLO
+    try:
+        from user_page_preferences import PAGE_KEY_LIVE_DRAFT_SETUP, get_user_page_preferences
+
+        uid = str(session.get("auth_user_id") or "").strip()
+        wid = str(
+            session.get("_suite_active_workspace_id")
+            or session.get("_suite_owned_workspace_id")
+            or session.get("workspace_id")
+            or ""
+        ).strip()
+        settings = get_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session) or {}
+        preferred = normalize_setup_mode(settings.get(LIVE_DRAFT_SETUP_MODE_KEY))
+    except ImportError:
+        preferred = SETUP_MODE_SOLO
+
+    session[LIVE_DRAFT_SETUP_MODE_KEY] = preferred
+    return preferred
+
+
+def commit_live_draft_mode_from_widget(
+    session: dict[str, Any],
+    selected: str,
+    *,
+    st: Any = None,
+) -> str:
+    """After radio render: stamp room + persist. Do not reassign the widget key."""
+    normalized = normalize_setup_mode(selected)
+    _stamp_room_setup_mode(session, normalized)
+    _persist_setup_mode_if_needed(session, normalized, st=st)
+    return normalized
+
+
+def record_setup_mode_trace(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    trace = dict(session.get(MODE_TRACE_KEY) or {})
+    if not isinstance(trace, dict):
+        trace = {}
+    trace.update({k: v for k, v in fields.items() if v is not None})
+    session[MODE_TRACE_KEY] = trace
+    return trace
 
 
 def is_solo_draft_mode(session: dict[str, Any], *, room: dict[str, Any] | None = None) -> bool:

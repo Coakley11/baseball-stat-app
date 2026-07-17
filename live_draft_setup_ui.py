@@ -6,12 +6,19 @@ from typing import Any, Callable
 
 from live_draft_setup_mode import (
     LIVE_DRAFT_SETUP_MODE_KEY,
+    MODE_TRACE_KEY,
+    SETUP_MODE_LABELS,
+    SETUP_MODE_OPTIONS,
     SETUP_MODE_SHARED,
     SETUP_MODE_SOLO,
     can_start_live_draft,
+    commit_live_draft_mode_from_widget,
     get_live_draft_setup_mode,
     is_shared_multiplayer_intent,
     is_solo_draft_mode,
+    normalize_setup_mode,
+    record_setup_mode_trace,
+    seed_live_draft_setup_mode_before_widget,
     set_live_draft_setup_mode,
     setup_is_read_only,
     shared_room_code,
@@ -35,33 +42,74 @@ def _mode_label(mode: str) -> str:
 
 
 def render_live_draft_mode_selector(st: Any, session: dict[str, Any], *, disabled: bool = False) -> str:
-    """Top-of-setup draft mode selector. Returns active mode."""
-    current = get_live_draft_setup_mode(session)
-    options = {
-        SETUP_MODE_SOLO: "Solo Draft — you control all teams (no room code)",
-        SETUP_MODE_SHARED: "Shared Multiplayer Draft Room — room code, other users join",
-    }
-    labels = list(options.values())
-    values = list(options.keys())
-    index = values.index(current) if current in values else 0
-    radio_key = "_live_draft_mode_radio_label"
-    desired_label = labels[index]
-    # Keep Streamlit widget state aligned with the persistent preference so refresh
-    # / End Draft cannot leave the radio stuck on Solo after Shared was saved.
-    if session.get(radio_key) != desired_label:
-        session[radio_key] = desired_label
+    """Top-of-setup draft mode selector. Returns active mode.
 
-    selected_label = st.radio(
+    Canonical Streamlit key is ``live_draft_setup_mode`` (same as the preference key).
+    Never assign that key after ``st.radio`` is created in the same run.
+    """
+    mode_at_entry = session.get(LIVE_DRAFT_SETUP_MODE_KEY)
+    persisted_hint = ""
+    try:
+        from user_page_preferences import PAGE_KEY_LIVE_DRAFT_SETUP, get_user_page_preferences
+
+        prefs = get_user_page_preferences(
+            str(session.get("auth_user_id") or ""),
+            str(session.get("_suite_active_workspace_id") or session.get("workspace_id") or ""),
+            PAGE_KEY_LIVE_DRAFT_SETUP,
+            session=session,
+        ) or {}
+        persisted_hint = str(prefs.get(LIVE_DRAFT_SETUP_MODE_KEY) or "")
+    except ImportError:
+        persisted_hint = ""
+
+    seeded = seed_live_draft_setup_mode_before_widget(session)
+    before_widget = session.get(LIVE_DRAFT_SETUP_MODE_KEY)
+    record_setup_mode_trace(
+        session,
+        mode_at_page_entry=mode_at_entry,
+        persisted_mode_loaded=persisted_hint or seeded,
+        session_mode_before_widget=before_widget,
+        overwrite_path="",
+    )
+
+    # Do not pass index when key is set — session state owns the selection.
+    # Do not assign session[LIVE_DRAFT_SETUP_MODE_KEY] again after this call.
+    selected = st.radio(
         "Draft Mode",
-        labels,
-        index=index,
-        key=radio_key,
+        list(SETUP_MODE_OPTIONS),
+        format_func=lambda m: SETUP_MODE_LABELS.get(m, str(m)),
+        key=LIVE_DRAFT_SETUP_MODE_KEY,
         disabled=disabled,
         help="Multiple team names alone does not make a draft multiplayer — choose Shared Multiplayer for a joinable room code.",
     )
-    mode = values[labels.index(selected_label)] if selected_label in labels else current
-    previous = current
-    set_live_draft_setup_mode(session, mode, persist=(mode != previous), st=st)
+    mode = normalize_setup_mode(selected)
+    after_widget = session.get(LIVE_DRAFT_SETUP_MODE_KEY)
+    committed = commit_live_draft_mode_from_widget(session, mode, st=st)
+    record_setup_mode_trace(
+        session,
+        widget_result=selected,
+        mode_after_widget=after_widget,
+        value_saved_to_preferences=committed,
+        session_mode_final=session.get(LIVE_DRAFT_SETUP_MODE_KEY),
+    )
+
+    try:
+        from suite_workspace import can_show_developer_tools
+
+        if can_show_developer_tools(st=st):
+            trace = session.get(MODE_TRACE_KEY) or {}
+            st.caption(
+                "Draft Mode trace · "
+                f"entry=`{trace.get('mode_at_page_entry')}` · "
+                f"persisted=`{trace.get('persisted_mode_loaded')}` · "
+                f"before_widget=`{trace.get('session_mode_before_widget')}` · "
+                f"widget=`{trace.get('widget_result')}` · "
+                f"after_widget=`{trace.get('mode_after_widget')}` · "
+                f"saved=`{trace.get('value_saved_to_preferences')}` · "
+                f"final=`{trace.get('session_mode_final')}`"
+            )
+    except ImportError:
+        pass
 
     if mode == SETUP_MODE_SOLO:
         st.info(
