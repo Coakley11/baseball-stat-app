@@ -259,9 +259,36 @@ class PreferencePersistenceTests(unittest.TestCase):
         self.assertEqual(session.get("live_draft_proj_window"), "3 years")
 
 
+class ProjectionCacheTests(unittest.TestCase):
+    def test_queue_tick_does_not_require_projection_recompute(self) -> None:
+        from live_draft_projection_cache import should_recompute_projection, store_queue_projection
+        from live_draft_rerun_scope import mark_live_draft_queue_tick
+
+        session = {"draft_queue": ["A"], "live_draft_room": {"draft_room_id": "R", "current_pick_index": 0}}
+        store_queue_projection(session, {"ok": True})
+        mark_live_draft_queue_tick(session)
+        self.assertFalse(should_recompute_projection(session))
+
+
+class PollFragmentOwnsLoopTests(unittest.TestCase):
+    def test_poll_apply_marks_optimistic_tick(self) -> None:
+        from live_draft_safe_mode import request_poll_apply_rerun
+        from live_draft_rerun_scope import live_draft_expensive_recompute_required
+
+        session: dict = {}
+        st = mock.MagicMock()
+        with mock.patch("live_draft_safe_mode.is_rerun_allowed", return_value=(True, "")):
+            with mock.patch("live_draft_safe_mode.record_rerun_diagnostics"):
+                request_poll_apply_rerun(st, session)
+        st.rerun.assert_called_once()
+        self.assertTrue(session.get("_live_draft_recs_pending_after_pick"))
+        self.assertFalse(live_draft_expensive_recompute_required(session))
+
+
 class ExpirationAdvancesWithoutRecsTests(unittest.TestCase):
     def test_page_autopick_marks_optimistic_not_expensive_first(self) -> None:
         from live_draft_safe_mode import request_live_draft_rerun
+        from live_draft_rerun_scope import live_draft_expensive_recompute_required
 
         session: dict = {}
         st = mock.MagicMock()
@@ -270,11 +297,10 @@ class ExpirationAdvancesWithoutRecsTests(unittest.TestCase):
                 request_live_draft_rerun(st, session, "page_autopick")
         st.rerun.assert_called_once()
         self.assertTrue(session.get("_live_draft_recs_pending_after_pick"))
-        # Optimistic pick tick means this paint skips expensive work.
         self.assertFalse(live_draft_expensive_recompute_required(session))
-        # Next paint (no tick) should run deferred analytics.
         self.assertTrue(live_draft_expensive_recompute_required(session))
 
 
 if __name__ == "__main__":
     unittest.main()
+

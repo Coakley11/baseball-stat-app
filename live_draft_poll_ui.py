@@ -98,7 +98,9 @@ def _run_shared_poll(session: dict[str, Any]) -> bool:
 
 
 def render_live_draft_poll_fragment(st: Any, session: dict[str, Any]) -> None:
-    """Poll shared room on an interval and rerun when a remote pick lands."""
+    """Single lightweight shared-room poller — head first; full doc only on revision change."""
+    # Suppress the duplicate page-level poll while this fragment owns the loop.
+    session["_live_draft_poll_fragment_active"] = True
     try:
         from live_draft_start_progress import should_skip_live_draft_poll
 
@@ -116,7 +118,16 @@ def render_live_draft_poll_fragment(st: Any, session: dict[str, Any]) -> None:
         record_live_poll_diagnostics(session, live_poll_enabled=False)
         return
 
-    interval_sec = float(shared_draft_poll_interval_sec(session))
+    # Prefer ~1s during active drafts so guests converge within the 1–2s budget.
+    interval_sec = min(1.0, float(shared_draft_poll_interval_sec(session)))
+    try:
+        room = session.get("live_draft_room")
+        if isinstance(room, dict) and str(room.get("status") or "") == "in_progress":
+            dl = room.get("timer_deadline")
+            if dl is not None and float(dl) <= time.time() + 2.0:
+                interval_sec = 0.5
+    except Exception:
+        pass
     record_live_poll_diagnostics(
         session,
         live_poll_enabled=True,
@@ -175,12 +186,8 @@ def render_live_draft_poll_fragment(st: Any, session: dict[str, Any]) -> None:
             poll_suppressed_reason="",
         )
         if changed:
-            try:
-                from live_draft_ui_cache import invalidate_live_draft_ui_caches
-
-                invalidate_live_draft_ui_caches(session)
-            except ImportError:
-                session.pop("_live_draft_rec_cache", None)
+            # Do not wipe recommendation caches here — board/timer paint first.
+            session["_live_draft_recs_pending_after_pick"] = True
             try:
                 from live_draft_render_trace import ldr_rerun
 

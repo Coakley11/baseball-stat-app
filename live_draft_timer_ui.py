@@ -161,6 +161,10 @@ def _sync_room_on_timer_tick(session: dict[str, Any], room: dict[str, Any]) -> t
         from suite_egress_policy import shared_draft_poll_interval_sec
 
         if is_multiplayer_draft_active(session):
+            # Prefer the dedicated poll fragment — avoid a second poller fighting for reruns.
+            if session.get("_live_draft_poll_fragment_active"):
+                live_room = sync_live_draft_timer_state(session, room)
+                return live_room, False
             now = time.time()
             last = float(session.get("_live_draft_timer_poll_ts") or 0)
             interval = min(1.0, float(shared_draft_poll_interval_sec(session)))

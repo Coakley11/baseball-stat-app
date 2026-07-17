@@ -439,16 +439,20 @@ def sync_draft_queue(
     reason_s = str(reason or "queue_change")
     # Queue mutations must stay transactional — never block on shared participant workflow I/O.
     if sync_participant is None:
-        sync_participant = not reason_s.startswith(
-            ("add_to_queue", "remove_from_queue", "move_queue", "drag_reorder", "queue_")
-        ) and reason_s not in {
-            "add_to_queue",
-            "remove_from_queue",
-            "move_queue_up",
-            "move_queue_down",
-            "drag_reorder_queue",
-            "queue_change",
-        }
+        sync_participant = not (
+            reason_s.startswith(
+                ("add_to_queue", "remove_from_queue", "move_queue", "drag_reorder", "queue_", "reorder_queue")
+            )
+            or reason_s
+            in {
+                "add_to_queue",
+                "remove_from_queue",
+                "move_queue_up",
+                "move_queue_down",
+                "drag_reorder_queue",
+                "queue_change",
+            }
+        )
     write_canonical_draft_state(
         session,
         queue=q,

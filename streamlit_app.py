@@ -21975,7 +21975,11 @@ if active_page == "Live Draft Room":
             _cur_page = st.session_state.get("active_page")
             page_entered = _cur_page == "Live Draft Room" and _prev_page != _cur_page
             st.session_state["_shared_draft_poll_active_page"] = _cur_page
-            poll_due = page_entered or (_poll_now - _poll_last >= interval)
+            # Fragment owns the poll loop — skip duplicate page-level polls (major flicker source).
+            _fragment_owns_poll = bool(st.session_state.get("_live_draft_poll_fragment_active"))
+            poll_due = (not _fragment_owns_poll) and (
+                page_entered or (_poll_now - _poll_last >= interval)
+            )
             _skip_poll = bool(
                 st.session_state.get("_live_draft_manual_pick_in_flight")
                 or st.session_state.get("_pending_manual_draft_pick")

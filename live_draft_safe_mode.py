@@ -415,8 +415,18 @@ def is_rerun_allowed(session: dict[str, Any], source: str, *, room: dict[str, An
 
 
 def request_poll_apply_rerun(st: Any, session: dict[str, Any], *, room: dict[str, Any] | None = None) -> bool:
-    """Rerun after remote revision apply — bypasses passive-receiver rerun budget."""
+    """Rerun after remote revision apply — bypasses passive-receiver rerun budget.
+
+    Paints board/timer from the new revision first; defers recommendation rebuild.
+    """
     session["_live_draft_poll_apply_pending"] = True
+    try:
+        from live_draft_rerun_scope import mark_live_draft_optimistic_pick_tick
+
+        mark_live_draft_optimistic_pick_tick(session)
+        session["_live_draft_recs_pending_after_pick"] = True
+    except ImportError:
+        pass
     allowed, reason = is_rerun_allowed(session, "poll_apply", room=room)
     record_rerun_diagnostics(session, rerun_source="poll_apply", rerun_allowed=allowed, rerun_blocked_reason=reason or None)
     try:
