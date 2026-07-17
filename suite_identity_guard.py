@@ -502,6 +502,20 @@ def build_mp_identity_snapshot(
     snap["commissioner"] = commissioner or "—"
     snap["workspace_enforce_error"] = str(session_state.get("_suite_workspace_enforce_error") or "")
     snap["workspace_last_clamp"] = str(session_state.get("_suite_workspace_last_clamp") or "")
+    snap["hard_clamp_error"] = str(session_state.get("_suite_workspace_hard_clamp_error") or "")
+    snap["bootstrap_error"] = str(session_state.get("_suite_workspace_bootstrap_error") or "")
+    trace = session_state.get("_suite_workspace_ownership_trace")
+    if isinstance(trace, dict):
+        snap["ownership_trace_stage"] = str(trace.get("stage") or "")
+        snap["ownership_trace_cloud_key"] = str(trace.get("cloud_key") or "")
+        snap["ownership_active_before"] = str(trace.get("active_before") or "")
+        snap["ownership_active_after"] = str(trace.get("active_after") or "")
+    try:
+        from suite_workspace import scoped_cloud_app_id
+
+        snap["cloud_data_scope"] = scoped_cloud_app_id("baseball", snap["workspace_id"] or None)
+    except ImportError:
+        snap["cloud_data_scope"] = ""
 
     account = str(snap["signed_in_account"] or "").strip().lower()
     active = str(snap["workspace_id"] or "").strip().lower()
@@ -553,11 +567,17 @@ def render_mp_identity_diagnostics(
             ("Owned workspace ID", snap.get("owned_workspace_id") or "—"),
             ("Display workspace name", snap.get("display_workspace_name") or "—"),
             ("Owned workspace label", snap.get("owned_workspace_label") or "—"),
+            ("Cloud / data scope", snap.get("cloud_data_scope") or snap.get("ownership_trace_cloud_key") or "—"),
             ("Claimed team", snap.get("claimed_team") or "—"),
             ("Commissioner", snap.get("commissioner") or "—"),
             ("Participant ID", snap.get("participant_id") or "—"),
+            ("Active before clamp", snap.get("ownership_active_before") or "—"),
+            ("Active after clamp", snap.get("ownership_active_after") or "—"),
+            ("Ownership stage", snap.get("ownership_trace_stage") or "—"),
             ("Last workspace clamp", snap.get("workspace_last_clamp") or "—"),
             ("Enforce error", snap.get("workspace_enforce_error") or "—"),
+            ("Hard clamp error", snap.get("hard_clamp_error") or "—"),
+            ("Bootstrap error", snap.get("bootstrap_error") or "—"),
         ]
         import pandas as pd
 

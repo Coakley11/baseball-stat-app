@@ -244,10 +244,13 @@ def _infer_external_id_from_email(email: str) -> str:
 
 def account_scoped_workspace_target(session_state: dict[str, Any]) -> str:
     """
-    Single allowed workspace for a signed-in non-admin account.
+    Single allowed workspace for a signed-in account with exactly one seat.
 
     Used to hard-clamp active workspace even when owned-workspace registry
     resolution is empty (e.g. ephemeral/read-only cloud disk).
+
+    Developer/admin tooling does **not** expand a single-seat account onto
+    Daniel's workspace — Coakley11 always resolves to ``coakley11``.
     """
     if not is_auth_enabled() or not is_authenticated(session_state):
         return ""
@@ -255,11 +258,12 @@ def account_scoped_workspace_target(session_state: dict[str, Any]) -> str:
         from suite_workspace import normalize_workspace_id
         from suite_workspace_registry import is_admin_account
 
-        if is_admin_account(session_state=session_state):
-            return ""
         allowed = allowed_workspaces_for_session(session_state)
         if len(allowed) == 1:
             return normalize_workspace_id(allowed[0])
+        # Multi-seat admin (Daniel): no forced single target.
+        if is_admin_account(session_state=session_state):
+            return ""
     except ImportError:
         pass
     return ""
@@ -285,6 +289,107 @@ def _seed_owned_workspace_cache(session_state: dict[str, Any], workspace_id: str
             )
     except ImportError:
         session_state["_suite_owned_workspace_id"] = ws
+
+
+def hard_clamp_owned_workspace_before_scoped_load(session_state: dict[str, Any]) -> str:
+    """Final ownership clamp immediately before any workspace-scoped cloud/disk load.
+
+    Coakley11 (and every single-seat account) must never remain on Daniel's workspace,
+    even when the account is flagged admin for developer tools.
+    Never falls back to ``daniel`` for a non-daniel authenticated account.
+    """
+    from suite_workspace import SESSION_KEY, normalize_workspace_id, scoped_cloud_app_id
+
+    active_before = normalize_workspace_id(str(session_state.get(SESSION_KEY) or ""))
+    email = current_auth_email(session_state)
+    auth_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
+    external = resolve_auth_external_id(session_state) if is_authenticated(session_state) else ""
+    owned = ""
+    clamp_error = ""
+    stage = "start"
+
+    if not is_auth_enabled() or not is_authenticated(session_state):
+        session_state["_suite_workspace_ownership_trace"] = {
+            "stage": "skipped_unauthenticated",
+            "auth_email": email,
+            "auth_user_id": auth_uid,
+            "external_id": external,
+            "active_before": active_before,
+            "owned": "",
+            "active_after": active_before,
+            "cloud_key": scoped_cloud_app_id("baseball", active_before or None),
+        }
+        return active_before
+
+    try:
+        from suite_workspace_registry import resolve_owned_workspace_id
+
+        stage = "resolve_owned"
+        owned = normalize_workspace_id(resolve_owned_workspace_id(session_state) or "")
+    except Exception as exc:
+        clamp_error = f"resolve_owned: {type(exc).__name__}: {exc}"
+        session_state["_suite_workspace_enforce_error"] = clamp_error
+
+    if not owned:
+        stage = "account_scoped_fallback"
+        owned = normalize_workspace_id(account_scoped_workspace_target(session_state) or "")
+    if not owned:
+        # Last resort: authenticated external id — never invent Daniel for Coakley11.
+        stage = "external_id_fallback"
+        ext_n = normalize_workspace_id(external or "")
+        if ext_n and ext_n != "daniel":
+            owned = ext_n
+        elif ext_n == "daniel":
+            owned = "daniel"
+
+    allowed = tuple(
+        normalize_workspace_id(w) for w in allowed_workspaces_for_session(session_state)
+    )
+    active = active_before
+    target = active
+
+    if owned and len(allowed) == 1:
+        # Single-seat accounts (Coakley11): admin/dev tools must not keep an unrelated seat.
+        target = owned
+        stage = "single_seat_hard_clamp"
+    elif owned and active and active not in allowed and allowed:
+        target = owned
+        stage = "active_not_allowed"
+    elif owned and owned != "daniel" and active == "daniel":
+        target = owned
+        stage = "never_linger_on_daniel"
+    elif owned and not active:
+        target = owned
+        stage = "empty_active"
+
+    if target and target != active:
+        session_state[SESSION_KEY] = target
+        _seed_owned_workspace_cache(session_state, target)
+        session_state["_suite_workspace_last_clamp"] = f"{active}->{target}:hard"
+        try:
+            from suite_workspace import persist_active_workspace_id
+
+            persist_active_workspace_id(target, session_state=session_state)
+        except Exception as exc:
+            clamp_error = (clamp_error + "; " if clamp_error else "") + f"persist: {type(exc).__name__}: {exc}"
+            session_state["_suite_workspace_enforce_error"] = clamp_error
+        active = target
+
+    cloud_key = scoped_cloud_app_id("baseball", active or None)
+    session_state["_suite_workspace_ownership_trace"] = {
+        "stage": stage,
+        "auth_email": email,
+        "auth_user_id": auth_uid,
+        "external_id": external,
+        "active_before": active_before,
+        "owned": owned,
+        "allowed": list(allowed),
+        "active_after": active,
+        "cloud_key": cloud_key,
+        "clamp_error": clamp_error,
+        "last_clamp": str(session_state.get("_suite_workspace_last_clamp") or ""),
+    }
+    return active
 
 
 def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
@@ -325,6 +430,17 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
             if active != scoped_target:
                 set_active_workspace_id(st, scoped_target)
                 session_state["_suite_workspace_last_clamp"] = f"{active}->{scoped_target}"
+            hard_clamp_owned_workspace_before_scoped_load(session_state)
+            return
+
+        # Single-seat accounts that are also "admin" for developer tools (Coakley11):
+        # still hard-clamp — admin must not keep Daniel's workspace active.
+        if scoped_target and admin and len(allowed) == 1:
+            _seed_owned_workspace_cache(session_state, scoped_target)
+            if active != scoped_target:
+                set_active_workspace_id(st, scoped_target)
+                session_state["_suite_workspace_last_clamp"] = f"{active}->{scoped_target}:admin_single"
+            hard_clamp_owned_workspace_before_scoped_load(session_state)
             return
 
         owned = normalize_workspace_id(_resolve_owned(session_state))
@@ -343,25 +459,24 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
         ):
             set_active_workspace_id(st, owned)
             session_state["_suite_workspace_last_clamp"] = f"{active}->{owned}:unsigned"
+            hard_clamp_owned_workspace_before_scoped_load(session_state)
             return
 
         # Prefer owned home when active seat is outside this account's allowed set.
-        # Coakley11 is admin for developer tools but allowed workspaces is still only
-        # ``coakley11`` — do not linger on Daniel's workspace.
         if owned and active != owned and not workspace_access_allowed(active, session_state=session_state):
             set_active_workspace_id(st, owned)
             session_state["_suite_workspace_last_clamp"] = f"{active}->{owned}:access"
+            hard_clamp_owned_workspace_before_scoped_load(session_state)
             return
         if active not in allowed and allowed:
             target = owned or allowed[0]
             set_active_workspace_id(st, target)
             session_state["_suite_workspace_last_clamp"] = f"{active}->{target}:allowed"
+            hard_clamp_owned_workspace_before_scoped_load(session_state)
             return
 
         # Home preference: without an explicit picker selection, stay on owned workspace
         # rather than another account's primary seat (daniel) after login/restore.
-        user_selected = bool(session_state.get(WORKSPACE_USER_SELECTED_KEY))
-        just_logged_in = bool(session_state.get(AUTH_JUST_LOGGED_IN_KEY))
         if (
             owned
             and owned != active
@@ -370,11 +485,15 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
         ):
             set_active_workspace_id(st, owned)
             session_state["_suite_workspace_last_clamp"] = f"{active}->{owned}:home"
+            hard_clamp_owned_workspace_before_scoped_load(session_state)
             return
+        hard_clamp_owned_workspace_before_scoped_load(session_state)
     except ImportError as exc:
         session_state["_suite_workspace_enforce_error"] = f"ImportError: {exc}"
+        hard_clamp_owned_workspace_before_scoped_load(session_state)
     except Exception as exc:
         session_state["_suite_workspace_enforce_error"] = f"{type(exc).__name__}: {exc}"
+        hard_clamp_owned_workspace_before_scoped_load(session_state)
 
 
 def _create_fresh_supabase_client() -> Any:

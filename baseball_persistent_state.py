@@ -1455,6 +1455,19 @@ def warm_startup_fingerprint(session: dict[str, Any]) -> str:
 def prepare_baseball_workspace(st: Any) -> bool:
     """Single authoritative cloud/disk workspace sync before sidebar widgets."""
     ss = st.session_state
+    # Final ownership clamp BEFORE any workspace-scoped cloud/disk load.
+    try:
+        from suite_auth import hard_clamp_owned_workspace_before_scoped_load
+
+        before_ws = str(ss.get("_suite_active_workspace_id") or "")
+        hard_clamp_owned_workspace_before_scoped_load(ss)
+        after_ws = str(ss.get("_suite_active_workspace_id") or "")
+        if before_ws and after_ws and before_ws != after_ws:
+            ss["_suite_workspace_force_sync"] = True
+            ss.pop("_baseball_warm_startup_fp", None)
+    except Exception as exc:
+        ss["_suite_workspace_hard_clamp_error"] = f"{type(exc).__name__}: {exc}"
+
     warm_skip = False
     try:
         from suite_user_persistence import _workspace_synced_key

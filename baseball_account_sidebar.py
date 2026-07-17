@@ -10,14 +10,26 @@ ACCOUNT_EXPANDER_FLAG = "_baseball_account_expander_open"
 def prepare_baseball_auth_session(st: Any) -> None:
     """Restore Supabase Auth from browser tokens before sidebar/widgets render."""
     try:
-        from suite_auth import enforce_workspace_ownership, is_auth_enabled, restore_auth_session
+        from suite_auth import (
+            enforce_workspace_ownership,
+            hard_clamp_owned_workspace_before_scoped_load,
+            is_auth_enabled,
+            restore_auth_session,
+        )
 
         if is_auth_enabled():
             restore_auth_session(st.session_state, st=st)
             if st.session_state.get("_suite_auth_session"):
                 enforce_workspace_ownership(st.session_state)
-    except ImportError:
-        pass
+                hard_clamp_owned_workspace_before_scoped_load(st.session_state)
+    except Exception as exc:
+        try:
+            st.session_state["_suite_workspace_auth_prepare_error"] = f"{type(exc).__name__}: {exc}"
+            from suite_auth import hard_clamp_owned_workspace_before_scoped_load
+
+            hard_clamp_owned_workspace_before_scoped_load(st.session_state)
+        except Exception:
+            pass
 
 
 def _dev_auth_details_visible(session: dict[str, Any]) -> bool:
@@ -215,6 +227,12 @@ def render_baseball_account_sidebar(st: Any) -> None:
     with st.sidebar.expander(expander_label, expanded=expanded):
         if status["signed_in"]:
             st.caption(f"Signed in as **{status['email'] or 'account'}**")
+            try:
+                from suite_auth import hard_clamp_owned_workspace_before_scoped_load
+
+                hard_clamp_owned_workspace_before_scoped_load(session)
+            except Exception:
+                pass
             if not dev_mode:
                 try:
                     from suite_workspace import get_active_workspace_id, workspace_label
@@ -229,6 +247,21 @@ def render_baseball_account_sidebar(st: Any) -> None:
                             st.caption(f"Workspace: **{label}**")
                 except Exception:
                     pass
+            else:
+                err = str(
+                    session.get("_suite_workspace_enforce_error")
+                    or session.get("_suite_workspace_hard_clamp_error")
+                    or session.get("_suite_workspace_bootstrap_error")
+                    or ""
+                ).strip()
+                if err:
+                    st.warning(f"Workspace ownership error: {err}")
+                trace = session.get("_suite_workspace_ownership_trace")
+                if isinstance(trace, dict) and trace:
+                    st.caption(
+                        f"Ownership: active=`{trace.get('active_after')}` · "
+                        f"owned=`{trace.get('owned')}` · cloud=`{trace.get('cloud_key')}`"
+                    )
         else:
             st.caption("Sign in to unlock shared drafts and cloud saves.")
 

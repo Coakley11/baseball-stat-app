@@ -533,8 +533,24 @@ try:
     from suite_workspace import bootstrap_suite_workspace
 
     bootstrap_suite_workspace(st)
-except Exception:
-    pass
+except Exception as _ws_boot_exc:
+    try:
+        st.session_state["_suite_workspace_bootstrap_error"] = (
+            f"{type(_ws_boot_exc).__name__}: {_ws_boot_exc}"
+        )
+    except Exception:
+        pass
+try:
+    from suite_auth import hard_clamp_owned_workspace_before_scoped_load
+
+    hard_clamp_owned_workspace_before_scoped_load(st.session_state)
+except Exception as _ws_clamp_exc:
+    try:
+        st.session_state["_suite_workspace_hard_clamp_error"] = (
+            f"{type(_ws_clamp_exc).__name__}: {_ws_clamp_exc}"
+        )
+    except Exception:
+        pass
 
 try:
     from fantasy_admin_draft_archive_repair_ui import (
