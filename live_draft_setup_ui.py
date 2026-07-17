@@ -559,7 +559,22 @@ def render_shared_draft_ready_card(
     with st.container(border=True):
         st.markdown("### Shared Draft Room Ready")
         if code:
-            st.markdown(f"**Join code:** `{code}`")
+            try:
+                from live_draft_room_ui import render_draft_room_code_panel
+
+                render_draft_room_code_panel(
+                    st,
+                    code,
+                    context_label="Waiting room — share this code with every manager",
+                )
+            except ImportError:
+                st.markdown(f"**Room Code:** `{code}`")
+                try:
+                    st.code(code, language=None)
+                except TypeError:
+                    st.code(code)
+        else:
+            st.error("Room code missing — recreate the shared room before inviting managers.")
         st.markdown(f"**Participants joined:** {joined} of {total}")
         if prow:
             for row in prow:
@@ -651,6 +666,9 @@ def render_lobby_status_panel(
             waiting_lines.append(team)
     with st.container(border=True):
         st.markdown("#### Lobby Status")
+        code = shared_room_code(session)
+        if code:
+            st.markdown(f"**Room Code:** `{code}`")
         for line in joined_lines:
             st.markdown(line)
         st.markdown("**Waiting:**")
@@ -702,7 +720,18 @@ def render_draft_status_summary_card(
     with st.container(border=True):
         st.markdown("#### Draft Status Summary")
         if code:
-            st.markdown(f"**Room Code:** `{code}`")
+            try:
+                from live_draft_room_ui import render_draft_room_code_panel
+
+                render_draft_room_code_panel(
+                    st,
+                    code,
+                    context_label="Same room code for commissioner and all participants",
+                )
+            except ImportError:
+                st.markdown(f"**Room Code:** `{code}`")
+        else:
+            st.warning("Room code missing for this shared draft.")
         st.markdown(f"**{commissioner_line}**")
         if pick_label:
             st.markdown(f"**Current Pick:** {pick_label}")

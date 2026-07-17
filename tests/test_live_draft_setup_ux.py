@@ -176,10 +176,15 @@ class ReadyCardRenderTests(unittest.TestCase):
         session = {"live_draft_setup_mode": SETUP_MODE_SHARED}
         room = _sample_room(status="not_started")
         render_shared_draft_ready_card(st, session, room, on_start=lambda: None)
-        st.button.assert_called_once()
-        args, kwargs = st.button.call_args
-        self.assertIn("Start Live Draft", args[0])
-        self.assertEqual(kwargs.get("type"), "primary")
+        start_calls = [
+            c for c in st.button.call_args_list if c.args and "Start Live Draft" in str(c.args[0])
+        ]
+        self.assertEqual(len(start_calls), 1, st.button.call_args_list)
+        self.assertEqual(start_calls[0].kwargs.get("type"), "primary")
+        self.assertTrue(
+            any(c.args and c.args[0] == "Copy room code" for c in st.button.call_args_list),
+            st.button.call_args_list,
+        )
 
 
 if __name__ == "__main__":

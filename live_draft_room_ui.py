@@ -580,16 +580,19 @@ def render_draft_room_code_panel(
     *,
     join_url: str = "",
     show_copy: bool = True,
+    context_label: str = "",
 ) -> None:
+    """Prominent shareable room code — waiting room and active draft."""
     code = str(code or "").strip().upper()
     if not code:
         return
+    label = str(context_label or "Share this code so other managers can join").strip()
     st.markdown(
         f"""
         <div class="ld-room-code-panel">
             <div>
                 <div class="ld-room-code-label">Room Code</div>
-                <div class="ld-room-code-value">{code}</div>
+                <div class="ld-room-code-value" id="ld-room-code-value">{code}</div>
             </div>
         </div>
         """,
@@ -599,7 +602,31 @@ def render_draft_room_code_panel(
         st.code(code, language=None)
     except TypeError:
         st.code(code)
-    st.caption("Share this 6-character code so other managers can join your live draft.")
+    cols = st.columns([2, 1, 2])
+    with cols[0]:
+        st.caption(label)
+    with cols[1]:
+        if show_copy and st.button("Copy room code", key=f"ld_copy_room_code_{code}", use_container_width=True):
+            # Best-effort clipboard via components; always leave code selectable above.
+            try:
+                import streamlit.components.v1 as components
+
+                components.html(
+                    f"""
+                    <script>
+                    (function() {{
+                      const text = {code!r};
+                      if (navigator.clipboard && navigator.clipboard.writeText) {{
+                        navigator.clipboard.writeText(text);
+                      }}
+                    }})();
+                    </script>
+                    """,
+                    height=0,
+                )
+            except Exception:
+                pass
+            st.success(f"Room code **{code}** ready — paste it to invite managers.")
     if join_url:
         st.markdown(f"**Join link:** [{join_url}]({join_url})")
 
@@ -612,9 +639,11 @@ def render_live_draft_room_code_header(
     join_url: str = "",
     draft_in_progress: bool = False,
 ) -> None:
-    """Show room code, copy affordance, and missing-code warning near draft header."""
-    if draft_in_progress:
-        return
+    """Show room code, copy affordance, and missing-code warning near draft header.
+
+    Visible in the waiting room and after the draft starts (not invitation-only).
+    """
+    _ = draft_in_progress  # code stays visible during live picks
     code = ""
     try:
         from draft_room_context import resolve_shared_room_code
@@ -624,7 +653,12 @@ def render_live_draft_room_code_header(
         code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
 
     if code:
-        render_draft_room_code_panel(st, code, join_url=join_url)
+        label = (
+            "Share this code so other managers can join"
+            if not draft_in_progress
+            else "Room code (same for commissioner and all participants)"
+        )
+        render_draft_room_code_panel(st, code, join_url=join_url, context_label=label)
         return
     if multiplayer:
         st.warning("Room code missing — shared draft may not be joinable.")
@@ -741,13 +775,13 @@ def render_live_draft_room_header(
         """,
         unsafe_allow_html=True,
     )
-    if code and not draft_in_progress:
+    if code:
         try:
             st.code(code, language=None)
         except TypeError:
             st.code(code)
         st.caption(f"Invite players with this room code: **{code}**")
-    elif not code:
+    else:
         st.error("Could not create shared room. This draft cannot be joined by others.")
 
 

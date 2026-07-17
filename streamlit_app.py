@@ -23032,6 +23032,17 @@ if active_page == "Live Draft Room":
                     else ""
                 )
                 if is_shared_lobby(st.session_state, room=room):
+                    try:
+                        from live_draft_room_ui import render_live_draft_room_code_header
+
+                        render_live_draft_room_code_header(
+                            st,
+                            st.session_state,
+                            multiplayer=True,
+                            draft_in_progress=False,
+                        )
+                    except ImportError:
+                        pass
                     render_lobby_status_panel(st, st.session_state, room)
                     render_shared_draft_ready_card(
                         st,
@@ -23319,7 +23330,12 @@ if active_page == "Live Draft Room":
                 try:
                     from live_draft_room_ui import render_live_draft_room_code_header
 
-                    render_live_draft_room_code_header(st, st.session_state, multiplayer=_multiplayer_draft)
+                    render_live_draft_room_code_header(
+                        st,
+                        st.session_state,
+                        multiplayer=_multiplayer_draft,
+                        draft_in_progress=_draft_in_progress,
+                    )
                 except ImportError:
                     if _multiplayer_draft:
                         sc = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()

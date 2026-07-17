@@ -105,6 +105,20 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
         from live_draft_setup_mode import should_hide_legacy_shared_panel
 
         if should_hide_legacy_shared_panel(session, room if isinstance(room, dict) else None):
+            # Compact lobby/live UI owns create/join, but the room code must stay visible.
+            try:
+                from draft_room_context import resolve_shared_room_code
+                from live_draft_room_ui import render_draft_room_code_panel
+
+                code = resolve_shared_room_code(session)
+                if code:
+                    render_draft_room_code_panel(
+                        st,
+                        code,
+                        context_label="Shared Multiplayer room code — visible to every manager in this room",
+                    )
+            except ImportError:
+                pass
             return False
     except ImportError:
         pass
