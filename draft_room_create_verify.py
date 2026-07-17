@@ -139,11 +139,53 @@ def validate_shared_room_document(document: dict[str, Any] | None) -> tuple[bool
     return True, ""
 
 
+def _load_one_store(store: Any, code: str, backend_label: str) -> dict[str, Any]:
+    loader = getattr(store, "load_with_diagnostics", None)
+    if callable(loader):
+        result = loader(code)
+        if isinstance(result, dict):
+            result.setdefault("backend", backend_label)
+            result.setdefault("room_code_queried", code)
+            return result
+    try:
+        document = store.load(code)
+    except Exception as exc:
+        return {
+            "found": False,
+            "document": None,
+            "reason": "query_error",
+            "query_error": str(exc),
+            "backend": backend_label,
+            "room_code_queried": code,
+        }
+    if not isinstance(document, dict):
+        return {
+            "found": False,
+            "document": None,
+            "reason": "not_found",
+            "query_error": None,
+            "backend": backend_label,
+            "room_code_queried": code,
+        }
+    return {
+        "found": True,
+        "document": document,
+        "reason": None,
+        "query_error": None,
+        "backend": backend_label,
+        "room_code_queried": code,
+    }
+
+
 def load_shared_room_with_diagnostics(
     store: Any,
     room_code: str,
 ) -> dict[str, Any]:
-    """Load a room and report whether Supabase returned empty vs query error."""
+    """Load a room by code from the global shared-room registry (not workspace-scoped).
+
+    Tries the primary store first, then the alternate backend (Supabase ↔ local file)
+    so guests can find a host room even when create/join backends briefly diverge.
+    """
     code = normalize_room_code(room_code)
     backend = "unknown"
     try:
@@ -153,42 +195,46 @@ def load_shared_room_with_diagnostics(
     except ImportError:
         pass
 
-    loader = getattr(store, "load_with_diagnostics", None)
-    if callable(loader):
-        result = loader(code)
-        if isinstance(result, dict):
-            result.setdefault("backend", backend)
-            result.setdefault("room_code_queried", code)
-            return result
+    primary = _load_one_store(store, code, backend)
+    if primary.get("found") and isinstance(primary.get("document"), dict):
+        primary["lookup_fallback_used"] = False
+        return primary
 
+    # Cross-backend fallback — room codes are global, never scoped to baseball__{workspace}.
+    alt_store = None
+    alt_label = ""
     try:
-        document = store.load(code)
-    except Exception as exc:
-        return {
-            "found": False,
-            "document": None,
-            "reason": "query_error",
-            "query_error": str(exc),
-            "backend": backend,
-            "room_code_queried": code,
-        }
-    if not isinstance(document, dict):
-        return {
-            "found": False,
-            "document": None,
-            "reason": "not_found",
-            "query_error": None,
-            "backend": backend,
-            "room_code_queried": code,
-        }
-    return {
-        "found": True,
-        "document": document,
-        "reason": None,
-        "query_error": None,
-        "backend": backend,
-        "room_code_queried": code,
-    }
+        from draft_room_shared_state import get_local_shared_room_store, shared_room_backend_name
+
+        primary_name = shared_room_backend_name()
+        if primary_name == "supabase":
+            alt_store = get_local_shared_room_store()
+            alt_label = "local_file"
+        else:
+            try:
+                from draft_room_supabase_store import (
+                    get_supabase_shared_room_store,
+                    supabase_shared_room_backend_available,
+                )
+
+                if supabase_shared_room_backend_available():
+                    alt_store = get_supabase_shared_room_store()
+                    alt_label = "supabase"
+            except Exception:
+                alt_store = None
+    except ImportError:
+        alt_store = None
+
+    if alt_store is not None and alt_store is not store:
+        alt = _load_one_store(alt_store, code, alt_label or "fallback")
+        if alt.get("found") and isinstance(alt.get("document"), dict):
+            alt["lookup_fallback_used"] = True
+            alt["primary_backend_miss"] = primary.get("reason") or "not_found"
+            alt["backend"] = f"{alt_label}_fallback_after_{backend}"
+            return alt
+
+    primary["lookup_fallback_used"] = False
+    return primary
 
 
 def verify_shared_room_persisted(

@@ -149,6 +149,42 @@ def render_shared_room_auth_diagnostics(st: Any, session: dict[str, Any]) -> Non
             )
 
 
+def render_join_attempt_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    """Developer Mode: last join attempt fields (lookup, claim, workspace isolation)."""
+    if not join_trace_visible(session):
+        return
+    diag = session.get("_draft_room_join_attempt_diag")
+    load = session.get("_draft_room_join_load_diag")
+    if not isinstance(diag, dict) and not isinstance(load, dict):
+        return
+    diag = dict(diag or {})
+    load = dict(load or {})
+    with st.expander("Join attempt diagnostics (Developer Mode)", expanded=True):
+        rows = [
+            ("entered / normalized code", diag.get("normalized_code") or load.get("room_code_queried") or "—"),
+            ("lookup backend", diag.get("lookup_backend") or load.get("backend") or "—"),
+            ("lookup fallback used", str(diag.get("lookup_fallback_used", load.get("lookup_fallback_used")))),
+            ("matched room ID", diag.get("matched_room_id") or "—"),
+            ("room owner", diag.get("room_owner") or "—"),
+            ("room status", diag.get("room_status") or "—"),
+            ("auth user ID", diag.get("auth_user_id") or "—"),
+            ("owned workspace (before)", diag.get("owned_workspace_before") or "—"),
+            ("owned workspace (after)", diag.get("owned_workspace_after") or "—"),
+            ("workspace unchanged", str(diag.get("workspace_unchanged"))),
+            ("selected team", diag.get("selected_team") or "—"),
+            ("invitation required", str(diag.get("invitation_required", False))),
+            ("claim / join result", diag.get("claim_result") or ("ok" if diag.get("participant_write_ok") else "—")),
+            ("participant write ok", str(diag.get("participant_write_ok"))),
+            ("presence write ok", str(diag.get("presence_write_ok"))),
+            ("room revision", str(diag.get("room_revision") if diag.get("room_revision") is not None else "—")),
+            ("navigation target", diag.get("navigation_target") or "—"),
+            ("load found", str(load.get("found"))),
+            ("load reason", load.get("reason") or "—"),
+        ]
+        for label, value in rows:
+            st.text(f"{label}: {value}")
+
+
 def render_join_trace_panel(st: Any, session: dict[str, Any]) -> None:
     if not join_trace_visible(session):
         return

@@ -645,6 +645,27 @@ def create_and_host_shared_room(
         abort_shared_room_create(session, backup_room=backup_room, backup_room_code=backup_room_code)
         return "", {}
 
+    # Mirror into the alternate global registry so guests can look up by code
+    # even if their client resolves a different primary backend.
+    try:
+        from draft_room_shared_state import get_local_shared_room_store
+
+        if shared_room_backend_name() == "supabase":
+            get_local_shared_room_store().save(saved)
+        else:
+            try:
+                from draft_room_supabase_store import (
+                    get_supabase_shared_room_store,
+                    supabase_shared_room_backend_available,
+                )
+
+                if supabase_shared_room_backend_available():
+                    get_supabase_shared_room_store().save(saved)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     saved_code = normalize_room_code(saved.get("room_code"))
     merge_create_flow_diagnostics(session, supabase_save_success=True, cloud_write_ok=True)
     verified, verify_msg, verify_diag = verify_shared_room_persisted(
@@ -814,30 +835,52 @@ def join_shared_draft_room(
         if reason == "query_error":
             detail = str(load_result.get("query_error") or "Supabase query failed")
             return False, f"Could not look up room **{code}** ({backend_name}): {detail}", None
-        try:
-            from live_draft_team_ownership import ROOM_NOT_FOUND_MSG
-
-            return False, ROOM_NOT_FOUND_MSG, None
-        except ImportError:
-            return False, "No active shared draft room was found for that code.", None
+        return False, "Room code not found", None
 
     ok_doc, doc_err = validate_shared_room_document(document)
     if not ok_doc:
         return False, doc_err, document
-    if str(document.get("status") or "").lower() == "closed":
+    status = str(document.get("status") or "").strip().lower()
+    # Guests may join waiting / ready / active rooms. Completed/cancelled/expired are blocked.
+    joinable = {"", "not_started", "waiting", "ready", "in_progress", "paused", "active"}
+    blocked = {"closed", "complete", "completed", "cancelled", "canceled", "expired"}
+    if status in blocked or status not in joinable:
         try:
             from draft_room_join_trace import trace_join_step
 
-            trace_join_step(session, "join_room_closed", room_code=code, backend=backend_name)
+            trace_join_step(
+                session,
+                "join_room_not_joinable",
+                room_code=code,
+                backend=backend_name,
+                room_status=status or "unknown",
+            )
         except ImportError:
             pass
-        return False, "This draft room has been closed by the host.", None
+        if status in ("closed", "cancelled", "canceled"):
+            return False, "Room is no longer joinable — it was closed or cancelled.", document
+        if status in ("complete", "completed", "expired"):
+            return False, "Room is no longer joinable — the draft has already finished.", document
+        return False, f"Room is no longer joinable (status: {status or 'unknown'}).", document
+
+    # Capture identity for diagnostics — join must not switch guest workspace.
+    owned_ws_before = str(
+        session.get("_suite_owned_workspace_id") or session.get("_suite_active_workspace_id") or ""
+    ).strip()
+    try:
+        from suite_auth import AUTH_USER_ID_KEY
+
+        auth_uid = str(session.get(AUTH_USER_ID_KEY) or "").strip()
+    except ImportError:
+        auth_uid = str(session.get("auth_user_id") or "").strip()
 
     participant_id = resolve_participant_id(session)
     participants = dict(document.get("participants") or {})
     existing = participants.get(participant_id)
+    duplicate_rejoin = False
     if isinstance(existing, dict) and existing.get("assigned_team"):
         assigned = str(existing["assigned_team"])
+        duplicate_rejoin = True
     else:
         assigned, err = resolve_join_team_assignment(
             document,
@@ -845,7 +888,16 @@ def join_shared_draft_room(
             requested_team=requested_team,
         )
         if not assigned:
-            return False, err or "No open team slots in this room.", document
+            friendly = err or "No teams are available"
+            if "already assigned" in str(err or "").lower():
+                friendly = "Team is already claimed"
+            elif "not available" in str(err or "").lower():
+                friendly = str(err)
+            elif "choose a team" in str(err or "").lower():
+                friendly = "Choose a team before joining"
+            elif "no open" in str(err or "").lower():
+                friendly = "No teams are available"
+            return False, friendly, document
         document = register_participant_in_shared_document(
             document,
             participant_id=participant_id,
@@ -855,6 +907,14 @@ def join_shared_draft_room(
         )
         try:
             backend.save(document)
+            # Mirror to the alternate registry so guests on either backend can re-load.
+            try:
+                from draft_room_shared_state import get_local_shared_room_store
+
+                if shared_room_backend_name() == "supabase":
+                    get_local_shared_room_store().save(document)
+            except Exception:
+                pass
         except Exception as exc:
             try:
                 from draft_room_supabase_errors import (
@@ -871,14 +931,17 @@ def join_shared_draft_room(
             except ImportError:
                 pass
             if isinstance(exc, ValueError):
-                return False, str(exc), document
+                return False, f"Unable to save participant: {exc}", document
             raise
     session[ACTIVE_SHARED_ROOM_CODE_KEY] = code
     set_active_participant(session, room_code=code, participant_id=participant_id, assigned_team=assigned)
+    presence_ok = True
     try:
         from live_draft_presence import mark_participant_present
 
         mark_participant_present(session, force_save=True, store=backend)
+        if session.get("_live_draft_presence_error"):
+            presence_ok = False
     except ImportError:
         pass
     from draft_state import DRAFT_QUEUE_KEY, DRAFT_WATCHLIST_FAVORITES_KEY, DRAFT_WATCHLIST_FOCUS_KEY
@@ -896,7 +959,11 @@ def join_shared_draft_room(
     if runtime is None:
         session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
         session.pop(SHARED_ROOM_META_KEY, None)
-        return False, str(session.get("_draft_room_publish_error") or "Shared room data is invalid."), document
+        return (
+            False,
+            str(session.get("_draft_room_publish_error") or "Room data could not be loaded."),
+            document,
+        )
     load_participant_workflow_into_session(session, code)
     _sync_participant_team_aliases(session, assigned)
     try:
@@ -909,6 +976,37 @@ def join_shared_draft_room(
         record_join_assignment_diagnostics(session, source="join_success", failure_reason=fail)
     except ImportError:
         pass
+    # Keep Draft Mode Shared for the guest after join (prefs only — no widget key write).
+    try:
+        from live_draft_setup_mode import SETUP_MODE_SHARED, persist_live_draft_setup_mode_preference
+
+        persist_live_draft_setup_mode_preference(session, SETUP_MODE_SHARED, st=None)
+    except ImportError:
+        pass
+    owned_ws_after = str(
+        session.get("_suite_owned_workspace_id") or session.get("_suite_active_workspace_id") or ""
+    ).strip()
+    session["_draft_room_join_attempt_diag"] = {
+        "entered_code": code,
+        "normalized_code": code,
+        "lookup_backend": str(load_result.get("backend") or backend_name),
+        "lookup_fallback_used": bool(load_result.get("lookup_fallback_used")),
+        "matched_room_id": str(document.get("draft_room_id") or ""),
+        "room_owner": str(document.get("host_user_id") or document.get("host_participant_id") or ""),
+        "room_status": status or str(document.get("status") or ""),
+        "auth_user_id": auth_uid or participant_id,
+        "owned_workspace_before": owned_ws_before,
+        "owned_workspace_after": owned_ws_after,
+        "workspace_unchanged": owned_ws_before == owned_ws_after or not owned_ws_before,
+        "selected_team": assigned,
+        "invitation_required": False,
+        "duplicate_rejoin": duplicate_rejoin,
+        "presence_write_ok": presence_ok,
+        "participant_write_ok": True,
+        "room_revision": int(document.get("revision") or 0),
+        "navigation_target": "shared_lobby" if status in ("", "not_started", "waiting", "ready") else "active_room",
+        "multiplayer_active": is_multiplayer_draft_active(session),
+    }
     try:
         from draft_room_join_trace import trace_join_step
 
@@ -920,9 +1018,12 @@ def join_shared_draft_room(
             backend=backend_name,
             multiplayer_active=is_multiplayer_draft_active(session),
             revision=document.get("revision"),
+            duplicate_rejoin=duplicate_rejoin,
         )
     except ImportError:
         pass
+    if duplicate_rejoin:
+        return True, f"You already joined this room as {assigned}.", document
     return True, f"Joined room {code} as {assigned}.", document
 
 

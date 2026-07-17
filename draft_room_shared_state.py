@@ -182,14 +182,24 @@ def document_to_runtime_room(document: dict[str, Any] | None) -> dict[str, Any] 
     runtime = room_from_persist_dict(copy.deepcopy(room_blob))
     if not isinstance(runtime, dict):
         return None
-    runtime["draft_room_id"] = str(document.get("draft_room_id") or document.get("room_code") or "")
+    room_code = str(document.get("room_code") or "").strip().upper()
+    runtime["draft_room_id"] = str(document.get("draft_room_id") or room_code or "")
+    # Stamp share code on every common reader path (top-level, config, meta.sync, sync).
+    if room_code:
+        runtime["room_code"] = room_code
+        runtime["share_code"] = room_code
+        cfg = dict(runtime.get("config") or {})
+        cfg["share_code"] = room_code
+        cfg["room_code"] = room_code
+        runtime["config"] = cfg
     meta = dict(runtime.get("meta") or {})
     sync = dict(meta.get("sync") or {})
     sync["revision"] = int(document.get("revision") or 1)
-    sync["room_code"] = str(document.get("room_code") or "")
+    sync["room_code"] = room_code
     sync["storage_backend"] = str(document.get("_storage_backend") or sync.get("storage_backend") or "shared_room")
     meta["sync"] = sync
     runtime["meta"] = meta
+    runtime["sync"] = dict(sync)
     return runtime
 
 

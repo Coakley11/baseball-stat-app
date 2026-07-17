@@ -18,7 +18,6 @@ from live_draft_setup_mode import (
     is_solo_draft_mode,
     normalize_setup_mode,
     record_setup_mode_trace,
-    persist_live_draft_setup_mode_preference,
     seed_live_draft_setup_mode_before_widget,
     setup_is_read_only,
     shared_room_code,
@@ -267,29 +266,46 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
                 "selectbox_return_value": str(picked_team or "").strip(),
             },
         )
+    try:
+        from draft_room_join_trace import render_join_attempt_diagnostics, render_join_trace_panel
+
+        render_join_attempt_diagnostics(st, session)
+        render_join_trace_panel(st, session)
+    except ImportError:
+        pass
 
 
 def _format_join_user_message(*, ok: bool, code: str, team: str, backend_msg: str) -> str:
     if ok:
-        return f"Joined room {code} as {team}."
+        return str(backend_msg or f"Joined room {code} as {team}.")
     raw = str(backend_msg or "").strip()
     if not raw:
         return "Could not join room: unknown error."
+    low = raw.lower()
     try:
         from draft_room_membership import ERR_TEAM_ALREADY_ASSIGNED
         from live_draft_team_ownership import ROOM_NOT_FOUND_MSG
 
-        if raw == ROOM_NOT_FOUND_MSG:
-            return ROOM_NOT_FOUND_MSG
-        if raw == ERR_TEAM_ALREADY_ASSIGNED:
-            return "That team has already been claimed."
+        if raw == ROOM_NOT_FOUND_MSG or "not found for that code" in low or low == "room code not found":
+            return "Room code not found"
+        if raw == ERR_TEAM_ALREADY_ASSIGNED or "already claimed" in low or "already assigned" in low:
+            return "Team is already claimed"
     except ImportError:
         pass
-    if raw in {
-        "Choose a team before joining.",
-        "Choose a team before joining — teams are never assigned automatically.",
-    }:
-        return "Choose a team before joining."
+    if "no longer joinable" in low:
+        return raw if raw.startswith("Room is no longer joinable") else f"Room is no longer joinable — {raw}"
+    if "already joined" in low:
+        return raw
+    if "choose a team" in low:
+        return "Choose a team before joining"
+    if "no open" in low or "no teams are available" in low:
+        return "No teams are available"
+    if "could not be loaded" in low:
+        return "Room data could not be loaded"
+    if "unable to save participant" in low:
+        return raw if raw.startswith("Unable to save") else f"Unable to save participant — {raw}"
+    if "workspace" in low and "mismatch" in low:
+        return "Workspace identity mismatch"
     if raw.startswith("Could not join room:"):
         return raw
     return f"Could not join room: {raw}"
@@ -495,12 +511,26 @@ def render_guest_join_from_setup(st: Any, session: dict[str, Any]) -> bool:
         room_lookup_attempted=True,
     )
     if ok:
-        # Radio already owns live_draft_setup_mode this run — never reassign it.
-        # Persist Shared preference only (join implies Shared Multiplayer intent).
-        persist_live_draft_setup_mode_preference(session, SETUP_MODE_SHARED, st=None)
+        # Mode preference is persisted inside join_shared_draft_room (no widget key write).
         session["_draft_join_flash"] = display
         return True
     session["_draft_join_error"] = display
+    # Keep structured failure details for Developer Mode + non-silent UI.
+    diag = session.get("_draft_room_join_load_diag") or {}
+    session.setdefault(
+        "_draft_room_join_attempt_diag",
+        {
+            "entered_code": code,
+            "normalized_code": code,
+            "lookup_backend": diag.get("backend"),
+            "lookup_fallback_used": diag.get("lookup_fallback_used"),
+            "found": diag.get("found"),
+            "reason": diag.get("reason"),
+            "selected_team": requested_team,
+            "invitation_required": False,
+            "claim_result": display,
+        },
+    )
     return False
 
 

@@ -117,6 +117,27 @@ def live_draft_blob_owner_auth_id(blob: dict[str, Any] | None) -> str:
     return str(blob.get(LIVE_DRAFT_OWNER_AUTH_KEY) or "").strip()
 
 
+def _session_is_shared_room_participant(session: dict[str, Any], blob: dict[str, Any] | None = None) -> bool:
+    """True when this browser session has joined a Shared Multiplayer room by code.
+
+    Guests (e.g. Coakley11) hydrate Daniel's shared room board into their session —
+    ownership stamps from the host must not wipe that join.
+    """
+    _ = blob
+    try:
+        from draft_room_context import resolve_shared_room_code
+
+        code = str(resolve_shared_room_code(session) or "").strip().upper()
+    except ImportError:
+        code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+    if not code:
+        return False
+    team = str(session.get("draft_room_participant_team") or session.get("room_your_team") or "").strip()
+    membership = session.get("draft_room_participant_membership")
+    has_mem = isinstance(membership, dict) and code in membership
+    return bool(team or has_mem)
+
+
 def live_draft_restore_allowed(
     session: dict[str, Any],
     blob: dict[str, Any] | None,
@@ -136,6 +157,10 @@ def live_draft_restore_allowed(
     if not is_authenticated(session):
         # Signed-out visitors must not adopt owned/shared multiplayer blobs.
         return False, "auth_required"
+
+    # Shared Multiplayer guests keep the host's room board without switching workspace.
+    if _session_is_shared_room_participant(session, blob):
+        return True, "shared_multiplayer_participant"
 
     current_auth = _current_auth_user_id(session)
     owner_auth = live_draft_blob_owner_auth_id(blob)
@@ -165,6 +190,10 @@ def live_draft_restore_allowed(
 
 
 def clear_foreign_live_draft_state(session: dict[str, Any], *, reason: str) -> None:
+    # Never wipe an active Shared Multiplayer join (cross-workspace guest).
+    if _session_is_shared_room_participant(session):
+        session["_live_draft_restore_blocked_reason"] = f"skipped_clear_mp:{reason}"
+        return
     session.pop(LIVE_DRAFT_STATE_KEY, None)
     session.pop(LIVE_DRAFT_ROOM_KEY, None)
     session["_live_draft_restore_blocked_reason"] = reason

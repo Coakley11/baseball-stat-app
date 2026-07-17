@@ -97,10 +97,18 @@ def team_claim_rows(
     return rows
 
 
+def _is_cpu_or_placeholder_team(name: str) -> bool:
+    raw = str(name or "").strip().lower()
+    if not raw:
+        return True
+    tokens = ("cpu", "bot", "ai team", "placeholder", "computer", "auto-draft")
+    return any(tok in raw for tok in tokens) or raw.startswith("cpu ")
+
+
 def open_teams_for_join(
     document: dict[str, Any],
 ) -> list[str]:
-    """Teams not yet claimed in a shared room document."""
+    """Human teams not yet claimed in a shared room document."""
     room_blob = document.get("room")
     teams: list[str] = []
     if isinstance(room_blob, dict):
@@ -111,7 +119,7 @@ def open_teams_for_join(
         for v in participants.values()
         if isinstance(v, dict) and v.get("assigned_team")
     }
-    return [t for t in teams if t not in taken]
+    return [t for t in teams if t not in taken and not _is_cpu_or_placeholder_team(t)]
 
 
 def count_joined_teams(session: dict[str, Any], room: dict[str, Any]) -> tuple[int, int]:
@@ -175,7 +183,7 @@ def format_team_claim_status(session: dict[str, Any], row: dict[str, Any]) -> st
     return f"{team} — claimed by {owner}"
 
 
-ROOM_NOT_FOUND_MSG = "No active shared draft room was found for that code."
+ROOM_NOT_FOUND_MSG = "Room code not found"
 
 
 def format_team_ownership_line(row: dict[str, Any]) -> str:
@@ -229,12 +237,13 @@ def lookup_open_teams_for_code(room_code: str, *, store: Any = None) -> tuple[li
             reason = str(load_result.get("reason") or "not_found")
             if reason == "query_error":
                 return [], str(load_result.get("query_error") or "Could not look up room.")
-            return [], ROOM_NOT_FOUND_MSG
-        if str(document.get("status") or "").lower() == "closed":
-            return [], "This draft room has been closed."
+            return [], "Room code not found"
+        status = str(document.get("status") or "").lower()
+        if status in ("closed", "complete", "completed", "cancelled", "canceled", "expired"):
+            return [], "Room is no longer joinable"
         open_teams = open_teams_for_join(document)
         if not open_teams:
-            return [], "No open team slots in this room."
+            return [], "No teams are available"
         return open_teams, ""
     except ImportError:
         return [], "Join lookup is unavailable."

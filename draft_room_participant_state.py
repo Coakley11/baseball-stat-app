@@ -441,22 +441,41 @@ def set_active_participant(
 
 
 def live_draft_room_share_code(room: dict[str, Any] | None) -> str:
-    """Share code stamped on a live runtime room (or empty)."""
+    """Share code stamped on a live runtime room (or empty).
+
+    Shared Multiplayer stores the code under ``meta.sync.room_code`` (and sometimes
+    top-level ``sync`` / ``room_code``). Never treat a long internal ``draft_room_id``
+    (e.g. PREDRAFT1) as the share code — that falsely mismatches the 6-char join code
+    and wipes a just-joined guest room via ``clear_mismatched_live_draft_runtime``.
+    """
     if not isinstance(room, dict):
         return ""
     sync = room.get("sync") if isinstance(room.get("sync"), dict) else {}
+    meta = room.get("meta") if isinstance(room.get("meta"), dict) else {}
+    meta_sync = meta.get("sync") if isinstance(meta.get("sync"), dict) else {}
     cfg = room.get("config") if isinstance(room.get("config"), dict) else {}
     for candidate in (
         sync.get("room_code"),
+        meta_sync.get("room_code"),
         room.get("room_code"),
         room.get("share_code"),
         cfg.get("share_code"),
         cfg.get("room_code"),
-        room.get("draft_room_id"),
     ):
         code = str(candidate or "").strip().upper()
         if code and len(code) >= 4:
             return code
+    rid = str(room.get("draft_room_id") or "").strip().upper()
+    if not rid:
+        return ""
+    try:
+        from draft_room_create_verify import is_plausible_share_code
+
+        if is_plausible_share_code(rid):
+            return rid
+    except ImportError:
+        if len(rid) == 6 and rid.isalnum():
+            return rid
     return ""
 
 

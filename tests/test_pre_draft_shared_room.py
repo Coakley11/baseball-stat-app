@@ -446,7 +446,7 @@ class PreDraftSharedRoomAppTestLifecycle(unittest.TestCase):
             with mock.patch.object(st, "session_state", session):
                 joined = render_guest_join_from_setup(st, session)
         self.assertFalse(joined)
-        self.assertEqual(session.get("_draft_join_error"), "That team has already been claimed.")
+        self.assertEqual(session.get("_draft_join_error"), "Team is already claimed")
         join_diag = session.get("_draft_room_join_diag") or {}
         self.assertTrue(join_diag.get("claim_attempted"))
 
