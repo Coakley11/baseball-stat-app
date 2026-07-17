@@ -7,7 +7,7 @@ from typing import Any
 
 LIVE_DRAFT_SETUP_DIRTY_KEY = "_live_draft_setup_dirty"
 LIVE_DRAFT_SETUP_DIRTY_TS_KEY = "_live_draft_setup_dirty_ts"
-LIVE_DRAFT_SETUP_AUTOSAVE_SEC = 3.0
+LIVE_DRAFT_SETUP_AUTOSAVE_SEC = 0.8
 
 
 def is_live_draft_pre_pick_setup(session: dict[str, Any], room: dict[str, Any] | None = None) -> bool:
@@ -62,7 +62,10 @@ def on_live_draft_setup_widget_changed(
     style_key: str = "live_draft_proj_style",
     format_key: str = "live_draft_scoring",
 ) -> None:
-    """Lightweight setup edit — canonical settings + dirty flag only (no cloud/disk save)."""
+    """Lightweight setup edit — canonical settings + dirty flag; autosave follows shortly."""
+    # Ignore widget on_change fired while we are seeding session from persistence.
+    if session.get("_live_draft_setup_seeding"):
+        return
     try:
         from live_draft_perf import PHASE_SETUP_CANONICAL_SETTINGS, PHASE_SETUP_SETTINGS_ONCHANGE, live_draft_perf_action
 
@@ -115,7 +118,7 @@ def flush_live_draft_setup_persist(
     reason: str,
     save_page: bool = True,
 ) -> bool:
-    """Persist deferred setup edits to page_filter_state + disk/cloud."""
+    """Persist deferred setup edits to page_filter_state + disk/cloud + preference record."""
     if not is_live_draft_setup_dirty(session) and reason != "live_draft_setup_force":
         return False
     try:
@@ -134,6 +137,12 @@ def flush_live_draft_setup_persist(
         if save_page:
             _save_live_draft_page_state(st, session)
         _force_save_setup(st, session, reason=reason)
+    try:
+        from user_page_preferences import persist_live_draft_setup_preferences
+
+        persist_live_draft_setup_preferences(session, st=st, force_disk=False)
+    except ImportError:
+        pass
     clear_live_draft_setup_dirty(session)
     return True
 

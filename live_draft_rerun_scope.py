@@ -62,6 +62,9 @@ def live_draft_expensive_recompute_required(session: dict[str, Any]) -> bool:
         session.pop(QUEUE_TICK_KEY, None)
         session.pop(PICK_TICK_KEY, None)
         return False
+    # After a transactional pick, the next normal paint refreshes analytics.
+    if session.pop("_live_draft_recs_pending_after_pick", None):
+        return True
     return True
 
 

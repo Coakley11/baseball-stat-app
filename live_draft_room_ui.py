@@ -1747,11 +1747,18 @@ def render_live_draft_rec_cards(
                     after = list(before)
                     try:
                         from draft_state import add_player_to_draft_queue
+                        from live_draft_rerun_scope import mark_live_draft_queue_tick
 
-                        # Phase 1: mutate session immediately; durable save is deferred.
+                        # Mutate session immediately; skip recommendation rebuild on the follow-up paint.
+                        mark_live_draft_queue_tick(_session)
                         after, added = add_player_to_draft_queue(_session, _name)
                     except ImportError:
-                        pass
+                        try:
+                            from draft_state import add_player_to_draft_queue
+
+                            after, added = add_player_to_draft_queue(_session, _name)
+                        except ImportError:
+                            pass
                     after = [str(x).strip() for x in (_session.get("draft_queue") or []) if str(x).strip()]
                     try:
                         from live_draft_queue_fragment import record_queue_add_diag

@@ -510,16 +510,34 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
             except ImportError:
                 mark_live_draft_timer_tick(session)
         elif source == "poll_fragment":
-            # Shared-board poll changed state — must rebuild recommendations.
+            # Apply shared board first; defer research rebuild.
+            try:
+                from live_draft_rerun_scope import mark_live_draft_optimistic_pick_tick
+
+                mark_live_draft_optimistic_pick_tick(session)
+            except ImportError:
+                mark_live_draft_timer_tick(session)
+            session["_live_draft_recs_pending_after_pick"] = True
+        elif source in ("pause_draft", "resume_draft"):
             force_live_draft_expensive_recompute(session)
-        elif source in (
-            "auto_pick",
-            "page_autopick",
-            "pause_draft",
-            "resume_draft",
-            "auto_pick_complete",
-        ):
-            force_live_draft_expensive_recompute(session)
+        elif source in ("auto_pick", "page_autopick", "auto_pick_complete"):
+            # Commit first, paint board/timer; analytics refresh on a later pass.
+            try:
+                from live_draft_rerun_scope import mark_live_draft_optimistic_pick_tick
+
+                mark_live_draft_optimistic_pick_tick(session)
+            except ImportError:
+                mark_live_draft_timer_tick(session)
+            # Schedule expensive recompute for the *next* navigation/poll, not this paint.
+            session["_live_draft_recs_pending_after_pick"] = True
+        elif source == "poll_apply":
+            # Lightweight shared-state apply — avoid full research rebuild unless pick advanced.
+            try:
+                from live_draft_rerun_scope import mark_live_draft_optimistic_pick_tick
+
+                mark_live_draft_optimistic_pick_tick(session)
+            except ImportError:
+                mark_live_draft_timer_tick(session)
     except ImportError:
         pass
     try:

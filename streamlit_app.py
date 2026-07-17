@@ -21715,6 +21715,12 @@ if active_page == DRAFT_LAB_PAGE:
 if active_page == "Live Draft Room":
     _page_perf_start(active_page)
     try:
+        from user_page_preferences import ensure_live_draft_setup_preferences_loaded
+
+        ensure_live_draft_setup_preferences_loaded(st.session_state)
+    except ImportError:
+        pass
+    try:
         _ui_rerun_t0 = st.session_state.pop("_expired_pick_ui_rerun_requested_at", None)
         if _ui_rerun_t0 is not None:
             import time as _time_ui_rerun
@@ -22795,7 +22801,7 @@ if active_page == "Live Draft Room":
             except ImportError:
                 _start_disabled, _start_help = False, ""
 
-            b_start, b_reset, b_save = st.columns([2, 2, 1])
+            b_start, b_reset, b_restore = st.columns([2, 2, 1])
             with b_start:
                 st.button(
                     "Start New Live Draft",
@@ -22807,29 +22813,31 @@ if active_page == "Live Draft Room":
                 )
             with b_reset:
                 reset_live = st.button("Delete Draft", key="live_draft_reset_btn")
-            with b_save:
-                try:
-                    from live_draft_setup_persist import is_live_draft_setup_dirty
-
-                    _save_setup_disabled = not is_live_draft_setup_dirty(st.session_state)
-                except ImportError:
-                    _save_setup_disabled = True
+            with b_restore:
+                st.caption("Setup autosaves.")
                 if st.button(
-                    "Save Setup",
-                    key="live_draft_save_setup_btn",
-                    disabled=_save_setup_disabled,
-                    help="Persist setup changes to disk/cloud (settings auto-save after a few seconds of idle).",
+                    "Reset Setup to Defaults",
+                    key="live_draft_reset_setup_btn",
+                    help="Restore application default setup values for future drafts. Does not wipe an in-progress draft board.",
                 ):
-                    try:
-                        from live_draft_setup_persist import flush_live_draft_setup_persist
+                    st.session_state["_live_draft_reset_setup_confirm"] = True
+                if st.session_state.get("_live_draft_reset_setup_confirm"):
+                    st.warning("Replace your saved Live Draft setup with application defaults?")
+                    c_yes, c_no = st.columns(2)
+                    with c_yes:
+                        if st.button("Confirm reset", key="live_draft_reset_setup_confirm_btn"):
+                            try:
+                                from user_page_preferences import reset_live_draft_setup_to_defaults
 
-                        if flush_live_draft_setup_persist(st, st.session_state, reason="live_draft_setup_save"):
-                            st.success("Setup saved.")
-                        else:
-                            st.info("No pending setup changes.")
-                    except ImportError:
-                        save_page_state("Live Draft Room")
-                        force_save_baseball_state(st, reason="live_draft_setup_save")
+                                reset_live_draft_setup_to_defaults(st.session_state, st=st)
+                                st.session_state.pop("_live_draft_reset_setup_confirm", None)
+                                st.success("Setup restored to defaults.")
+                                st.rerun()
+                            except ImportError:
+                                st.error("Preference reset unavailable.")
+                    with c_no:
+                        if st.button("Cancel", key="live_draft_reset_setup_cancel_btn"):
+                            st.session_state.pop("_live_draft_reset_setup_confirm", None)
 
             if reset_live:
                 from draft_room_membership import reset_live_draft_with_membership_guard

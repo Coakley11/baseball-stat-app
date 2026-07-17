@@ -22,6 +22,7 @@ QUEUE_ACTION_ID_KEY = "_live_draft_queue_action_id"
 _ALLOWED_EMPTY_REASONS = frozenset(
     {
         "clear_queue",
+        "remove_from_queue",
         "auth_user_switch",
         "auth_user_restore",
         "leave_shared_room",

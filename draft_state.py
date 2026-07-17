@@ -427,9 +427,41 @@ def flush_draft_workflow_edits(session: dict[str, Any], st_obj: Any = None, *, r
     return True
 
 
-def sync_draft_queue(session: dict[str, Any], queue: Any, *, reason: str = "queue_change") -> list[str]:
+def sync_draft_queue(
+    session: dict[str, Any],
+    queue: Any,
+    *,
+    reason: str = "queue_change",
+    sync_participant: bool | None = None,
+) -> list[str]:
+    """Update local queue immediately. Multiplayer participant sync is deferred for queue edits."""
     q = _normalize_player_list(queue)
-    write_canonical_draft_state(session, queue=q, reason=reason, local_edit=True)
+    reason_s = str(reason or "queue_change")
+    # Queue mutations must stay transactional — never block on shared participant workflow I/O.
+    if sync_participant is None:
+        sync_participant = not reason_s.startswith(
+            ("add_to_queue", "remove_from_queue", "move_queue", "drag_reorder", "queue_")
+        ) and reason_s not in {
+            "add_to_queue",
+            "remove_from_queue",
+            "move_queue_up",
+            "move_queue_down",
+            "drag_reorder_queue",
+            "queue_change",
+        }
+    write_canonical_draft_state(
+        session,
+        queue=q,
+        reason=reason_s,
+        local_edit=True,
+        sync_participant=bool(sync_participant),
+    )
+    try:
+        from live_draft_rerun_scope import mark_live_draft_queue_tick
+
+        mark_live_draft_queue_tick(session)
+    except ImportError:
+        pass
     return q
 
 
@@ -470,16 +502,31 @@ def add_player_to_draft_queue(session: dict[str, Any], player_name: str) -> tupl
     if name in q:
         return q, False
     try:
+        from live_draft_action_latency import begin_action, finish_action, mark_action
+
+        begin_action(session, "queue_add", detail=name)
+        _latency = True
+    except ImportError:
+        _latency = False
+        begin_action = mark_action = finish_action = None  # type: ignore[assignment]
+    try:
         from live_draft_perf import PHASE_QUEUE_ADD, live_draft_perf_action
 
         with live_draft_perf_action(session, "queue_add", phase=PHASE_QUEUE_ADD):
             q.append(name)
-            sync_draft_queue(session, q, reason="add_to_queue")
+            # Optimistic local update — no recommendation rebuild, no MP participant round-trip.
+            sync_draft_queue(session, q, reason="add_to_queue", sync_participant=False)
             _note_queue_mutation_deferred(session, reason="add_to_queue")
     except ImportError:
         q.append(name)
-        sync_draft_queue(session, q, reason="add_to_queue")
+        sync_draft_queue(session, q, reason="add_to_queue", sync_participant=False)
         _note_queue_mutation_deferred(session, reason="add_to_queue")
+    if _latency:
+        try:
+            mark_action(session, "local_update")
+            finish_action(session)
+        except Exception:
+            pass
     try:
         from draft_ui import cache_queue_player_meta
 
@@ -492,13 +539,14 @@ def add_player_to_draft_queue(session: dict[str, Any], player_name: str) -> tupl
                 pool = room.get("pool")
         except ImportError:
             pass
-        if pool is not None and hasattr(pool, "iterrows"):
-            target = name.lower()
-            col = "fullName" if "fullName" in pool.columns else "Player"
-            if col in pool.columns:
-                for _, row in pool.iterrows():
-                    full = str(row.get(col) or "").strip()
-                    if full.lower() == target:
+        # Prefer indexed lookup — avoid full pool iterrows on the queue critical path.
+        if pool is not None and hasattr(pool, "columns"):
+            col = "fullName" if "fullName" in pool.columns else ("Player" if "Player" in getattr(pool, "columns", []) else "")
+            if col:
+                try:
+                    mask = pool[col].astype(str).str.strip().str.lower() == name.lower()
+                    if bool(mask.any()):
+                        row = pool.loc[mask].iloc[0]
                         cache_queue_player_meta(
                             session,
                             name,
@@ -507,7 +555,8 @@ def add_player_to_draft_queue(session: dict[str, Any], player_name: str) -> tupl
                                 "team": str(row.get("Team") or row.get("MLB Team") or "—"),
                             },
                         )
-                        break
+                except Exception:
+                    pass
     except ImportError:
         pass
     return q, True
@@ -528,11 +577,11 @@ def remove_player_from_draft_queue(
 
         with live_draft_perf_action(session, "queue_remove", phase=PHASE_QUEUE_REMOVE):
             q = [p for p in q if p != name]
-            sync_draft_queue(session, q, reason=reason)
+            sync_draft_queue(session, q, reason=reason, sync_participant=False)
             _note_queue_mutation_deferred(session, reason=reason)
     except ImportError:
         q = [p for p in q if p != name]
-        sync_draft_queue(session, q, reason=reason)
+        sync_draft_queue(session, q, reason=reason, sync_participant=False)
         _note_queue_mutation_deferred(session, reason=reason)
     return q, True
 

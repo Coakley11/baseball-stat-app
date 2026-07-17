@@ -94,7 +94,13 @@ def should_suppress_expired_rerun(session: dict[str, Any], room: dict[str, Any])
 
 
 def _multiplayer_autopick_allowed(session: dict[str, Any]) -> bool:
-    """Only the room host runs timer auto-pick in multiplayer (avoids duplicate commits)."""
+    """Host preferred; lease takeover allowed when authority stalls (watchdog)."""
+    try:
+        from live_draft_timer_authority import multiparty_may_run_autopick
+
+        return bool(multiparty_may_run_autopick(session))
+    except ImportError:
+        pass
     try:
         from draft_room_context import is_multiplayer_draft_active
         from draft_room_membership import is_room_host
@@ -102,7 +108,6 @@ def _multiplayer_autopick_allowed(session: dict[str, Any]) -> bool:
 
         if not is_multiplayer_draft_active(session):
             return True
-        # Reuse recent mp diag host flag when available (avoids a network load on every expire).
         mp_diag = session.get("_live_draft_mp_diag")
         if isinstance(mp_diag, dict) and mp_diag.get("is_host") is not None:
             return bool(mp_diag.get("is_host"))
@@ -474,6 +479,26 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
     t0 = time.perf_counter()
     host_ok = _multiplayer_autopick_allowed(session)
     record_expired_pick_perf(session, host_check_ms=_perf_ms(t0))
+    try:
+        from live_draft_timer_authority import (
+            expired_pick_needs_watchdog,
+            record_watchdog_diagnostics,
+        )
+
+        if expired_pick_needs_watchdog(session, room):
+            record_watchdog_diagnostics(
+                session,
+                expiration_token=expiration_token,
+                pick_index=idx,
+                authority_allowed=host_ok,
+                elapsed_after_deadline_sec=max(
+                    0.0,
+                    time.time() - float(room.get("timer_deadline") or time.time()),
+                ),
+                source=source,
+            )
+    except ImportError:
+        pass
     if not host_ok:
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
 

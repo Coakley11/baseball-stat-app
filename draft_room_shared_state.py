@@ -280,13 +280,48 @@ def preserve_shared_room_participants(
     return merged
 
 
+def preserve_shared_room_timer_authority(
+    outgoing: dict[str, Any],
+    existing: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Keep the newer timer_authority lease when board writers omit it."""
+    if not isinstance(outgoing, dict):
+        return {}
+    if not isinstance(existing, dict):
+        return outgoing
+    existing_auth = existing.get("timer_authority")
+    out_auth = outgoing.get("timer_authority")
+    if not isinstance(existing_auth, dict):
+        return outgoing
+    if not isinstance(out_auth, dict):
+        merged = copy.deepcopy(outgoing)
+        merged["timer_authority"] = copy.deepcopy(existing_auth)
+        return merged
+    try:
+        existing_lease = float(existing_auth.get("lease_expires_at") or 0)
+    except (TypeError, ValueError):
+        existing_lease = 0.0
+    try:
+        out_lease = float(out_auth.get("lease_expires_at") or 0)
+    except (TypeError, ValueError):
+        out_lease = 0.0
+    if existing_lease > out_lease:
+        merged = copy.deepcopy(outgoing)
+        merged["timer_authority"] = copy.deepcopy(existing_auth)
+        return merged
+    return outgoing
+
+
 def preserve_shared_room_sidecars(
     outgoing: dict[str, Any],
     existing: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Preserve chat + participants when writing a potentially stale document."""
-    return preserve_shared_room_chat(
-        preserve_shared_room_participants(outgoing, existing),
+    """Preserve chat + participants + timer authority when writing a potentially stale document."""
+    return preserve_shared_room_timer_authority(
+        preserve_shared_room_chat(
+            preserve_shared_room_participants(outgoing, existing),
+            existing,
+        ),
         existing,
     )
 
@@ -387,12 +422,23 @@ class LocalFileSharedRoomStore:
             return None
         if not isinstance(raw, dict):
             return None
-        return {
+        head = {
             "room_code": str(raw.get("room_code") or room_code).upper(),
             "revision": int(raw.get("revision") or 1),
             "status": str(raw.get("status") or ""),
             "updated_at": str(raw.get("updated_at") or ""),
         }
+        try:
+            from live_draft_timer_authority import extract_live_head_fields
+
+            head.update(extract_live_head_fields(raw))
+            head["revision"] = int(head.get("room_revision") or head.get("revision") or 1)
+        except ImportError:
+            room = raw.get("room") if isinstance(raw.get("room"), dict) else {}
+            if isinstance(room, dict):
+                head["current_pick_index"] = int(room.get("current_pick_index") or 0)
+                head["timer_deadline"] = room.get("timer_deadline")
+        return head
 
     def save(self, document: dict[str, Any]) -> dict[str, Any]:
         code = str(document.get("room_code") or "").strip().upper()
