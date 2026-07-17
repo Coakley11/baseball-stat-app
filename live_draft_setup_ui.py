@@ -107,11 +107,20 @@ def render_shared_multiplayer_setup(
             waiting = 0
             room = session.get("live_draft_room")
             if isinstance(room, dict):
-                waiting = waiting_participant_count(session, room)
+                try:
+                    from live_draft_presence import count_required_joined, format_participant_status_line
+
+                    joined_n, total_n, prow = count_required_joined(session, room)
+                    waiting = max(0, total_n - joined_n)
+                    st.markdown(f"**Participants:** {joined_n} of {total_n} joined")
+                    for row in prow:
+                        st.markdown(f"- {format_participant_status_line(row)}")
+                except ImportError:
+                    waiting = waiting_participant_count(session, room)
+                    for row in team_claim_rows(session, room):
+                        st.markdown(f"- {format_team_claim_status(session, row)}")
             if waiting > 0:
                 st.info(f"Waiting for **{waiting}** more participant{'s' if waiting != 1 else ''}")
-            for row in team_claim_rows(session, room if isinstance(room, dict) else {"teams": team_names}):
-                st.markdown(f"- {format_team_claim_status(session, row)}")
             assigned = str(session.get("room_your_team") or "").strip()
             if assigned:
                 st.caption(f"Commissioner team: **{assigned}**")
@@ -537,7 +546,13 @@ def render_shared_draft_ready_card(
         return
 
     code = shared_room_code(session)
-    joined, total = count_joined_teams(session, room)
+    try:
+        from live_draft_presence import count_required_joined, format_participant_status_line
+
+        joined, total, prow = count_required_joined(session, room)
+    except ImportError:
+        joined, total = count_joined_teams(session, room)
+        prow = []
     is_host = _is_room_host(session)
     start_disabled, start_help = start_button_disabled(session)
 
@@ -545,7 +560,10 @@ def render_shared_draft_ready_card(
         st.markdown("### Shared Draft Room Ready")
         if code:
             st.markdown(f"**Join code:** `{code}`")
-        st.markdown(f"**Teams joined:** {joined} of {total}")
+        st.markdown(f"**Participants joined:** {joined} of {total}")
+        if prow:
+            for row in prow:
+                st.markdown(f"- {format_participant_status_line(row)}")
         distinct = distinct_claimed_owner_count(session, room)
         if is_host and distinct < 2 and total >= 2:
             st.caption(
@@ -554,7 +572,7 @@ def render_shared_draft_ready_card(
 
         if is_host:
             st.info(
-                "Press **Start Live Draft** when all participants have joined and claimed their teams."
+                "Press **Start Live Draft** when all required participants have joined and claimed their teams."
             )
             st.button(
                 "Start Live Draft",
@@ -567,6 +585,8 @@ def render_shared_draft_ready_card(
             )
         else:
             st.warning("Waiting for commissioner to start the draft.")
+            if start_help:
+                st.caption(start_help)
 
 
 def render_edit_setup_expander(

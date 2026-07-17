@@ -1,4 +1,4 @@
-"""Live Draft Chat UI — fragment-scoped so timer/autopick stay on the hot path."""
+"""Live Draft Chat UI — compact 1990s AIM-style messenger window."""
 
 from __future__ import annotations
 
@@ -8,11 +8,13 @@ from typing import Any
 from live_draft_chat import (
     CHAT_COLLAPSED_KEY,
     CHAT_POLL_SEC,
-    QUICK_MESSAGES,
+    CHAT_SHOW_EARLIER_KEY,
+    CHAT_VISIBLE_LIMIT,
     append_live_draft_chat_message,
     author_label,
     chat_room_title,
     clear_system_chat_messages,
+    count_earlier_user_messages,
     delete_chat_message,
     format_chat_timestamp,
     is_chat_commissioner,
@@ -22,44 +24,8 @@ from live_draft_chat import (
     refresh_live_draft_chat_if_newer,
     set_chat_disabled,
     unread_chat_count,
+    user_visible_messages,
 )
-
-
-def _chat_css() -> str:
-    return """
-<style>
-.ld-chat-wrap {
-  margin: 8px 0 14px 0;
-  padding: 10px 12px;
-  background: linear-gradient(180deg, #f7faff 0%, #ffffff 100%);
-  border: 1px solid #d5e2f2;
-  border-radius: 10px;
-}
-.ld-chat-title {
-  font-size: 13px; font-weight: 700; color: #1f4e79; margin: 0 0 4px 0;
-}
-.ld-chat-sub {
-  font-size: 11px; color: #5a6f82; margin: 0 0 8px 0;
-}
-.ld-chat-log {
-  max-height: 200px; overflow-y: auto;
-  border: 1px solid #e3ebf5; border-radius: 8px;
-  background: #fff; padding: 8px 10px; margin-bottom: 8px;
-}
-.ld-chat-row { margin: 0 0 8px 0; line-height: 1.35; }
-.ld-chat-row.mine {
-  background: #eef6ff; border-radius: 6px; padding: 4px 6px; margin-left: 12px;
-}
-.ld-chat-row.system { opacity: 0.85; font-style: italic; }
-.ld-chat-row.mention {
-  border-left: 3px solid #c47b1a; padding-left: 6px; background: #fff8ee;
-}
-.ld-chat-meta { font-size: 11px; color: #5a6f82; margin-bottom: 1px; }
-.ld-chat-text { font-size: 13px; color: #12324a; word-wrap: break-word; }
-.ld-chat-empty { font-size: 12px; color: #7a8b9c; font-style: italic; padding: 6px 2px; }
-.ld-chat-mention-hl { font-weight: 700; color: #8a4b08; }
-</style>
-"""
 
 
 def _escape_html(text: str) -> str:
@@ -72,14 +38,107 @@ def _escape_html(text: str) -> str:
     )
 
 
-def _highlight_mentions(escaped_text: str) -> str:
-    import re
+def _aim_css() -> str:
+    return """
+<style>
+.ld-aim-wrap {
+  width: min(380px, 100%);
+  height: 400px;
+  max-height: 400px;
+  margin: 8px 0 12px 0;
+  display: flex;
+  flex-direction: column;
+  background: #c0c0c0;
+  border: 2px solid;
+  border-color: #ffffff #808080 #808080 #ffffff;
+  font-family: "Tahoma", "MS Sans Serif", "Segoe UI", sans-serif;
+  box-sizing: border-box;
+}
+.ld-aim-titlebar {
+  background: #000080;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+}
+.ld-aim-controls span {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-left: 3px;
+  background: #c0c0c0;
+  border: 1px solid #000;
+  color: #000;
+  font-size: 9px;
+  line-height: 10px;
+  text-align: center;
+}
+.ld-aim-status {
+  background: #d4d0c8;
+  border-bottom: 1px solid #808080;
+  font-size: 11px;
+  color: #222;
+  padding: 3px 6px;
+  flex: 0 0 auto;
+}
+.ld-aim-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #228b22;
+  margin-right: 3px;
+  vertical-align: middle;
+}
+.ld-aim-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px inset #808080;
+  margin: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: #000;
+}
+.ld-aim-row { margin: 0 0 8px 0; line-height: 1.25; }
+.ld-aim-row.mine { background: #ffffe0; }
+.ld-aim-row.mention { background: #fff4d6; }
+.ld-aim-meta { font-size: 11px; color: #333; margin-bottom: 1px; }
+.ld-aim-meta strong { font-weight: 700; color: #000080; }
+.ld-aim-team { color: #555; font-weight: 400; }
+.ld-aim-ts { float: right; color: #666; font-size: 10px; }
+.ld-aim-text { clear: both; white-space: pre-wrap; word-wrap: break-word; }
+.ld-aim-empty { color: #666; font-style: italic; font-size: 11px; }
+.ld-aim-composer {
+  flex: 0 0 auto;
+  background: #d4d0c8;
+  border-top: 1px solid #808080;
+  padding: 4px 6px 6px 6px;
+}
+</style>
+"""
 
-    return re.sub(
-        r"(@[A-Za-z0-9][A-Za-z0-9 _.'-]{0,40})",
-        r'<span class="ld-chat-mention-hl">\1</span>',
-        escaped_text,
-    )
+
+def _participant_status_line(session: dict[str, Any]) -> str:
+    try:
+        from live_draft_presence import required_human_participant_rows
+
+        room = session.get("live_draft_room") or {}
+        rows = required_human_participant_rows(session, room if isinstance(room, dict) else {})
+        bits = []
+        for row in rows[:6]:
+            name = _escape_html(str(row.get("display_name") or ""))
+            team = _escape_html(str(row.get("team_name") or ""))
+            dot = '<span class="ld-aim-dot" title="Joined"></span>' if row.get("joined") else ""
+            bits.append(f"{dot}{name} ({team})" if team else f"{dot}{name}")
+        return " · ".join(bits) if bits else "Managers in this draft"
+    except Exception:
+        return "Managers in this draft"
 
 
 def _current_participant_id(session: dict[str, Any]) -> str:
@@ -91,38 +150,38 @@ def _current_participant_id(session: dict[str, Any]) -> str:
         return ""
 
 
-def _render_message_log(st: Any, session: dict[str, Any], messages: list[dict[str, Any]]) -> None:
+def _render_transcript(st: Any, session: dict[str, Any], messages: list[dict[str, Any]]) -> None:
     if not messages:
         st.markdown(
-            '<div class="ld-chat-log"><div class="ld-chat-empty">'
+            '<div class="ld-aim-log"><div class="ld-aim-empty">'
             "No league messages yet. Start the conversation."
             "</div></div>",
             unsafe_allow_html=True,
         )
         return
     me = _current_participant_id(session)
-    parts: list[str] = ['<div class="ld-chat-log" id="ld-chat-log">']
-    for msg in messages[-80:]:
-        classes = ["ld-chat-row"]
-        msg_type = str(msg.get("message_type") or "user")
-        if msg_type == "system":
-            classes.append("system")
-        if me and str(msg.get("participant_id") or "") == me and msg_type != "system":
+    parts = ['<div class="ld-aim-log" id="ld-aim-log">']
+    for msg in messages:
+        classes = ["ld-aim-row"]
+        if me and str(msg.get("participant_id") or "") == me:
             classes.append("mine")
         if message_mentions_viewer(msg, session):
             classes.append("mention")
-        meta = f"{author_label(msg)} · {format_chat_timestamp(str(msg.get('ts') or ''))}"
-        text = _highlight_mentions(_escape_html(str(msg.get("text") or "")))
+        name = _escape_html(str(msg.get("display_name") or "Manager"))
+        team = _escape_html(str(msg.get("claimed_team") or msg.get("team") or ""))
+        ts = _escape_html(format_chat_timestamp(str(msg.get("ts") or "")))
+        text = _escape_html(str(msg.get("text") or ""))
+        team_bit = f' <span class="ld-aim-team">— {team}</span>' if team else ""
         parts.append(
-            f'<div class="{" ".join(classes)}"><div class="ld-chat-meta">{_escape_html(meta)}</div>'
-            f'<div class="ld-chat-text">{text}</div></div>'
+            f'<div class="{" ".join(classes)}">'
+            f'<div class="ld-aim-meta"><strong>{name}</strong>{team_bit}'
+            f'<span class="ld-aim-ts">{ts}</span></div>'
+            f'<div class="ld-aim-text">{text}</div></div>'
         )
     parts.append("</div>")
     parts.append(
-        "<script>"
-        "var el=document.getElementById('ld-chat-log');"
-        "if(el){el.scrollTop=el.scrollHeight;}"
-        "</script>"
+        "<script>var el=document.getElementById('ld-aim-log');"
+        "if(el){el.scrollTop=el.scrollHeight;}</script>"
     )
     st.markdown("\n".join(parts), unsafe_allow_html=True)
 
@@ -140,7 +199,7 @@ def _post_message(st: Any, session: dict[str, Any], text: str) -> None:
 
 
 def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
-    """Compact Live Draft / shared-league chat panel."""
+    """Compact AIM-style Live Draft chat — shared scope, five visible messages."""
     try:
         from draft_room_context import is_multiplayer_draft_active
     except ImportError:
@@ -153,33 +212,34 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
     unread = unread_chat_count(session, chat_preview)
     collapsed = bool(session.get(CHAT_COLLAPSED_KEY))
 
-    st.markdown(_chat_css(), unsafe_allow_html=True)
-    st.markdown('<div class="ld-chat-wrap">', unsafe_allow_html=True)
-
-    head = st.columns([5, 1])
-    with head[0]:
-        badge = f" · {unread} unread" if collapsed and unread else ""
-        st.markdown(
-            f'<div class="ld-chat-title">{_escape_html(title)} — Draft Chat{badge}</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            '<div class="ld-chat-sub">League chat for this live draft</div>',
-            unsafe_allow_html=True,
-        )
-    with head[1]:
-        toggle_label = "Expand" if collapsed else "Collapse"
-        if st.button(toggle_label, key="live_draft_chat_collapse", use_container_width=True):
-            session[CHAT_COLLAPSED_KEY] = not collapsed
-            if not session[CHAT_COLLAPSED_KEY]:
-                mark_chat_seen(session)
-            st.rerun()
+    st.markdown(_aim_css(), unsafe_allow_html=True)
 
     if collapsed:
+        label = f"Live Draft Chat — {title}"
         if unread:
-            st.caption(f"{unread} unread message{'s' if unread != 1 else ''}")
-        st.markdown("</div>", unsafe_allow_html=True)
+            label += f" ({unread} unread)"
+        if st.button(label, key="live_draft_chat_expand"):
+            session[CHAT_COLLAPSED_KEY] = False
+            mark_chat_seen(session)
+            st.rerun()
         return
+
+    st.markdown('<div class="ld-aim-wrap">', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="ld-aim-titlebar"><span>Live Draft Chat — {_escape_html(title)}</span>'
+        f'<span class="ld-aim-controls"><span>_</span><span>□</span><span>×</span></span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="ld-aim-status">{_participant_status_line(session)}</div>',
+        unsafe_allow_html=True,
+    )
+
+    head = st.columns([4, 1])
+    with head[1]:
+        if st.button("Hide", key="live_draft_chat_collapse", help="Collapse chat"):
+            session[CHAT_COLLAPSED_KEY] = True
+            st.rerun()
 
     mark_chat_seen(session, chat_preview)
 
@@ -188,30 +248,11 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
 
         @st.fragment(run_every=poll_interval)
         def _chat_fragment() -> None:
-            t0 = None
-            try:
-                import time
-
-                from live_draft_perf import PHASE_CHAT_LOAD, live_draft_perf_action
-
-                t0 = time.perf_counter()
-                ctx = live_draft_perf_action(session, "chat_load", phase=PHASE_CHAT_LOAD)
-            except Exception:
-                ctx = None
-            if ctx is not None:
-                with ctx:
-                    _chat_fragment_body(st, session)
-            else:
-                _chat_fragment_body(st, session)
-            if t0 is not None:
-                try:
-                    session["_live_draft_chat_load_ms"] = int((time.perf_counter() - t0) * 1000)
-                except Exception:
-                    pass
+            _chat_body(st, session)
 
         _chat_fragment()
     except Exception:
-        _chat_fragment_body(st, session, form_key="live_draft_chat_form_fallback")
+        _chat_body(st, session, form_key="live_draft_chat_form_fallback")
 
     if is_chat_commissioner(session):
         with st.expander("Commissioner chat controls", expanded=False):
@@ -231,7 +272,12 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
                     clear_system_chat_messages(session)
                     st.rerun()
             with c3:
-                mid = st.text_input("Delete message id", key="ld_chat_delete_id", label_visibility="collapsed", placeholder="Message id")
+                mid = st.text_input(
+                    "Delete message id",
+                    key="ld_chat_delete_id",
+                    label_visibility="collapsed",
+                    placeholder="Message id",
+                )
                 if st.button("Delete", key="ld_chat_delete_btn") and mid:
                     ok, err = delete_chat_message(session, mid)
                     if not ok and err:
@@ -242,37 +288,48 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _chat_fragment_body(st: Any, session: dict[str, Any], *, form_key: str = "live_draft_chat_form") -> None:
-    if session.get("_live_draft_manual_pick_in_flight") or session.get("_pending_manual_draft_pick"):
-        chat = load_live_draft_chat(session, force=False)
+def _chat_body(st: Any, session: dict[str, Any], *, form_key: str = "live_draft_chat_form") -> None:
+    refresh_live_draft_chat_if_newer(session)
+    chat = load_live_draft_chat(session, force=True)
+    all_messages = list(chat.get("messages") or [])
+    show_earlier = bool(session.get(CHAT_SHOW_EARLIER_KEY))
+    earlier = count_earlier_user_messages(all_messages)
+    if show_earlier:
+        visible = user_visible_messages(all_messages, limit=20)
     else:
-        refresh_live_draft_chat_if_newer(session)
-        chat = load_live_draft_chat(session, force=False)
+        visible = user_visible_messages(all_messages, limit=CHAT_VISIBLE_LIMIT)
 
     if chat.get("chat_disabled"):
         st.caption("Chat is disabled for this league.")
-        _render_message_log(st, session, list(chat.get("messages") or []))
+        _render_transcript(st, session, visible)
         return
 
-    _render_message_log(st, session, list(chat.get("messages") or []))
+    if earlier > 0 and not show_earlier:
+        if st.button(f"View earlier messages ({earlier})", key="ld_chat_earlier"):
+            session[CHAT_SHOW_EARLIER_KEY] = True
+            try:
+                st.rerun(scope="fragment")
+            except TypeError:
+                st.rerun()
+    elif show_earlier:
+        if st.button("Show latest five", key="ld_chat_latest_five"):
+            session[CHAT_SHOW_EARLIER_KEY] = False
+            try:
+                st.rerun(scope="fragment")
+            except TypeError:
+                st.rerun()
 
-    quick_cols = st.columns(len(QUICK_MESSAGES))
-    for i, phrase in enumerate(QUICK_MESSAGES):
-        with quick_cols[i]:
-            if st.button(phrase, key=f"ld_chat_quick_{i}", use_container_width=True):
-                _post_message(st, session, phrase)
+    _render_transcript(st, session, visible)
 
     with st.form(form_key, clear_on_submit=True):
-        composer = st.columns([5, 1])
-        with composer[0]:
-            message = st.text_input(
-                "Message",
-                label_visibility="collapsed",
-                placeholder="Message the league… (@Team to mention)",
-                max_chars=400,
-                key=f"{form_key}_input",
-            )
-        with composer[1]:
-            sent = st.form_submit_button("Send", use_container_width=True)
+        message = st.text_area(
+            "Message",
+            label_visibility="collapsed",
+            placeholder="Type a message…",
+            max_chars=400,
+            height=68,
+            key=f"{form_key}_input",
+        )
+        sent = st.form_submit_button("Send", use_container_width=False)
         if sent:
             _post_message(st, session, message)

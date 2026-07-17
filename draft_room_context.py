@@ -674,6 +674,12 @@ def create_and_host_shared_room(
         participant_id=participant_id,
         assigned_team=assigned,
     )
+    try:
+        from live_draft_presence import mark_participant_present
+
+        mark_participant_present(session, force_save=True, store=backend)
+    except ImportError:
+        pass
     save_participant_workflow_from_session(session, saved_code)
     _sync_participant_team_aliases(session, assigned)
     try:
@@ -863,6 +869,12 @@ def join_shared_draft_room(
             raise
     session[ACTIVE_SHARED_ROOM_CODE_KEY] = code
     set_active_participant(session, room_code=code, participant_id=participant_id, assigned_team=assigned)
+    try:
+        from live_draft_presence import mark_participant_present
+
+        mark_participant_present(session, force_save=True, store=backend)
+    except ImportError:
+        pass
     from draft_state import DRAFT_QUEUE_KEY, DRAFT_WATCHLIST_FAVORITES_KEY, DRAFT_WATCHLIST_FOCUS_KEY
     from draft_room_participant_state import participant_workflow_slot
 

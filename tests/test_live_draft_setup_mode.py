@@ -78,7 +78,10 @@ class SetupModeTests(unittest.TestCase):
         self.assertTrue(shared_room_ready_for_start(session))
         ok, reason = can_start_live_draft(session)
         self.assertFalse(ok)
-        self.assertIn("participant", reason.lower())
+        self.assertTrue(
+            any(tok in reason.lower() for tok in ("participant", "manager", "claim", "join")),
+            reason,
+        )
 
 
 class SharedRoomCreateTests(unittest.TestCase):

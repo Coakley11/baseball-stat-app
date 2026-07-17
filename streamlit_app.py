@@ -22885,6 +22885,12 @@ if active_page == "Live Draft Room":
         except Exception:
             pass
         try:
+            from live_draft_presence import mark_participant_present
+
+            mark_participant_present(st.session_state, force_save=True)
+        except Exception:
+            pass
+        try:
             from live_draft_render_trace import ldr_post_rerun_checkpoint, ldr_section
 
             ldr_section(

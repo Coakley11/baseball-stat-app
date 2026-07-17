@@ -46,7 +46,23 @@ _PRIVATE_DOCUMENT_KEYS = frozenset(
     }
 )
 
-_PARTICIPANT_PUBLIC_KEYS = frozenset({"assigned_team", "display_name", "joined_at", "participant_id"})
+_PARTICIPANT_PUBLIC_KEYS = frozenset(
+    {
+        "assigned_team",
+        "display_name",
+        "joined_at",
+        "last_seen_at",
+        "participant_id",
+        "user_id",
+        "account_user_id",
+        "external_id",
+        "email",
+        "workspace_id",
+        "seat_kind",
+        "team_kind",
+        "is_cpu",
+    }
+)
 
 
 def shared_room_document_private_leaks(document: dict[str, Any] | None, *, prefix: str = "") -> list[str]:
@@ -220,6 +236,61 @@ def preserve_shared_room_chat(
     return outgoing
 
 
+def preserve_shared_room_participants(
+    outgoing: dict[str, Any],
+    existing: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge participants + joined_participants so stale host saves cannot drop guests."""
+    if not isinstance(outgoing, dict):
+        return {}
+    if not isinstance(existing, dict):
+        return outgoing
+    merged = copy.deepcopy(outgoing)
+
+    existing_parts = dict(existing.get("participants") or {})
+    outgoing_parts = dict(outgoing.get("participants") or {})
+    combined: dict[str, Any] = copy.deepcopy(existing_parts)
+    for pid, meta in outgoing_parts.items():
+        if not isinstance(meta, dict):
+            continue
+        prev = combined.get(str(pid))
+        if isinstance(prev, dict):
+            entry = dict(prev)
+            entry.update({k: v for k, v in meta.items() if v not in (None, "")})
+            # Prefer non-empty assigned_team from either side.
+            team = str(meta.get("assigned_team") or prev.get("assigned_team") or "").strip()
+            if team:
+                entry["assigned_team"] = team
+            combined[str(pid)] = entry
+        else:
+            combined[str(pid)] = copy.deepcopy(meta)
+    merged["participants"] = combined
+
+    try:
+        from live_draft_presence import JOINED_PARTICIPANTS_KEY, merge_joined_participants
+
+        merged[JOINED_PARTICIPANTS_KEY] = merge_joined_participants(outgoing, existing)
+    except ImportError:
+        existing_joined = existing.get("joined_participants")
+        if isinstance(existing_joined, dict) and existing_joined:
+            out_joined = outgoing.get("joined_participants")
+            if not isinstance(out_joined, dict) or not out_joined:
+                merged["joined_participants"] = copy.deepcopy(existing_joined)
+
+    return merged
+
+
+def preserve_shared_room_sidecars(
+    outgoing: dict[str, Any],
+    existing: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Preserve chat + participants when writing a potentially stale document."""
+    return preserve_shared_room_chat(
+        preserve_shared_room_participants(outgoing, existing),
+        existing,
+    )
+
+
 @runtime_checkable
 class SharedRoomStore(Protocol):
     def exists(self, room_code: str) -> bool: ...
@@ -335,7 +406,7 @@ class LocalFileSharedRoomStore:
                 existing = raw if isinstance(raw, dict) else None
             except (OSError, json.JSONDecodeError):
                 existing = None
-        payload = sanitize_shared_room_document(preserve_shared_room_chat(document, existing))
+        payload = sanitize_shared_room_document(preserve_shared_room_sidecars(document, existing))
         payload["_storage_backend"] = "local_file"
         self.root.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -356,7 +427,7 @@ class LocalFileSharedRoomStore:
         current_rev = int(current.get("revision") or 0)
         if expected_revision is not None and current_rev != int(expected_revision):
             return False, current
-        saved = self.save(preserve_shared_room_chat(document, current))
+        saved = self.save(preserve_shared_room_sidecars(document, current))
         return True, saved
 
 

@@ -19,19 +19,12 @@ CHAT_DOC_KEY = "chat"
 CHAT_SESSION_CACHE_KEY = "_live_draft_chat_cache"
 CHAT_LAST_SEEN_REV_KEY = "_live_draft_chat_last_seen_rev"
 CHAT_COLLAPSED_KEY = "_live_draft_chat_collapsed"
+CHAT_SHOW_EARLIER_KEY = "_live_draft_chat_show_earlier"
 CHAT_MAX_MESSAGES = 100
 CHAT_MAX_TEXT_LEN = 400
 CHAT_POLL_SEC = 2.5
+CHAT_VISIBLE_LIMIT = 5
 CHAT_SCHEMA_VERSION = 2
-
-QUICK_MESSAGES: tuple[str, ...] = (
-    "You're on the clock.",
-    "Nice pick.",
-    "Trade after the draft?",
-    "Who are you targeting?",
-    "I'm ready.",
-    "Good luck.",
-)
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9 _.'-]{0,40})")
 
@@ -45,6 +38,7 @@ def empty_chat_payload() -> dict[str, Any]:
         "schema_version": CHAT_SCHEMA_VERSION,
         "chat_revision": 0,
         "chat_disabled": False,
+        "chat_scope": "",
         "messages": [],
     }
 
@@ -81,8 +75,44 @@ def normalize_chat_payload(raw: Any) -> dict[str, Any]:
     base["schema_version"] = int(raw.get("schema_version") or CHAT_SCHEMA_VERSION)
     base["chat_revision"] = int(raw.get("chat_revision") or 0)
     base["chat_disabled"] = bool(raw.get("chat_disabled"))
+    base["chat_scope"] = str(raw.get("chat_scope") or "").strip()
+    # Stable chronological order for all clients.
+    cleaned.sort(key=lambda m: (str(m.get("ts") or ""), str(m.get("id") or "")))
     base["messages"] = cleaned[-CHAT_MAX_MESSAGES:]
     return base
+
+
+def canonical_chat_scope(session: dict[str, Any]) -> str:
+    """Shared conversation key — never includes user/workspace/session identity."""
+    league_id, draft_id = _league_and_draft_ids(session)
+    code = _active_room_code(session)
+    room_id = draft_id or code
+    league = league_id or code
+    if not room_id:
+        return ""
+    return f"league:{league}:room:{room_id}"
+
+
+def user_visible_messages(
+    messages: list[dict[str, Any]],
+    *,
+    limit: int = CHAT_VISIBLE_LIMIT,
+    include_system: bool = False,
+) -> list[dict[str, Any]]:
+    """Latest N user messages for the compact AIM window (system clutter hidden)."""
+    filtered = []
+    for msg in messages:
+        if not include_system and str(msg.get("message_type") or "user") == "system":
+            continue
+        filtered.append(msg)
+    if limit <= 0:
+        return filtered
+    return filtered[-int(limit) :]
+
+
+def count_earlier_user_messages(messages: list[dict[str, Any]], *, visible_limit: int = CHAT_VISIBLE_LIMIT) -> int:
+    user_msgs = [m for m in messages if str(m.get("message_type") or "user") != "system"]
+    return max(0, len(user_msgs) - max(0, int(visible_limit)))
 
 
 def author_label(message: dict[str, Any]) -> str:
@@ -257,29 +287,38 @@ def load_live_draft_chat(
     *,
     force: bool = False,
 ) -> dict[str, Any]:
-    """Return chat payload for the active shared room (cached when unchanged)."""
+    """Return chat payload for the active shared room (same scope for every participant)."""
     code = _active_room_code(session)
     if not code:
         return empty_chat_payload()
+    scope = canonical_chat_scope(session)
     cache = session.get(CHAT_SESSION_CACHE_KEY)
     if (
         not force
         and isinstance(cache, dict)
         and str(cache.get("room_code") or "").upper() == code
+        and str(cache.get("chat_scope") or "") == scope
         and isinstance(cache.get("chat"), dict)
     ):
         return normalize_chat_payload(cache.get("chat"))
     doc: dict[str, Any] | None = None
     try:
-        from draft_room_shared_state import get_shared_room_store, load_shared_room_document
+        from draft_room_shared_state import get_shared_room_store, invalidate_shared_room_document_cache
 
-        doc = load_shared_room_document(session, code)
-        if not isinstance(doc, dict):
-            doc = get_shared_room_store().load(code)
+        # Always read the authoritative shared store — never a per-user soft cache alone.
+        if force:
+            invalidate_shared_room_document_cache(session, code)
+        doc = get_shared_room_store().load(code)
     except Exception:
         doc = None
     chat = normalize_chat_payload((doc or {}).get(CHAT_DOC_KEY))
-    session[CHAT_SESSION_CACHE_KEY] = {"room_code": code, "chat": copy.deepcopy(chat)}
+    if scope and not chat.get("chat_scope"):
+        chat["chat_scope"] = scope
+    session[CHAT_SESSION_CACHE_KEY] = {
+        "room_code": code,
+        "chat_scope": scope,
+        "chat": copy.deepcopy(chat),
+    }
     return chat
 
 
@@ -289,14 +328,18 @@ def refresh_live_draft_chat_if_newer(session: dict[str, Any]) -> bool:
     if not code:
         return False
     try:
-        from draft_room_shared_state import get_shared_room_store
+        from draft_room_shared_state import get_shared_room_store, invalidate_shared_room_document_cache
 
+        invalidate_shared_room_document_cache(session, code)
         doc = get_shared_room_store().load(code)
     except Exception:
         return False
     if not isinstance(doc, dict):
         return False
+    scope = canonical_chat_scope(session)
     remote = normalize_chat_payload(doc.get(CHAT_DOC_KEY))
+    if scope and not remote.get("chat_scope"):
+        remote["chat_scope"] = scope
     local = normalize_chat_payload((session.get(CHAT_SESSION_CACHE_KEY) or {}).get("chat"))
     if (
         int(remote.get("chat_revision") or 0) == int(local.get("chat_revision") or 0)
@@ -304,7 +347,11 @@ def refresh_live_draft_chat_if_newer(session: dict[str, Any]) -> bool:
         and bool(remote.get("chat_disabled")) == bool(local.get("chat_disabled"))
     ):
         return False
-    session[CHAT_SESSION_CACHE_KEY] = {"room_code": code, "chat": copy.deepcopy(remote)}
+    session[CHAT_SESSION_CACHE_KEY] = {
+        "room_code": code,
+        "chat_scope": scope,
+        "chat": copy.deepcopy(remote),
+    }
     return True
 
 
@@ -352,7 +399,11 @@ def _mutate_chat(
             continue
         if ok and isinstance(current, dict):
             verified = normalize_chat_payload(current.get(CHAT_DOC_KEY))
-            session[CHAT_SESSION_CACHE_KEY] = {"room_code": code, "chat": copy.deepcopy(verified)}
+            session[CHAT_SESSION_CACHE_KEY] = {
+                "room_code": code,
+                "chat_scope": canonical_chat_scope(session),
+                "chat": copy.deepcopy(verified),
+            }
             invalidate_shared_room_document_cache(session, code)
             return True, ""
         if isinstance(current, dict):
@@ -381,17 +432,18 @@ def append_live_draft_chat_message(
         return False, "Join a shared Live Draft room to use chat."
 
     league_id, draft_id = _league_and_draft_ids(session)
+    chat_scope = canonical_chat_scope(session)
     participant_id, display_name, team = _resolve_author(session)
     msg_type = str(message_type or "user").strip() or "user"
     if msg_type == "system":
-        participant_id = "system"
-        display_name = "Draft System"
-        team = ""
+        # System clutter disabled for ordinary draft activity.
+        return False, "System chat messages are disabled."
 
     new_message = {
         "id": uuid.uuid4().hex[:12],
         "league_id": league_id,
         "draft_id": draft_id,
+        "chat_scope": chat_scope,
         "ts": _utc_now_iso(),
         "user_id": participant_id,
         "participant_id": participant_id,
@@ -407,6 +459,8 @@ def append_live_draft_chat_message(
     def _mutator(chat: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
         if chat.get("chat_disabled") and msg_type != "system":
             return False, "Chat is disabled for this league.", chat
+        if chat_scope:
+            chat["chat_scope"] = chat_scope
         messages = list(chat.get("messages") or [])
         if system_key:
             for existing in messages:
@@ -420,6 +474,7 @@ def append_live_draft_chat_message(
             ):
                 return False, "Duplicate message — already sent.", chat
         messages.append(new_message)
+        messages.sort(key=lambda m: (str(m.get("ts") or ""), str(m.get("id") or "")))
         chat["messages"] = messages[-CHAT_MAX_MESSAGES:]
         chat["chat_revision"] = int(chat.get("chat_revision") or 0) + 1
         chat["schema_version"] = CHAT_SCHEMA_VERSION

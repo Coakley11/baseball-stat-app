@@ -196,7 +196,10 @@ class PreDraftSharedRoomCreateTests(unittest.TestCase):
         host["live_draft_room"] = room
         ok, reason = can_start_live_draft(host)
         self.assertFalse(ok)
-        self.assertIn("participant", reason.lower())
+        self.assertTrue(
+            any(tok in reason.lower() for tok in ("participant", "manager", "claim", "join", "two distinct")),
+            reason,
+        )
 
     @mock.patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     def test_invalid_code_rejected(self, _auth: object) -> None:

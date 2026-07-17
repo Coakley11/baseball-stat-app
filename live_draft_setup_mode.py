@@ -66,7 +66,22 @@ def shared_room_ready_for_start(session: dict[str, Any]) -> bool:
     if not shared_room_code(session):
         return False
     room = session.get("live_draft_room")
-    return isinstance(room, dict)
+    if isinstance(room, dict):
+        return True
+    # Session runtime can be cleared by unrelated persistence helpers; rehydrate
+    # from the shared room document so Start Draft still works.
+    try:
+        from draft_room_shared_state import document_to_runtime_room, load_shared_room
+
+        code = shared_room_code(session)
+        doc = load_shared_room(code)
+        runtime = document_to_runtime_room(doc) if isinstance(doc, dict) else None
+        if isinstance(runtime, dict):
+            session["live_draft_room"] = runtime
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def can_start_live_draft(session: dict[str, Any]) -> tuple[bool, str]:
@@ -82,20 +97,44 @@ def can_start_live_draft(session: dict[str, Any]) -> tuple[bool, str]:
         if str(room.get("status") or "") not in ("not_started", "in_progress", "paused"):
             return False, "Draft room is not ready to start."
         try:
-            from live_draft_team_ownership import (
-                claimed_team_count,
-                count_joined_teams,
-                distinct_claimed_owner_count,
-                list_room_teams,
+            from draft_room_shared_state import (
+                ACTIVE_SHARED_ROOM_CODE_KEY,
+                invalidate_shared_room_document_cache,
+                load_shared_room_document,
             )
+            from live_draft_presence import (
+                count_required_joined,
+                mark_participant_present,
+                missing_participant_labels,
+            )
+            from live_draft_team_ownership import distinct_claimed_owner_count, list_room_teams
+
+            code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+            # Always reload latest shared room before evaluating the start gate.
+            if code:
+                invalidate_shared_room_document_cache(session, code)
+                mark_participant_present(session, force_save=True)
+                document = load_shared_room_document(session, code, force=True)
+            else:
+                document = None
 
             teams = list_room_teams(room)
-            joined, total = count_joined_teams(session, room)
+            joined, total, rows = count_required_joined(session, room, document=document)
+            if total < 1:
+                return False, "No claimed managers yet — invite and claim teams before starting."
             if joined < total:
+                missing = missing_participant_labels(rows)
+                if missing:
+                    return (
+                        False,
+                        f"Waiting for {', '.join(missing)} to join the Live Draft Room "
+                        f"({joined} of {total} required participants joined).",
+                    )
                 waiting = max(0, total - joined)
                 return (
                     False,
-                    f"Waiting for {waiting} more participant(s) to claim a team before starting.",
+                    f"Waiting for {waiting} more participant(s) to join before starting "
+                    f"({joined} of {total} joined).",
                 )
             distinct = distinct_claimed_owner_count(session, room)
             if len(teams) >= 2 and distinct < 2:
@@ -104,8 +143,8 @@ def can_start_live_draft(session: dict[str, Any]) -> tuple[bool, str]:
                     "Two distinct authenticated managers must claim teams before starting "
                     "(one user cannot control both teams in Phase 1).",
                 )
-            if claimed_team_count(session, room) < 2 and len(teams) >= 2:
-                return False, "All teams must be claimed before starting the draft."
+            if total < 2 and len(teams) >= 2:
+                return False, "At least two managers must claim teams before starting the draft."
         except ImportError:
             pass
         return True, ""

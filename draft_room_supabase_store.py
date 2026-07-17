@@ -9,7 +9,7 @@ from typing import Any
 
 from draft_room_json_sanitize import SharedRoomJsonSerializeError, prepare_supabase_json_body
 from draft_room_supabase_errors import SharedRoomSupabaseError, shared_room_supabase_error_from_runtime
-from draft_room_shared_state import preserve_shared_room_chat, sanitize_shared_room_document
+from draft_room_shared_state import preserve_shared_room_sidecars, sanitize_shared_room_document
 
 _TABLE = "baseball_shared_draft_rooms"
 
@@ -205,7 +205,7 @@ class SupabaseSharedRoomStore:
         if not code:
             raise ValueError("shared room document missing room_code")
         existing = self.load(code) if self.exists(code) else None
-        payload = preserve_shared_room_chat(document, existing)
+        payload = sanitize_shared_room_document(preserve_shared_room_sidecars(document, existing))
         try:
             row = document_to_row(payload, created=existing is None)
         except SharedRoomJsonSerializeError as exc:
@@ -250,7 +250,7 @@ class SupabaseSharedRoomStore:
             return False, self.load(code)
 
         current = self.load(code)
-        payload = preserve_shared_room_chat(document, current)
+        payload = sanitize_shared_room_document(preserve_shared_room_sidecars(document, current))
         row = document_to_row(payload)
         try:
             patch_body = _supabase_write_body(row, patch=True)

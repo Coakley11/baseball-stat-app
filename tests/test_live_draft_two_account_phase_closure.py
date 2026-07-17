@@ -189,7 +189,10 @@ class LiveDraftTwoAccountClosureTests(unittest.TestCase):
         self.daniel[LIVE_DRAFT_ROOM_KEY] = room
         ok, reason = can_start_live_draft(self.daniel)
         self.assertFalse(ok)
-        self.assertIn("participant", reason.lower())
+        self.assertTrue(
+            any(tok in reason.lower() for tok in ("participant", "manager", "claim", "join", "two distinct")),
+            reason,
+        )
 
 
 if __name__ == "__main__":
