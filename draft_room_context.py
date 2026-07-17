@@ -1155,6 +1155,13 @@ def leave_shared_draft_room(session: dict[str, Any]) -> None:
     except Exception:
         pass
     session.pop(LIVE_DRAFT_ROOM_KEY, None)
+    # Keep Solo/Shared preference for the next draft after leaving a room.
+    try:
+        from user_page_preferences import restore_live_draft_setup_mode_preference
+
+        restore_live_draft_setup_mode_preference(session)
+    except ImportError:
+        pass
     try:
         from draft_room_runtime_diagnostics import capture_leave_state_after
 

@@ -205,6 +205,14 @@ def end_live_draft_session(
         session.pop("live_draft_room", None)
         session.pop("live_draft_state", None)
 
+    # Preserve Solo vs Shared Multiplayer after room clear (prefs / session last choice).
+    try:
+        from user_page_preferences import restore_live_draft_setup_mode_preference
+
+        restore_live_draft_setup_mode_preference(session)
+    except ImportError:
+        pass
+
     # Live Draft Override OFF → temporary board is gone; restore Active Draft my-team.
     try:
         from fantasy_context_source import (

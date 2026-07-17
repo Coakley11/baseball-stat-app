@@ -29,12 +29,20 @@ def _resolve_ids(session: dict[str, Any] | None) -> tuple[str, str]:
         user_id = str(session.get(AUTH_USER_ID_KEY) or "").strip()
     except ImportError:
         user_id = str(session.get("auth_user_id") or "").strip()
-    try:
-        from suite_user import current_workspace_id
+    workspace_id = str(
+        session.get("_suite_active_workspace_id")
+        or session.get("_suite_owned_workspace_id")
+        or session.get("workspace_id")
+        or session.get("active_workspace_id")
+        or ""
+    ).strip()
+    if not workspace_id:
+        try:
+            from suite_user import current_workspace_id
 
-        workspace_id = str(current_workspace_id(session) or "").strip()
-    except ImportError:
-        workspace_id = str(session.get("workspace_id") or session.get("active_workspace_id") or "").strip()
+            workspace_id = str(current_workspace_id(session) or "").strip()
+        except ImportError:
+            pass
     return user_id, workspace_id
 
 
@@ -174,8 +182,14 @@ def collect_live_draft_setup_settings(session: dict[str, Any]) -> dict[str, Any]
     for key, val in list(session.items()):
         if str(key).startswith("live_slot_") or str(key).startswith("live_draft_team_name_"):
             out[str(key)] = val
-    if "live_draft_setup_mode" in session:
-        out["live_draft_setup_mode"] = session["live_draft_setup_mode"]
+    # Draft Mode is a first-class persistent preference (Solo vs Shared Multiplayer).
+    try:
+        from live_draft_setup_mode import LIVE_DRAFT_SETUP_MODE_KEY, get_live_draft_setup_mode
+
+        out[LIVE_DRAFT_SETUP_MODE_KEY] = get_live_draft_setup_mode(session)
+    except ImportError:
+        if "live_draft_setup_mode" in session:
+            out["live_draft_setup_mode"] = session["live_draft_setup_mode"]
     return out
 
 
@@ -187,25 +201,91 @@ def apply_live_draft_setup_settings(session: dict[str, Any], settings: dict[str,
         if key.startswith("_"):
             continue
         session[key] = val
+    # Keep Streamlit Draft Mode radio aligned with restored preference.
+    try:
+        from live_draft_setup_mode import (
+            LIVE_DRAFT_SETUP_MODE_KEY,
+            SETUP_MODE_SHARED,
+            SETUP_MODE_SOLO,
+            normalize_setup_mode,
+        )
+
+        mode = normalize_setup_mode(session.get(LIVE_DRAFT_SETUP_MODE_KEY))
+        session[LIVE_DRAFT_SETUP_MODE_KEY] = mode
+        label = (
+            "Shared Multiplayer Draft Room — room code, other users join"
+            if mode == SETUP_MODE_SHARED
+            else "Solo Draft — you control all teams (no room code)"
+        )
+        session["_live_draft_mode_radio_label"] = label
+        _ = SETUP_MODE_SOLO
+    except ImportError:
+        pass
+
+
+def restore_live_draft_setup_mode_preference(session: dict[str, Any]) -> str:
+    """Restore Solo/Shared mode from preferences without re-seeding every setup field.
+
+    Used after End Draft / room clear so the user's workflow mode survives.
+    """
+    try:
+        from live_draft_setup_mode import (
+            LIVE_DRAFT_SETUP_MODE_KEY,
+            SETUP_MODE_SHARED,
+            normalize_setup_mode,
+            set_live_draft_setup_mode,
+        )
+    except ImportError:
+        return str(session.get("live_draft_setup_mode") or "solo")
+
+    uid, wid = _resolve_ids(session)
+    settings = get_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session) or {}
+    preferred = normalize_setup_mode(settings.get(LIVE_DRAFT_SETUP_MODE_KEY) or session.get(LIVE_DRAFT_SETUP_MODE_KEY))
+    set_live_draft_setup_mode(session, preferred)
+    label = (
+        "Shared Multiplayer Draft Room — room code, other users join"
+        if preferred == SETUP_MODE_SHARED
+        else "Solo Draft — you control all teams (no room code)"
+    )
+    session["_live_draft_mode_radio_label"] = label
+    return preferred
 
 
 def ensure_live_draft_setup_preferences_loaded(session: dict[str, Any]) -> bool:
     """Load persisted Live Draft setup once per session before widget defaults win.
 
     Returns True when settings were applied from persistence.
+    Draft Mode is restored whenever missing so End Draft / refresh cannot snap to Solo.
     """
     page_key = PAGE_KEY_LIVE_DRAFT_SETUP
+    uid, wid = _resolve_ids(session)
+    settings = get_user_page_preferences(uid, wid, page_key, session=session)
+    room = session.get("live_draft_room")
+    active_picking = isinstance(room, dict) and str(room.get("status") or "") in ("in_progress", "paused")
+
     if preferences_initialized(session, page_key):
+        # Preference already seeded this browser session — still recover Draft Mode
+        # if End Draft / leave room cleared the session key.
+        if not str(session.get("live_draft_setup_mode") or "").strip():
+            if isinstance(settings, dict) and settings.get("live_draft_setup_mode"):
+                apply_live_draft_setup_settings(
+                    session, {"live_draft_setup_mode": settings["live_draft_setup_mode"]}
+                )
+            else:
+                restore_live_draft_setup_mode_preference(session)
         return False
+
     session["_live_draft_setup_seeding"] = True
     try:
-        # Active in-progress draft config wins over generic saved preferences.
-        room = session.get("live_draft_room")
-        if isinstance(room, dict) and str(room.get("status") or "") in ("in_progress", "paused"):
+        # Active in-progress draft: stamp mode from room into session, skip full reseeding.
+        if active_picking:
+            if isinstance(room, dict):
+                cfg = dict(room.get("config") or {})
+                stored = str(cfg.get("draft_setup_mode") or "").strip()
+                if stored:
+                    apply_live_draft_setup_settings(session, {"live_draft_setup_mode": stored})
             mark_preferences_initialized(session, page_key)
             return False
-        uid, wid = _resolve_ids(session)
-        settings = get_user_page_preferences(uid, wid, page_key, session=session)
         if not settings:
             # Fallback: page_filter_state Live Draft Room snapshot keys.
             try:
@@ -218,6 +298,8 @@ def ensure_live_draft_setup_preferences_loaded(session: dict[str, Any]) -> bool:
                     for k, v in block.items():
                         if str(k).startswith("live_slot_") or str(k).startswith("live_draft_team_name_"):
                             settings[str(k)] = v
+                    if block.get("live_draft_setup_mode"):
+                        settings["live_draft_setup_mode"] = block["live_draft_setup_mode"]
             except ImportError:
                 settings = None
         applied = False
@@ -253,6 +335,7 @@ def persist_live_draft_setup_preferences(
 def default_live_draft_setup_settings() -> dict[str, Any]:
     """Application defaults for Reset Setup."""
     return {
+        "live_draft_setup_mode": "solo",
         "live_draft_team_count": 2,
         "live_draft_num_teams": 2,
         "live_draft_picks_per_team": 4,

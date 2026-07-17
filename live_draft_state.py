@@ -258,6 +258,7 @@ def live_draft_identity_diagnostics(session: dict[str, Any]) -> dict[str, str]:
 SHARED_DRAFT_POOL_COLUMNS = LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS
 
 LIVE_DRAFT_SETTINGS_KEYS = (
+    "live_draft_setup_mode",
     "live_draft_league_name",
     "live_draft_team_count",
     "live_draft_num_teams",

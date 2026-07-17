@@ -20,21 +20,45 @@ def normalize_setup_mode(mode: str | None) -> str:
 def get_live_draft_setup_mode(session: dict[str, Any], *, room: dict[str, Any] | None = None) -> str:
     live = room if isinstance(room, dict) else session.get("live_draft_room")
     if isinstance(live, dict):
+        status = str(live.get("status") or "").strip()
         cfg = live.get("config") or {}
         stored = str(cfg.get(DRAFT_SETUP_MODE_CONFIG_KEY) or "").strip()
-        if stored:
+        # Active/lobby rooms keep the stamped mode for this draft. Completed rooms
+        # defer to the user's persistent preference so the next draft keeps Shared/Solo.
+        if stored and status in ("not_started", "in_progress", "paused"):
             return normalize_setup_mode(stored)
     return normalize_setup_mode(session.get(LIVE_DRAFT_SETUP_MODE_KEY))
 
 
-def set_live_draft_setup_mode(session: dict[str, Any], mode: str) -> str:
+def set_live_draft_setup_mode(
+    session: dict[str, Any],
+    mode: str,
+    *,
+    persist: bool = False,
+    st: Any = None,
+) -> str:
     normalized = normalize_setup_mode(mode)
+    previous = normalize_setup_mode(session.get(LIVE_DRAFT_SETUP_MODE_KEY))
     session[LIVE_DRAFT_SETUP_MODE_KEY] = normalized
     room = session.get("live_draft_room")
     if isinstance(room, dict):
-        cfg = dict(room.get("config") or {})
-        cfg[DRAFT_SETUP_MODE_CONFIG_KEY] = normalized
-        room["config"] = cfg
+        status = str(room.get("status") or "").strip()
+        if status in ("", "not_started", "in_progress", "paused"):
+            cfg = dict(room.get("config") or {})
+            cfg[DRAFT_SETUP_MODE_CONFIG_KEY] = normalized
+            room["config"] = cfg
+    if persist and not session.get("_live_draft_setup_seeding"):
+        try:
+            from live_draft_setup_persist import mark_live_draft_setup_dirty
+            from user_page_preferences import persist_live_draft_setup_preferences
+
+            # Always write when caller requests persist (join / explicit mode change)
+            # so Shared is saved even if session already matched before prefs existed.
+            if previous != normalized:
+                mark_live_draft_setup_dirty(session)
+            persist_live_draft_setup_preferences(session, st=st, force_disk=bool(st is not None))
+        except ImportError:
+            pass
     return normalized
 
 

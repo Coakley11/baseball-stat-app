@@ -29,6 +29,12 @@ from live_draft_timer_authority import (
     expired_pick_needs_watchdog,
     try_acquire_timer_authority,
 )
+from live_draft_setup_mode import (
+    SETUP_MODE_SHARED,
+    SETUP_MODE_SOLO,
+    get_live_draft_setup_mode,
+    set_live_draft_setup_mode,
+)
 from user_page_preferences import (
     PAGE_KEY_LIVE_DRAFT_SETUP,
     apply_live_draft_setup_settings,
@@ -38,6 +44,7 @@ from user_page_preferences import (
     get_user_page_preferences,
     preferences_initialized,
     reset_live_draft_setup_to_defaults,
+    restore_live_draft_setup_mode_preference,
     save_user_page_preferences,
 )
 
@@ -257,6 +264,288 @@ class PreferencePersistenceTests(unittest.TestCase):
         applied = ensure_live_draft_setup_preferences_loaded(session)
         self.assertFalse(applied)
         self.assertEqual(session.get("live_draft_proj_window"), "3 years")
+
+    def test_draft_mode_shared_survives_new_session(self) -> None:
+        session_a = {"auth_user_id": "user:daniel", "workspace_id": "ws1"}
+        set_live_draft_setup_mode(session_a, SETUP_MODE_SHARED, persist=True, st=None)
+        self.assertEqual(get_live_draft_setup_mode(session_a), SETUP_MODE_SHARED)
+        prefs = get_user_page_preferences("user:daniel", "ws1", PAGE_KEY_LIVE_DRAFT_SETUP, session=session_a)
+        self.assertEqual(prefs.get("live_draft_setup_mode"), SETUP_MODE_SHARED)
+
+        session_b = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws1",
+            "page_filter_state": session_a["page_filter_state"],
+        }
+        applied = ensure_live_draft_setup_preferences_loaded(session_b)
+        self.assertTrue(applied)
+        self.assertEqual(get_live_draft_setup_mode(session_b), SETUP_MODE_SHARED)
+        self.assertIn("Shared Multiplayer", str(session_b.get("_live_draft_mode_radio_label") or ""))
+
+    def test_draft_mode_solo_survives_new_session(self) -> None:
+        session_a = {"auth_user_id": "user:daniel", "workspace_id": "ws1"}
+        set_live_draft_setup_mode(session_a, SETUP_MODE_SHARED, persist=True, st=None)
+        set_live_draft_setup_mode(session_a, SETUP_MODE_SOLO, persist=True, st=None)
+        session_b = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws1",
+            "page_filter_state": session_a["page_filter_state"],
+        }
+        ensure_live_draft_setup_preferences_loaded(session_b)
+        self.assertEqual(get_live_draft_setup_mode(session_b), SETUP_MODE_SOLO)
+
+    def test_end_draft_restores_shared_mode_preference(self) -> None:
+        from live_draft_completion import end_live_draft_session
+
+        session = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws1",
+            "live_draft_setup_mode": SETUP_MODE_SHARED,
+            "live_draft_room": {
+                "draft_room_id": "R1",
+                "status": "completed",
+                "config": {"draft_setup_mode": SETUP_MODE_SHARED, "league_name": "Test"},
+            },
+        }
+        set_live_draft_setup_mode(session, SETUP_MODE_SHARED, persist=True, st=None)
+        end_live_draft_session(session, st=None, reason="test_end")
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
+        self.assertIsNone(session.get("live_draft_room") or None)
+
+    def test_completed_room_defers_to_session_preference(self) -> None:
+        session = {
+            "live_draft_setup_mode": SETUP_MODE_SHARED,
+            "live_draft_room": {
+                "status": "completed",
+                "config": {"draft_setup_mode": SETUP_MODE_SOLO},
+            },
+        }
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
+
+    def test_mode_recovered_after_init_when_session_key_missing(self) -> None:
+        session = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws1",
+            "_prefs_initialized:live_draft_setup": True,
+            "page_filter_state": {
+                "_user_page_preferences": {
+                    PAGE_KEY_LIVE_DRAFT_SETUP: {
+                        "user_id": "user:daniel",
+                        "workspace_id": "ws1",
+                        "settings": {"live_draft_setup_mode": SETUP_MODE_SHARED},
+                    }
+                }
+            },
+        }
+        ensure_live_draft_setup_preferences_loaded(session)
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
+
+    def test_reset_setup_returns_mode_to_solo(self) -> None:
+        session = {"auth_user_id": "user:daniel", "live_draft_setup_mode": SETUP_MODE_SHARED}
+        set_live_draft_setup_mode(session, SETUP_MODE_SHARED, persist=True, st=None)
+        reset_live_draft_setup_to_defaults(session, st=None)
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SOLO)
+        prefs = get_user_page_preferences("user:daniel", "", PAGE_KEY_LIVE_DRAFT_SETUP, session=session)
+        self.assertEqual(prefs.get("live_draft_setup_mode"), SETUP_MODE_SOLO)
+
+    def test_restore_mode_preference_helper(self) -> None:
+        session = {"auth_user_id": "user:daniel", "workspace_id": "ws1"}
+        set_live_draft_setup_mode(session, SETUP_MODE_SHARED, persist=True, st=None)
+        session.pop("live_draft_setup_mode", None)
+        session.pop("_live_draft_mode_radio_label", None)
+        mode = restore_live_draft_setup_mode_preference(session)
+        self.assertEqual(mode, SETUP_MODE_SHARED)
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
+
+    def _mode_lifecycle(self, preferred: str) -> None:
+        """Shared/Solo remain selected across create → finish → end → return → refresh → re-auth."""
+        from draft_room_context import leave_shared_draft_room
+        from live_draft_completion import end_live_draft_session
+
+        session = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws-daniel",
+            "_suite_active_workspace_id": "ws-daniel",
+        }
+        set_live_draft_setup_mode(session, preferred, persist=True, st=None)
+        self.assertEqual(get_live_draft_setup_mode(session), preferred)
+
+        # Create / run a draft room stamped with this mode.
+        session["live_draft_room"] = {
+            "draft_room_id": "LIFE1",
+            "status": "in_progress",
+            "config": {"draft_setup_mode": preferred, "league_name": "Lifecycle"},
+        }
+        self.assertEqual(get_live_draft_setup_mode(session), preferred)
+
+        # Finish draft — completed room must not snap mode away from preference.
+        session["live_draft_room"]["status"] = "completed"
+        self.assertEqual(get_live_draft_setup_mode(session), preferred)
+
+        # End session / leave room → still preferred on setup return.
+        end_live_draft_session(session, st=None, reason="lifecycle_end")
+        self.assertEqual(get_live_draft_setup_mode(session), preferred)
+
+        # Navigate away and back (prefs already initialized; mode key missing).
+        session.pop("live_draft_setup_mode", None)
+        session.pop("_live_draft_mode_radio_label", None)
+        ensure_live_draft_setup_preferences_loaded(session)
+        self.assertEqual(get_live_draft_setup_mode(session), preferred)
+
+        # Refresh / sign-out + sign-in: new session dict, same persisted page_filter_state.
+        session_refresh = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws-daniel",
+            "_suite_active_workspace_id": "ws-daniel",
+            "page_filter_state": session["page_filter_state"],
+        }
+        ensure_live_draft_setup_preferences_loaded(session_refresh)
+        self.assertEqual(get_live_draft_setup_mode(session_refresh), preferred)
+        self.assertIn(
+            "Shared Multiplayer" if preferred == SETUP_MODE_SHARED else "Solo Draft",
+            str(session_refresh.get("_live_draft_mode_radio_label") or ""),
+        )
+
+        # Leave path also preserves preference.
+        session_leave = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws-daniel",
+            "_suite_active_workspace_id": "ws-daniel",
+            "page_filter_state": session["page_filter_state"],
+            "live_draft_setup_mode": preferred,
+            "live_draft_room": {
+                "draft_room_id": "LIFE2",
+                "status": "not_started",
+                "config": {"draft_setup_mode": preferred},
+            },
+            "active_shared_draft_room_code": "ABC123" if preferred == SETUP_MODE_SHARED else "",
+            "draft_room_participant_id": "user:daniel",
+        }
+        with mock.patch(
+            "draft_room_participant_state.save_participant_workflow_from_session"
+        ), mock.patch("draft_room_participant_state.mark_participant_left_room"):
+            leave_shared_draft_room(session_leave)
+        self.assertEqual(get_live_draft_setup_mode(session_leave), preferred)
+
+    def test_case1_shared_mode_lifecycle_persistence(self) -> None:
+        self._mode_lifecycle(SETUP_MODE_SHARED)
+
+    def test_case2_solo_mode_lifecycle_persistence(self) -> None:
+        self._mode_lifecycle(SETUP_MODE_SOLO)
+
+    def test_case3_old_room_does_not_overwrite_saved_preference(self) -> None:
+        session = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws1",
+            "_suite_active_workspace_id": "ws1",
+        }
+        set_live_draft_setup_mode(session, SETUP_MODE_SHARED, persist=True, st=None)
+        # Old completed solo room still present — preference stays Shared.
+        session["live_draft_room"] = {
+            "draft_room_id": "OLD1",
+            "status": "completed",
+            "config": {"draft_setup_mode": SETUP_MODE_SOLO},
+        }
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
+        # Starting/viewing an in-progress old room uses room stamp for that draft only.
+        session["live_draft_room"]["status"] = "in_progress"
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SOLO)
+        # After clearing the old room, saved preference returns to Shared.
+        session.pop("live_draft_room", None)
+        restore_live_draft_setup_mode_preference(session)
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
+        prefs = get_user_page_preferences("user:daniel", "ws1", PAGE_KEY_LIVE_DRAFT_SETUP, session=session)
+        self.assertEqual(prefs.get("live_draft_setup_mode"), SETUP_MODE_SHARED)
+
+    def test_case4_only_reset_setup_returns_mode_to_solo(self) -> None:
+        from live_draft_completion import end_live_draft_session
+
+        session = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws1",
+            "_suite_active_workspace_id": "ws1",
+        }
+        set_live_draft_setup_mode(session, SETUP_MODE_SHARED, persist=True, st=None)
+        session["live_draft_room"] = {
+            "draft_room_id": "R",
+            "status": "completed",
+            "config": {"draft_setup_mode": SETUP_MODE_SHARED},
+        }
+        end_live_draft_session(session, st=None, reason="not_reset")
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
+        restore_live_draft_setup_mode_preference(session)
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
+        # Explicit Reset Setup is the intentional Solo return.
+        reset_live_draft_setup_to_defaults(session, st=None)
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SOLO)
+
+    def test_case5_daniel_and_coakley11_isolated_mode_prefs(self) -> None:
+        daniel = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws-daniel",
+            "_suite_active_workspace_id": "ws-daniel",
+            "page_filter_state": {},
+        }
+        coakley = {
+            "auth_user_id": "user:coakley11",
+            "workspace_id": "ws-coakley",
+            "_suite_active_workspace_id": "ws-coakley",
+            "page_filter_state": {},
+        }
+        set_live_draft_setup_mode(daniel, SETUP_MODE_SHARED, persist=True, st=None)
+        set_live_draft_setup_mode(coakley, SETUP_MODE_SOLO, persist=True, st=None)
+
+        daniel_b = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws-daniel",
+            "_suite_active_workspace_id": "ws-daniel",
+            "page_filter_state": daniel["page_filter_state"],
+        }
+        coakley_b = {
+            "auth_user_id": "user:coakley11",
+            "workspace_id": "ws-coakley",
+            "_suite_active_workspace_id": "ws-coakley",
+            "page_filter_state": coakley["page_filter_state"],
+        }
+        ensure_live_draft_setup_preferences_loaded(daniel_b)
+        ensure_live_draft_setup_preferences_loaded(coakley_b)
+        self.assertEqual(get_live_draft_setup_mode(daniel_b), SETUP_MODE_SHARED)
+        self.assertEqual(get_live_draft_setup_mode(coakley_b), SETUP_MODE_SOLO)
+        # Cross-user: Coakley must not read Daniel's Shared preference from Daniel's blob.
+        leaked = get_user_page_preferences(
+            "user:coakley11", "ws-coakley", PAGE_KEY_LIVE_DRAFT_SETUP, session=daniel_b
+        )
+        self.assertIsNone(leaked)
+
+    def test_case6_initial_render_does_not_overwrite_restored_shared(self) -> None:
+        """ensure_…_loaded + apply must win before radio defaults; seeding skips persist races."""
+        session = {
+            "auth_user_id": "user:daniel",
+            "workspace_id": "ws1",
+            "_suite_active_workspace_id": "ws1",
+            "page_filter_state": {
+                "_user_page_preferences": {
+                    PAGE_KEY_LIVE_DRAFT_SETUP: {
+                        "user_id": "user:daniel",
+                        "workspace_id": "ws1",
+                        "page_key": PAGE_KEY_LIVE_DRAFT_SETUP,
+                        "schema_version": 1,
+                        "settings": {"live_draft_setup_mode": SETUP_MODE_SHARED},
+                        "updated_at": "t",
+                    }
+                }
+            },
+        }
+        # Simulate first paint: no mode key yet (widget default would be Solo).
+        self.assertNotIn("live_draft_setup_mode", session)
+        applied = ensure_live_draft_setup_preferences_loaded(session)
+        self.assertTrue(applied)
+        self.assertEqual(get_live_draft_setup_mode(session), SETUP_MODE_SHARED)
+        self.assertIn("Shared Multiplayer", str(session.get("_live_draft_mode_radio_label") or ""))
+        # Seeding flag cleared; a subsequent set during load must not have wiped prefs.
+        self.assertFalse(session.get("_live_draft_setup_seeding"))
+        prefs = get_user_page_preferences("user:daniel", "ws1", PAGE_KEY_LIVE_DRAFT_SETUP, session=session)
+        self.assertEqual(prefs.get("live_draft_setup_mode"), SETUP_MODE_SHARED)
 
 
 class ProjectionCacheTests(unittest.TestCase):

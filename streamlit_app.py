@@ -22479,7 +22479,9 @@ if active_page == "Live Draft Room":
                             except ImportError:
                                 pass
                     else:
-                        set_live_draft_setup_mode(st.session_state, SETUP_MODE_SOLO)
+                        set_live_draft_setup_mode(
+                            st.session_state, SETUP_MODE_SOLO, persist=True, st=st
+                        )
                         live_draft_start(new_room)
                         st.session_state["live_draft_room"] = new_room
                         st.session_state["room_your_team"] = user_team

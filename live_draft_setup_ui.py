@@ -44,17 +44,24 @@ def render_live_draft_mode_selector(st: Any, session: dict[str, Any], *, disable
     labels = list(options.values())
     values = list(options.keys())
     index = values.index(current) if current in values else 0
+    radio_key = "_live_draft_mode_radio_label"
+    desired_label = labels[index]
+    # Keep Streamlit widget state aligned with the persistent preference so refresh
+    # / End Draft cannot leave the radio stuck on Solo after Shared was saved.
+    if session.get(radio_key) != desired_label:
+        session[radio_key] = desired_label
 
     selected_label = st.radio(
         "Draft Mode",
         labels,
         index=index,
-        key="_live_draft_mode_radio_label",
+        key=radio_key,
         disabled=disabled,
         help="Multiple team names alone does not make a draft multiplayer — choose Shared Multiplayer for a joinable room code.",
     )
     mode = values[labels.index(selected_label)] if selected_label in labels else current
-    set_live_draft_setup_mode(session, mode)
+    previous = current
+    set_live_draft_setup_mode(session, mode, persist=(mode != previous), st=st)
 
     if mode == SETUP_MODE_SOLO:
         st.info(
@@ -440,7 +447,7 @@ def render_guest_join_from_setup(st: Any, session: dict[str, Any]) -> bool:
         room_lookup_attempted=True,
     )
     if ok:
-        set_live_draft_setup_mode(session, SETUP_MODE_SHARED)
+        set_live_draft_setup_mode(session, SETUP_MODE_SHARED, persist=True, st=None)
         session["_draft_join_flash"] = display
         return True
     session["_draft_join_error"] = display
