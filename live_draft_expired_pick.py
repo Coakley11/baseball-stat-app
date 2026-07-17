@@ -6,7 +6,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from live_draft_pick_commit import persist_applied_pick, resolve_live_room, run_autopick_selection, sync_expected_revision
-from live_draft_timer_logic import live_draft_seconds_remaining, live_draft_timer_expired_for_pick
+from live_draft_timer_logic import (
+    build_expiration_token,
+    expiration_already_processed,
+    live_draft_seconds_remaining,
+    live_draft_timer_expired_for_pick,
+    mark_expiration_processed,
+    reconstruct_timer_deadline,
+)
 
 AUTOPICK_DIAG_KEY = "_live_draft_autopick_diag"
 AUTOPICK_ATTEMPTED_INDEX_KEY = "_live_draft_autopick_attempted_for_index"
@@ -20,6 +27,9 @@ EXPIRED_PICK_PENDING_KEY = "_live_draft_timer_expired_pending"
 # One full-app timer_fragment_zero per pick index — prevents fragment attach → sync tick →
 # st.rerun() from aborting room_controls_timer before handle_expired_pick_on_page runs.
 TIMER_ZERO_RERUN_LATCH_KEY = "_live_draft_timer_zero_rerun_pick"
+# Session-scoped single-flight for the current expiration token (covers duplicate Streamlit reruns).
+LAST_PROCESSED_EXPIRATION_TOKEN_SESSION_KEY = "_live_draft_last_processed_expiration_token"
+CLAIMED_EXPIRATION_TOKEN_KEY = "_live_draft_claimed_expiration_token"
 
 
 @dataclass
@@ -226,31 +236,58 @@ def should_fragment_trigger_full_rerun(session: dict[str, Any], room: dict[str, 
     return True
 
 
-def clear_autopick_state_for_pick_advance(session: dict[str, Any], new_index: int | None = None) -> None:
-    """Clear backoff/attempt locks after manual pick or successful auto-pick."""
-    session.pop(AUTOPICK_ATTEMPTED_INDEX_KEY, None)
-    session.pop(AUTOPICK_BACKOFF_INDEX_KEY, None)
-    session.pop(AUTOPICK_BACKOFF_UNTIL_KEY, None)
-    session.pop(AUTOPICK_ERROR_KEY, None)
-    session.pop(RERUN_LOOP_PREVENTED_KEY, None)
-    session.pop(EXPIRED_PICK_PENDING_KEY, None)
-    session.pop(AUTOPICK_LOCK_KEY, None)
-    session.pop(TIMER_ZERO_RERUN_LATCH_KEY, None)
-    # Fresh pick = fresh rerun budget so page_autopick can refresh the UI after commit.
-    session.pop("_live_draft_rerun_count", None)
-    if new_index is not None:
-        record_autopick_diagnostics(
-            session,
-            autopick_failure_backoff_active=False,
-            rerun_loop_prevented=False,
-            autopick_attempted_for_index=None,
-            autopick_in_progress_lock=False,
-        )
+MANUAL_PREEMPTED_EXPIRATION_TOKEN_KEY = "_live_draft_manual_preempted_expiration_token"
+
+
+def _expiration_token_already_done(session: dict[str, Any], room: dict[str, Any], token: str) -> bool:
+    if not token:
+        return False
+    if str(session.get(LAST_PROCESSED_EXPIRATION_TOKEN_SESSION_KEY) or "").strip() == token:
+        return True
+    return expiration_already_processed(room, token)
+
+
+def claim_expiration_token(session: dict[str, Any], token: str) -> bool:
+    """Claim a deadline token for single-flight processing. Returns False if already claimed/done."""
+    tok = str(token or "").strip()
+    if not tok:
+        return False
+    if str(session.get(LAST_PROCESSED_EXPIRATION_TOKEN_SESSION_KEY) or "").strip() == tok:
+        return False
+    claimed = str(session.get(CLAIMED_EXPIRATION_TOKEN_KEY) or "").strip()
+    if claimed == tok:
+        return False
+    session[CLAIMED_EXPIRATION_TOKEN_KEY] = tok
+    return True
+
+
+def remember_processed_expiration_token(
+    session: dict[str, Any],
+    room: dict[str, Any],
+    token: str,
+    *,
+    expired_pick_index: int | None = None,
+) -> None:
+    tok = str(token or "").strip()
+    if not tok:
+        return
+    session[LAST_PROCESSED_EXPIRATION_TOKEN_SESSION_KEY] = tok
+    mark_expiration_processed(room, tok, expired_pick_index=expired_pick_index)
 
 
 def clear_autopick_backoff_for_manual(session: dict[str, Any], room: dict[str, Any]) -> None:
-    """Manual pick bypasses failed auto-pick backoff for the current pick index."""
+    """Manual pick bypasses failed auto-pick backoff for the current pick index.
+
+    Stashes the current expiration token so a successful manual pick can mark it
+    processed and block a duplicate timer auto-pick for the same deadline.
+    """
     idx = _pick_index(room)
+    try:
+        token = build_expiration_token(room)
+        if token:
+            session[MANUAL_PREEMPTED_EXPIRATION_TOKEN_KEY] = token
+    except Exception:
+        pass
     if session.get(AUTOPICK_BACKOFF_INDEX_KEY) == idx:
         session.pop(AUTOPICK_BACKOFF_INDEX_KEY, None)
         session.pop(RERUN_LOOP_PREVENTED_KEY, None)
@@ -261,6 +298,49 @@ def clear_autopick_backoff_for_manual(session: dict[str, Any], room: dict[str, A
             autopick_failure_backoff_active=False,
             rerun_loop_prevented=False,
             autopick_attempted_for_index=None,
+        )
+    session.pop(EXPIRED_PICK_PENDING_KEY, None)
+    session.pop(TIMER_ZERO_RERUN_LATCH_KEY, None)
+    try:
+        token = str(session.get(MANUAL_PREEMPTED_EXPIRATION_TOKEN_KEY) or "").strip()
+        if token:
+            session[CLAIMED_EXPIRATION_TOKEN_KEY] = token
+        else:
+            session.pop(CLAIMED_EXPIRATION_TOKEN_KEY, None)
+    except Exception:
+        session.pop(CLAIMED_EXPIRATION_TOKEN_KEY, None)
+
+
+def clear_autopick_state_for_pick_advance(session: dict[str, Any], new_index: int | None = None) -> None:
+    """Clear backoff/attempt locks after manual pick or successful auto-pick."""
+    preempted = str(session.pop(MANUAL_PREEMPTED_EXPIRATION_TOKEN_KEY, None) or "").strip()
+    if preempted:
+        try:
+            room = session.get("live_draft_room")
+            if isinstance(room, dict):
+                remember_processed_expiration_token(session, room, preempted)
+            else:
+                session[LAST_PROCESSED_EXPIRATION_TOKEN_SESSION_KEY] = preempted
+        except Exception:
+            session[LAST_PROCESSED_EXPIRATION_TOKEN_SESSION_KEY] = preempted
+    session.pop(AUTOPICK_ATTEMPTED_INDEX_KEY, None)
+    session.pop(AUTOPICK_BACKOFF_INDEX_KEY, None)
+    session.pop(AUTOPICK_BACKOFF_UNTIL_KEY, None)
+    session.pop(AUTOPICK_ERROR_KEY, None)
+    session.pop(RERUN_LOOP_PREVENTED_KEY, None)
+    session.pop(EXPIRED_PICK_PENDING_KEY, None)
+    session.pop(AUTOPICK_LOCK_KEY, None)
+    session.pop(TIMER_ZERO_RERUN_LATCH_KEY, None)
+    session.pop(CLAIMED_EXPIRATION_TOKEN_KEY, None)
+    # Fresh pick = fresh rerun budget so page_autopick can refresh the UI after commit.
+    session.pop("_live_draft_rerun_count", None)
+    if new_index is not None:
+        record_autopick_diagnostics(
+            session,
+            autopick_failure_backoff_active=False,
+            rerun_loop_prevented=False,
+            autopick_attempted_for_index=None,
+            autopick_in_progress_lock=False,
         )
 
 
@@ -339,8 +419,13 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
 
     t_total = time.perf_counter()
     room = resolve_live_room(session, room) or room
+    try:
+        reconstruct_timer_deadline(room)
+    except Exception:
+        pass
     idx = _pick_index(room)
-    record_expired_pick_perf(session, source=source, pick_index=idx)
+    expiration_token = build_expiration_token(room)
+    record_expired_pick_perf(session, source=source, pick_index=idx, expiration_token=expiration_token)
 
     record_autopick_diagnostics(
         session,
@@ -352,10 +437,18 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
         rerun_loop_prevented=bool(session.get(RERUN_LOOP_PREVENTED_KEY)),
         current_pick_index_before_autopick=idx,
         board_size_before_autopick=len(room.get("draft_board") or []),
+        expiration_token=expiration_token,
     )
 
     if room.get("status") != "in_progress":
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
+
+    if room.get("status") == "complete":
+        return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
+
+    if _expiration_token_already_done(session, room, expiration_token):
+        record_expired_pick_perf(session, stage="token_already_processed", total_ms=_perf_ms(t_total))
+        return ExpiredPickPageResult(handled=True, ok=True, should_rerun=False, message="", error="")
 
     if not clock_needs_autopick(session, room):
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
@@ -368,7 +461,7 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
             session,
             "timer_hit_zero",
             ok=True,
-            detail=f"remaining={live_draft_seconds_remaining(room)}",
+            detail=f"remaining={live_draft_seconds_remaining(room)} token={expiration_token}",
             pick_index=idx,
         )
     except ImportError:
@@ -389,6 +482,10 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
 
     if session.get(AUTOPICK_LOCK_KEY):
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
+
+    if not claim_expiration_token(session, expiration_token):
+        record_expired_pick_perf(session, stage="token_claim_denied", total_ms=_perf_ms(t_total))
+        return ExpiredPickPageResult(handled=True, ok=True, should_rerun=False, message="", error="")
 
     session[AUTOPICK_LOCK_KEY] = True
     record_autopick_diagnostics(session, autopick_in_progress_lock=True, autopick_commit_path=source)
@@ -428,6 +525,7 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
         except ImportError:
             pass
         if not ok_select:
+            session.pop(CLAIMED_EXPIRATION_TOKEN_KEY, None)
             _mark_autopick_failed(session, room, select_msg or "Auto-pick selection failed.")
             record_expired_pick_perf(session, total_ms=_perf_ms(t_total), ok=False)
             # Rerun so UI shows the error and the recovery fragment can remount.
@@ -470,6 +568,7 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
         )
 
         if not commit.ok:
+            session.pop(CLAIMED_EXPIRATION_TOKEN_KEY, None)
             _mark_autopick_failed(session, room, commit.message)
             record_expired_pick_perf(session, total_ms=_perf_ms(t_total), ok=False)
             return ExpiredPickPageResult(
@@ -479,6 +578,18 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
                 message="",
                 error=commit.message,
             )
+
+        # Persist the pre-advance token so duplicate Streamlit reruns cannot re-pick it.
+        # Do not stamp timer_handled_index here — make_pick already reset the next deadline.
+        remember_processed_expiration_token(session, room, expiration_token)
+        # Successful pick resets the deadline; never leave an active draft parked at 0:00.
+        if room.get("status") == "in_progress" and live_draft_seconds_remaining(room) <= 0:
+            try:
+                from live_draft_timer_logic import live_draft_reset_timer
+
+                live_draft_reset_timer(room)
+            except Exception:
+                pass
 
         msg = select_msg or commit.message
         t0 = time.perf_counter()
@@ -518,6 +629,17 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
                 detail=f"remaining={_secs(room) if room.get('status') != 'complete' else 'complete'}",
                 pick_index=idx_after,
                 error=None if timer_ok else "timer not restarted after pick",
+            )
+        except ImportError:
+            pass
+        try:
+            from live_draft_chat_system import maybe_post_draft_system_message
+
+            maybe_post_draft_system_message(
+                session,
+                "auto_pick",
+                detail=msg,
+                pick_index=idx_after,
             )
         except ImportError:
             pass

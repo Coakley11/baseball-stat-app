@@ -29,6 +29,10 @@ PHASE_POST_DRAFT_SAVE = "live_draft_post_draft_save"
 PHASE_REC_SECTION = "live_draft_rec_section"
 PHASE_ROSTER_SECTION = "live_draft_roster_section"
 PHASE_SECTION_NAV = "live_draft_section_nav"
+PHASE_TIMER_PROCESS = "live_draft_timer_process"
+PHASE_CHAT_LOAD = "live_draft_chat_load"
+PHASE_DRAFT_STATE_LOAD = "live_draft_state_load"
+PHASE_PAGE_TOTAL = "live_draft_page_total"
 
 # Pick-commit sub-phases (slice 2 — profile before optimize).
 PHASE_PICK_COMMIT_DIAG = "live_draft_pick_commit_diag"
@@ -183,6 +187,19 @@ def render_live_draft_perf_section(st: Any, session: dict[str, Any]) -> None:
     """Developer Mode sidebar — recent Live Draft actions with cache hints."""
     if not _dev_enabled(session):
         return
+    # Compact timing strip requested for Live Draft Room profiling.
+    buckets = [
+        ("page", session.get("_live_draft_page_total_ms")),
+        ("timer", session.get("_live_draft_timer_process_ms")),
+        ("recs", session.get("_live_draft_rec_engine_ms")),
+        ("state", session.get("_live_draft_state_load_ms")),
+        ("persist", session.get("_live_draft_persist_ms")),
+        ("chat", session.get("_live_draft_chat_load_ms")),
+    ]
+    present = [(k, v) for k, v in buckets if v is not None]
+    if present:
+        st.markdown("**Live Draft — timing (ms)**")
+        st.caption(" · ".join(f"{k}={int(v)}" for k, v in present))
     rows = recent_live_draft_actions(session, limit=12)
     if not rows:
         return

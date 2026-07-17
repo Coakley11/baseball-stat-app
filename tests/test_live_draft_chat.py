@@ -1,4 +1,4 @@
-"""Phase 1 Live Draft Chat — persist without bumping board revision."""
+"""Live Draft Chat — persist without bumping board revision."""
 
 from __future__ import annotations
 
@@ -14,7 +14,15 @@ from draft_room_shared_state import (
     reset_shared_room_store_for_tests,
     shared_room_document,
 )
-from live_draft_chat import append_live_draft_chat_message, load_live_draft_chat, normalize_chat_payload
+from live_draft_chat import (
+    append_live_draft_chat_message,
+    format_chat_timestamp,
+    load_live_draft_chat,
+    message_mentions_viewer,
+    normalize_chat_payload,
+    set_chat_disabled,
+    unread_chat_count,
+)
 
 
 def _minimal_live_room() -> dict:
@@ -69,6 +77,50 @@ class LiveDraftChatTests(unittest.TestCase):
         self.assertEqual(int(chat.get("chat_revision") or 0), 1)
         self.assertEqual(len(chat.get("messages") or []), 1)
         self.assertIn("drafting", chat["messages"][0]["text"])
+        self.assertEqual(chat["messages"][0]["claimed_team"], "Team X")
+        self.assertEqual(chat["messages"][0]["message_type"], "user")
+
+    def test_duplicate_submission_rejected(self) -> None:
+        with mock.patch("draft_room_context.is_multiplayer_draft_active", return_value=True):
+            with mock.patch(
+                "draft_room_participant_state.resolve_participant_id",
+                return_value="p1",
+            ):
+                with mock.patch(
+                    "draft_room_participant_state.active_participant_team",
+                    return_value="Team X",
+                ):
+                    ok1, _ = append_live_draft_chat_message(self.session, "Hello league")
+                    ok2, err2 = append_live_draft_chat_message(self.session, "Hello league")
+        self.assertTrue(ok1)
+        self.assertFalse(ok2)
+        self.assertIn("Duplicate", err2)
+
+    def test_eastern_timestamp_suffix(self) -> None:
+        label = format_chat_timestamp("2026-07-17T18:30:00Z")
+        self.assertTrue(label.endswith("ET"))
+
+    def test_mention_highlight_for_viewer_team(self) -> None:
+        msg = {"text": "Hey @Team X are you ready?", "message_type": "user"}
+        with mock.patch(
+            "live_draft_chat._resolve_author",
+            return_value=("p1", "Daniel", "Team X"),
+        ):
+            self.assertTrue(message_mentions_viewer(msg, self.session))
+
+    def test_unread_count_when_collapsed(self) -> None:
+        with mock.patch("draft_room_context.is_multiplayer_draft_active", return_value=True):
+            with mock.patch(
+                "draft_room_participant_state.resolve_participant_id",
+                return_value="p1",
+            ):
+                with mock.patch(
+                    "draft_room_participant_state.active_participant_team",
+                    return_value="Team X",
+                ):
+                    append_live_draft_chat_message(self.session, "New note")
+        self.session["_live_draft_chat_last_seen_rev"] = 0
+        self.assertGreaterEqual(unread_chat_count(self.session), 1)
 
     def test_board_save_preserves_newer_chat(self) -> None:
         with mock.patch("draft_room_context.is_multiplayer_draft_active", return_value=True):
@@ -117,6 +169,14 @@ class LiveDraftChatTests(unittest.TestCase):
                     append_live_draft_chat_message(self.session, "Cached hello")
         chat = load_live_draft_chat(self.session, force=False)
         self.assertEqual(chat["messages"][-1]["text"], "Cached hello")
+
+    def test_commissioner_can_disable_chat(self) -> None:
+        with mock.patch("live_draft_chat.is_chat_commissioner", return_value=True):
+            with mock.patch("draft_room_context.is_multiplayer_draft_active", return_value=True):
+                ok, err = set_chat_disabled(self.session, True)
+        self.assertTrue(ok, err)
+        chat = load_live_draft_chat(self.session, force=True)
+        self.assertTrue(chat.get("chat_disabled"))
 
 
 if __name__ == "__main__":

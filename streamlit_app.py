@@ -22879,6 +22879,12 @@ if active_page == "Live Draft Room":
         st.info("Open **Draft Setup** to configure a new draft, or use **Advanced → Convert Simulator to Live Draft** to promote an existing simulator board.")
     else:
         try:
+            from live_draft_timer_logic import reconstruct_timer_deadline
+
+            reconstruct_timer_deadline(room)
+        except Exception:
+            pass
+        try:
             from live_draft_render_trace import ldr_post_rerun_checkpoint, ldr_section
 
             ldr_section(
@@ -23498,12 +23504,20 @@ if active_page == "Live Draft Room":
             ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
             with ctrl1:
                 if st.button("⏸ Pause Draft", disabled=_status != "in_progress", key="live_draft_pause"):
-                    from live_draft_timer_logic import live_draft_clear_timer
+                    from live_draft_timer_logic import live_draft_pause_timer
 
-                    room["paused_remaining_seconds"] = live_draft_seconds_remaining(room)
-                    room["status"] = "paused"
-                    live_draft_clear_timer(room)
+                    live_draft_pause_timer(room)
                     _persist_live_draft_room(room, reason="pause_draft")
+                    try:
+                        from live_draft_chat_system import maybe_post_draft_system_message
+
+                        maybe_post_draft_system_message(
+                            st.session_state,
+                            "draft_paused",
+                            pick_index=int(room.get("current_pick_index") or 0),
+                        )
+                    except ImportError:
+                        pass
                     try:
                         from live_draft_safe_mode import request_live_draft_rerun
 
@@ -23518,6 +23532,16 @@ if active_page == "Live Draft Room":
                     pause_left = int(room.get("paused_remaining_seconds") or cfg.get("timer_seconds", 60))
                     live_draft_resume_timer(room, pause_left)
                     _persist_live_draft_room(room, reason="resume_draft")
+                    try:
+                        from live_draft_chat_system import maybe_post_draft_system_message
+
+                        maybe_post_draft_system_message(
+                            st.session_state,
+                            "draft_resumed",
+                            pick_index=int(room.get("current_pick_index") or 0),
+                        )
+                    except ImportError:
+                        pass
                     try:
                         from live_draft_safe_mode import request_live_draft_rerun
 
