@@ -23,6 +23,7 @@ from draft_room_shared_state import (
     ACTIVE_SHARED_ROOM_CODE_KEY,
     SHARED_ROOM_META_KEY,
     SharedRoomStore,
+    bump_revision,
     document_to_runtime_room,
     generate_room_code,
     get_shared_room_store,
@@ -390,7 +391,7 @@ def sync_shared_draft_room(
     poll_started = time.time()
     _trace(last_poll_started_at=poll_started, room_code=room_code)
 
-    backend = store or get_shared_room_store()
+    backend = store if store is not None else get_shared_room_store()
     local_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
     try:
         from live_draft_state import LIVE_DRAFT_ROOM_KEY
@@ -623,7 +624,7 @@ def refresh_shared_lobby_authority(
         except Exception:
             pass
 
-    backend = store or get_shared_room_store()
+    backend = store if store is not None else get_shared_room_store()
     try:
         from draft_room_shared_state import invalidate_shared_room_document_cache
 
@@ -719,7 +720,7 @@ def create_and_host_shared_room(
         session["_draft_room_last_error"] = auth_msg
         return "", {}
 
-    backend = store or get_shared_room_store()
+    backend = store if store is not None else get_shared_room_store()
     participant_id = resolve_participant_id(session)
     assigned = str(host_team or "").strip() or default_host_team(live_room)
     try:
@@ -975,7 +976,7 @@ def join_shared_draft_room(
             return False, hint or f"Enter a valid {ROOM_CODE_LEN}-character share code from the host.", None
     except ImportError:
         pass
-    backend = store or get_shared_room_store()
+    backend = store if store is not None else get_shared_room_store()
     backend_name = shared_room_backend_name()
     try:
         from draft_room_join_trace import trace_join_step
@@ -1324,11 +1325,13 @@ def join_shared_draft_room(
             or str(document.get("status") or "").lower() in ("saved_for_later", "parked")
         ):
             from live_draft_resume_lobby import mark_resume_rejoined
-            from draft_room_shared_state import bump_revision, get_shared_room_store
 
+            # Use module-level get_shared_room_store / bump_revision — never re-import
+            # get_shared_room_store here (UnboundLocalError on the earlier backend = … line).
             document = mark_resume_rejoined(document, participant_id=participant_id)
             updated = bump_revision(document)
-            get_shared_room_store().save(updated)
+            save_backend = store if store is not None else get_shared_room_store()
+            save_backend.save(updated)
             document = updated
             session["_live_draft_resume_lobby"] = True
     except Exception:
@@ -1469,7 +1472,7 @@ def commit_shared_room_state(
         record_draft_commit_diagnostics = None  # type: ignore[assignment,misc]
 
     room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
-    backend = store or get_shared_room_store()
+    backend = store if store is not None else get_shared_room_store()
     try:
         from draft_room_shared_state import load_shared_room_document
 
@@ -1650,8 +1653,6 @@ def leave_shared_draft_room(session: dict[str, Any]) -> None:
         mark_participant_left_room(session, room_code, participant_id=leave_pid)
         # Release this participant from the authoritative shared document.
         try:
-            from draft_room_shared_state import bump_revision, get_shared_room_store, load_shared_room
-
             doc = load_shared_room(room_code)
             if isinstance(doc, dict):
                 parts = dict(doc.get("participants") or {})
