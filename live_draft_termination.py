@@ -414,106 +414,6 @@ def _mark_membership_left(session: dict[str, Any], room_code: str) -> None:
         pass
 
 
-def permanently_end_live_draft(
-    session: dict[str, Any],
-    *,
-    st: Any | None = None,
-    canonical_user_id: str = "",
-    draft_id: str = "",
-    room_id: str = "",
-    room_code: str = "",
-    reason: str = "permanently_end_live_draft",
-) -> dict[str, Any]:
-    """End the active Live Draft permanently; keep temporary last-board snapshot."""
-    del canonical_user_id  # reserved for future auth-scoped tombstone rows
-    room = session.get("live_draft_room")
-    if not isinstance(room, dict):
-        room = {}
-    d_id, r_id, code = _ids_from_room(session, room)
-    draft_id = str(draft_id or d_id or "").strip()
-    room_id = str(room_id or r_id or "").strip()
-    room_code = str(room_code or code or "").strip().upper()
-
-    snapshot = capture_last_draft_board_snapshot(session, room if room else None)
-
-    # Sync picks into simulator table so sidebar/Simulator can show the snapshot board.
-    if room:
-        try:
-            from draft_room_state import sync_live_draft_room_to_canonical_board
-
-            sync_live_draft_room_to_canonical_board(session, room)
-        except Exception:
-            pass
-
-    persist_durable_tombstones(
-        session, draft_id=draft_id, room_id=room_id, room_code=room_code
-    )
-    _close_backend_room(session, room_code=room_code, terminal_status="ended")
-    _mark_membership_left(session, room_code)
-    cleared = _clear_runtime_pointers(session, clear_queues=True)
-    bump_live_draft_page_epoch(session)
-    _clear_query_room_params(st)
-
-    # Re-seed setup preferences (mode preserved via preferred_next_draft_mode).
-    try:
-        from user_page_preferences import (
-            ensure_live_draft_setup_preferences_loaded,
-            restore_live_draft_setup_mode_preference,
-        )
-
-        session.pop("_prefs_initialized:live_draft_setup", None)
-        restore_live_draft_setup_mode_preference(session)
-        ensure_live_draft_setup_preferences_loaded(session)
-    except ImportError:
-        pass
-
-    try:
-        from live_draft_state import commit_live_draft_room
-
-        if st is not None:
-            commit_live_draft_room(st, session, None, reason=reason)
-    except Exception:
-        pass
-
-    session[ENDED_NOTICE_KEY] = {
-        "message": (
-            "Ended the Live Draft session permanently. The live room cannot be resumed. "
-            "Previous picks may remain temporarily in the Draft Simulator until you start another live draft."
-        ),
-        "ended_at": _utc_now_iso(),
-        "ended_room_code": room_code or None,
-        "ended_draft_id": draft_id or None,
-        "preserved_snapshot": bool(snapshot),
-        "cleared_keys": list(cleared),
-        "operation": "end",
-    }
-    # Alias for existing setup notice reader.
-    session["_live_draft_session_ended_notice"] = session[ENDED_NOTICE_KEY]
-
-    try:
-        from baseball_persistent_state import force_save_baseball_state
-
-        if st is not None:
-            force_save_baseball_state(st, reason=reason)
-        else:
-            force_save_baseball_state(
-                type("S", (), {"session_state": session})(),
-                reason=reason,
-            )
-    except Exception:
-        pass
-
-    return {
-        "ok": True,
-        "operation": "end",
-        "draft_id": draft_id or None,
-        "room_id": room_id or None,
-        "room_code": room_code or None,
-        "snapshot": snapshot,
-        "cleared_keys": cleared,
-    }
-
-
 def permanently_delete_live_draft(
     session: dict[str, Any],
     *,
@@ -534,6 +434,18 @@ def permanently_delete_live_draft(
     draft_id = str(draft_id or d_id or "").strip()
     room_id = str(room_id or r_id or "").strip()
     room_code = str(room_code or code or "").strip().upper()
+
+    # Also clear resumable slot when it points at this draft.
+    try:
+        from live_draft_resumable_slot import (
+            clear_resumable_live_draft_slot,
+            resumable_slot_matches_draft,
+        )
+
+        if resumable_slot_matches_draft(session, draft_id=draft_id, room_code=room_code):
+            clear_resumable_live_draft_slot(session)
+    except ImportError:
+        session.pop("resumable_live_draft_slot", None)
 
     persist_durable_tombstones(
         session, draft_id=draft_id, room_id=room_id, room_code=room_code
@@ -562,7 +474,6 @@ def permanently_delete_live_draft(
 
     if delete_saved_library_copy and draft_id:
         try:
-            # Explicit only — never silent.
             from draft_library_manifest import mark_draft_deleted_from_library
 
             mark_draft_deleted_from_library(session, draft_id)
@@ -599,7 +510,7 @@ def permanently_delete_live_draft(
     session[ENDED_NOTICE_KEY] = {
         "message": (
             "Deleted the draft permanently. The live room and temporary draft board were removed "
-            "and cannot be restored."
+            "and cannot be restored. Choose Save & Continue Later next time if you want to finish later."
         ),
         "ended_at": _utc_now_iso(),
         "ended_room_code": room_code or None,
@@ -634,9 +545,69 @@ def permanently_delete_live_draft(
     }
 
 
-def reset_context_for_new_live_draft(session: dict[str, Any]) -> dict[str, Any]:
+def discard_live_draft_and_start_over(
+    session: dict[str, Any],
+    *,
+    st: Any | None = None,
+    reason: str = "discard_live_draft_and_start_over",
+) -> dict[str, Any]:
+    """Canonical End/Delete — permanently destroy the draft (no resume, no temp board)."""
+    # Also discard resumable slot matching any parked copy of this draft.
+    room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else {}
+    d_id, _r_id, code = _ids_from_room(session, room)
+    try:
+        from live_draft_resumable_slot import (
+            clear_resumable_live_draft_slot,
+            get_resumable_live_draft_slot,
+            resumable_slot_matches_draft,
+        )
+
+        slot = get_resumable_live_draft_slot(session)
+        if slot and (
+            not room
+            or resumable_slot_matches_draft(session, draft_id=d_id, room_code=code)
+        ):
+            # When discarding from active room, only clear slot if it is this draft.
+            if room and resumable_slot_matches_draft(session, draft_id=d_id, room_code=code):
+                clear_resumable_live_draft_slot(session)
+            elif not room:
+                clear_resumable_live_draft_slot(session)
+    except ImportError:
+        pass
+    result = permanently_delete_live_draft(session, st=st, reason=reason)
+    result["operation"] = "discard"
+    return result
+
+
+def permanently_end_live_draft(
+    session: dict[str, Any],
+    *,
+    st: Any | None = None,
+    canonical_user_id: str = "",
+    draft_id: str = "",
+    room_id: str = "",
+    room_code: str = "",
+    reason: str = "permanently_end_live_draft",
+) -> dict[str, Any]:
+    """Deprecated alias — End now means discard (Save & Continue Later is the pause-for-later path)."""
+    del canonical_user_id, draft_id, room_id, room_code
+    return discard_live_draft_and_start_over(session, st=st, reason=reason)
+
+
+def reset_context_for_new_live_draft(
+    session: dict[str, Any],
+    *,
+    clear_resumable_slot: bool = True,
+) -> dict[str, Any]:
     """On successful new Solo/Shared create — wipe prior temporary board and bind Pick 1."""
     clear_last_draft_board_snapshot(session)
+    if clear_resumable_slot:
+        try:
+            from live_draft_resumable_slot import clear_resumable_live_draft_slot
+
+            clear_resumable_live_draft_slot(session)
+        except ImportError:
+            session.pop("resumable_live_draft_slot", None)
     try:
         from draft_room_state import delete_active_draft
 

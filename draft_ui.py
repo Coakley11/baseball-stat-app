@@ -1601,6 +1601,19 @@ def on_start_new_live_draft() -> None:
         flush_live_draft_setup_persist(st, st.session_state, reason="live_draft_start")
     except ImportError:
         pass
+    try:
+        from live_draft_resumable_slot import warn_if_starting_replaces_resumable
+
+        warn = warn_if_starting_replaces_resumable(st.session_state)
+        if warn and not st.session_state.get("_live_draft_start_replace_resumable_ok"):
+            st.session_state["_live_draft_start_replace_resumable_pending"] = True
+            st.session_state["_live_draft_start_replace_resumable_message"] = warn.get("message")
+            return
+        st.session_state.pop("_live_draft_start_replace_resumable_ok", None)
+        st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
+        st.session_state.pop("_live_draft_start_replace_resumable_message", None)
+    except ImportError:
+        pass
     mark_start_live_draft_clicked(st.session_state)
     st.session_state["_start_live_draft_mode"] = "new"
     st.session_state["_start_live_draft_pending"] = True

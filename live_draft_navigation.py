@@ -149,6 +149,13 @@ def on_browse_other_pages(session: dict[str, Any], *, target_page: str | None = 
 def on_return_to_live_draft(session: dict[str, Any]) -> None:
     session.pop(BROWSING_AWAY_KEY, None)
     session[FORCE_SYNC_ON_RETURN_KEY] = True
+    try:
+        from live_draft_resumable_slot import continue_saved_draft, get_resumable_live_draft_slot
+
+        if get_resumable_live_draft_slot(session) and not isinstance(session.get("live_draft_room"), dict):
+            continue_saved_draft(session, st=None)
+    except ImportError:
+        pass
     _apply_scheduled_page(session, "Live Draft Room")
 
 
@@ -1005,28 +1012,30 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
         )
         return lobby_ctx
 
-    # Temporary last-board snapshot after End Draft — never labeled Resume Live Draft.
+    # Temporary last-board snapshot after discard is gone; prefer resumable slot card.
     try:
-        from live_draft_termination import get_last_draft_board_snapshot
+        from live_draft_resumable_slot import get_resumable_live_draft_slot, resumable_slot_summary
 
-        snap = get_last_draft_board_snapshot(session)
-        if isinstance(snap, dict) and int(snap.get("pick_count") or 0) > 0:
+        slot = get_resumable_live_draft_slot(session)
+        if isinstance(slot, dict):
+            summary = resumable_slot_summary(slot)
             _set_resume_diag(
                 session,
-                resume_source_kind="last_board_snapshot",
-                sidebar_source_selected="last_board_snapshot",
-                sidebar_priority_reason="ended_live_draft_snapshot",
+                resume_source_kind="resumable_slot",
+                sidebar_source_selected="resumable_slot",
+                sidebar_priority_reason="save_continue_later",
             )
             return {
-                "kind": "last_board_snapshot",
-                "title": str(snap.get("label") or "Last Draft Board"),
-                "team_label": str(snap.get("league_name") or "Previous Draft"),
+                "kind": "resumable_slot",
+                "title": "Continue Saved Draft",
+                "team_label": str(summary.get("league_name") or "Saved Draft"),
                 "user_team": "",
                 "round_no": None,
-                "pick_no": int(snap.get("pick_count") or 0),
+                "pick_no": int(summary.get("current_pick") or 0),
                 "on_clock": "—",
-                "total_picks": int(snap.get("total_picks") or 0),
-                "not_a_live_room": True,
+                "total_picks": int(summary.get("total_picks") or 0),
+                "not_a_live_room": False,
+                "is_resumable_slot": True,
             }
     except ImportError:
         pass
@@ -1239,6 +1248,19 @@ def _render_return_card(
                 key=button_key,
                 use_container_width=True,
                 on_click=on_return_to_draft_simulator,
+                args=(session,),
+            )
+        elif kind == "resumable_slot":
+            st.caption(
+                f"{ctx.get('title') or 'Continue Saved Draft'} — "
+                f"Pick {ctx.get('pick_no') or '—'} of {ctx.get('total_picks') or '—'}"
+            )
+            st.button(
+                _with_page_icon("Live Draft Room", "Continue Saved Draft", page_label_fn),
+                type="primary",
+                key=button_key,
+                use_container_width=True,
+                on_click=on_return_to_live_draft,
                 args=(session,),
             )
         elif kind == "last_board_snapshot":

@@ -121,7 +121,7 @@ class PermanentEndLifecycleTests(unittest.TestCase):
         reset_shared_room_store_for_tests(None)
         self._tmpdir.cleanup()
 
-    def test_end_partial_shared_closes_for_both_and_preserves_snapshot(self) -> None:
+    def test_end_partial_shared_closes_for_both_and_discards(self) -> None:
         host = _daniel()
         set_live_draft_setup_mode(host, SETUP_MODE_SHARED)
         room = _sample_room(picks=3)
@@ -132,16 +132,16 @@ class PermanentEndLifecycleTests(unittest.TestCase):
         ok, msg, _ = join_shared_draft_room(guest, code, requested_team="Team B", store=self.store)
         self.assertTrue(ok, msg)
 
-        result = permanently_end_live_draft(host, st=None, reason="test_end")
+        from live_draft_termination import discard_live_draft_and_start_over
+
+        result = discard_live_draft_and_start_over(host, st=None)
         self.assertTrue(result["ok"])
         self.assertIsNone(host.get("live_draft_room"))
         self.assertEqual(resolve_live_draft_lifecycle(host), LIFECYCLE_SETUP)
         self.assertTrue(is_live_draft_permanently_retired(host, room_code=code, draft_id="LIFE1"))
         self.assertIn(TERMINATION_TOMBSTONES_KEY, host)
-        snap = get_last_draft_board_snapshot(host)
-        self.assertIsNotNone(snap)
-        self.assertEqual(int(snap["pick_count"]), 3)
-        self.assertTrue(snap.get("not_a_live_room"))
+        # Discard does not keep a temporary board snapshot — use Save & Continue Later for that.
+        self.assertIsNone(get_last_draft_board_snapshot(host))
         # Preferred mode remains Shared.
         self.assertEqual(get_preferred_next_draft_mode(host), SETUP_MODE_SHARED)
         # Backend room no longer joinable.
@@ -162,12 +162,14 @@ class PermanentEndLifecycleTests(unittest.TestCase):
         code, err = finalize_shared_room_create(host, room, host_team="Team A", store=self.store)
         self.assertFalse(err, err)
         host["live_draft_room"] = room
-        permanently_end_live_draft(host, st=None)
-        self.assertIsNotNone(get_last_draft_board_snapshot(host))
-        # Simulate leftover room pointer then delete.
-        host["live_draft_room"] = dict(room)
-        host["active_shared_draft_room_code"] = code
-        permanently_delete_live_draft(host, st=None)
+        host["last_draft_board_snapshot"] = {
+            "kind": "last_draft_board_snapshot",
+            "not_a_live_room": True,
+            "pick_count": 2,
+        }
+        from live_draft_termination import discard_live_draft_and_start_over
+
+        discard_live_draft_and_start_over(host, st=None)
         self.assertIsNone(get_last_draft_board_snapshot(host))
         self.assertIsNone(host.get("live_draft_room"))
         self.assertTrue(is_live_draft_permanently_retired(host, room_code=code, draft_id="LIFE1"))

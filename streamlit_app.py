@@ -22752,17 +22752,46 @@ if active_page == "Live Draft Room":
         except ImportError:
             pass
         try:
-            from live_draft_termination import GUEST_ENDED_NOTICE_KEY, get_last_draft_board_snapshot
+            from live_draft_resumable_slot import (
+                SAVE_CONTINUE_FLASH_KEY,
+                continue_saved_draft,
+                get_resumable_live_draft_slot,
+                resumable_slot_summary,
+            )
+
+            _save_flash = st.session_state.pop(SAVE_CONTINUE_FLASH_KEY, None)
+            if isinstance(_save_flash, dict) and _save_flash.get("message"):
+                st.success(str(_save_flash["message"]))
+            _slot = get_resumable_live_draft_slot(st.session_state)
+            if isinstance(_slot, dict):
+                _sum = resumable_slot_summary(_slot)
+                with st.container(border=True):
+                    st.markdown("#### Continue Saved Draft")
+                    st.caption(
+                        f"**{_sum.get('mode_label')}** · {_sum.get('num_teams') or '—'} teams · "
+                        f"Pick {_sum.get('current_pick')} of {_sum.get('total_picks')} · "
+                        f"last saved {_sum.get('saved_at') or '—'}"
+                        + (f" · code `{_sum.get('room_code')}`" if _sum.get("room_code") else "")
+                    )
+                    if st.button(
+                        "Continue Saved Draft",
+                        type="primary",
+                        key="live_draft_continue_saved_btn",
+                        help="Restore the exact saved Live Draft (picks, teams, room, queues).",
+                    ):
+                        result = continue_saved_draft(st.session_state, st=st)
+                        if result.get("ok"):
+                            st.rerun()
+                        else:
+                            st.error(str(result.get("message") or "Could not continue saved draft."))
+        except ImportError:
+            pass
+        try:
+            from live_draft_termination import GUEST_ENDED_NOTICE_KEY
 
             _guest_ended = st.session_state.pop(GUEST_ENDED_NOTICE_KEY, None)
             if isinstance(_guest_ended, dict) and _guest_ended.get("message"):
                 st.info(str(_guest_ended["message"]))
-            _snap = get_last_draft_board_snapshot(st.session_state)
-            if isinstance(_snap, dict) and int(_snap.get("pick_count") or 0) > 0:
-                st.caption(
-                    f"{_snap.get('label') or 'Last Draft Board'} — temporary Simulator snapshot only "
-                    "(not a live room). Open Draft Room Simulator to review previous picks."
-                )
         except ImportError:
             pass
         # Never show leftover create/join flash on a clean setup page.
@@ -22930,7 +22959,11 @@ if active_page == "Live Draft Room":
                     on_click=on_start_new_live_draft,
                 )
             with b_reset:
-                reset_live = st.button("Delete Draft", key="live_draft_reset_btn")
+                reset_live = st.button(
+                    "End/Delete Draft",
+                    key="live_draft_reset_btn",
+                    help="Permanently discard any leftover draft state and clear the resumable slot.",
+                )
             with b_restore:
                 st.caption("Setup autosaves.")
                 if st.button(
@@ -22957,12 +22990,38 @@ if active_page == "Live Draft Room":
                         if st.button("Cancel", key="live_draft_reset_setup_cancel_btn"):
                             st.session_state.pop("_live_draft_reset_setup_confirm", None)
 
-            if reset_live:
-                st.session_state["_live_draft_delete_confirm"] = True
-            if st.session_state.get("_live_draft_delete_confirm") and _live_draft_lifecycle == LIFECYCLE_SETUP:
+            if st.session_state.get("_live_draft_start_replace_resumable_pending"):
                 st.warning(
-                    "Delete this draft permanently? The live room and temporary draft board will be removed "
-                    "and cannot be restored."
+                    str(
+                        st.session_state.get("_live_draft_start_replace_resumable_message")
+                        or "A resumable draft is already saved. Starting a new draft will replace it."
+                    )
+                )
+                sr1, sr2 = st.columns(2)
+                with sr1:
+                    if st.button(
+                        "Replace & Start New Draft",
+                        key="live_draft_start_replace_confirm_btn",
+                        type="primary",
+                    ):
+                        st.session_state["_live_draft_start_replace_resumable_ok"] = True
+                        st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
+                        on_start_new_live_draft()
+                        st.rerun()
+                with sr2:
+                    if st.button("Keep Saved Draft", key="live_draft_start_replace_cancel_btn"):
+                        st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
+                        st.session_state.pop("_live_draft_start_replace_resumable_message", None)
+                        st.rerun()
+
+            if reset_live:
+                st.session_state["_live_draft_discard_confirm"] = True
+            if st.session_state.get("_live_draft_discard_confirm") and _live_draft_lifecycle == LIFECYCLE_SETUP:
+                st.error(
+                    "Permanently delete this draft and start over?\n\n"
+                    "All current picks, teams, room information, queues, participants, and live-draft "
+                    "progress will be removed. This draft cannot be resumed.\n\n"
+                    "Choose **Save & Continue Later** instead if you want to finish it another time."
                 )
                 dc1, dc2 = st.columns(2)
                 with dc1:
@@ -22971,15 +23030,17 @@ if active_page == "Live Draft Room":
                         key="live_draft_setup_delete_confirm_btn",
                         type="primary",
                     ):
-                        from live_draft_termination import permanently_delete_live_draft
+                        from live_draft_termination import discard_live_draft_and_start_over
+                        from live_draft_resumable_slot import clear_resumable_live_draft_slot
 
-                        st.session_state.pop("_live_draft_delete_confirm", None)
-                        permanently_delete_live_draft(st.session_state, st=st)
+                        st.session_state.pop("_live_draft_discard_confirm", None)
+                        clear_resumable_live_draft_slot(st.session_state)
+                        discard_live_draft_and_start_over(st.session_state, st=st)
                         st.success("Draft deleted permanently.")
                         st.rerun()
                 with dc2:
-                    if st.button("Cancel", key="live_draft_setup_delete_cancel_btn"):
-                        st.session_state.pop("_live_draft_delete_confirm", None)
+                    if st.button("Keep Draft", key="live_draft_setup_delete_cancel_btn"):
+                        st.session_state.pop("_live_draft_discard_confirm", None)
                         st.rerun()
 
             with st.expander("Advanced — Convert Simulator to Live Draft", expanded=False):
@@ -23729,63 +23790,107 @@ if active_page == "Live Draft Room":
                         st.rerun()
             with ctrl3:
                 if st.button(
-                    "🗑 Delete Draft",
-                    key="live_draft_delete_btn",
-                    help="Permanently delete this Live Draft and its temporary board.",
+                    "Save & Continue Later",
+                    key="live_draft_save_continue_btn",
+                    help="Pause and save this draft so the same group can resume later from the exact same pick.",
                 ):
-                    st.session_state["_live_draft_delete_confirm"] = True
-                    st.session_state.pop("_live_draft_end_confirm", None)
+                    from live_draft_resumable_slot import save_and_continue_later
+
+                    result = save_and_continue_later(st.session_state, st=st, replace_existing=False)
+                    if result.get("needs_replace_confirm"):
+                        st.session_state["_live_draft_replace_resumable_confirm"] = True
+                        st.session_state["_live_draft_replace_resumable_message"] = result.get("message")
+                    elif result.get("ok"):
+                        st.rerun()
+                    else:
+                        st.error(str(result.get("message") or "Could not save draft for later."))
             with ctrl4:
                 if st.button(
-                    "End Draft",
-                    key="live_draft_end_btn",
-                    help="Permanently end this live room. Picks may remain temporarily in the Simulator.",
+                    "End/Delete Draft",
+                    key="live_draft_discard_btn",
+                    help="Permanently destroy this draft and start over. Use Save & Continue Later to finish another day.",
                 ):
-                    st.session_state["_live_draft_end_confirm"] = True
-                    st.session_state.pop("_live_draft_delete_confirm", None)
-            if st.session_state.get("_live_draft_end_confirm"):
+                    st.session_state["_live_draft_discard_confirm"] = True
+                    st.session_state.pop("_live_draft_replace_resumable_confirm", None)
+
+            if st.session_state.get("_live_draft_replace_resumable_confirm"):
                 st.warning(
-                    "End this live draft permanently? The live room cannot be resumed. "
-                    "Its picks may remain temporarily in the Draft Simulator until another live draft is started."
+                    str(
+                        st.session_state.get("_live_draft_replace_resumable_message")
+                        or "A resumable draft is already saved. Saving this draft will replace it."
+                    )
                 )
-                end_ok, end_cancel = st.columns(2)
-                with end_ok:
+                rc1, rc2 = st.columns(2)
+                with rc1:
                     if st.button(
-                        "End Draft Permanently",
-                        key="live_draft_end_confirm_btn",
+                        "Replace Saved Draft",
+                        key="live_draft_replace_resumable_confirm_btn",
                         type="primary",
                     ):
-                        from live_draft_termination import permanently_end_live_draft
+                        from live_draft_resumable_slot import save_and_continue_later
 
-                        st.session_state.pop("_live_draft_end_confirm", None)
-                        permanently_end_live_draft(st.session_state, st=st)
+                        st.session_state.pop("_live_draft_replace_resumable_confirm", None)
+                        st.session_state.pop("_live_draft_replace_resumable_message", None)
+                        result = save_and_continue_later(
+                            st.session_state, st=st, replace_existing=True
+                        )
+                        if result.get("ok"):
+                            st.rerun()
+                        else:
+                            st.error(str(result.get("message") or "Could not replace saved draft."))
+                with rc2:
+                    if st.button("Keep Existing Saved Draft", key="live_draft_replace_resumable_cancel_btn"):
+                        st.session_state.pop("_live_draft_replace_resumable_confirm", None)
+                        st.session_state.pop("_live_draft_replace_resumable_message", None)
                         st.rerun()
-                with end_cancel:
-                    if st.button("Cancel", key="live_draft_end_cancel_btn"):
-                        st.session_state.pop("_live_draft_end_confirm", None)
-                        st.rerun()
-            if st.session_state.get("_live_draft_delete_confirm"):
-                st.warning(
-                    "Delete this draft permanently? The live room and temporary draft board will be removed "
-                    "and cannot be restored."
+
+            if st.session_state.get("_live_draft_discard_confirm"):
+                st.error(
+                    "Permanently delete this draft and start over?\n\n"
+                    "All current picks, teams, room information, queues, participants, and live-draft "
+                    "progress will be removed. This draft cannot be resumed.\n\n"
+                    "Choose **Save & Continue Later** instead if you want to finish it another time."
                 )
-                confirm_col, cancel_col = st.columns(2)
-                with confirm_col:
+                dc1, dc2 = st.columns(2)
+                with dc1:
                     if st.button(
                         "Delete Draft Permanently",
-                        key="live_draft_delete_confirm_btn",
+                        key="live_draft_discard_confirm_btn",
                         type="primary",
                     ):
-                        from live_draft_termination import permanently_delete_live_draft
+                        from live_draft_termination import discard_live_draft_and_start_over
 
-                        st.session_state.pop("_live_draft_delete_confirm", None)
-                        permanently_delete_live_draft(st.session_state, st=st)
-                        st.success("Draft deleted permanently.")
+                        st.session_state.pop("_live_draft_discard_confirm", None)
+                        discard_live_draft_and_start_over(st.session_state, st=st)
                         st.rerun()
-                with cancel_col:
-                    if st.button("Cancel", key="live_draft_delete_cancel_btn"):
-                        st.session_state.pop("_live_draft_delete_confirm", None)
+                with dc2:
+                    if st.button("Keep Draft", key="live_draft_discard_cancel_btn"):
+                        st.session_state.pop("_live_draft_discard_confirm", None)
                         st.rerun()
+
+            # Distinct library save — historical record, not the resumable slot.
+            if st.button(
+                "Save to Draft Library",
+                key="live_draft_save_library_btn",
+                help="Save a historical copy to Saved Draft Library for analysis. Does not replace Save & Continue Later.",
+            ):
+                try:
+                    from fantasy_league_context import save_live_draft_league_context
+
+                    _team = str(
+                        st.session_state.get("draft_room_participant_team")
+                        or (room.get("config") or {}).get("your_team")
+                        or (room.get("config") or {}).get("user_team")
+                        or ((room.get("teams") or [""])[0])
+                        or "My Team"
+                    ).strip()
+                    save_live_draft_league_context(
+                        st.session_state, room, my_team_name=_team, save_only=True
+                    )
+                    st.success("Saved a historical copy to Draft Library.")
+                except Exception as _lib_save_exc:
+                    st.warning(f"Could not save to Draft Library: {_lib_save_exc}")
+
             st.markdown("</div>", unsafe_allow_html=True)
 
         with ldr_step(st.session_state, "timer_attach_callbacks", st=st):

@@ -50,17 +50,17 @@ class EndLiveDraftSessionTests(unittest.TestCase):
         self.assertEqual(len(list_draft_archives(session)), 1)
         self.assertIn("ctx-keep-1", session.get("league_contexts") or {})
         notice = session.get(SESSION_ENDED_NOTICE_KEY) or {}
-        self.assertIn("Ended the Live Draft session", str(notice.get("message") or ""))
+        self.assertIn("permanently", str(notice.get("message") or "").lower())
         self.assertFalse(session.get("_start_live_draft_pending"))
         self.assertNotIn("live_draft_my_team", session)
         room = prepare_live_draft_state(session)
         self.assertIsNone(room)
         ctx = get_draft_return_context(session)
-        # Temporary last-board snapshot is allowed; Resume Live Draft is not.
+        # Discard removes resumable slot and temporary boards — no Resume Live Draft.
         if ctx is not None:
-            self.assertEqual(ctx.get("kind"), "last_board_snapshot")
-            self.assertTrue(ctx.get("not_a_live_room"))
-        self.assertNotEqual(str((ctx or {}).get("title") or ""), "Return to Live Draft")
+            self.assertNotEqual(ctx.get("kind"), "live_active")
+            self.assertNotEqual(str(ctx.get("title") or ""), "Return to Live Draft")
+        self.assertIsNone(session.get("resumable_live_draft_slot"))
 
 
 if __name__ == "__main__":

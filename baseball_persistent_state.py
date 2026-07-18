@@ -139,6 +139,7 @@ _WORKFLOW_KEYS = (
     "use_simulator_board_as_fantasy_context",
     "live_draft_termination_tombstones",
     "last_draft_board_snapshot",
+    "resumable_live_draft_slot",
     "_waiver_pending_move_pairs",
     "waiver_planner_add_pick",
     "waiver_planner_drop_pick",
