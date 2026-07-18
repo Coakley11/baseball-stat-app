@@ -12231,15 +12231,6 @@ def _auto_remove_drafted_from_queue():
     return removed
 
 
-def _move_queue_item(idx, delta):
-    from draft_state import move_queue_item_down, move_queue_item_up
-
-    if delta < 0:
-        move_queue_item_up(st.session_state, idx)
-    elif delta > 0:
-        move_queue_item_down(st.session_state, idx)
-
-
 def _clear_workflow_list(key):
     from draft_state import clear_draft_queue, clear_watchlist
 

@@ -441,7 +441,15 @@ def sync_draft_queue(
     if sync_participant is None:
         sync_participant = not (
             reason_s.startswith(
-                ("add_to_queue", "remove_from_queue", "move_queue", "drag_reorder", "queue_", "reorder_queue")
+                (
+                    "add_to_queue",
+                    "remove_from_queue",
+                    "move_queue",
+                    "drag_reorder",
+                    "queue_",
+                    "reorder_queue",
+                    "reorder_user",
+                )
             )
             or reason_s
             in {
@@ -450,6 +458,7 @@ def sync_draft_queue(
                 "move_queue_up",
                 "move_queue_down",
                 "drag_reorder_queue",
+                "reorder_user_draft_queue",
                 "queue_change",
             }
         )
@@ -649,13 +658,96 @@ def clear_draft_queue(session: dict[str, Any], *, reason: str = "clear_queue") -
     _note_queue_mutation_deferred(session, reason=reason)
 
 
+def _queue_scope_ids(session: dict[str, Any]) -> tuple[str, str]:
+    """Return (room_or_draft_id, canonical_user_id) for queue isolation diagnostics."""
+    room_id = ""
+    try:
+        from draft_room_context import resolve_shared_room_code
+
+        room_id = str(resolve_shared_room_code(session) or "").strip().upper()
+    except ImportError:
+        pass
+    if not room_id:
+        try:
+            from live_draft_state import LIVE_DRAFT_ROOM_KEY
+
+            room = session.get(LIVE_DRAFT_ROOM_KEY)
+            if isinstance(room, dict):
+                room_id = str(room.get("draft_room_id") or room.get("draft_id") or "").strip()
+        except ImportError:
+            pass
+    if not room_id:
+        room_id = str(session.get("active_shared_draft_room_code") or "solo").strip()
+    user_id = ""
+    try:
+        from draft_room_participant_state import resolve_participant_id
+
+        user_id = str(resolve_participant_id(session) or "").strip()
+    except ImportError:
+        pass
+    if not user_id:
+        try:
+            from suite_auth import AUTH_USER_ID_KEY
+
+            user_id = str(session.get(AUTH_USER_ID_KEY) or "").strip()
+        except ImportError:
+            user_id = str(session.get("draft_room_participant_id") or "").strip()
+    return room_id, user_id
+
+
+def reorder_user_draft_queue(
+    session: dict[str, Any],
+    ordered_player_ids: list[str] | tuple[str, ...] | None,
+    *,
+    room_or_draft_id: str = "",
+    canonical_user_id: str = "",
+    reason: str = "reorder_user_draft_queue",
+) -> tuple[list[str], bool]:
+    """Canonical queue reorder for sidebar + Live Draft + Simulator.
+
+    ``ordered_player_ids`` are the stable queue identities already stored in
+    ``draft_queue`` (player names today; playerIDs when that is the queue key).
+    Sidebar and main panels must call this same function — no separate copies.
+    """
+    current = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+    new_q = _normalize_player_list(ordered_player_ids)
+    # Wipe guard: never accept an empty drag result over a populated queue.
+    if current and not new_q:
+        return current, False
+    if not new_q:
+        return current, False
+    # Prefer a full permutation; allow concurrent-remove subset of membership.
+    if sorted(new_q) != sorted(current) and not set(new_q).issubset(set(current)):
+        return current, False
+    if new_q == current:
+        return current, False
+
+    scope_room, scope_user = _queue_scope_ids(session)
+    session["_draft_queue_last_reorder"] = {
+        "room_or_draft_id": str(room_or_draft_id or scope_room or ""),
+        "canonical_user_id": str(canonical_user_id or scope_user or ""),
+        "ordered_player_ids": list(new_q),
+        "reason": str(reason or "reorder_user_draft_queue"),
+    }
+    try:
+        from live_draft_perf import PHASE_QUEUE_REORDER, live_draft_perf_action
+
+        with live_draft_perf_action(session, "queue_reorder", phase=PHASE_QUEUE_REORDER):
+            sync_draft_queue(session, new_q, reason=reason, sync_participant=False)
+            _note_queue_mutation_deferred(session, reason=reason)
+    except ImportError:
+        sync_draft_queue(session, new_q, reason=reason, sync_participant=False)
+        _note_queue_mutation_deferred(session, reason=reason)
+    return new_q, True
+
+
 def move_queue_item(
     session: dict[str, Any],
     index: int,
     *,
     direction: str,
 ) -> tuple[list[str], bool]:
-    """Reorder draft queue — up, down, or top. Returns (queue, changed)."""
+    """Legacy index mover — prefer ``reorder_user_draft_queue`` / drag UI."""
     q = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
     try:
         idx = int(index)
@@ -674,16 +766,11 @@ def move_queue_item(
         new_q.insert(0, item)
     else:
         return q, False
-    try:
-        from live_draft_perf import PHASE_QUEUE_REORDER, live_draft_perf_action
-
-        with live_draft_perf_action(session, "queue_reorder", phase=PHASE_QUEUE_REORDER):
-            sync_draft_queue(session, new_q, reason=f"reorder_queue_{direction}")
-            _note_queue_mutation_deferred(session, reason=f"reorder_queue_{direction}")
-    except ImportError:
-        sync_draft_queue(session, new_q, reason=f"reorder_queue_{direction}")
-        _note_queue_mutation_deferred(session, reason=f"reorder_queue_{direction}")
-    return new_q, True
+    return reorder_user_draft_queue(
+        session,
+        new_q,
+        reason=f"reorder_queue_{direction}",
+    )
 
 
 def move_queue_item_up(session: dict[str, Any], index: int) -> tuple[list[str], bool]:
@@ -696,7 +783,6 @@ def move_queue_item_down(session: dict[str, Any], index: int) -> tuple[list[str]
 
 def move_queue_item_to_top(session: dict[str, Any], index: int) -> tuple[list[str], bool]:
     return move_queue_item(session, index, direction="top")
-
 
 def clear_watchlist(session: dict[str, Any], *, reason: str = "clear_watchlist") -> None:
     sync_watchlist(session, watchlist_focus=[], watchlist_favorites=[], reason=reason)

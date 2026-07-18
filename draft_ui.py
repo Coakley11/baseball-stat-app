@@ -990,12 +990,7 @@ def render_draft_queue_panel(
     Returns True when caller should st.rerun().
     """
     from draft_actions import _prune_drafted_from_queue, draft_action_context
-    from draft_state import (
-        move_queue_item_down,
-        move_queue_item_to_top,
-        move_queue_item_up,
-        remove_player_from_draft_queue,
-    )
+    from draft_state import remove_player_from_draft_queue, reorder_user_draft_queue
 
     container = st.sidebar if use_sidebar else st
     try:
@@ -1112,13 +1107,12 @@ def render_draft_queue_panel(
         container.caption("Empty — add players with **⭐ Add to Queue** on recommendation cards.")
         return False
 
-    # Red sliding queue (streamlit_sortables). Wipe guard keeps survival fixes:
-    # never accept an empty sortable result over a populated queue.
-    if not compact and not use_sidebar and len(queue) >= 2:
+    # Red sliding queue (streamlit_sortables) — sidebar + Live Draft + Simulator.
+    # Wipe guard: never accept an empty sortable result over a populated queue.
+    # Arrows removed; drag is the only reorder control.
+    if len(queue) >= 2:
         try:
             from streamlit_sortables import sort_items
-
-            from draft_state import sync_draft_queue
 
             try:
                 from live_draft_ux import inject_draft_queue_sortable_styles
@@ -1129,7 +1123,7 @@ def render_draft_queue_panel(
                 )
             except ImportError:
                 pass
-            container.caption("Drag the red cards to set queue priority.")
+            container.caption("Drag the red cards to set queue priority (first = highest).")
             _sortable_in = list(queue)
             sorted_queue = sort_items(list(queue), key=f"{key_prefix}_sortable")
             if list(sorted_queue) != list(queue):
@@ -1159,28 +1153,27 @@ def render_draft_queue_panel(
                         )
                     except ImportError:
                         pass
-                    sync_draft_queue(session, list(sorted_queue), reason="drag_reorder_queue")
-                    try:
-                        from live_draft_queue_persist import note_queue_mutation
+                    _changed_q, changed = reorder_user_draft_queue(
+                        session,
+                        list(sorted_queue),
+                        reason="drag_reorder_queue",
+                    )
+                    if changed:
+                        try:
+                            from live_draft_queue_survival import note_queue_survival
 
-                        note_queue_mutation(session, reason="drag_reorder_queue")
-                    except ImportError:
-                        pass
-                    try:
-                        from live_draft_queue_survival import note_queue_survival
-
-                        note_queue_survival(
-                            session,
-                            "sortable_reorder",
-                            detail=",".join(list(sorted_queue)[:8]),
-                        )
-                    except ImportError:
-                        pass
-                    queue = list(sorted_queue)
-                    rerun = True
+                            note_queue_survival(
+                                session,
+                                "sortable_reorder",
+                                detail=",".join(list(_changed_q)[:8]),
+                            )
+                        except ImportError:
+                            pass
+                        queue = list(_changed_q)
+                        rerun = True
         except ImportError:
-            if _is_live and len(queue) >= 2:
-                container.caption("Reorder with Up / Down / Top (drag component unavailable).")
+            if len(queue) >= 2:
+                container.caption("Drag reorder unavailable — install streamlit-sortables to reorder.")
 
     ctx = draft_action_context(session)
     if ctx.get("is_your_pick") and ctx.get("current_pick"):
@@ -1199,12 +1192,12 @@ def render_draft_queue_panel(
         paused = False
 
     if not compact and not use_sidebar and not _is_live:
-        header = container.columns([0.06, 0.30, 0.10, 0.14, 0.22, 0.18])
+        header = container.columns([0.06, 0.34, 0.12, 0.16, 0.12, 0.20])
         header[0].caption("**Photo**")
         header[1].caption("**Player**")
         header[2].caption("**Pos**")
         header[3].caption("**Team**")
-        header[4].caption("**Reorder**")
+        header[4].caption("**Remove**")
         header[5].caption("**Draft**")
 
     try:
@@ -1234,20 +1227,7 @@ def render_draft_queue_panel(
         if _use_compact_rows:
             if _is_live:
                 container.markdown(f"**{idx + 1}. {pname}**")
-            c_ctrl, c_name, c_draft = container.columns([0.38, 0.42, 0.20])
-            u, d, t, r = c_ctrl.columns(4)
-            if u.button("↑", key=f"{key_prefix}_up_{idx}", disabled=idx == 0):
-                move_queue_item_up(session, idx)
-                rerun = True
-            if d.button("↓", key=f"{key_prefix}_dn_{idx}", disabled=idx >= len(queue) - 1):
-                move_queue_item_down(session, idx)
-                rerun = True
-            if t.button("⤒", key=f"{key_prefix}_top_{idx}", disabled=idx == 0):
-                move_queue_item_to_top(session, idx)
-                rerun = True
-            if r.button("✕", key=f"{key_prefix}_rm_{idx}"):
-                remove_player_from_draft_queue(session, pname)
-                rerun = True
+            c_name, c_rm, c_draft = container.columns([0.62, 0.18, 0.20])
             label = format_queue_player_label(pname, meta)
             metrics_line = format_queue_player_metrics_line(pool_row)
             if _queue_photos:
@@ -1265,6 +1245,18 @@ def render_draft_queue_panel(
             else:
                 extra = f"\n{metrics_line}" if metrics_line else ""
                 c_name.caption(label[:72] + ("…" if len(label) > 72 else "") + extra)
+            if c_rm.button("✕", key=f"{key_prefix}_rm_{idx}", help="Remove from queue"):
+                if str(key_prefix).startswith("live"):
+                    try:
+                        from live_draft_ux_latency import ACTION_REMOVE_QUEUE, note_ux_action
+
+                        note_ux_action(
+                            session, ACTION_REMOVE_QUEUE, source="queue_remove", detail=pname, st=st
+                        )
+                    except ImportError:
+                        pass
+                remove_player_from_draft_queue(session, pname)
+                rerun = True
             if render_draft_button(
                 st,
                 session,
@@ -1278,7 +1270,7 @@ def render_draft_queue_panel(
             ):
                 rerun = True
         else:
-            cols = container.columns([0.06, 0.30, 0.10, 0.14, 0.22, 0.18])
+            cols = container.columns([0.06, 0.34, 0.12, 0.16, 0.12, 0.20])
             if _queue_photos:
                 cols[0].markdown(render_queue_headshot_html(photo_info), unsafe_allow_html=True)
             else:
@@ -1290,57 +1282,18 @@ def render_draft_queue_panel(
             cols[1].write(name_block)
             cols[2].write(meta["position"])
             cols[3].write(meta["team"][:18] + ("…" if len(meta["team"]) > 18 else ""))
-            ctrl = container.columns([0.5, 0.5])
-            with ctrl[0]:
-                b1, b2, b3, b4 = st.columns(4)
-                if b1.button("Up", key=f"{key_prefix}_up_{idx}", disabled=idx == 0):
-                    if str(key_prefix).startswith("live"):
-                        try:
-                            from live_draft_ux_latency import ACTION_REORDER_QUEUE, note_ux_action
+            if cols[4].button("✕", key=f"{key_prefix}_rm_{idx}", help="Remove from queue"):
+                if str(key_prefix).startswith("live"):
+                    try:
+                        from live_draft_ux_latency import ACTION_REMOVE_QUEUE, note_ux_action
 
-                            note_ux_action(
-                                session, ACTION_REORDER_QUEUE, source="queue_up", detail=pname, st=st
-                            )
-                        except ImportError:
-                            pass
-                    move_queue_item_up(session, idx)
-                    rerun = True
-                if b2.button("Down", key=f"{key_prefix}_dn_{idx}", disabled=idx >= len(queue) - 1):
-                    if str(key_prefix).startswith("live"):
-                        try:
-                            from live_draft_ux_latency import ACTION_REORDER_QUEUE, note_ux_action
-
-                            note_ux_action(
-                                session, ACTION_REORDER_QUEUE, source="queue_down", detail=pname, st=st
-                            )
-                        except ImportError:
-                            pass
-                    move_queue_item_down(session, idx)
-                    rerun = True
-                if b3.button("Top", key=f"{key_prefix}_top_{idx}", disabled=idx == 0):
-                    if str(key_prefix).startswith("live"):
-                        try:
-                            from live_draft_ux_latency import ACTION_REORDER_QUEUE, note_ux_action
-
-                            note_ux_action(
-                                session, ACTION_REORDER_QUEUE, source="queue_top", detail=pname, st=st
-                            )
-                        except ImportError:
-                            pass
-                    move_queue_item_to_top(session, idx)
-                    rerun = True
-                if b4.button("Remove", key=f"{key_prefix}_rm_{idx}"):
-                    if str(key_prefix).startswith("live"):
-                        try:
-                            from live_draft_ux_latency import ACTION_REMOVE_QUEUE, note_ux_action
-
-                            note_ux_action(
-                                session, ACTION_REMOVE_QUEUE, source="queue_remove", detail=pname, st=st
-                            )
-                        except ImportError:
-                            pass
-                    remove_player_from_draft_queue(session, pname)
-                    rerun = True
+                        note_ux_action(
+                            session, ACTION_REMOVE_QUEUE, source="queue_remove", detail=pname, st=st
+                        )
+                    except ImportError:
+                        pass
+                remove_player_from_draft_queue(session, pname)
+                rerun = True
             if render_draft_button(
                 st,
                 session,
@@ -1362,7 +1315,6 @@ def render_draft_queue_panel(
                     except ImportError:
                         pass
                 rerun = True
-
     if len(queue) > max_rows:
         container.caption(f"+{len(queue) - max_rows} more in queue")
     if _is_live:
