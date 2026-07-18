@@ -14817,6 +14817,596 @@ def _resolve_build_hof_cohort_display_text():
 
         return _fallback
 
+# --- Page callbacks (hoisted above exclusive active_page router) ---
+
+def career_filter_changed():
+    try:
+        from career_totals_state import mark_career_filter_pending_sync
+
+        mark_career_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+
+
+def career_hof_case_mode_changed():
+    try:
+        from hall_of_fame_data import (
+            CAREER_HOF_CASE_MODE_KEY,
+            clear_career_hof_case_scope_state,
+        )
+
+        if not st.session_state.get(CAREER_HOF_CASE_MODE_KEY):
+            clear_career_hof_case_scope_state(st.session_state)
+    except Exception:
+        pass
+    career_filter_changed()
+
+def leaderboards_filter_changed():
+    try:
+        from leaderboards_state import mark_leaderboards_filter_pending_sync, mark_leaderboards_local_edit
+
+        mark_leaderboards_local_edit(st.session_state)
+        mark_leaderboards_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+    save_page_state("Leaderboards")
+    try:
+        force_save_baseball_state(st, reason="leaderboards_filter")
+    except Exception:
+        pass
+
+
+def _prepare_and_show_draft_shared_settings(
+    page: str,
+    *,
+    lookback_key: str | None = None,
+    style_key: str | None = None,
+    format_key: str | None = None,
+) -> None:
+    try:
+        from shared_draft_context import (
+            prepare_shared_draft_context,
+            render_draft_shared_settings_diagnostics,
+        )
+        from live_draft_perf import PHASE_SETUP_SHARED_CONTEXT, live_draft_perf_action
+
+        with live_draft_perf_action(st.session_state, "shared_context", phase=PHASE_SETUP_SHARED_CONTEXT):
+            prepare_shared_draft_context(st.session_state, active_page=page, force_mirror=True)
+        render_draft_shared_settings_diagnostics(
+            st,
+            st.session_state,
+            active_page=page,
+            widget_lookback_key=lookback_key,
+            widget_style_key=style_key,
+            widget_format_key=format_key,
+        )
+    except ImportError:
+        try:
+            from shared_draft_context import (
+                prepare_shared_draft_context,
+                render_draft_shared_settings_diagnostics,
+            )
+
+            prepare_shared_draft_context(st.session_state, active_page=page, force_mirror=True)
+            render_draft_shared_settings_diagnostics(
+                st,
+                st.session_state,
+                active_page=page,
+                widget_lookback_key=lookback_key,
+                widget_style_key=style_key,
+                widget_format_key=format_key,
+            )
+        except ImportError:
+            pass
+
+
+def fantasy_filter_changed():
+    try:
+        from fantasy_state import mark_fantasy_filter_pending_sync, section_for_page
+
+        section = section_for_page(st.session_state.get("active_page", ""))
+        if section:
+            mark_fantasy_filter_pending_sync(st.session_state, section)
+    except Exception:
+        pass
+    # Propagate lineup scoring (roto/points) to canonical format.
+    try:
+        from global_fantasy_settings_state import on_lineup_format_changed
+
+        if "lineup_format" in st.session_state:
+            on_lineup_format_changed(st.session_state)
+    except Exception:
+        pass
+    # Propagate any alias format change to the canonical key so all pages see it.
+    try:
+        from global_fantasy_settings_state import FORMAT_ALIASES, on_alias_format_changed
+
+        for alias_key in FORMAT_ALIASES:
+            if alias_key in st.session_state:
+                on_alias_format_changed(st.session_state, alias_key)
+                break
+    except Exception:
+        pass
+    try:
+        from shared_draft_context import on_draft_settings_changed
+
+        on_draft_settings_changed(
+            st.session_state,
+            source_page="Fantasy Sleepers & Busts",
+            lookback_key="fantasy_market_window",
+            min_games_key="fantasy_market_min_g",
+            min_ab_key="fantasy_market_min_ab",
+        )
+    except Exception:
+        try:
+            from shared_draft_context import on_alias_lookback_changed
+
+            on_alias_lookback_changed(
+                st.session_state, "fantasy_market_window", source_page="Fantasy Sleepers & Busts"
+            )
+        except Exception:
+            pass
+    try:
+        force_save_baseball_state(st, reason="fantasy_filter_changed")
+    except Exception:
+        pass
+
+
+def _normal_two_sided_p_from_z(z):
+    """Approximate two-sided p-value using the standard normal distribution."""
+    try:
+        import math
+        return float(math.erfc(abs(float(z)) / math.sqrt(2)))
+    except Exception:
+        return np.nan
+
+
+def _welch_test_summary(a, b):
+    """Return Welch-style difference test using a normal approximation for p-value."""
+    a = pd.to_numeric(pd.Series(a), errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    b = pd.to_numeric(pd.Series(b), errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    n1, n2 = len(a), len(b)
+    if n1 < 2 or n2 < 2:
+        return {"n1": n1, "n2": n2, "mean1": np.nan, "mean2": np.nan, "difference": np.nan,
+                "stat": np.nan, "p_value": np.nan, "ci_low": np.nan, "ci_high": np.nan, "enough_data": False}
+    mean1, mean2 = float(a.mean()), float(b.mean())
+    var1 = float(a.var(ddof=1))
+    var2 = float(b.var(ddof=1))
+    se = np.sqrt(var1 / n1 + var2 / n2)
+    if not np.isfinite(se) or se == 0:
+        return {"n1": n1, "n2": n2, "mean1": mean1, "mean2": mean2, "difference": mean1 - mean2,
+                "stat": np.nan, "p_value": np.nan, "ci_low": np.nan, "ci_high": np.nan, "enough_data": False}
+    stat = (mean1 - mean2) / se
+    p_value = _normal_two_sided_p_from_z(stat)
+    diff = mean1 - mean2
+    return {"n1": n1, "n2": n2, "mean1": mean1, "mean2": mean2, "difference": diff,
+            "stat": float(stat), "p_value": p_value, "ci_low": float(diff - 1.96 * se),
+            "ci_high": float(diff + 1.96 * se), "enough_data": True}
+
+
+def _interpret_significance(player_a, player_b, stat, diff, p_value, alpha):
+    if pd.isna(p_value):
+        return "Not enough usable data or no variation to test."
+    if p_value < alpha:
+        if diff > 0:
+            return f"{player_a} is significantly better at {stat}."
+        if diff < 0:
+            return f"{player_b} is significantly better at {stat}."
+    if diff > 0:
+        return f"{player_a} is higher at {stat}, but the difference is not statistically significant."
+    if diff < 0:
+        return f"{player_b} is higher at {stat}, but the difference is not statistically significant."
+    return f"No meaningful difference in {stat}."
+
+
+def _format_sig_table(df):
+    """Format the displayed significance-test table.
+
+    Counting stats display to 1 decimal place.
+    Rate stats display up to 4 decimals, with trailing zeros removed.
+    Confidence interval columns are removed from the output.
+    """
+    df = df.copy()
+
+    # Remove confidence interval columns entirely from the displayed table.
+    for ci_col in ["95% CI Low", "95% CI High", "CI Low", "CI High", " Low", " High"]:
+        if ci_col in df.columns:
+            df = df.drop(columns=[ci_col])
+
+    counting_stats = {"R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "AB", "G"}
+    rate_stats = {"BA", "OBP", "SLG", "OPS"}
+
+    def fmt_by_stat(stat, value):
+        if pd.isna(value):
+            return ""
+        stat = str(stat).upper()
+        try:
+            v = float(value)
+        except Exception:
+            return value
+
+        if stat in rate_stats:
+            s = f"{v:.4f}".rstrip("0").rstrip(".")
+            if s.startswith("."):
+                s = "0" + s
+            if s.startswith("-."):
+                s = s.replace("-.", "-0.", 1)
+            return s
+
+        if stat in counting_stats:
+            return f"{v:.1f}"
+
+        return f"{v:.4f}".rstrip("0").rstrip(".")
+
+    avg_cols = [c for c in df.columns if str(c).endswith(" Avg") or str(c).endswith(" AVG")]
+    for c in avg_cols + ["Difference"]:
+        if c in df.columns and "Stat" in df.columns:
+            df[c] = df.apply(lambda r: fmt_by_stat(r["Stat"], r[c]), axis=1)
+
+    if "Test Statistic" in df.columns:
+        df["Test Statistic"] = pd.to_numeric(df["Test Statistic"], errors="coerce").round(4)
+
+    if "p-value" in df.columns:
+        df["p-value"] = pd.to_numeric(df["p-value"], errors="coerce").round(4)
+
+    return df
+
+
+
+
+
+
+def compare_top_changed():
+    selected = st.session_state.get("compare_players", [])
+    if not isinstance(selected, list):
+        return
+    try:
+        from comparison_state import record_comparison_sync_trace, sync_compare_from_multiselect
+
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        sync_compare_from_multiselect(
+            st.session_state, selected, label_map, resolve_fullname_to_clean_label
+        )
+        record_comparison_sync_trace(
+            st.session_state, winner="multiselect", reason="compare_top_changed"
+        )
+        selected = st.session_state.get("compare_players") or []
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="comparison_edit")
+        except Exception:
+            pass
+    except Exception:
+        selected = [x for x in selected if isinstance(x, str)][:3]
+    if len(selected) >= 2:
+        record_workflow_comparison_group(selected[:3])
+    if len(selected) >= 2:
+        record_workflow_comparison_pair(selected[0], selected[1])
+        try:
+            from baseball_activity import log_player_comparison
+
+            sig = tuple(sorted(selected[:2]))
+            if st.session_state.get("_cc_compare_activity_sig") != sig:
+                st.session_state["_cc_compare_activity_sig"] = sig
+                log_player_comparison(selected[0], selected[1])
+        except Exception:
+            pass
+
+
+def compare_settings_changed():
+    try:
+        from comparison_state import mark_comparison_local_edit, record_comparison_field_write
+
+        mark_comparison_local_edit(st.session_state)
+        for _key in [
+            "compare_stat",
+            "compare_x_axis_mode",
+            "compare_year_range",
+            "compare_age_range",
+            "compare_trend_mode",
+            "compare_smooth_window",
+        ]:
+            if _key in st.session_state:
+                st.session_state[f"{_key}_saved"] = st.session_state[_key]
+                record_comparison_field_write(
+                    st.session_state, _key, "widget", new=st.session_state[_key]
+                )
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="comparison_edit")
+        except Exception:
+            pass
+    except Exception:
+        for _key in [
+            "compare_stat",
+            "compare_x_axis_mode",
+            "compare_year_range",
+            "compare_age_range",
+            "compare_trend_mode",
+            "compare_smooth_window",
+        ]:
+            if _key in st.session_state:
+                st.session_state[f"{_key}_saved"] = st.session_state[_key]
+
+
+def trend_chart_player_changed():
+    try:
+        from trend_state import sync_trend_chart_player_change
+
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        sync_trend_chart_player_change(
+            st.session_state,
+            st.session_state.get("single_trend_dashboard_player"),
+            label_map,
+            resolve_fullname_to_clean_label,
+        )
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="trend_edit")
+    except Exception:
+        pass
+
+
+def trend_multi_changed():
+    try:
+        from trend_state import sync_trend_multi_change
+
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        sync_trend_multi_change(
+            st.session_state,
+            st.session_state.get("trend_players_multi"),
+            label_map,
+            resolve_fullname_to_clean_label,
+        )
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="trend_edit")
+    except Exception:
+        pass
+
+
+def trend_settings_changed():
+    try:
+        from shared_draft_context import on_draft_settings_changed
+
+        on_draft_settings_changed(
+            st.session_state,
+            source_page="Trend Value",
+            lookback_key="trend_lag",
+            min_games_key="trend_min_g",
+        )
+    except ImportError:
+        pass
+    try:
+        from trend_state import sync_trend_settings_change
+
+        sync_trend_settings_change(st.session_state, reason="settings_change")
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="trend_edit")
+    except Exception:
+        pass
+
+
+def _sig_years_changed(key):
+    if key in st.session_state:
+        st.session_state[f"{key}_saved"] = st.session_state[key]
+
+
+def sig_players_changed():
+    try:
+        from comparison_state import record_comparison_sync_trace, sync_compare_from_sig_ab
+
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        sync_compare_from_sig_ab(st.session_state, label_map, resolve_fullname_to_clean_label)
+        record_comparison_sync_trace(st.session_state, winner="sig_ab", reason="sig_players_changed")
+    except Exception:
+        a = st.session_state.get("sig_player_a_clean")
+        b = st.session_state.get("sig_player_b_clean")
+        selected = []
+        if a:
+            selected.append(a)
+        if b and b not in selected:
+            selected.append(b)
+        st.session_state["compare_players_saved"] = selected[:3]
+        st.session_state["pending_compare_players"] = selected[:3]
+
+
+def _on_reset_draft_room_simulator_click() -> None:
+    import streamlit as st
+
+    from draft_room_state import (
+        effective_board_pick_count,
+        persist_draft_board_to_storage,
+        record_draft_room_button_trace,
+        record_draft_room_handler_entry_trace,
+        reset_simulator_board_only,
+    )
+
+    ss = st.session_state
+    picks_before = effective_board_pick_count(ss)
+    record_draft_room_handler_entry_trace(
+        ss,
+        button_name="Reset Draft Room Simulator",
+        action="reset_simulator",
+        picks_before=picks_before,
+    )
+    try:
+        reset_simulator_board_only(ss)
+        picks_after = effective_board_pick_count(ss)
+        record_draft_room_button_trace(
+            ss,
+            action="reset_simulator",
+            picks_before=picks_before,
+            picks_after=picks_after,
+            ok=True,
+            message="Simulator board cleared.",
+        )
+        persist_draft_board_to_storage(
+            st,
+            ss,
+            ss.get("draft_room_table"),
+            reason="reset_canonical_board",
+        )
+        try:
+            from baseball_persistent_state import force_save_baseball_state
+
+            force_save_baseball_state(st, reason="reset_simulator_board")
+        except Exception as exc:
+            trace = dict(ss.get("_draft_room_action_trace") or {})
+            trace["force_save_error"] = str(exc)
+            ss["_draft_room_action_trace"] = trace
+        ss["_draft_room_reset_flash"] = "Simulator board cleared."
+    except Exception as exc:
+        trace = dict(ss.get("_draft_room_action_trace") or {})
+        trace["handler_error"] = f"{type(exc).__name__}: {exc}"
+        trace["phase"] = "handler_failed"
+        ss["_draft_room_action_trace"] = trace
+
+
+def _on_undo_last_simulator_pick_click() -> None:
+    import streamlit as st
+
+    from draft_room_state import (
+        effective_board_pick_count,
+        persist_draft_board_to_storage,
+        record_draft_room_button_trace,
+        record_draft_room_handler_entry_trace,
+        undo_last_simulator_pick,
+    )
+
+    ss = st.session_state
+    picks_before = effective_board_pick_count(ss)
+    record_draft_room_handler_entry_trace(
+        ss,
+        button_name="Undo Last Pick",
+        action="undo_last_pick",
+        picks_before=picks_before,
+    )
+    try:
+        result = undo_last_simulator_pick(ss)
+        picks_after = effective_board_pick_count(ss)
+        record_draft_room_button_trace(
+            ss,
+            action="undo_last_pick",
+            picks_before=picks_before,
+            picks_after=picks_after,
+            ok=bool(result.get("ok")),
+            message=str(result.get("message") or ""),
+        )
+        if result.get("ok"):
+            persist_draft_board_to_storage(
+                st,
+                ss,
+                ss.get("draft_room_table"),
+                reason="undo_last_pick",
+            )
+            try:
+                from baseball_persistent_state import force_save_baseball_state
+
+                force_save_baseball_state(st, reason="undo_last_pick")
+            except Exception as exc:
+                trace = dict(ss.get("_draft_room_action_trace") or {})
+                trace["force_save_error"] = str(exc)
+                ss["_draft_room_action_trace"] = trace
+            ss["_draft_room_undo_flash"] = str(result.get("message") or "Undid last pick.")
+        else:
+            ss["_draft_room_undo_flash"] = str(result.get("message") or "Could not undo pick.")
+            trace = dict(ss.get("_draft_room_action_trace") or {})
+            trace["phase"] = "handler_rejected"
+            ss["_draft_room_action_trace"] = trace
+    except Exception as exc:
+        trace = dict(ss.get("_draft_room_action_trace") or {})
+        trace["handler_error"] = f"{type(exc).__name__}: {exc}"
+        trace["phase"] = "handler_failed"
+        ss["_draft_room_action_trace"] = trace
+
+
+def build_trade_verdict_text(trade_eval, weighted_gain):
+    """Plain-English trade verdict for Fantasy Lineup Assistant."""
+    try:
+        wg = float(weighted_gain)
+    except Exception:
+        wg = 0.0
+
+    if wg >= 5:
+        verdict = "Strong accept"
+        reason = "The trade appears to improve your roster in important need areas."
+    elif wg >= 1:
+        verdict = "Slight accept"
+        reason = "The trade looks modestly helpful, especially if it addresses a weak category or roster need."
+    elif wg > -1:
+        verdict = "Fair / neutral"
+        reason = "The trade is close enough that team context, injury risk, and category needs should decide it."
+    elif wg > -5:
+        verdict = "Slight decline"
+        reason = "The trade appears slightly unfavorable unless it solves a specific roster problem."
+    else:
+        verdict = "Decline"
+        reason = "The trade appears to cost too much projected value or category balance."
+
+    return f"{verdict}: {reason} Team-need weighted score: {wg:.2f}."
+
+
+def filter_trade_suggestions_by_requested_players(suggestions, forced_give=None, forced_get=None):
+    """Filter trade suggestions using optional user-desired give/acquire players."""
+    if suggestions is None or suggestions.empty:
+        return suggestions
+    out = suggestions.copy()
+    forced_give = [str(x) for x in (forced_give or []) if str(x).strip()]
+    forced_get = [str(x) for x in (forced_get or []) if str(x).strip()]
+    if forced_give and "Give" in out.columns:
+        out = out[out["Give"].astype(str).isin(forced_give)]
+    if forced_get and "Receive" in out.columns:
+        out = out[out["Receive"].astype(str).isin(forced_get)]
+    return out
+
+
+def valuation_filter_changed():
+    try:
+        from shared_draft_context import on_draft_settings_changed
+
+        on_draft_settings_changed(
+            st.session_state,
+            source_page="Valuation",
+            lookback_key="value_lag",
+            min_games_key="value_min_g",
+        )
+    except ImportError:
+        pass
+    try:
+        from valuation_state import mark_valuation_filter_pending_sync
+
+        mark_valuation_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+
+
+def projections_filter_changed():
+    try:
+        from shared_draft_context import on_draft_settings_changed
+
+        on_draft_settings_changed(
+            st.session_state,
+            source_page="ML Predictions",
+            lookback_key="ml_lookback",
+            style_key="ml_projection_style",
+            min_games_key="ml_min_games",
+            min_ab_key="ml_min_ab",
+        )
+    except ImportError:
+        pass
+    try:
+        from projections_state import mark_projections_filter_pending_sync
+
+        mark_projections_filter_pending_sync(st.session_state)
+    except Exception:
+        pass
+
+
+
 
 if active_page == "Historical Explorer":
     try:
@@ -15211,28 +15801,6 @@ if active_page == "Historical Explorer":
     save_page_state(active_page)
     force_save_baseball_state(st, reason="historical_edit")
 
-
-def career_filter_changed():
-    try:
-        from career_totals_state import mark_career_filter_pending_sync
-
-        mark_career_filter_pending_sync(st.session_state)
-    except Exception:
-        pass
-
-
-def career_hof_case_mode_changed():
-    try:
-        from hall_of_fame_data import (
-            CAREER_HOF_CASE_MODE_KEY,
-            clear_career_hof_case_scope_state,
-        )
-
-        if not st.session_state.get(CAREER_HOF_CASE_MODE_KEY):
-            clear_career_hof_case_scope_state(st.session_state)
-    except Exception:
-        pass
-    career_filter_changed()
 
 elif active_page == "Career Totals":
     from career_totals_state import (
@@ -16011,117 +16579,6 @@ elif active_page == "Career Totals":
     save_page_state(active_page)
     force_save_baseball_state(st, reason="career_edit")
 
-def leaderboards_filter_changed():
-    try:
-        from leaderboards_state import mark_leaderboards_filter_pending_sync, mark_leaderboards_local_edit
-
-        mark_leaderboards_local_edit(st.session_state)
-        mark_leaderboards_filter_pending_sync(st.session_state)
-    except Exception:
-        pass
-    save_page_state("Leaderboards")
-    try:
-        force_save_baseball_state(st, reason="leaderboards_filter")
-    except Exception:
-        pass
-
-
-def _prepare_and_show_draft_shared_settings(
-    page: str,
-    *,
-    lookback_key: str | None = None,
-    style_key: str | None = None,
-    format_key: str | None = None,
-) -> None:
-    try:
-        from shared_draft_context import (
-            prepare_shared_draft_context,
-            render_draft_shared_settings_diagnostics,
-        )
-        from live_draft_perf import PHASE_SETUP_SHARED_CONTEXT, live_draft_perf_action
-
-        with live_draft_perf_action(st.session_state, "shared_context", phase=PHASE_SETUP_SHARED_CONTEXT):
-            prepare_shared_draft_context(st.session_state, active_page=page, force_mirror=True)
-        render_draft_shared_settings_diagnostics(
-            st,
-            st.session_state,
-            active_page=page,
-            widget_lookback_key=lookback_key,
-            widget_style_key=style_key,
-            widget_format_key=format_key,
-        )
-    except ImportError:
-        try:
-            from shared_draft_context import (
-                prepare_shared_draft_context,
-                render_draft_shared_settings_diagnostics,
-            )
-
-            prepare_shared_draft_context(st.session_state, active_page=page, force_mirror=True)
-            render_draft_shared_settings_diagnostics(
-                st,
-                st.session_state,
-                active_page=page,
-                widget_lookback_key=lookback_key,
-                widget_style_key=style_key,
-                widget_format_key=format_key,
-            )
-        except ImportError:
-            pass
-
-
-def fantasy_filter_changed():
-    try:
-        from fantasy_state import mark_fantasy_filter_pending_sync, section_for_page
-
-        section = section_for_page(st.session_state.get("active_page", ""))
-        if section:
-            mark_fantasy_filter_pending_sync(st.session_state, section)
-    except Exception:
-        pass
-    # Propagate lineup scoring (roto/points) to canonical format.
-    try:
-        from global_fantasy_settings_state import on_lineup_format_changed
-
-        if "lineup_format" in st.session_state:
-            on_lineup_format_changed(st.session_state)
-    except Exception:
-        pass
-    # Propagate any alias format change to the canonical key so all pages see it.
-    try:
-        from global_fantasy_settings_state import FORMAT_ALIASES, on_alias_format_changed
-
-        for alias_key in FORMAT_ALIASES:
-            if alias_key in st.session_state:
-                on_alias_format_changed(st.session_state, alias_key)
-                break
-    except Exception:
-        pass
-    try:
-        from shared_draft_context import on_draft_settings_changed
-
-        on_draft_settings_changed(
-            st.session_state,
-            source_page="Fantasy Sleepers & Busts",
-            lookback_key="fantasy_market_window",
-            min_games_key="fantasy_market_min_g",
-            min_ab_key="fantasy_market_min_ab",
-        )
-    except Exception:
-        try:
-            from shared_draft_context import on_alias_lookback_changed
-
-            on_alias_lookback_changed(
-                st.session_state, "fantasy_market_window", source_page="Fantasy Sleepers & Busts"
-            )
-        except Exception:
-            pass
-    try:
-        force_save_baseball_state(st, reason="fantasy_filter_changed")
-    except Exception:
-        pass
-
-
 elif active_page == "Leaderboards":
     from leaderboard_aggregation import (
         aggregate_leaderboard_career_totals,
@@ -16267,268 +16724,6 @@ elif active_page == "Leaderboards":
 # ----------------------------
 # Comparison Tool statistical tests
 # ----------------------------
-def _normal_two_sided_p_from_z(z):
-    """Approximate two-sided p-value using the standard normal distribution."""
-    try:
-        import math
-        return float(math.erfc(abs(float(z)) / math.sqrt(2)))
-    except Exception:
-        return np.nan
-
-
-def _welch_test_summary(a, b):
-    """Return Welch-style difference test using a normal approximation for p-value."""
-    a = pd.to_numeric(pd.Series(a), errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-    b = pd.to_numeric(pd.Series(b), errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-    n1, n2 = len(a), len(b)
-    if n1 < 2 or n2 < 2:
-        return {"n1": n1, "n2": n2, "mean1": np.nan, "mean2": np.nan, "difference": np.nan,
-                "stat": np.nan, "p_value": np.nan, "ci_low": np.nan, "ci_high": np.nan, "enough_data": False}
-    mean1, mean2 = float(a.mean()), float(b.mean())
-    var1 = float(a.var(ddof=1))
-    var2 = float(b.var(ddof=1))
-    se = np.sqrt(var1 / n1 + var2 / n2)
-    if not np.isfinite(se) or se == 0:
-        return {"n1": n1, "n2": n2, "mean1": mean1, "mean2": mean2, "difference": mean1 - mean2,
-                "stat": np.nan, "p_value": np.nan, "ci_low": np.nan, "ci_high": np.nan, "enough_data": False}
-    stat = (mean1 - mean2) / se
-    p_value = _normal_two_sided_p_from_z(stat)
-    diff = mean1 - mean2
-    return {"n1": n1, "n2": n2, "mean1": mean1, "mean2": mean2, "difference": diff,
-            "stat": float(stat), "p_value": p_value, "ci_low": float(diff - 1.96 * se),
-            "ci_high": float(diff + 1.96 * se), "enough_data": True}
-
-
-def _interpret_significance(player_a, player_b, stat, diff, p_value, alpha):
-    if pd.isna(p_value):
-        return "Not enough usable data or no variation to test."
-    if p_value < alpha:
-        if diff > 0:
-            return f"{player_a} is significantly better at {stat}."
-        if diff < 0:
-            return f"{player_b} is significantly better at {stat}."
-    if diff > 0:
-        return f"{player_a} is higher at {stat}, but the difference is not statistically significant."
-    if diff < 0:
-        return f"{player_b} is higher at {stat}, but the difference is not statistically significant."
-    return f"No meaningful difference in {stat}."
-
-
-def _format_sig_table(df):
-    """Format the displayed significance-test table.
-
-    Counting stats display to 1 decimal place.
-    Rate stats display up to 4 decimals, with trailing zeros removed.
-    Confidence interval columns are removed from the output.
-    """
-    df = df.copy()
-
-    # Remove confidence interval columns entirely from the displayed table.
-    for ci_col in ["95% CI Low", "95% CI High", "CI Low", "CI High", " Low", " High"]:
-        if ci_col in df.columns:
-            df = df.drop(columns=[ci_col])
-
-    counting_stats = {"R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "AB", "G"}
-    rate_stats = {"BA", "OBP", "SLG", "OPS"}
-
-    def fmt_by_stat(stat, value):
-        if pd.isna(value):
-            return ""
-        stat = str(stat).upper()
-        try:
-            v = float(value)
-        except Exception:
-            return value
-
-        if stat in rate_stats:
-            s = f"{v:.4f}".rstrip("0").rstrip(".")
-            if s.startswith("."):
-                s = "0" + s
-            if s.startswith("-."):
-                s = s.replace("-.", "-0.", 1)
-            return s
-
-        if stat in counting_stats:
-            return f"{v:.1f}"
-
-        return f"{v:.4f}".rstrip("0").rstrip(".")
-
-    avg_cols = [c for c in df.columns if str(c).endswith(" Avg") or str(c).endswith(" AVG")]
-    for c in avg_cols + ["Difference"]:
-        if c in df.columns and "Stat" in df.columns:
-            df[c] = df.apply(lambda r: fmt_by_stat(r["Stat"], r[c]), axis=1)
-
-    if "Test Statistic" in df.columns:
-        df["Test Statistic"] = pd.to_numeric(df["Test Statistic"], errors="coerce").round(4)
-
-    if "p-value" in df.columns:
-        df["p-value"] = pd.to_numeric(df["p-value"], errors="coerce").round(4)
-
-    return df
-
-
-
-
-
-
-def compare_top_changed():
-    selected = st.session_state.get("compare_players", [])
-    if not isinstance(selected, list):
-        return
-    try:
-        from comparison_state import record_comparison_sync_trace, sync_compare_from_multiselect
-
-        label_map = get_clean_player_label_map_yearly(yearly_df)
-        sync_compare_from_multiselect(
-            st.session_state, selected, label_map, resolve_fullname_to_clean_label
-        )
-        record_comparison_sync_trace(
-            st.session_state, winner="multiselect", reason="compare_top_changed"
-        )
-        selected = st.session_state.get("compare_players") or []
-        try:
-            from baseball_persistent_state import force_save_baseball_state
-
-            force_save_baseball_state(st, reason="comparison_edit")
-        except Exception:
-            pass
-    except Exception:
-        selected = [x for x in selected if isinstance(x, str)][:3]
-    if len(selected) >= 2:
-        record_workflow_comparison_group(selected[:3])
-    if len(selected) >= 2:
-        record_workflow_comparison_pair(selected[0], selected[1])
-        try:
-            from baseball_activity import log_player_comparison
-
-            sig = tuple(sorted(selected[:2]))
-            if st.session_state.get("_cc_compare_activity_sig") != sig:
-                st.session_state["_cc_compare_activity_sig"] = sig
-                log_player_comparison(selected[0], selected[1])
-        except Exception:
-            pass
-
-
-def compare_settings_changed():
-    try:
-        from comparison_state import mark_comparison_local_edit, record_comparison_field_write
-
-        mark_comparison_local_edit(st.session_state)
-        for _key in [
-            "compare_stat",
-            "compare_x_axis_mode",
-            "compare_year_range",
-            "compare_age_range",
-            "compare_trend_mode",
-            "compare_smooth_window",
-        ]:
-            if _key in st.session_state:
-                st.session_state[f"{_key}_saved"] = st.session_state[_key]
-                record_comparison_field_write(
-                    st.session_state, _key, "widget", new=st.session_state[_key]
-                )
-        try:
-            from baseball_persistent_state import force_save_baseball_state
-
-            force_save_baseball_state(st, reason="comparison_edit")
-        except Exception:
-            pass
-    except Exception:
-        for _key in [
-            "compare_stat",
-            "compare_x_axis_mode",
-            "compare_year_range",
-            "compare_age_range",
-            "compare_trend_mode",
-            "compare_smooth_window",
-        ]:
-            if _key in st.session_state:
-                st.session_state[f"{_key}_saved"] = st.session_state[_key]
-
-
-def trend_chart_player_changed():
-    try:
-        from trend_state import sync_trend_chart_player_change
-
-        label_map = get_clean_player_label_map_yearly(yearly_df)
-        sync_trend_chart_player_change(
-            st.session_state,
-            st.session_state.get("single_trend_dashboard_player"),
-            label_map,
-            resolve_fullname_to_clean_label,
-        )
-        from baseball_persistent_state import force_save_baseball_state
-
-        force_save_baseball_state(st, reason="trend_edit")
-    except Exception:
-        pass
-
-
-def trend_multi_changed():
-    try:
-        from trend_state import sync_trend_multi_change
-
-        label_map = get_clean_player_label_map_yearly(yearly_df)
-        sync_trend_multi_change(
-            st.session_state,
-            st.session_state.get("trend_players_multi"),
-            label_map,
-            resolve_fullname_to_clean_label,
-        )
-        from baseball_persistent_state import force_save_baseball_state
-
-        force_save_baseball_state(st, reason="trend_edit")
-    except Exception:
-        pass
-
-
-def trend_settings_changed():
-    try:
-        from shared_draft_context import on_draft_settings_changed
-
-        on_draft_settings_changed(
-            st.session_state,
-            source_page="Trend Value",
-            lookback_key="trend_lag",
-            min_games_key="trend_min_g",
-        )
-    except ImportError:
-        pass
-    try:
-        from trend_state import sync_trend_settings_change
-
-        sync_trend_settings_change(st.session_state, reason="settings_change")
-        from baseball_persistent_state import force_save_baseball_state
-
-        force_save_baseball_state(st, reason="trend_edit")
-    except Exception:
-        pass
-
-
-def _sig_years_changed(key):
-    if key in st.session_state:
-        st.session_state[f"{key}_saved"] = st.session_state[key]
-
-
-def sig_players_changed():
-    try:
-        from comparison_state import record_comparison_sync_trace, sync_compare_from_sig_ab
-
-        label_map = get_clean_player_label_map_yearly(yearly_df)
-        sync_compare_from_sig_ab(st.session_state, label_map, resolve_fullname_to_clean_label)
-        record_comparison_sync_trace(st.session_state, winner="sig_ab", reason="sig_players_changed")
-    except Exception:
-        a = st.session_state.get("sig_player_a_clean")
-        b = st.session_state.get("sig_player_b_clean")
-        selected = []
-        if a:
-            selected.append(a)
-        if b and b not in selected:
-            selected.append(b)
-        st.session_state["compare_players_saved"] = selected[:3]
-        st.session_state["pending_compare_players"] = selected[:3]
-
-
 elif active_page == "Comparison Tool":
     try:
         from shared_draft_context import prepare_canonical_scoring_context
@@ -20270,116 +20465,6 @@ elif active_page == "Draft Assistant Simulator":
     _page_perf_end(active_page)
     save_page_state(active_page)
     render_page_filters_debug(active_page)
-
-
-def _on_reset_draft_room_simulator_click() -> None:
-    import streamlit as st
-
-    from draft_room_state import (
-        effective_board_pick_count,
-        persist_draft_board_to_storage,
-        record_draft_room_button_trace,
-        record_draft_room_handler_entry_trace,
-        reset_simulator_board_only,
-    )
-
-    ss = st.session_state
-    picks_before = effective_board_pick_count(ss)
-    record_draft_room_handler_entry_trace(
-        ss,
-        button_name="Reset Draft Room Simulator",
-        action="reset_simulator",
-        picks_before=picks_before,
-    )
-    try:
-        reset_simulator_board_only(ss)
-        picks_after = effective_board_pick_count(ss)
-        record_draft_room_button_trace(
-            ss,
-            action="reset_simulator",
-            picks_before=picks_before,
-            picks_after=picks_after,
-            ok=True,
-            message="Simulator board cleared.",
-        )
-        persist_draft_board_to_storage(
-            st,
-            ss,
-            ss.get("draft_room_table"),
-            reason="reset_canonical_board",
-        )
-        try:
-            from baseball_persistent_state import force_save_baseball_state
-
-            force_save_baseball_state(st, reason="reset_simulator_board")
-        except Exception as exc:
-            trace = dict(ss.get("_draft_room_action_trace") or {})
-            trace["force_save_error"] = str(exc)
-            ss["_draft_room_action_trace"] = trace
-        ss["_draft_room_reset_flash"] = "Simulator board cleared."
-    except Exception as exc:
-        trace = dict(ss.get("_draft_room_action_trace") or {})
-        trace["handler_error"] = f"{type(exc).__name__}: {exc}"
-        trace["phase"] = "handler_failed"
-        ss["_draft_room_action_trace"] = trace
-
-
-def _on_undo_last_simulator_pick_click() -> None:
-    import streamlit as st
-
-    from draft_room_state import (
-        effective_board_pick_count,
-        persist_draft_board_to_storage,
-        record_draft_room_button_trace,
-        record_draft_room_handler_entry_trace,
-        undo_last_simulator_pick,
-    )
-
-    ss = st.session_state
-    picks_before = effective_board_pick_count(ss)
-    record_draft_room_handler_entry_trace(
-        ss,
-        button_name="Undo Last Pick",
-        action="undo_last_pick",
-        picks_before=picks_before,
-    )
-    try:
-        result = undo_last_simulator_pick(ss)
-        picks_after = effective_board_pick_count(ss)
-        record_draft_room_button_trace(
-            ss,
-            action="undo_last_pick",
-            picks_before=picks_before,
-            picks_after=picks_after,
-            ok=bool(result.get("ok")),
-            message=str(result.get("message") or ""),
-        )
-        if result.get("ok"):
-            persist_draft_board_to_storage(
-                st,
-                ss,
-                ss.get("draft_room_table"),
-                reason="undo_last_pick",
-            )
-            try:
-                from baseball_persistent_state import force_save_baseball_state
-
-                force_save_baseball_state(st, reason="undo_last_pick")
-            except Exception as exc:
-                trace = dict(ss.get("_draft_room_action_trace") or {})
-                trace["force_save_error"] = str(exc)
-                ss["_draft_room_action_trace"] = trace
-            ss["_draft_room_undo_flash"] = str(result.get("message") or "Undid last pick.")
-        else:
-            ss["_draft_room_undo_flash"] = str(result.get("message") or "Could not undo pick.")
-            trace = dict(ss.get("_draft_room_action_trace") or {})
-            trace["phase"] = "handler_rejected"
-            ss["_draft_room_action_trace"] = trace
-    except Exception as exc:
-        trace = dict(ss.get("_draft_room_action_trace") or {})
-        trace["handler_error"] = f"{type(exc).__name__}: {exc}"
-        trace["phase"] = "handler_failed"
-        ss["_draft_room_action_trace"] = trace
 
 
 elif active_page == "Draft Room Simulator":
@@ -25528,46 +25613,6 @@ elif active_page == "Fantasy Standings Tracker":
 
 
 
-def build_trade_verdict_text(trade_eval, weighted_gain):
-    """Plain-English trade verdict for Fantasy Lineup Assistant."""
-    try:
-        wg = float(weighted_gain)
-    except Exception:
-        wg = 0.0
-
-    if wg >= 5:
-        verdict = "Strong accept"
-        reason = "The trade appears to improve your roster in important need areas."
-    elif wg >= 1:
-        verdict = "Slight accept"
-        reason = "The trade looks modestly helpful, especially if it addresses a weak category or roster need."
-    elif wg > -1:
-        verdict = "Fair / neutral"
-        reason = "The trade is close enough that team context, injury risk, and category needs should decide it."
-    elif wg > -5:
-        verdict = "Slight decline"
-        reason = "The trade appears slightly unfavorable unless it solves a specific roster problem."
-    else:
-        verdict = "Decline"
-        reason = "The trade appears to cost too much projected value or category balance."
-
-    return f"{verdict}: {reason} Team-need weighted score: {wg:.2f}."
-
-
-def filter_trade_suggestions_by_requested_players(suggestions, forced_give=None, forced_get=None):
-    """Filter trade suggestions using optional user-desired give/acquire players."""
-    if suggestions is None or suggestions.empty:
-        return suggestions
-    out = suggestions.copy()
-    forced_give = [str(x) for x in (forced_give or []) if str(x).strip()]
-    forced_get = [str(x) for x in (forced_get or []) if str(x).strip()]
-    if forced_give and "Give" in out.columns:
-        out = out[out["Give"].astype(str).isin(forced_give)]
-    if forced_get and "Receive" in out.columns:
-        out = out[out["Receive"].astype(str).isin(forced_get)]
-    return out
-
-
 elif active_page == "Fantasy Lineup Assistant":
     from fantasy_state import (
         flush_fantasy_section_edits,
@@ -25958,48 +26003,6 @@ elif active_page == "Waiver Wire / Add-Drop Center":
     _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
     render_page_filters_debug(active_page)
-
-
-def valuation_filter_changed():
-    try:
-        from shared_draft_context import on_draft_settings_changed
-
-        on_draft_settings_changed(
-            st.session_state,
-            source_page="Valuation",
-            lookback_key="value_lag",
-            min_games_key="value_min_g",
-        )
-    except ImportError:
-        pass
-    try:
-        from valuation_state import mark_valuation_filter_pending_sync
-
-        mark_valuation_filter_pending_sync(st.session_state)
-    except Exception:
-        pass
-
-
-def projections_filter_changed():
-    try:
-        from shared_draft_context import on_draft_settings_changed
-
-        on_draft_settings_changed(
-            st.session_state,
-            source_page="ML Predictions",
-            lookback_key="ml_lookback",
-            style_key="ml_projection_style",
-            min_games_key="ml_min_games",
-            min_ab_key="ml_min_ab",
-        )
-    except ImportError:
-        pass
-    try:
-        from projections_state import mark_projections_filter_pending_sync
-
-        mark_projections_filter_pending_sync(st.session_state)
-    except Exception:
-        pass
 
 
 elif active_page == "Valuation":
