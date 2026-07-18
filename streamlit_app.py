@@ -23296,12 +23296,58 @@ elif active_page == "Live Draft Room":
         _live_draft_lifecycle_room, dict
     ):
         try:
+            from live_draft_render_checkpoints import (
+                note_live_draft_render_checkpoint,
+                reset_live_draft_render_checkpoints,
+            )
+
+            reset_live_draft_render_checkpoints(st.session_state)
+            note_live_draft_render_checkpoint(
+                st.session_state, "header", phase="started", room=_live_draft_lifecycle_room
+            )
+        except ImportError:
+            pass
+        try:
             from live_draft_termination import clear_fragment_suppress_for_active_room
 
             clear_fragment_suppress_for_active_room(st.session_state)
         except ImportError:
             pass
         room = _live_draft_lifecycle_room
+        # Authoritative membership gate — guests without Join must not render this room.
+        try:
+            from draft_room_context import is_multiplayer_draft_active
+            from shared_room_membership_gate import assert_or_repair_before_shared_render
+
+            if is_multiplayer_draft_active(st.session_state) or st.session_state.get(
+                "active_shared_draft_room_code"
+            ):
+                _may_render, _gate_reason = assert_or_repair_before_shared_render(st.session_state)
+                if not _may_render:
+                    try:
+                        from live_draft_render_checkpoints import mark_live_draft_render_abort
+
+                        mark_live_draft_render_abort(
+                            st.session_state,
+                            where="membership_gate",
+                            reason=_gate_reason,
+                        )
+                    except ImportError:
+                        pass
+                    st.info(
+                        "You are not joined to this shared draft room. "
+                        "Enter the room code and press Join, or continue a saved draft."
+                    )
+                    try:
+                        from live_draft_render_checkpoints import render_live_draft_checkpoint_panel
+
+                        render_live_draft_checkpoint_panel(st, st.session_state)
+                    except ImportError:
+                        pass
+                    st.rerun()
+                    st.stop()
+        except ImportError:
+            pass
         try:
             from shared_live_draft_snapshot import refresh_shared_live_draft_snapshot
 
@@ -24048,10 +24094,20 @@ elif active_page == "Live Draft Room":
                     except ImportError:
                         st.rerun()
             with ctrl3:
-                if st.button(
+                _is_commissioner = False
+                try:
+                    from draft_room_membership import is_room_host
+                    from draft_room_shared_state import load_shared_room_document
+
+                    _code_h = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
+                    _doc_h = load_shared_room_document(st.session_state, _code_h) if _code_h else None
+                    _is_commissioner = bool(is_room_host(st.session_state, _doc_h)) if _code_h else True
+                except ImportError:
+                    _is_commissioner = not bool(st.session_state.get("active_shared_draft_room_code"))
+                if _is_commissioner and st.button(
                     "Save & Continue Later",
                     key="live_draft_save_continue_btn",
-                    help="Pause and save this draft so the same group can resume later from the exact same pick.",
+                    help="Commissioner: pause and park this room for everyone. Resume via Continue Saved Draft.",
                 ):
                     from live_draft_resumable_slot import save_and_continue_later
 
@@ -24063,14 +24119,41 @@ elif active_page == "Live Draft Room":
                         st.rerun()
                     else:
                         st.error(str(result.get("message") or "Could not save draft for later."))
+                elif not _is_commissioner:
+                    if st.button(
+                        "Leave This Room",
+                        key="live_draft_leave_this_room_btn",
+                        help="Leave only your seat. The draft continues for everyone else.",
+                    ):
+                        st.session_state["_live_draft_leave_confirm"] = True
             with ctrl4:
-                if st.button(
-                    "End/Delete Draft",
-                    key="live_draft_discard_btn",
-                    help="Permanently destroy this draft and start over. Use Save & Continue Later to finish another day.",
-                ):
-                    st.session_state["_live_draft_discard_confirm"] = True
-                    st.session_state.pop("_live_draft_replace_resumable_confirm", None)
+                if _is_commissioner:
+                    if st.button(
+                        "End/Delete Draft for Everyone",
+                        key="live_draft_discard_btn",
+                        help="Commissioner only: permanently destroy this room for every participant.",
+                    ):
+                        st.session_state["_live_draft_discard_confirm"] = True
+                        st.session_state.pop("_live_draft_replace_resumable_confirm", None)
+                        st.session_state.pop("_live_draft_leave_confirm", None)
+
+            if st.session_state.get("_live_draft_leave_confirm"):
+                st.warning(
+                    "Leave this draft room? You will give up your claimed team. "
+                    "The draft will remain available to the other participants."
+                )
+                lc1, lc2 = st.columns(2)
+                with lc1:
+                    if st.button("Leave This Room", key="live_draft_leave_confirm_btn", type="primary"):
+                        from draft_room_context import leave_shared_draft_room
+
+                        st.session_state.pop("_live_draft_leave_confirm", None)
+                        leave_shared_draft_room(st.session_state)
+                        st.rerun()
+                with lc2:
+                    if st.button("Stay in Room", key="live_draft_leave_cancel_btn"):
+                        st.session_state.pop("_live_draft_leave_confirm", None)
+                        st.rerun()
 
             if st.session_state.get("_live_draft_replace_resumable_confirm"):
                 st.warning(
@@ -24105,15 +24188,16 @@ elif active_page == "Live Draft Room":
 
             if st.session_state.get("_live_draft_discard_confirm"):
                 st.error(
-                    "Permanently delete this draft and start over?\n\n"
-                    "All current picks, teams, room information, queues, participants, and live-draft "
-                    "progress will be removed. This draft cannot be resumed.\n\n"
-                    "Choose **Save & Continue Later** instead if you want to finish it another time."
+                    "Permanently delete this draft for every participant?\n\n"
+                    "All picks, teams, queues, chat, and progress will be removed. "
+                    "This cannot be undone.\n\n"
+                    "Guests who only need to exit should use **Leave This Room** instead.\n\n"
+                    "Choose **Save & Continue Later** if you want to finish another time."
                 )
                 dc1, dc2 = st.columns(2)
                 with dc1:
                     if st.button(
-                        "Delete Draft Permanently",
+                        "End/Delete Draft for Everyone",
                         key="live_draft_discard_confirm_btn",
                         type="primary",
                     ):
@@ -24192,11 +24276,22 @@ elif active_page == "Live Draft Room":
                 with adv2:
                     try:
                         from draft_room_context import leave_shared_draft_room
+                        from draft_room_membership import is_room_host
+                        from draft_room_shared_state import load_shared_room_document
 
-                        if st.button("Leave Draft", key="live_draft_leave_btn"):
-                            leave_shared_draft_room(st.session_state)
-                            st.session_state.pop("live_draft_room", None)
-                            st.rerun()
+                        _code_leave = str(
+                            st.session_state.get("active_shared_draft_room_code") or ""
+                        ).strip().upper()
+                        _doc_leave = (
+                            load_shared_room_document(st.session_state, _code_leave)
+                            if _code_leave
+                            else None
+                        )
+                        _host_leave = bool(is_room_host(st.session_state, _doc_leave)) if _code_leave else True
+                        if _code_leave and not _host_leave:
+                            if st.button("Leave This Room", key="live_draft_leave_btn"):
+                                st.session_state["_live_draft_leave_confirm"] = True
+                                st.rerun()
                     except ImportError:
                         pass
         st.markdown("</div>", unsafe_allow_html=True)
@@ -24237,6 +24332,12 @@ elif active_page == "Live Draft Room":
         # mutating session without updating the visible queue on fragment reruns.
         with board_col:
             try:
+                from live_draft_render_checkpoints import note_live_draft_render_checkpoint
+
+                note_live_draft_render_checkpoint(st.session_state, "queue", phase="started", room=room)
+            except ImportError:
+                pass
+            try:
                 from live_draft_queue_fragment import render_live_draft_queue_fragment
 
                 render_live_draft_queue_fragment(st, st.session_state)
@@ -24244,14 +24345,14 @@ elif active_page == "Live Draft Room":
                 from draft_ui import render_live_draft_queue_panel
 
                 if render_live_draft_queue_panel(st, st.session_state):
-                    try:
-                        from live_draft_safe_mode import request_live_draft_rerun
+                    st.session_state["_live_draft_defer_full_rerun"] = True
+            try:
+                from live_draft_render_checkpoints import note_live_draft_render_checkpoint
 
-                        request_live_draft_rerun(
-                            st, st.session_state, "live_draft_queue", room=room
-                        )
-                    except ImportError:
-                        st.rerun()
+                note_live_draft_render_checkpoint(st.session_state, "queue", phase="completed", room=room)
+                note_live_draft_render_checkpoint(st.session_state, "board", phase="started", room=room)
+            except ImportError:
+                pass
             try:
                 from live_draft_ux_latency import mark_ux_milestone
 
@@ -25129,6 +25230,16 @@ elif active_page == "Live Draft Room":
             ldr_section_done(st.session_state, "room_body", st=st)
         except ImportError:
             pass
+        try:
+            from live_draft_render_checkpoints import (
+                note_live_draft_render_checkpoint,
+                render_live_draft_checkpoint_panel,
+            )
+
+            note_live_draft_render_checkpoint(st.session_state, "footer", phase="completed", room=room)
+            render_live_draft_checkpoint_panel(st, st.session_state)
+        except ImportError:
+            pass
 
     try:
         from live_draft_state import flush_deferred_live_draft_pick_effects
@@ -25158,6 +25269,18 @@ elif active_page == "Live Draft Room":
         flush_deferred_pick_persist(st.session_state, st_obj=st)
     except ImportError:
         pass
+
+    # Deferred full-app refresh after queue mutations — never mid-pass after Draft Queue.
+    if st.session_state.pop("_live_draft_defer_full_rerun", None):
+        try:
+            from live_draft_render_checkpoints import note_live_draft_render_checkpoint
+
+            note_live_draft_render_checkpoint(
+                st.session_state, "deferred_rerun", phase="started", detail="end_of_page"
+            )
+        except ImportError:
+            pass
+        st.rerun()
 
     try:
         from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section_done

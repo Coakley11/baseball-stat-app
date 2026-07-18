@@ -116,6 +116,16 @@ class CurrentLiveDraftSessionTests(unittest.TestCase):
                 return_value="Team Y",
             ),
             patch("suite_auth.is_auth_enabled", return_value=False),
+            patch(
+                "shared_room_membership_gate.load_authoritative_shared_document",
+                return_value={
+                    "room_code": "NEWRM1",
+                    "status": "in_progress",
+                    "draft_room_id": "dr-new",
+                    "participants": {"pid-a": {"assigned_team": "Team Y"}},
+                    "room": {"status": "in_progress", "draft_room_id": "dr-new"},
+                },
+            ),
         ):
             code = restore_persisted_shared_room_membership(session)
         self.assertEqual(code, "NEWRM1")

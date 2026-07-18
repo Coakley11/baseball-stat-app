@@ -47,20 +47,18 @@ def _board_len(session: dict[str, Any]) -> int:
 
 
 def _pick_escalation_needed(session: dict[str, Any], *, board_before: int) -> bool:
+    """True when a pick advanced during queue paint and the full page must refresh.
+
+    Do not escalate for sticky pick flags or deferred persist dirty — those used to
+    call ``st.rerun()`` mid-pass after Draft Queue and permanently truncate the page.
+    """
     if board_before < _board_len(session):
         return True
     if session.get("_pending_manual_draft_pick"):
         return True
     if session.get("_live_draft_manual_pick_in_flight"):
         return True
-    try:
-        from live_draft_pick_persist import PICK_PERSIST_DIRTY_KEY
-
-        if session.get(PICK_PERSIST_DIRTY_KEY):
-            return True
-    except ImportError:
-        pass
-    return bool(session.get(QUEUE_FRAGMENT_PICK_KEY))
+    return False
 
 
 def _queue_names(session: dict[str, Any]) -> list[str]:
@@ -203,14 +201,26 @@ def render_live_draft_queue_fragment(st: Any, session: dict[str, Any]) -> None:
 
         queue_mutated = after_q != before_q or bool(panel_rerun)
 
-        if _pick_escalation_needed(session, board_before=board_before):
-            session[QUEUE_FRAGMENT_PICK_KEY] = True
-            if note_ux_rerun_scope:
-                note_ux_rerun_scope(session, "app", st=st)
+        # Never mid-pass st.rerun after queue — that aborted board/recs/rosters and
+        # flickered when sticky flags never cleared. Defer a full-app refresh to page end.
+        session.pop(QUEUE_FRAGMENT_PICK_KEY, None)
+        if _pick_escalation_needed(session, board_before=board_before) or (
+            panel_rerun and board_before < _board_len(session)
+        ):
+            session["_live_draft_defer_full_rerun"] = True
             if mark_ux_milestone:
-                mark_ux_milestone(session, "escalate_app_rerun", rebuild="full_app", st=st)
-            _app_rerun(st)
-            return
+                mark_ux_milestone(session, "escalate_deferred", rebuild="end_of_page", st=st)
+            try:
+                from live_draft_render_checkpoints import note_live_draft_render_checkpoint
+
+                note_live_draft_render_checkpoint(
+                    session, "queue", phase="completed", detail="defer_full_rerun"
+                )
+            except ImportError:
+                pass
+        elif panel_rerun:
+            # Queue-only mutation (add/remove/reorder) — still finish the page paint.
+            session["_live_draft_defer_full_rerun"] = True
 
         if USE_QUEUE_FRAGMENT and queue_mutated:
             painted = _queue_names(session)

@@ -252,6 +252,23 @@ def prepare_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
         else:
             document = load_shared_room(str(room_code))
             if document:
+                # Refuse to hydrate a shared room the current user never joined.
+                try:
+                    from shared_room_membership_gate import (
+                        can_render_shared_live_draft,
+                        clear_stale_shared_room_local_state,
+                    )
+
+                    ok_gate, gate_reason = can_render_shared_live_draft(
+                        session, document=document, require_team_claim=False
+                    )
+                    if not ok_gate:
+                        clear_stale_shared_room_local_state(
+                            session, reason=f"prepare_global_gate:{gate_reason}"
+                        )
+                        return get_global_draft_context(session)
+                except ImportError:
+                    pass
                 runtime = publish_shared_room_runtime(session, document, reason="global_context_prepare")
                 if runtime is None:
                     clear_stale_multiplayer_state(
@@ -724,6 +741,13 @@ def create_and_host_shared_room(
     document["created_at"] = document.get("updated_at") or document.get("created_at")
     document["host_user_id"] = str(auth_user_id(session) or participant_id)
     document["host_participant_id"] = participant_id
+    # Unique generation — guests must never inherit this via stale local pointers.
+    import time as _time_mod
+    import uuid as _uuid_mod
+
+    document["room_generation"] = f"{code}-{int(_time_mod.time())}-{_uuid_mod.uuid4().hex[:8]}"
+    document["participants"] = {}
+    document["joined_participants"] = {}
     document["_storage_backend"] = shared_room_backend_name()
     document = register_participant_in_shared_document(
         document,
@@ -1506,7 +1530,11 @@ def commit_shared_room_state(
 
 
 def leave_shared_draft_room(session: dict[str, Any]) -> None:
-    """Leave multiplayer room and clear shared runtime keys (private workflow is saved)."""
+    """Leave multiplayer room and clear shared runtime keys (private workflow is saved).
+
+    Guest action: removes only this participant from the authoritative document and
+    releases their team. Does not delete the room or end the draft for others.
+    """
     from draft_room_participant_state import (
         ACTIVE_PARTICIPANT_ID_KEY,
         PARTICIPANT_NOTES_KEY,
@@ -1528,6 +1556,36 @@ def leave_shared_draft_room(session: dict[str, Any]) -> None:
     if room_code:
         save_participant_workflow_from_session(session, room_code)
         mark_participant_left_room(session, room_code, participant_id=leave_pid)
+        # Release this participant from the authoritative shared document.
+        try:
+            from draft_room_shared_state import bump_revision, get_shared_room_store, load_shared_room
+
+            doc = load_shared_room(room_code)
+            if isinstance(doc, dict):
+                parts = dict(doc.get("participants") or {})
+                parts.pop(leave_pid, None)
+                # Also drop case-insensitive aliases.
+                for key in list(parts.keys()):
+                    if str(key).strip().lower() == leave_pid.lower():
+                        parts.pop(key, None)
+                doc["participants"] = parts
+                joined = doc.get("joined_participants")
+                if isinstance(joined, dict):
+                    joined.pop(leave_pid, None)
+                    for key in list(joined.keys()):
+                        if str(key).strip().lower() == leave_pid.lower():
+                            joined.pop(key, None)
+                    doc["joined_participants"] = joined
+                updated = bump_revision(doc)
+                get_shared_room_store().save(updated)
+                try:
+                    from draft_room_shared_state import invalidate_shared_room_document_cache
+
+                    invalidate_shared_room_document_cache(session, room_code)
+                except Exception:
+                    pass
+        except Exception:
+            pass
     for key in (
         ACTIVE_SHARED_ROOM_CODE_KEY,
         SHARED_ROOM_META_KEY,
@@ -1541,6 +1599,8 @@ def leave_shared_draft_room(session: dict[str, Any]) -> None:
         "_draft_room_membership_notice",
         "_shared_draft_poll_ts",
         _SHARED_DRAFT_SYNC_RUN_KEY,
+        "_live_draft_queue_fragment_pick",
+        "_live_draft_defer_full_rerun",
     ):
         session.pop(key, None)
     session[DRAFT_QUEUE_KEY] = []
@@ -1564,7 +1624,12 @@ def leave_shared_draft_room(session: dict[str, Any]) -> None:
         capture_leave_state_after(session, membership_marked_left=bool(room_code))
     except ImportError:
         pass
+    try:
+        from live_draft_termination import bump_live_draft_page_epoch
 
+        bump_live_draft_page_epoch(session)
+    except ImportError:
+        pass
 
 def recommendation_team(session: dict[str, Any], *, on_clock_team: str | None = None) -> str:
     """Team scope for recommendation engines — participant team in multiplayer."""

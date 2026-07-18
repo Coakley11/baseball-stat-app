@@ -1069,11 +1069,18 @@ def participant_has_left_room(session: dict[str, Any], room_code: str) -> bool:
     by_pid = room_state.get("by_participant")
     if not isinstance(by_pid, dict):
         return False
-    pid = str(resolve_participant_id(session)).strip()
-    if not pid:
-        return False
-    slot = by_pid.get(pid)
-    return bool(isinstance(slot, dict) and str(slot.get("left_at") or "").strip())
+    candidates = {
+        str(resolve_participant_id(session) or "").strip(),
+        str(session.get(ACTIVE_PARTICIPANT_ID_KEY) or "").strip(),
+        str(session.get("draft_room_participant_id") or "").strip(),
+        str(session.get("_last_left_participant_id") or "").strip(),
+    }
+    candidates.discard("")
+    for pid in candidates:
+        slot = by_pid.get(pid)
+        if isinstance(slot, dict) and str(slot.get("left_at") or "").strip():
+            return True
+    return False
 
 
 def mark_participant_left_room(
@@ -1097,6 +1104,8 @@ def mark_participant_left_room(
         by_pid[pid] = slot
     slot["left_at"] = _utc_now_iso()
     slot.pop("joined_at", None)
+    if pid:
+        session["_last_left_participant_id"] = pid
 
 
 def clear_participant_left_room(session: dict[str, Any], room_code: str) -> None:
@@ -1236,39 +1245,63 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
         session["_live_draft_restore_blocked_reason"] = f"active_code_skipped:{code_block}"
         code = ""
 
-    if preferred and code and preferred != code:
-        # Active League's Live Draft origin wins over a stale resume pointer —
-        # but never for completed/left/tombstoned rooms.
-        team = ""
+    def _authoritative_reattach(room_code: str, *, source: str) -> str:
+        """Bind only when the shared document still lists this participant."""
+        room_code = _valid_code(room_code)
+        if not room_code:
+            return ""
+        if participant_has_left_room(session, room_code):
+            return ""
         try:
-            from fantasy_league_team_ownership import resolve_account_fantasy_team
+            from shared_room_membership_gate import (
+                can_render_shared_live_draft,
+                load_authoritative_shared_document,
+                participant_in_document,
+            )
 
-            team = str(resolve_account_fantasy_team(session, active_ctx) or "").strip()
-        except Exception:
-            team = membership_team_for_participant(session, preferred, participant_id=pid)
-        bind_current_live_draft_session(session, preferred, assigned_team=team)
-        _hydrate_team_from_membership(session, preferred, participant_id=pid)
-        return preferred
+            doc = load_authoritative_shared_document(session, room_code, force=True)
+            ok_doc, team = participant_in_document(doc, pid)
+            if not ok_doc:
+                session["_live_draft_restore_blocked_reason"] = f"{source}:not_in_document"
+                return ""
+            # Temporary bind so the gate can evaluate local code/id.
+            bind_current_live_draft_session(session, room_code, assigned_team=team)
+            ok, reason = can_render_shared_live_draft(session, document=doc, require_team_claim=False)
+            if not ok:
+                session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+                session["_live_draft_restore_blocked_reason"] = f"{source}:{reason}"
+                return ""
+            _hydrate_team_from_membership(session, room_code, participant_id=pid)
+            try:
+                from draft_room_runtime_diagnostics import note_prepare_global_rehydrate
+
+                note_prepare_global_rehydrate(session, room_code=room_code, source=source)
+            except ImportError:
+                pass
+            return room_code
+        except ImportError:
+            # Fail closed without the gate — do not auto-bind.
+            session["_live_draft_restore_blocked_reason"] = f"{source}:gate_unavailable"
+            return ""
+
+    if preferred and code and preferred != code:
+        attached = _authoritative_reattach(preferred, source="preferred_league_room")
+        if attached:
+            return attached
+        preferred = ""
 
     if preferred and not code:
-        team = membership_team_for_participant(session, preferred, participant_id=pid)
-        bind_current_live_draft_session(session, preferred, assigned_team=team)
-        _hydrate_team_from_membership(session, preferred, participant_id=pid)
-        return preferred
+        attached = _authoritative_reattach(preferred, source="preferred_league_room")
+        if attached:
+            return attached
 
     if code:
-        if participant_has_left_room(session, code):
-            session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
-            code = ""
-        else:
-            _hydrate_team_from_membership(session, code, participant_id=pid)
-            if not str(session.get(ACTIVE_PARTICIPANT_TEAM_KEY) or "").strip():
-                team, _fail = ensure_participant_team_assigned(session, room_code=code)
-                if team:
-                    session[ACTIVE_PARTICIPANT_ID_KEY] = pid
-                    session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
-            clear_mismatched_live_draft_runtime(session, code)
-            return code
+        attached = _authoritative_reattach(code, source="active_shared_room_code")
+        if attached:
+            clear_mismatched_live_draft_runtime(session, attached)
+            return attached
+        session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+        code = ""
 
     candidates: list[tuple[str, str, str]] = []
     membership = session.get(MEMBERSHIP_KEY)
@@ -1299,18 +1332,15 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
     if not candidates:
         return ""
 
-    # Newest join wins — never silently revive the oldest membership key.
+    # Newest local membership first — but only reattach when the document agrees.
     candidates.sort(key=lambda row: row[2] or "", reverse=True)
-    room_code, team, _joined = candidates[0]
-    bind_current_live_draft_session(session, room_code, assigned_team=team)
-    session[ACTIVE_PARTICIPANT_ID_KEY] = pid
-    try:
-        from draft_room_runtime_diagnostics import note_prepare_global_rehydrate
+    for room_code, _team, _joined in candidates:
+        attached = _authoritative_reattach(room_code, source="membership_verified_reattach")
+        if attached:
+            return attached
 
-        note_prepare_global_rehydrate(session, room_code=room_code, source="membership_newest")
-    except ImportError:
-        pass
-    return room_code
+    session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+    return ""
 
 
 def _hydrate_team_from_membership(
