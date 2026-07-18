@@ -32,6 +32,13 @@ _TABLE_SETTINGS = "suite_user_settings"
 _SAVED_ITEM_CONFLICT_COLS = "user_id,app,item_type,item_key"
 _FULL_SESSION_KEY = "full_session"
 _READ_CACHE_KEY = "_suite_supabase_get_cache"
+# Multi-writer tables must never be served from a session GET cache — another
+# browser/account can advance the document while this session still holds a hit.
+_NO_GET_CACHE_TABLES = frozenset(
+    {
+        "baseball_shared_draft_rooms",
+    }
+)
 
 
 def _read_cache_bucket() -> dict[tuple[str, str, tuple[tuple[str, str], ...]], tuple[int, Any]]:
@@ -60,6 +67,11 @@ def _invalidate_read_cache_for_table(table: str) -> None:
     drop = [k for k in bucket if k[1] == table or k[1].startswith(f"{table}/")]
     for key in drop:
         bucket.pop(key, None)
+
+
+def invalidate_shared_draft_room_read_cache() -> None:
+    """Drop every cached GET for shared multiplayer room documents."""
+    _invalidate_read_cache_for_table("baseball_shared_draft_rooms")
 
 
 def _row_to_state_dict(row: dict[str, Any], *, logical: str) -> dict[str, Any]:
@@ -225,6 +237,7 @@ def _request(
     params: dict[str, str] | None = None,
     json_body: Any = None,
     prefer: str = "return=minimal",
+    use_cache: bool | None = None,
 ) -> Any:
     import requests  # lazy import — available in all suite apps
 
@@ -235,12 +248,11 @@ def _request(
     table = str(path or "").split("/", 1)[0]
     method_u = method.upper()
     cache_key = _cache_key(method_u, table, params)
-    cached = False
-    if method_u == "GET":
+    allow_cache = bool(use_cache) if use_cache is not None else table not in _NO_GET_CACHE_TABLES
+    if method_u == "GET" and allow_cache:
         bucket = _read_cache_bucket()
         hit = bucket.get(cache_key)
         if hit is not None:
-            cached = True
             try:
                 from suite_egress_trace import record_egress
 
@@ -253,6 +265,9 @@ def _request(
             except ImportError:
                 pass
             return hit[1]
+    elif method_u == "GET" and not allow_cache:
+        # Ensure a prior cached hit cannot linger across lobby polls.
+        _invalidate_read_cache_for_table(table)
 
     url = f"{config.url}/rest/v1/{path}"
     response = requests.request(
@@ -287,7 +302,7 @@ def _request(
         parsed = response.json()
     except json.JSONDecodeError:
         parsed = None
-    if method_u == "GET" and parsed is not None:
+    if method_u == "GET" and parsed is not None and allow_cache:
         _read_cache_bucket()[cache_key] = (bytes_in, parsed)
     return parsed
 

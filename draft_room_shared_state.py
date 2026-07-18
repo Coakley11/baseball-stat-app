@@ -596,6 +596,13 @@ def invalidate_shared_room_document_cache(session: dict[str, Any] | None, room_c
     cache = session.get(SHARED_DOC_SOFT_CACHE_KEY)
     if not code or (isinstance(cache, dict) and str(cache.get("room_code") or "") == code):
         session.pop(SHARED_DOC_SOFT_CACHE_KEY, None)
+    # Also drop Supabase GET cache so host lobby polls cannot keep a pre-claim row.
+    try:
+        from suite_storage_supabase import invalidate_shared_draft_room_read_cache
+
+        invalidate_shared_draft_room_read_cache()
+    except ImportError:
+        pass
 
 
 def reset_shared_room_store_for_tests(store: SharedRoomStore | None = None) -> None:

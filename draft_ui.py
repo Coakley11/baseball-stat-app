@@ -939,12 +939,32 @@ def _resolve_visible_draft_queue(
         return [str(x).strip() for x in raw if str(x).strip()]
 
     widget = _norm(session.get(qkey))
+    ds = session.get("draft_state") if isinstance(session.get("draft_state"), dict) else {}
+    canon = _norm(ds.get("queue"))
+
+    # When local edits dirty the queue, trust the canonical mirrors even if empty
+    # so intentional X removal cannot be undone by last-good / write-log fallbacks.
+    dirty_local = False
+    try:
+        from draft_state import is_draft_locally_dirty
+
+        dirty_local = bool(
+            is_draft_locally_dirty(session)
+            or session.get("_draft_queue_persist_dirty")
+            or session.get("_draft_workflow_pending_sync")
+        )
+    except ImportError:
+        dirty_local = bool(session.get("_draft_queue_persist_dirty"))
+
     if widget:
         session["_live_draft_queue_last_good"] = list(widget)
         return widget, qkey
 
-    ds = session.get("draft_state") if isinstance(session.get("draft_state"), dict) else {}
-    canon = _norm(ds.get("queue"))
+    if dirty_local and isinstance(ds, dict) and "queue" in ds:
+        if canon:
+            return canon, "draft_state.queue"
+        return [], "draft_state.queue_empty"
+
     if canon:
         return canon, "draft_state.queue"
 
@@ -956,21 +976,22 @@ def _resolve_visible_draft_queue(
             if pf_q:
                 return pf_q, "page_filter_state.Draft Workflow"
 
-    last_good = _norm(session.get("_live_draft_queue_last_good"))
-    if last_good:
-        return last_good, "_live_draft_queue_last_good"
+    if not dirty_local:
+        last_good = _norm(session.get("_live_draft_queue_last_good"))
+        if last_good:
+            return last_good, "_live_draft_queue_last_good"
 
-    # Survival write log: last non-empty new_session_queue.
-    try:
-        writes = list(session.get("_live_draft_queue_write_log") or [])
-        for entry in reversed(writes):
-            if not isinstance(entry, dict):
-                continue
-            names = _norm(entry.get("new_session_queue"))
-            if names:
-                return names, f"write_log:{entry.get('function')}"
-    except Exception:
-        pass
+        # Survival write log: last non-empty new_session_queue.
+        try:
+            writes = list(session.get("_live_draft_queue_write_log") or [])
+            for entry in reversed(writes):
+                if not isinstance(entry, dict):
+                    continue
+                names = _norm(entry.get("new_session_queue"))
+                if names:
+                    return names, f"write_log:{entry.get('function')}"
+        except Exception:
+            pass
     return [], "empty"
 
 
@@ -990,7 +1011,7 @@ def render_draft_queue_panel(
     Returns True when caller should st.rerun().
     """
     from draft_actions import _prune_drafted_from_queue, draft_action_context
-    from draft_state import remove_player_from_draft_queue, reorder_user_draft_queue
+    from draft_state import remove_player_from_user_draft_queue, reorder_user_draft_queue
 
     container = st.sidebar if use_sidebar else st
     try:
@@ -1062,9 +1083,18 @@ def render_draft_queue_panel(
             session["_live_draft_queue_last_good"] = list(queue)
         # Paint / survival diagnostics — Developer Mode only (screenshot-clean otherwise).
         if _dev_queue_diag:
+            try:
+                from draft_state import _queue_scope_ids
+
+                _qr, _qu = _queue_scope_ids(session)
+            except Exception:
+                _qr, _qu = ("", "")
+            _rm = session.get("_draft_queue_last_remove") or {}
             container.markdown(
                 f"**VISIBLE RENDER INPUT:** `{queue}`  \n"
-                f"source=`{queue_source}` · widget=`{widget_after_prune}` · key=`{_qkey}`"
+                f"source=`{queue_source}` · widget=`{widget_after_prune}` · key=`{_qkey}`  \n"
+                f"scope=`{_qr}|{_qu}` · epoch=`{session.get('_draft_queue_widget_epoch')}`  \n"
+                f"last_remove=`{_rm}`"
             )
             if queue:
                 _lines = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(queue[:max_rows]))
@@ -1125,7 +1155,21 @@ def render_draft_queue_panel(
                 pass
             container.caption("Drag the red cards to set queue priority (first = highest).")
             _sortable_in = list(queue)
-            sorted_queue = sort_items(list(queue), key=f"{key_prefix}_sortable")
+            try:
+                from draft_state import _queue_scope_ids
+
+                _scope_room, _scope_user = _queue_scope_ids(session)
+            except Exception:
+                _scope_room, _scope_user = ("", "")
+            _epoch = int(session.get("_draft_queue_widget_epoch") or 0)
+            _sortable_key = (
+                f"{key_prefix}_sortable_"
+                f"{str(_scope_room or 'solo')[:24]}_"
+                f"{str(_scope_user or 'user')[:24]}_"
+                f"e{_epoch}"
+            )
+            sorted_queue = sort_items(list(queue), key=_sortable_key)
+            # Ignore stale sortable returns that resurrect removed players.
             if list(sorted_queue) != list(queue):
                 if len(queue) >= 2 and not list(sorted_queue):
                     session["_live_draft_queue_sortable_wipe_blocked"] = True
@@ -1140,6 +1184,12 @@ def render_draft_queue_panel(
                         )
                     except ImportError:
                         pass
+                elif set(sorted_queue) - set(queue):
+                    session["_live_draft_queue_sortable_stale_ignored"] = {
+                        "sortable": list(sorted_queue)[:12],
+                        "canonical": list(queue)[:12],
+                        "key": _sortable_key,
+                    }
                 else:
                     try:
                         from live_draft_ux_latency import ACTION_REORDER_QUEUE, note_ux_action
@@ -1255,7 +1305,16 @@ def render_draft_queue_panel(
                         )
                     except ImportError:
                         pass
-                remove_player_from_draft_queue(session, pname)
+                pid = ""
+                if isinstance(pool_row, dict):
+                    pid = str(pool_row.get("playerID") or "").strip()
+                elif pool_row is not None and hasattr(pool_row, "get"):
+                    try:
+                        pid = str(pool_row.get("playerID") or "").strip()
+                    except Exception:
+                        pid = ""
+                remove_player_from_user_draft_queue(session, pid or pname)
+                queue = [x for x in queue if x != pname]
                 rerun = True
             if render_draft_button(
                 st,
@@ -1292,7 +1351,16 @@ def render_draft_queue_panel(
                         )
                     except ImportError:
                         pass
-                remove_player_from_draft_queue(session, pname)
+                pid = ""
+                if isinstance(pool_row, dict):
+                    pid = str(pool_row.get("playerID") or "").strip()
+                elif pool_row is not None and hasattr(pool_row, "get"):
+                    try:
+                        pid = str(pool_row.get("playerID") or "").strip()
+                    except Exception:
+                        pid = ""
+                remove_player_from_user_draft_queue(session, pid or pname)
+                queue = [x for x in queue if x != pname]
                 rerun = True
             if render_draft_button(
                 st,

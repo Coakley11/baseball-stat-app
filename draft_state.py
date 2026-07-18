@@ -185,6 +185,11 @@ def write_canonical_draft_state(
         session[DRAFT_WATCHLIST_FAVORITES_KEY] = list(favorites)
     if q:
         session["_live_draft_queue_last_good"] = list(q)
+    elif reason_s.startswith(
+        ("remove", "clear_queue", "clear_draft", "drafted", "queue_autopick", "remove_from_queue")
+    ):
+        # Intentional empty / shrink — do not keep a stale last-good that can rehydrate.
+        session.pop("_live_draft_queue_last_good", None)
     if not blocked:
         try:
             from live_draft_queue_survival import record_queue_write
@@ -575,28 +580,109 @@ def add_player_to_draft_queue(session: dict[str, Any], player_name: str) -> tupl
     return q, True
 
 
+def _resolve_queue_player_key(session: dict[str, Any], player_id_or_name: str) -> str:
+    """Map stable playerID → queued identity (name today) when present."""
+    token = str(player_id_or_name or "").strip()
+    if not token:
+        return ""
+    q = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+    if token in q:
+        return token
+    # Match by playerID from pool / meta cache.
+    try:
+        from draft_ui import lookup_player_pool_row
+
+        for name in q:
+            row = lookup_player_pool_row(session, name)
+            if row is None:
+                continue
+            pid = str(getattr(row, "get", lambda *_: None)("playerID") or "")
+            if not pid and hasattr(row, "__getitem__"):
+                try:
+                    pid = str(row["playerID"])
+                except Exception:
+                    pid = ""
+            if str(pid).strip() == token:
+                return name
+    except ImportError:
+        pass
+    # Case-insensitive name fallback.
+    lower = token.lower()
+    for name in q:
+        if name.lower() == lower:
+            return name
+    return token
+
+
+def remove_player_from_user_draft_queue(
+    session: dict[str, Any],
+    player_id: str,
+    *,
+    source_type: str = "",
+    room_or_draft_id: str = "",
+    canonical_user_id: str = "",
+    reason: str = "remove_from_queue",
+) -> tuple[list[str], bool]:
+    """Canonical remove for sidebar + Live Draft + Simulator (same queue scope)."""
+    del source_type  # reserved for future multi-draft scoped storage
+    name = _resolve_queue_player_key(session, player_id)
+    before = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+    if not name or name not in before:
+        return before, False
+
+    scope_room, scope_user = _queue_scope_ids(session)
+    room_id = str(room_or_draft_id or scope_room or "")
+    user_id = str(canonical_user_id or scope_user or "")
+
+    try:
+        from live_draft_perf import PHASE_QUEUE_REMOVE, live_draft_perf_action
+
+        with live_draft_perf_action(session, "queue_remove", phase=PHASE_QUEUE_REMOVE):
+            q = [p for p in before if p != name]
+            sync_draft_queue(session, q, reason=reason, sync_participant=False)
+            _note_queue_mutation_deferred(session, reason=reason)
+    except ImportError:
+        q = [p for p in before if p != name]
+        sync_draft_queue(session, q, reason=reason, sync_participant=False)
+        _note_queue_mutation_deferred(session, reason=reason)
+
+    # Keep every mirror for this scope aligned immediately.
+    session["_live_draft_queue_last_good"] = list(q)
+    if not q:
+        session.pop("_live_draft_queue_last_good", None)
+    session["_draft_queue_widget_epoch"] = int(session.get("_draft_queue_widget_epoch") or 0) + 1
+    session["_draft_queue_last_remove"] = {
+        "player_id": str(player_id or ""),
+        "resolved_name": name,
+        "room_or_draft_id": room_id,
+        "canonical_user_id": user_id,
+        "before": list(before),
+        "after": list(q),
+        "reason": reason,
+    }
+    # Bust Streamlit sortable component state so a stale red-card list cannot restore.
+    for prefix in ("sidebar_queue", "live_queue", "sim_queue"):
+        session.pop(f"{prefix}_sortable", None)
+    try:
+        from draft_room_context import resolve_shared_room_code
+        from draft_room_participant_state import save_participant_workflow_from_session
+
+        code = str(resolve_shared_room_code(session) or "").strip().upper()
+        if code:
+            save_participant_workflow_from_session(session, code)
+    except ImportError:
+        pass
+    return q, True
+
+
 def remove_player_from_draft_queue(
     session: dict[str, Any],
     player_name: str,
     *,
     reason: str = "remove_from_queue",
 ) -> tuple[list[str], bool]:
-    name = str(player_name or "").strip()
-    q = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
-    if name not in q:
-        return q, False
-    try:
-        from live_draft_perf import PHASE_QUEUE_REMOVE, live_draft_perf_action
-
-        with live_draft_perf_action(session, "queue_remove", phase=PHASE_QUEUE_REMOVE):
-            q = [p for p in q if p != name]
-            sync_draft_queue(session, q, reason=reason, sync_participant=False)
-            _note_queue_mutation_deferred(session, reason=reason)
-    except ImportError:
-        q = [p for p in q if p != name]
-        sync_draft_queue(session, q, reason=reason, sync_participant=False)
-        _note_queue_mutation_deferred(session, reason=reason)
-    return q, True
+    """Compatibility wrapper — prefer ``remove_player_from_user_draft_queue``."""
+    return remove_player_from_user_draft_queue(session, player_name, reason=reason)
 
 
 def draft_player_from_queue(session: dict[str, Any], player_name: str) -> dict[str, Any]:

@@ -30,6 +30,8 @@ def _host_user_id() -> str:
 def _request(method: str, path: str, **kwargs: Any) -> Any:
     from suite_storage_supabase import _invalidate_read_cache_for_table, _request as supabase_request
 
+    # Shared rooms are multi-writer — never serve GET from the session read cache.
+    kwargs.setdefault("use_cache", False)
     try:
         result = supabase_request(method, path, **kwargs)
     except RuntimeError as exc:
