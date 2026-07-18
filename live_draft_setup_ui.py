@@ -673,10 +673,19 @@ def render_shared_draft_ready_card(
         return
 
     code = shared_room_code(session)
+    authority = None
+    try:
+        from draft_room_context import refresh_shared_lobby_authority
+
+        authority = refresh_shared_lobby_authority(session, force_poll=True)
+    except ImportError:
+        authority = None
     try:
         from live_draft_presence import count_required_joined, format_participant_status_line
 
-        joined, total, prow = count_required_joined(session, room)
+        joined, total, prow = count_required_joined(
+            session, room, document=authority if isinstance(authority, dict) else None
+        )
     except ImportError:
         joined, total = count_joined_teams(session, room)
         prow = []
@@ -694,7 +703,9 @@ def render_shared_draft_ready_card(
         if prow:
             for row in prow:
                 st.markdown(f"- {format_participant_status_line(row)}")
-        distinct = distinct_claimed_owner_count(session, room)
+        distinct = distinct_claimed_owner_count(
+            session, room
+        )
         if is_host and distinct < 2 and total >= 2:
             st.caption(
                 f"**{distinct}** distinct owner(s) — need **2** before starting (Phase 1)."
@@ -769,7 +780,16 @@ def render_lobby_status_panel(
         return
     if str(room.get("status") or "") != "not_started":
         return
-    rows = team_claim_rows(session, room)
+    authority = None
+    try:
+        from draft_room_context import refresh_shared_lobby_authority
+
+        authority = refresh_shared_lobby_authority(session, force_poll=True)
+    except ImportError:
+        authority = None
+    rows = team_claim_rows(
+        session, room, document=authority if isinstance(authority, dict) else None
+    )
     joined_lines: list[str] = []
     waiting_lines: list[str] = []
     for row in rows:
@@ -795,6 +815,35 @@ def render_lobby_status_panel(
         joined, total = count_joined_teams(session, room)
         if joined >= total and total > 0:
             st.success("Ready to Start")
+        diag = session.get("_shared_lobby_sync_diag")
+        show_diag = isinstance(diag, dict)
+        if show_diag:
+            try:
+                from draft_room_join_trace import join_trace_visible
+
+                show_diag = join_trace_visible(session)
+            except ImportError:
+                show_diag = bool(session.get("developer_mode"))
+        if show_diag and isinstance(diag, dict):
+            with st.expander("Lobby sync diagnostics (Developer Mode)", expanded=True):
+                for key in (
+                    "entered_room_code",
+                    "canonical_room_id",
+                    "shared_document_storage_key",
+                    "room_revision",
+                    "configured_teams",
+                    "required_human_teams",
+                    "raw_participants",
+                    "joined_participants",
+                    "raw_team_claims",
+                    "canonicalized_claims",
+                    "current_account_participant_id",
+                    "claimed_team",
+                    "last_shared_document_update",
+                    "participants_joined",
+                    "participants_required",
+                ):
+                    st.text(f"{key}: {diag.get(key)}")
 
 
 def render_draft_status_summary_card(

@@ -31,6 +31,20 @@ def list_room_teams(room: dict[str, Any] | None) -> list[str]:
     return [f"Team {i + 1}" for i in range(n)] if n else []
 
 
+def list_required_human_teams(
+    room: dict[str, Any] | None = None,
+    document: dict[str, Any] | None = None,
+) -> list[str]:
+    """Configured human seats — denominator for Participants joined X of Y.
+
+    Never derived from how many participants are currently visible.
+    """
+    teams = list_document_teams(document, session_room=room if isinstance(room, dict) else None)
+    if not teams and isinstance(room, dict):
+        teams = list_room_teams(room)
+    return [t for t in teams if not _is_cpu_or_placeholder_team(t)]
+
+
 def list_document_teams(document: dict[str, Any] | None, *, session_room: dict[str, Any] | None = None) -> list[str]:
     """Canonical team list for host lobby and guest join — same source of truth.
 
@@ -63,8 +77,8 @@ def load_shared_room_document(session: dict[str, Any], *, room_code: str | None 
     if not code:
         return None
     try:
-        from draft_room_context import get_shared_room_store
         from draft_room_create_verify import load_shared_room_with_diagnostics
+        from draft_room_shared_state import get_shared_room_store
 
         result = load_shared_room_with_diagnostics(get_shared_room_store(), code)
         doc = result.get("document")
@@ -121,13 +135,14 @@ def _host_participant_id(session: dict[str, Any], document: dict[str, Any] | Non
 
 
 def _participant_is_host(pid: str, host_aliases: set[str], meta: dict[str, Any] | None = None) -> bool:
+    meaningful = {a for a in host_aliases if not _is_generic_local_identity(a)}
     key = str(pid or "").strip()
-    if key and key in host_aliases:
+    if key and key in meaningful:
         return True
     if isinstance(meta, dict):
-        for field in ("user_id", "account_user_id", "participant_id"):
+        for field in ("user_id", "account_user_id", "participant_id", "external_id"):
             alias = str(meta.get(field) or "").strip()
-            if alias and alias in host_aliases:
+            if alias and not _is_generic_local_identity(alias) and alias in meaningful:
                 return True
     return False
 
@@ -140,31 +155,38 @@ def _identity_tokens(pid: str, meta: dict[str, Any] | None) -> set[str]:
     return {t for t in tokens if t}
 
 
+def _is_generic_local_identity(value: str) -> bool:
+    raw = str(value or "").strip().lower()
+    return (not raw) or raw.startswith(("local:", "anonymous:", "demo:"))
+
+
 def _canonical_identity_key(
     pid: str,
     meta: dict[str, Any] | None,
     *,
     host_aliases: set[str],
 ) -> str:
-    """One stable key per human — host aliases collapse to host_participant_id."""
+    """One stable key per human — host aliases collapse to host_participant_id.
+
+    Generic local/anonymous ids must not collapse distinct participants (Daniel vs
+    Coakley11 both getting ``local:default``) into one seat.
+    """
     tokens = _identity_tokens(pid, meta)
-    if tokens & host_aliases:
-        # Prefer documented host_participant_id when present among aliases.
-        for preferred in host_aliases:
-            if preferred in tokens or preferred == pid:
-                # Prefer non-cloud alias when host_participant_id is in the set.
-                pass
-        host_primary = next(iter(sorted(host_aliases)), "")
-        # Prefer shortest uuid-looking / first host_participant style: keep any host alias
-        # as a single bucket keyed by a deterministic member of the intersection.
-        intersection = tokens & host_aliases
-        return sorted(intersection, key=lambda x: (len(x), x))[0] if intersection else host_primary
+    # Ignore generic local tokens when matching host aliases so Coakley11 cannot
+    # inherit the host seat via a shared ``local:default`` user_id stamp.
+    meaningful_host_aliases = {a for a in host_aliases if not _is_generic_local_identity(a)}
+    host_match = tokens & meaningful_host_aliases
+    if host_match:
+        return sorted(host_match, key=lambda x: (len(x), x))[0]
     if isinstance(meta, dict):
-        for field in ("user_id", "account_user_id"):
+        for field in ("user_id", "account_user_id", "external_id"):
             val = str(meta.get(field) or "").strip()
-            if val:
+            if val and not _is_generic_local_identity(val):
                 return val
-    return str(pid or "").strip()
+    pid_s = str(pid or "").strip()
+    if pid_s and not _is_generic_local_identity(pid_s):
+        return pid_s
+    return pid_s
 
 
 def canonicalize_shared_room_claims(
@@ -499,7 +521,22 @@ def team_claim_rows(
 
 
 def count_joined_teams(session: dict[str, Any], room: dict[str, Any]) -> tuple[int, int]:
-    rows = team_claim_rows(session, room)
+    """Return (claimed_human_seats, required_human_seats).
+
+    Denominator is always configured required human teams (e.g. 2), never the
+    size of a stale/partial participant list.
+    """
+    doc = load_shared_room_document(session)
+    required = list_required_human_teams(room, document=doc if isinstance(doc, dict) else None)
+    rows = team_claim_rows(session, room, document=doc if isinstance(doc, dict) else None)
+    claimed_teams = {
+        str(r.get("team") or "").strip()
+        for r in rows
+        if r.get("claimed") and str(r.get("team") or "").strip()
+    }
+    if required:
+        joined = sum(1 for team in required if team in claimed_teams)
+        return joined, len(required)
     total = len(rows)
     joined = sum(1 for r in rows if r.get("claimed"))
     return joined, total

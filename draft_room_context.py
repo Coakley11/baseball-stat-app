@@ -534,6 +534,78 @@ def poll_shared_draft_room(
     return sync_shared_draft_room(session, force=force, store=store)
 
 
+def refresh_shared_lobby_authority(
+    session: dict[str, Any],
+    *,
+    store: SharedRoomStore | None = None,
+    force_poll: bool = True,
+) -> dict[str, Any] | None:
+    """Force-load the authoritative shared document for lobby claim/participant UI.
+
+    Host screens must not keep rendering a stale session copy when a newer shared
+    revision exists (e.g. Coakley11 claimed Team B).
+    """
+    room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+    if not room_code:
+        return None
+    try:
+        from draft_room_shared_state import invalidate_shared_room_document_cache
+
+        invalidate_shared_room_document_cache(session, room_code)
+    except ImportError:
+        pass
+
+    local_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
+    if force_poll:
+        try:
+            reset_shared_draft_sync_gate(session)
+            poll_shared_draft_room(session, force=True, store=store)
+        except Exception:
+            pass
+
+    backend = store or get_shared_room_store()
+    try:
+        from draft_room_shared_state import invalidate_shared_room_document_cache
+
+        invalidate_shared_room_document_cache(session, room_code)
+    except ImportError:
+        pass
+    document = backend.load(room_code)
+    if not isinstance(document, dict):
+        return None
+
+    remote_rev = int(document.get("revision") or 0)
+    if remote_rev > local_rev:
+        try:
+            publish_shared_room_runtime(session, document, reason="lobby_authority_refresh")
+        except Exception:
+            pass
+    elif remote_rev == local_rev:
+        # Even at equal revision, re-bind meta so lobby helpers see latest participants.
+        try:
+            meta = dict(session.get(SHARED_ROOM_META_KEY) or {})
+            meta["revision"] = remote_rev
+            meta["room_code"] = room_code
+            meta["updated_at"] = str(document.get("updated_at") or meta.get("updated_at") or "")
+            session[SHARED_ROOM_META_KEY] = meta
+        except Exception:
+            pass
+
+    session["_shared_lobby_authority_doc"] = document
+    try:
+        from live_draft_presence import build_lobby_sync_diagnostics
+
+        live = session.get(LIVE_DRAFT_ROOM_KEY)
+        session["_shared_lobby_sync_diag"] = build_lobby_sync_diagnostics(
+            session,
+            live if isinstance(live, dict) else {},
+            document=document,
+        )
+    except ImportError:
+        pass
+    return document
+
+
 def create_and_host_shared_room(
     session: dict[str, Any],
     live_room: dict[str, Any],
@@ -952,6 +1024,30 @@ def join_shared_draft_room(
             elif "no open" in str(err or "").lower():
                 friendly = "No teams are available"
             return False, friendly, document
+        # Atomic claim: reload latest → verify open → write claim + joined → bump revision → persist.
+        try:
+            from live_draft_team_ownership import repair_shared_document_claims as _repair_claims
+        except ImportError:
+            _repair_claims = None  # type: ignore[assignment,misc]
+        try:
+            fresh = backend.load(code)
+            if isinstance(fresh, dict):
+                document = fresh
+                if callable(_repair_claims):
+                    document = _repair_claims(document)
+                assigned, err = resolve_join_team_assignment(
+                    document,
+                    participant_id,
+                    requested_team=requested_team or assigned,
+                    current_identity_aliases=aliases,
+                )
+                if not assigned:
+                    friendly = err or "No teams are available"
+                    if "already assigned" in str(err or "").lower():
+                        friendly = "Team is already claimed"
+                    return False, friendly, document
+        except Exception:
+            pass
         document = register_participant_in_shared_document(
             document,
             participant_id=participant_id,
@@ -960,7 +1056,20 @@ def join_shared_draft_room(
             session=session,
         )
         try:
-            backend.save(document)
+            from live_draft_presence import JOINED_PARTICIPANTS_KEY, reconcile_joined_from_participants
+
+            document[JOINED_PARTICIPANTS_KEY] = reconcile_joined_from_participants(document)
+            if callable(_repair_claims):
+                document = _repair_claims(document)
+        except ImportError:
+            pass
+        try:
+            from draft_room_shared_state import invalidate_shared_room_document_cache
+
+            invalidate_shared_room_document_cache(session, code)
+            saved_doc = backend.save(document)
+            if isinstance(saved_doc, dict):
+                document = saved_doc
             # Mirror to the alternate registry so guests on either backend can re-load.
             try:
                 from draft_room_shared_state import get_local_shared_room_store
@@ -969,6 +1078,19 @@ def join_shared_draft_room(
                     get_local_shared_room_store().save(document)
             except Exception:
                 pass
+            invalidate_shared_room_document_cache(session, code)
+            # Read-back verification — claim must be visible on the global document.
+            verified = backend.load(code)
+            if isinstance(verified, dict):
+                document = verified
+                vparts = dict(verified.get("participants") or {})
+                vmeta = vparts.get(participant_id) if isinstance(vparts.get(participant_id), dict) else {}
+                if str((vmeta or {}).get("assigned_team") or "").strip() != str(assigned).strip():
+                    return (
+                        False,
+                        f"Unable to save participant: Team {assigned} claim did not persist on room {code}.",
+                        document,
+                    )
         except Exception as exc:
             try:
                 from draft_room_supabase_errors import (
@@ -1005,6 +1127,10 @@ def join_shared_draft_room(
         mark_participant_present(session, force_save=True, store=backend)
         if session.get("_live_draft_presence_error"):
             presence_ok = False
+        # Presence may bump revision after the claim save — return the latest document.
+        refreshed = backend.load(code)
+        if isinstance(refreshed, dict):
+            document = refreshed
     except ImportError:
         pass
     from draft_state import DRAFT_QUEUE_KEY, DRAFT_WATCHLIST_FAVORITES_KEY, DRAFT_WATCHLIST_FOCUS_KEY

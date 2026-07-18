@@ -247,8 +247,6 @@ def mark_participant_present(
                         out = repaired
                 except ImportError:
                     pass
-                # register bumps revision; restore board revision for chat-friendly save.
-                out["revision"] = board_rev
                 # Normalize joined_participants onto the same claim key.
                 if claim_pid != uid and claim_pid in (out.get("participants") or {}):
                     joined = normalize_joined_participants(out.get(JOINED_PARTICIPANTS_KEY))
@@ -260,6 +258,39 @@ def mark_participant_present(
                     uid = claim_pid
             except ImportError:
                 pass
+
+        # Heartbeat-only writes keep the board revision. Claim / join-map identity
+        # changes MUST bump revision so the host lightweight poll applies them.
+        # Ignore last_seen_at so presence heartbeats do not fight chat/board writers.
+        def _membership_fingerprint(parts: Any, joined_raw: Any) -> tuple[tuple[str, str], ...]:
+            rows: list[tuple[str, str]] = []
+            if isinstance(parts, dict):
+                for pid, meta in parts.items():
+                    if not isinstance(meta, dict):
+                        continue
+                    rows.append(
+                        (
+                            str(pid),
+                            str(meta.get("assigned_team") or "").strip(),
+                        )
+                    )
+            for uid, meta in normalize_joined_participants(joined_raw).items():
+                rows.append(
+                    (
+                        f"joined:{uid}",
+                        str(meta.get("team_name") or "").strip(),
+                    )
+                )
+            return tuple(sorted(rows))
+
+        membership_changed = _membership_fingerprint(
+            doc.get("participants"), doc.get(JOINED_PARTICIPANTS_KEY)
+        ) != _membership_fingerprint(out.get("participants"), out.get(JOINED_PARTICIPANTS_KEY))
+        if membership_changed:
+            out["revision"] = int(board_rev) + 1
+            out["updated_at"] = _utc_now_iso()
+        else:
+            out["revision"] = board_rev
 
         if not force_save:
             session["_live_draft_joined_participants_cache"] = copy.deepcopy(joined)
@@ -288,9 +319,17 @@ def required_human_participant_rows(
     *,
     document: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Required real managers: claimed team owners (not CPU / unclaimed placeholders)."""
+    """One row per configured required human seat (not per visible participant).
+
+    Denominator for ``Participants joined X of Y`` is always len(required teams).
+    Open seats appear as Waiting even when the host's participant list is stale.
+    """
     try:
-        from live_draft_team_ownership import list_room_teams, load_shared_participants
+        from live_draft_team_ownership import (
+            canonicalize_shared_room_claims,
+            list_required_human_teams,
+            repair_shared_document_claims,
+        )
     except ImportError:
         return []
 
@@ -305,127 +344,102 @@ def required_human_participant_rows(
             except ImportError:
                 doc = None
 
-    participants = {}
     if isinstance(doc, dict):
-        participants = dict(doc.get("participants") or {})
-    if not participants:
-        participants = load_shared_participants(session)
+        doc = repair_shared_document_claims(doc)
+    else:
+        doc = {"room": room if isinstance(room, dict) else {}, "participants": {}}
 
-    joined = normalize_joined_participants(
-        (doc or {}).get(JOINED_PARTICIPANTS_KEY) if isinstance(doc, dict) else {}
-    )
+    required = list_required_human_teams(room, document=doc)
+    if not required:
+        return []
+
+    canon = canonicalize_shared_room_claims(doc)
+    occupancy = dict(canon.get("occupancy") or {})
+    joined_map = normalize_joined_participants(doc.get(JOINED_PARTICIPANTS_KEY))
+    raw_participants = dict(doc.get("participants") or {})
 
     rows: list[dict[str, Any]] = []
-    seen_uids: set[str] = set()
-    seen_teams: set[str] = set()
-    for pid, meta in participants.items():
-        if not isinstance(meta, dict):
+    for team in required:
+        slot = occupancy.get(team) or {}
+        owner_pid = str(slot.get("canonical_participant_id") or "").strip()
+        if not owner_pid:
+            rows.append(
+                {
+                    "user_id": "",
+                    "display_name": "",
+                    "team_name": team,
+                    "joined": False,
+                    "waiting": True,
+                    "joined_at": "",
+                    "last_seen_at": "",
+                    "participant_id": "",
+                    "is_host": False,
+                }
+            )
             continue
-        team = str(meta.get("assigned_team") or "").strip()
-        if not team:
-            continue
-        # Skip explicit CPU / placeholder markers.
-        kind = str(meta.get("seat_kind") or meta.get("team_kind") or "").strip().lower()
-        if kind in {"cpu", "ai", "placeholder", "filler"}:
-            continue
-        if str(meta.get("is_cpu") or "").lower() in {"1", "true", "yes"}:
-            continue
-        uid = str(meta.get("user_id") or meta.get("account_user_id") or pid).strip() or str(pid)
-        uid_key = uid.strip().lower()
-        team_key = team.strip().lower()
-        # One seat per authenticated identity and per claimed team.
-        if uid_key in seen_uids or (team_key and team_key in seen_teams):
-            continue
-        seen_uids.add(uid_key)
-        if team_key:
-            seen_teams.add(team_key)
-        presence = joined.get(uid_key) or joined.get(uid) or {}
+
+        meta = raw_participants.get(owner_pid) if isinstance(raw_participants.get(owner_pid), dict) else {}
+        uid = str(
+            (meta or {}).get("user_id")
+            or (meta or {}).get("account_user_id")
+            or slot.get("canonical_identity")
+            or owner_pid
+        ).strip()
+        presence = joined_map.get(uid.lower()) or joined_map.get(uid) or joined_map.get(owner_pid) or {}
+        # Prefer presence / external_id display (coakley11) over raw email.
         display = str(
-            presence.get("display_name") or meta.get("display_name") or uid
+            presence.get("display_name")
+            or (meta or {}).get("display_name")
+            or (meta or {}).get("external_id")
+            or slot.get("canonical_claimant")
+            or uid
         ).strip()
         if "@" in display:
             display = display.split("@", 1)[0].strip() or display
-        # Joined means recorded in shared joined_participants (entered the room).
-        # Legacy fallback: if the room never wrote joined_participants, treat a
-        # claimed participant with joined_at as present so older rooms still start.
-        if joined:
-            is_joined = uid_key in joined or uid in joined
-        else:
-            is_joined = bool(str(meta.get("joined_at") or "").strip())
-        rows.append(
-            {
-                "user_id": uid,
-                "display_name": display,
-                "team_name": team or presence.get("team_name") or "",
-                "joined": is_joined,
-                "joined_at": presence.get("joined_at") or meta.get("joined_at") or "",
-                "last_seen_at": presence.get("last_seen_at") or "",
-            }
-        )
-
-    # Include presence-only entries that somehow lack participants (safety).
-    for uid, presence in joined.items():
-        uid_key = str(uid or "").strip().lower()
-        if uid_key in seen_uids:
-            continue
-        team_key = str(presence.get("team_name") or "").strip().lower()
-        if team_key and team_key in seen_teams:
-            continue
-        if str(uid).startswith(("local:", "anonymous:", "demo:")):
-            continue
-        team = str(presence.get("team_name") or "").strip()
-        if not team:
-            continue
-        # Skip if this team is already represented by a claimed participant.
-        if any(str(r.get("team_name") or "").strip().lower() == team.strip().lower() for r in rows):
-            continue
-        seen_uids.add(uid_key)
-        if team_key:
-            seen_teams.add(team_key)
-        display = str(presence.get("display_name") or uid).strip()
+        # Canonical claim fills the seat for lobby counts (Join Room = claim + enter).
         rows.append(
             {
                 "user_id": uid,
                 "display_name": display,
                 "team_name": team,
                 "joined": True,
-                "joined_at": presence.get("joined_at") or "",
+                "waiting": False,
+                "joined_at": presence.get("joined_at") or (meta or {}).get("joined_at") or "",
                 "last_seen_at": presence.get("last_seen_at") or "",
+                "participant_id": owner_pid,
+                "is_host": bool(slot.get("is_host")),
             }
         )
-
-    # Deduplicate by canonical authenticated identity (and one seat per team).
-    try:
-        from live_draft_chat_ui import dedupe_chat_participant_rows
-
-        rows = dedupe_chat_participant_rows(rows)
-    except ImportError:
-        # Local fallback: unique by lowercased user_id then team.
-        deduped: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            key = str(row.get("user_id") or "").strip().lower() or str(row.get("team_name") or "").strip().lower()
-            if not key:
-                continue
-            if key not in deduped:
-                deduped[key] = row
-        rows = list(deduped.values())
-
-    # Stable order by room team list when possible.
-    team_order = {t: i for i, t in enumerate(list_room_teams(room))}
-    rows.sort(key=lambda r: (team_order.get(str(r.get("team_name") or ""), 999), str(r.get("display_name") or "")))
     return rows
 
 
-def count_required_joined(session: dict[str, Any], room: dict[str, Any], *, document: dict[str, Any] | None = None) -> tuple[int, int, list[dict[str, Any]]]:
+def count_required_joined(
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    document: dict[str, Any] | None = None,
+) -> tuple[int, int, list[dict[str, Any]]]:
+    """Return (joined_count, required_human_seats, rows).
+
+    ``required_human_seats`` comes from configured teams — never from len(visible participants).
+    """
     rows = required_human_participant_rows(session, room, document=document)
-    total = len(rows)
-    joined = sum(1 for r in rows if r.get("joined"))
+    try:
+        from live_draft_team_ownership import list_required_human_teams
+
+        required = list_required_human_teams(room, document=document)
+        total = len(required) if required else len(rows)
+    except ImportError:
+        total = len(rows)
+    joined = sum(1 for r in rows if r.get("joined") and not r.get("waiting"))
     return joined, total, rows
 
 
 def format_participant_status_line(row: dict[str, Any]) -> str:
-    name = str(row.get("display_name") or row.get("user_id") or "Manager").strip()
     team = str(row.get("team_name") or "Unassigned").strip()
+    if row.get("waiting") or (not row.get("joined") and not str(row.get("user_id") or "").strip()):
+        return f"{team} — Waiting"
+    name = str(row.get("display_name") or row.get("user_id") or "Manager").strip()
     status = "Joined" if row.get("joined") else "Not joined"
     return f"{name} — {team} — {status}"
 
@@ -435,7 +449,90 @@ def missing_participant_labels(rows: list[dict[str, Any]]) -> list[str]:
     for row in rows:
         if row.get("joined"):
             continue
-        name = str(row.get("display_name") or row.get("user_id") or "Manager").strip()
         team = str(row.get("team_name") or "").strip()
+        if row.get("waiting") or not str(row.get("user_id") or "").strip():
+            missing.append(team or "open seat")
+            continue
+        name = str(row.get("display_name") or row.get("user_id") or "Manager").strip()
         missing.append(f"{name} ({team})" if team else name)
     return missing
+
+
+def build_lobby_sync_diagnostics(
+    session: dict[str, Any],
+    room: dict[str, Any] | None = None,
+    *,
+    document: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Developer Mode snapshot for host/guest lobby sync debugging."""
+    live = room if isinstance(room, dict) else session.get("live_draft_room")
+    if not isinstance(live, dict):
+        live = {}
+    code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+    doc = document
+    if not isinstance(doc, dict) and code:
+        try:
+            from draft_room_shared_state import load_shared_room
+
+            doc = load_shared_room(code)
+        except ImportError:
+            doc = None
+    try:
+        from live_draft_team_ownership import (
+            canonicalize_shared_room_claims,
+            list_required_human_teams,
+            session_identity_aliases,
+        )
+        from draft_room_participant_state import resolve_participant_id
+
+        required = list_required_human_teams(live, document=doc if isinstance(doc, dict) else None)
+        canon = canonicalize_shared_room_claims(doc if isinstance(doc, dict) else {})
+        joined_n, total_n, rows = count_required_joined(
+            session, live, document=doc if isinstance(doc, dict) else None
+        )
+        pid = str(resolve_participant_id(session) or "").strip()
+        claimed = ""
+        for row in rows:
+            if str(row.get("participant_id") or "") == pid or str(row.get("user_id") or "") in session_identity_aliases(session):
+                claimed = str(row.get("team_name") or "")
+                break
+        storage_key = ""
+        try:
+            from draft_room_shared_state import shared_room_backend_name
+
+            storage_key = f"{shared_room_backend_name()}:{code}"
+        except ImportError:
+            storage_key = code
+        return {
+            "entered_room_code": code,
+            "canonical_room_id": str((doc or {}).get("draft_room_id") or live.get("draft_room_id") or ""),
+            "shared_document_storage_key": storage_key,
+            "room_revision": int((doc or {}).get("revision") or 0),
+            "configured_teams": list(required),
+            "required_human_teams": list(required),
+            "raw_participants": dict((doc or {}).get("participants") or {}),
+            "joined_participants": dict((doc or {}).get(JOINED_PARTICIPANTS_KEY) or {}),
+            "raw_team_claims": {
+                pid: str((meta or {}).get("assigned_team") or "")
+                for pid, meta in dict((doc or {}).get("participants") or {}).items()
+                if isinstance(meta, dict)
+            },
+            "canonicalized_claims": {
+                team: {
+                    "canonical_claimant": (slot or {}).get("canonical_claimant"),
+                    "canonical_participant_id": (slot or {}).get("canonical_participant_id"),
+                    "claimant_raw_ids": list((slot or {}).get("claimant_raw_ids") or []),
+                    "available": (slot or {}).get("available"),
+                    "reason": (slot or {}).get("reason"),
+                }
+                for team, slot in dict(canon.get("occupancy") or {}).items()
+            },
+            "current_account_participant_id": pid,
+            "claimed_team": claimed,
+            "last_shared_document_update": str((doc or {}).get("updated_at") or ""),
+            "participants_joined": joined_n,
+            "participants_required": total_n,
+            "lobby_rows": rows,
+        }
+    except Exception as exc:
+        return {"error": str(exc), "entered_room_code": code}

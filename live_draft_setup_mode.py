@@ -318,12 +318,25 @@ def can_start_live_draft(session: dict[str, Any]) -> tuple[bool, str]:
             # Always reload latest shared room before evaluating the start gate.
             if code:
                 invalidate_shared_room_document_cache(session, code)
-                mark_participant_present(session, force_save=True)
-                document = load_shared_room_document(session, code, force=True)
+                try:
+                    from draft_room_context import refresh_shared_lobby_authority
+
+                    document = refresh_shared_lobby_authority(session, force_poll=True)
+                except ImportError:
+                    mark_participant_present(session, force_save=True)
+                    document = load_shared_room_document(session, code, force=True)
+                else:
+                    mark_participant_present(session, force_save=True)
+                    if not isinstance(document, dict):
+                        document = load_shared_room_document(session, code, force=True)
             else:
                 document = None
 
-            teams = list_room_teams(room)
+            from live_draft_team_ownership import list_required_human_teams
+
+            teams = list_required_human_teams(room, document=document if isinstance(document, dict) else None)
+            if not teams:
+                teams = list_room_teams(room)
             joined, total, rows = count_required_joined(session, room, document=document)
             if total < 1:
                 return False, "No claimed managers yet — invite and claim teams before starting."
