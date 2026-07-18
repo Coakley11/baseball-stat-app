@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 LIVE_DRAFT_SETUP_MODE_KEY = "live_draft_setup_mode"
+# Durable preference for the *next* setup form (alias of the setup-mode key).
+PREFERRED_NEXT_DRAFT_MODE_KEY = "preferred_next_draft_mode"
 SETUP_MODE_SOLO = "solo"
 SETUP_MODE_SHARED = "shared_multiplayer"
 DRAFT_SETUP_MODE_CONFIG_KEY = "draft_setup_mode"
@@ -41,11 +43,13 @@ def normalize_setup_mode(mode: str | None) -> str:
 def get_preferred_next_draft_mode(session: dict[str, Any]) -> str:
     """Saved/setup preference for creating the *next* draft.
 
+    Distinct from ``active_room_mode`` — only controls the next setup form.
     Must not relabel an already-active Shared Multiplayer room.
     """
-    session_mode = session.get(LIVE_DRAFT_SETUP_MODE_KEY)
-    if str(session_mode or "").strip():
-        return normalize_setup_mode(session_mode)
+    for key in (PREFERRED_NEXT_DRAFT_MODE_KEY, LIVE_DRAFT_SETUP_MODE_KEY):
+        session_mode = session.get(key)
+        if str(session_mode or "").strip():
+            return normalize_setup_mode(session_mode)
     try:
         from user_page_preferences import (
             PAGE_KEY_LIVE_DRAFT_SETUP,
@@ -60,8 +64,10 @@ def get_preferred_next_draft_mode(session: dict[str, Any]) -> str:
             or ""
         ).strip()
         prefs = load_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session)
-        if isinstance(prefs, dict) and str(prefs.get(LIVE_DRAFT_SETUP_MODE_KEY) or "").strip():
-            return normalize_setup_mode(prefs.get(LIVE_DRAFT_SETUP_MODE_KEY))
+        if isinstance(prefs, dict):
+            for key in (PREFERRED_NEXT_DRAFT_MODE_KEY, LIVE_DRAFT_SETUP_MODE_KEY):
+                if str(prefs.get(key) or "").strip():
+                    return normalize_setup_mode(prefs.get(key))
     except Exception:
         pass
     return SETUP_MODE_SOLO
@@ -274,6 +280,7 @@ def persist_live_draft_setup_mode_preference(
 ) -> str:
     """Persist Draft Mode to preferences without assigning the widget session key."""
     normalized = normalize_setup_mode(mode)
+    session[PREFERRED_NEXT_DRAFT_MODE_KEY] = normalized
     _stamp_room_setup_mode(session, normalized)
     if session.get("_live_draft_setup_seeding"):
         session[LAST_PERSISTED_SETUP_MODE_KEY] = normalized
@@ -299,6 +306,7 @@ def persist_live_draft_setup_mode_preference(
         ).strip()
         settings = collect_live_draft_setup_settings(session)
         settings[LIVE_DRAFT_SETUP_MODE_KEY] = normalized
+        settings[PREFERRED_NEXT_DRAFT_MODE_KEY] = normalized
         save_user_page_preferences(
             uid,
             wid,
@@ -331,6 +339,7 @@ def request_live_draft_setup_mode(
         session[PENDING_LIVE_DRAFT_SETUP_MODE_KEY] = normalized
     else:
         session[LIVE_DRAFT_SETUP_MODE_KEY] = normalized
+        session[PREFERRED_NEXT_DRAFT_MODE_KEY] = normalized
     _stamp_room_setup_mode(session, normalized)
     if persist:
         persist_live_draft_setup_mode_preference(session, normalized, st=st)
@@ -368,6 +377,7 @@ def set_live_draft_setup_mode(
         if is_setup_mode_widget_locked(session):
             return request_live_draft_setup_mode(session, normalized, persist=persist, st=st)
         session[LIVE_DRAFT_SETUP_MODE_KEY] = normalized
+        session[PREFERRED_NEXT_DRAFT_MODE_KEY] = normalized
     _stamp_room_setup_mode(session, normalized)
     if persist:
         persist_live_draft_setup_mode_preference(session, normalized, st=st)
@@ -707,6 +717,13 @@ def finalize_shared_room_create(
             distinct_owner_count=distinct_claimed_owner_count(session, room),
         )
     except ImportError:
+        pass
+    try:
+        # Last successfully created draft mode becomes the next setup default.
+        persist_live_draft_setup_mode_preference(session, SETUP_MODE_SHARED, st=None)
+        session[LIVE_DRAFT_SETUP_MODE_KEY] = SETUP_MODE_SHARED
+        session[PREFERRED_NEXT_DRAFT_MODE_KEY] = SETUP_MODE_SHARED
+    except Exception:
         pass
     try:
         from baseball_persistent_state import force_save_baseball_state

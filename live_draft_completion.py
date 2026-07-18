@@ -19,6 +19,12 @@ SESSION_ENDED_NOTICE_KEY = "_live_draft_session_ended_notice"
 ENDED_ROOM_CODES_KEY = "_live_draft_ended_room_codes"
 ENDED_DRAFT_IDS_KEY = "_live_draft_ended_draft_ids"
 
+# Mutually exclusive Live Draft page states — never paint setup + board together.
+LIFECYCLE_SETUP = "setup"
+LIFECYCLE_WAITING_SHARED_LOBBY = "waiting_shared_lobby"
+LIFECYCLE_ACTIVE_DRAFT = "active_draft"
+LIFECYCLE_COMPLETED_HISTORY_VIEW = "completed_history_view"
+
 # Transient runtime pointers cleared by End Draft (setup preferences are preserved).
 END_DRAFT_CLEAR_KEYS = (
     "active_shared_draft_room_code",
@@ -49,6 +55,22 @@ END_DRAFT_CLEAR_KEYS = (
     "_live_draft_force_resume",
     "active_draft_source",
     "_active_draft_source",
+    "_shared_lobby_authority_doc",
+    "_shared_lobby_sync_diag",
+    "_shared_lobby_host_refresh_trace",
+    "_shared_room_doc_soft_cache",
+    "_live_draft_rec_cache",
+    "_live_draft_joined_participants_cache",
+    "_live_draft_timer_expired_pending",
+    "_live_draft_page_owns_expired",
+    "_live_draft_poll_diag",
+    "_live_draft_poll_apply_pending",
+    "_active_live_draft_mode_resolve",
+    "_live_draft_queue_last_good",
+    "_draft_queue_widget_epoch",
+    "show_live_draft",
+    "draft_started",
+    "live_draft_active",
 )
 
 
@@ -195,6 +217,48 @@ def is_live_draft_ended_tombstoned(
     if draft_id and isinstance(ids, list) and draft_id in ids:
         return True
     return False
+
+
+def resolve_live_draft_lifecycle(
+    session: dict[str, Any],
+    *,
+    room: dict[str, Any] | None = None,
+) -> str:
+    """Canonical page lifecycle — setup and active draft are mutually exclusive."""
+    if bool(session.get("_live_draft_history_view")):
+        return LIFECYCLE_COMPLETED_HISTORY_VIEW
+
+    live = room if isinstance(room, dict) else session.get("live_draft_room")
+    if not isinstance(live, dict):
+        return LIFECYCLE_SETUP
+
+    code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+    if not code:
+        try:
+            from draft_room_context import resolve_shared_room_code
+
+            code = str(resolve_shared_room_code(session) or "").strip().upper()
+        except ImportError:
+            code = ""
+    draft_id = _draft_id(live)
+    if is_live_draft_ended_tombstoned(session, room_code=code, draft_room_id=draft_id):
+        return LIFECYCLE_SETUP
+
+    if is_live_draft_explicitly_complete(live) and bool(session.get("_live_draft_history_view")):
+        return LIFECYCLE_COMPLETED_HISTORY_VIEW
+
+    status = str(live.get("status") or "").strip().lower()
+    if status in ("waiting", "not_started"):
+        try:
+            from live_draft_setup_mode import resolve_active_live_draft_mode
+
+            active = resolve_active_live_draft_mode(session, authoritative_room=live)
+            if active.get("is_shared_multiplayer"):
+                return LIFECYCLE_WAITING_SHARED_LOBBY
+        except Exception:
+            if code:
+                return LIFECYCLE_WAITING_SHARED_LOBBY
+    return LIFECYCLE_ACTIVE_DRAFT
 
 
 def end_live_draft_session(
@@ -366,6 +430,31 @@ def end_live_draft_session(
         pass
 
     session["_live_draft_end_cleared_keys"] = list(cleared_keys)
+    session["_draft_queue_widget_epoch"] = int(session.get("_draft_queue_widget_epoch") or 0) + 1
+    try:
+        from draft_room_shared_state import invalidate_shared_room_document_cache
+
+        invalidate_shared_room_document_cache(session, shared_code)
+    except Exception:
+        pass
+    try:
+        from suite_storage_supabase import invalidate_shared_draft_room_read_cache
+
+        invalidate_shared_draft_room_read_cache()
+    except Exception:
+        pass
+    # Clear query/URL room context when Streamlit is available.
+    if st is not None:
+        try:
+            qp = dict(st.query_params) if hasattr(st, "query_params") else {}
+            for key in ("room_code", "draft_room_code", "live_draft_room_code", "code"):
+                if key in qp:
+                    try:
+                        del st.query_params[key]
+                    except Exception:
+                        pass
+        except Exception:
+            pass
     return {
         "ok": True,
         "reason": reason,

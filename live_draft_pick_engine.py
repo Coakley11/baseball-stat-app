@@ -310,4 +310,13 @@ def live_draft_make_pick(
             room.setdefault("rosters", {}).setdefault(team, []).append(pick_record)
     else:
         _apply_pick_mutations()
+    if session is not None:
+        try:
+            from draft_state import remove_drafted_player_from_active_queues
+
+            pname = str(player_row.get("fullName") or player_row.get("Player") or "").strip()
+            pid_s = str(player_row.get("playerID") or pid or "").strip()
+            remove_drafted_player_from_active_queues(session, pid_s or pname)
+        except Exception:
+            pass
     return True, f"Drafted {player_row.get('fullName', 'player')} to {team}."

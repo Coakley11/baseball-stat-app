@@ -237,14 +237,20 @@ def _post_draft_side_effects(
     """
     trace: dict[str, Any] = {"saved": False, "queue_after": []}
     try:
-        from draft_state import mark_draft_pending_sync, remove_player_from_draft_queue
+        from draft_state import mark_draft_pending_sync, remove_drafted_player_from_active_queues
 
-        remove_player_from_draft_queue(session, player_name, reason="drafted")
-        trace["queue_after"] = _prune_drafted_from_queue(session)
+        remove_drafted_player_from_active_queues(session, player_name)
+        trace["queue_after"] = list(session.get("draft_queue") or [])
         mark_draft_pending_sync(session)
     except ImportError as exc:
         log.warning("post_draft queue cleanup failed: %s", exc)
-        trace["queue_after"] = list(session.get("draft_queue") or [])
+        try:
+            from draft_state import remove_player_from_draft_queue
+
+            remove_player_from_draft_queue(session, player_name, reason="drafted")
+            trace["queue_after"] = _prune_drafted_from_queue(session)
+        except ImportError:
+            trace["queue_after"] = list(session.get("draft_queue") or [])
 
     _clear_ami_draft_cache(session)
 

@@ -491,6 +491,34 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                 # rerunning again — next full page render owns autopick.
                 if not should_attach_timer_fragment(session, tick_room):
                     session[EXPIRED_PICK_PENDING_KEY] = True
+                    # Host: commit autopick on this fragment tick so Pick N+1 does not
+                    # wait for a slow full-page poll (observed ~20s stall at 0).
+                    try:
+                        from live_draft_expired_pick import (
+                            handle_expired_pick_on_page,
+                            should_fragment_trigger_full_rerun,
+                        )
+
+                        if should_fragment_trigger_full_rerun(session, tick_room):
+                            expired_result = handle_expired_pick_on_page(
+                                session, tick_room, source="timer_fragment_zero"
+                            )
+                            if expired_result.ok:
+                                try:
+                                    from draft_state import remove_drafted_player_from_active_queues
+
+                                    pick_name = str(
+                                        (session.get("_live_draft_autopick_diag") or {}).get(
+                                            "selected_auto_pick_player"
+                                        )
+                                        or ""
+                                    ).strip()
+                                    if pick_name:
+                                        remove_drafted_player_from_active_queues(session, pick_name)
+                                except Exception:
+                                    pass
+                    except ImportError:
+                        pass
                     with _ldr_step(session, "timer_fragment_render_static", st=st, expired=True):
                         _render_timer_static(st, session, tick_room, source="fragment_tick_expired")
                     if should_fragment_trigger_full_rerun(session, tick_room):

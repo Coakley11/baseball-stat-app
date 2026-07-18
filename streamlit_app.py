@@ -22558,6 +22558,28 @@ if active_page == "Live Draft Room":
             render_shared_scoring_consistency_check(yearly_df, market_df_live, key_suffix="live_draft")
 
     room = st.session_state.get("live_draft_room")
+    # Capture once for exclusive lifecycle branching. Do not re-read after setup —
+    # End Draft clears room then setup paints; a later rehydrate must not also paint
+    # the old board in the same pass.
+    _live_draft_lifecycle_room = room if isinstance(room, dict) else None
+    try:
+        from live_draft_completion import (
+            LIFECYCLE_ACTIVE_DRAFT,
+            LIFECYCLE_SETUP,
+            LIFECYCLE_WAITING_SHARED_LOBBY,
+            resolve_live_draft_lifecycle,
+        )
+
+        _live_draft_lifecycle = resolve_live_draft_lifecycle(
+            st.session_state, room=_live_draft_lifecycle_room
+        )
+    except ImportError:
+        LIFECYCLE_SETUP = "setup"
+        LIFECYCLE_WAITING_SHARED_LOBBY = "waiting_shared_lobby"
+        LIFECYCLE_ACTIVE_DRAFT = "active_draft"
+        _live_draft_lifecycle = (
+            LIFECYCLE_SETUP if _live_draft_lifecycle_room is None else LIFECYCLE_ACTIVE_DRAFT
+        )
 
     if st.session_state.get("_simulator_to_live_show_confirm"):
         from draft_live_start import build_simulator_to_live_summary
@@ -22675,7 +22697,7 @@ if active_page == "Live Draft Room":
                     on_click=on_cancel_simulator_convert_panel,
                 )
 
-    elif room is None:
+    elif _live_draft_lifecycle == LIFECYCLE_SETUP:
         try:
             from live_draft_completion import SESSION_ENDED_NOTICE_KEY
 
@@ -22901,24 +22923,35 @@ if active_page == "Live Draft Room":
                 _setup_render_ctx.__exit__(None, None, None)
         except Exception:
             pass
+        # Start/join may have created a room during setup — exclusive route requires a fresh pass.
+        if isinstance(st.session_state.get("live_draft_room"), dict):
+            st.rerun()
 
-    room = st.session_state.get("live_draft_room")
-    try:
-        from live_draft_render_trace import ldr_post_rerun_checkpoint
-
-        ldr_post_rerun_checkpoint(st, st.session_state, "before_room_body")
-    except ImportError:
-        pass
-
-    if room is None:
+    elif _live_draft_lifecycle in (LIFECYCLE_WAITING_SHARED_LOBBY, LIFECYCLE_ACTIVE_DRAFT) and isinstance(
+        _live_draft_lifecycle_room, dict
+    ):
+        room = _live_draft_lifecycle_room
+        # Reject tombstoned / ended rooms that slipped past End Draft clears.
         try:
-            from live_draft_render_trace import ldr_early_return
+            from live_draft_completion import is_live_draft_ended_tombstoned
 
-            ldr_early_return(st.session_state, "room_body", reason="no_live_draft_room", st=st)
+            _code = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
+            _did = str(room.get("draft_room_id") or room.get("draft_id") or "").strip()
+            if is_live_draft_ended_tombstoned(
+                st.session_state, room_code=_code, draft_room_id=_did
+            ):
+                st.session_state.pop("live_draft_room", None)
+                st.session_state.pop("live_draft_state", None)
+                st.info("That Live Draft session has ended. Configure a new draft below.")
+                st.rerun()
         except ImportError:
             pass
-        st.info("Open **Draft Setup** to configure a new draft, or use **Advanced → Convert Simulator to Live Draft** to promote an existing simulator board.")
-    else:
+        try:
+            from live_draft_render_trace import ldr_post_rerun_checkpoint
+
+            ldr_post_rerun_checkpoint(st, st.session_state, "before_room_body")
+        except ImportError:
+            pass
         try:
             from live_draft_timer_logic import reconstruct_timer_deadline
 
@@ -22941,6 +22974,7 @@ if active_page == "Live Draft Room":
                 last_rerun_source=str(st.session_state.get("_live_draft_last_rerun_source") or ""),
                 status=str(room.get("status") or ""),
                 team=str((room.get("config") or {}).get("user_team") or ""),
+                lifecycle=_live_draft_lifecycle,
             )
             try:
                 from live_draft_ux_latency import begin_script_run_mark

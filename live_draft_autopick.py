@@ -257,12 +257,13 @@ def _try_queue_auto_pick(
         verdict=verdict,
         pick_source="Queue Auto Pick",
         snapshot=chosen_dict,
+        session=session,
     )
     if ok:
         try:
-            from draft_state import remove_player_from_draft_queue
+            from draft_state import remove_drafted_player_from_active_queues
 
-            remove_player_from_draft_queue(session, chosen_name, reason="queue_autopick")
+            remove_drafted_player_from_active_queues(session, chosen_name)
         except Exception:
             # Best-effort queue cleanup — pick already applied.
             q = [x for x in (session.get("draft_queue") or []) if _normalize_player_key(
