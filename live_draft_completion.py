@@ -344,9 +344,19 @@ def resolve_live_draft_lifecycle(
         session.pop("live_draft_room", None)
         return LIFECYCLE_SETUP
     if status in ("saved_for_later", "parked"):
-        # Parked shared draft — only Resume Lobby may rehydrate; setup otherwise.
+        # Parked shared draft — Resume Lobby (explicit continue or reserved map).
         if bool(session.get("_live_draft_resume_lobby")):
             return LIFECYCLE_WAITING_SHARED_LOBBY
+        try:
+            from live_draft_resume_lobby import reserved_team_owners
+            from draft_room_shared_state import load_shared_room
+
+            doc = load_shared_room(code) if code else None
+            if isinstance(doc, dict) and reserved_team_owners(doc):
+                session["_live_draft_resume_lobby"] = True
+                return LIFECYCLE_WAITING_SHARED_LOBBY
+        except Exception:
+            pass
         session.pop("live_draft_room", None)
         return LIFECYCLE_SETUP
     if status in ("complete", "completed") and bool(session.get("_live_draft_history_view")):
@@ -356,7 +366,13 @@ def resolve_live_draft_lifecycle(
         return LIFECYCLE_SETUP
 
     # Resume lobby: shared room restored but waiting for reserved teams before Continue Draft.
-    if bool(session.get("_live_draft_resume_lobby")) and status in ("paused", "waiting", "not_started"):
+    if bool(session.get("_live_draft_resume_lobby")) and status in (
+        "paused",
+        "waiting",
+        "not_started",
+        "saved_for_later",
+        "parked",
+    ):
         return LIFECYCLE_WAITING_SHARED_LOBBY
 
     if status in ("waiting", "not_started"):

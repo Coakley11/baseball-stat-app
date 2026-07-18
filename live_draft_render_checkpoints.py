@@ -102,6 +102,17 @@ def render_live_draft_checkpoint_panel(st: Any, session: dict[str, Any]) -> None
             f"room=`{blob.get('room_code')}` · draft=`{blob.get('draft_id')}` · "
             f"room_id=`{blob.get('room_id')}`"
         )
+        try:
+            from shared_live_draft_snapshot import SHARED_ROOM_SNAPSHOT_KEY
+
+            snap = session.get(SHARED_ROOM_SNAPSHOT_KEY) if isinstance(session.get(SHARED_ROOM_SNAPSHOT_KEY), dict) else {}
+            st.caption(
+                f"snap_rev=`{snap.get('revision')}` · on_clock=`{snap.get('on_clock_team')}` · "
+                f"pick=`{snap.get('current_pick')}` · gen=`{snap.get('room_generation')}` · "
+                f"deadline=`{snap.get('timer_deadline_utc')}` · paused=`{snap.get('timer_paused')}`"
+            )
+        except ImportError:
+            pass
         if abort:
             st.error(
                 f"Render aborted at **{abort.get('where')}**: {abort.get('reason')} "

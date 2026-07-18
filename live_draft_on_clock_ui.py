@@ -330,9 +330,27 @@ def render_live_on_clock_banner(
             from live_draft_timer_logic import live_draft_timer_expired_for_pick
 
             if live_draft_timer_expired_for_pick(tick_room):
-                from live_draft_expired_pick import expire_pick_and_advance
+                # Page / timer-authority fragment owns the CAS commit. Banner only
+                # polls + paints so two devices cannot both invent an auto-pick.
+                may_expire = True
+                try:
+                    from live_draft_timer_authority import multiparty_may_run_autopick
 
-                expire_pick_and_advance(session, source="on_clock_banner_zero")
+                    may_expire = bool(multiparty_may_run_autopick(session, tick_room))
+                except ImportError:
+                    pass
+                if may_expire and not session.get("_live_draft_page_owns_expired"):
+                    from live_draft_expired_pick import expire_pick_and_advance
+
+                    expire_pick_and_advance(session, source="on_clock_banner_zero")
+                else:
+                    try:
+                        from draft_room_context import poll_shared_draft_room, reset_shared_draft_sync_gate
+
+                        reset_shared_draft_sync_gate(session)
+                        poll_shared_draft_room(session, force=True)
+                    except ImportError:
+                        pass
                 tick_room = _resolve_live_room(session, tick_room)
                 try:
                     from shared_live_draft_snapshot import build_shared_live_draft_snapshot

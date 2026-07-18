@@ -1201,11 +1201,12 @@ def render_draft_queue_panel(
             except Exception:
                 _scope_room, _scope_user = ("", "")
             _epoch = int(session.get("_draft_queue_widget_epoch") or 0)
+            _q_rev = int(session.get("_draft_queue_revision") or 0)
             _sortable_key = (
                 f"{key_prefix}_sortable_"
                 f"{str(_scope_room or 'solo')[:24]}_"
                 f"{str(_scope_user or 'user')[:24]}_"
-                f"e{_epoch}"
+                f"e{_epoch}_r{_q_rev}"
             )
             # After ✕ remove, skip sort_items once so stale component state cannot resurrect.
             if session.pop("_draft_queue_skip_sortable_once", None):
@@ -1214,7 +1215,19 @@ def render_draft_queue_panel(
                 sorted_queue = sort_items(list(queue), key=_sortable_key)
             # Ignore stale sortable returns that resurrect removed players.
             if list(sorted_queue) != list(queue):
-                if len(queue) >= 2 and not list(sorted_queue):
+                # Stale payload from an older queue revision must never win.
+                _prev_rev = int(session.get("_draft_queue_sortable_seen_rev") or 0)
+                if _q_rev and _prev_rev and _prev_rev < _q_rev and set(sorted_queue) - set(queue):
+                    session["_live_draft_queue_sortable_stale_ignored"] = {
+                        "sortable": list(sorted_queue)[:12],
+                        "canonical": list(queue)[:12],
+                        "key": _sortable_key,
+                        "reason": "revision_guard",
+                        "prev_rev": _prev_rev,
+                        "queue_revision": _q_rev,
+                    }
+                    sorted_queue = list(queue)
+                elif len(queue) >= 2 and not list(sorted_queue):
                     session["_live_draft_queue_sortable_wipe_blocked"] = True
                     try:
                         from live_draft_queue_fragment import record_queue_paint_diag
@@ -1268,7 +1281,11 @@ def render_draft_queue_panel(
                         except ImportError:
                             pass
                         queue = list(_changed_q)
+                        session["_draft_queue_revision"] = (
+                            int(session.get("_draft_queue_revision") or 0) + 1
+                        )
                         rerun = True
+            session["_draft_queue_sortable_seen_rev"] = _q_rev
         except ImportError:
             if len(queue) >= 2:
                 container.caption("Drag reorder unavailable — install streamlit-sortables to reorder.")

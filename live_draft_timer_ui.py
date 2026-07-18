@@ -137,10 +137,19 @@ def sync_live_draft_timer_state(session: dict[str, Any], room: dict[str, Any]) -
         except ImportError:
             pass
         if mp:
+            # Only the timer-authority holder may publish deadline repairs —
+            # guests must poll the authoritative deadline, never invent one.
             try:
+                from live_draft_timer_authority import multiparty_may_run_autopick
+
                 room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
                 document = get_shared_room_store().load(room_code) if room_code else None
-                if is_room_host(session, document):
+                may_publish = bool(is_room_host(session, document))
+                try:
+                    may_publish = may_publish and multiparty_may_run_autopick(session, live_room)
+                except Exception:
+                    pass
+                if may_publish:
                     commit_shared_room_state(session, live_room)
             except Exception:
                 pass
@@ -162,10 +171,6 @@ def _sync_room_on_timer_tick(session: dict[str, Any], room: dict[str, Any]) -> t
         from suite_egress_policy import shared_draft_poll_interval_sec
 
         if is_multiplayer_draft_active(session):
-            # Prefer the dedicated poll fragment — avoid a second poller fighting for reruns.
-            if session.get("_live_draft_poll_fragment_active"):
-                live_room = sync_live_draft_timer_state(session, room)
-                return live_room, False
             now = time.time()
             last = float(session.get("_live_draft_timer_poll_ts") or 0)
             interval = min(1.0, float(shared_draft_poll_interval_sec(session)))
@@ -179,10 +184,15 @@ def _sync_room_on_timer_tick(session: dict[str, Any], room: dict[str, Any]) -> t
                 expired = False
             if expired:
                 interval = 0.5
+            # Prefer the dedicated poll fragment — but still force a poll at zero
+            # so guests do not wait 20–30s on a stale pick/deadline.
+            if session.get("_live_draft_poll_fragment_active") and not expired:
+                live_room = sync_live_draft_timer_state(session, room)
+                return live_room, False
             if now - last >= interval:
                 session["_live_draft_timer_poll_ts"] = now
                 reset_shared_draft_sync_gate(session)
-                changed = bool(poll_shared_draft_room(session))
+                changed = bool(poll_shared_draft_room(session, force=bool(expired)))
     except ImportError:
         pass
     live_room = sync_live_draft_timer_state(session, room)

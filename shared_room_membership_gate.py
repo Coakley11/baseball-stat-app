@@ -261,6 +261,38 @@ def repair_stale_shared_room_session(
     return diag
 
 
+def _resume_lobby_may_render(session: dict[str, Any], reason: str) -> tuple[bool, str] | None:
+    """Allow Resume Lobby paint without wiping Continue Saved Draft hydration."""
+    try:
+        from live_draft_resume_lobby import RESUME_LOBBY_KEY, is_resume_lobby
+
+        in_lobby = bool(session.get(RESUME_LOBBY_KEY)) or is_resume_lobby(session)
+    except ImportError:
+        in_lobby = bool(session.get("_live_draft_resume_lobby"))
+    if not in_lobby:
+        return None
+    # Terminal / tombstoned rooms must still fail closed.
+    if reason == "tombstoned" or str(reason).startswith("terminal:"):
+        return None
+    soft = {
+        "not_in_document_participants",
+        "no_team_claim",
+        "no_participant_id",
+        "room_missing",
+        "local_room_id_mismatch",
+        "local_room_code_mismatch",
+    }
+    if reason not in soft:
+        return None
+    session[MEMBERSHIP_GATE_DIAG_KEY] = {
+        "ok": False,
+        "reason": reason,
+        "deferred_repair": True,
+        "resume_lobby": True,
+    }
+    return True, f"resume_lobby:{reason}"
+
+
 def assert_or_repair_before_shared_render(session: dict[str, Any]) -> tuple[bool, str]:
     """Call before painting active shared draft UI. Returns (may_render, reason)."""
     code = _room_code(session)
@@ -270,6 +302,10 @@ def assert_or_repair_before_shared_render(session: dict[str, Any]) -> tuple[bool
     ok, reason = can_render_shared_live_draft(session, require_team_claim=False)
     if ok:
         return True, reason
+    # Continue Saved Draft / Resume Lobby: never wipe hydrated room on soft miss.
+    resume_allow = _resume_lobby_may_render(session, reason)
+    if resume_allow is not None:
+        return resume_allow
     # Brand-new create: do not wipe the room on a transient readback miss.
     try:
         from live_draft_creation_trace import new_room_is_protected
@@ -284,6 +320,22 @@ def assert_or_repair_before_shared_render(session: dict[str, Any]) -> tuple[bool
             # Allow lobby paint for the host; next poll can re-verify.
             return True, f"protected_new_room:{reason}"
     except ImportError:
+        pass
+    # Parked / saved_for_later documents with reserved teams — keep lobby pointers.
+    try:
+        doc = load_authoritative_shared_document(session, code)
+        status = str((doc or {}).get("status") or "").strip().lower()
+        reserved = (doc or {}).get("resume_reserved_teams") if isinstance(doc, dict) else None
+        if status in ("saved_for_later", "parked", "paused") and isinstance(reserved, dict) and reserved:
+            session[MEMBERSHIP_GATE_DIAG_KEY] = {
+                "ok": False,
+                "reason": reason,
+                "deferred_repair": True,
+                "saved_for_later": True,
+            }
+            session["_live_draft_resume_lobby"] = True
+            return True, f"saved_for_later:{reason}"
+    except Exception:
         pass
     repair_stale_shared_room_session(session)
     return False, reason

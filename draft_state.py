@@ -651,6 +651,8 @@ def remove_player_from_user_draft_queue(
     if not q:
         session.pop("_live_draft_queue_last_good", None)
     session["_draft_queue_widget_epoch"] = int(session.get("_draft_queue_widget_epoch") or 0) + 1
+    session["_draft_queue_revision"] = int(session.get("_draft_queue_revision") or 0) + 1
+    session["_draft_queue_persist_dirty"] = True
     session["_draft_queue_last_remove"] = {
         "player_id": str(player_id or ""),
         "resolved_name": name,
@@ -659,6 +661,7 @@ def remove_player_from_user_draft_queue(
         "before": list(before),
         "after": list(q),
         "reason": reason,
+        "queue_revision": int(session.get("_draft_queue_revision") or 0),
     }
     # Bust Streamlit sortable component state so a stale red-card list cannot restore.
     # Keys are scoped: ``{prefix}_sortable_{room}_{user}_e{epoch}`` — pop all matching prefixes.

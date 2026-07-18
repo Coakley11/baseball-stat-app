@@ -813,6 +813,15 @@ def render_active_draft_mode_banner(st: Any, session: dict[str, Any], *, room: d
 
 
 def start_button_disabled(session: dict[str, Any]) -> tuple[bool, str]:
+    # Resumable slot present: allow Start so Replace confirmation can arm a fresh create
+    # even when Shared mode has no active room code after Save & Continue Later.
+    try:
+        from live_draft_resumable_slot import get_resumable_live_draft_slot
+
+        if get_resumable_live_draft_slot(session):
+            return False, ""
+    except ImportError:
+        pass
     ok, reason = can_start_live_draft(session)
     return not ok, reason
 

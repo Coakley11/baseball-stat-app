@@ -280,9 +280,20 @@ def _transcript_html(session: dict[str, Any], messages: list[dict[str, Any]]) ->
             f'<div class="ld-aim-text">{text}</div></div>'
         )
     parts.append("</div>")
+    # Auto-scroll only on initial load / own send / when already near bottom.
+    # Avoid yanking users who are reading older messages.
+    room_key = str(session.get("active_shared_draft_room_code") or "solo").strip().upper()
+    force = bool(session.pop("_live_draft_chat_force_scroll", None))
     parts.append(
-        "<script>var el=document.getElementById('ld-aim-log');"
-        "if(el){el.scrollTop=el.scrollHeight;}</script>"
+        f"<div id='ld-aim-scroll-anchor-{room_key}' data-force='{1 if force else 0}'></div>"
+        "<script>(function(){"
+        "var el=document.getElementById('ld-aim-log');"
+        "if(!el)return;"
+        "var force=document.querySelector('[id^=ld-aim-scroll-anchor-]')&&"
+        "document.querySelector('[id^=ld-aim-scroll-anchor-]').getAttribute('data-force')==='1';"
+        "var near= (el.scrollHeight - el.scrollTop - el.clientHeight) < 80;"
+        "if(force||near||el.scrollTop===0){el.scrollTop=el.scrollHeight;}"
+        "})();</script>"
     )
     return "\n".join(parts)
 
@@ -292,6 +303,7 @@ def post_chat_message(session: dict[str, Any], text: str, *, composer_key: str =
     ok, err = append_live_draft_chat_message(session, text)
     if ok:
         mark_chat_seen(session)
+        session["_live_draft_chat_force_scroll"] = True
         try:
             session[composer_key] = ""
         except Exception:

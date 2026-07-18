@@ -402,8 +402,7 @@ def continue_saved_draft(
     document: dict[str, Any] | None = None
     if code:
         try:
-            from draft_room_shared_state import load_shared_room
-            from draft_room_shared_state import shared_document_room_blob
+            from draft_room_shared_state import load_shared_room, shared_document_room_blob
 
             doc = load_shared_room(code)
             if isinstance(doc, dict):
@@ -427,11 +426,20 @@ def continue_saved_draft(
 
                     clear_participant_left_room(session, code)
                     publish_shared_room_runtime(session, doc, reason="continue_saved_draft")
-                    room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else room
+                    room = (
+                        session.get("live_draft_room")
+                        if isinstance(session.get("live_draft_room"), dict)
+                        else room
+                    )
                 except Exception:
                     pass
-        except Exception:
-            pass
+        except Exception as exc:
+            session["_live_draft_continue_saved_diag"] = {
+                "ok": False,
+                "error": "load_failed",
+                "detail": str(exc)[:200],
+                "room_code": code,
+            }
 
     if room is None:
         raw = slot.get("room")
@@ -439,13 +447,22 @@ def continue_saved_draft(
             room = dict(raw)
 
     if not isinstance(room, dict):
-        return {"ok": False, "error": "missing_room", "message": "Saved draft data is incomplete."}
+        return {
+            "ok": False,
+            "error": "missing_room",
+            "message": (
+                "Saved draft data is incomplete or the shared room could not be loaded. "
+                "Try Replace and Start New Draft, or recreate the room."
+            ),
+        }
 
     # Always enter paused — shared drafts open Resume Lobby until everyone rejoins.
+    # Keep timer frozen; do not invent a deadline.
     room["status"] = "paused"
     room["paused"] = True
     room["timer_paused"] = True
     room.pop("pick_deadline_ts", None)
+    room.pop("timer_deadline", None)
     session["live_draft_room"] = room
     if code:
         session["active_shared_draft_room_code"] = code
@@ -454,6 +471,13 @@ def continue_saved_draft(
         session["draft_room_participant_team"] = team
         session["room_your_team"] = team
     pid = str(slot.get("participant_id") or "").strip()
+    if not pid:
+        try:
+            from draft_room_participant_state import resolve_participant_id
+
+            pid = str(resolve_participant_id(session) or "").strip()
+        except ImportError:
+            pid = str(session.get("auth_user_id") or "").strip()
     if pid:
         session["draft_room_participant_id"] = pid
 
@@ -486,14 +510,53 @@ def continue_saved_draft(
             from live_draft_resume_lobby import enter_resume_lobby, mark_resume_rejoined
 
             enter_resume_lobby(session, document=document)
+            # Install lobby flag before any gate / lifecycle pass.
+            session["_live_draft_resume_lobby"] = True
             if isinstance(document, dict) and pid:
                 from draft_room_shared_state import bump_revision, get_shared_room_store
 
+                # Ensure commissioner/guest remains registered on the parked document.
+                parts = dict(document.get("participants") or {})
+                if pid not in parts and team:
+                    parts[pid] = {
+                        "assigned_team": team,
+                        "display_name": str(session.get("auth_user_id") or pid),
+                    }
+                    document["participants"] = parts
                 document = mark_resume_rejoined(document, participant_id=pid)
+                # Keep backend parked — Resume Lobby until Continue Draft.
+                document["status"] = "saved_for_later"
+                blob = document.get("room")
+                if isinstance(blob, dict):
+                    blob["status"] = "paused"
+                    blob["paused"] = True
+                    blob["timer_paused"] = True
+                    blob.pop("timer_deadline", None)
                 updated = bump_revision(document)
                 get_shared_room_store().save(updated)
+                document = updated
         except ImportError:
             session["_live_draft_resume_lobby"] = True
+        except Exception as exc:
+            session["_live_draft_resume_lobby"] = True
+            session["_live_draft_continue_saved_diag"] = {
+                "ok": True,
+                "warning": "resume_doc_save_failed",
+                "detail": str(exc)[:200],
+            }
+
+    # Sticky success so a membership soft-miss cannot look like a silent no-op.
+    session["_live_draft_continue_saved_flash"] = {
+        "ok": True,
+        "resume_lobby": bool(is_shared),
+        "room_code": code,
+        "draft_id": draft_id,
+        "message": (
+            "Resume Lobby opened — waiting for reserved teams before Continue Draft."
+            if is_shared
+            else "Saved draft restored."
+        ),
+    }
 
     try:
         from baseball_persistent_state import force_save_baseball_state
@@ -508,6 +571,89 @@ def continue_saved_draft(
         "room": room,
         "slot": slot,
         "resume_lobby": bool(is_shared),
+        "document": document,
+    }
+
+
+def replace_resumable_and_arm_start(
+    session: dict[str, Any],
+    *,
+    st: Any | None = None,
+) -> dict[str, Any]:
+    """Permanently discard the resumable slot and arm a fresh Pick-1 create.
+
+    Preserves setup preferences (mode, team/pick counts, timer, scoring, roster).
+    Shared mode arms ``prepare_shared`` so a new room code is created.
+    """
+    slot = get_resumable_live_draft_slot(session)
+    draft_id = str((slot or {}).get("draft_id") or "").strip()
+    room_id = str((slot or {}).get("room_id") or draft_id or "").strip()
+    code = str((slot or {}).get("room_code") or "").strip().upper()
+    is_shared = bool((slot or {}).get("is_shared")) or bool(code)
+
+    # Authoritative discard of the old resumable room (backend + tombstones).
+    # Parked drafts have no active live_draft_room — tombstone by identity + close backend.
+    try:
+        from live_draft_termination import persist_durable_tombstones
+
+        persist_durable_tombstones(session, draft_id=draft_id, room_id=room_id, room_code=code)
+    except ImportError:
+        pass
+    if code:
+        try:
+            from draft_room_shared_state import bump_revision, get_shared_room_store, load_shared_room
+
+            doc = load_shared_room(code)
+            if isinstance(doc, dict):
+                doc["status"] = "deleted"
+                blob = doc.get("room")
+                if isinstance(blob, dict):
+                    blob["status"] = "deleted"
+                get_shared_room_store().save(bump_revision(doc))
+        except Exception:
+            pass
+
+    clear_resumable_live_draft_slot(session)
+    for key in PARK_CLEAR_ACTIVE_KEYS:
+        session.pop(key, None)
+    session.pop("_live_draft_resume_lobby", None)
+    session.pop("_live_draft_resume_reserved_teams", None)
+    session.pop("_live_draft_start_replace_resumable_pending", None)
+    session.pop("_live_draft_start_replace_resumable_message", None)
+    session.pop("_live_draft_replace_confirm_pending", None)
+
+    # Arm create — Shared uses prepare_shared (new code); Solo uses new.
+    try:
+        from live_draft_setup_mode import SETUP_MODE_SHARED, get_preferred_next_draft_mode, is_shared_multiplayer_intent
+
+        prefer_shared = is_shared or is_shared_multiplayer_intent(session)
+        if not prefer_shared:
+            prefer_shared = get_preferred_next_draft_mode(session) == SETUP_MODE_SHARED
+    except ImportError:
+        prefer_shared = is_shared
+
+    session["_live_draft_start_replace_resumable_ok"] = True
+    session["_live_draft_replace_create_fresh"] = True
+    session["_start_live_draft_mode"] = "prepare_shared" if prefer_shared else "new"
+    session["_start_live_draft_pending"] = True
+    session["_live_draft_replace_flash"] = {
+        "ok": True,
+        "message": "Saved draft discarded. Starting a new draft at Pick 1…",
+        "prior_room_code": code,
+        "mode": session["_start_live_draft_mode"],
+    }
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        if st is not None:
+            force_save_baseball_state(st, reason="replace_resumable_and_arm_start")
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "mode": session["_start_live_draft_mode"],
+        "prior_room_code": code,
+        "prior_draft_id": draft_id,
     }
 
 

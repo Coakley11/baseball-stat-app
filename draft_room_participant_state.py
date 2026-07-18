@@ -680,6 +680,28 @@ def load_participant_workflow_into_session(session: dict[str, Any], room_code: s
     new_q = [str(x).strip() for x in (workflow.get("queue") or []) if str(x).strip()]
     pid = resolve_participant_id(session)
     code = str(room_code or "").strip().upper()
+    # Reject stale participant workflow that would resurrect a removed queue player.
+    try:
+        local_rev = int(session.get("_draft_queue_revision") or 0)
+        remote_rev = int(workflow.get("queue_revision") or slot.get("queue_revision") or 0)
+        if local_rev > 0 and remote_rev > 0 and remote_rev < local_rev:
+            session["_live_draft_queue_stale_hydrate_blocked"] = {
+                "local_rev": local_rev,
+                "remote_rev": remote_rev,
+                "reason": "queue_revision_behind",
+            }
+            return participant_state_for_room(session, room_code)
+        if local_rev > 0 and remote_rev == local_rev:
+            # Same revision — keep local (authoritative after ✕ / reorder).
+            if list(old_q) != list(new_q) and session.get("_draft_queue_persist_dirty"):
+                session["_live_draft_queue_stale_hydrate_blocked"] = {
+                    "local_rev": local_rev,
+                    "remote_rev": remote_rev,
+                    "reason": "dirty_same_revision",
+                }
+                return participant_state_for_room(session, room_code)
+    except (TypeError, ValueError):
+        pass
     try:
         from live_draft_queue_survival import QUEUE_SCOPE_KEY, queue_scope_key, record_queue_write, should_block_empty_queue_write
 
@@ -778,12 +800,18 @@ def save_participant_workflow_from_session(session: dict[str, Any], room_code: s
     """Persist queue/watchlist from session into participant-private storage."""
     workflow = gather_draft_workflow(session)
     slot = participant_workflow_slot(session, room_code)
+    q_rev = int(session.get("_draft_queue_revision") or 0)
+    if q_rev <= 0:
+        q_rev = int((slot.get("workflow") or {}).get("queue_revision") or 0) + 1
+        session["_draft_queue_revision"] = q_rev
     slot["workflow"] = {
         "queue": copy.deepcopy(workflow.get("queue") or []),
         "watchlist_focus": copy.deepcopy(workflow.get("watchlist_focus") or []),
         "watchlist_favorites": copy.deepcopy(workflow.get("watchlist_favorites") or []),
         "updated_at": _utc_now_iso(),
+        "queue_revision": q_rev,
     }
+    slot["queue_revision"] = q_rev
     try:
         from live_draft_queue_survival import QUEUE_SCOPE_KEY, queue_scope_key
 

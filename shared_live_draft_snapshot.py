@@ -159,16 +159,69 @@ def build_shared_live_draft_snapshot(
     except ImportError:
         pass
 
+    commissioner = ""
+    room_generation = ""
+    timer_paused = bool(live.get("timer_paused") or live.get("paused") or status in ("paused", "saved_for_later", "parked"))
+    if isinstance(document, dict):
+        commissioner = str(
+            document.get("commissioner_participant_id")
+            or document.get("host_participant_id")
+            or ""
+        ).strip()
+        room_generation = str(document.get("room_generation") or "").strip()
+        if document.get("status"):
+            # Authoritative pause/deleted from document wins for lifecycle fields.
+            timer_paused = timer_paused or str(document.get("status") or "").lower() in (
+                "paused",
+                "saved_for_later",
+                "parked",
+            )
+    # Prefer document room blob deadline when present (authoritative shared turn).
+    if isinstance(document, dict):
+        room_blob = document.get("room") if isinstance(document.get("room"), dict) else {}
+        if room_blob.get("timer_deadline") is not None and not timer_paused:
+            deadline = room_blob.get("timer_deadline")
+            try:
+                from live_draft_timer_logic import live_draft_seconds_remaining
+
+                # Temporarily mirror deadline onto live for remaining calc.
+                tmp = dict(live)
+                tmp["timer_deadline"] = deadline
+                seconds_remaining = live_draft_seconds_remaining(tmp)
+            except ImportError:
+                pass
+        doc_idx = room_blob.get("current_pick_index") if isinstance(room_blob, dict) else None
+        if doc_idx is not None:
+            try:
+                doc_idx_i = int(doc_idx)
+                if doc_idx_i >= idx:
+                    idx = doc_idx_i
+                    if 0 <= idx < len(pick_order) and isinstance(pick_order[idx], dict):
+                        slot = pick_order[idx]
+                        on_clock = str((slot or {}).get("Team") or on_clock).strip()
+                        try:
+                            current_pick = int((slot or {}).get("Pick") or (idx + 1))
+                        except (TypeError, ValueError):
+                            current_pick = idx + 1
+            except (TypeError, ValueError):
+                pass
+
     snap = {
         "room_id": identity.get("shared_room_id") or live.get("draft_room_id") or "",
+        "draft_id": str(live.get("draft_room_id") or identity.get("shared_room_id") or ""),
         "room_code": identity.get("shared_room_code") or "",
+        "room_generation": room_generation,
         "room_status": status,
+        "lifecycle": str(session.get("_live_draft_lifecycle") or status or ""),
         "current_pick": current_pick,
         "current_pick_index": idx,
+        "current_round": int((slot or {}).get("Round") or 0) or None,
         "on_clock_team": on_clock,
         "turn_started_at": started,
         "turn_deadline": deadline,
-        "seconds_remaining": seconds_remaining,
+        "timer_deadline_utc": deadline,
+        "timer_paused": timer_paused,
+        "seconds_remaining": None if timer_paused else seconds_remaining,
         "completed_picks": len(board),
         "total_picks": len(pick_order),
         "draft_board": copy.deepcopy(board),
@@ -176,6 +229,7 @@ def build_shared_live_draft_snapshot(
         "drafted_player_ids": drafted_ids,
         "claimed_teams": claims,
         "claimed_team": identity.get("claimed_team") or "",
+        "commissioner_participant_id": commissioner,
         "auth_user_id": identity.get("auth_user_id") or "",
         "participant_id": identity.get("participant_id") or "",
         "chat_room_key": str(identity.get("shared_room_code") or "").strip().upper(),
@@ -188,8 +242,14 @@ def build_shared_live_draft_snapshot(
             or session.get("_shared_room_expected_revision")
             or 0
         ),
+        "latest_committed_pick_id": str(
+            (board[-1].get("player_id") or board[-1].get("playerID") or board[-1].get("Player") or "")
+            if board and isinstance(board[-1], dict)
+            else ""
+        ),
     }
     session[SHARED_ROOM_SNAPSHOT_KEY] = snap
+    session["_live_draft_authoritative_snap_rev"] = snap["revision"]
     return snap
 
 
