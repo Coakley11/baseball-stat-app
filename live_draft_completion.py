@@ -251,6 +251,7 @@ def resolve_live_draft_lifecycle(
     if deleting == "in_progress":
         return LIFECYCLE_DELETING
     # Deletion completed — never re-enter ACTIVE even if a stale room pointer resurrects.
+    # Brand-new create clears these flags in reset_context_for_new_live_draft / begin_live_draft_start.
     if deleting == "done" or bool(session.get("_live_draft_force_setup_after_delete")):
         live_done = room if isinstance(room, dict) else session.get("live_draft_room")
         if isinstance(live_done, dict):
@@ -327,12 +328,18 @@ def resolve_live_draft_lifecycle(
         try:
             from live_draft_setup_mode import resolve_active_live_draft_mode
 
-            active = resolve_active_live_draft_mode(session, authoritative_room=live)
-            if active.get("is_shared_multiplayer"):
+            # Pass room= only — authoritative_room must be a shared document, not the live room blob.
+            active = resolve_active_live_draft_mode(session, room=live)
+            # resolve_active returns is_shared (not is_shared_multiplayer).
+            if active.get("is_shared") or bool(code):
                 return LIFECYCLE_WAITING_SHARED_LOBBY
         except Exception:
             if code:
                 return LIFECYCLE_WAITING_SHARED_LOBBY
+        # Orphan not_started without a join code — clear and return to setup.
+        session.pop("live_draft_room", None)
+        session.pop("live_draft_state", None)
+        return LIFECYCLE_SETUP
     return LIFECYCLE_ACTIVE_DRAFT
 
 

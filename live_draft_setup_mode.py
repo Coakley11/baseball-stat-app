@@ -203,8 +203,13 @@ def resolve_active_live_draft_mode(
             if not code:
                 code = str(live.get("room_code") or live_cfg.get("room_code") or "").strip().upper()
         elif live_mode == SETUP_MODE_SOLO:
-            mode = SETUP_MODE_SOLO
-            source = "runtime_solo_stamp"
+            # Orphan not_started Solo rooms must not hide Shared create / sticky Shared prefs.
+            if live_status == "not_started" and not code and preferred == SETUP_MODE_SHARED:
+                mode = preferred
+                source = "preferred_next_over_orphan_solo"
+            else:
+                mode = SETUP_MODE_SOLO
+                source = "runtime_solo_stamp"
         else:
             mode = preferred
             source = "preferred_next_draft_mode"
@@ -272,16 +277,37 @@ def mark_setup_mode_widget_locked(session: dict[str, Any]) -> None:
     session[WIDGET_MODE_LOCKED_KEY] = True
 
 
+def _mirror_mode_into_page_snapshot(session: dict[str, Any], normalized: str) -> None:
+    """Keep Live Draft Room page snapshot aligned with sticky mode (prefs win on restore)."""
+    try:
+        pfs = session.get("page_filter_state")
+        if not isinstance(pfs, dict):
+            pfs = {}
+            session["page_filter_state"] = pfs
+        block = pfs.get("Live Draft Room")
+        if not isinstance(block, dict):
+            block = {}
+            pfs["Live Draft Room"] = block
+        block[LIVE_DRAFT_SETUP_MODE_KEY] = normalized
+        block[PREFERRED_NEXT_DRAFT_MODE_KEY] = normalized
+    except Exception:
+        pass
+
+
 def persist_live_draft_setup_mode_preference(
     session: dict[str, Any],
     mode: str,
     *,
     st: Any = None,
 ) -> str:
-    """Persist Draft Mode to preferences without assigning the widget session key."""
+    """Persist Draft Mode to preferences without assigning the widget session key.
+
+    Authoritative durable field: preferred_next_draft_mode (mirrored to live_draft_setup_mode).
+    """
     normalized = normalize_setup_mode(mode)
     session[PREFERRED_NEXT_DRAFT_MODE_KEY] = normalized
     _stamp_room_setup_mode(session, normalized)
+    _mirror_mode_into_page_snapshot(session, normalized)
     if session.get("_live_draft_setup_seeding"):
         session[LAST_PERSISTED_SETUP_MODE_KEY] = normalized
         return normalized
@@ -294,7 +320,9 @@ def persist_live_draft_setup_mode_preference(
         )
 
         last_raw = session.get(LAST_PERSISTED_SETUP_MODE_KEY)
-        if last_raw is not None and normalize_setup_mode(last_raw) == normalized:
+        already = last_raw is not None and normalize_setup_mode(last_raw) == normalized
+        # Always mirror page snapshot; skip full prefs rewrite only when unchanged.
+        if already and st is None:
             return normalized
         mark_live_draft_setup_dirty(session)
         uid = str(session.get("auth_user_id") or "").strip()
@@ -314,7 +342,7 @@ def persist_live_draft_setup_mode_preference(
             settings,
             session=session,
             st=st,
-            force_disk=bool(st is not None),
+            force_disk=True,
         )
         session[LAST_PERSISTED_SETUP_MODE_KEY] = normalized
     except ImportError:
@@ -396,23 +424,10 @@ def seed_live_draft_setup_mode_before_widget(session: dict[str, Any]) -> str:
             session[LIVE_DRAFT_SETUP_MODE_KEY] = normalize_setup_mode(existing)
         return normalize_setup_mode(session.get(LIVE_DRAFT_SETUP_MODE_KEY))
 
-    preferred = SETUP_MODE_SOLO
-    try:
-        from user_page_preferences import PAGE_KEY_LIVE_DRAFT_SETUP, get_user_page_preferences
-
-        uid = str(session.get("auth_user_id") or "").strip()
-        wid = str(
-            session.get("_suite_active_workspace_id")
-            or session.get("_suite_owned_workspace_id")
-            or session.get("workspace_id")
-            or ""
-        ).strip()
-        settings = get_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session) or {}
-        preferred = normalize_setup_mode(settings.get(LIVE_DRAFT_SETUP_MODE_KEY))
-    except ImportError:
-        preferred = SETUP_MODE_SOLO
-
+    # Prefer durable sticky mode (preferred_next first) — Solo only as true first-run default.
+    preferred = get_preferred_next_draft_mode(session)
     session[LIVE_DRAFT_SETUP_MODE_KEY] = preferred
+    session[PREFERRED_NEXT_DRAFT_MODE_KEY] = preferred
     return preferred
 
 
@@ -422,10 +437,12 @@ def commit_live_draft_mode_from_widget(
     *,
     st: Any = None,
 ) -> str:
-    """After radio render: stamp room + persist. Do not reassign the widget key."""
+    """After radio render: stamp room + persist immediately. Do not reassign the widget key."""
     normalized = normalize_setup_mode(selected)
     mark_setup_mode_widget_locked(session)
+    session[PREFERRED_NEXT_DRAFT_MODE_KEY] = normalized
     _stamp_room_setup_mode(session, normalized)
+    # Force-disk on every deliberate radio selection so Shared survives refresh.
     persist_live_draft_setup_mode_preference(session, normalized, st=st)
     return normalized
 

@@ -838,6 +838,9 @@ def reset_context_for_new_live_draft(
         session["draft_queue"] = []
     session["draft_queue"] = []
     session.pop(DELETING_STATUS_KEY, None)
+    # Must clear — lifecycle nukes every new room while this stays True after End/Delete.
+    session.pop("_live_draft_force_setup_after_delete", None)
+    session.pop("_live_draft_exit_deleted_room", None)
     session.pop(SUPPRESS_FRAGMENTS_KEY, None)
     session.pop("_live_draft_termination_cleared", None)
     session.pop("_live_draft_controls_locked", None)

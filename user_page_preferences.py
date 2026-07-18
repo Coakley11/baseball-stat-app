@@ -281,7 +281,12 @@ def restore_live_draft_setup_mode_preference(session: dict[str, Any]) -> str:
     session.pop(LEGACY_MODE_RADIO_LABEL_KEY, None)
     uid, wid = _resolve_ids(session)
     settings = get_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session) or {}
-    preferred = normalize_setup_mode(settings.get(LIVE_DRAFT_SETUP_MODE_KEY) or session.get(LIVE_DRAFT_SETUP_MODE_KEY))
+    preferred = normalize_setup_mode(
+        settings.get("preferred_next_draft_mode")
+        or settings.get(LIVE_DRAFT_SETUP_MODE_KEY)
+        or session.get("preferred_next_draft_mode")
+        or session.get(LIVE_DRAFT_SETUP_MODE_KEY)
+    )
     # End/leave may run after the Draft Mode radio — request() defers when locked.
     try:
         from live_draft_setup_mode import request_live_draft_setup_mode
@@ -340,6 +345,34 @@ def ensure_live_draft_setup_preferences_loaded(session: dict[str, Any]) -> bool:
     if preferences_initialized(session, page_key):
         if isinstance(settings, dict) and settings:
             _seed_missing_from_settings(settings)
+            # Durable preferred_next wins over ambient Solo session leftovers when
+            # the Draft Mode radio has not locked the key this run.
+            try:
+                from live_draft_setup_mode import is_setup_mode_widget_locked, normalize_setup_mode
+
+                durable = settings.get("preferred_next_draft_mode") or settings.get(
+                    "live_draft_setup_mode"
+                )
+                if durable and not is_setup_mode_widget_locked(session):
+                    durable_n = normalize_setup_mode(durable)
+                    cur = normalize_setup_mode(
+                        session.get("preferred_next_draft_mode")
+                        or session.get("live_draft_setup_mode")
+                    )
+                    if durable_n != cur:
+                        session["_live_draft_setup_force_mode_apply"] = True
+                        try:
+                            apply_live_draft_setup_settings(
+                                session,
+                                {
+                                    "live_draft_setup_mode": durable_n,
+                                    "preferred_next_draft_mode": durable_n,
+                                },
+                            )
+                        finally:
+                            session.pop("_live_draft_setup_force_mode_apply", None)
+            except ImportError:
+                pass
         elif not str(session.get("live_draft_setup_mode") or "").strip():
             restore_live_draft_setup_mode_preference(session)
         return False

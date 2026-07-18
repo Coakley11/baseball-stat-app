@@ -1489,8 +1489,13 @@ def restore_live_draft_page_filters(session: dict[str, Any], store: dict[str, An
     # Always restore league/draft settings and slot sizes from the snapshot.
     # This is the fix for the refresh-revert bug: settings were saved to the snapshot
     # by _live_draft_setting_changed but only restored when an active draft blob existed.
+    # Mode keys are owned by sticky prefs (preferred_next_draft_mode) — never let a
+    # stale Solo page snapshot overwrite Shared.
+    _MODE_KEYS = frozenset({"live_draft_setup_mode", "preferred_next_draft_mode"})
     settings_restored = False
     for key in LIVE_DRAFT_SETTINGS_KEYS:
+        if key in _MODE_KEYS:
+            continue
         if key in snapshot:
             session[key] = snapshot[key]
             settings_restored = True
