@@ -545,13 +545,27 @@ def permanently_delete_live_draft(
 
     try:
         from user_page_preferences import (
+            PAGE_KEY_LIVE_DRAFT_SETUP,
+            apply_live_draft_setup_settings,
             ensure_live_draft_setup_preferences_loaded,
+            get_user_page_preferences,
             restore_live_draft_setup_mode_preference,
         )
 
         session.pop("_prefs_initialized:live_draft_setup", None)
         restore_live_draft_setup_mode_preference(session)
         ensure_live_draft_setup_preferences_loaded(session)
+        # Re-apply full sticky setup (teams/picks/projection) after End/Delete.
+        uid = str(session.get("auth_user_id") or "").strip()
+        wid = str(
+            session.get("_suite_active_workspace_id")
+            or session.get("_suite_owned_workspace_id")
+            or session.get("workspace_id")
+            or ""
+        ).strip()
+        settings = get_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session)
+        if isinstance(settings, dict) and settings:
+            apply_live_draft_setup_settings(session, settings)
     except ImportError:
         pass
 

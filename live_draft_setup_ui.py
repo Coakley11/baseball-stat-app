@@ -136,6 +136,41 @@ def _shared_create_blocked(session: dict[str, Any]) -> tuple[bool, str]:
     return False, ""
 
 
+def should_render_shared_room_created_card(session: dict[str, Any]) -> bool:
+    """Show the created-room card only for the current waiting lobby room."""
+    code = str(shared_room_code(session) or "").strip().upper()
+    if not code:
+        return False
+    try:
+        from live_draft_termination import is_live_draft_permanently_retired
+
+        if is_live_draft_permanently_retired(session, room_code=code):
+            return False
+    except ImportError:
+        pass
+    try:
+        from live_draft_completion import is_live_draft_ended_tombstoned
+
+        if is_live_draft_ended_tombstoned(session, room_code=code):
+            return False
+    except ImportError:
+        pass
+    room = session.get("live_draft_room")
+    if not isinstance(room, dict):
+        # Stale code without a room — clear and hide.
+        try:
+            from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY
+
+            session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+        except ImportError:
+            session.pop("active_shared_draft_room_code", None)
+        return False
+    status = str(room.get("status") or "").strip().lower()
+    if status in ("ended", "closed", "deleted", "complete", "completed"):
+        return False
+    return status in ("waiting", "not_started", "in_progress", "paused")
+
+
 def render_shared_multiplayer_setup(
     st: Any,
     session: dict[str, Any],
@@ -148,10 +183,14 @@ def render_shared_multiplayer_setup(
         return
 
     code = shared_room_code(session)
+    show_created = should_render_shared_room_created_card(session)
+    if code and not show_created:
+        # Stale confirmation after delete/end — do not paint the card.
+        code = ""
     auth_blocked, auth_help = _shared_create_blocked(session)
     with st.container(border=True):
         st.markdown("#### Shared Multiplayer Draft Room")
-        if code:
+        if show_created and code:
             st.success("**Shared Draft Room created**")
             st.markdown(f"**Join code:** `{code}`")
             try:

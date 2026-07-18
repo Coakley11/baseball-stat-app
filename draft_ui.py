@@ -904,6 +904,16 @@ def render_draft_sidebar_timer(
     summary: dict[str, Any] | None = None,
 ) -> None:
     """Live Draft countdown in sidebar — matches live draft room timer."""
+    # Do not keep a Live Draft timer fragment alive on other application pages.
+    try:
+        from app_page_generation import fragment_allowed
+
+        if not fragment_allowed(session, expected_page="Live Draft Room"):
+            return
+    except ImportError:
+        page = str(session.get("active_page_name") or session.get("active_page") or "").strip()
+        if page and page != "Live Draft Room":
+            return
     from draft_actions import draft_status_summary
 
     summary = summary or draft_status_summary(session)
@@ -918,6 +928,13 @@ def render_draft_sidebar_timer(
 
     @fragment(run_every=1)
     def _sidebar_timer_tick() -> None:
+        try:
+            from app_page_generation import fragment_allowed
+
+            if not fragment_allowed(session, expected_page="Live Draft Room"):
+                return
+        except ImportError:
+            pass
         refresh_sidebar_timer_session(session, summary=summary)
 
     _sidebar_timer_tick()

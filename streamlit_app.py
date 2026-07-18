@@ -14612,6 +14612,14 @@ try:
 except ImportError:
     pass
 
+# Immutable page snapshot for this run — exclusive body routing + fragment gates.
+try:
+    from app_page_generation import begin_page_run
+
+    begin_page_run(st.session_state, active_page)
+except ImportError:
+    pass
+
 from baseball_ami_sidebar import render_baseball_insight_sidebar
 
 st.session_state["_suite_runtime_app_id"] = "baseball"
@@ -14811,6 +14819,12 @@ def _resolve_build_hof_cohort_display_text():
 
 
 if active_page == "Historical Explorer":
+    try:
+        from app_page_generation import note_page_renderer
+
+        note_page_renderer(st.session_state, "render_historical_explorer", selected_page=active_page)
+    except ImportError:
+        pass
     from historical_state import (
         flush_historical_filter_edits,
         prepare_historical_explorer_filters,
@@ -15220,7 +15234,7 @@ def career_hof_case_mode_changed():
         pass
     career_filter_changed()
 
-if active_page == "Career Totals":
+elif active_page == "Career Totals":
     from career_totals_state import (
         flush_career_filter_edits,
         prepare_career_multiselect_filter,
@@ -16108,7 +16122,7 @@ def fantasy_filter_changed():
         pass
 
 
-if active_page == "Leaderboards":
+elif active_page == "Leaderboards":
     from leaderboard_aggregation import (
         aggregate_leaderboard_career_totals,
         build_leaderboard_aggregation_diagnostics,
@@ -16515,7 +16529,7 @@ def sig_players_changed():
         st.session_state["pending_compare_players"] = selected[:3]
 
 
-if active_page == "Comparison Tool":
+elif active_page == "Comparison Tool":
     try:
         from shared_draft_context import prepare_canonical_scoring_context
 
@@ -17289,7 +17303,7 @@ if active_page == "Comparison Tool":
     render_page_filters_debug(active_page)
 
 
-if active_page == "Trend Value":
+elif active_page == "Trend Value":
     try:
         from shared_draft_context import prepare_canonical_scoring_context
 
@@ -18027,7 +18041,7 @@ if active_page == "Trend Value":
     render_page_filters_debug(active_page)
 
 
-if active_page == "Fantasy Sleepers & Busts":
+elif active_page == "Fantasy Sleepers & Busts":
     from fantasy_state import (
         flush_fantasy_section_edits,
         mark_fantasy_local_edit,
@@ -18957,7 +18971,7 @@ if active_page == "Fantasy Sleepers & Busts":
     render_page_filters_debug(active_page)
 
 
-if active_page == "Draft Assistant Simulator":
+elif active_page == "Draft Assistant Simulator":
     _page_perf_start(active_page)
     _maybe_render_account_pref_sync(active_page)
     if pp.is_screenshot_mode(st) or pp.is_demo_mode(st):
@@ -20368,7 +20382,7 @@ def _on_undo_last_simulator_pick_click() -> None:
         ss["_draft_room_action_trace"] = trace
 
 
-if active_page == "Draft Room Simulator":
+elif active_page == "Draft Room Simulator":
     _maybe_render_account_pref_sync(active_page)
     _page_perf_start(active_page)
     render_section_header(
@@ -21132,7 +21146,7 @@ if active_page == "Draft Room Simulator":
     render_page_filters_debug(active_page)
 
 
-if active_page == DRAFT_LAB_PAGE:
+elif active_page == DRAFT_LAB_PAGE:
     _page_perf_start(active_page)
 
     render_section_header(
@@ -21719,7 +21733,13 @@ if active_page == DRAFT_LAB_PAGE:
     render_page_filters_debug(active_page)
 
 
-if active_page == "Live Draft Room":
+elif active_page == "Live Draft Room":
+    try:
+        from app_page_generation import note_page_renderer
+
+        note_page_renderer(st.session_state, "render_live_draft_page", selected_page=active_page)
+    except ImportError:
+        pass
     _page_perf_start(active_page)
     try:
         from suite_identity_guard import render_mp_identity_diagnostics
@@ -22865,7 +22885,24 @@ if active_page == "Live Draft Room":
                     key="live_draft_league_name",
                     on_change=_live_draft_setting_changed,
                 )
-                ensure_number_state("live_draft_team_count", 10, min_value=2, max_value=20)
+                try:
+                    from user_page_preferences import live_draft_setup_number_default
+
+                    _team_default = live_draft_setup_number_default(
+                        st.session_state, "live_draft_team_count", 2
+                    )
+                    _picks_default = live_draft_setup_number_default(
+                        st.session_state, "live_draft_picks_per_team", 4
+                    )
+                except ImportError:
+                    _team_default = 2
+                    _picks_default = 4
+                ensure_number_state(
+                    "live_draft_team_count",
+                    _team_default,
+                    min_value=2,
+                    max_value=20,
+                )
                 live_num_teams = st.number_input(
                     "Number of Teams",
                     min_value=2,
@@ -22874,7 +22911,7 @@ if active_page == "Live Draft Room":
                     key="live_draft_team_count",
                     on_change=_live_draft_setting_changed,
                 )
-                validate_number_state("live_draft_picks_per_team", 15, min_value=1, max_value=30)
+                validate_number_state("live_draft_picks_per_team", _picks_default, min_value=1, max_value=30)
                 live_picks_per_team = st.number_input(
                     "Picks per Team",
                     min_value=1,
@@ -24936,7 +24973,7 @@ if active_page == "Live Draft Room":
     render_page_filters_debug(active_page)
 
 
-if active_page == "Saved Draft Library":
+elif active_page == "Saved Draft Library":
     from draft_archive_ui import render_saved_draft_library_page
 
     _page_perf_start(active_page)
@@ -24959,7 +24996,7 @@ if active_page == "Saved Draft Library":
     render_page_filters_debug(active_page)
 
 
-if active_page == "Fantasy Standings Tracker":
+elif active_page == "Fantasy Standings Tracker":
     from fantasy_state import (
         flush_fantasy_section_edits,
         prepare_fantasy_standings_filters,
@@ -25531,7 +25568,7 @@ def filter_trade_suggestions_by_requested_players(suggestions, forced_give=None,
     return out
 
 
-if active_page == "Fantasy Lineup Assistant":
+elif active_page == "Fantasy Lineup Assistant":
     from fantasy_state import (
         flush_fantasy_section_edits,
         prepare_fantasy_lineup_filters,
@@ -25867,7 +25904,7 @@ if active_page == "Fantasy Lineup Assistant":
     render_page_filters_debug(active_page)
 
 
-if active_page == "Waiver Wire / Add-Drop Center":
+elif active_page == "Waiver Wire / Add-Drop Center":
     from fantasy_waiver_wire_ui import render_waiver_wire_page
 
     _page_perf_start(active_page)
@@ -25965,7 +26002,7 @@ def projections_filter_changed():
         pass
 
 
-if active_page == "Valuation":
+elif active_page == "Valuation":
     try:
         from shared_draft_context import prepare_canonical_scoring_context
 
@@ -26312,7 +26349,7 @@ if active_page == "Valuation":
     render_page_filters_debug(active_page)
 
 
-if active_page == "ML Predictions":
+elif active_page == "ML Predictions":
     try:
         from shared_draft_context import prepare_canonical_scoring_context
 

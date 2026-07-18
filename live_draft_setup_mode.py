@@ -53,7 +53,7 @@ def get_preferred_next_draft_mode(session: dict[str, Any]) -> str:
     try:
         from user_page_preferences import (
             PAGE_KEY_LIVE_DRAFT_SETUP,
-            load_user_page_preferences,
+            get_user_page_preferences,
         )
 
         uid = str(session.get("auth_user_id") or "").strip()
@@ -63,7 +63,7 @@ def get_preferred_next_draft_mode(session: dict[str, Any]) -> str:
             or session.get("workspace_id")
             or ""
         ).strip()
-        prefs = load_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session)
+        prefs = get_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session)
         if isinstance(prefs, dict):
             for key in (PREFERRED_NEXT_DRAFT_MODE_KEY, LIVE_DRAFT_SETUP_MODE_KEY):
                 if str(prefs.get(key) or "").strip():

@@ -319,6 +319,13 @@ def _post_message(st: Any, session: dict[str, Any], text: str) -> bool:
 def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
     """Compact AIM-style Live Draft chat — one HTML card, no empty wrapper box."""
     try:
+        from app_page_generation import fragment_allowed
+
+        if not fragment_allowed(session, expected_page="Live Draft Room"):
+            return
+    except ImportError:
+        pass
+    try:
         from draft_room_context import is_multiplayer_draft_active
     except ImportError:
         return

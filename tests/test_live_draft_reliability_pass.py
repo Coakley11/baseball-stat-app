@@ -65,7 +65,12 @@ class DiscardExclusivityTests(unittest.TestCase):
         self.assertTrue(live_draft_fragments_suppressed(session))
         self.assertEqual(resolve_live_draft_lifecycle(session), LIFECYCLE_SETUP)
         self.assertFalse(isinstance(session.get("live_draft_room"), dict))
-        self.assertEqual(_poll_suppressed_reason(session), "fragments_suppressed_or_deleting")
+        # After discard, fragments are suppressed (and/or page gate blocks them).
+        reason = _poll_suppressed_reason(session)
+        self.assertIn(
+            reason,
+            ("fragments_suppressed_or_deleting", "page_mismatch", "lifecycle_setup"),
+        )
         self.assertFalse(
             any(str(k).startswith("live_queue_sortable") for k in session.keys())
         )

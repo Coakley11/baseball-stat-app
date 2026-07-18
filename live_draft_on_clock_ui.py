@@ -187,6 +187,13 @@ def render_live_on_clock_banner(
     next_pick: int | None = None,
 ) -> None:
     """Render blue On-the-Clock banner with client-side 1 Hz countdown."""
+    try:
+        from app_page_generation import fragment_allowed
+
+        if not fragment_allowed(session, expected_page="Live Draft Room"):
+            return
+    except ImportError:
+        pass
     if not isinstance(slot, dict):
         return
     try:

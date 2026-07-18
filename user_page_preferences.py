@@ -117,8 +117,13 @@ def save_user_page_preferences(
     session: dict[str, Any] | None = None,
     st: Any = None,
     force_disk: bool = True,
+    merge: bool = True,
 ) -> dict[str, Any]:
-    """Persist page settings into page_filter_state (+ optional workspace disk/cloud)."""
+    """Persist page settings into page_filter_state (+ optional workspace disk/cloud).
+
+    When ``merge`` is True (default), overlay onto any existing settings so a
+    mode-only save cannot wipe team_count / picks / projection preferences.
+    """
     session = session if isinstance(session, dict) else {}
     uid, wid = _resolve_ids(session)
     user_id = str(user_id or uid or "").strip()
@@ -126,12 +131,19 @@ def save_user_page_preferences(
     key = str(page_key or "").strip()
     if not key:
         raise ValueError("page_key required")
+    incoming = copy.deepcopy(settings if isinstance(settings, dict) else {})
+    if merge:
+        previous = get_user_page_preferences(user_id, workspace_id, key, session=session) or {}
+        if isinstance(previous, dict) and previous:
+            merged = dict(previous)
+            merged.update({k: v for k, v in incoming.items() if not str(k).startswith("_")})
+            incoming = merged
     payload = {
         "user_id": user_id,
         "workspace_id": workspace_id,
         "page_key": key,
         "schema_version": PREFS_SCHEMA_VERSION,
-        "settings": copy.deepcopy(settings if isinstance(settings, dict) else {}),
+        "settings": incoming,
         "updated_at": _utc_now_iso(),
     }
     block = _prefs_block(session)
@@ -166,16 +178,23 @@ def reset_user_page_preferences(
         session=session,
         st=st,
         force_disk=True,
+        merge=False,
     )
 
 
 def collect_live_draft_setup_settings(session: dict[str, Any]) -> dict[str, Any]:
-    """Snapshot Live Draft setup controls that should survive reboot."""
+    """Snapshot Live Draft setup controls that should survive reboot.
+
+    Starts from durable preferences so a partial session (mode-only) cannot
+    erase previously saved team_count / picks / projection values.
+    """
     try:
         from live_draft_state import LIVE_DRAFT_SETTINGS_KEYS
     except ImportError:
         LIVE_DRAFT_SETTINGS_KEYS = ()
-    out: dict[str, Any] = {}
+    uid, wid = _resolve_ids(session)
+    existing = get_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session) or {}
+    out: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
     for key in LIVE_DRAFT_SETTINGS_KEYS:
         if key in session:
             out[key] = session[key]
@@ -277,7 +296,8 @@ def ensure_live_draft_setup_preferences_loaded(session: dict[str, Any]) -> bool:
     """Load persisted Live Draft setup once per session before widget defaults win.
 
     Returns True when settings were applied from persistence.
-    Draft Mode is restored whenever missing so End Draft / refresh cannot snap to Solo.
+    Draft Mode and numeric setup fields are recovered whenever missing so
+    End Draft / refresh cannot snap to Solo / 10 teams / 15 picks.
     """
     page_key = PAGE_KEY_LIVE_DRAFT_SETUP
     uid, wid = _resolve_ids(session)
@@ -285,16 +305,43 @@ def ensure_live_draft_setup_preferences_loaded(session: dict[str, Any]) -> bool:
     room = session.get("live_draft_room")
     active_picking = isinstance(room, dict) and str(room.get("status") or "") in ("in_progress", "paused")
 
+    critical_keys = (
+        "live_draft_setup_mode",
+        "preferred_next_draft_mode",
+        "live_draft_team_count",
+        "live_draft_num_teams",
+        "live_draft_picks_per_team",
+        "live_draft_proj_window",
+        "live_draft_proj_style",
+        "live_draft_timer",
+        "live_draft_scoring",
+        "live_draft_auto_rule",
+        "live_draft_league_name",
+    )
+
+    def _seed_missing_from_settings(src: dict[str, Any]) -> None:
+        if not isinstance(src, dict):
+            return
+        patch: dict[str, Any] = {}
+        for key in critical_keys:
+            if key not in src:
+                continue
+            cur = session.get(key)
+            if cur is None or (isinstance(cur, str) and not str(cur).strip()):
+                patch[key] = src[key]
+        # Also restore roster / team-name prefs when absent.
+        for key, val in src.items():
+            if str(key).startswith("live_slot_") or str(key).startswith("live_draft_team_name_"):
+                if key not in session:
+                    patch[key] = val
+        if patch:
+            apply_live_draft_setup_settings(session, patch)
+
     if preferences_initialized(session, page_key):
-        # Preference already seeded this browser session — still recover Draft Mode
-        # if End Draft / leave room cleared the session key.
-        if not str(session.get("live_draft_setup_mode") or "").strip():
-            if isinstance(settings, dict) and settings.get("live_draft_setup_mode"):
-                apply_live_draft_setup_settings(
-                    session, {"live_draft_setup_mode": settings["live_draft_setup_mode"]}
-                )
-            else:
-                restore_live_draft_setup_mode_preference(session)
+        if isinstance(settings, dict) and settings:
+            _seed_missing_from_settings(settings)
+        elif not str(session.get("live_draft_setup_mode") or "").strip():
+            restore_live_draft_setup_mode_preference(session)
         return False
 
     session["_live_draft_setup_seeding"] = True
@@ -332,6 +379,29 @@ def ensure_live_draft_setup_preferences_loaded(session: dict[str, Any]) -> bool:
         return applied
     finally:
         session.pop("_live_draft_setup_seeding", None)
+
+
+def live_draft_setup_number_default(session: dict[str, Any], key: str, fallback: int) -> int:
+    """Resolve a sticky numeric setup default — prefs beat hard-coded widget fallbacks."""
+    if key in session and session.get(key) is not None:
+        try:
+            return int(session.get(key))
+        except (TypeError, ValueError):
+            pass
+    uid, wid = _resolve_ids(session)
+    settings = get_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session) or {}
+    if isinstance(settings, dict) and settings.get(key) is not None:
+        try:
+            return int(settings.get(key))
+        except (TypeError, ValueError):
+            pass
+    defaults = default_live_draft_setup_settings()
+    if defaults.get(key) is not None:
+        try:
+            return int(defaults.get(key))
+        except (TypeError, ValueError):
+            pass
+    return int(fallback)
 
 
 def persist_live_draft_setup_preferences(
