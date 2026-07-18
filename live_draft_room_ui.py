@@ -712,20 +712,30 @@ def render_live_draft_room_header(
     mode_detail = "You control all teams"
     solo = True
     try:
-        from live_draft_setup_mode import is_solo_draft_mode, is_shared_multiplayer_intent, shared_room_code
+        from live_draft_setup_mode import resolve_active_live_draft_mode
 
-        solo = is_solo_draft_mode(session, room=room)
+        auth_doc = session.get("_shared_lobby_authority_doc")
+        active = resolve_active_live_draft_mode(
+            session,
+            room=room if isinstance(room, dict) else None,
+            document=auth_doc if isinstance(auth_doc, dict) else None,
+        )
+        solo = bool(active.get("is_solo"))
+        code = str(active.get("room_code") or "").strip().upper()
         if solo:
             mode_label = "Solo Draft"
             teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
-            mode_detail = f"You control all teams ({len(teams)} teams)" if len(teams) > 1 else "You control all teams"
-        elif is_shared_multiplayer_intent(session, room=room):
+            mode_detail = (
+                f"You control all teams ({len(teams)} teams)" if len(teams) > 1 else "You control all teams"
+            )
+        else:
             mode_label = "Shared Multiplayer"
             mode_detail = ""
             from draft_room_context import get_global_draft_context, resolve_shared_room_code
 
             ctx = get_global_draft_context(session)
-            code = shared_room_code(session) or resolve_shared_room_code(session)
+            if not code:
+                code = str(resolve_shared_room_code(session) or "").strip().upper()
             role = "Host" if ctx.get("is_room_host") else "Guest"
             assigned_team = str(ctx.get("participant_team") or assigned_team or "—").strip() or "—"
     except ImportError:
@@ -749,7 +759,8 @@ def render_live_draft_room_header(
         teams_block = "<br/>".join(f"· {line}" for line in ownership_lines)
     else:
         teams_block = teams_txt
-    live_badge = " · **Live**" if draft_in_progress else ""
+    # Pure HTML only — never inject markdown **bold** into unsafe_allow_html blocks.
+    live_badge = " · <strong>Live</strong>" if draft_in_progress else ""
     status_txt = str(status_label or room.get("status") or "—").replace("_", " ").title()
 
     if solo:
@@ -768,19 +779,16 @@ def render_live_draft_room_header(
         return
 
     code_block = (
-        f'<div class="ld-rh-code">{code}</div>' if code else '<span style="color:#b45309;">Code missing</span>'
+        f'<div class="ld-rh-code">Room Code: <strong>{code}</strong></div>'
+        if code
+        else '<span style="color:#b45309;">Code missing</span>'
     )
     role_txt = f"<strong>Your role:</strong> {role} · " if role else ""
-    try:
-        from live_draft_ux import format_your_fantasy_team_caption
-
-        team_line = format_your_fantasy_team_caption(assigned_team or "—")
-    except ImportError:
-        team_line = f"<strong>Your Fantasy Team:</strong> {assigned_team or '—'}"
+    team_line = f"<strong>Your Fantasy Team:</strong> {assigned_team or '—'}"
     st.markdown(
         f"""
         <div class="ld-room-header">
-            <div class="ld-rh-title">Live draft room · {mode_label}</div>
+            <div class="ld-rh-title">Live Draft Room · {mode_label}</div>
             {code_block}
             <div class="ld-rh-meta">
                 {role_txt}

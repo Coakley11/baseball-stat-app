@@ -10,6 +10,7 @@ SETUP_MODE_SHARED = "shared_multiplayer"
 DRAFT_SETUP_MODE_CONFIG_KEY = "draft_setup_mode"
 LAST_PERSISTED_SETUP_MODE_KEY = "_live_draft_setup_mode_last_persisted"
 MODE_TRACE_KEY = "_live_draft_setup_mode_trace"
+ACTIVE_MODE_RESOLVE_KEY = "_active_live_draft_mode_resolve"
 # Programmatic mode change after st.radio — applied next run before the widget binds.
 PENDING_LIVE_DRAFT_SETUP_MODE_KEY = "_pending_live_draft_setup_mode"
 # True after Draft Mode radio is created in this Streamlit run.
@@ -23,6 +24,8 @@ SETUP_MODE_LABELS = {
     SETUP_MODE_SHARED: "Shared Multiplayer Draft Room — room code, other users join",
 }
 
+_ACTIVE_ROOM_STATUSES = frozenset({"waiting", "not_started", "in_progress", "paused"})
+
 
 def normalize_setup_mode(mode: str | None) -> str:
     raw = str(mode or "").strip().lower()
@@ -35,28 +38,211 @@ def normalize_setup_mode(mode: str | None) -> str:
     return SETUP_MODE_SOLO
 
 
-def get_live_draft_setup_mode(session: dict[str, Any], *, room: dict[str, Any] | None = None) -> str:
-    """Return Draft Mode with setup-safe precedence.
+def get_preferred_next_draft_mode(session: dict[str, Any]) -> str:
+    """Saved/setup preference for creating the *next* draft.
 
-    1) Explicit session/widget ``live_draft_setup_mode`` (user click wins)
-    2) Active picking room stamp (in_progress / paused only)
-    3) Default solo
-
-    Lobby/not_started/completed room stamps must not override the widget —
-    that caused Shared → Solo snap-back when a leftover solo lobby existed.
+    Must not relabel an already-active Shared Multiplayer room.
     """
     session_mode = session.get(LIVE_DRAFT_SETUP_MODE_KEY)
     if str(session_mode or "").strip():
         return normalize_setup_mode(session_mode)
+    try:
+        from user_page_preferences import (
+            PAGE_KEY_LIVE_DRAFT_SETUP,
+            load_user_page_preferences,
+        )
 
-    live = room if isinstance(room, dict) else session.get("live_draft_room")
-    if isinstance(live, dict):
-        status = str(live.get("status") or "").strip()
-        cfg = live.get("config") or {}
-        stored = str(cfg.get(DRAFT_SETUP_MODE_CONFIG_KEY) or "").strip()
-        if stored and status in ("in_progress", "paused"):
-            return normalize_setup_mode(stored)
+        uid = str(session.get("auth_user_id") or "").strip()
+        wid = str(
+            session.get("_suite_active_workspace_id")
+            or session.get("_suite_owned_workspace_id")
+            or session.get("workspace_id")
+            or ""
+        ).strip()
+        prefs = load_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session)
+        if isinstance(prefs, dict) and str(prefs.get(LIVE_DRAFT_SETUP_MODE_KEY) or "").strip():
+            return normalize_setup_mode(prefs.get(LIVE_DRAFT_SETUP_MODE_KEY))
+    except Exception:
+        pass
     return SETUP_MODE_SOLO
+
+
+def get_live_draft_setup_mode(session: dict[str, Any], *, room: dict[str, Any] | None = None) -> str:
+    """Setup-widget / preferred-next mode (not the active-room classifier).
+
+    For Solo vs Shared labeling of an *active* room, use
+    ``resolve_active_live_draft_mode`` / ``is_solo_draft_mode``.
+    """
+    del room  # preferred-next ignores leftover room stamps (avoids snap-back in the radio)
+    return get_preferred_next_draft_mode(session)
+
+
+def _document_room_status(document: dict[str, Any] | None) -> str:
+    if not isinstance(document, dict):
+        return ""
+    status = str(document.get("status") or "").strip()
+    if status:
+        return status
+    room_blob = document.get("room")
+    if isinstance(room_blob, dict):
+        return str(room_blob.get("status") or "").strip()
+    return ""
+
+
+def _document_room_code(document: dict[str, Any] | None) -> str:
+    if not isinstance(document, dict):
+        return ""
+    code = str(document.get("room_code") or "").strip().upper()
+    if code:
+        return code
+    room_blob = document.get("room")
+    if isinstance(room_blob, dict):
+        return str(room_blob.get("room_code") or (room_blob.get("config") or {}).get("room_code") or "").strip().upper()
+    return ""
+
+
+def _document_setup_mode(document: dict[str, Any] | None) -> str:
+    if not isinstance(document, dict):
+        return ""
+    raw = str(document.get("mode") or document.get("draft_setup_mode") or "").strip()
+    if raw:
+        return normalize_setup_mode(raw)
+    room_blob = document.get("room") if isinstance(document.get("room"), dict) else {}
+    cfg = dict(room_blob.get("config") or {}) if room_blob else {}
+    stored = str(cfg.get(DRAFT_SETUP_MODE_CONFIG_KEY) or "").strip()
+    return normalize_setup_mode(stored) if stored else ""
+
+
+def resolve_active_live_draft_mode(
+    session: dict[str, Any],
+    *,
+    authoritative_room: dict[str, Any] | None = None,
+    document: dict[str, Any] | None = None,
+    room: dict[str, Any] | None = None,
+    runtime_state: dict[str, Any] | None = None,
+    saved_preferences: str | None = None,
+) -> dict[str, Any]:
+    """Canonical Solo vs Shared for the *active* Live Draft context.
+
+    Precedence:
+    1. Authoritative shared-room document (active status / participants / claims)
+    2. Active shared-room membership / room code
+    3. Runtime room stamp when shared
+    4. Saved setup preference only when no shared room is active
+    """
+    del runtime_state  # reserved; session + room cover current runtime
+    live = room if isinstance(room, dict) else session.get("live_draft_room")
+    doc = document if isinstance(document, dict) else None
+    if doc is None and isinstance(authoritative_room, dict):
+        doc = authoritative_room
+    if doc is None:
+        auth = session.get("_shared_lobby_authority_doc")
+        if isinstance(auth, dict):
+            doc = auth
+
+    code = ""
+    try:
+        from draft_room_context import resolve_shared_room_code
+
+        code = str(resolve_shared_room_code(session) or "").strip().upper()
+    except ImportError:
+        code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+    if not code:
+        code = _document_room_code(doc)
+    if not code and isinstance(live, dict):
+        code = str(
+            live.get("room_code")
+            or (live.get("config") or {}).get("room_code")
+            or ""
+        ).strip().upper()
+
+    preferred = (
+        normalize_setup_mode(saved_preferences)
+        if saved_preferences is not None
+        else get_preferred_next_draft_mode(session)
+    )
+
+    doc_status = _document_room_status(doc)
+    doc_mode = _document_setup_mode(doc)
+    participants = dict(doc.get("participants") or {}) if isinstance(doc, dict) else {}
+    joined = dict(doc.get("joined_participants") or {}) if isinstance(doc, dict) else {}
+    participant_count = len(participants) or len(joined)
+
+    live_status = str(live.get("status") or "").strip() if isinstance(live, dict) else ""
+    live_cfg = dict(live.get("config") or {}) if isinstance(live, dict) else {}
+    live_mode = normalize_setup_mode(live_cfg.get(DRAFT_SETUP_MODE_CONFIG_KEY)) if live_cfg.get(DRAFT_SETUP_MODE_CONFIG_KEY) else ""
+
+    mode = preferred
+    source = "preferred_next_draft_mode"
+
+    if isinstance(doc, dict) and (
+        doc_status in _ACTIVE_ROOM_STATUSES
+        or participant_count >= 1
+        or bool(code)
+        or doc_mode == SETUP_MODE_SHARED
+    ):
+        mode = SETUP_MODE_SHARED
+        source = "authoritative_shared_room"
+        if not code:
+            code = _document_room_code(doc)
+    elif code:
+        mode = SETUP_MODE_SHARED
+        source = "active_room_code"
+    elif isinstance(live, dict) and live_status in _ACTIVE_ROOM_STATUSES:
+        if live_mode == SETUP_MODE_SHARED or bool(
+            live.get("room_code") or live_cfg.get("room_code")
+        ):
+            mode = SETUP_MODE_SHARED
+            source = "runtime_room_stamp"
+            if not code:
+                code = str(live.get("room_code") or live_cfg.get("room_code") or "").strip().upper()
+        elif live_mode == SETUP_MODE_SOLO:
+            mode = SETUP_MODE_SOLO
+            source = "runtime_solo_stamp"
+        else:
+            mode = preferred
+            source = "preferred_next_draft_mode"
+    else:
+        mode = preferred
+        source = "preferred_next_draft_mode"
+
+    # Repair dropped room identity when shared is active.
+    if mode == SETUP_MODE_SHARED and code:
+        try:
+            from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY
+
+            if not str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip():
+                session[ACTIVE_SHARED_ROOM_CODE_KEY] = code
+        except ImportError:
+            if not str(session.get("active_shared_draft_room_code") or "").strip():
+                session["active_shared_draft_room_code"] = code
+
+    result = {
+        "mode": mode,
+        "is_shared": mode == SETUP_MODE_SHARED,
+        "is_solo": mode == SETUP_MODE_SOLO,
+        "room_code": code,
+        "source": source,
+        "preferred_next_draft_mode": preferred,
+        "document_status": doc_status,
+        "live_status": live_status,
+        "participant_count": participant_count,
+    }
+    session[ACTIVE_MODE_RESOLVE_KEY] = dict(result)
+    return result
+
+
+def is_solo_draft_mode(session: dict[str, Any], *, room: dict[str, Any] | None = None) -> bool:
+    return bool(resolve_active_live_draft_mode(session, room=room).get("is_solo"))
+
+
+def is_shared_multiplayer_intent(session: dict[str, Any], *, room: dict[str, Any] | None = None) -> bool:
+    """True when the *active* Live Draft context is Shared Multiplayer.
+
+    Named historically for setup intent; now follows active-room precedence so a
+    leftover Solo preference cannot relabel an active shared room.
+    """
+    return bool(resolve_active_live_draft_mode(session, room=room).get("is_shared"))
 
 
 def _stamp_room_setup_mode(session: dict[str, Any], normalized: str) -> None:
@@ -243,22 +429,11 @@ def record_setup_mode_trace(session: dict[str, Any], **fields: Any) -> dict[str,
     return trace
 
 
-def is_solo_draft_mode(session: dict[str, Any], *, room: dict[str, Any] | None = None) -> bool:
-    try:
-        from draft_room_context import is_multiplayer_draft_active
-
-        if is_multiplayer_draft_active(session):
-            return False
-    except ImportError:
-        pass
-    return get_live_draft_setup_mode(session, room=room) == SETUP_MODE_SOLO
-
-
-def is_shared_multiplayer_intent(session: dict[str, Any], *, room: dict[str, Any] | None = None) -> bool:
-    return get_live_draft_setup_mode(session, room=room) == SETUP_MODE_SHARED
-
-
 def shared_room_code(session: dict[str, Any]) -> str:
+    resolved = resolve_active_live_draft_mode(session)
+    code = str(resolved.get("room_code") or "").strip().upper()
+    if code:
+        return code
     try:
         from draft_room_context import resolve_shared_room_code
 
@@ -290,7 +465,8 @@ def shared_room_ready_for_start(session: dict[str, Any]) -> bool:
 
 
 def can_start_live_draft(session: dict[str, Any]) -> tuple[bool, str]:
-    if is_shared_multiplayer_intent(session):
+    active = resolve_active_live_draft_mode(session)
+    if active.get("is_shared"):
         if not shared_room_ready_for_start(session):
             return (
                 False,
@@ -314,7 +490,11 @@ def can_start_live_draft(session: dict[str, Any]) -> tuple[bool, str]:
             )
             from live_draft_team_ownership import distinct_claimed_owner_count, list_room_teams
 
-            code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+            code = str(
+                active.get("room_code")
+                or session.get(ACTIVE_SHARED_ROOM_CODE_KEY)
+                or ""
+            ).strip().upper()
             # Always reload latest shared room before evaluating the start gate.
             if code:
                 invalidate_shared_room_document_cache(session, code)
