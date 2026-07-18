@@ -394,7 +394,22 @@ def should_resolve_live_draft_source(session: dict[str, Any]) -> bool:
     Precedence: a bound Live Draft (waiting lobby, ready, active, or paused) owns
     draft UI over leftover simulator runtime. Setup-form-only edits without a
     hydrated ``live_draft_room`` still leave ownership on the simulator.
+
+    Completed / ended rooms never win automatic active-source resolution — they
+    remain available only via draft history / library.
     """
+    try:
+        from live_draft_completion import is_live_draft_ended_tombstoned
+
+        room_probe = session.get("live_draft_room")
+        draft_id = ""
+        if isinstance(room_probe, dict):
+            draft_id = str(room_probe.get("draft_room_id") or "").strip()
+        code = str(session.get("active_shared_draft_room_code") or "").strip()
+        if is_live_draft_ended_tombstoned(session, room_code=code, draft_room_id=draft_id):
+            return False
+    except ImportError:
+        pass
     if is_live_draft_runtime_active(session):
         return True
     try:
@@ -403,7 +418,10 @@ def should_resolve_live_draft_source(session: dict[str, Any]) -> bool:
         room = session.get(LIVE_DRAFT_ROOM_KEY)
         if not is_runtime_room(room):
             return False
-        status = str(room.get("status") or "").strip()
+        status = str(room.get("status") or "").strip().lower()
+        # Completed/ended rooms must not reopen as the active Live Draft page.
+        if status in ("complete", "completed", "closed", "ended"):
+            return False
         picks = live_draft_handoff_pick_count(room)
         # Bound Shared Live Draft lobby (join code present) — never fall back to
         # simulator Pick N. Local setup-form rooms without a share code stay on simulator.
@@ -416,10 +434,7 @@ def should_resolve_live_draft_source(session: dict[str, Any]) -> bool:
             except ImportError:
                 pass
             return False
-        # Completed live boards keep handoff ownership when picks exist.
-        if status == "complete" and picks > 0:
-            return True
-        if picks > 0 and status in ("in_progress", "paused", "complete"):
+        if picks > 0 and status in ("in_progress", "paused"):
             return True
         if status in ("in_progress", "paused"):
             return True

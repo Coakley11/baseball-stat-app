@@ -238,6 +238,15 @@ def mark_participant_present(
                     display_name=display,
                     session=session,
                 )
+                # Collapse host/guest alias duplicates so one identity owns one seat.
+                try:
+                    from live_draft_team_ownership import repair_shared_document_claims
+
+                    repaired = repair_shared_document_claims(out)
+                    if isinstance(repaired, dict):
+                        out = repaired
+                except ImportError:
+                    pass
                 # register bumps revision; restore board revision for chat-friendly save.
                 out["revision"] = board_rev
                 # Normalize joined_participants onto the same claim key.

@@ -160,25 +160,61 @@ def render_room_sync_diagnostics(st: Any, session: dict[str, Any]) -> None:
     except ImportError:
         pass
     diag = session.get("_draft_room_sync_diag")
-    if not isinstance(diag, dict):
+    claim = session.get("_draft_room_claim_diag")
+    if not isinstance(diag, dict) and not isinstance(claim, dict):
         return
+    diag = dict(diag or {})
+    claim = dict(claim or {})
     with st.expander("Room sync diagnostics (Developer Mode)", expanded=True):
         rows = [
-            ("room code", diag.get("room_code") or "—"),
-            ("matched room ID", diag.get("matched_room_id") or "—"),
-            ("room revision", diag.get("room_revision")),
-            ("lookup backend", diag.get("lookup_backend") or "—"),
-            ("lookup fallback used", diag.get("lookup_fallback_used")),
+            ("room code", diag.get("room_code") or claim.get("room_code") or "—"),
+            ("matched room ID", diag.get("matched_room_id") or claim.get("draft_room_id") or "—"),
+            ("room revision", diag.get("room_revision") if diag.get("room_revision") is not None else claim.get("room_revision")),
+            ("lookup backend", diag.get("lookup_backend") or claim.get("lookup_backend") or "—"),
+            ("lookup fallback used", diag.get("lookup_fallback_used", claim.get("lookup_fallback_used"))),
             ("host_participant_id", diag.get("host_participant_id") or "—"),
             ("host_user_id", diag.get("host_user_id") or "—"),
+            ("host aliases", claim.get("host_aliases") or diag.get("host_aliases") or []),
             ("is_room_host", diag.get("is_room_host")),
-            ("current participant_id", diag.get("participant_id") or "—"),
-            ("session teams", diag.get("session_teams") or []),
-            ("document teams", diag.get("document_teams") or []),
-            ("participants (claimed)", diag.get("participants") or {}),
+            ("current participant_id", diag.get("participant_id") or claim.get("current_participant_id") or "—"),
+            ("session teams", diag.get("session_teams") or claim.get("session_teams") or []),
+            ("document teams", diag.get("document_teams") or claim.get("document_teams") or []),
+            ("participants (claimed)", diag.get("participants") or claim.get("participants") or {}),
+            ("joined_participants", claim.get("joined_participants") or {}),
+            ("available teams", claim.get("available_teams") or []),
+            ("already joined team", claim.get("already_joined_team") or "—"),
         ]
         for label, value in rows:
             st.text(f"{label}: {value if value is not None and value != '' else '—'}")
+
+
+def render_claim_availability_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    """Developer Mode: per-team claimant raw ids, canonical owner, availability reason."""
+    if not join_trace_visible(session):
+        return
+    claim = session.get("_draft_room_claim_diag")
+    if not isinstance(claim, dict):
+        return
+    occupancy = claim.get("occupancy")
+    if not isinstance(occupancy, dict) or not occupancy:
+        return
+    with st.expander("Team claim availability (Developer Mode)", expanded=True):
+        st.text(f"authoritative_fn: list_available_shared_room_teams")
+        st.text(f"room_code: {claim.get('room_code') or '—'}")
+        st.text(f"draft_room_id: {claim.get('draft_room_id') or '—'}")
+        st.text(f"room_revision: {claim.get('room_revision')}")
+        st.text(f"current_participant_id: {claim.get('current_participant_id') or '—'}")
+        st.text(f"current_identity_aliases: {claim.get('current_identity_aliases') or []}")
+        for team in claim.get("document_teams") or list(occupancy.keys()):
+            slot = occupancy.get(team) or {}
+            st.text(f"{team}:")
+            st.text(f"  claimant_raw_ids: {list(slot.get('claimant_raw_ids') or [])}")
+            st.text(
+                f"  canonical_claimant: {slot.get('canonical_claimant') or 'none'}"
+                f" ({slot.get('canonical_participant_id') or '—'})"
+            )
+            st.text(f"  available: {bool(slot.get('available'))}")
+            st.text(f"  reason: {slot.get('reason') or '—'}")
 
 
 def render_join_attempt_diagnostics(st: Any, session: dict[str, Any]) -> None:

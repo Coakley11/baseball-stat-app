@@ -905,10 +905,33 @@ def join_shared_draft_room(
         auth_uid = str(session.get("auth_user_id") or "").strip()
 
     participant_id = resolve_participant_id(session)
+    try:
+        from live_draft_team_ownership import (
+            list_available_shared_room_teams,
+            repair_shared_document_claims,
+            session_identity_aliases,
+        )
+
+        document = repair_shared_document_claims(document)
+        aliases = session_identity_aliases(session)
+        _open, claim_diag = list_available_shared_room_teams(
+            document,
+            participant_id,
+            current_identity_aliases=aliases,
+        )
+        session["_draft_room_claim_diag"] = claim_diag
+    except ImportError:
+        aliases = {str(participant_id or "").strip()} if participant_id else set()
+        claim_diag = {}
+
     participants = dict(document.get("participants") or {})
     existing = participants.get(participant_id)
     duplicate_rejoin = False
-    if isinstance(existing, dict) and existing.get("assigned_team"):
+    already_team = str((claim_diag or {}).get("already_joined_team") or "").strip()
+    if already_team:
+        assigned = already_team
+        duplicate_rejoin = True
+    elif isinstance(existing, dict) and existing.get("assigned_team"):
         assigned = str(existing["assigned_team"])
         duplicate_rejoin = True
     else:
@@ -916,6 +939,7 @@ def join_shared_draft_room(
             document,
             participant_id,
             requested_team=requested_team,
+            current_identity_aliases=aliases,
         )
         if not assigned:
             friendly = err or "No teams are available"

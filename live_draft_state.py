@@ -1184,6 +1184,64 @@ def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
         return _prepare_live_draft_state_body(session)
 
 
+def _room_blocked_from_auto_restore(
+    session: dict[str, Any],
+    room: dict[str, Any] | None,
+    *,
+    for_persisted_restore: bool = False,
+) -> str:
+    """Block automatic runtime restore for ended/completed drafts.
+
+    Tombstones always win. Persisted restore paths also skip completed boards so
+    refresh/reboot cannot reopen them. An in-session completed room (results
+    banner before End Draft) is kept until End Draft clears it.
+    """
+    if not isinstance(room, dict):
+        return ""
+    draft_id = str(room.get("draft_room_id") or "").strip()
+    code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+    try:
+        from draft_room_participant_state import live_draft_room_share_code
+
+        share = str(live_draft_room_share_code(room) or "").strip().upper()
+        if share:
+            code = share
+    except ImportError:
+        pass
+    try:
+        from live_draft_completion import is_live_draft_ended_tombstoned
+
+        if is_live_draft_ended_tombstoned(session, room_code=code, draft_room_id=draft_id):
+            return "ended_tombstone"
+    except ImportError:
+        pass
+    status = str(room.get("status") or "").strip().lower()
+    if status in ("closed", "ended"):
+        return f"status_{status}"
+    if for_persisted_restore and status in ("complete", "completed"):
+        return f"status_{status}"
+    record = room.get("live_draft_completion_record")
+    if (
+        for_persisted_restore
+        and isinstance(record, dict)
+        and record.get("draft_status") == "complete"
+        and record.get("final_board_locked")
+    ):
+        return "completion_record"
+    return ""
+
+
+def _clear_blocked_completed_runtime(session: dict[str, Any], *, reason: str) -> None:
+    session["_live_draft_restore_blocked_reason"] = reason
+    session.pop(LIVE_DRAFT_ROOM_KEY, None)
+    session.pop(LIVE_DRAFT_STATE_KEY, None)
+    pf = session.get("page_filter_state")
+    if isinstance(pf, dict):
+        block = pf.get(LIVE_DRAFT_PAGE_BLOCK)
+        if isinstance(block, dict):
+            block.pop(LIVE_DRAFT_ROOM_KEY, None)
+
+
 def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | None:
     if session.get("_live_draft_manual_pick_in_flight"):
         room = session.get(LIVE_DRAFT_ROOM_KEY)
@@ -1204,6 +1262,15 @@ def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | 
                 return _finish_prepare(session, room)
     except ImportError:
         pass
+    # Tombstoned / closed runtime must not survive prepare (End Draft marker).
+    runtime_probe = session.get(LIVE_DRAFT_ROOM_KEY)
+    blocked = _room_blocked_from_auto_restore(
+        session,
+        runtime_probe if isinstance(runtime_probe, dict) else None,
+        for_persisted_restore=False,
+    )
+    if blocked:
+        _clear_blocked_completed_runtime(session, reason=f"prepare_skip_runtime:{blocked}")
     short = _try_short_circuit_prepare(session)
     if short is not None:
         return short
@@ -1212,36 +1279,59 @@ def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | 
 
         if is_multiplayer_draft_active(session):
             room = session.get(LIVE_DRAFT_ROOM_KEY)
-            if is_runtime_room(room):
-                write_canonical_live_draft_state(session, room, reason="multiplayer_hydrate", local_edit=False)
-                return _finish_prepare(session, room)
-            # Prefer hydrating the shared lobby over wiping Create/Join/Claim state.
-            try:
-                from draft_room_context import poll_shared_draft_room, sync_shared_draft_room
-
-                sync_shared_draft_room(session, force=False)
-                poll_shared_draft_room(session)
-                room = session.get(LIVE_DRAFT_ROOM_KEY)
-                if is_runtime_room(room):
-                    write_canonical_live_draft_state(session, room, reason="multiplayer_poll_hydrate", local_edit=False)
-                    return _finish_prepare(session, room)
-            except Exception:
-                pass
-            code = str(resolve_shared_room_code(session) or "").strip().upper()
-            membership = session.get("draft_room_participant_membership")
-            has_membership = isinstance(membership, dict) and bool(code) and code in membership
-            if has_membership or bool(session.get("draft_room_participant_team")):
-                # Valid Create/Join/Claim lobby — keep room code; do not treat as stale.
-                return _finish_prepare(session, room if isinstance(room, dict) else None)
-            clear_stale_multiplayer_state(
+            mp_blocked = _room_blocked_from_auto_restore(
                 session,
-                reason="Shared room was not loaded — restored your single-user live draft.",
+                room if isinstance(room, dict) else None,
+                for_persisted_restore=False,
             )
+            if mp_blocked:
+                _clear_blocked_completed_runtime(session, reason=f"prepare_skip_mp:{mp_blocked}")
+                try:
+                    from draft_room_context import leave_shared_draft_room
+
+                    leave_shared_draft_room(session)
+                except Exception:
+                    session.pop("active_shared_draft_room_code", None)
+            else:
+                if is_runtime_room(room):
+                    write_canonical_live_draft_state(session, room, reason="multiplayer_hydrate", local_edit=False)
+                    return _finish_prepare(session, room)
+                # Prefer hydrating the shared lobby over wiping Create/Join/Claim state.
+                try:
+                    from draft_room_context import poll_shared_draft_room, sync_shared_draft_room
+
+                    sync_shared_draft_room(session, force=False)
+                    poll_shared_draft_room(session)
+                    room = session.get(LIVE_DRAFT_ROOM_KEY)
+                    if is_runtime_room(room):
+                        write_canonical_live_draft_state(session, room, reason="multiplayer_poll_hydrate", local_edit=False)
+                        return _finish_prepare(session, room)
+                except Exception:
+                    pass
+                code = str(resolve_shared_room_code(session) or "").strip().upper()
+                membership = session.get("draft_room_participant_membership")
+                has_membership = isinstance(membership, dict) and bool(code) and code in membership
+                if has_membership or bool(session.get("draft_room_participant_team")):
+                    # Valid Create/Join/Claim lobby — keep room code; do not treat as stale.
+                    return _finish_prepare(session, room if isinstance(room, dict) else None)
+                clear_stale_multiplayer_state(
+                    session,
+                    reason="Shared room was not loaded — restored your single-user live draft.",
+                )
     except ImportError:
         pass
     canonical = canonical_live_draft(session)
     room = session.get(LIVE_DRAFT_ROOM_KEY)
     if isinstance(canonical, dict) and canonical.get("draft_room_id"):
+        # Only restore from persisted canonical when runtime is empty — and never
+        # rehydrate a completed/ended board after End Draft / reboot.
+        if not is_runtime_room(room):
+            canon_blocked = _room_blocked_from_auto_restore(
+                session, canonical, for_persisted_restore=True
+            )
+            if canon_blocked:
+                _clear_blocked_completed_runtime(session, reason=f"prepare_skip_canonical:{canon_blocked}")
+                return None
         allowed, block_reason = live_draft_restore_allowed(session, canonical, source="session_canonical")
         if not allowed:
             clear_foreign_live_draft_state(session, reason=block_reason)
@@ -1265,6 +1355,12 @@ def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | 
             pass
         restored = room_from_persist_dict(canonical)
         if restored:
+            restore_blocked = _room_blocked_from_auto_restore(
+                session, restored, for_persisted_restore=not is_runtime_room(room)
+            )
+            if restore_blocked:
+                _clear_blocked_completed_runtime(session, reason=f"prepare_skip_canonical_restore:{restore_blocked}")
+                return None
             session[LIVE_DRAFT_ROOM_KEY] = restored
             check_manual_commit_overwrite(session, source="prepare_live_draft_state_canonical_restore")
             return _finish_prepare(session, restored)
@@ -1279,6 +1375,14 @@ def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | 
             if is_persisted_room_blob(legacy):
                 restored = room_from_persist_dict(legacy)
                 if restored:
+                    legacy_blocked = _room_blocked_from_auto_restore(
+                        session, restored, for_persisted_restore=True
+                    )
+                    if legacy_blocked:
+                        _clear_blocked_completed_runtime(
+                            session, reason=f"prepare_skip_page_filter:{legacy_blocked}"
+                        )
+                        return None
                     write_canonical_live_draft_state(session, restored, reason="page_filter_hydrate", local_edit=False)
                     return _finish_prepare(session, restored)
     final = room if isinstance(room, dict) else None

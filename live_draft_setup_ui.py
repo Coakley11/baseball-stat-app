@@ -230,12 +230,24 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
     code = str(code_input or session.get("live_draft_join_code_input") or "").strip().upper()
     open_teams: list[str] = []
     lookup_err = ""
+    already_team = ""
     if len(code) >= 6:
-        open_teams, lookup_err = lookup_open_teams_for_code(code)
-    if lookup_err and len(code) >= 6:
+        open_teams, lookup_err = lookup_open_teams_for_code(code, session=session)
+        claim_diag = session.get("_draft_room_claim_diag")
+        if isinstance(claim_diag, dict):
+            already_team = str(claim_diag.get("already_joined_team") or "").strip()
+        if not already_team and lookup_err and "already joined" in lookup_err.lower():
+            # Parse "You already joined this room as Team B"
+            marker = " as "
+            idx = lookup_err.lower().rfind(marker)
+            if idx >= 0:
+                already_team = lookup_err[idx + len(marker) :].strip().rstrip(".")
+    if already_team and len(code) >= 6:
+        st.info(f"You already joined this room as {already_team}")
+    elif lookup_err and len(code) >= 6:
         st.caption(f"⚠ {lookup_err}")
     picked_team = ""
-    if open_teams:
+    if open_teams and not already_team:
         default_idx = 0
         prev = str(session.get("live_draft_join_team_pick") or "").strip()
         if prev in open_teams:
@@ -247,7 +259,7 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
             key="live_draft_join_team_pick",
             help="Pick the team you control. Teams are never assigned automatically.",
         )
-    elif code:
+    elif code and not already_team and not lookup_err:
         st.caption("Enter a valid 6-character code to see available teams.")
     with join_col2:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
@@ -255,19 +267,33 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
             from draft_ui import on_join_shared_draft_from_setup
         except ImportError:
             on_join_shared_draft_from_setup = None  # type: ignore[assignment,misc]
-        st.button(
-            "Join Room",
-            key="live_draft_join_from_setup_btn",
-            type="primary",
-            on_click=on_join_shared_draft_from_setup,
-            kwargs={
-                "requested_code": code,
-                "requested_team": str(picked_team or "").strip(),
-                "selectbox_return_value": str(picked_team or "").strip(),
-            },
-        )
+        if already_team:
+            st.button(
+                "Enter Room",
+                key="live_draft_reenter_from_setup_btn",
+                type="primary",
+                on_click=on_join_shared_draft_from_setup,
+                kwargs={
+                    "requested_code": code,
+                    "requested_team": already_team,
+                    "selectbox_return_value": already_team,
+                },
+            )
+        else:
+            st.button(
+                "Join Room",
+                key="live_draft_join_from_setup_btn",
+                type="primary",
+                on_click=on_join_shared_draft_from_setup,
+                kwargs={
+                    "requested_code": code,
+                    "requested_team": str(picked_team or "").strip(),
+                    "selectbox_return_value": str(picked_team or "").strip(),
+                },
+            )
     try:
         from draft_room_join_trace import (
+            render_claim_availability_diagnostics,
             render_join_attempt_diagnostics,
             render_join_trace_panel,
             render_room_sync_diagnostics,
@@ -275,6 +301,7 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
 
         render_join_attempt_diagnostics(st, session)
         render_room_sync_diagnostics(st, session)
+        render_claim_availability_diagnostics(st, session)
         render_join_trace_panel(st, session)
     except ImportError:
         pass
@@ -327,7 +354,7 @@ def _resolve_requested_team_for_join(
         return team, False, False, ""
     if not code:
         return "", False, False, ""
-    open_teams, lookup_err = lookup_open_teams_for_code(code)
+    open_teams, lookup_err = lookup_open_teams_for_code(code, session=session)
     if len(open_teams) == 1:
         return open_teams[0], True, True, str(lookup_err or "")
     return "", False, True, str(lookup_err or "")

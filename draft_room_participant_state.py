@@ -1109,6 +1109,54 @@ def clear_participant_left_room(session: dict[str, Any], room_code: str) -> None
     slot["joined_at"] = _utc_now_iso()
 
 
+def _shared_room_restore_blocked(session: dict[str, Any], room_code: str) -> str:
+    """Return a short reason when a room code must not auto-restore as active runtime."""
+    code = str(room_code or "").strip().upper()
+    if not code:
+        return "empty"
+    try:
+        from live_draft_completion import is_live_draft_ended_tombstoned
+
+        if is_live_draft_ended_tombstoned(session, room_code=code):
+            return "ended_tombstone"
+    except ImportError:
+        pass
+    if participant_has_left_room(session, code):
+        return "participant_left"
+    try:
+        from draft_room_shared_state import load_shared_room
+
+        document = load_shared_room(code)
+        if isinstance(document, dict):
+            status = str(document.get("status") or "").strip().lower()
+            if status in (
+                "closed",
+                "complete",
+                "completed",
+                "cancelled",
+                "canceled",
+                "expired",
+                "ended",
+            ):
+                return f"document_{status or 'terminal'}"
+            room_blob = document.get("room") if isinstance(document.get("room"), dict) else {}
+            room_status = str((room_blob or {}).get("status") or "").strip().lower()
+            if room_status in ("complete", "completed", "closed", "ended"):
+                return f"room_{room_status}"
+            draft_id = str(document.get("draft_room_id") or (room_blob or {}).get("draft_room_id") or "").strip()
+            if draft_id:
+                try:
+                    from live_draft_completion import is_live_draft_ended_tombstoned
+
+                    if is_live_draft_ended_tombstoned(session, draft_room_id=draft_id):
+                        return "ended_draft_id_tombstone"
+                except ImportError:
+                    pass
+    except Exception:
+        pass
+    return ""
+
+
 def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
     """Rehydrate active room code + team from persisted workspace blob after refresh."""
     try:
@@ -1157,9 +1205,21 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
         preferred = ""
         active_ctx = None
 
+    preferred_block = _shared_room_restore_blocked(session, preferred) if preferred else ""
+    if preferred_block:
+        session["_live_draft_restore_blocked_reason"] = f"preferred_source_room_skipped:{preferred_block}"
+        preferred = ""
+
     code = _valid_code(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "")
+    code_block = _shared_room_restore_blocked(session, code) if code else ""
+    if code_block:
+        session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+        session["_live_draft_restore_blocked_reason"] = f"active_code_skipped:{code_block}"
+        code = ""
+
     if preferred and code and preferred != code:
-        # Active League's Live Draft origin wins over a stale resume pointer.
+        # Active League's Live Draft origin wins over a stale resume pointer —
+        # but never for completed/left/tombstoned rooms.
         team = ""
         try:
             from fantasy_league_team_ownership import resolve_account_fantasy_team
@@ -1196,7 +1256,7 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
     if isinstance(membership, dict):
         for raw_code, _room_mem in membership.items():
             room_code = _valid_code(raw_code)
-            if not room_code or participant_has_left_room(session, room_code):
+            if not room_code or _shared_room_restore_blocked(session, room_code):
                 continue
             team = membership_team_for_participant(session, room_code, participant_id=pid)
             if team:
@@ -1206,7 +1266,7 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
     if isinstance(bucket, dict):
         for raw_code, state in bucket.items():
             room_code = _valid_code(raw_code)
-            if not room_code or not isinstance(state, dict) or participant_has_left_room(session, room_code):
+            if not room_code or not isinstance(state, dict) or _shared_room_restore_blocked(session, room_code):
                 continue
             if any(c[0] == room_code for c in candidates):
                 continue

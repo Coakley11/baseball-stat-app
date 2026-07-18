@@ -369,45 +369,67 @@ def resolve_join_team_assignment(
     participant_id: str,
     *,
     requested_team: str | None = None,
+    current_identity_aliases: set[str] | None = None,
 ) -> tuple[str | None, str]:
-    """Pick or restore team for join; return (team, error_message)."""
+    """Pick or restore team for join; return (team, error_message).
+
+    Occupancy uses the same authoritative calculator as the guest join screen so
+    host alias duplicates cannot invent a second claimed seat.
+    """
     pid = str(participant_id or "").strip()
+    try:
+        from live_draft_team_ownership import (
+            list_available_shared_room_teams,
+            repair_shared_document_claims,
+        )
+
+        doc = repair_shared_document_claims(document)
+        open_teams, diag = list_available_shared_room_teams(
+            doc,
+            pid,
+            current_identity_aliases=current_identity_aliases,
+        )
+        already = str(diag.get("already_joined_team") or "").strip()
+        if already:
+            return already, ""
+
+        if requested_team:
+            req = str(requested_team).strip()
+            if req in open_teams:
+                return req, ""
+            slot = (diag.get("occupancy") or {}).get(req) or {}
+            owner = str(slot.get("canonical_claimant") or "").strip()
+            if owner or slot.get("canonical_participant_id"):
+                return None, ERR_TEAM_ALREADY_ASSIGNED
+            return None, f"Team **{req}** is not available in this room."
+
+        if not open_teams:
+            return None, "No open team slots in this room."
+        return None, "Choose a team before joining — teams are never assigned automatically."
+    except ImportError:
+        pass
+
     participants = dict(document.get("participants") or {})
     existing = participants.get(pid)
     if isinstance(existing, dict) and existing.get("assigned_team"):
         return str(existing["assigned_team"]), ""
 
-    try:
-        from live_draft_team_ownership import list_document_teams
-
-        teams = list_document_teams(document)
-    except ImportError:
-        room_blob = document.get("room")
-        teams = []
-        if isinstance(room_blob, dict):
-            teams = [str(t).strip() for t in (room_blob.get("teams") or []) if str(t).strip()]
-            if not teams:
-                cfg = dict(room_blob.get("config") or {})
-                n = int(cfg.get("num_teams") or 0)
-                teams = [f"Team {i + 1}" for i in range(n)] if n else []
+    room_blob = document.get("room")
+    teams = []
+    if isinstance(room_blob, dict):
+        teams = [str(t).strip() for t in (room_blob.get("teams") or []) if str(t).strip()]
+        if not teams:
+            cfg = dict(room_blob.get("config") or {})
+            n = int(cfg.get("num_teams") or 0)
+            teams = [f"Team {i + 1}" for i in range(n)] if n else []
 
     taken_by_other: dict[str, str] = {}
-    # Collapse duplicate identity keys so host auth/cloud aliases do not fill every seat.
-    seen_owners: dict[str, str] = {}
     for other_id, meta in participants.items():
         if not isinstance(meta, dict):
             continue
         team = str(meta.get("assigned_team") or "").strip()
         if not team:
             continue
-        owner_key = str(
-            meta.get("user_id") or meta.get("account_user_id") or other_id or ""
-        ).strip()
-        prev = seen_owners.get(team)
-        if prev and prev != owner_key:
-            taken_by_other[team] = prev
-            continue
-        seen_owners[team] = owner_key
         taken_by_other[team] = str(other_id)
 
     if requested_team:
