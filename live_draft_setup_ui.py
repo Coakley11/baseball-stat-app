@@ -267,9 +267,14 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
             },
         )
     try:
-        from draft_room_join_trace import render_join_attempt_diagnostics, render_join_trace_panel
+        from draft_room_join_trace import (
+            render_join_attempt_diagnostics,
+            render_join_trace_panel,
+            render_room_sync_diagnostics,
+        )
 
         render_join_attempt_diagnostics(st, session)
+        render_room_sync_diagnostics(st, session)
         render_join_trace_panel(st, session)
     except ImportError:
         pass
@@ -590,6 +595,12 @@ def render_draft_information_panel(
         st.markdown("**Team ownership**")
         for row in team_claim_rows(session, room):
             st.markdown(f"- {format_team_claim_status(session, row)}")
+        try:
+            from draft_room_join_trace import render_room_sync_diagnostics
+
+            render_room_sync_diagnostics(st, session)
+        except ImportError:
+            pass
 
         action_col1, action_col2, action_col3 = st.columns(3)
         with action_col1:
@@ -600,7 +611,9 @@ def render_draft_information_panel(
             if st.button("Refresh Lobby", key="live_draft_lobby_refresh_btn", use_container_width=True):
                 try:
                     from draft_room_context import sync_shared_draft_room
+                    from draft_room_shared_state import invalidate_shared_room_document_cache
 
+                    invalidate_shared_room_document_cache(session, code)
                     sync_shared_draft_room(session, force=True)
                 except ImportError:
                     pass

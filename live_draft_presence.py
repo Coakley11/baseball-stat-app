@@ -14,17 +14,20 @@ def _utc_now_iso() -> str:
 
 
 def canonical_participant_user_id(session: dict[str, Any]) -> str:
-    """Stable authenticated identity — never display name alone."""
-    # Prefer explicit auth / account ids from the session before Streamlit fallbacks.
-    for key in (
-        "auth_user_id",
-        "_suite_cloud_user_id",
-        "_suite_auth_user_id",
-        "draft_room_participant_id",
-    ):
-        val = str(session.get(key) or "").strip()
-        if val and not val.startswith(("local:", "anonymous:", "demo:")):
-            return val
+    """Stable authenticated identity — must match resolve_participant_id.
+
+    Presence and claim maps must use one key. Preferring ``_suite_cloud_user_id``
+    over ``_suite_auth_user_id`` previously double-registered the host and made
+    guests see every team claimed ("No teams are available").
+    """
+    try:
+        from draft_room_participant_state import resolve_participant_id
+
+        pid = str(resolve_participant_id(session) or "").strip()
+        if pid:
+            return pid
+    except ImportError:
+        pass
     try:
         from suite_auth import AUTH_USER_ID_KEY
 
@@ -33,17 +36,10 @@ def canonical_participant_user_id(session: dict[str, Any]) -> str:
             return val
     except ImportError:
         pass
-    try:
-        from draft_room_participant_state import resolve_participant_id
-
-        pid = str(resolve_participant_id(session) or "").strip()
-        if pid and not pid.startswith(("local:", "anonymous:", "demo:")):
-            return pid
-        # Last resort only when no authenticated id exists.
-        if pid:
-            return pid
-    except ImportError:
-        pass
+    for key in ("_suite_cloud_user_id", "draft_room_participant_id", "auth_user_id"):
+        val = str(session.get(key) or "").strip()
+        if val and not val.startswith(("local:", "anonymous:", "demo:")):
+            return val
     return ""
 
 
@@ -226,19 +222,33 @@ def mark_participant_present(
         out[JOINED_PARTICIPANTS_KEY] = joined
 
         # Keep participants map in sync when the user already has a claimed team.
+        # Always re-use resolve_participant_id — never invent a second claim key.
         if team:
             try:
-                from draft_room_participant_state import register_participant_in_shared_document
+                from draft_room_participant_state import (
+                    register_participant_in_shared_document,
+                    resolve_participant_id,
+                )
 
+                claim_pid = str(resolve_participant_id(session) or uid).strip() or uid
                 out = register_participant_in_shared_document(
                     out,
-                    participant_id=uid,
+                    participant_id=claim_pid,
                     assigned_team=team,
                     display_name=display,
                     session=session,
                 )
                 # register bumps revision; restore board revision for chat-friendly save.
                 out["revision"] = board_rev
+                # Normalize joined_participants onto the same claim key.
+                if claim_pid != uid and claim_pid in (out.get("participants") or {}):
+                    joined = normalize_joined_participants(out.get(JOINED_PARTICIPANTS_KEY))
+                    if uid in joined and claim_pid not in joined:
+                        row = dict(joined.pop(uid))
+                        row["user_id"] = claim_pid
+                        joined[claim_pid] = row
+                        out[JOINED_PARTICIPANTS_KEY] = joined
+                    uid = claim_pid
             except ImportError:
                 pass
 

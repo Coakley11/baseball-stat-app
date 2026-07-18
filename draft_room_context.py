@@ -116,14 +116,44 @@ def get_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
     room = session.get(LIVE_DRAFT_ROOM_KEY)
     runtime_active = has_active_live_draft(session)
     is_host = False
+    shared_doc: dict[str, Any] | None = None
     if room_code:
         try:
+            from draft_room_create_verify import load_shared_room_with_diagnostics
             from draft_room_membership import is_room_host
 
-            doc = load_shared_room(room_code)
-            is_host = is_room_host(session, doc)
+            load_result = load_shared_room_with_diagnostics(get_shared_room_store(), room_code)
+            doc = load_result.get("document")
+            shared_doc = doc if isinstance(doc, dict) else None
+            is_host = is_room_host(session, shared_doc)
+            session["_draft_room_sync_diag"] = {
+                "room_code": room_code,
+                "lookup_backend": load_result.get("backend"),
+                "lookup_fallback_used": bool(load_result.get("lookup_fallback_used")),
+                "matched_room_id": str((shared_doc or {}).get("draft_room_id") or ""),
+                "room_revision": int((shared_doc or {}).get("revision") or 0),
+                "host_participant_id": str((shared_doc or {}).get("host_participant_id") or ""),
+                "host_user_id": str((shared_doc or {}).get("host_user_id") or ""),
+                "is_room_host": is_host,
+                "participant_id": participant_id,
+                "session_teams": list((room or {}).get("teams") or []) if isinstance(room, dict) else [],
+                "document_teams": list(((shared_doc or {}).get("room") or {}).get("teams") or [])
+                if isinstance(shared_doc, dict)
+                else [],
+                "participants": {
+                    str(k): str((v or {}).get("assigned_team") or "")
+                    for k, v in dict((shared_doc or {}).get("participants") or {}).items()
+                    if isinstance(v, dict)
+                },
+            }
         except ImportError:
-            pass
+            try:
+                from draft_room_membership import is_room_host
+
+                shared_doc = load_shared_room(room_code)
+                is_host = is_room_host(session, shared_doc)
+            except ImportError:
+                pass
     return {
         "mode": "multiplayer" if room_code else ("single_user_live" if runtime_active else "none"),
         "room_code": room_code or None,
@@ -131,12 +161,12 @@ def get_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
         "participant_team": participant_team,
         "draft_room_id": str(room.get("draft_room_id") or "") if isinstance(room, dict) else "",
         "is_room_host": is_host,
-        "shared_revision": shared_meta.get("revision"),
+        "shared_revision": shared_meta.get("revision")
+        or (int((shared_doc or {}).get("revision") or 0) if shared_doc else None),
         "shared_updated_at": shared_meta.get("updated_at"),
         "shared_storage_backend": shared_meta.get("storage_backend"),
         "live_draft_active": runtime_active,
         "room_status": str(room.get("status") or "") if isinstance(room, dict) else "",
-        "draft_room_id": str(room.get("draft_room_id") or "") if isinstance(room, dict) else "",
     }
 
 

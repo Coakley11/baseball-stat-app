@@ -313,12 +313,25 @@ def default_host_team(live_room: dict[str, Any]) -> str:
     return "Team 1"
 
 
+def document_host_ids(document: dict[str, Any] | None) -> set[str]:
+    """All host identity aliases on a shared room document."""
+    if not isinstance(document, dict):
+        return set()
+    out: set[str] = set()
+    for key in ("host_participant_id", "host_user_id"):
+        val = str(document.get(key) or "").strip()
+        if val:
+            out.add(val)
+    return out
+
+
 def document_host_id(document: dict[str, Any] | None) -> str:
+    """Primary host id — prefer participant map key over auth alias."""
     if not isinstance(document, dict):
         return ""
     return str(
-        document.get("host_user_id")
-        or document.get("host_participant_id")
+        document.get("host_participant_id")
+        or document.get("host_user_id")
         or ""
     ).strip()
 
@@ -329,10 +342,26 @@ def is_room_host(
 ) -> bool:
     from draft_room_participant_state import resolve_participant_id
 
-    host = document_host_id(document)
-    if not host:
+    hosts = document_host_ids(document)
+    if not hosts:
         return False
-    return host == resolve_participant_id(session)
+    pid = str(resolve_participant_id(session) or "").strip()
+    if pid and pid in hosts:
+        return True
+    # Presence / cloud aliases may differ from the create-time participant key.
+    try:
+        from suite_auth import AUTH_USER_ID_KEY
+
+        auth = str(session.get(AUTH_USER_ID_KEY) or "").strip()
+        if auth and auth in hosts:
+            return True
+    except ImportError:
+        pass
+    for key in ("_suite_cloud_user_id", "draft_room_participant_id"):
+        alias = str(session.get(key) or "").strip()
+        if alias and alias in hosts:
+            return True
+    return False
 
 
 def resolve_join_team_assignment(
@@ -348,22 +377,38 @@ def resolve_join_team_assignment(
     if isinstance(existing, dict) and existing.get("assigned_team"):
         return str(existing["assigned_team"]), ""
 
-    room_blob = document.get("room")
-    teams: list[str] = []
-    if isinstance(room_blob, dict):
-        teams = [str(t).strip() for t in (room_blob.get("teams") or []) if str(t).strip()]
-        if not teams:
-            cfg = dict(room_blob.get("config") or {})
-            n = int(cfg.get("num_teams") or 0)
-            teams = [f"Team {i + 1}" for i in range(n)] if n else []
+    try:
+        from live_draft_team_ownership import list_document_teams
+
+        teams = list_document_teams(document)
+    except ImportError:
+        room_blob = document.get("room")
+        teams = []
+        if isinstance(room_blob, dict):
+            teams = [str(t).strip() for t in (room_blob.get("teams") or []) if str(t).strip()]
+            if not teams:
+                cfg = dict(room_blob.get("config") or {})
+                n = int(cfg.get("num_teams") or 0)
+                teams = [f"Team {i + 1}" for i in range(n)] if n else []
 
     taken_by_other: dict[str, str] = {}
+    # Collapse duplicate identity keys so host auth/cloud aliases do not fill every seat.
+    seen_owners: dict[str, str] = {}
     for other_id, meta in participants.items():
         if not isinstance(meta, dict):
             continue
         team = str(meta.get("assigned_team") or "").strip()
-        if team:
-            taken_by_other[team] = str(other_id)
+        if not team:
+            continue
+        owner_key = str(
+            meta.get("user_id") or meta.get("account_user_id") or other_id or ""
+        ).strip()
+        prev = seen_owners.get(team)
+        if prev and prev != owner_key:
+            taken_by_other[team] = prev
+            continue
+        seen_owners[team] = owner_key
+        taken_by_other[team] = str(other_id)
 
     if requested_team:
         req = str(requested_team).strip()

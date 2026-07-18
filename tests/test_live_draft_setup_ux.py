@@ -117,16 +117,8 @@ class TeamClaimTests(unittest.TestCase):
     def test_team_claim_rows_show_host_and_open(self) -> None:
         session = {ACTIVE_SHARED_ROOM_CODE_KEY: "ABC123"}
         room = _sample_room()
-        with mock.patch(
-            "live_draft_team_ownership.load_shared_participants",
-            return_value={
-                "host-user": {"assigned_team": "Danny", "display_name": "Danny"},
-            },
-        ), mock.patch(
-            "live_draft_team_ownership._host_participant_id",
-            return_value="host-user",
-        ):
-            rows = team_claim_rows(session, room)
+        doc = _shared_doc(room)
+        rows = team_claim_rows(session, room, document=doc)
         by_team = {r["team"]: r for r in rows}
         self.assertTrue(by_team["Danny"]["claimed"])
         self.assertTrue(by_team["Danny"]["is_host"])

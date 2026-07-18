@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 
-def list_room_teams(room: dict[str, Any]) -> list[str]:
+def list_room_teams(room: dict[str, Any] | None) -> list[str]:
+    if not isinstance(room, dict):
+        return []
     teams = [str(t).strip() for t in (room.get("teams") or []) if str(t).strip()]
     if teams:
         return teams
@@ -13,41 +15,155 @@ def list_room_teams(room: dict[str, Any]) -> list[str]:
     named = [str(t).strip() for t in (cfg.get("teams") or []) if str(t).strip()]
     if named:
         return named
+    # Derive from pick order when persist stripped top-level teams.
+    order_teams: list[str] = []
+    seen: set[str] = set()
+    for slot in room.get("pick_order") or []:
+        if not isinstance(slot, dict):
+            continue
+        name = str(slot.get("Team") or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            order_teams.append(name)
+    if order_teams:
+        return order_teams
     n = int(cfg.get("num_teams") or 0)
     return [f"Team {i + 1}" for i in range(n)] if n else []
 
 
-def load_shared_participants(session: dict[str, Any], *, room_code: str | None = None) -> dict[str, dict[str, Any]]:
+def list_document_teams(document: dict[str, Any] | None, *, session_room: dict[str, Any] | None = None) -> list[str]:
+    """Canonical team list for host lobby and guest join — same source of truth.
+
+    Prefer shared ``document.room``; union session runtime teams so a thin/stale
+    document cannot hide Team B while the host lobby still shows it.
+    """
+    doc_teams: list[str] = []
+    if isinstance(document, dict):
+        room_blob = document.get("room")
+        if isinstance(room_blob, dict):
+            doc_teams = list_room_teams(room_blob)
+    session_teams = list_room_teams(session_room) if isinstance(session_room, dict) else []
+    if not doc_teams:
+        return session_teams
+    if not session_teams:
+        return doc_teams
+    # Preserve document order; append any session-only teams.
+    seen = {t.lower() for t in doc_teams}
+    merged = list(doc_teams)
+    for team in session_teams:
+        if team.lower() not in seen:
+            merged.append(team)
+            seen.add(team.lower())
+    return merged
+
+
+def load_shared_room_document(session: dict[str, Any], *, room_code: str | None = None) -> dict[str, Any] | None:
+    """Load shared room with the same global lookup + fallback guests use."""
     code = str(room_code or session.get("active_shared_draft_room_code") or "").strip().upper()
     if not code:
-        return {}
+        return None
+    try:
+        from draft_room_context import get_shared_room_store
+        from draft_room_create_verify import load_shared_room_with_diagnostics
+
+        result = load_shared_room_with_diagnostics(get_shared_room_store(), code)
+        doc = result.get("document")
+        return doc if isinstance(doc, dict) else None
+    except ImportError:
+        pass
     try:
         from draft_room_shared_state import load_shared_room
 
         doc = load_shared_room(code)
-        if isinstance(doc, dict):
-            raw = doc.get("participants") or {}
-            if isinstance(raw, dict):
-                return {str(k): dict(v) for k, v in raw.items() if isinstance(v, dict)}
+        return doc if isinstance(doc, dict) else None
     except ImportError:
-        pass
+        return None
+
+
+def load_shared_participants(session: dict[str, Any], *, room_code: str | None = None) -> dict[str, dict[str, Any]]:
+    doc = load_shared_room_document(session, room_code=room_code)
+    if not isinstance(doc, dict):
+        return {}
+    raw = doc.get("participants") or {}
+    if isinstance(raw, dict):
+        return {str(k): dict(v) for k, v in raw.items() if isinstance(v, dict)}
     return {}
 
 
-def _host_participant_id(session: dict[str, Any], document: dict[str, Any] | None = None) -> str:
+def _host_id_aliases(session: dict[str, Any], document: dict[str, Any] | None = None) -> set[str]:
     doc = document
     if doc is None:
-        code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
-        if code:
-            try:
-                from draft_room_shared_state import load_shared_room
+        doc = load_shared_room_document(session)
+    try:
+        from draft_room_membership import document_host_ids
 
-                doc = load_shared_room(code)
-            except ImportError:
-                doc = None
+        return document_host_ids(doc)
+    except ImportError:
+        pass
     if isinstance(doc, dict):
-        return str(doc.get("host_user_id") or doc.get("host_participant_id") or "").strip()
-    return ""
+        return {
+            str(x).strip()
+            for x in (doc.get("host_participant_id"), doc.get("host_user_id"))
+            if str(x or "").strip()
+        }
+    return set()
+
+
+def _host_participant_id(session: dict[str, Any], document: dict[str, Any] | None = None) -> str:
+    aliases = _host_id_aliases(session, document)
+    if not aliases:
+        return ""
+    # Prefer host_participant_id (map key) when present on the document.
+    if isinstance(document, dict):
+        primary = str(document.get("host_participant_id") or "").strip()
+        if primary:
+            return primary
+    return next(iter(aliases))
+
+
+def _participant_is_host(pid: str, host_aliases: set[str], meta: dict[str, Any] | None = None) -> bool:
+    key = str(pid or "").strip()
+    if key and key in host_aliases:
+        return True
+    if isinstance(meta, dict):
+        for field in ("user_id", "account_user_id", "participant_id"):
+            alias = str(meta.get(field) or "").strip()
+            if alias and alias in host_aliases:
+                return True
+    return False
+
+
+def _dedupe_participants_by_team(participants: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """One claim per team — prefer earlier / host map keys when aliases collide."""
+    by_team: dict[str, tuple[str, dict[str, Any]]] = {}
+    for pid, meta in participants.items():
+        if not isinstance(meta, dict):
+            continue
+        team = str(meta.get("assigned_team") or "").strip()
+        if not team:
+            continue
+        prev = by_team.get(team)
+        if prev is None:
+            by_team[team] = (str(pid), meta)
+            continue
+        # Keep existing unless the new entry carries richer identity for same user.
+        prev_meta = prev[1]
+        prev_uids = {
+            str(prev_meta.get("user_id") or "").strip(),
+            str(prev_meta.get("account_user_id") or "").strip(),
+            str(prev[0]).strip(),
+        }
+        new_uids = {
+            str(meta.get("user_id") or "").strip(),
+            str(meta.get("account_user_id") or "").strip(),
+            str(pid).strip(),
+        }
+        if prev_uids & new_uids - {""}:
+            # Same person double-registered — keep the first (usually create-time) key.
+            continue
+        # Distinct owners claiming same team — keep first for display; join gate blocks later.
+        continue
+    return {pid: meta for pid, meta in by_team.values()}
 
 
 def team_claim_rows(
@@ -57,11 +173,15 @@ def team_claim_rows(
     document: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """One row per fantasy team: team name, claim status, owner label, host flag."""
-    teams = list_room_teams(room)
-    participants = dict((document or {}).get("participants") or {})
+    doc = document
+    if doc is None:
+        doc = load_shared_room_document(session)
+    teams = list_document_teams(doc, session_room=room if isinstance(room, dict) else None)
+    participants = dict((doc or {}).get("participants") or {}) if isinstance(doc, dict) else {}
     if not participants:
         participants = load_shared_participants(session)
-    host_pid = _host_participant_id(session, document)
+    participants = _dedupe_participants_by_team(participants)
+    host_aliases = _host_id_aliases(session, doc)
 
     by_team: dict[str, dict[str, Any]] = {}
     for pid, meta in participants.items():
@@ -71,13 +191,13 @@ def team_claim_rows(
         if not team:
             continue
         display = str(meta.get("display_name") or "").strip() or "Guest"
-        is_host = pid == host_pid
+        is_host = _participant_is_host(str(pid), host_aliases, meta)
         by_team[team] = {
             "team": team,
             "claimed": True,
             "owner_label": "Host" if is_host else display,
             "is_host": is_host,
-            "participant_id": pid,
+            "participant_id": str(pid),
         }
 
     rows: list[dict[str, Any]] = []
@@ -109,11 +229,8 @@ def open_teams_for_join(
     document: dict[str, Any],
 ) -> list[str]:
     """Human teams not yet claimed in a shared room document."""
-    room_blob = document.get("room")
-    teams: list[str] = []
-    if isinstance(room_blob, dict):
-        teams = list_room_teams(room_blob)
-    participants = dict(document.get("participants") or {})
+    teams = list_document_teams(document)
+    participants = _dedupe_participants_by_team(dict(document.get("participants") or {}))
     taken = {
         str(v.get("assigned_team") or "").strip()
         for v in participants.values()
@@ -241,6 +358,9 @@ def lookup_open_teams_for_code(room_code: str, *, store: Any = None) -> tuple[li
         status = str(document.get("status") or "").lower()
         if status in ("closed", "complete", "completed", "cancelled", "canceled", "expired"):
             return [], "Room is no longer joinable"
+        teams = list_document_teams(document)
+        if not teams:
+            return [], "Room data could not be loaded — team list missing from shared room."
         open_teams = open_teams_for_join(document)
         if not open_teams:
             return [], "No teams are available"

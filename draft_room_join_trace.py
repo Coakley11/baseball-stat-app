@@ -149,6 +149,38 @@ def render_shared_room_auth_diagnostics(st: Any, session: dict[str, Any]) -> Non
             )
 
 
+def render_room_sync_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    """Developer Mode: host/guest room identity, teams, claims, revision."""
+    if not join_trace_visible(session):
+        return
+    try:
+        from draft_room_context import get_global_draft_context
+
+        get_global_draft_context(session)
+    except ImportError:
+        pass
+    diag = session.get("_draft_room_sync_diag")
+    if not isinstance(diag, dict):
+        return
+    with st.expander("Room sync diagnostics (Developer Mode)", expanded=True):
+        rows = [
+            ("room code", diag.get("room_code") or "—"),
+            ("matched room ID", diag.get("matched_room_id") or "—"),
+            ("room revision", diag.get("room_revision")),
+            ("lookup backend", diag.get("lookup_backend") or "—"),
+            ("lookup fallback used", diag.get("lookup_fallback_used")),
+            ("host_participant_id", diag.get("host_participant_id") or "—"),
+            ("host_user_id", diag.get("host_user_id") or "—"),
+            ("is_room_host", diag.get("is_room_host")),
+            ("current participant_id", diag.get("participant_id") or "—"),
+            ("session teams", diag.get("session_teams") or []),
+            ("document teams", diag.get("document_teams") or []),
+            ("participants (claimed)", diag.get("participants") or {}),
+        ]
+        for label, value in rows:
+            st.text(f"{label}: {value if value is not None and value != '' else '—'}")
+
+
 def render_join_attempt_diagnostics(st: Any, session: dict[str, Any]) -> None:
     """Developer Mode: last join attempt fields (lookup, claim, workspace isolation)."""
     if not join_trace_visible(session):

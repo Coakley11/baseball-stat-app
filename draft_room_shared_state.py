@@ -149,6 +149,20 @@ def shared_room_document(
     """Wrap canonical live draft blob with multiplayer metadata."""
     blob = room_to_persist_dict(live_room, compact_pool=True) if live_room.get("pool") is not None else copy.deepcopy(live_room)
     blob.pop("pool", None)
+    # Guarantee team list on the shared document so guest open-team lookup cannot
+    # diverge from the host session lobby (empty document.room.teams → "No teams").
+    try:
+        from live_draft_team_ownership import list_room_teams
+
+        teams = list_room_teams(blob) or list_room_teams(live_room)
+        if teams:
+            blob["teams"] = list(teams)
+            cfg = dict(blob.get("config") or {})
+            cfg["teams"] = list(teams)
+            cfg.setdefault("num_teams", len(teams))
+            blob["config"] = cfg
+    except ImportError:
+        pass
     return {
         "schema_version": 1,
         "room_code": str(room_code).strip().upper(),
