@@ -95,11 +95,21 @@ class SetupVisibilityTests(unittest.TestCase):
 
 
 class TeamClaimTests(unittest.TestCase):
-    def test_join_requires_explicit_team(self) -> None:
+    def test_join_auto_assigns_when_exactly_one_open(self) -> None:
         doc = _shared_doc(_sample_room())
+        # Danny claimed; Amiel + Team 3 open → requires selection
         team, err = resolve_join_team_assignment(doc, "guest-user", requested_team=None)
         self.assertIsNone(team)
         self.assertIn("Choose a team", err)
+
+    def test_join_auto_assigns_sole_open_team(self) -> None:
+        room = _sample_room()
+        room["teams"] = ["Danny", "Amiel"]
+        room["config"] = {**dict(room.get("config") or {}), "num_teams": 2}
+        doc = _shared_doc(room)
+        team, err = resolve_join_team_assignment(doc, "guest-user", requested_team=None)
+        self.assertEqual(team, "Amiel")
+        self.assertEqual(err, "")
 
     def test_join_accepts_requested_open_team(self) -> None:
         doc = _shared_doc(_sample_room())

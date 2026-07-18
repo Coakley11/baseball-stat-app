@@ -1153,11 +1153,21 @@ def _shared_room_restore_blocked(session: dict[str, Any], room_code: str) -> str
                 "expired",
                 "ended",
                 "deleted",
+                "saved_for_later",
+                "parked",
             ):
                 return f"document_{status or 'terminal'}"
             room_blob = document.get("room") if isinstance(document.get("room"), dict) else {}
             room_status = str((room_blob or {}).get("status") or "").strip().lower()
-            if room_status in ("complete", "completed", "closed", "ended", "deleted"):
+            if room_status in (
+                "complete",
+                "completed",
+                "closed",
+                "ended",
+                "deleted",
+                "saved_for_later",
+                "parked",
+            ):
                 return f"room_{room_status}"
             draft_id = str(document.get("draft_room_id") or (room_blob or {}).get("draft_room_id") or "").strip()
             if draft_id:

@@ -114,6 +114,15 @@ def live_draft_fragments_suppressed(session: dict[str, Any]) -> bool:
 
 
 def clear_fragment_suppress_for_active_room(session: dict[str, Any]) -> None:
+    """Allow fragments again for a live room — never clear a finished End/Delete flag.
+
+    Popping ``_live_draft_deleting`` after a successful delete let prepare/restore
+    rehydrate the room and the lifecycle fall through to ACTIVE. Only a brand-new
+    draft create (``reset_context_for_new_live_draft``) may clear the done flag.
+    """
+    deleting = str(session.get(DELETING_STATUS_KEY) or "").strip().lower()
+    if deleting in ("in_progress", "done"):
+        return
     room = session.get("live_draft_room")
     if isinstance(room, dict) and str(room.get("status") or "").strip().lower() in (
         "in_progress",
@@ -122,7 +131,6 @@ def clear_fragment_suppress_for_active_room(session: dict[str, Any]) -> None:
         "not_started",
     ):
         session.pop(SUPPRESS_FRAGMENTS_KEY, None)
-        session.pop(DELETING_STATUS_KEY, None)
 
 
 def _ids_from_room(session: dict[str, Any], room: dict[str, Any] | None) -> tuple[str, str, str]:
@@ -374,6 +382,9 @@ def _close_backend_room(
             updated["status"] = terminal_status
             updated["terminated_at"] = _utc_now_iso()
             updated["termination"] = terminal_status
+            updated["participants"] = {}
+            updated["joined_participants"] = {}
+            updated["team_claims"] = {}
             room_blob = updated.get("room")
             if isinstance(room_blob, dict):
                 room_blob["status"] = terminal_status
@@ -452,19 +463,49 @@ def _clear_runtime_pointers(session: dict[str, Any], *, clear_queues: bool) -> l
 
 
 def _mark_membership_left(session: dict[str, Any], room_code: str) -> None:
+    """Remove every local membership / participant pointer for this room code."""
     code = str(room_code or "").strip().upper()
     if not code:
         return
     try:
-        from draft_room_participant_state import mark_participant_left_room, resolve_participant_id
+        from draft_room_participant_state import (
+            MEMBERSHIP_KEY,
+            PARTICIPANT_STATE_KEY,
+            mark_participant_left_room,
+            resolve_participant_id,
+        )
 
         mark_participant_left_room(
             session,
             code,
             participant_id=resolve_participant_id(session),
         )
+        membership = session.get(MEMBERSHIP_KEY)
+        if isinstance(membership, dict):
+            membership.pop(code, None)
+            # Also drop any case variants.
+            for key in list(membership.keys()):
+                if str(key).strip().upper() == code:
+                    membership.pop(key, None)
+        bucket = session.get(PARTICIPANT_STATE_KEY)
+        if isinstance(bucket, dict):
+            bucket.pop(code, None)
+            for key in list(bucket.keys()):
+                if str(key).strip().upper() == code:
+                    bucket.pop(key, None)
     except Exception:
         pass
+    try:
+        from draft_room_participant_state import ACTIVE_SHARED_ROOM_CODE_KEY
+
+        session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+    except Exception:
+        session.pop("active_shared_draft_room_code", None)
+    session.pop("draft_room_shared_meta", None)
+    session.pop("draft_room_participant_team", None)
+    session.pop("draft_room_participant_id", None)
+    session.pop("room_your_team", None)
+    session.pop("live_draft_my_team", None)
 
 
 def permanently_delete_live_draft(

@@ -318,7 +318,7 @@ def document_host_ids(document: dict[str, Any] | None) -> set[str]:
     if not isinstance(document, dict):
         return set()
     out: set[str] = set()
-    for key in ("host_participant_id", "host_user_id"):
+    for key in ("commissioner_participant_id", "host_participant_id", "host_user_id"):
         val = str(document.get(key) or "").strip()
         if val:
             out.add(val)
@@ -326,11 +326,12 @@ def document_host_ids(document: dict[str, Any] | None) -> set[str]:
 
 
 def document_host_id(document: dict[str, Any] | None) -> str:
-    """Primary host id — prefer participant map key over auth alias."""
+    """Primary host id — prefer commissioner / participant map key over auth alias."""
     if not isinstance(document, dict):
         return ""
     return str(
-        document.get("host_participant_id")
+        document.get("commissioner_participant_id")
+        or document.get("host_participant_id")
         or document.get("host_user_id")
         or ""
     ).strip()
@@ -340,27 +341,35 @@ def is_room_host(
     session: dict[str, Any],
     document: dict[str, Any] | None = None,
 ) -> bool:
+    """True only when the current participant is the authoritative room commissioner.
+
+    Never infer from Team A, workspace name, stale is_host flags, or sibling
+    membership pids. Matching rule:
+
+        canonical_current_participant_id == authoritative_room.commissioner_participant_id
+    """
+    try:
+        from shared_draft_permissions import is_canonical_commissioner
+
+        return bool(is_canonical_commissioner(session, document))
+    except ImportError:
+        pass
     from draft_room_participant_state import resolve_participant_id
 
-    hosts = document_host_ids(document)
-    if not hosts:
+    host = document_host_id(document)
+    if not host:
         return False
     pid = str(resolve_participant_id(session) or "").strip()
-    if pid and pid in hosts:
+    if pid and pid == host:
         return True
-    # Presence / cloud aliases may differ from the create-time participant key.
     try:
         from suite_auth import AUTH_USER_ID_KEY
 
         auth = str(session.get(AUTH_USER_ID_KEY) or "").strip()
-        if auth and auth in hosts:
+        if auth and auth == host:
             return True
     except ImportError:
         pass
-    for key in ("_suite_cloud_user_id", "draft_room_participant_id"):
-        alias = str(session.get(key) or "").strip()
-        if alias and alias in hosts:
-            return True
     return False
 
 
@@ -375,8 +384,17 @@ def resolve_join_team_assignment(
 
     Occupancy uses the same authoritative calculator as the guest join screen so
     host alias duplicates cannot invent a second claimed seat.
+
+    Auto-assigns when exactly one human team is open. Requires explicit selection
+    when multiple teams remain open. Never assigns the commissioner seat to a guest.
     """
     pid = str(participant_id or "").strip()
+    # Exact document reattach — current participant already owns a team in this room.
+    participants = dict(document.get("participants") or {}) if isinstance(document, dict) else {}
+    existing = participants.get(pid)
+    if isinstance(existing, dict) and existing.get("assigned_team"):
+        return str(existing["assigned_team"]).strip(), ""
+
     try:
         from live_draft_team_ownership import (
             list_available_shared_room_teams,
@@ -391,7 +409,20 @@ def resolve_join_team_assignment(
         )
         already = str(diag.get("already_joined_team") or "").strip()
         if already:
-            return already, ""
+            # Guard: never treat commissioner Team A as "already joined" for a guest
+            # whose exact participant row is missing from the document.
+            owner_pid = str(
+                ((diag.get("occupancy") or {}).get(already) or {}).get("canonical_participant_id")
+                or ""
+            ).strip()
+            if owner_pid and owner_pid == pid:
+                return already, ""
+            if pid in participants and str(
+                (participants.get(pid) or {}).get("assigned_team") or ""
+            ).strip() == already:
+                return already, ""
+            # Stale alias match — ignore and continue with open-team assignment.
+            already = ""
 
         if requested_team:
             req = str(requested_team).strip()
@@ -405,7 +436,9 @@ def resolve_join_team_assignment(
 
         if not open_teams:
             return None, "No open team slots in this room."
-        return None, "Choose a team before joining — teams are never assigned automatically."
+        if len(open_teams) == 1:
+            return open_teams[0], ""
+        return None, "Choose a team before joining — select one of the open teams."
     except ImportError:
         pass
 
@@ -443,7 +476,9 @@ def resolve_join_team_assignment(
     open_teams = [t for t in teams if t not in taken_by_other]
     if not open_teams:
         return None, "No open team slots in this room."
-    return None, "Choose a team before joining — teams are never assigned automatically."
+    if len(open_teams) == 1:
+        return open_teams[0], ""
+    return None, "Choose a team before joining — select one of the open teams."
 
 
 def sync_membership_from_document(

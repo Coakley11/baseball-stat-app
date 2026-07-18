@@ -125,11 +125,11 @@ class SaveContinueLaterTests(unittest.TestCase):
         self.assertIsNotNone(slot)
         self.assertEqual(int(slot["summary"]["current_pick"]), 4)
         self.assertEqual(int(slot["summary"]["total_picks"]), 20)
-        self.assertEqual(slot["room"]["status"], "paused")
+        self.assertEqual(slot["room"]["status"], "saved_for_later")
         self.assertEqual(len(slot["room"]["draft_board"]), 3)
         self.assertEqual(slot["queues"]["draft_queue"], ["Aaron Judge", "Mookie Betts"])
         doc = load_shared_room(code, store=self.store)
-        self.assertEqual(str(doc.get("status") or "").lower(), "paused")
+        self.assertEqual(str(doc.get("status") or "").lower(), "saved_for_later")
 
     def test_continue_restores_exact_pick(self) -> None:
         host = _daniel()

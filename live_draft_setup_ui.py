@@ -287,17 +287,22 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
         st.caption(f"⚠ {lookup_err}")
     picked_team = ""
     if open_teams and not already_team:
-        default_idx = 0
-        prev = str(session.get("live_draft_join_team_pick") or "").strip()
-        if prev in open_teams:
-            default_idx = open_teams.index(prev)
-        picked_team = st.selectbox(
-            "Choose your team",
-            open_teams,
-            index=default_idx,
-            key="live_draft_join_team_pick",
-            help="Pick the team you control. Teams are never assigned automatically.",
-        )
+        if len(open_teams) == 1:
+            picked_team = open_teams[0]
+            st.info(f"Only **{picked_team}** is open — you will join as that team.")
+            session["live_draft_join_team_pick"] = picked_team
+        else:
+            default_idx = 0
+            prev = str(session.get("live_draft_join_team_pick") or "").strip()
+            if prev in open_teams:
+                default_idx = open_teams.index(prev)
+            picked_team = st.selectbox(
+                "Which team are you?",
+                open_teams,
+                index=default_idx,
+                key="live_draft_join_team_pick",
+                help="Select one of the currently unclaimed teams.",
+            )
     elif code and not already_team and not lookup_err:
         st.caption("Enter a valid 6-character code to see available teams.")
     with join_col2:
@@ -319,8 +324,11 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
                 },
             )
         else:
+            join_label = "Join Room"
+            if len(open_teams) == 1 and picked_team:
+                join_label = f"Join as {picked_team}"
             st.button(
-                "Join Room",
+                join_label,
                 key="live_draft_join_from_setup_btn",
                 type="primary",
                 on_click=on_join_shared_draft_from_setup,

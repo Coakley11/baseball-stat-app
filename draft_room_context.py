@@ -174,6 +174,14 @@ def prepare_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
     """Bootstrap hook — hydrate runtime room and participant-private workflow."""
     from draft_room_participant_state import restore_persisted_shared_room_membership
 
+    # Never rehydrate during / after End/Delete — that was restoring the deleted room.
+    deleting = str(session.get("_live_draft_deleting") or "").strip().lower()
+    if deleting in ("in_progress", "done"):
+        session.pop("live_draft_room", None)
+        session.pop("live_draft_state", None)
+        session.pop("active_shared_draft_room_code", None)
+        return get_global_draft_context(session)
+
     restored_code = restore_persisted_shared_room_membership(session)
     try:
         from draft_room_runtime_diagnostics import note_prepare_global_rehydrate
@@ -741,6 +749,16 @@ def create_and_host_shared_room(
     document["created_at"] = document.get("updated_at") or document.get("created_at")
     document["host_user_id"] = str(auth_user_id(session) or participant_id)
     document["host_participant_id"] = participant_id
+    try:
+        from shared_draft_permissions import stamp_commissioner_on_document
+
+        stamp_commissioner_on_document(
+            document,
+            participant_id=participant_id,
+            auth_user_id=str(auth_user_id(session) or ""),
+        )
+    except ImportError:
+        document["commissioner_participant_id"] = participant_id
     # Unique generation — guests must never inherit this via stale local pointers.
     import time as _time_mod
     import uuid as _uuid_mod
@@ -995,8 +1013,18 @@ def join_shared_draft_room(
     if not ok_doc:
         return False, doc_err, document
     status = str(document.get("status") or "").strip().lower()
-    # Guests may join waiting / ready / active rooms. Completed/cancelled/expired are blocked.
-    joinable = {"", "not_started", "waiting", "ready", "in_progress", "paused", "active"}
+    # Guests may join waiting / ready / active / parked rooms. Completed/cancelled/expired are blocked.
+    joinable = {
+        "",
+        "not_started",
+        "waiting",
+        "ready",
+        "in_progress",
+        "paused",
+        "active",
+        "saved_for_later",
+        "parked",
+    }
     blocked = {"closed", "complete", "completed", "cancelled", "canceled", "expired", "ended", "deleted"}
     if status in blocked or status not in joinable:
         try:
@@ -1058,13 +1086,39 @@ def join_shared_draft_room(
     existing = participants.get(participant_id)
     duplicate_rejoin = False
     already_team = str((claim_diag or {}).get("already_joined_team") or "").strip()
+    # Resume lobby: reserved owners must reattach to their original team only.
+    reserved = document.get("resume_reserved_teams") if isinstance(document, dict) else None
+    if isinstance(reserved, dict) and participant_id:
+        for team_name, meta in reserved.items():
+            if not isinstance(meta, dict):
+                continue
+            if str(meta.get("participant_id") or "").strip() == participant_id:
+                already_team = str(team_name).strip()
+                break
     if already_team:
-        assigned = already_team
-        duplicate_rejoin = True
-    elif isinstance(existing, dict) and existing.get("assigned_team"):
+        # Only accept alias already_joined when the exact participant owns that seat.
+        owner_ok = False
+        if isinstance(existing, dict) and str(existing.get("assigned_team") or "").strip() == already_team:
+            owner_ok = True
+        elif isinstance(reserved, dict):
+            rmeta = reserved.get(already_team) or {}
+            if str((rmeta or {}).get("participant_id") or "").strip() == participant_id:
+                owner_ok = True
+        slot = ((claim_diag or {}).get("occupancy") or {}).get(already_team) or {}
+        if str(slot.get("canonical_participant_id") or "").strip() == participant_id:
+            owner_ok = True
+        if owner_ok:
+            assigned = already_team
+            duplicate_rejoin = True
+        else:
+            already_team = ""
+            assigned = None
+    else:
+        assigned = None
+    if not assigned and isinstance(existing, dict) and existing.get("assigned_team"):
         assigned = str(existing["assigned_team"])
         duplicate_rejoin = True
-    else:
+    if not assigned:
         assigned, err = resolve_join_team_assignment(
             document,
             participant_id,
@@ -1241,6 +1295,22 @@ def join_shared_draft_room(
     except ImportError:
         pass
     set_active_participant(session, room_code=code, participant_id=participant_id, assigned_team=assigned)
+    # Resume lobby: mark this participant as explicitly rejoined.
+    try:
+        if isinstance(document, dict) and (
+            document.get("resume_reserved_teams")
+            or str(document.get("status") or "").lower() in ("saved_for_later", "parked")
+        ):
+            from live_draft_resume_lobby import mark_resume_rejoined
+            from draft_room_shared_state import bump_revision, get_shared_room_store
+
+            document = mark_resume_rejoined(document, participant_id=participant_id)
+            updated = bump_revision(document)
+            get_shared_room_store().save(updated)
+            document = updated
+            session["_live_draft_resume_lobby"] = True
+    except Exception:
+        pass
     # Isolate Live Draft UI from leftover private simulator Pick N / source labels.
     try:
         from live_draft_navigation import clear_private_baseball_simulator_runtime

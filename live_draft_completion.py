@@ -249,9 +249,13 @@ def resolve_live_draft_lifecycle(
     deleting = str(session.get("_live_draft_deleting") or "").strip().lower()
     if deleting == "in_progress":
         return LIFECYCLE_DELETING
-    if deleting == "done" and not isinstance(
-        room if isinstance(room, dict) else session.get("live_draft_room"), dict
-    ):
+    # Deletion completed — never re-enter ACTIVE even if a stale room pointer resurrects.
+    if deleting == "done":
+        live_done = room if isinstance(room, dict) else session.get("live_draft_room")
+        if isinstance(live_done, dict):
+            session.pop("live_draft_room", None)
+            session.pop("live_draft_state", None)
+            session.pop("active_shared_draft_room_code", None)
         return LIFECYCLE_SETUP
 
     if bool(session.get("_live_draft_history_view")):
@@ -279,6 +283,8 @@ def resolve_live_draft_lifecycle(
             code = ""
     draft_id = _draft_id(live)
     if is_live_draft_ended_tombstoned(session, room_code=code, draft_room_id=draft_id):
+        session.pop("live_draft_room", None)
+        session.pop("live_draft_state", None)
         return LIFECYCLE_SETUP
     try:
         from live_draft_termination import is_live_draft_permanently_retired
@@ -286,18 +292,31 @@ def resolve_live_draft_lifecycle(
         if is_live_draft_permanently_retired(
             session, draft_id=draft_id, room_code=code, room=live
         ):
+            session.pop("live_draft_room", None)
+            session.pop("live_draft_state", None)
             return LIFECYCLE_SETUP
     except ImportError:
         pass
 
     status = str(live.get("status") or "").strip().lower()
     if status in ("ended", "closed", "deleted"):
+        session.pop("live_draft_room", None)
+        return LIFECYCLE_SETUP
+    if status in ("saved_for_later", "parked"):
+        # Parked shared draft — only Resume Lobby may rehydrate; setup otherwise.
+        if bool(session.get("_live_draft_resume_lobby")):
+            return LIFECYCLE_WAITING_SHARED_LOBBY
+        session.pop("live_draft_room", None)
         return LIFECYCLE_SETUP
     if status in ("complete", "completed") and bool(session.get("_live_draft_history_view")):
         return LIFECYCLE_HISTORICAL_READ_ONLY
     # Completed without explicit history view → setup (temporary board lives in Simulator).
     if status in ("complete", "completed") or is_live_draft_explicitly_complete(live):
         return LIFECYCLE_SETUP
+
+    # Resume lobby: shared room restored but waiting for reserved teams before Continue Draft.
+    if bool(session.get("_live_draft_resume_lobby")) and status in ("paused", "waiting", "not_started"):
+        return LIFECYCLE_WAITING_SHARED_LOBBY
 
     if status in ("waiting", "not_started"):
         try:

@@ -302,7 +302,11 @@ def canonicalize_shared_room_claims(
 
 
 def session_identity_aliases(session: dict[str, Any] | None) -> set[str]:
-    """All identity tokens for the current browser session (auth + workspace aliases)."""
+    """Identity tokens for the *current* browser user only.
+
+    Never pull other participants' ids from the membership map — that caused guests
+    to inherit the commissioner's Team A / host role via already_joined matching.
+    """
     if not isinstance(session, dict):
         return set()
     tokens: set[str] = set()
@@ -318,30 +322,38 @@ def session_identity_aliases(session: dict[str, Any] | None) -> set[str]:
         "_suite_auth_user_id",
         "auth_user_id",
         "account_user_id",
+        "ACTIVE_PARTICIPANT_ID_KEY",
     ):
         tokens.add(str(session.get(key) or "").strip())
+    try:
+        from draft_room_participant_state import ACTIVE_PARTICIPANT_ID_KEY
+
+        tokens.add(str(session.get(ACTIVE_PARTICIPANT_ID_KEY) or "").strip())
+    except ImportError:
+        pass
     try:
         from suite_auth import AUTH_USER_ID_KEY
 
         tokens.add(str(session.get(AUTH_USER_ID_KEY) or "").strip())
     except ImportError:
         pass
-    # Membership pids for any room still owned by this browser — reattach after refresh.
+    # Only this session's own membership row (never sibling participant keys).
     try:
-        from draft_room_participant_state import MEMBERSHIP_KEY
+        from draft_room_participant_state import MEMBERSHIP_KEY, resolve_participant_id
 
         membership = session.get(MEMBERSHIP_KEY)
-        if isinstance(membership, dict):
+        my_pid = str(resolve_participant_id(session) or "").strip()
+        if isinstance(membership, dict) and my_pid:
             for room_mem in membership.values():
                 if not isinstance(room_mem, dict):
                     continue
-                if room_mem.get("participant_id"):
-                    tokens.add(str(room_mem.get("participant_id") or "").strip())
-                for pid_key, meta in room_mem.items():
-                    if isinstance(meta, dict):
-                        tokens.add(str(meta.get("participant_id") or pid_key or "").strip())
-                    elif isinstance(pid_key, str) and pid_key not in ("assigned_team", "participant_id"):
-                        tokens.add(pid_key.strip())
+                meta = room_mem.get(my_pid)
+                if isinstance(meta, dict):
+                    tokens.add(str(meta.get("participant_id") or my_pid).strip())
+                # Legacy flat shape: room_mem["participant_id"] == me
+                flat_pid = str(room_mem.get("participant_id") or "").strip()
+                if flat_pid and flat_pid == my_pid:
+                    tokens.add(flat_pid)
     except ImportError:
         pass
     return {t for t in tokens if t}
@@ -681,7 +693,16 @@ def lookup_open_teams_for_code(
         # Repair alias duplicate seats before availability calculation.
         document = repair_shared_document_claims(document)
         status = str(document.get("status") or "").lower()
-        if status in ("closed", "complete", "completed", "cancelled", "canceled", "expired"):
+        if status in (
+            "closed",
+            "complete",
+            "completed",
+            "cancelled",
+            "canceled",
+            "expired",
+            "ended",
+            "deleted",
+        ):
             return [], "Room is no longer joinable"
 
         pid = str(current_participant_id or "").strip()

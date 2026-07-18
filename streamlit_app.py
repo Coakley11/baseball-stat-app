@@ -22126,15 +22126,23 @@ elif active_page == "Live Draft Room":
             else LIFECYCLE_ACTIVE_DRAFT
         )
     if _early_lifecycle == LIFECYCLE_DELETING:
-        st.info("Deleting draft…")
+        st.info("Deleting draft for everyone…")
         try:
             from live_draft_termination import discard_live_draft_and_start_over
 
             if str(st.session_state.get("_live_draft_deleting") or "").strip().lower() == "in_progress":
                 discard_live_draft_and_start_over(st.session_state, st=st)
-        except Exception:
             st.session_state["_live_draft_deleting"] = "done"
-            st.session_state.pop("live_draft_room", None)
+        except Exception:
+            try:
+                from live_draft_termination import discard_live_draft_and_start_over
+
+                discard_live_draft_and_start_over(st.session_state, st=st)
+            except Exception:
+                st.session_state.pop("live_draft_room", None)
+                st.session_state.pop("live_draft_state", None)
+                st.session_state.pop("active_shared_draft_room_code", None)
+            st.session_state["_live_draft_deleting"] = "done"
         st.rerun()
         st.stop()
     _lifecycle_allows_shared_runtime = _early_lifecycle in (
@@ -22821,15 +22829,23 @@ elif active_page == "Live Draft Room":
         )
 
     if _live_draft_lifecycle == LIFECYCLE_DELETING:
-        st.info("Deleting draft…")
+        st.info("Deleting draft for everyone…")
         try:
             from live_draft_termination import discard_live_draft_and_start_over
 
             if str(st.session_state.get("_live_draft_deleting") or "").strip().lower() == "in_progress":
                 discard_live_draft_and_start_over(st.session_state, st=st)
-        except Exception:
             st.session_state["_live_draft_deleting"] = "done"
-            st.session_state.pop("live_draft_room", None)
+        except Exception:
+            try:
+                from live_draft_termination import discard_live_draft_and_start_over
+
+                discard_live_draft_and_start_over(st.session_state, st=st)
+            except Exception:
+                st.session_state.pop("live_draft_room", None)
+                st.session_state.pop("live_draft_state", None)
+                st.session_state.pop("active_shared_draft_room_code", None)
+            st.session_state["_live_draft_deleting"] = "done"
         st.rerun()
         st.stop()
 
@@ -23519,6 +23535,57 @@ elif active_page == "Live Draft Room":
                     pass
                 st.rerun()
 
+            # Resume Lobby — parked shared draft waiting for reserved teams to rejoin.
+            if st.session_state.get("_live_draft_resume_lobby"):
+                try:
+                    from draft_room_shared_state import load_shared_room_document
+                    from live_draft_resume_lobby import (
+                        all_required_participants_rejoined,
+                        continue_draft_from_resume_lobby,
+                        resume_lobby_rows,
+                    )
+                    from shared_draft_permissions import is_canonical_commissioner
+
+                    _rl_code = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
+                    _rl_doc = load_shared_room_document(st.session_state, _rl_code) if _rl_code else None
+                    st.markdown("#### Resume Lobby")
+                    st.caption(
+                        "This draft was saved for later. The timer stays paused until every reserved "
+                        "participant rejoins and the commissioner presses Continue Draft."
+                    )
+                    _rl_rows = resume_lobby_rows(st.session_state, _rl_doc)
+                    for _row in _rl_rows:
+                        _role = "Commissioner" if _row.get("is_commissioner") else "Guest"
+                        st.write(
+                            f"**{_row.get('display_name')}** — {_row.get('team')} — "
+                            f"{_role} — {_row.get('status_label')}"
+                        )
+                    _ready, _ready_n, _total_n = all_required_participants_rejoined(
+                        st.session_state, _rl_doc
+                    )
+                    st.caption(f"Participants ready: {_ready_n} of {_total_n}")
+                    _rl_is_comm = bool(is_canonical_commissioner(st.session_state, _rl_doc))
+                    if _rl_is_comm:
+                        if st.button(
+                            "Continue Draft",
+                            type="primary",
+                            key="live_draft_resume_lobby_continue_btn",
+                            disabled=not _ready,
+                            help="Enabled once all reserved participants have rejoined.",
+                        ):
+                            _cont = continue_draft_from_resume_lobby(
+                                st.session_state, st=st, document=_rl_doc
+                            )
+                            if _cont.get("ok"):
+                                st.rerun()
+                            else:
+                                st.warning(str(_cont.get("message") or "Cannot continue yet."))
+                    else:
+                        st.info("Waiting for the commissioner to continue once everyone has rejoined.")
+                    st.markdown("---")
+                except ImportError:
+                    pass
+
             if is_shared_multiplayer_intent(st.session_state, room=room):
                 _lobby_status = str(room.get("status") or "").strip()
                 _lobby_started = _lobby_status in ("in_progress", "paused", "complete")
@@ -24095,19 +24162,30 @@ elif active_page == "Live Draft Room":
                         st.rerun()
             with ctrl3:
                 _is_commissioner = False
+                _doc_h = None
                 try:
-                    from draft_room_membership import is_room_host
                     from draft_room_shared_state import load_shared_room_document
+                    from shared_draft_permissions import is_canonical_commissioner
 
                     _code_h = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
                     _doc_h = load_shared_room_document(st.session_state, _code_h) if _code_h else None
-                    _is_commissioner = bool(is_room_host(st.session_state, _doc_h)) if _code_h else True
+                    if _code_h:
+                        _is_commissioner = bool(is_canonical_commissioner(st.session_state, _doc_h))
+                    else:
+                        # Solo / no shared room — local owner is commissioner.
+                        _is_commissioner = True
                 except ImportError:
-                    _is_commissioner = not bool(st.session_state.get("active_shared_draft_room_code"))
+                    try:
+                        from draft_room_membership import is_room_host
+
+                        _code_h = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
+                        _is_commissioner = bool(is_room_host(st.session_state, _doc_h)) if _code_h else True
+                    except ImportError:
+                        _is_commissioner = not bool(st.session_state.get("active_shared_draft_room_code"))
                 if _is_commissioner and st.button(
                     "Save & Continue Later",
                     key="live_draft_save_continue_btn",
-                    help="Commissioner: pause and park this room for everyone. Resume via Continue Saved Draft.",
+                    help="Commissioner only: park this shared draft for everyone. Resume via Continue Saved Draft.",
                 ):
                     from live_draft_resumable_slot import save_and_continue_later
 
@@ -24245,34 +24323,57 @@ elif active_page == "Live Draft Room":
             with st.expander("Advanced draft controls", expanded=False):
                 adv1, adv2 = st.columns(2)
                 with adv1:
-                    if st.button("↻ Reset Timer", disabled=_status != "in_progress", key="live_draft_reset_timer"):
-                        live_draft_reset_timer(room)
-                        _persist_live_draft_room(room, reason="reset_timer")
-                    if st.button("⚡ Auto Pick Now", disabled=_status not in ("in_progress", "paused"), key="live_draft_auto_now"):
-                        if room.get("status") == "paused":
-                            room["status"] = "in_progress"
-                        ok, msg = live_draft_auto_pick(room, st.session_state)
-                        if ok:
-                            try:
-                                from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
+                    if _is_commissioner:
+                        if st.button("↻ Reset Timer", disabled=_status != "in_progress", key="live_draft_reset_timer"):
+                            live_draft_reset_timer(room)
+                            _persist_live_draft_room(room, reason="reset_timer")
+                    _may_auto = False
+                    try:
+                        from shared_draft_permissions import participant_may_auto_pick
 
-                                invalidate_live_draft_ui_caches(st.session_state)
-                                invalidate_draft_assistant_scoring_cache(st.session_state)
-                            except ImportError:
-                                st.session_state.pop("_live_draft_rec_cache", None)
-                            st.success(msg)
-                            try:
-                                from live_draft_safe_mode import is_draft_truly_complete, request_live_draft_rerun
-
-                                if is_draft_truly_complete(room):
-                                    request_live_draft_rerun(st, st.session_state, "auto_pick_complete", room=room)
-                                else:
-                                    request_live_draft_rerun(st, st.session_state, "auto_pick", room=room)
-                            except ImportError:
-                                st.rerun()
+                        _may_auto = participant_may_auto_pick(
+                            st.session_state,
+                            room,
+                            document=_doc_h,
+                        )
+                    except ImportError:
+                        _may_auto = bool(_is_commissioner)
+                    if st.button(
+                        "⚡ Auto Pick Now",
+                        disabled=(_status not in ("in_progress", "paused")) or (not _may_auto),
+                        key="live_draft_auto_now",
+                        help=(
+                            "Commissioner: auto-pick for the team on the clock. "
+                            "Guest: only when your claimed team is on the clock."
+                        ),
+                    ):
+                        if not _may_auto:
+                            st.warning("Auto Pick Now is only available when your team is on the clock.")
                         else:
-                            st.warning(msg)
-                        _persist_live_draft_room(room, reason="auto_pick")
+                            if room.get("status") == "paused":
+                                room["status"] = "in_progress"
+                            ok, msg = live_draft_auto_pick(room, st.session_state)
+                            if ok:
+                                try:
+                                    from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
+
+                                    invalidate_live_draft_ui_caches(st.session_state)
+                                    invalidate_draft_assistant_scoring_cache(st.session_state)
+                                except ImportError:
+                                    st.session_state.pop("_live_draft_rec_cache", None)
+                                st.success(msg)
+                                try:
+                                    from live_draft_safe_mode import is_draft_truly_complete, request_live_draft_rerun
+
+                                    if is_draft_truly_complete(room):
+                                        request_live_draft_rerun(st, st.session_state, "auto_pick_complete", room=room)
+                                    else:
+                                        request_live_draft_rerun(st, st.session_state, "auto_pick", room=room)
+                                except ImportError:
+                                    st.rerun()
+                            else:
+                                st.warning(msg)
+                            _persist_live_draft_room(room, reason="auto_pick")
                 with adv2:
                     try:
                         from draft_room_context import leave_shared_draft_room

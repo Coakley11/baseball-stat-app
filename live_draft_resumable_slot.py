@@ -177,7 +177,7 @@ def _collect_queues(session: dict[str, Any]) -> dict[str, Any]:
 
 
 def pause_and_persist_for_save(session: dict[str, Any], room: dict[str, Any]) -> dict[str, Any]:
-    """Pause timer and write paused status to shared backend when applicable."""
+    """Pause timer and park the shared backend as saved_for_later when applicable."""
     try:
         from live_draft_timer_logic import live_draft_pause_timer
 
@@ -188,6 +188,10 @@ def pause_and_persist_for_save(session: dict[str, Any], room: dict[str, Any]) ->
     except ImportError:
         room["status"] = "paused"
 
+    room["status"] = "saved_for_later"
+    room["paused"] = True
+    room["timer_paused"] = True
+    room.pop("pick_deadline_ts", None)
     session["live_draft_room"] = room
     code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
     if code:
@@ -197,10 +201,16 @@ def pause_and_persist_for_save(session: dict[str, Any], room: dict[str, Any]) ->
             doc = load_shared_room(code)
             if isinstance(doc, dict):
                 updated = bump_revision(doc)
-                updated["status"] = "paused"
+                try:
+                    from live_draft_resume_lobby import stamp_resume_reserved_on_document
+
+                    stamp_resume_reserved_on_document(updated)
+                except ImportError:
+                    updated["status"] = "saved_for_later"
                 updated["room"] = _persist_room_blob(room)
                 if isinstance(updated.get("room"), dict):
-                    updated["room"]["status"] = "paused"
+                    updated["room"]["status"] = "saved_for_later"
+                    updated["room"]["paused"] = True
                 get_shared_room_store().save(updated)
                 try:
                     from draft_room_shared_state import invalidate_shared_room_document_cache
@@ -288,8 +298,10 @@ def save_resumable_live_draft_slot(
 
 def park_active_to_setup_after_save(session: dict[str, Any], *, st: Any | None = None) -> None:
     """Leave the active runtime so setup shows Continue Saved Draft (draft is not deleted)."""
+    code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
     for key in PARK_CLEAR_ACTIVE_KEYS:
         session.pop(key, None)
+    session.pop("_live_draft_resume_lobby", None)
     try:
         from live_draft_state import clear_live_draft_state
 
@@ -298,6 +310,16 @@ def park_active_to_setup_after_save(session: dict[str, Any], *, st: Any | None =
     except Exception:
         session.pop("live_draft_room", None)
         session.pop("live_draft_state", None)
+    # Soft-leave membership so refresh does not revive the parked room as ACTIVE.
+    if code:
+        try:
+            from draft_room_participant_state import mark_participant_left_room, resolve_participant_id
+
+            mark_participant_left_room(
+                session, code, participant_id=resolve_participant_id(session)
+            )
+        except Exception:
+            pass
     # Re-seed setup prefs for the clean setup page.
     try:
         from user_page_preferences import (
@@ -356,7 +378,7 @@ def continue_saved_draft(
     *,
     st: Any | None = None,
 ) -> dict[str, Any]:
-    """Explicitly restore the resumable slot into the active Live Draft runtime."""
+    """Explicitly restore the resumable slot into Resume Lobby (shared) or active room (solo)."""
     slot = get_resumable_live_draft_slot(session)
     if not slot:
         return {"ok": False, "error": "no_slot", "message": "No saved draft to continue."}
@@ -377,6 +399,7 @@ def continue_saved_draft(
         pass
 
     room: dict[str, Any] | None = None
+    document: dict[str, Any] | None = None
     if code:
         try:
             from draft_room_shared_state import load_shared_room
@@ -384,6 +407,7 @@ def continue_saved_draft(
 
             doc = load_shared_room(code)
             if isinstance(doc, dict):
+                document = doc
                 status = str(doc.get("status") or "").strip().lower()
                 if status in ("ended", "closed", "deleted"):
                     clear_resumable_live_draft_slot(session)
@@ -399,7 +423,9 @@ def continue_saved_draft(
                 session["active_shared_draft_room_code"] = code
                 try:
                     from draft_room_context import publish_shared_room_runtime
+                    from draft_room_participant_state import clear_participant_left_room
 
+                    clear_participant_left_room(session, code)
                     publish_shared_room_runtime(session, doc, reason="continue_saved_draft")
                     room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else room
                 except Exception:
@@ -415,7 +441,11 @@ def continue_saved_draft(
     if not isinstance(room, dict):
         return {"ok": False, "error": "missing_room", "message": "Saved draft data is incomplete."}
 
+    # Always enter paused — shared drafts open Resume Lobby until everyone rejoins.
     room["status"] = "paused"
+    room["paused"] = True
+    room["timer_paused"] = True
+    room.pop("pick_deadline_ts", None)
     session["live_draft_room"] = room
     if code:
         session["active_shared_draft_room_code"] = code
@@ -450,6 +480,21 @@ def continue_saved_draft(
     except Exception:
         pass
 
+    is_shared = bool(code) or bool(slot.get("is_shared"))
+    if is_shared:
+        try:
+            from live_draft_resume_lobby import enter_resume_lobby, mark_resume_rejoined
+
+            enter_resume_lobby(session, document=document)
+            if isinstance(document, dict) and pid:
+                from draft_room_shared_state import bump_revision, get_shared_room_store
+
+                document = mark_resume_rejoined(document, participant_id=pid)
+                updated = bump_revision(document)
+                get_shared_room_store().save(updated)
+        except ImportError:
+            session["_live_draft_resume_lobby"] = True
+
     try:
         from baseball_persistent_state import force_save_baseball_state
 
@@ -458,7 +503,12 @@ def continue_saved_draft(
     except Exception:
         pass
 
-    return {"ok": True, "room": room, "slot": slot}
+    return {
+        "ok": True,
+        "room": room,
+        "slot": slot,
+        "resume_lobby": bool(is_shared),
+    }
 
 
 def warn_if_starting_replaces_resumable(session: dict[str, Any]) -> dict[str, Any] | None:
