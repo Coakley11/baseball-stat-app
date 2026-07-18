@@ -779,9 +779,16 @@ def publish_shared_room_runtime(
         pass
     doc_status = str(document.get("status") or "").strip()
     if doc_status and doc_status != str(runtime.get("status") or "").strip():
-        if doc_status == "closed":
-            runtime["status"] = "complete"
-        elif doc_status in ("in_progress", "paused", "not_started", "complete"):
+        # Terminal shared-room statuses must never hydrate an active/complete live room.
+        if doc_status in ("closed", "ended", "deleted"):
+            try:
+                from live_draft_termination import handle_shared_document_terminal
+
+                if handle_shared_document_terminal(session, document):
+                    return None
+            except ImportError:
+                runtime["status"] = doc_status
+        elif doc_status in ("in_progress", "paused", "not_started", "waiting", "complete"):
             runtime["status"] = doc_status
 
     existing = session.get(LIVE_DRAFT_ROOM_KEY)

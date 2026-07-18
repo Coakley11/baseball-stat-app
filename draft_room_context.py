@@ -388,6 +388,19 @@ def sync_shared_draft_room(
             last_apply_error="shared room document not found",
         )
         return False
+    try:
+        from live_draft_termination import handle_shared_document_terminal
+
+        if handle_shared_document_terminal(session, document):
+            _trace(
+                last_poll_finished_at=time.time(),
+                last_poll_result="room_terminated",
+                poll_skipped_reason="document_terminal",
+                remote_room_status=str(document.get("status") or ""),
+            )
+            return True
+    except ImportError:
+        pass
     remote_rev = int(document.get("revision") or 0)
     remote_blob = shared_document_room_blob(document)
     remote_player, remote_team, remote_pid = ("", "", "")
@@ -960,7 +973,7 @@ def join_shared_draft_room(
     status = str(document.get("status") or "").strip().lower()
     # Guests may join waiting / ready / active rooms. Completed/cancelled/expired are blocked.
     joinable = {"", "not_started", "waiting", "ready", "in_progress", "paused", "active"}
-    blocked = {"closed", "complete", "completed", "cancelled", "canceled", "expired"}
+    blocked = {"closed", "complete", "completed", "cancelled", "canceled", "expired", "ended", "deleted"}
     if status in blocked or status not in joinable:
         try:
             from draft_room_join_trace import trace_join_step
@@ -974,8 +987,14 @@ def join_shared_draft_room(
             )
         except ImportError:
             pass
-        if status in ("closed", "cancelled", "canceled"):
-            return False, "Room is no longer joinable — it was closed or cancelled.", document
+        if status in ("closed", "cancelled", "canceled", "ended", "deleted"):
+            try:
+                from live_draft_termination import persist_durable_tombstones
+
+                persist_durable_tombstones(session, room_code=code)
+            except ImportError:
+                pass
+            return False, "This draft has ended.", document
         if status in ("complete", "completed", "expired"):
             return False, "Room is no longer joinable — the draft has already finished.", document
         return False, f"Room is no longer joinable (status: {status or 'unknown'}).", document

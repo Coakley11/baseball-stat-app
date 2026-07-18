@@ -55,7 +55,12 @@ class EndLiveDraftSessionTests(unittest.TestCase):
         self.assertNotIn("live_draft_my_team", session)
         room = prepare_live_draft_state(session)
         self.assertIsNone(room)
-        self.assertIsNone(get_draft_return_context(session))
+        ctx = get_draft_return_context(session)
+        # Temporary last-board snapshot is allowed; Resume Live Draft is not.
+        if ctx is not None:
+            self.assertEqual(ctx.get("kind"), "last_board_snapshot")
+            self.assertTrue(ctx.get("not_a_live_room"))
+        self.assertNotEqual(str((ctx or {}).get("title") or ""), "Return to Live Draft")
 
 
 if __name__ == "__main__":

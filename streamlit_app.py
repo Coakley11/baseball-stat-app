@@ -21734,6 +21734,12 @@ if active_page == "Live Draft Room":
     except Exception:
         pass
     try:
+        from live_draft_termination import repair_corrupted_live_draft_lifecycle
+
+        repair_corrupted_live_draft_lifecycle(st.session_state)
+    except ImportError:
+        pass
+    try:
         from user_page_preferences import ensure_live_draft_setup_preferences_loaded
 
         ensure_live_draft_setup_preferences_loaded(st.session_state)
@@ -21944,6 +21950,34 @@ if active_page == "Live Draft Room":
         except ImportError:
             pass
     _shared_panel_wants_rerun = False
+    # Resolve lifecycle BEFORE poll/legacy shared panel so setup never paints with
+    # Leave shared room / room-code chrome from a prior ended session.
+    try:
+        from live_draft_completion import (
+            LIFECYCLE_ACTIVE_DRAFT,
+            LIFECYCLE_SETUP,
+            LIFECYCLE_WAITING_SHARED_LOBBY,
+            resolve_live_draft_lifecycle,
+        )
+
+        _early_lifecycle_room = st.session_state.get("live_draft_room")
+        _early_lifecycle = resolve_live_draft_lifecycle(
+            st.session_state,
+            room=_early_lifecycle_room if isinstance(_early_lifecycle_room, dict) else None,
+        )
+    except ImportError:
+        LIFECYCLE_SETUP = "setup"
+        LIFECYCLE_WAITING_SHARED_LOBBY = "waiting_shared_lobby"
+        LIFECYCLE_ACTIVE_DRAFT = "active_draft"
+        _early_lifecycle = (
+            LIFECYCLE_SETUP
+            if not isinstance(st.session_state.get("live_draft_room"), dict)
+            else LIFECYCLE_ACTIVE_DRAFT
+        )
+    _lifecycle_allows_shared_runtime = _early_lifecycle in (
+        LIFECYCLE_WAITING_SHARED_LOBBY,
+        LIFECYCLE_ACTIVE_DRAFT,
+    )
     try:
         from draft_room_context import is_multiplayer_draft_active, poll_shared_draft_room
         from draft_ui_multiplayer import render_shared_draft_room_panel
@@ -21951,7 +21985,7 @@ if active_page == "Live Draft Room":
         from suite_egress_policy import shared_draft_poll_interval_sec
 
         _skip_poll = False
-        if is_multiplayer_draft_active(st.session_state):
+        if _lifecycle_allows_shared_runtime and is_multiplayer_draft_active(st.session_state):
             _skip_poll = _skip_poll or bool(
                 st.session_state.get("_start_live_draft_pending")
                 or st.session_state.get("_live_draft_start_in_flight")
@@ -22036,29 +22070,31 @@ if active_page == "Live Draft Room":
                         )
                     except ImportError:
                         st.rerun()
-        try:
-            with _ldr_step_ctx(
-                st.session_state,
-                "shared_draft_panel",
-                st=st,
-                last_rerun_source=_ldr_last_rerun,
-            ):
-                _shared_panel_wants_rerun = bool(render_shared_draft_room_panel(st, st.session_state))
+        # Legacy shared panel only while an active/lobby lifecycle owns the page.
+        if _lifecycle_allows_shared_runtime:
             try:
-                from live_draft_render_trace import ldr_post_rerun_checkpoint
+                with _ldr_step_ctx(
+                    st.session_state,
+                    "shared_draft_panel",
+                    st=st,
+                    last_rerun_source=_ldr_last_rerun,
+                ):
+                    _shared_panel_wants_rerun = bool(render_shared_draft_room_panel(st, st.session_state))
+                try:
+                    from live_draft_render_trace import ldr_post_rerun_checkpoint
 
-                ldr_post_rerun_checkpoint(st, st.session_state, "after_shared_draft_panel")
-            except ImportError:
-                pass
-        except Exception as _ldr_panel_exc:
-            try:
-                from live_draft_render_trace import ldr_exception
+                    ldr_post_rerun_checkpoint(st, st.session_state, "after_shared_draft_panel")
+                except ImportError:
+                    pass
+            except Exception as _ldr_panel_exc:
+                try:
+                    from live_draft_render_trace import ldr_exception
 
-                ldr_exception(st.session_state, "shared_draft_panel", _ldr_panel_exc, st=st)
-            except ImportError:
-                pass
-            st.error(f"LDR shared_draft_panel exception: {type(_ldr_panel_exc).__name__}: {_ldr_panel_exc}")
-            raise
+                    ldr_exception(st.session_state, "shared_draft_panel", _ldr_panel_exc, st=st)
+                except ImportError:
+                    pass
+                st.error(f"LDR shared_draft_panel exception: {type(_ldr_panel_exc).__name__}: {_ldr_panel_exc}")
+                raise
         if _shared_panel_wants_rerun:
             try:
                 from live_draft_render_trace import ldr_rerun
@@ -22441,6 +22477,15 @@ if active_page == "Live Draft Room":
                         SETUP_MODE_SOLO,
                     )
 
+                    # Brand-new draft (not simulator promote): wipe prior temporary board → Pick 1.
+                    if not (_from_simulator and sim_pick_count > 0):
+                        try:
+                            from live_draft_termination import reset_context_for_new_live_draft
+
+                            reset_context_for_new_live_draft(st.session_state)
+                        except ImportError:
+                            pass
+
                     stamp_room_setup_mode(new_room, st.session_state)
                     if _prepare_shared:
                         code, err = finalize_shared_room_create(
@@ -22707,6 +22752,24 @@ if active_page == "Live Draft Room":
         except ImportError:
             pass
         try:
+            from live_draft_termination import GUEST_ENDED_NOTICE_KEY, get_last_draft_board_snapshot
+
+            _guest_ended = st.session_state.pop(GUEST_ENDED_NOTICE_KEY, None)
+            if isinstance(_guest_ended, dict) and _guest_ended.get("message"):
+                st.info(str(_guest_ended["message"]))
+            _snap = get_last_draft_board_snapshot(st.session_state)
+            if isinstance(_snap, dict) and int(_snap.get("pick_count") or 0) > 0:
+                st.caption(
+                    f"{_snap.get('label') or 'Last Draft Board'} — temporary Simulator snapshot only "
+                    "(not a live room). Open Draft Room Simulator to review previous picks."
+                )
+        except ImportError:
+            pass
+        # Never show leftover create/join flash on a clean setup page.
+        st.session_state.pop("_live_draft_start_feedback", None)
+        st.session_state.pop("_shared_draft_room_created_flash", None)
+        st.session_state.pop("_draft_join_flash", None)
+        try:
             from live_draft_perf import PHASE_SETUP_RENDER, live_draft_perf_action
 
             _setup_render_ctx = live_draft_perf_action(st.session_state, "setup_render", phase=PHASE_SETUP_RENDER)
@@ -22895,16 +22958,29 @@ if active_page == "Live Draft Room":
                             st.session_state.pop("_live_draft_reset_setup_confirm", None)
 
             if reset_live:
-                from draft_room_membership import reset_live_draft_with_membership_guard
-
-                ok, msg = reset_live_draft_with_membership_guard(
-                    st.session_state, st_obj=st, reason="reset_draft"
+                st.session_state["_live_draft_delete_confirm"] = True
+            if st.session_state.get("_live_draft_delete_confirm") and _live_draft_lifecycle == LIFECYCLE_SETUP:
+                st.warning(
+                    "Delete this draft permanently? The live room and temporary draft board will be removed "
+                    "and cannot be restored."
                 )
-                if ok:
-                    st.success("Live draft deleted.")
-                    st.rerun()
-                else:
-                    st.error(msg)
+                dc1, dc2 = st.columns(2)
+                with dc1:
+                    if st.button(
+                        "Delete Draft Permanently",
+                        key="live_draft_setup_delete_confirm_btn",
+                        type="primary",
+                    ):
+                        from live_draft_termination import permanently_delete_live_draft
+
+                        st.session_state.pop("_live_draft_delete_confirm", None)
+                        permanently_delete_live_draft(st.session_state, st=st)
+                        st.success("Draft deleted permanently.")
+                        st.rerun()
+                with dc2:
+                    if st.button("Cancel", key="live_draft_setup_delete_cancel_btn"):
+                        st.session_state.pop("_live_draft_delete_confirm", None)
+                        st.rerun()
 
             with st.expander("Advanced — Convert Simulator to Live Draft", expanded=False):
                 st.caption(
@@ -23655,37 +23731,57 @@ if active_page == "Live Draft Room":
                 if st.button(
                     "🗑 Delete Draft",
                     key="live_draft_delete_btn",
-                    help="Delete this Live Draft session and return to Create / Join.",
+                    help="Permanently delete this Live Draft and its temporary board.",
                 ):
                     st.session_state["_live_draft_delete_confirm"] = True
+                    st.session_state.pop("_live_draft_end_confirm", None)
             with ctrl4:
-                try:
-                    from live_draft_completion import on_end_live_draft_session
+                if st.button(
+                    "End Draft",
+                    key="live_draft_end_btn",
+                    help="Permanently end this live room. Picks may remain temporarily in the Simulator.",
+                ):
+                    st.session_state["_live_draft_end_confirm"] = True
+                    st.session_state.pop("_live_draft_delete_confirm", None)
+            if st.session_state.get("_live_draft_end_confirm"):
+                st.warning(
+                    "End this live draft permanently? The live room cannot be resumed. "
+                    "Its picks may remain temporarily in the Draft Simulator until another live draft is started."
+                )
+                end_ok, end_cancel = st.columns(2)
+                with end_ok:
+                    if st.button(
+                        "End Draft Permanently",
+                        key="live_draft_end_confirm_btn",
+                        type="primary",
+                    ):
+                        from live_draft_termination import permanently_end_live_draft
 
-                    st.button(
-                        "End Draft",
-                        key="live_draft_end_btn",
-                        help="End this Live Draft session. Saved drafts and Shared Leagues are preserved.",
-                        on_click=on_end_live_draft_session,
-                    )
-                except ImportError:
-                    pass
+                        st.session_state.pop("_live_draft_end_confirm", None)
+                        permanently_end_live_draft(st.session_state, st=st)
+                        st.rerun()
+                with end_cancel:
+                    if st.button("Cancel", key="live_draft_end_cancel_btn"):
+                        st.session_state.pop("_live_draft_end_confirm", None)
+                        st.rerun()
             if st.session_state.get("_live_draft_delete_confirm"):
-                st.warning("Delete this Live Draft session? The in-progress room will be cleared. Saved Draft Library and Shared Leagues are not deleted.")
+                st.warning(
+                    "Delete this draft permanently? The live room and temporary draft board will be removed "
+                    "and cannot be restored."
+                )
                 confirm_col, cancel_col = st.columns(2)
                 with confirm_col:
-                    if st.button("Yes, delete this draft", key="live_draft_delete_confirm_btn", type="primary"):
-                        from draft_room_membership import reset_live_draft_with_membership_guard
+                    if st.button(
+                        "Delete Draft Permanently",
+                        key="live_draft_delete_confirm_btn",
+                        type="primary",
+                    ):
+                        from live_draft_termination import permanently_delete_live_draft
 
                         st.session_state.pop("_live_draft_delete_confirm", None)
-                        ok, msg = reset_live_draft_with_membership_guard(
-                            st.session_state, st_obj=st, reason="abandon_live_draft"
-                        )
-                        if ok:
-                            st.success("Live draft deleted.")
-                            st.rerun()
-                        else:
-                            st.error(msg)
+                        permanently_delete_live_draft(st.session_state, st=st)
+                        st.success("Draft deleted permanently.")
+                        st.rerun()
                 with cancel_col:
                     if st.button("Cancel", key="live_draft_delete_cancel_btn"):
                         st.session_state.pop("_live_draft_delete_confirm", None)

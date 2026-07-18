@@ -1115,6 +1115,13 @@ def _shared_room_restore_blocked(session: dict[str, Any], room_code: str) -> str
     if not code:
         return "empty"
     try:
+        from live_draft_termination import is_live_draft_permanently_retired
+
+        if is_live_draft_permanently_retired(session, room_code=code):
+            return "ended_tombstone"
+    except ImportError:
+        pass
+    try:
         from live_draft_completion import is_live_draft_ended_tombstoned
 
         if is_live_draft_ended_tombstoned(session, room_code=code):
@@ -1137,14 +1144,22 @@ def _shared_room_restore_blocked(session: dict[str, Any], room_code: str) -> str
                 "canceled",
                 "expired",
                 "ended",
+                "deleted",
             ):
                 return f"document_{status or 'terminal'}"
             room_blob = document.get("room") if isinstance(document.get("room"), dict) else {}
             room_status = str((room_blob or {}).get("status") or "").strip().lower()
-            if room_status in ("complete", "completed", "closed", "ended"):
+            if room_status in ("complete", "completed", "closed", "ended", "deleted"):
                 return f"room_{room_status}"
             draft_id = str(document.get("draft_room_id") or (room_blob or {}).get("draft_room_id") or "").strip()
             if draft_id:
+                try:
+                    from live_draft_termination import is_live_draft_permanently_retired
+
+                    if is_live_draft_permanently_retired(session, draft_id=draft_id):
+                        return "ended_draft_id_tombstone"
+                except ImportError:
+                    pass
                 try:
                     from live_draft_completion import is_live_draft_ended_tombstoned
 

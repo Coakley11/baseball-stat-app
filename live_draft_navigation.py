@@ -1005,6 +1005,32 @@ def get_draft_return_context(session: dict[str, Any]) -> dict[str, Any] | None:
         )
         return lobby_ctx
 
+    # Temporary last-board snapshot after End Draft — never labeled Resume Live Draft.
+    try:
+        from live_draft_termination import get_last_draft_board_snapshot
+
+        snap = get_last_draft_board_snapshot(session)
+        if isinstance(snap, dict) and int(snap.get("pick_count") or 0) > 0:
+            _set_resume_diag(
+                session,
+                resume_source_kind="last_board_snapshot",
+                sidebar_source_selected="last_board_snapshot",
+                sidebar_priority_reason="ended_live_draft_snapshot",
+            )
+            return {
+                "kind": "last_board_snapshot",
+                "title": str(snap.get("label") or "Last Draft Board"),
+                "team_label": str(snap.get("league_name") or "Previous Draft"),
+                "user_team": "",
+                "round_no": None,
+                "pick_no": int(snap.get("pick_count") or 0),
+                "on_clock": "—",
+                "total_picks": int(snap.get("total_picks") or 0),
+                "not_a_live_room": True,
+            }
+    except ImportError:
+        pass
+
     # Completed rooms are not resumable sidebar targets (use End Live Draft).
     room = _live_draft_room_for_return(session)
     if isinstance(room, dict):
@@ -1210,6 +1236,16 @@ def _render_return_card(
             st.button(
                 _with_page_icon("Draft Room Simulator", "Return to Draft Simulator", page_label_fn),
                 type="primary",
+                key=button_key,
+                use_container_width=True,
+                on_click=on_return_to_draft_simulator,
+                args=(session,),
+            )
+        elif kind == "last_board_snapshot":
+            st.caption(str(ctx.get("title") or "Last Draft Board"))
+            st.caption("Temporary previous picks — not a live room.")
+            st.button(
+                _with_page_icon("Draft Room Simulator", "Open Draft Simulator", page_label_fn),
                 key=button_key,
                 use_container_width=True,
                 on_click=on_return_to_draft_simulator,

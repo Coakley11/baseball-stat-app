@@ -23,7 +23,9 @@ ENDED_DRAFT_IDS_KEY = "_live_draft_ended_draft_ids"
 LIFECYCLE_SETUP = "setup"
 LIFECYCLE_WAITING_SHARED_LOBBY = "waiting_shared_lobby"
 LIFECYCLE_ACTIVE_DRAFT = "active_draft"
-LIFECYCLE_COMPLETED_HISTORY_VIEW = "completed_history_view"
+LIFECYCLE_HISTORICAL_READ_ONLY = "historical_read_only"
+# Backward-compatible alias
+LIFECYCLE_COMPLETED_HISTORY_VIEW = LIFECYCLE_HISTORICAL_READ_ONLY
 
 # Transient runtime pointers cleared by End Draft (setup preferences are preserved).
 END_DRAFT_CLEAR_KEYS = (
@@ -184,6 +186,15 @@ def record_ended_live_draft_tombstone(
     draft_room_id: str = "",
 ) -> None:
     """Durable marker so reboot/refresh cannot auto-restore an ended room."""
+    try:
+        from live_draft_termination import persist_durable_tombstones
+
+        persist_durable_tombstones(
+            session, draft_id=draft_room_id, room_id=draft_room_id, room_code=room_code
+        )
+        return
+    except ImportError:
+        pass
     code = str(room_code or "").strip().upper()
     draft_id = str(draft_room_id or "").strip()
     if code:
@@ -208,6 +219,14 @@ def is_live_draft_ended_tombstoned(
     room_code: str = "",
     draft_room_id: str = "",
 ) -> bool:
+    try:
+        from live_draft_termination import is_live_draft_permanently_retired
+
+        return is_live_draft_permanently_retired(
+            session, draft_id=draft_room_id, room_code=room_code
+        )
+    except ImportError:
+        pass
     code = str(room_code or "").strip().upper()
     draft_id = str(draft_room_id or "").strip()
     codes = session.get(ENDED_ROOM_CODES_KEY)
@@ -226,7 +245,7 @@ def resolve_live_draft_lifecycle(
 ) -> str:
     """Canonical page lifecycle — setup and active draft are mutually exclusive."""
     if bool(session.get("_live_draft_history_view")):
-        return LIFECYCLE_COMPLETED_HISTORY_VIEW
+        return LIFECYCLE_HISTORICAL_READ_ONLY
 
     live = room if isinstance(room, dict) else session.get("live_draft_room")
     if not isinstance(live, dict):
@@ -243,11 +262,25 @@ def resolve_live_draft_lifecycle(
     draft_id = _draft_id(live)
     if is_live_draft_ended_tombstoned(session, room_code=code, draft_room_id=draft_id):
         return LIFECYCLE_SETUP
+    try:
+        from live_draft_termination import is_live_draft_permanently_retired
 
-    if is_live_draft_explicitly_complete(live) and bool(session.get("_live_draft_history_view")):
-        return LIFECYCLE_COMPLETED_HISTORY_VIEW
+        if is_live_draft_permanently_retired(
+            session, draft_id=draft_id, room_code=code, room=live
+        ):
+            return LIFECYCLE_SETUP
+    except ImportError:
+        pass
 
     status = str(live.get("status") or "").strip().lower()
+    if status in ("ended", "closed", "deleted"):
+        return LIFECYCLE_SETUP
+    if status in ("complete", "completed") and bool(session.get("_live_draft_history_view")):
+        return LIFECYCLE_HISTORICAL_READ_ONLY
+    # Completed without explicit history view → setup (temporary board lives in Simulator).
+    if status in ("complete", "completed") or is_live_draft_explicitly_complete(live):
+        return LIFECYCLE_SETUP
+
     if status in ("waiting", "not_started"):
         try:
             from live_draft_setup_mode import resolve_active_live_draft_mode
@@ -267,206 +300,33 @@ def end_live_draft_session(
     st: Any | None = None,
     reason: str = "end_live_draft_session",
 ) -> dict[str, Any]:
-    """Close the active Live Draft runtime and return to setup with saved preferences.
+    """Compatibility wrapper → permanently_end_live_draft."""
+    try:
+        from live_draft_termination import permanently_end_live_draft
 
-    Clears in-room hydrate pointers so Live Draft Room shows Create/Join/setup.
-    Saved drafts, Shared Leagues, and historical results are left untouched.
-    Setup preferences (Solo/Shared, teams, rounds, timer, scoring, etc.) are preserved.
-    """
-    room = session.get("live_draft_room")
-    if not isinstance(room, dict):
-        room = {}
-    cfg = dict(room.get("config") or {})
-    draft_label = str(
-        cfg.get("league_name") or room.get("league_name") or cfg.get("draft_name") or "Live Draft"
-    ).strip()
-    draft_room_id = _draft_id(room)
-    shared_code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
-    if not shared_code:
-        try:
-            from draft_room_context import resolve_shared_room_code
-
-            shared_code = str(resolve_shared_room_code(session) or "").strip().upper()
-        except ImportError:
-            pass
-
-    # Finalize/save completion markers on the local room before teardown.
-    if room:
-        try:
-            apply_live_draft_completion(room, session)
-        except Exception:
-            room["status"] = str(room.get("status") or "complete") or "complete"
-
+        return permanently_end_live_draft(session, st=st, reason=reason)
+    except ImportError:
+        pass
+    # Minimal fallback if termination module missing.
     record_ended_live_draft_tombstone(
         session,
-        room_code=shared_code,
-        draft_room_id=draft_room_id,
+        room_code=str(session.get("active_shared_draft_room_code") or ""),
+        draft_room_id=_draft_id(session.get("live_draft_room") or {}),
     )
-
-    cleared_keys: list[str] = []
-    if shared_code:
-        try:
-            from draft_room_membership import close_shared_draft_room, is_room_host
-            from draft_room_shared_state import load_shared_room
-
-            document = load_shared_room(shared_code)
-            if is_room_host(session, document if isinstance(document, dict) else None):
-                close_shared_draft_room(session)
-                cleared_keys.append("shared_document:closed")
-            else:
-                from draft_room_context import leave_shared_draft_room
-
-                leave_shared_draft_room(session)
-                cleared_keys.append("shared_document:left")
-        except Exception:
-            try:
-                from draft_room_context import leave_shared_draft_room
-
-                leave_shared_draft_room(session)
-                cleared_keys.append("shared_document:left_fallback")
-            except Exception:
-                shared_code = ""
-    if not shared_code or session.get("live_draft_room"):
-        try:
-            from draft_room_state import delete_live_draft_only
-
-            delete_live_draft_only(session)
-            cleared_keys.append("delete_live_draft_only")
-        except Exception:
-            try:
-                from live_draft_state import clear_live_draft_state
-
-                clear_live_draft_state(session, reason=reason)
-                cleared_keys.append("clear_live_draft_state")
-            except Exception:
-                session.pop("live_draft_room", None)
-                session.pop("live_draft_state", None)
-                cleared_keys.extend(["live_draft_room", "live_draft_state"])
-
-    # Mark membership left so restore cannot revive via preferred Active League code.
-    if shared_code:
-        try:
-            from draft_room_participant_state import mark_participant_left_room, resolve_participant_id
-
-            mark_participant_left_room(
-                session,
-                shared_code,
-                participant_id=resolve_participant_id(session),
-            )
-            cleared_keys.append(f"membership_left:{shared_code}")
-        except Exception:
-            pass
-
-    for key in END_DRAFT_CLEAR_KEYS:
-        if key in session:
-            session.pop(key, None)
-            cleared_keys.append(key)
-
-    # Clear queue / participant runtime for the ended room without wiping other rooms' history.
-    try:
-        from draft_state import DRAFT_QUEUE_KEY, DRAFT_WATCHLIST_FAVORITES_KEY, DRAFT_WATCHLIST_FOCUS_KEY
-
-        session[DRAFT_QUEUE_KEY] = []
-        session[DRAFT_WATCHLIST_FOCUS_KEY] = []
-        session[DRAFT_WATCHLIST_FAVORITES_KEY] = []
-        cleared_keys.extend([DRAFT_QUEUE_KEY, DRAFT_WATCHLIST_FOCUS_KEY, DRAFT_WATCHLIST_FAVORITES_KEY])
-    except ImportError:
-        pass
-
-    session[SESSION_ENDED_NOTICE_KEY] = {
-        "message": (
-            f"Ended the Live Draft session for **{draft_label}**. "
-            "Saved drafts and Shared Leagues were preserved. "
-            "Fantasy pages restored to the Active Draft when Live Draft Override is off."
-        ),
-        "ended_at": _utc_now_iso(),
-        "ended_room_code": shared_code or None,
-        "ended_draft_room_id": draft_room_id or None,
-        "cleared_keys": list(cleared_keys),
-    }
-
-    try:
-        from live_draft_state import commit_live_draft_room
-
-        if st is not None:
-            commit_live_draft_room(st, session, None, reason=reason)
-        else:
-            from live_draft_state import clear_live_draft_state
-
-            clear_live_draft_state(session, reason=reason)
-    except Exception:
-        session.pop("live_draft_room", None)
-        session.pop("live_draft_state", None)
-
-    # Seed setup controls from persisted user preferences (mode + form fields).
-    try:
-        from user_page_preferences import (
-            ensure_live_draft_setup_preferences_loaded,
-            restore_live_draft_setup_mode_preference,
-        )
-
-        # Allow full preference reseed onto the setup page after runtime clear.
-        session.pop("_prefs_initialized:live_draft_setup", None)
-        restore_live_draft_setup_mode_preference(session)
-        ensure_live_draft_setup_preferences_loaded(session)
-    except ImportError:
-        pass
-
-    # Live Draft Override OFF → temporary board is gone; restore Active Draft my-team.
-    try:
-        from fantasy_context_source import (
-            USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY,
-            invalidate_fantasy_workflow_descriptor_cache,
-        )
-
-        override_on = bool(session.get(USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY))
-        invalidate_fantasy_workflow_descriptor_cache(session)
-        if not override_on:
-            from global_fantasy_settings_state import sync_active_fantasy_team_to_canonical
-
-            restored = sync_active_fantasy_team_to_canonical(session)
-            session["_live_draft_ended_restored_active_team"] = restored
-    except Exception:
-        pass
-
-    session["_live_draft_end_cleared_keys"] = list(cleared_keys)
-    session["_draft_queue_widget_epoch"] = int(session.get("_draft_queue_widget_epoch") or 0) + 1
-    try:
-        from draft_room_shared_state import invalidate_shared_room_document_cache
-
-        invalidate_shared_room_document_cache(session, shared_code)
-    except Exception:
-        pass
-    try:
-        from suite_storage_supabase import invalidate_shared_draft_room_read_cache
-
-        invalidate_shared_draft_room_read_cache()
-    except Exception:
-        pass
-    # Clear query/URL room context when Streamlit is available.
-    if st is not None:
-        try:
-            qp = dict(st.query_params) if hasattr(st, "query_params") else {}
-            for key in ("room_code", "draft_room_code", "live_draft_room_code", "code"):
-                if key in qp:
-                    try:
-                        del st.query_params[key]
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-    return {
-        "ok": True,
-        "reason": reason,
-        "draft_label": draft_label,
-        "cleared_keys": cleared_keys,
-        "ended_room_code": shared_code or None,
-        "ended_draft_room_id": draft_room_id or None,
-    }
+    session.pop("live_draft_room", None)
+    session.pop("live_draft_state", None)
+    return {"ok": True, "reason": reason}
 
 
 def on_end_live_draft_session() -> None:
-    """Streamlit on_click: end session and return to Live Draft landing (no auto-start)."""
+    """Streamlit on_click: permanently end and rerun into clean setup."""
+    try:
+        from live_draft_termination import on_permanently_end_live_draft
+
+        on_permanently_end_live_draft()
+        return
+    except ImportError:
+        pass
     try:
         import streamlit as st_mod
     except Exception:

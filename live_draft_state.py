@@ -1209,6 +1209,15 @@ def _room_blocked_from_auto_restore(
     except ImportError:
         pass
     try:
+        from live_draft_termination import is_live_draft_permanently_retired
+
+        if is_live_draft_permanently_retired(
+            session, draft_id=draft_id, room_code=code, room=room
+        ):
+            return "ended_tombstone"
+    except ImportError:
+        pass
+    try:
         from live_draft_completion import is_live_draft_ended_tombstoned
 
         if is_live_draft_ended_tombstoned(session, room_code=code, draft_room_id=draft_id):
@@ -1216,7 +1225,7 @@ def _room_blocked_from_auto_restore(
     except ImportError:
         pass
     status = str(room.get("status") or "").strip().lower()
-    if status in ("closed", "ended"):
+    if status in ("closed", "ended", "deleted"):
         return f"status_{status}"
     if for_persisted_restore and status in ("complete", "completed"):
         return f"status_{status}"
