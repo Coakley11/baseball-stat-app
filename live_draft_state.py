@@ -1555,8 +1555,9 @@ def enrich_save_payload_with_live_draft(
     }
     sync_live_draft_session_before_save(session)
     blob = canonical_live_draft(session)
-    if not blob or not blob.get("draft_room_id"):
-        if is_live_draft_locally_dirty(session):
+    termination_cleared = bool(session.get("_live_draft_termination_cleared"))
+    if termination_cleared or (not blob or not blob.get("draft_room_id")):
+        if termination_cleared or is_live_draft_locally_dirty(session):
             out = copy.deepcopy(state)
             out.pop(LIVE_DRAFT_STATE_KEY, None)
             out.pop(LIVE_DRAFT_ROOM_KEY, None)
@@ -1568,12 +1569,44 @@ def enrich_save_payload_with_live_draft(
             ws = out.get("baseball_workspace_state")
             if isinstance(ws, dict):
                 ws.pop("live_draft", None)
+            diag["stripped_after_termination"] = bool(termination_cleared)
             return out, diag
         existing = _live_draft_from_blob(state)
         if existing and existing.get("draft_room_id"):
+            # Never reinject a tombstoned room from soft workspace cache.
+            try:
+                from live_draft_termination import is_live_draft_permanently_retired
+
+                if is_live_draft_permanently_retired(
+                    session,
+                    draft_id=str(existing.get("draft_room_id") or ""),
+                    room=existing,
+                ):
+                    out = copy.deepcopy(state)
+                    out.pop(LIVE_DRAFT_STATE_KEY, None)
+                    out.pop(LIVE_DRAFT_ROOM_KEY, None)
+                    return out, diag
+            except ImportError:
+                pass
             blob = existing
         else:
             return state, diag
+
+    # Active session blob may still point at a just-deleted room — refuse reinject.
+    try:
+        from live_draft_termination import is_live_draft_permanently_retired
+
+        if is_live_draft_permanently_retired(
+            session,
+            draft_id=str((blob or {}).get("draft_room_id") or ""),
+            room=blob if isinstance(blob, dict) else None,
+        ):
+            out = copy.deepcopy(state)
+            out.pop(LIVE_DRAFT_STATE_KEY, None)
+            out.pop(LIVE_DRAFT_ROOM_KEY, None)
+            return out, diag
+    except ImportError:
+        pass
 
     if is_persisted_room_blob(blob):
         safe_blob = copy.deepcopy(blob)

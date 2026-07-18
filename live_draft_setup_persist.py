@@ -140,7 +140,7 @@ def flush_live_draft_setup_persist(
     try:
         from user_page_preferences import persist_live_draft_setup_preferences
 
-        persist_live_draft_setup_preferences(session, st=st, force_disk=False)
+        persist_live_draft_setup_preferences(session, st=st, force_disk=True)
     except ImportError:
         pass
     clear_live_draft_setup_dirty(session)

@@ -146,20 +146,27 @@ class StickySetupPreferenceTests(unittest.TestCase):
                 "status": "in_progress",
                 "draft_room_id": "dr-sticky",
                 "sync": {"room_code": "STICKY"},
-                "config": {"timer_seconds": 30, "draft_setup_mode": "shared_multiplayer"},
+                "teams": ["Team A", "Team B"],
+                "config": {
+                    "timer_seconds": 30,
+                    "draft_setup_mode": "shared_multiplayer",
+                    "num_teams": 2,
+                    "picks_per_team": 4,
+                },
             },
             "active_shared_draft_room_code": "STICKY",
         }
+        # Stale durable prefs that previously caused Shared→Solo / 2→10 / 4→15 after delete.
         save_user_page_preferences(
             "daniel",
             "ws-daniel",
             PAGE_KEY_LIVE_DRAFT_SETUP,
             {
-                "live_draft_setup_mode": "shared_multiplayer",
-                "preferred_next_draft_mode": "shared_multiplayer",
-                "live_draft_team_count": 2,
-                "live_draft_picks_per_team": 4,
-                "live_draft_proj_window": 5,
+                "live_draft_setup_mode": "solo",
+                "preferred_next_draft_mode": "solo",
+                "live_draft_team_count": 10,
+                "live_draft_picks_per_team": 15,
+                "live_draft_proj_window": 3,
             },
             session=session,
             st=None,
@@ -168,14 +175,34 @@ class StickySetupPreferenceTests(unittest.TestCase):
         from unittest.mock import patch
 
         with patch("live_draft_termination._close_backend_room"), patch(
-            "live_draft_termination.persist_durable_tombstones"
-        ), patch("live_draft_termination._clear_query_room_params"):
+            "live_draft_termination._clear_query_room_params"
+        ):
             discard_live_draft_and_start_over(session, st=None)
         self.assertEqual(session.get("live_draft_setup_mode"), "shared_multiplayer")
         self.assertEqual(int(session.get("live_draft_team_count") or 0), 2)
         self.assertEqual(int(session.get("live_draft_picks_per_team") or 0), 4)
-        self.assertEqual(int(session.get("live_draft_proj_window") or 0), 5)
         self.assertFalse(should_render_shared_room_created_card(session))
+        self.assertTrue(session.get("_live_draft_termination_cleared"))
+        self.assertIsNone(session.get("live_draft_room"))
+
+    def test_enrich_save_strips_after_termination(self) -> None:
+        from live_draft_state import enrich_save_payload_with_live_draft
+
+        session: dict = {
+            "_live_draft_termination_cleared": True,
+            "_live_draft_locally_dirty": True,
+        }
+        state = {
+            "live_draft_state": {"draft_room_id": "ghost", "status": "in_progress"},
+            "live_draft_room": {"draft_room_id": "ghost", "status": "in_progress"},
+            "page_filter_state": {
+                "Live Draft Room": {"live_draft_room": {"draft_room_id": "ghost"}}
+            },
+        }
+        out, diag = enrich_save_payload_with_live_draft(session, state)
+        self.assertNotIn("live_draft_state", out)
+        self.assertNotIn("live_draft_room", out)
+        self.assertTrue(diag.get("stripped_after_termination"))
 
     def test_ensure_reseeds_missing_team_count(self) -> None:
         session: dict = {

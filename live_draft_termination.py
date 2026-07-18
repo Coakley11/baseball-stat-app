@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -356,15 +357,19 @@ def _close_backend_room(
 ) -> None:
     code = str(room_code or "").strip().upper()
     if not code:
+        try:
+            from draft_room_context import leave_shared_draft_room
+
+            leave_shared_draft_room(session)
+        except Exception:
+            pass
         return
     try:
-        from draft_room_membership import is_room_host
         from draft_room_shared_state import bump_revision, get_shared_room_store, load_shared_room
 
         document = load_shared_room(code)
-        if not isinstance(document, dict):
-            return
-        if is_room_host(session, document):
+        if isinstance(document, dict):
+            # Always mark the authoritative room deleted — do not require host-only.
             updated = bump_revision(document)
             updated["status"] = terminal_status
             updated["terminated_at"] = _utc_now_iso()
@@ -372,20 +377,24 @@ def _close_backend_room(
             room_blob = updated.get("room")
             if isinstance(room_blob, dict):
                 room_blob["status"] = terminal_status
-            get_shared_room_store().save(updated)
-        try:
-            from draft_room_context import leave_shared_draft_room
+            try:
+                get_shared_room_store().save(updated)
+            except Exception:
+                pass
+            try:
+                from draft_room_shared_state import invalidate_shared_room_document_cache
 
-            leave_shared_draft_room(session)
-        except ImportError:
-            pass
+                invalidate_shared_room_document_cache(session, code)
+            except Exception:
+                pass
     except Exception:
-        try:
-            from draft_room_context import leave_shared_draft_room
+        pass
+    try:
+        from draft_room_context import leave_shared_draft_room
 
-            leave_shared_draft_room(session)
-        except Exception:
-            pass
+        leave_shared_draft_room(session)
+    except Exception:
+        pass
 
 
 def _clear_runtime_pointers(session: dict[str, Any], *, clear_queues: bool) -> list[str]:
@@ -476,7 +485,13 @@ def permanently_delete_live_draft(
         return {"ok": True, "operation": "delete", "idempotent": True}
 
     session[DELETING_STATUS_KEY] = "in_progress"
+    session["_live_draft_delete_started_at"] = time.time()
     bump_live_draft_page_epoch(session)
+    # Stop every interactive control immediately — fragments must no-op this run.
+    session["_live_draft_controls_locked"] = True
+    session.pop("_live_draft_timer_expired_pending", None)
+    session.pop("_live_draft_page_owns_expired", None)
+    session.pop("_live_draft_poll_fragment_active", None)
 
     room = session.get("live_draft_room")
     if not isinstance(room, dict):
@@ -485,6 +500,68 @@ def permanently_delete_live_draft(
     draft_id = str(draft_id or d_id or "").strip()
     room_id = str(room_id or r_id or "").strip()
     room_code = str(room_code or code or "").strip().upper()
+
+    # Snapshot sticky setup BEFORE clearing runtime so Shared/2/4 survive End/Delete.
+    setup_snapshot: dict[str, Any] = {}
+    try:
+        from user_page_preferences import (
+            PAGE_KEY_LIVE_DRAFT_SETUP,
+            collect_live_draft_setup_settings,
+            save_user_page_preferences,
+        )
+
+        setup_snapshot = collect_live_draft_setup_settings(session)
+        # Prefer the just-active room's mode over a stale Solo preference.
+        try:
+            from live_draft_setup_mode import (
+                LIVE_DRAFT_SETUP_MODE_KEY,
+                PREFERRED_NEXT_DRAFT_MODE_KEY,
+                SETUP_MODE_SHARED,
+                normalize_setup_mode,
+            )
+
+            cfg = dict(room.get("config") or {}) if isinstance(room, dict) else {}
+            room_mode = normalize_setup_mode(
+                cfg.get("draft_setup_mode") or session.get(LIVE_DRAFT_SETUP_MODE_KEY)
+            )
+            if room_mode:
+                setup_snapshot[LIVE_DRAFT_SETUP_MODE_KEY] = room_mode
+                setup_snapshot[PREFERRED_NEXT_DRAFT_MODE_KEY] = room_mode
+            # Prefer shared when an active shared room code existed.
+            if room_code:
+                setup_snapshot[LIVE_DRAFT_SETUP_MODE_KEY] = SETUP_MODE_SHARED
+                setup_snapshot[PREFERRED_NEXT_DRAFT_MODE_KEY] = SETUP_MODE_SHARED
+            # Prefer the just-deleted room's team/pick counts over stale durable 10/15.
+            n_teams = cfg.get("num_teams") or len(room.get("teams") or [])
+            if n_teams:
+                setup_snapshot["live_draft_team_count"] = int(n_teams)
+                setup_snapshot["live_draft_num_teams"] = int(n_teams)
+            ppt = cfg.get("picks_per_team")
+            if ppt:
+                setup_snapshot["live_draft_picks_per_team"] = int(ppt)
+        except ImportError:
+            pass
+        uid = str(session.get("auth_user_id") or "").strip()
+        wid = str(
+            session.get("_suite_active_workspace_id")
+            or session.get("_suite_owned_workspace_id")
+            or session.get("workspace_id")
+            or ""
+        ).strip()
+        if setup_snapshot:
+            save_user_page_preferences(
+                uid,
+                wid,
+                PAGE_KEY_LIVE_DRAFT_SETUP,
+                setup_snapshot,
+                session=session,
+                st=st,
+                force_disk=True,
+                merge=True,
+            )
+            session["_live_draft_setup_snapshot_after_delete"] = dict(setup_snapshot)
+    except ImportError:
+        setup_snapshot = {}
 
     # Also clear resumable slot when it points at this draft.
     try:
@@ -523,6 +600,10 @@ def permanently_delete_live_draft(
         except Exception:
             pass
 
+    # Mark locally dirty so enrich_save_payload cannot reinject the deleted room.
+    session["_live_draft_locally_dirty"] = True
+    session["_live_draft_termination_cleared"] = True
+
     # Epoch already bumped at start; keep suppress active for setup-only paint.
     session[SUPPRESS_FRAGMENTS_KEY] = int(session.get(PAGE_FRAGMENT_EPOCH_KEY) or 1)
     session[DELETING_STATUS_KEY] = "done"
@@ -545,27 +626,20 @@ def permanently_delete_live_draft(
 
     try:
         from user_page_preferences import (
-            PAGE_KEY_LIVE_DRAFT_SETUP,
             apply_live_draft_setup_settings,
             ensure_live_draft_setup_preferences_loaded,
-            get_user_page_preferences,
-            restore_live_draft_setup_mode_preference,
         )
 
         session.pop("_prefs_initialized:live_draft_setup", None)
-        restore_live_draft_setup_mode_preference(session)
+        # Restore from the snapshot we just forced to disk — never stale Solo/10/15.
+        restore_settings = setup_snapshot or session.get("_live_draft_setup_snapshot_after_delete")
+        if isinstance(restore_settings, dict) and restore_settings:
+            session["_live_draft_setup_force_mode_apply"] = True
+            try:
+                apply_live_draft_setup_settings(session, restore_settings)
+            finally:
+                session.pop("_live_draft_setup_force_mode_apply", None)
         ensure_live_draft_setup_preferences_loaded(session)
-        # Re-apply full sticky setup (teams/picks/projection) after End/Delete.
-        uid = str(session.get("auth_user_id") or "").strip()
-        wid = str(
-            session.get("_suite_active_workspace_id")
-            or session.get("_suite_owned_workspace_id")
-            or session.get("workspace_id")
-            or ""
-        ).strip()
-        settings = get_user_page_preferences(uid, wid, PAGE_KEY_LIVE_DRAFT_SETUP, session=session)
-        if isinstance(settings, dict) and settings:
-            apply_live_draft_setup_settings(session, settings)
     except ImportError:
         pass
 
@@ -575,6 +649,15 @@ def permanently_delete_live_draft(
         if st is not None:
             commit_live_draft_room(st, session, None, reason=reason)
     except Exception:
+        pass
+
+    # Bump global page generation so every fragment rejects the deleted instance.
+    try:
+        from app_page_generation import ACTIVE_PAGE_GENERATION_KEY, begin_page_run
+
+        session[ACTIVE_PAGE_GENERATION_KEY] = int(session.get(ACTIVE_PAGE_GENERATION_KEY) or 0) + 1
+        begin_page_run(session, "Live Draft Room")
+    except ImportError:
         pass
 
     session[ENDED_NOTICE_KEY] = {
@@ -590,6 +673,7 @@ def permanently_delete_live_draft(
         "operation": "delete",
     }
     session["_live_draft_session_ended_notice"] = session[ENDED_NOTICE_KEY]
+    session.pop("_live_draft_controls_locked", None)
 
     try:
         from baseball_persistent_state import force_save_baseball_state
@@ -604,6 +688,13 @@ def permanently_delete_live_draft(
     except Exception:
         pass
 
+    try:
+        started = float(session.pop("_live_draft_delete_started_at", 0) or 0)
+        if started:
+            session["_live_draft_delete_elapsed_ms"] = int((time.time() - started) * 1000)
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "operation": "delete",
@@ -612,6 +703,8 @@ def permanently_delete_live_draft(
         "room_code": room_code or None,
         "snapshot": None,
         "cleared_keys": cleared,
+        "setup_snapshot": setup_snapshot or None,
+        "delete_elapsed_ms": session.get("_live_draft_delete_elapsed_ms"),
     }
 
 
@@ -703,6 +796,9 @@ def reset_context_for_new_live_draft(
     session["draft_queue"] = []
     session.pop(DELETING_STATUS_KEY, None)
     session.pop(SUPPRESS_FRAGMENTS_KEY, None)
+    session.pop("_live_draft_termination_cleared", None)
+    session.pop("_live_draft_controls_locked", None)
+    session.pop("_live_draft_locally_dirty", None)
     for key in (
         "_live_draft_rec_cache",
         "_live_draft_joined_participants_cache",

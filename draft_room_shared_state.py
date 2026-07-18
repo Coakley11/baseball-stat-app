@@ -738,6 +738,24 @@ def publish_shared_room_runtime(
     reason: str = "shared_room_sync",
 ) -> dict[str, Any] | None:
     """Mirror shared room document into session runtime keys used by existing engines."""
+    code = str(
+        (document or {}).get("room_code")
+        or session.get(ACTIVE_SHARED_ROOM_CODE_KEY)
+        or ""
+    ).strip().upper()
+    draft_id = str((document or {}).get("draft_room_id") or "").strip()
+    try:
+        from live_draft_termination import is_live_draft_permanently_retired
+
+        if is_live_draft_permanently_retired(
+            session, draft_id=draft_id, room_code=code, room=document if isinstance(document, dict) else None
+        ):
+            session.pop(LIVE_DRAFT_ROOM_KEY, None)
+            session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+            session["_draft_room_publish_error"] = "Room was permanently deleted."
+            return None
+    except ImportError:
+        pass
     try:
         from draft_room_create_verify import validate_shared_room_document
 

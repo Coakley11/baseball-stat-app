@@ -514,6 +514,15 @@ def _try_hydrate_shared_room(session: dict[str, Any], room_code: str) -> dict[st
     code = str(room_code or "").strip().upper()
     if not code:
         return None
+    try:
+        from live_draft_termination import is_live_draft_permanently_retired
+
+        if is_live_draft_permanently_retired(session, room_code=code):
+            session.pop("live_draft_room", None)
+            session.pop("active_shared_draft_room_code", None)
+            return None
+    except ImportError:
+        pass
     room = _live_draft_room_for_return(session)
     if isinstance(room, dict):
         try:
@@ -542,6 +551,20 @@ def _try_hydrate_shared_room(session: dict[str, Any], room_code: str) -> dict[st
         doc = load_shared_room(code)
         if not isinstance(doc, dict):
             return None
+        doc_status = str(doc.get("status") or "").strip().lower()
+        if doc_status in ("deleted", "ended", "closed"):
+            session.pop("live_draft_room", None)
+            session.pop("active_shared_draft_room_code", None)
+            return None
+        try:
+            from live_draft_termination import is_live_draft_permanently_retired
+
+            if is_live_draft_permanently_retired(session, room_code=code, room=doc):
+                session.pop("live_draft_room", None)
+                session.pop("active_shared_draft_room_code", None)
+                return None
+        except ImportError:
+            pass
         # Shared docs often wrap live draft under live_draft / draft_room keys.
         blob = doc.get("live_draft") or doc.get("live_draft_room") or doc.get("room") or doc
         restored = None

@@ -22083,6 +22083,15 @@ elif active_page == "Live Draft Room":
         )
     if _early_lifecycle == LIFECYCLE_DELETING:
         st.info("Deleting draft…")
+        try:
+            from live_draft_termination import discard_live_draft_and_start_over
+
+            if str(st.session_state.get("_live_draft_deleting") or "").strip().lower() == "in_progress":
+                discard_live_draft_and_start_over(st.session_state, st=st)
+        except Exception:
+            st.session_state["_live_draft_deleting"] = "done"
+            st.session_state.pop("live_draft_room", None)
+        st.rerun()
         st.stop()
     _lifecycle_allows_shared_runtime = _early_lifecycle in (
         LIFECYCLE_WAITING_SHARED_LOBBY,
@@ -22408,9 +22417,22 @@ elif active_page == "Live Draft Room":
             )
             live_auto_rule = str(st.session_state.get("live_draft_auto_rule") or LIVE_DRAFT_AUTO_RULES[4])
             live_proj_style = str(st.session_state.get("live_draft_proj_style") or "Balanced")
-            live_proj_window = int(st.session_state.get("live_draft_proj_window") or 3)
-            live_num_teams = int(st.session_state.get("live_draft_team_count") or 4)
-            live_picks_per_team = int(st.session_state.get("live_draft_picks_per_team") or 15)
+            try:
+                from user_page_preferences import live_draft_setup_number_default
+
+                live_proj_window = int(
+                    live_draft_setup_number_default(st.session_state, "live_draft_proj_window", 3)
+                )
+                live_num_teams = int(
+                    live_draft_setup_number_default(st.session_state, "live_draft_team_count", 2)
+                )
+                live_picks_per_team = int(
+                    live_draft_setup_number_default(st.session_state, "live_draft_picks_per_team", 4)
+                )
+            except ImportError:
+                live_proj_window = int(st.session_state.get("live_draft_proj_window") or 3)
+                live_num_teams = int(st.session_state.get("live_draft_team_count") or 2)
+                live_picks_per_team = int(st.session_state.get("live_draft_picks_per_team") or 4)
             live_league_name = str(st.session_state.get("live_draft_league_name") or "My Fantasy League")
             default_teams = _live_draft_default_teams(live_num_teams)
             team_names = [
@@ -22619,6 +22641,14 @@ elif active_page == "Live Draft Room":
                             st.success(st.session_state["_live_draft_start_feedback"])
                             _start_handler_ok = True
                             try:
+                                from user_page_preferences import persist_live_draft_setup_preferences
+
+                                persist_live_draft_setup_preferences(
+                                    st.session_state, st=st, force_disk=True
+                                )
+                            except ImportError:
+                                pass
+                            try:
                                 from baseball_persistent_state import force_save_baseball_state
 
                                 force_save_baseball_state(st, reason="shared_draft_room_create")
@@ -22639,6 +22669,14 @@ elif active_page == "Live Draft Room":
                         live_draft_start(new_room)
                         st.session_state["live_draft_room"] = new_room
                         st.session_state["room_your_team"] = user_team
+                        try:
+                            from user_page_preferences import persist_live_draft_setup_preferences
+
+                            persist_live_draft_setup_preferences(
+                                st.session_state, st=st, force_disk=True
+                            )
+                        except ImportError:
+                            pass
                         try:
                             from draft_actions import draft_action_context
                             from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, set_canonical_draft_meta
@@ -22740,6 +22778,15 @@ elif active_page == "Live Draft Room":
 
     if _live_draft_lifecycle == LIFECYCLE_DELETING:
         st.info("Deleting draft…")
+        try:
+            from live_draft_termination import discard_live_draft_and_start_over
+
+            if str(st.session_state.get("_live_draft_deleting") or "").strip().lower() == "in_progress":
+                discard_live_draft_and_start_over(st.session_state, st=st)
+        except Exception:
+            st.session_state["_live_draft_deleting"] = "done"
+            st.session_state.pop("live_draft_room", None)
+        st.rerun()
         st.stop()
 
     if st.session_state.get("_simulator_to_live_show_confirm"):
@@ -23163,14 +23210,18 @@ elif active_page == "Live Draft Room":
                         key="live_draft_setup_delete_confirm_btn",
                         type="primary",
                     ):
-                        from live_draft_termination import discard_live_draft_and_start_over
+                        from live_draft_termination import bump_live_draft_page_epoch
                         from live_draft_resumable_slot import clear_resumable_live_draft_slot
 
                         st.session_state.pop("_live_draft_discard_confirm", None)
                         st.session_state["_live_draft_deleting"] = "in_progress"
+                        st.session_state["_live_draft_controls_locked"] = True
+                        st.session_state.pop("_live_draft_timer_expired_pending", None)
+                        bump_live_draft_page_epoch(st.session_state)
                         clear_resumable_live_draft_slot(st.session_state)
-                        discard_live_draft_and_start_over(st.session_state, st=st)
+                        # Two-phase: paint "Deleting draft…" then execute discard on next run.
                         st.rerun()
+                        st.stop()
                 with dc2:
                     if st.button("Keep Draft", key="live_draft_setup_delete_cancel_btn"):
                         st.session_state.pop("_live_draft_discard_confirm", None)
@@ -23997,12 +24048,16 @@ elif active_page == "Live Draft Room":
                         key="live_draft_discard_confirm_btn",
                         type="primary",
                     ):
-                        from live_draft_termination import discard_live_draft_and_start_over
+                        from live_draft_termination import bump_live_draft_page_epoch
 
                         st.session_state.pop("_live_draft_discard_confirm", None)
                         st.session_state["_live_draft_deleting"] = "in_progress"
-                        discard_live_draft_and_start_over(st.session_state, st=st)
+                        st.session_state["_live_draft_controls_locked"] = True
+                        st.session_state.pop("_live_draft_timer_expired_pending", None)
+                        bump_live_draft_page_epoch(st.session_state)
+                        # Two-phase: paint "Deleting draft…" then execute discard on next run.
                         st.rerun()
+                        st.stop()
                 with dc2:
                     if st.button("Keep Draft", key="live_draft_discard_cancel_btn"):
                         st.session_state.pop("_live_draft_discard_confirm", None)
