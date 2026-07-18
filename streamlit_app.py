@@ -22099,6 +22099,37 @@ elif active_page == "Live Draft Room":
         except ImportError:
             pass
     _shared_panel_wants_rerun = False
+    # Continue Saved Draft / Replace — process on_click pending BEFORE lifecycle so
+    # force_setup / setup chrome cannot swallow the operation.
+    try:
+        from live_draft_resumable_ops import (
+            consume_op_flash,
+            get_op_receipt,
+            process_pending_resumable_ops,
+            render_op_receipt_panel,
+        )
+
+        _op_flash = consume_op_flash(st.session_state)
+        if isinstance(_op_flash, dict) and _op_flash.get("message"):
+            _kind = str(_op_flash.get("kind") or "info")
+            if _kind == "error":
+                st.error(str(_op_flash["message"]))
+            elif _kind == "success":
+                st.success(str(_op_flash["message"]))
+            else:
+                st.info(str(_op_flash["message"]))
+        process_pending_resumable_ops(st.session_state, st=st)
+        _op_receipt = get_op_receipt(st.session_state)
+        if (
+            isinstance(_op_receipt, dict)
+            and _op_receipt.get("success") is False
+            and _op_receipt.get("failure_message")
+            and not isinstance(_op_flash, dict)
+        ):
+            st.error(str(_op_receipt["failure_message"]))
+        render_op_receipt_panel(st, st.session_state)
+    except ImportError:
+        pass
     # Resolve lifecycle BEFORE poll/legacy shared panel so setup never paints with
     # Leave shared room / room-code chrome from a prior ended session.
     try:
@@ -23165,7 +23196,6 @@ elif active_page == "Live Draft Room":
         try:
             from live_draft_resumable_slot import (
                 SAVE_CONTINUE_FLASH_KEY,
-                continue_saved_draft,
                 get_resumable_live_draft_slot,
                 resumable_slot_summary,
             )
@@ -23173,15 +23203,15 @@ elif active_page == "Live Draft Room":
             _save_flash = st.session_state.pop(SAVE_CONTINUE_FLASH_KEY, None)
             if isinstance(_save_flash, dict) and _save_flash.get("message"):
                 st.success(str(_save_flash["message"]))
-            _cont_flash = st.session_state.pop("_live_draft_continue_saved_flash", None)
-            if isinstance(_cont_flash, dict) and _cont_flash.get("message"):
-                st.success(str(_cont_flash["message"]))
-            _rep_flash = st.session_state.pop("_live_draft_replace_flash", None)
-            if isinstance(_rep_flash, dict) and _rep_flash.get("message"):
-                st.info(str(_rep_flash["message"]))
             _slot = get_resumable_live_draft_slot(st.session_state)
             if isinstance(_slot, dict):
-                from live_draft_resumable_slot import replace_resumable_and_arm_start
+                from live_draft_resumable_ops import (
+                    on_continue_saved_click,
+                    on_replace_cancel_click,
+                    on_replace_confirm_click,
+                    on_replace_request_click,
+                    render_op_receipt_panel,
+                )
 
                 _sum = resumable_slot_summary(_slot)
                 with st.container(border=True):
@@ -23194,58 +23224,58 @@ elif active_page == "Live Draft Room":
                     )
                     _c1, _c2 = st.columns(2)
                     with _c1:
-                        if st.button(
+                        st.button(
                             "Continue Saved Draft",
                             type="primary",
                             key="live_draft_continue_saved_btn",
                             help="Restore the exact saved Live Draft into Resume Lobby (paused).",
                             use_container_width=True,
-                        ):
-                            result = continue_saved_draft(st.session_state, st=st)
-                            if result.get("ok"):
-                                st.rerun()
-                            else:
-                                st.error(
-                                    str(result.get("message") or "Could not continue saved draft.")
-                                )
-                                st.caption(
-                                    "Recovery: use **Replace and Start New Draft** to discard "
-                                    "the invalid saved slot and create a fresh draft."
-                                )
+                            on_click=on_continue_saved_click,
+                        )
                     with _c2:
-                        if st.button(
+                        st.button(
                             "Replace and Start New Draft",
                             key="live_draft_replace_saved_start_btn",
-                            help="Permanently discard the saved draft and create a new one at Pick 1.",
+                            help="Create a new draft first, then permanently discard the saved one.",
                             use_container_width=True,
-                        ):
-                            st.session_state["_live_draft_replace_confirm_pending"] = True
+                            on_click=on_replace_request_click,
+                        )
                     if st.session_state.get("_live_draft_replace_confirm_pending"):
                         st.warning(
                             "Replace the saved draft and start a new one? "
-                            "The saved live-draft progress will be permanently removed."
+                            "The saved live-draft progress will be permanently removed "
+                            "only after the new room is created successfully."
                         )
                         _ry, _rn = st.columns(2)
                         with _ry:
-                            if st.button(
+                            st.button(
                                 "Confirm Replace & Start",
                                 key="live_draft_replace_saved_confirm_btn",
                                 type="primary",
-                            ):
-                                st.session_state.pop("_live_draft_replace_confirm_pending", None)
-                                rep = replace_resumable_and_arm_start(st.session_state, st=st)
-                                if rep.get("ok"):
-                                    st.rerun()
-                                else:
-                                    st.error(
-                                        str(rep.get("message") or "Could not replace saved draft.")
-                                    )
+                                on_click=on_replace_confirm_click,
+                            )
                         with _rn:
-                            if st.button(
+                            st.button(
                                 "Keep Saved Draft",
                                 key="live_draft_replace_saved_cancel_btn",
-                            ):
-                                st.session_state.pop("_live_draft_replace_confirm_pending", None)
+                                on_click=on_replace_cancel_click,
+                            )
+                    render_op_receipt_panel(st, st.session_state)
+                    # Durable failure from a prior click (never silent).
+                    _receipt = st.session_state.get("_live_draft_resumable_op_receipt")
+                    if (
+                        isinstance(_receipt, dict)
+                        and _receipt.get("success") is False
+                        and _receipt.get("failure_message")
+                    ):
+                        st.error(str(_receipt["failure_message"]))
+                        if st.button("Retry last resumable action", key="live_draft_resumable_op_retry_btn"):
+                            _action = str(_receipt.get("action") or "")
+                            if _action == "continue_saved":
+                                on_continue_saved_click()
+                                st.rerun()
+                            elif _action in ("replace_execute", "replace_confirm"):
+                                on_replace_confirm_click()
                                 st.rerun()
         except ImportError:
             pass
@@ -23476,28 +23506,32 @@ elif active_page == "Live Draft Room":
                         st.session_state.get("_live_draft_start_replace_resumable_message")
                         or (
                             "Replace the saved draft and start a new one? "
-                            "The saved live-draft progress will be permanently removed."
+                            "The saved live-draft progress will be permanently removed "
+                            "only after the new room is created successfully."
                         )
                     )
                 )
                 sr1, sr2 = st.columns(2)
                 with sr1:
-                    if st.button(
-                        "Replace and Start New Draft",
-                        key="live_draft_start_replace_confirm_btn",
-                        type="primary",
-                    ):
-                        st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
-                        try:
-                            from live_draft_resumable_slot import replace_resumable_and_arm_start
+                    try:
+                        from live_draft_resumable_ops import on_replace_confirm_click
 
-                            rep = replace_resumable_and_arm_start(st.session_state, st=st)
-                            if not rep.get("ok"):
-                                st.error(str(rep.get("message") or "Replace failed."))
-                        except ImportError:
+                        st.button(
+                            "Replace and Start New Draft",
+                            key="live_draft_start_replace_confirm_btn",
+                            type="primary",
+                            on_click=on_replace_confirm_click,
+                        )
+                    except ImportError:
+                        if st.button(
+                            "Replace and Start New Draft",
+                            key="live_draft_start_replace_confirm_btn",
+                            type="primary",
+                        ):
                             st.session_state["_live_draft_start_replace_resumable_ok"] = True
+                            st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
                             on_start_new_live_draft()
-                        st.rerun()
+                            st.rerun()
                 with sr2:
                     if st.button("Keep Saved Draft", key="live_draft_start_replace_cancel_btn"):
                         st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
@@ -23605,7 +23639,7 @@ elif active_page == "Live Draft Room":
                         "You are not joined to this shared draft room. "
                         "Enter the room code and press Join, or use Continue Saved Draft."
                     )
-                    st.session_state["_live_draft_force_setup_after_delete"] = True
+                    # Never set force_setup here — that wipes Continue Saved Draft on the next pass.
                     st.info(st.session_state["_live_draft_membership_gate_flash"])
                     try:
                         from live_draft_render_checkpoints import render_live_draft_checkpoint_panel

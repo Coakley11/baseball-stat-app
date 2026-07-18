@@ -128,13 +128,14 @@ def main() -> int:
                     assert is_canonical_commissioner(daniel, store.load(code))
                     print("CONTINUE_OK", life)
 
-                    # Replace.
+                    # Replace (create-first transaction).
                     rep = replace_resumable_and_arm_start(daniel)
                     assert rep.get("ok"), rep
-                    assert daniel.get("_start_live_draft_pending")
-                    assert daniel.get("_start_live_draft_mode") == "prepare_shared"
+                    new_code = str(rep.get("new_room_code") or "")
+                    assert new_code and new_code != code, rep
+                    assert daniel.get("active_shared_draft_room_code") == new_code
                     assert str((store.load(code) or {}).get("status") or "").lower() == "deleted"
-                    print("REPLACE_OK", rep.get("mode"), "tombstoned", code)
+                    print("REPLACE_OK", new_code, "tombstoned", code)
     except Exception as exc:
         print("VERIFY_FAILED", type(exc).__name__, exc)
         traceback.print_exc()

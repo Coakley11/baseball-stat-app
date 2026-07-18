@@ -148,8 +148,10 @@ class ResumeReplaceConsistencyTests(unittest.TestCase):
         rep = replace_resumable_and_arm_start(host)
         self.assertTrue(rep.get("ok"), rep)
         self.assertIsNone(get_resumable_live_draft_slot(host))
-        self.assertTrue(host.get("_start_live_draft_pending"))
-        self.assertEqual(host.get("_start_live_draft_mode"), "prepare_shared")
+        new_code = str(rep.get("new_room_code") or "")
+        self.assertTrue(new_code)
+        self.assertNotEqual(new_code, code)
+        self.assertEqual(host.get("active_shared_draft_room_code"), new_code)
         closed = self.store.load(code)
         self.assertEqual(str((closed or {}).get("status") or "").lower(), "deleted")
 

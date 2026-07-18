@@ -580,81 +580,10 @@ def replace_resumable_and_arm_start(
     *,
     st: Any | None = None,
 ) -> dict[str, Any]:
-    """Permanently discard the resumable slot and arm a fresh Pick-1 create.
+    """Compatibility wrapper → transactional replace (create new, then tombstone old)."""
+    from live_draft_resumable_ops import execute_replace_transactional
 
-    Preserves setup preferences (mode, team/pick counts, timer, scoring, roster).
-    Shared mode arms ``prepare_shared`` so a new room code is created.
-    """
-    slot = get_resumable_live_draft_slot(session)
-    draft_id = str((slot or {}).get("draft_id") or "").strip()
-    room_id = str((slot or {}).get("room_id") or draft_id or "").strip()
-    code = str((slot or {}).get("room_code") or "").strip().upper()
-    is_shared = bool((slot or {}).get("is_shared")) or bool(code)
-
-    # Authoritative discard of the old resumable room (backend + tombstones).
-    # Parked drafts have no active live_draft_room — tombstone by identity + close backend.
-    try:
-        from live_draft_termination import persist_durable_tombstones
-
-        persist_durable_tombstones(session, draft_id=draft_id, room_id=room_id, room_code=code)
-    except ImportError:
-        pass
-    if code:
-        try:
-            from draft_room_shared_state import bump_revision, get_shared_room_store, load_shared_room
-
-            doc = load_shared_room(code)
-            if isinstance(doc, dict):
-                doc["status"] = "deleted"
-                blob = doc.get("room")
-                if isinstance(blob, dict):
-                    blob["status"] = "deleted"
-                get_shared_room_store().save(bump_revision(doc))
-        except Exception:
-            pass
-
-    clear_resumable_live_draft_slot(session)
-    for key in PARK_CLEAR_ACTIVE_KEYS:
-        session.pop(key, None)
-    session.pop("_live_draft_resume_lobby", None)
-    session.pop("_live_draft_resume_reserved_teams", None)
-    session.pop("_live_draft_start_replace_resumable_pending", None)
-    session.pop("_live_draft_start_replace_resumable_message", None)
-    session.pop("_live_draft_replace_confirm_pending", None)
-
-    # Arm create — Shared uses prepare_shared (new code); Solo uses new.
-    try:
-        from live_draft_setup_mode import SETUP_MODE_SHARED, get_preferred_next_draft_mode, is_shared_multiplayer_intent
-
-        prefer_shared = is_shared or is_shared_multiplayer_intent(session)
-        if not prefer_shared:
-            prefer_shared = get_preferred_next_draft_mode(session) == SETUP_MODE_SHARED
-    except ImportError:
-        prefer_shared = is_shared
-
-    session["_live_draft_start_replace_resumable_ok"] = True
-    session["_live_draft_replace_create_fresh"] = True
-    session["_start_live_draft_mode"] = "prepare_shared" if prefer_shared else "new"
-    session["_start_live_draft_pending"] = True
-    session["_live_draft_replace_flash"] = {
-        "ok": True,
-        "message": "Saved draft discarded. Starting a new draft at Pick 1…",
-        "prior_room_code": code,
-        "mode": session["_start_live_draft_mode"],
-    }
-    try:
-        from baseball_persistent_state import force_save_baseball_state
-
-        if st is not None:
-            force_save_baseball_state(st, reason="replace_resumable_and_arm_start")
-    except Exception:
-        pass
-    return {
-        "ok": True,
-        "mode": session["_start_live_draft_mode"],
-        "prior_room_code": code,
-        "prior_draft_id": draft_id,
-    }
+    return execute_replace_transactional(session, st=st)
 
 
 def warn_if_starting_replaces_resumable(session: dict[str, Any]) -> dict[str, Any] | None:

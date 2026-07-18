@@ -250,8 +250,17 @@ def resolve_live_draft_lifecycle(
     deleting = str(session.get("_live_draft_deleting") or "").strip().lower()
     if deleting == "in_progress":
         return LIFECYCLE_DELETING
-    # Deletion completed — block stale resurrection, but never wipe a brand-new create.
+    # Deletion completed — block stale resurrection, but never wipe a brand-new create
+    # or an explicit Continue Saved Draft / Resume Lobby hydration.
     force_setup = bool(session.get("_live_draft_force_setup_after_delete"))
+    resume_in_flight = bool(session.get("_live_draft_resume_lobby")) or bool(
+        session.get("_live_draft_resumable_op_pending")
+    )
+    if resume_in_flight and force_setup:
+        # Continue Saved Draft just restored a parked room — force_setup from a prior
+        # End/Delete or membership soft-fail must not erase it.
+        session.pop("_live_draft_force_setup_after_delete", None)
+        force_setup = False
     if deleting == "done" or force_setup:
         live_done = room if isinstance(room, dict) else session.get("live_draft_room")
         protected = False
@@ -261,8 +270,8 @@ def resolve_live_draft_lifecycle(
             protected = bool(new_room_is_protected(session))
         except ImportError:
             protected = False
-        if protected and isinstance(live_done, dict):
-            # Successful create in this session — drop stale delete flags and continue.
+        if (protected or resume_in_flight) and isinstance(live_done, dict):
+            # Successful create / resume in this session — drop stale delete flags and continue.
             session.pop("_live_draft_deleting", None)
             session.pop("_live_draft_force_setup_after_delete", None)
         else:
