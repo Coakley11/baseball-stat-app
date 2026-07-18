@@ -18,6 +18,7 @@ TIMER_TICK_COUNT_KEY = "_live_draft_timer_tick_count"
 TIMER_LAST_TICK_TS_KEY = "_live_draft_timer_last_tick_ts"
 from live_draft_expired_pick import (
     EXPIRED_PICK_PENDING_KEY,
+    handle_expired_pick_on_page,
     should_attach_timer_fragment,
     should_fragment_trigger_full_rerun,
 )
@@ -450,6 +451,8 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                 session[TIMER_TICK_COUNT_KEY] = int(session.get(TIMER_TICK_COUNT_KEY) or 0) + 1
                 session[TIMER_LAST_TICK_TS_KEY] = time.time()
                 tick_room, _poll_changed = _sync_room_on_timer_tick(session, room)
+                if not isinstance(tick_room, dict) or not tick_room:
+                    return
                 session[EXPIRED_PICK_PENDING_KEY] = True
                 _render_timer_static(st, session, tick_room, source="fragment_expired_recovery")
                 # Never abort the page script that already owns expire handling.
@@ -487,19 +490,18 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                 session[TIMER_LAST_TICK_TS_KEY] = time.time()
                 with _ldr_step(session, "timer_fragment_poll_shared", st=st):
                     tick_room, poll_changed = _sync_room_on_timer_tick(session, room)
+                if not isinstance(tick_room, dict) or not tick_room:
+                    return
                 # If the clock hit zero between ticks, stop this fragment from full-app
                 # rerunning again — next full page render owns autopick.
+                # Use module-scope should_fragment_trigger_full_rerun / handle_expired_pick_on_page
+                # — never re-import those names here (UnboundLocalError on other branches).
                 if not should_attach_timer_fragment(session, tick_room):
                     session[EXPIRED_PICK_PENDING_KEY] = True
                     # Host: commit autopick on this fragment tick so Pick N+1 does not
                     # wait for a slow full-page poll (observed ~20s stall at 0).
-                    try:
-                        from live_draft_expired_pick import (
-                            handle_expired_pick_on_page,
-                            should_fragment_trigger_full_rerun,
-                        )
-
-                        if should_fragment_trigger_full_rerun(session, tick_room):
+                    if should_fragment_trigger_full_rerun(session, tick_room):
+                        try:
                             expired_result = handle_expired_pick_on_page(
                                 session, tick_room, source="timer_fragment_zero"
                             )
@@ -517,8 +519,8 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                                         remove_drafted_player_from_active_queues(session, pick_name)
                                 except Exception:
                                     pass
-                    except ImportError:
-                        pass
+                        except Exception:
+                            pass
                     with _ldr_step(session, "timer_fragment_render_static", st=st, expired=True):
                         _render_timer_static(st, session, tick_room, source="fragment_tick_expired")
                     if should_fragment_trigger_full_rerun(session, tick_room):
