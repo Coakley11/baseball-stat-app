@@ -1,4 +1,4 @@
-"""Draft Control Center — compact live controls + commissioner chat-side actions."""
+"""Draft Control Center — compact live controls + commissioner draft actions."""
 
 from __future__ import annotations
 
@@ -34,10 +34,11 @@ def render_live_draft_control_center(
     cfg: dict[str, Any],
     persist_room: Callable[[dict[str, Any], str], None],
     developer_mode: bool = False,
+    show_heading: bool = True,
 ) -> dict[str, Any]:
-    """Compact live controls only (Pause / Resume / Auto Pick / Reset Timer).
+    """Compact live controls only (Pause / Resume / Auto Pick / Reset Timer) in a 2×2 grid.
 
-    Save & Continue Later and End/Delete live beside Live Chat — not here.
+    Park/delete commissioner actions live near Team Rosters — not here.
     Historical library save is unavailable until the draft finishes naturally.
     """
     del developer_mode  # reserved for future live-control diagnostics
@@ -51,10 +52,12 @@ def render_live_draft_control_center(
     except ImportError:
         may_auto = bool(is_commissioner)
 
-    st.markdown("### Draft Control Center")
-    st.caption("Temporary actions for the currently active room.")
-    live1, live2, live3, live4 = st.columns(4)
-    with live1:
+    if show_heading:
+        st.markdown("### Draft Control Center")
+        st.caption("Temporary actions for the currently active room.")
+
+    top1, top2 = st.columns(2)
+    with top1:
         if st.button(
             "⏸ Pause Draft",
             disabled=status != "in_progress",
@@ -80,7 +83,7 @@ def render_live_draft_control_center(
                 request_live_draft_rerun(st, session, "pause_draft", room=room)
             except ImportError:
                 st.rerun()
-    with live2:
+    with top2:
         if st.button(
             "▶ Resume Draft",
             disabled=status != "paused",
@@ -109,7 +112,9 @@ def render_live_draft_control_center(
                 request_live_draft_rerun(st, session, "resume_draft", room=room)
             except ImportError:
                 st.rerun()
-    with live3:
+
+    bot1, bot2 = st.columns(2)
+    with bot1:
         if st.button(
             "⚡ Auto Pick Now",
             disabled=(status not in ("in_progress", "paused")) or (not may_auto),
@@ -147,7 +152,7 @@ def render_live_draft_control_center(
             else:
                 st.warning(msg)
             persist_room(room, "auto_pick")
-    with live4:
+    with bot2:
         if is_commissioner:
             if st.button(
                 "⏱ Reset Timer",
@@ -190,69 +195,110 @@ def render_live_draft_control_center(
     return {"is_commissioner": is_commissioner, "document": doc}
 
 
-def render_commissioner_actions_beside_chat(
+def render_control_center_with_live_chat(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    cfg: dict[str, Any],
+    persist_room: Callable[[dict[str, Any], str], None],
+    developer_mode: bool = False,
+) -> dict[str, Any]:
+    """Control Center (left) + Live Chat (right), above the On-the-Clock timer card."""
+    try:
+        from live_draft_chat_ui import render_live_draft_chat_panel
+    except ImportError:
+        render_live_draft_chat_panel = None  # type: ignore[assignment]
+
+    ctrl_col, chat_col = st.columns([1.0, 1.15])
+    with ctrl_col:
+        st.markdown('<div class="live-draft-action-row">', unsafe_allow_html=True)
+        result = render_live_draft_control_center(
+            st,
+            session,
+            room,
+            cfg=cfg,
+            persist_room=persist_room,
+            developer_mode=developer_mode,
+            show_heading=True,
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+    with chat_col:
+        if render_live_draft_chat_panel is not None:
+            try:
+                render_live_draft_chat_panel(st, session)
+            except Exception as exc:
+                st.caption(f"Draft chat unavailable: {type(exc).__name__}")
+        else:
+            st.caption("Draft chat unavailable.")
+    return result
+
+
+def render_commissioner_draft_actions(
     st: Any,
     session: dict[str, Any],
     *,
     developer_mode: bool = False,
 ) -> None:
-    """Compact commissioner-only Save / End buttons (beside or below Live Chat)."""
+    """Compact commissioner-only Save / End buttons (near Team Rosters)."""
     is_commissioner, _doc = _resolve_commissioner(session)
     if not is_commissioner:
         return
 
     st.markdown("**Draft Actions**")
-    if st.button(
-        "💾 Save & Continue Later",
-        key="live_draft_save_continue_btn",
-        help="Park this draft and resume it later with the same picks, teams, and progress.",
-        use_container_width=True,
-    ):
-        from live_draft_resumable_slot import save_and_continue_later
-
-        result = save_and_continue_later(session, st=st, replace_existing=False)
-        if result.get("needs_replace_confirm"):
-            session["_live_draft_replace_resumable_confirm"] = True
-            session["_live_draft_replace_resumable_message"] = result.get("message")
-        elif result.get("ok"):
-            st.rerun()
-        else:
-            st.error(str(result.get("message") or "Could not save draft for later."))
-    st.caption("Park and resume later.")
-
-    try:
-        from live_draft_delete_authority import (
-            note_delete_trace,
-            on_show_end_delete_confirm,
-            render_delete_trace_panel,
-        )
-
-        note_delete_trace(
-            session,
-            "button_rendered",
-            widget_key="live_draft_discard_btn",
-            is_commissioner=True,
-        )
-        st.button(
-            "🗑 End/Delete Draft for Everyone",
-            key="live_draft_discard_btn",
-            type="primary",
-            help="Permanently delete this draft for every participant. This cannot be undone.",
-            use_container_width=True,
-            on_click=on_show_end_delete_confirm,
-        )
-        if developer_mode:
-            render_delete_trace_panel(st, session)
-    except ImportError:
+    a1, a2 = st.columns(2)
+    with a1:
         if st.button(
-            "🗑 End/Delete Draft for Everyone",
-            key="live_draft_discard_btn",
-            type="primary",
+            "💾 Save & Continue Later",
+            key="live_draft_save_continue_btn",
+            help="Park this draft and resume it later with the same picks, teams, and progress.",
             use_container_width=True,
-            help="Permanently delete this draft for every participant. This cannot be undone.",
         ):
-            session["_live_draft_discard_confirm"] = True
-    st.caption("Permanent — cannot be undone.")
+            from live_draft_resumable_slot import save_and_continue_later
+
+            result = save_and_continue_later(session, st=st, replace_existing=False)
+            if result.get("needs_replace_confirm"):
+                session["_live_draft_replace_resumable_confirm"] = True
+                session["_live_draft_replace_resumable_message"] = result.get("message")
+            elif result.get("ok"):
+                st.rerun()
+            else:
+                st.error(str(result.get("message") or "Could not save draft for later."))
+        st.caption("Park and resume later.")
+    with a2:
+        try:
+            from live_draft_delete_authority import (
+                note_delete_trace,
+                on_show_end_delete_confirm,
+                render_delete_trace_panel,
+            )
+
+            note_delete_trace(
+                session,
+                "button_rendered",
+                widget_key="live_draft_discard_btn",
+                is_commissioner=True,
+            )
+            st.button(
+                "🗑 End/Delete Draft for Everyone",
+                key="live_draft_discard_btn",
+                type="primary",
+                help="Permanently delete this draft for every participant. This cannot be undone.",
+                use_container_width=True,
+                on_click=on_show_end_delete_confirm,
+            )
+            if developer_mode:
+                render_delete_trace_panel(st, session)
+        except ImportError:
+            if st.button(
+                "🗑 End/Delete Draft for Everyone",
+                key="live_draft_discard_btn",
+                type="primary",
+                use_container_width=True,
+                help="Permanently delete this draft for every participant. This cannot be undone.",
+            ):
+                session["_live_draft_discard_confirm"] = True
+        st.caption("Permanent — cannot be undone.")
 
     if session.get("_live_draft_delete_error"):
         st.error(
@@ -333,34 +379,21 @@ def render_commissioner_actions_beside_chat(
                 st.rerun()
 
 
+# Backward-compatible aliases for older imports / tests.
+render_commissioner_actions_beside_chat = render_commissioner_draft_actions
+
+
 def render_live_chat_with_commissioner_actions(
     st: Any,
     session: dict[str, Any],
     *,
     developer_mode: bool = False,
 ) -> None:
-    """Live Chat with compact commissioner Draft Actions beside it (stacked on narrow layouts)."""
-    is_commissioner, _ = _resolve_commissioner(session)
+    """Deprecated layout helper — chat only (commissioner actions render near rosters)."""
     try:
         from live_draft_chat_ui import render_live_draft_chat_panel
-    except ImportError:
-        render_live_draft_chat_panel = None  # type: ignore[assignment]
 
-    if is_commissioner:
-        chat_col, action_col = st.columns([3.2, 1.0])
-        with chat_col:
-            if render_live_draft_chat_panel is not None:
-                try:
-                    render_live_draft_chat_panel(st, session)
-                except Exception as exc:
-                    st.caption(f"Draft chat unavailable: {type(exc).__name__}")
-        with action_col:
-            render_commissioner_actions_beside_chat(
-                st, session, developer_mode=developer_mode
-            )
-    else:
-        if render_live_draft_chat_panel is not None:
-            try:
-                render_live_draft_chat_panel(st, session)
-            except Exception as exc:
-                st.caption(f"Draft chat unavailable: {type(exc).__name__}")
+        render_live_draft_chat_panel(st, session)
+    except Exception as exc:
+        st.caption(f"Draft chat unavailable: {type(exc).__name__}")
+    del developer_mode

@@ -23990,7 +23990,6 @@ elif active_page == "Live Draft Room":
                 return _ldr_nullcontext()
 
         st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
-        st.markdown('<div class="ld-controls-title">Draft Control Center</div>', unsafe_allow_html=True)
         with ldr_step(st.session_state, "timer_enter", st=st):
             _timer_ok = bool(
                 _draft_in_progress
@@ -24052,20 +24051,22 @@ elif active_page == "Live Draft Room":
         # (safe_mode / rerun throttle / recovery caption). Missing this gate left the
         # clock stuck at 0 while page_complete kept firing.
         _process_expired_or_timer = bool(not _autopick_off and (_timer_ok or _clock_expired))
+        _expired_result = None
+        _timer_bar_fallback = None  # "caption" | "recovery" | None
 
+        # Expire commit runs before Control Center buttons so a same-run Auto Pick /
+        # Pause click cannot race the zero-second rollover. Timer bar paints after
+        # Control Center + Chat so the visual order stays controls|chat → On Clock.
         if _process_expired_or_timer:
             try:
                 from live_draft_expired_pick import autopick_error_message, handle_expired_pick_on_page
-                from live_draft_safe_mode import request_live_draft_rerun
-                from live_draft_timer_ui import note_live_draft_page_load, render_live_draft_timer_bar
+                from live_draft_timer_ui import note_live_draft_page_load
 
                 with ldr_step(st.session_state, "timer_note_page_load", st=st):
                     note_live_draft_page_load(st.session_state, room)
-                # Page owns expire commit BEFORE the timer bar mounts any recovery
-                # fragment — otherwise fragment st.rerun() aborts mid-controls.
                 st.session_state["_live_draft_page_owns_expired"] = True
                 with ldr_step(st.session_state, "timer_handle_expired_pick", st=st):
-                    expired_result = handle_expired_pick_on_page(
+                    _expired_result = handle_expired_pick_on_page(
                         st.session_state, room, source="page_autopick"
                     )
                 if developer_mode_enabled():
@@ -24083,19 +24084,62 @@ elif active_page == "Live Draft Room":
                             st.caption(f"Expired-pick perf: {_expired_perf}")
                     except ImportError:
                         pass
-                if expired_result.error:
-                    st.error(expired_result.error)
+                if _expired_result.error:
+                    st.error(_expired_result.error)
                 else:
                     backoff_err = autopick_error_message(st.session_state, room)
                     if backoff_err:
                         st.error(backoff_err)
-                if expired_result.ok and expired_result.message:
-                    st.success(expired_result.message)
+                if _expired_result.ok and _expired_result.message:
+                    st.success(_expired_result.message)
+            except ImportError:
+                _timer_bar_fallback = "caption"
+        elif room.get("status") == "in_progress" and slot is not None:
+            _timer_bar_fallback = "recovery"
+
+        # Control Center (left) + Live Chat (right) above On-the-Clock timer card.
+        with ldr_step(st.session_state, "timer_render_controls", st=st):
+            try:
+                from live_draft_control_center_ui import render_control_center_with_live_chat
+
+                _cc = render_control_center_with_live_chat(
+                    st,
+                    st.session_state,
+                    room,
+                    cfg=cfg,
+                    persist_room=lambda r, reason: _persist_live_draft_room(r, reason=reason),
+                    developer_mode=bool(developer_mode_enabled()),
+                )
+                _is_commissioner = bool((_cc or {}).get("is_commissioner"))
+                _doc_h = (_cc or {}).get("document")
+            except ImportError:
+                _is_commissioner = True
+                _doc_h = None
+                try:
+                    from live_draft_control_center_ui import render_live_draft_control_center
+
+                    _cc = render_live_draft_control_center(
+                        st,
+                        st.session_state,
+                        room,
+                        cfg=cfg,
+                        persist_room=lambda r, reason: _persist_live_draft_room(r, reason=reason),
+                        developer_mode=bool(developer_mode_enabled()),
+                    )
+                    _is_commissioner = bool((_cc or {}).get("is_commissioner"))
+                    _doc_h = (_cc or {}).get("document")
+                except ImportError:
+                    st.warning("Control Center unavailable — live_draft_control_center_ui missing.")
+
+        if _process_expired_or_timer and _timer_bar_fallback is None:
+            try:
+                from live_draft_safe_mode import request_live_draft_rerun
+                from live_draft_timer_ui import render_live_draft_timer_bar
+
                 with ldr_step(st.session_state, "timer_render_countdown", st=st):
-                    # Flag stays set so recovery fragment does not abort this pass.
                     render_live_draft_timer_bar(st, st.session_state, room)
                 st.session_state.pop("_live_draft_page_owns_expired", None)
-                if expired_result.should_rerun:
+                if _expired_result is not None and _expired_result.should_rerun:
                     try:
                         import time as _time
 
@@ -24121,36 +24165,18 @@ elif active_page == "Live Draft Room":
                         pass
                     request_live_draft_rerun(st, st.session_state, "page_autopick", room=room)
             except ImportError:
-                with ldr_step(st.session_state, "timer_compute_remaining", st=st, fallback=True):
-                    remaining = live_draft_seconds_remaining(room)
-                with ldr_step(st.session_state, "timer_render_countdown", st=st, fallback=True):
-                    st.caption(f"Time on clock: {remaining}s")
-        elif room.get("status") == "in_progress" and slot is not None:
+                _timer_bar_fallback = "caption"
+
+        if _timer_bar_fallback == "caption":
+            with ldr_step(st.session_state, "timer_compute_remaining", st=st, fallback=True):
+                remaining = live_draft_seconds_remaining(room)
+            with ldr_step(st.session_state, "timer_render_countdown", st=st, fallback=True):
+                st.caption(f"Time on clock: {remaining}s")
+        elif _timer_bar_fallback == "recovery":
             with ldr_step(st.session_state, "timer_compute_remaining", st=st, recovery=True):
                 remaining = live_draft_seconds_remaining(room)
             with ldr_step(st.session_state, "timer_render_countdown", st=st, recovery=True):
                 st.markdown(f"**Time on clock:** {remaining}s *(timer paused — draft state recovery)*")
-
-        with ldr_step(st.session_state, "timer_render_controls", st=st):
-            st.markdown('<div class="live-draft-action-row">', unsafe_allow_html=True)
-            try:
-                from live_draft_control_center_ui import render_live_draft_control_center
-
-                _cc = render_live_draft_control_center(
-                    st,
-                    st.session_state,
-                    room,
-                    cfg=cfg,
-                    persist_room=lambda r, reason: _persist_live_draft_room(r, reason=reason),
-                    developer_mode=bool(developer_mode_enabled()),
-                )
-                _is_commissioner = bool((_cc or {}).get("is_commissioner"))
-                _doc_h = (_cc or {}).get("document")
-            except ImportError:
-                _is_commissioner = True
-                _doc_h = None
-                st.warning("Control Center unavailable — live_draft_control_center_ui missing.")
-            st.markdown("</div>", unsafe_allow_html=True)
 
         try:
             from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section_done, ldr_step
@@ -24906,6 +24932,19 @@ elif active_page == "Live Draft Room":
                     st.caption("Serialized room snapshot for diagnostics.")
                     st.json(serialize_live_draft_room(room))
 
+        # Compact commissioner park/delete — near Team Rosters, not in Control Center.
+        if _draft_in_progress and not _pending_manual_pick:
+            try:
+                from live_draft_control_center_ui import render_commissioner_draft_actions
+
+                render_commissioner_draft_actions(
+                    st,
+                    st.session_state,
+                    developer_mode=bool(developer_mode_enabled()),
+                )
+            except ImportError:
+                pass
+
         st.subheader("Team Rosters")
         roster_df = live_draft_rosters_df(room)
         if roster_df.empty:
@@ -24950,29 +24989,6 @@ elif active_page == "Live Draft Room":
                 display_rows=20,
             )
             st.markdown("</div>", unsafe_allow_html=True)
-
-        # Live Chat + compact commissioner Save / End actions (after board / recs / rosters).
-        if _draft_in_progress and not _pending_manual_pick:
-            try:
-                from live_draft_control_center_ui import render_live_chat_with_commissioner_actions
-
-                render_live_chat_with_commissioner_actions(
-                    st,
-                    st.session_state,
-                    developer_mode=bool(developer_mode_enabled()),
-                )
-            except ImportError:
-                try:
-                    from live_draft_chat_ui import render_live_draft_chat_panel
-
-                    render_live_draft_chat_panel(st, st.session_state)
-                except Exception:
-                    pass
-            except Exception as _ld_chat_exc:
-                try:
-                    st.caption(f"Draft chat unavailable: {type(_ld_chat_exc).__name__}")
-                except Exception:
-                    pass
 
         if _draft_is_complete and not _pending_manual_pick:
             try:
