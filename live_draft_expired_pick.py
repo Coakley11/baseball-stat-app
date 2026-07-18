@@ -27,6 +27,9 @@ EXPIRED_PICK_PENDING_KEY = "_live_draft_timer_expired_pending"
 # One full-app timer_fragment_zero per pick index — prevents fragment attach → sync tick →
 # st.rerun() from aborting room_controls_timer before handle_expired_pick_on_page runs.
 TIMER_ZERO_RERUN_LATCH_KEY = "_live_draft_timer_zero_rerun_pick"
+TIMER_ZERO_RERUN_LATCH_TS_KEY = "_live_draft_timer_zero_rerun_ts"
+# Allow another zero-wake if the prior latch never produced a pick advance.
+TIMER_ZERO_RERUN_LATCH_TTL_SEC = 1.5
 # Session-scoped single-flight for the current expiration token (covers duplicate Streamlit reruns).
 LAST_PROCESSED_EXPIRATION_TOKEN_SESSION_KEY = "_live_draft_last_processed_expiration_token"
 CLAIMED_EXPIRATION_TOKEN_KEY = "_live_draft_claimed_expiration_token"
@@ -160,15 +163,29 @@ def format_expired_pick_perf(session: dict[str, Any]) -> str:
 
 
 def timer_zero_rerun_already_latched(session: dict[str, Any], room: dict[str, Any]) -> bool:
-    return session.get(TIMER_ZERO_RERUN_LATCH_KEY) == _pick_index(room)
+    if session.get(TIMER_ZERO_RERUN_LATCH_KEY) != _pick_index(room):
+        return False
+    import time
+
+    ts = session.get(TIMER_ZERO_RERUN_LATCH_TS_KEY)
+    if ts is None:
+        return True
+    if time.time() - float(ts) >= TIMER_ZERO_RERUN_LATCH_TTL_SEC:
+        session.pop(TIMER_ZERO_RERUN_LATCH_KEY, None)
+        session.pop(TIMER_ZERO_RERUN_LATCH_TS_KEY, None)
+        return False
+    return True
 
 
 def claim_timer_zero_rerun(session: dict[str, Any], room: dict[str, Any]) -> bool:
     """Claim the single timer_fragment_zero full-app rerun for this pick index."""
+    import time
+
     idx = _pick_index(room)
-    if session.get(TIMER_ZERO_RERUN_LATCH_KEY) == idx:
+    if timer_zero_rerun_already_latched(session, room):
         return False
     session[TIMER_ZERO_RERUN_LATCH_KEY] = idx
+    session[TIMER_ZERO_RERUN_LATCH_TS_KEY] = time.time()
     session[EXPIRED_PICK_PENDING_KEY] = True
     return True
 
@@ -306,6 +323,7 @@ def clear_autopick_backoff_for_manual(session: dict[str, Any], room: dict[str, A
         )
     session.pop(EXPIRED_PICK_PENDING_KEY, None)
     session.pop(TIMER_ZERO_RERUN_LATCH_KEY, None)
+    session.pop(TIMER_ZERO_RERUN_LATCH_TS_KEY, None)
     try:
         token = str(session.get(MANUAL_PREEMPTED_EXPIRATION_TOKEN_KEY) or "").strip()
         if token:
@@ -336,6 +354,7 @@ def clear_autopick_state_for_pick_advance(session: dict[str, Any], new_index: in
     session.pop(EXPIRED_PICK_PENDING_KEY, None)
     session.pop(AUTOPICK_LOCK_KEY, None)
     session.pop(TIMER_ZERO_RERUN_LATCH_KEY, None)
+    session.pop(TIMER_ZERO_RERUN_LATCH_TS_KEY, None)
     session.pop(CLAIMED_EXPIRATION_TOKEN_KEY, None)
     # Fresh pick = fresh rerun budget so page_autopick can refresh the UI after commit.
     session.pop("_live_draft_rerun_count", None)
@@ -361,6 +380,7 @@ def _mark_autopick_failed(session: dict[str, Any], room: dict[str, Any], error: 
     # Keep pending + clear zero-rerun latch so a recovery tick can fire after backoff.
     session[EXPIRED_PICK_PENDING_KEY] = True
     session.pop(TIMER_ZERO_RERUN_LATCH_KEY, None)
+    session.pop(TIMER_ZERO_RERUN_LATCH_TS_KEY, None)
     record_autopick_diagnostics(
         session,
         autopick_success=False,
@@ -500,6 +520,10 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
     except ImportError:
         pass
     if not host_ok:
+        # Do not keep the zero-rerun latch: when host authority stalls / lease moves,
+        # another client must be able to wake expire_pick_and_advance.
+        session.pop(TIMER_ZERO_RERUN_LATCH_KEY, None)
+        session.pop(TIMER_ZERO_RERUN_LATCH_TS_KEY, None)
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
 
     if autopick_attempted_for_index(session, room):
@@ -747,3 +771,73 @@ def autopick_error_message(session: dict[str, Any], room: dict[str, Any]) -> str
     if autopick_failure_backoff_active(session, room):
         return str(session.get(AUTOPICK_ERROR_KEY) or "")
     return ""
+
+
+def expire_pick_and_advance(
+    session: dict[str, Any],
+    room_id: str = "",
+    *,
+    expected_revision: int | None = None,
+    expected_pick_number: int | None = None,
+    expected_deadline: float | None = None,
+    source: str = "expire_pick_and_advance",
+) -> ExpiredPickPageResult:
+    """Authoritative atomic timer expiration: pick → advance → full next deadline.
+
+    Multiple clients may call this at zero; CAS on the shared room ensures only one
+    pick commits. The next deadline is always ``now + timer_seconds`` (never based
+    on the previous deadline).
+    """
+    del room_id  # room resolved from session / live_draft_room
+    room = resolve_live_room(session, session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else {})
+    if not isinstance(room, dict) or not room:
+        return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="no_room")
+
+    status = str(room.get("status") or "").strip().lower()
+    if status != "in_progress":
+        return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error=f"status_{status or 'unknown'}")
+
+    if expected_pick_number is not None and int(room.get("current_pick_index") or 0) != int(expected_pick_number):
+        return ExpiredPickPageResult(handled=True, ok=True, should_rerun=False, message="", error="pick_already_advanced")
+
+    if expected_deadline is not None:
+        dl = room.get("timer_deadline")
+        if dl is not None and abs(float(dl) - float(expected_deadline)) > 0.5:
+            # Stale client clock — reload via handle which re-resolves room.
+            pass
+
+    if expected_revision is not None:
+        try:
+            sync_expected_revision(session)
+            local_rev = int(
+                (session.get("_shared_room_expected_revision") or room.get("revision") or 0)
+            )
+            if local_rev and local_rev != int(expected_revision):
+                # Another writer may have advanced — still attempt; CAS rejects duplicates.
+                pass
+        except Exception:
+            pass
+
+    session[EXPIRED_PICK_PENDING_KEY] = True
+    result = handle_expired_pick_on_page(session, room, source=source)
+    if result.ok and result.handled:
+        # Guarantee full configured duration on the next pick (engine already resets;
+        # re-assert so deadline is never derived from the prior deadline).
+        try:
+            live = resolve_live_room(session, session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else room) or room
+            if isinstance(live, dict) and str(live.get("status") or "") == "in_progress":
+                from live_draft_timer_logic import live_draft_reset_timer, live_draft_seconds_remaining
+
+                remaining = live_draft_seconds_remaining(live)
+                cfg_sec = int((live.get("config") or {}).get("timer_seconds") or 60)
+                # If somehow only a partial clock remains after advance, reset to full.
+                if remaining < max(1, cfg_sec - 2):
+                    live_draft_reset_timer(live)
+                    session["live_draft_room"] = live
+        except Exception:
+            pass
+    elif not result.ok:
+        # Allow another zero-wake after failure / host-not-allowed.
+        session.pop(TIMER_ZERO_RERUN_LATCH_KEY, None)
+        session.pop(TIMER_ZERO_RERUN_LATCH_TS_KEY, None)
+    return result

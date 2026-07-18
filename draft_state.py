@@ -661,8 +661,20 @@ def remove_player_from_user_draft_queue(
         "reason": reason,
     }
     # Bust Streamlit sortable component state so a stale red-card list cannot restore.
-    for prefix in ("sidebar_queue", "live_queue", "sim_queue"):
-        session.pop(f"{prefix}_sortable", None)
+    # Keys are scoped: ``{prefix}_sortable_{room}_{user}_e{epoch}`` — pop all matching prefixes.
+    stale_keys = [
+        k
+        for k in list(session.keys())
+        if isinstance(k, str)
+        and (
+            k.startswith("sidebar_queue_sortable")
+            or k.startswith("live_queue_sortable")
+            or k.startswith("sim_queue_sortable")
+        )
+    ]
+    for k in stale_keys:
+        session.pop(k, None)
+    session["_draft_queue_skip_sortable_once"] = True
     try:
         from draft_room_context import resolve_shared_room_code
         from draft_room_participant_state import save_participant_workflow_from_session

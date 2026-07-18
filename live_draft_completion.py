@@ -23,6 +23,8 @@ ENDED_DRAFT_IDS_KEY = "_live_draft_ended_draft_ids"
 LIFECYCLE_SETUP = "setup"
 LIFECYCLE_WAITING_SHARED_LOBBY = "waiting_shared_lobby"
 LIFECYCLE_ACTIVE_DRAFT = "active_draft"
+LIFECYCLE_SAVED_FOR_LATER = "saved_for_later"
+LIFECYCLE_DELETING = "deleting"
 LIFECYCLE_HISTORICAL_READ_ONLY = "historical_read_only"
 # Backward-compatible alias
 LIFECYCLE_COMPLETED_HISTORY_VIEW = LIFECYCLE_HISTORICAL_READ_ONLY
@@ -244,11 +246,27 @@ def resolve_live_draft_lifecycle(
     room: dict[str, Any] | None = None,
 ) -> str:
     """Canonical page lifecycle — setup and active draft are mutually exclusive."""
+    deleting = str(session.get("_live_draft_deleting") or "").strip().lower()
+    if deleting == "in_progress":
+        return LIFECYCLE_DELETING
+    if deleting == "done" and not isinstance(
+        room if isinstance(room, dict) else session.get("live_draft_room"), dict
+    ):
+        return LIFECYCLE_SETUP
+
     if bool(session.get("_live_draft_history_view")):
         return LIFECYCLE_HISTORICAL_READ_ONLY
 
     live = room if isinstance(room, dict) else session.get("live_draft_room")
     if not isinstance(live, dict):
+        try:
+            from live_draft_resumable_slot import get_resumable_live_draft_slot
+
+            if get_resumable_live_draft_slot(session):
+                # Parked draft — setup UI with Continue Saved Draft, not active room chrome.
+                return LIFECYCLE_SETUP
+        except ImportError:
+            pass
         return LIFECYCLE_SETUP
 
     code = str(session.get("active_shared_draft_room_code") or "").strip().upper()

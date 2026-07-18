@@ -243,7 +243,7 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
             if idx >= 0:
                 already_team = lookup_err[idx + len(marker) :].strip().rstrip(".")
     if already_team and len(code) >= 6:
-        st.info(f"You already joined this room as {already_team}")
+        st.info(f"You are already joined as {already_team}")
     elif lookup_err and len(code) >= 6:
         st.caption(f"⚠ {lookup_err}")
     picked_team = ""
@@ -269,7 +269,7 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
             on_join_shared_draft_from_setup = None  # type: ignore[assignment,misc]
         if already_team:
             st.button(
-                "Enter Room",
+                "Re-enter Draft",
                 key="live_draft_reenter_from_setup_btn",
                 type="primary",
                 on_click=on_join_shared_draft_from_setup,

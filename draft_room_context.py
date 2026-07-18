@@ -1209,6 +1209,13 @@ def join_shared_draft_room(
                 return False, f"Unable to save participant: {exc}", document
             raise
     session[ACTIVE_SHARED_ROOM_CODE_KEY] = code
+    # Explicit re-enter clears any stale local left_at from a soft disconnect.
+    try:
+        from draft_room_participant_state import clear_participant_left_room
+
+        clear_participant_left_room(session, code)
+    except ImportError:
+        pass
     set_active_participant(session, room_code=code, participant_id=participant_id, assigned_team=assigned)
     # Isolate Live Draft UI from leftover private simulator Pick N / source labels.
     try:

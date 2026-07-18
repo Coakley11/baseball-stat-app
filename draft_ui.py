@@ -1168,7 +1168,11 @@ def render_draft_queue_panel(
                 f"{str(_scope_user or 'user')[:24]}_"
                 f"e{_epoch}"
             )
-            sorted_queue = sort_items(list(queue), key=_sortable_key)
+            # After ✕ remove, skip sort_items once so stale component state cannot resurrect.
+            if session.pop("_draft_queue_skip_sortable_once", None):
+                sorted_queue = list(queue)
+            else:
+                sorted_queue = sort_items(list(queue), key=_sortable_key)
             # Ignore stale sortable returns that resurrect removed players.
             if list(sorted_queue) != list(queue):
                 if len(queue) >= 2 and not list(sorted_queue):
@@ -1190,6 +1194,11 @@ def render_draft_queue_panel(
                         "canonical": list(queue)[:12],
                         "key": _sortable_key,
                     }
+                    sorted_queue = list(queue)
+                elif set(queue) - set(sorted_queue):
+                    # Sortable lagging behind canonical — keep canonical order.
+                    session["_live_draft_queue_sortable_lag_ignored"] = True
+                    sorted_queue = list(queue)
                 else:
                     try:
                         from live_draft_ux_latency import ACTION_REORDER_QUEUE, note_ux_action

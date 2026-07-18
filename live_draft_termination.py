@@ -9,6 +9,8 @@ from typing import Any
 LAST_DRAFT_BOARD_SNAPSHOT_KEY = "last_draft_board_snapshot"
 TERMINATION_TOMBSTONES_KEY = "live_draft_termination_tombstones"
 PAGE_FRAGMENT_EPOCH_KEY = "_live_draft_page_fragment_epoch"
+SUPPRESS_FRAGMENTS_KEY = "_live_draft_suppress_fragments"
+DELETING_STATUS_KEY = "_live_draft_deleting"
 REPAIR_DONE_KEY = "_live_draft_lifecycle_repair_v1_done"
 ENDED_NOTICE_KEY = "_live_draft_session_ended_notice"
 GUEST_ENDED_NOTICE_KEY = "_live_draft_guest_ended_notice"
@@ -86,7 +88,40 @@ def bump_live_draft_page_epoch(session: dict[str, Any]) -> int:
     nxt = int(session.get(PAGE_FRAGMENT_EPOCH_KEY) or 0) + 1
     session[PAGE_FRAGMENT_EPOCH_KEY] = nxt
     session["_draft_queue_widget_epoch"] = int(session.get("_draft_queue_widget_epoch") or 0) + 1
+    # Fragments must stop painting the prior room after discard / epoch bump.
+    session[SUPPRESS_FRAGMENTS_KEY] = nxt
+    session.pop("_live_draft_poll_fragment_active", None)
     return nxt
+
+
+def live_draft_fragments_suppressed(session: dict[str, Any]) -> bool:
+    """True when poll/timer/queue fragments must not paint (delete in flight or setup-only)."""
+    deleting = str(session.get(DELETING_STATUS_KEY) or "").strip().lower()
+    if deleting == "in_progress":
+        return True
+    if bool(session.get(SUPPRESS_FRAGMENTS_KEY)):
+        # Keep suppress until a non-setup lifecycle owns an active room again.
+        room = session.get("live_draft_room")
+        if not isinstance(room, dict):
+            return True
+        status = str(room.get("status") or "").strip().lower()
+        if status in ("ended", "closed", "deleted", "complete", "completed"):
+            return True
+        if deleting == "done":
+            return True
+    return False
+
+
+def clear_fragment_suppress_for_active_room(session: dict[str, Any]) -> None:
+    room = session.get("live_draft_room")
+    if isinstance(room, dict) and str(room.get("status") or "").strip().lower() in (
+        "in_progress",
+        "paused",
+        "waiting",
+        "not_started",
+    ):
+        session.pop(SUPPRESS_FRAGMENTS_KEY, None)
+        session.pop(DELETING_STATUS_KEY, None)
 
 
 def _ids_from_room(session: dict[str, Any], room: dict[str, Any] | None) -> tuple[str, str, str]:
@@ -383,6 +418,15 @@ def _clear_runtime_pointers(session: dict[str, Any], *, clear_queues: bool) -> l
             cleared.extend([DRAFT_QUEUE_KEY, DRAFT_WATCHLIST_FOCUS_KEY, DRAFT_WATCHLIST_FAVORITES_KEY])
         except ImportError:
             pass
+        # Bust Streamlit sortable component state from the deleted draft.
+        for k in list(session.keys()):
+            if isinstance(k, str) and (
+                k.startswith("sidebar_queue_sortable")
+                or k.startswith("live_queue_sortable")
+                or k.startswith("sim_queue_sortable")
+            ):
+                session.pop(k, None)
+                cleared.append(k)
     try:
         from draft_room_shared_state import invalidate_shared_room_document_cache
 
@@ -427,6 +471,13 @@ def permanently_delete_live_draft(
 ) -> dict[str, Any]:
     """Delete live room + temporary board snapshot. Saved library only if explicitly requested."""
     del canonical_user_id
+    # Idempotent: already deleted / no active room → stay on setup.
+    if session.get(DELETING_STATUS_KEY) == "done" and not isinstance(session.get("live_draft_room"), dict):
+        return {"ok": True, "operation": "delete", "idempotent": True}
+
+    session[DELETING_STATUS_KEY] = "in_progress"
+    bump_live_draft_page_epoch(session)
+
     room = session.get("live_draft_room")
     if not isinstance(room, dict):
         room = {}
@@ -439,10 +490,13 @@ def permanently_delete_live_draft(
     try:
         from live_draft_resumable_slot import (
             clear_resumable_live_draft_slot,
+            get_resumable_live_draft_slot,
             resumable_slot_matches_draft,
         )
 
         if resumable_slot_matches_draft(session, draft_id=draft_id, room_code=room_code):
+            clear_resumable_live_draft_slot(session)
+        elif get_resumable_live_draft_slot(session) and not draft_id and not room_code:
             clear_resumable_live_draft_slot(session)
     except ImportError:
         session.pop("resumable_live_draft_slot", None)
@@ -469,7 +523,9 @@ def permanently_delete_live_draft(
         except Exception:
             pass
 
-    bump_live_draft_page_epoch(session)
+    # Epoch already bumped at start; keep suppress active for setup-only paint.
+    session[SUPPRESS_FRAGMENTS_KEY] = int(session.get(PAGE_FRAGMENT_EPOCH_KEY) or 1)
+    session[DELETING_STATUS_KEY] = "done"
     _clear_query_room_params(st)
 
     if delete_saved_library_copy and draft_id:
@@ -631,6 +687,8 @@ def reset_context_for_new_live_draft(
     except Exception:
         session["draft_queue"] = []
     session["draft_queue"] = []
+    session.pop(DELETING_STATUS_KEY, None)
+    session.pop(SUPPRESS_FRAGMENTS_KEY, None)
     for key in (
         "_live_draft_rec_cache",
         "_live_draft_joined_participants_cache",

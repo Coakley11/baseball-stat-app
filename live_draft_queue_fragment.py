@@ -123,6 +123,13 @@ def record_queue_paint_diag(
 
 def render_live_draft_queue_fragment(st: Any, session: dict[str, Any]) -> None:
     """Draft Queue mount — call from inside ``board_col`` only."""
+    try:
+        from live_draft_termination import live_draft_fragments_suppressed
+
+        if live_draft_fragments_suppressed(session):
+            return
+    except ImportError:
+        pass
 
     def _body() -> None:
         session.pop(QUEUE_FRAGMENT_MUTATE_KEY, None)

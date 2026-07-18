@@ -335,6 +335,13 @@ def _render_js_countdown(st: Any, deadline: float, *, pick_index: int, session: 
 def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
     """Countdown that refreshes every second via Streamlit fragment when available."""
     try:
+        from live_draft_termination import live_draft_fragments_suppressed
+
+        if live_draft_fragments_suppressed(session):
+            return
+    except ImportError:
+        pass
+    try:
         from live_draft_ux_latency import mark_ux_milestone
 
         mark_ux_milestone(session, "timer_paint_start", rebuild="timer", st=st)

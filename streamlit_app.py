@@ -21955,6 +21955,7 @@ if active_page == "Live Draft Room":
     try:
         from live_draft_completion import (
             LIFECYCLE_ACTIVE_DRAFT,
+            LIFECYCLE_DELETING,
             LIFECYCLE_SETUP,
             LIFECYCLE_WAITING_SHARED_LOBBY,
             resolve_live_draft_lifecycle,
@@ -21969,11 +21970,15 @@ if active_page == "Live Draft Room":
         LIFECYCLE_SETUP = "setup"
         LIFECYCLE_WAITING_SHARED_LOBBY = "waiting_shared_lobby"
         LIFECYCLE_ACTIVE_DRAFT = "active_draft"
+        LIFECYCLE_DELETING = "deleting"
         _early_lifecycle = (
             LIFECYCLE_SETUP
             if not isinstance(st.session_state.get("live_draft_room"), dict)
             else LIFECYCLE_ACTIVE_DRAFT
         )
+    if _early_lifecycle == LIFECYCLE_DELETING:
+        st.info("Deleting draft…")
+        st.stop()
     _lifecycle_allows_shared_runtime = _early_lifecycle in (
         LIFECYCLE_WAITING_SHARED_LOBBY,
         LIFECYCLE_ACTIVE_DRAFT,
@@ -22610,6 +22615,7 @@ if active_page == "Live Draft Room":
     try:
         from live_draft_completion import (
             LIFECYCLE_ACTIVE_DRAFT,
+            LIFECYCLE_DELETING,
             LIFECYCLE_SETUP,
             LIFECYCLE_WAITING_SHARED_LOBBY,
             resolve_live_draft_lifecycle,
@@ -22622,9 +22628,14 @@ if active_page == "Live Draft Room":
         LIFECYCLE_SETUP = "setup"
         LIFECYCLE_WAITING_SHARED_LOBBY = "waiting_shared_lobby"
         LIFECYCLE_ACTIVE_DRAFT = "active_draft"
+        LIFECYCLE_DELETING = "deleting"
         _live_draft_lifecycle = (
             LIFECYCLE_SETUP if _live_draft_lifecycle_room is None else LIFECYCLE_ACTIVE_DRAFT
         )
+
+    if _live_draft_lifecycle == LIFECYCLE_DELETING:
+        st.info("Deleting draft…")
+        st.stop()
 
     if st.session_state.get("_simulator_to_live_show_confirm"):
         from draft_live_start import build_simulator_to_live_summary
@@ -23034,9 +23045,9 @@ if active_page == "Live Draft Room":
                         from live_draft_resumable_slot import clear_resumable_live_draft_slot
 
                         st.session_state.pop("_live_draft_discard_confirm", None)
+                        st.session_state["_live_draft_deleting"] = "in_progress"
                         clear_resumable_live_draft_slot(st.session_state)
                         discard_live_draft_and_start_over(st.session_state, st=st)
-                        st.success("Draft deleted permanently.")
                         st.rerun()
                 with dc2:
                     if st.button("Keep Draft", key="live_draft_setup_delete_cancel_btn"):
@@ -23067,6 +23078,12 @@ if active_page == "Live Draft Room":
     elif _live_draft_lifecycle in (LIFECYCLE_WAITING_SHARED_LOBBY, LIFECYCLE_ACTIVE_DRAFT) and isinstance(
         _live_draft_lifecycle_room, dict
     ):
+        try:
+            from live_draft_termination import clear_fragment_suppress_for_active_room
+
+            clear_fragment_suppress_for_active_room(st.session_state)
+        except ImportError:
+            pass
         room = _live_draft_lifecycle_room
         # Reject tombstoned / ended rooms that slipped past End Draft clears.
         try:
@@ -23861,6 +23878,7 @@ if active_page == "Live Draft Room":
                         from live_draft_termination import discard_live_draft_and_start_over
 
                         st.session_state.pop("_live_draft_discard_confirm", None)
+                        st.session_state["_live_draft_deleting"] = "in_progress"
                         discard_live_draft_and_start_over(st.session_state, st=st)
                         st.rerun()
                 with dc2:

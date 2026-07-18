@@ -11,6 +11,20 @@ LIVE_DRAFT_POLL_DIAG_KEY = "_live_draft_poll_diag"
 
 
 def _poll_suppressed_reason(session: dict[str, Any]) -> str:
+    try:
+        from live_draft_termination import live_draft_fragments_suppressed
+
+        if live_draft_fragments_suppressed(session):
+            return "fragments_suppressed_or_deleting"
+    except ImportError:
+        pass
+    try:
+        from live_draft_completion import LIFECYCLE_SETUP, resolve_live_draft_lifecycle
+
+        if resolve_live_draft_lifecycle(session) == LIFECYCLE_SETUP:
+            return "lifecycle_setup"
+    except ImportError:
+        pass
     if session.get("_live_draft_manual_pick_in_flight"):
         return "manual_pick_in_flight"
     if session.get("_pending_manual_draft_pick"):
@@ -99,6 +113,13 @@ def _run_shared_poll(session: dict[str, Any]) -> bool:
 
 def render_live_draft_poll_fragment(st: Any, session: dict[str, Any]) -> None:
     """Single lightweight shared-room poller — head first; full doc only on revision change."""
+    suppressed = _poll_suppressed_reason(session)
+    if suppressed:
+        session.pop("_live_draft_poll_fragment_active", None)
+        record_live_poll_diagnostics(
+            session, live_poll_enabled=False, poll_suppressed_reason=suppressed
+        )
+        return
     # Suppress the duplicate page-level poll while this fragment owns the loop.
     session["_live_draft_poll_fragment_active"] = True
     try:

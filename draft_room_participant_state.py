@@ -1061,20 +1061,19 @@ def register_participant_in_shared_document(
 
 
 def participant_has_left_room(session: dict[str, Any], room_code: str) -> bool:
+    """True only when *this* participant explicitly left — not any slot in the room."""
     code = str(room_code or "").strip().upper()
     if not code:
         return False
     room_state = participant_state_for_room(session, code)
     by_pid = room_state.get("by_participant")
-    if isinstance(by_pid, dict):
-        pid = str(resolve_participant_id(session)).strip()
-        slot = by_pid.get(pid)
-        if isinstance(slot, dict) and str(slot.get("left_at") or "").strip():
-            return True
-        for slot in by_pid.values():
-            if isinstance(slot, dict) and str(slot.get("left_at") or "").strip():
-                return True
-    return False
+    if not isinstance(by_pid, dict):
+        return False
+    pid = str(resolve_participant_id(session)).strip()
+    if not pid:
+        return False
+    slot = by_pid.get(pid)
+    return bool(isinstance(slot, dict) and str(slot.get("left_at") or "").strip())
 
 
 def mark_participant_left_room(
@@ -1177,10 +1176,14 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
     try:
         from suite_auth import is_auth_enabled, is_authenticated
 
-        # Unsigned browsers must never reattach to another account's multiplayer room.
+        # Soft offline only — never mark left / never wipe membership when the
+        # browser briefly loses auth (phone sleep, tab background, session refresh).
+        # Unsigned browsers must not *act* as another user, but membership stays.
         if is_auth_enabled() and not is_authenticated(session):
-            session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
-            session.pop(ACTIVE_PARTICIPANT_TEAM_KEY, None)
+            session["_live_draft_presence_offline"] = True
+            code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+            # Keep membership + room code; drop only the live runtime so unsigned
+            # clients cannot commit picks until they re-authenticate and reattach.
             try:
                 from live_draft_state import LIVE_DRAFT_ROOM_KEY, LIVE_DRAFT_STATE_KEY
 
@@ -1188,7 +1191,8 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
                 session.pop(LIVE_DRAFT_STATE_KEY, None)
             except ImportError:
                 session.pop("live_draft_room", None)
-            return ""
+            return code
+        session.pop("_live_draft_presence_offline", None)
     except ImportError:
         pass
     try:

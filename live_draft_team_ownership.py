@@ -326,6 +326,24 @@ def session_identity_aliases(session: dict[str, Any] | None) -> set[str]:
         tokens.add(str(session.get(AUTH_USER_ID_KEY) or "").strip())
     except ImportError:
         pass
+    # Membership pids for any room still owned by this browser — reattach after refresh.
+    try:
+        from draft_room_participant_state import MEMBERSHIP_KEY
+
+        membership = session.get(MEMBERSHIP_KEY)
+        if isinstance(membership, dict):
+            for room_mem in membership.values():
+                if not isinstance(room_mem, dict):
+                    continue
+                if room_mem.get("participant_id"):
+                    tokens.add(str(room_mem.get("participant_id") or "").strip())
+                for pid_key, meta in room_mem.items():
+                    if isinstance(meta, dict):
+                        tokens.add(str(meta.get("participant_id") or pid_key or "").strip())
+                    elif isinstance(pid_key, str) and pid_key not in ("assigned_team", "participant_id"):
+                        tokens.add(pid_key.strip())
+    except ImportError:
+        pass
     return {t for t in tokens if t}
 
 
@@ -700,7 +718,7 @@ def lookup_open_teams_for_code(
 
         already = str(diag.get("already_joined_team") or "").strip()
         if already:
-            return [], f"You already joined this room as {already}"
+            return [], f"You are already joined as {already}"
 
         if not diag.get("document_teams"):
             return [], "Room data could not be loaded — team list missing from shared room."
@@ -713,6 +731,18 @@ def lookup_open_teams_for_code(
             }
             if isinstance(session, dict):
                 session["_draft_room_claim_diag"]["exclusion_detail"] = occupied
+                # Last-chance reattach: local membership still owns a seat in this room.
+                try:
+                    from draft_room_participant_state import membership_team_for_participant, resolve_participant_id
+
+                    mem_team = membership_team_for_participant(
+                        session, code, participant_id=resolve_participant_id(session)
+                    )
+                    if mem_team:
+                        session["_draft_room_claim_diag"]["already_joined_team"] = mem_team
+                        return [], f"You are already joined as {mem_team}"
+                except ImportError:
+                    pass
             return [], "No teams are available"
         return open_teams, ""
     except ImportError:
