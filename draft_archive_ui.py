@@ -3642,10 +3642,11 @@ def render_live_draft_completion_panel(
         )
     with save_col:
         st.button(
-            "Save Draft",
+            "📁 Save to Draft Library",
             key=f"{key_prefix}_save_btn",
             type="primary",
             use_container_width=True,
+            help="Save a historical copy of the completed draft for viewing and analysis.",
             on_click=_on_live_draft_save_click,
             kwargs={
                 "team_name": save_team,

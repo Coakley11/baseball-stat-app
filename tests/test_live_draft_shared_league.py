@@ -232,7 +232,8 @@ class LiveDraftCompletionTests(unittest.TestCase):
     def test_draft_complete_hub_actions(self) -> None:
         self.assertIn("Create Shared League", DRAFT_COMPLETE_HUB_ACTIONS)
         self.assertIn("Review Draft Results", DRAFT_COMPLETE_HUB_ACTIONS)
-        self.assertNotIn("Set Active Draft", DRAFT_COMPLETE_HUB_ACTIONS)
+        self.assertIn("Save to Draft Library", DRAFT_COMPLETE_HUB_ACTIONS)
+        self.assertIn("Set Active Draft", DRAFT_COMPLETE_HUB_ACTIONS)
 
     def test_repeated_completion_preserves_record_identity_and_timestamp(self) -> None:
         room = _completed_two_team_room()

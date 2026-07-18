@@ -22340,15 +22340,9 @@ elif active_page == "Live Draft Room":
     if "live_draft_room" not in st.session_state:
         st.session_state["live_draft_room"] = None
     room = st.session_state.get("live_draft_room")
+    # Active drafts: no Save to Draft Library / manual library save here.
+    # Commissioner park/delete live beside Live Chat; library save only after completion.
     if room and isinstance(room, dict) and room.get("status") in ("in_progress", "paused"):
-        if st.button("Save Draft", key="live_draft_manual_save_btn", help="Save your draft now."):
-            from live_draft_state import commit_live_draft_room
-
-            trace = commit_live_draft_room(st, st.session_state, room, reason="manual_save")
-            if trace.get("last_live_draft_save_success"):
-                st.success("Draft saved.")
-            else:
-                st.error(f"Save failed: {trace.get('last_live_draft_save_error') or trace.get('error') or 'unknown'}")
         if developer_mode_enabled():
             dev_col1, dev_col2 = st.columns(2)
             with dev_col1:
@@ -24158,18 +24152,6 @@ elif active_page == "Live Draft Room":
                 st.warning("Control Center unavailable — live_draft_control_center_ui missing.")
             st.markdown("</div>", unsafe_allow_html=True)
 
-        with ldr_step(st.session_state, "timer_attach_callbacks", st=st):
-            # Advanced expander kept for legacy leave duplicate only when guest.
-            if st.session_state.get("active_shared_draft_room_code") and not _is_commissioner:
-                with st.expander("Advanced draft controls", expanded=False):
-                    try:
-                        from draft_room_context import leave_shared_draft_room
-
-                        if st.button("Leave This Room", key="live_draft_leave_btn"):
-                            st.session_state["_live_draft_leave_confirm"] = True
-                            st.rerun()
-                    except ImportError:
-                        pass
         try:
             from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section_done, ldr_step
 
@@ -24187,19 +24169,6 @@ elif active_page == "Live Draft Room":
             ldr_section(st.session_state, "room_board_column", st=st)
         except ImportError:
             pass
-
-        # Phase 1 Live Draft Chat — fragment-scoped; does not touch timer/board revision.
-        try:
-            from live_draft_chat_ui import render_live_draft_chat_panel
-
-            render_live_draft_chat_panel(st, st.session_state)
-        except ImportError:
-            pass
-        except Exception as _ld_chat_exc:
-            try:
-                st.caption(f"Draft chat unavailable: {type(_ld_chat_exc).__name__}")
-            except Exception:
-                pass
 
         board_col, rec_col = st.columns([1.45, 1.0])
         # Queue fragment MUST mount inside board_col (same container it paints).
@@ -24981,6 +24950,29 @@ elif active_page == "Live Draft Room":
                 display_rows=20,
             )
             st.markdown("</div>", unsafe_allow_html=True)
+
+        # Live Chat + compact commissioner Save / End actions (after board / recs / rosters).
+        if _draft_in_progress and not _pending_manual_pick:
+            try:
+                from live_draft_control_center_ui import render_live_chat_with_commissioner_actions
+
+                render_live_chat_with_commissioner_actions(
+                    st,
+                    st.session_state,
+                    developer_mode=bool(developer_mode_enabled()),
+                )
+            except ImportError:
+                try:
+                    from live_draft_chat_ui import render_live_draft_chat_panel
+
+                    render_live_draft_chat_panel(st, st.session_state)
+                except Exception:
+                    pass
+            except Exception as _ld_chat_exc:
+                try:
+                    st.caption(f"Draft chat unavailable: {type(_ld_chat_exc).__name__}")
+                except Exception:
+                    pass
 
         if _draft_is_complete and not _pending_manual_pick:
             try:

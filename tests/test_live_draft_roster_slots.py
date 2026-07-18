@@ -186,7 +186,7 @@ class LiveDraftRosterSlotsTests(unittest.TestCase):
         self.assertIn("render_live_draft_completion_panel", text)
         self.assertIn("export_frames_fn=live_draft_export_frames", text)
         ui_text = (_REPO / "draft_archive_ui.py").read_text(encoding="utf-8")
-        self.assertIn('"Save Draft"', ui_text)
+        self.assertIn("Save to Draft Library", ui_text)
         self.assertIn('"Analyze Draft"', ui_text)
         self.assertIn('"Create Shared League"', ui_text)
         self.assertIn('"Review Draft Results"', ui_text)

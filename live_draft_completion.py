@@ -9,10 +9,11 @@ COMPLETION_RECORD_KEY = "live_draft_completion_record"
 
 DRAFT_COMPLETE_HUB_ACTIONS = (
     "Review Draft Results",
-    "Save Draft",
+    "Save to Draft Library",
     "Analyze Draft",
     "Create Shared League",
     "Export Draft",
+    "Set Active Draft",
 )
 
 SESSION_ENDED_NOTICE_KEY = "_live_draft_session_ended_notice"
