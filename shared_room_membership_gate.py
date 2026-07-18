@@ -270,5 +270,20 @@ def assert_or_repair_before_shared_render(session: dict[str, Any]) -> tuple[bool
     ok, reason = can_render_shared_live_draft(session, require_team_claim=False)
     if ok:
         return True, reason
+    # Brand-new create: do not wipe the room on a transient readback miss.
+    try:
+        from live_draft_creation_trace import new_room_is_protected
+
+        if new_room_is_protected(session):
+            session[MEMBERSHIP_GATE_DIAG_KEY] = {
+                "ok": False,
+                "reason": reason,
+                "deferred_repair": True,
+                "protect_new_room": True,
+            }
+            # Allow lobby paint for the host; next poll can re-verify.
+            return True, f"protected_new_room:{reason}"
+    except ImportError:
+        pass
     repair_stale_shared_room_session(session)
     return False, reason

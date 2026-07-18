@@ -200,7 +200,7 @@ class TimerZeroLatchTests(unittest.TestCase):
 
 class LifecycleActiveClearsSuppress(unittest.TestCase):
     def test_active_lifecycle_when_room_present(self) -> None:
-        # After End/Delete, deleting=done must NOT resurrect a stale room pointer.
+        # force_setup still blocks stale resurrection.
         session = {
             "live_draft_room": {
                 "status": "in_progress",
@@ -208,11 +208,12 @@ class LifecycleActiveClearsSuppress(unittest.TestCase):
             },
             ACTIVE_SHARED_ROOM_CODE_KEY: "ZZZZZZ",
             SUPPRESS_FRAGMENTS_KEY: 9,
+            "_live_draft_force_setup_after_delete": True,
             DELETING_STATUS_KEY: "done",
         }
         self.assertEqual(resolve_live_draft_lifecycle(session), LIFECYCLE_SETUP)
         self.assertIsNone(session.get("live_draft_room"))
-        # Brand-new create clears delete blocks, then an in-progress room is ACTIVE.
+        # Stale deleting=done alone must not wipe a fresh non-tombstoned room.
         from live_draft_start_progress import clear_post_delete_create_blocks
 
         clear_post_delete_create_blocks(session)
@@ -221,7 +222,9 @@ class LifecycleActiveClearsSuppress(unittest.TestCase):
             "config": {"timer_seconds": 30},
         }
         session[ACTIVE_SHARED_ROOM_CODE_KEY] = "NEWR01"
+        session[DELETING_STATUS_KEY] = "done"
         self.assertEqual(resolve_live_draft_lifecycle(session), LIFECYCLE_ACTIVE_DRAFT)
+        self.assertNotEqual(session.get(DELETING_STATUS_KEY), "done")
 
 
 if __name__ == "__main__":

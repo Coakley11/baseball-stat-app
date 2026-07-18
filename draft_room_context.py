@@ -174,13 +174,35 @@ def prepare_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
     """Bootstrap hook — hydrate runtime room and participant-private workflow."""
     from draft_room_participant_state import restore_persisted_shared_room_membership
 
-    # Never rehydrate during / after End/Delete — that was restoring the deleted room.
+    # Never rehydrate during active End/Delete. After delete completes, do not wipe a
+    # brand-new protected create (stale deleting=done was killing Solo/Shared starts).
     deleting = str(session.get("_live_draft_deleting") or "").strip().lower()
-    if deleting in ("in_progress", "done"):
+    if deleting == "in_progress":
         session.pop("live_draft_room", None)
         session.pop("live_draft_state", None)
         session.pop("active_shared_draft_room_code", None)
         return get_global_draft_context(session)
+    if deleting == "done":
+        protected = False
+        try:
+            from live_draft_creation_trace import new_room_is_protected
+
+            protected = bool(new_room_is_protected(session))
+        except ImportError:
+            protected = False
+        room = session.get("live_draft_room")
+        if protected and isinstance(room, dict):
+            session.pop("_live_draft_deleting", None)
+            session.pop("_live_draft_force_setup_after_delete", None)
+        elif isinstance(room, dict):
+            # Keep non-tombstoned rooms; only clear empty/stale pointers.
+            session.pop("_live_draft_deleting", None)
+            session.pop("_live_draft_force_setup_after_delete", None)
+        else:
+            session.pop("live_draft_room", None)
+            session.pop("live_draft_state", None)
+            session.pop("active_shared_draft_room_code", None)
+            return get_global_draft_context(session)
 
     restored_code = restore_persisted_shared_room_membership(session)
     try:

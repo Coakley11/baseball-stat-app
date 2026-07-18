@@ -174,60 +174,35 @@ def render_draft_start_progress(st: Any, session: dict[str, Any], *, developer_m
             session.pop(START_ERROR_KEY, None)
             st.rerun()
 
-    prog = session.get(START_PROGRESS_KEY)
-    if not isinstance(prog, dict):
-        return
     in_flight = is_live_draft_start_in_flight(session)
-    if not developer_mode:
-        if not in_flight:
-            return
-        step = str(prog.get("current_step") or "")
+    if in_flight:
         try:
-            from live_draft_ux import user_facing_start_step
+            from live_draft_creation_trace import user_facing_creation_status
 
-            label = user_facing_start_step(step)
+            label = user_facing_creation_status(session)
         except ImportError:
-            label = "Preparing Draft…"
-        st.info(label)
-        return
-    with st.expander("Draft start progress", expanded=bool(in_flight or developer_mode)):
-        if in_flight:
-            st.info(f"Starting draft… current step: **{prog.get('current_step', '—')}**")
-        steps = prog.get("steps") if isinstance(prog.get("steps"), dict) else {}
-        for step, elapsed in steps.items():
-            st.text(f"{step}: {elapsed}s")
-        for key in (
-            "click_received_ts",
-            "room_created_ts",
-            "market_data_loaded",
-            "pool_build_start_ts",
-            "pool_build_end_ts",
-            "room_initialized_ts",
-            "shared_write_start_ts",
-            "shared_write_end_ts",
-            "shared_write_ok",
-            "shared_write_error",
-            "local_save_start_ts",
-            "local_save_end_ts",
-            "activity_write_start_ts",
-            "activity_write_end_ts",
-            "timer_deadline_set",
-            "pool_loaded",
-            "recommendations_loaded",
-            "first_render_ready",
-            "rerun_requested",
-            "last_rerun_reason",
-            "start_error",
-            "lifecycle",
-        ):
-            val = prog.get(key)
-            if val is not None and val != "":
-                st.text(f"{key}: {val}")
-        try:
-            from live_draft_safe_mode import RERUN_DIAG_KEY
+            prog = session.get(START_PROGRESS_KEY) if isinstance(session.get(START_PROGRESS_KEY), dict) else {}
+            step = str((prog or {}).get("current_step") or "")
+            try:
+                from live_draft_ux import user_facing_start_step
 
-            rerun = session.get(RERUN_DIAG_KEY) or {}
-            if isinstance(rerun, dict) and rerun.get("rerun_source"):
-                st.text(f"last_rerun_reason: {rerun.get('rerun_source')}")
+                label = user_facing_start_step(step)
+            except ImportError:
+                label = "Starting…"
+        st.info(label)
+
+    if developer_mode:
+        try:
+            from live_draft_creation_trace import render_creation_receipt_panel
+
+            render_creation_receipt_panel(st, session, developer_mode=True)
         except ImportError:
             pass
+        prog = session.get(START_PROGRESS_KEY)
+        if isinstance(prog, dict):
+            with st.expander("Draft start progress steps", expanded=bool(in_flight)):
+                if in_flight:
+                    st.caption(f"current step: **{prog.get('current_step', '—')}**")
+                steps = prog.get("steps") if isinstance(prog.get("steps"), dict) else {}
+                for step, elapsed in steps.items():
+                    st.text(f"{step}: {elapsed}s")

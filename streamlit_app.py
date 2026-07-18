@@ -22419,8 +22419,15 @@ elif active_page == "Live Draft Room":
             _skip_pool_build = False
             if _begin_start is not None:
                 _begin_start(st.session_state, mode=_start_mode)
-            if mark_start_step:
-                mark_start_step(st.session_state, "handler_begin", click_received_ts=time.time())
+            try:
+                from live_draft_creation_trace import init_creation_trace, note_creation_step
+
+                init_creation_trace(st.session_state, mode=_start_mode)
+                note_creation_step(st.session_state, "begin_live_draft_start", ok=True)
+                note_creation_step(st.session_state, "handler_begin", ok=True)
+            except ImportError:
+                if mark_start_step:
+                    mark_start_step(st.session_state, "handler_begin", click_received_ts=time.time())
             if _start_mode == "new" and not _from_simulator and not _prepare_shared:
                 try:
                     from live_draft_setup_mode import (
@@ -22530,11 +22537,13 @@ elif active_page == "Live Draft Room":
                 slot_bench = session_slot_count(st.session_state, "live_slot_bench", 5)
                 fantasy_format = "5x5 Roto" if "Roto" in live_scoring else "Points League"
                 try:
+                    from live_draft_creation_trace import note_creation_step
+
+                    note_creation_step(st.session_state, "pool_build_start", ok=True)
+                except Exception:
                     if mark_start_step:
                         mark_start_step(st.session_state, "pool_build_start", pool_build_start_ts=_time_mod.time())
-                except Exception:
-                    pass
-                with st.spinner("Building player pool and draft room..."):
+                with st.spinner("Building player pool…"):
                     pool_live = get_cached_unified_projection_pool(
                         int(st.session_state.get("_lahman_max_year", year_max)),
                         int(live_proj_window),
@@ -22545,6 +22554,15 @@ elif active_page == "Live Draft Room":
                         int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
                     )
                 try:
+                    from live_draft_creation_trace import note_creation_step
+
+                    note_creation_step(
+                        st.session_state,
+                        "pool_build_end",
+                        ok=True,
+                        pool_live_count=len(pool_live),
+                    )
+                except Exception:
                     if mark_start_step:
                         mark_start_step(
                             st.session_state,
@@ -22553,8 +22571,6 @@ elif active_page == "Live Draft Room":
                             pool_loaded=True,
                             pool_live_count=len(pool_live),
                         )
-                except Exception:
-                    pass
                 record_start_live_draft_diagnostics(st.session_state, pool_live_count=len(pool_live))
                 try:
                     if _from_simulator:
@@ -22688,7 +22704,25 @@ elif active_page == "Live Draft Room":
                                 pass
 
                         stamp_room_setup_mode(new_room, st.session_state)
+                        try:
+                            from live_draft_creation_trace import note_creation_step
+
+                            note_creation_step(
+                                st.session_state,
+                                "room_initialized",
+                                ok=True,
+                                draft_id=str(new_room.get("draft_room_id") or ""),
+                                room_id=str(new_room.get("draft_room_id") or ""),
+                            )
+                        except ImportError:
+                            pass
                         if _prepare_shared:
+                            try:
+                                from live_draft_creation_trace import note_creation_step
+
+                                note_creation_step(st.session_state, "shared_room_create_start", ok=True)
+                            except ImportError:
+                                pass
                             code, err = finalize_shared_room_create(
                                 st.session_state, new_room, host_team=user_team
                             )
@@ -22703,11 +22737,51 @@ elif active_page == "Live Draft Room":
                                     cleanup_partial_create(st.session_state)
                                 except ImportError:
                                     st.session_state.pop("live_draft_room", None)
+                                try:
+                                    from live_draft_creation_trace import note_creation_step
+
+                                    note_creation_step(
+                                        st.session_state,
+                                        "shared_room_create_end",
+                                        ok=False,
+                                        error=_start_handler_err,
+                                    )
+                                except ImportError:
+                                    pass
                                 record_start_live_draft_diagnostics(
                                     st.session_state, start_live_draft_error=_start_handler_err
                                 )
                             else:
                                 st.session_state["live_draft_room"] = new_room
+                                try:
+                                    from live_draft_creation_trace import (
+                                        note_creation_step,
+                                        protect_new_room,
+                                    )
+
+                                    note_creation_step(
+                                        st.session_state,
+                                        "commissioner_registered",
+                                        ok=True,
+                                        draft_id=str(new_room.get("draft_room_id") or ""),
+                                        room_id=str(new_room.get("draft_room_id") or ""),
+                                        room_code=code,
+                                    )
+                                    note_creation_step(
+                                        st.session_state,
+                                        "shared_room_create_end",
+                                        ok=True,
+                                        room_code=code,
+                                    )
+                                    note_creation_step(
+                                        st.session_state,
+                                        "session_installed",
+                                        ok=True,
+                                        room_code=code,
+                                    )
+                                    protect_new_room(st.session_state)
+                                except ImportError:
+                                    pass
                                 st.session_state["_live_draft_start_feedback"] = (
                                     f"Shared draft room ready. **Join code: {code}** — "
                                     f"share this code so co-managers can join and claim their teams."
@@ -22755,6 +22829,24 @@ elif active_page == "Live Draft Room":
                             live_draft_start(new_room)
                             st.session_state["live_draft_room"] = new_room
                             st.session_state["room_your_team"] = user_team
+                            try:
+                                from live_draft_creation_trace import (
+                                    note_creation_step,
+                                    protect_new_room,
+                                )
+
+                                note_creation_step(
+                                    st.session_state,
+                                    "solo_started",
+                                    ok=True,
+                                    draft_id=str(new_room.get("draft_room_id") or ""),
+                                    room_id=str(new_room.get("draft_room_id") or ""),
+                                    lifecycle="active_draft",
+                                )
+                                note_creation_step(st.session_state, "session_installed", ok=True)
+                                protect_new_room(st.session_state)
+                            except ImportError:
+                                pass
                             try:
                                 from user_page_preferences import persist_live_draft_setup_preferences
 
@@ -22841,10 +22933,50 @@ elif active_page == "Live Draft Room":
             except Exception:
                 pass
             try:
+                from live_draft_creation_trace import note_creation_step
+
+                note_creation_step(
+                    st.session_state, "start_failed", ok=False, error=_start_handler_err
+                )
+            except Exception:
+                pass
+            try:
                 st.error(f"Draft creation failed: {_start_handler_err}")
             except Exception:
                 pass
         finally:
+            _life_after = ""
+            try:
+                from live_draft_completion import resolve_live_draft_lifecycle
+                from live_draft_creation_trace import (
+                    finalize_creation_receipt,
+                    note_creation_step,
+                    protect_new_room,
+                )
+
+                if _start_handler_ok:
+                    protect_new_room(st.session_state)
+                _life_after = resolve_live_draft_lifecycle(
+                    st.session_state,
+                    room=st.session_state.get("live_draft_room")
+                    if isinstance(st.session_state.get("live_draft_room"), dict)
+                    else None,
+                )
+                note_creation_step(
+                    st.session_state,
+                    "lifecycle_resolved",
+                    ok=_start_handler_ok,
+                    lifecycle=_life_after,
+                    error=_start_handler_err,
+                )
+                finalize_creation_receipt(
+                    st.session_state,
+                    success=_start_handler_ok,
+                    lifecycle=_life_after,
+                    error=_start_handler_err,
+                )
+            except Exception:
+                pass
             if _finish_start is not None:
                 _finish_start(st.session_state, ok=_start_handler_ok, error=_start_handler_err)
 

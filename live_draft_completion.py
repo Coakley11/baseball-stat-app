@@ -250,16 +250,51 @@ def resolve_live_draft_lifecycle(
     deleting = str(session.get("_live_draft_deleting") or "").strip().lower()
     if deleting == "in_progress":
         return LIFECYCLE_DELETING
-    # Deletion completed — never re-enter ACTIVE even if a stale room pointer resurrects.
-    # Brand-new create clears these flags in reset_context_for_new_live_draft / begin_live_draft_start.
-    if deleting == "done" or bool(session.get("_live_draft_force_setup_after_delete")):
+    # Deletion completed — block stale resurrection, but never wipe a brand-new create.
+    force_setup = bool(session.get("_live_draft_force_setup_after_delete"))
+    if deleting == "done" or force_setup:
         live_done = room if isinstance(room, dict) else session.get("live_draft_room")
-        if isinstance(live_done, dict):
-            session.pop("live_draft_room", None)
-            session.pop("live_draft_state", None)
-            session.pop("active_shared_draft_room_code", None)
-        session["_live_draft_deleting"] = "done"
-        return LIFECYCLE_SETUP
+        protected = False
+        try:
+            from live_draft_creation_trace import new_room_is_protected
+
+            protected = bool(new_room_is_protected(session))
+        except ImportError:
+            protected = False
+        if protected and isinstance(live_done, dict):
+            # Successful create in this session — drop stale delete flags and continue.
+            session.pop("_live_draft_deleting", None)
+            session.pop("_live_draft_force_setup_after_delete", None)
+        else:
+            tombstoned = False
+            if isinstance(live_done, dict):
+                code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+                draft_id = _draft_id(live_done)
+                tombstoned = bool(
+                    is_live_draft_ended_tombstoned(
+                        session, room_code=code, draft_room_id=draft_id
+                    )
+                )
+                try:
+                    from live_draft_termination import is_live_draft_permanently_retired
+
+                    tombstoned = tombstoned or bool(
+                        is_live_draft_permanently_retired(
+                            session, draft_id=draft_id, room_code=code, room=live_done
+                        )
+                    )
+                except ImportError:
+                    pass
+            if force_setup or tombstoned or not isinstance(live_done, dict):
+                if isinstance(live_done, dict):
+                    session.pop("live_draft_room", None)
+                    session.pop("live_draft_state", None)
+                    session.pop("active_shared_draft_room_code", None)
+                session["_live_draft_deleting"] = "done"
+                return LIFECYCLE_SETUP
+            # Stale deleting=done with a non-tombstoned live room: clear flag, keep room.
+            session.pop("_live_draft_deleting", None)
+            session.pop("_live_draft_force_setup_after_delete", None)
     if deleting == "failed":
         # Stay on active draft so the commissioner can retry; error is shown in UI.
         pass
