@@ -1044,6 +1044,28 @@ def render_draft_queue_panel(
         _prune_drafted_from_queue(session)
     widget_after_prune = [str(x).strip() for x in (session.get(_qkey) or []) if str(x).strip()]
     queue, queue_source = _resolve_visible_draft_queue(session, qkey=_qkey)
+    # Hard filter: never paint drafted players (no "Already drafted by…" in queue).
+    try:
+        from shared_live_draft_snapshot import drafted_player_tokens
+
+        drafted_tok = drafted_player_tokens(session)
+        if drafted_tok and queue:
+            filtered = [
+                n
+                for n in queue
+                if str(n).strip() not in drafted_tok and str(n).strip().lower() not in drafted_tok
+            ]
+            if filtered != list(queue):
+                try:
+                    from draft_state import sync_draft_queue
+
+                    sync_draft_queue(session, filtered, reason="queue_paint_drop_drafted")
+                except ImportError:
+                    session[_qkey] = list(filtered)
+                queue = filtered
+                queue_source = f"{queue_source}+drop_drafted"
+    except ImportError:
+        pass
     # If widget was empty but another source has names, repair session for this paint.
     if queue and not widget_after_prune:
         try:

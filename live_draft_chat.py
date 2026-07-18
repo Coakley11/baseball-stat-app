@@ -83,14 +83,11 @@ def normalize_chat_payload(raw: Any) -> dict[str, Any]:
 
 
 def canonical_chat_scope(session: dict[str, Any]) -> str:
-    """Shared conversation key — never includes user/workspace/session identity."""
-    league_id, draft_id = _league_and_draft_ids(session)
+    """Shared conversation key — room code only (same for every participant)."""
     code = _active_room_code(session)
-    room_id = draft_id or code
-    league = league_id or code
-    if not room_id:
+    if not code:
         return ""
-    return f"league:{league}:room:{room_id}"
+    return f"room:{code}"
 
 
 def user_visible_messages(
@@ -174,23 +171,25 @@ def _active_room_code(session: dict[str, Any]) -> str:
     try:
         from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY
 
-        return str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+        code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
     except ImportError:
-        return str(session.get("active_shared_draft_room_code") or "").strip().upper()
+        code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+    if code:
+        return code
+    try:
+        from draft_room_context import resolve_shared_room_code
+
+        return str(resolve_shared_room_code(session) or "").strip().upper()
+    except ImportError:
+        return ""
+    except Exception:
+        return ""
 
 
 def _league_and_draft_ids(session: dict[str, Any]) -> tuple[str, str]:
     code = _active_room_code(session)
-    league_id = str(session.get("shared_league_id") or session.get("active_shared_league_id") or code).strip()
-    draft_id = ""
-    room = session.get("live_draft_room")
-    if isinstance(room, dict):
-        draft_id = str(
-            room.get("draft_room_id") or room.get("id") or room.get("draft_id") or code
-        ).strip()
-        if not league_id:
-            league_id = str((room.get("meta") or {}).get("league_id") or code).strip()
-    return league_id, draft_id or code
+    # Prefer room code for both — do not invent divergent league/draft keys per account.
+    return code, code
 
 
 def _resolve_author(session: dict[str, Any]) -> tuple[str, str, str]:
@@ -410,6 +409,27 @@ def _mutate_chat(
             last_err = "Someone else updated the room — retrying…"
             continue
         last_err = "Chat not saved — try again."
+    # Last resort: unconditional save with sidecar merge so chat is not lost forever.
+    try:
+        doc = store.load(code)
+        if isinstance(doc, dict):
+            chat = normalize_chat_payload(doc.get(CHAT_DOC_KEY))
+            ok_mut, err, chat = mutator(chat)
+            if not ok_mut:
+                return False, err
+            out = copy.deepcopy(doc)
+            out[CHAT_DOC_KEY] = chat
+            saved = store.save(out)
+            verified = normalize_chat_payload((saved or out).get(CHAT_DOC_KEY))
+            session[CHAT_SESSION_CACHE_KEY] = {
+                "room_code": code,
+                "chat_scope": canonical_chat_scope(session),
+                "chat": copy.deepcopy(verified),
+            }
+            invalidate_shared_room_document_cache(session, code)
+            return True, ""
+    except Exception as exc:
+        last_err = str(exc) or last_err
     return False, last_err
 
 

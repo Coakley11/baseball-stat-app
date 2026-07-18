@@ -12197,14 +12197,34 @@ def _workflow_normalize_draft_queue():
 
 def _drafted_player_names_from_room():
     """Names already drafted by any team; used only to prune unavailable draft queue items."""
+    names: set[str] = set()
     table = _canonical_draft_board_df()
-    if table is None or getattr(table, "empty", True) or "Player" not in table.columns:
-        return set()
-    return {
-        str(x).strip()
-        for x in table["Player"].dropna().astype(str).tolist()
-        if str(x).strip()
-    }
+    if table is not None and not getattr(table, "empty", True) and "Player" in table.columns:
+        names.update(
+            {
+                str(x).strip()
+                for x in table["Player"].dropna().astype(str).tolist()
+                if str(x).strip()
+            }
+        )
+    room = st.session_state.get("live_draft_room")
+    if isinstance(room, dict):
+        for entry in room.get("draft_board") or []:
+            if not isinstance(entry, dict):
+                continue
+            full = str(entry.get("fullName") or entry.get("Player") or "").strip()
+            if full:
+                names.add(full)
+    try:
+        from shared_live_draft_snapshot import drafted_player_tokens
+
+        for tok in drafted_player_tokens(st.session_state):
+            s = str(tok or "").strip()
+            if s and " " in s:  # display names
+                names.add(s)
+    except ImportError:
+        pass
+    return names
 
 
 def _auto_remove_drafted_from_queue():
@@ -12327,24 +12347,39 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
         st.sidebar.caption(f"Active draft source: **{draft_ctx['active_draft_source']}**")
 
     st.sidebar.markdown("**Draft queue**")
+    # Live Draft Room owns the single Draft Queue surface — do not mount a second
+    # sidebar queue while an active live room is open (duplicate widgets break X remove).
+    _skip_sidebar_queue = False
     try:
-        if render_draft_queue_panel(
-            st,
-            st.session_state,
-            key_prefix="sidebar_queue",
-            use_sidebar=True,
-            max_rows=12,
-            show_subheader=False,
-            compact=True,
-        ):
-            # Phase 1: queue mutate already marked deferred persist — do not force_save here.
-            st.rerun()
-    except NameError:
-        pass
+        _page = str(st.session_state.get("active_page") or "").strip()
+        _live = st.session_state.get("live_draft_room")
+        if _page == "Live Draft Room" and isinstance(_live, dict):
+            _st = str(_live.get("status") or "").strip().lower()
+            if _st in ("in_progress", "paused", "waiting", "not_started", "ready"):
+                _skip_sidebar_queue = True
+    except Exception:
+        _skip_sidebar_queue = False
+    if _skip_sidebar_queue:
+        st.sidebar.caption("Draft Queue is shown in the Live Draft Room panel.")
+    else:
+        try:
+            if render_draft_queue_panel(
+                st,
+                st.session_state,
+                key_prefix="sidebar_queue",
+                use_sidebar=True,
+                max_rows=12,
+                show_subheader=False,
+                compact=True,
+            ):
+                # Phase 1: queue mutate already marked deferred persist — do not force_save here.
+                st.rerun()
+        except NameError:
+            pass
     if st.sidebar.button(
         "Clear Draft Queue",
         key="sidebar_clear_draft_queue",
-        disabled=not bool(st.session_state.get("draft_queue")),
+        disabled=not bool(st.session_state.get("draft_queue")) or _skip_sidebar_queue,
     ):
         _clear_workflow_list("draft_queue")
         st.rerun()
@@ -22042,6 +22077,15 @@ elif active_page == "Live Draft Room":
         st.error(f"LDR prepare_live_draft_state exception: {type(_ldr_prep_exc).__name__}: {_ldr_prep_exc}")
         raise
     try:
+        from shared_live_draft_snapshot import refresh_shared_live_draft_snapshot
+
+        if st.session_state.get("active_shared_draft_room_code") or isinstance(
+            st.session_state.get("live_draft_room"), dict
+        ):
+            refresh_shared_live_draft_snapshot(st.session_state)
+    except ImportError:
+        pass
+    try:
         if _setup_prep_ctx is not None:
             _setup_prep_ctx.__exit__(None, None, None)
     except Exception:
@@ -23258,6 +23302,31 @@ elif active_page == "Live Draft Room":
         except ImportError:
             pass
         room = _live_draft_lifecycle_room
+        try:
+            from shared_live_draft_snapshot import refresh_shared_live_draft_snapshot
+
+            _snap = refresh_shared_live_draft_snapshot(st.session_state)
+            if isinstance(st.session_state.get("live_draft_room"), dict):
+                room = st.session_state["live_draft_room"]
+            # Reconcile queues against authoritative drafted set every paint.
+            try:
+                from draft_actions import _prune_drafted_from_queue
+
+                _prune_drafted_from_queue(st.session_state)
+            except ImportError:
+                pass
+            if _snap.get("draft_complete") and str(_snap.get("room_status") or "") in (
+                "ended",
+                "closed",
+                "deleted",
+                "complete",
+                "completed",
+            ):
+                st.session_state.pop("live_draft_room", None)
+                st.info("This shared draft has ended.")
+                st.rerun()
+        except ImportError:
+            pass
         # Reject tombstoned / ended rooms that slipped past End Draft clears.
         try:
             from live_draft_completion import is_live_draft_ended_tombstoned

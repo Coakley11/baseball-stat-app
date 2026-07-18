@@ -298,10 +298,56 @@ def render_live_on_clock_banner(
             mark_live_draft_timer_tick(session)
         except ImportError:
             pass
-        tick_room = _resolve_live_room(session, room)
-        tick_slot = live_draft_current_slot(tick_room) or slot_view
-        tick_deadline = live_draft_timer_deadline(tick_room)
-        tick_idx = int(tick_room.get("current_pick_index") or pick_idx)
+        # Keep banner on the same authoritative deadline as Draft Control Center.
+        try:
+            from live_draft_timer_ui import _sync_room_on_timer_tick
+
+            tick_room, _changed = _sync_room_on_timer_tick(session, room)
+        except Exception:
+            tick_room = _resolve_live_room(session, room)
+        try:
+            from shared_live_draft_snapshot import build_shared_live_draft_snapshot
+
+            snap = build_shared_live_draft_snapshot(session, room=tick_room)
+            tick_idx = int(snap.get("current_pick_index") or pick_idx)
+            tick_deadline = snap.get("turn_deadline")
+            remaining = snap.get("seconds_remaining")
+            if remaining is None:
+                remaining = live_draft_display_seconds(tick_room)
+            on_clock = str(snap.get("on_clock_team") or "").strip()
+            tick_slot = dict(slot_view)
+            if on_clock:
+                tick_slot["Team"] = on_clock
+            if snap.get("current_pick") is not None:
+                tick_slot["Pick"] = snap.get("current_pick")
+        except ImportError:
+            tick_slot = live_draft_current_slot(tick_room) or slot_view
+            tick_deadline = live_draft_timer_deadline(tick_room)
+            tick_idx = int(tick_room.get("current_pick_index") or pick_idx)
+            remaining = live_draft_display_seconds(tick_room)
+        # When at zero, run the same idempotent expire path Control Center uses.
+        try:
+            from live_draft_timer_logic import live_draft_timer_expired_for_pick
+
+            if live_draft_timer_expired_for_pick(tick_room):
+                from live_draft_expired_pick import expire_pick_and_advance
+
+                expire_pick_and_advance(session, source="on_clock_banner_zero")
+                tick_room = _resolve_live_room(session, tick_room)
+                try:
+                    from shared_live_draft_snapshot import build_shared_live_draft_snapshot
+
+                    snap = build_shared_live_draft_snapshot(session, room=tick_room)
+                    tick_idx = int(snap.get("current_pick_index") or tick_idx)
+                    tick_deadline = snap.get("turn_deadline")
+                    remaining = snap.get("seconds_remaining")
+                    if remaining is None:
+                        remaining = live_draft_display_seconds(tick_room)
+                except ImportError:
+                    remaining = live_draft_display_seconds(tick_room)
+                    tick_deadline = live_draft_timer_deadline(tick_room)
+        except Exception:
+            pass
         record_timer_diagnostics(session, tick_room, source="on_clock_banner_tick")
         if session.get("_live_draft_timer_diag"):
             diag = dict(session["_live_draft_timer_diag"])
@@ -311,7 +357,7 @@ def render_live_on_clock_banner(
         _render_on_clock_banner_html(
             st,
             tick_slot,
-            live_draft_display_seconds(tick_room),
+            int(remaining or 0),
             next_pick=next_pick_view,
             pick_index=tick_idx,
             deadline=tick_deadline,

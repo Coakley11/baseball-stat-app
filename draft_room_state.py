@@ -991,9 +991,21 @@ def get_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
 
 
 def get_all_drafted_player_names(session: dict[str, Any]) -> list[str]:
-    """Names on the richest in-memory board — avoids prepare_draft_room_state clobber during assign."""
+    """Names on the richest in-memory board — includes Live Draft Room board."""
     table, _, _ = _resolve_richest_draft_board(session)
-    return _drafted_players_from_table(table)
+    names = list(_drafted_players_from_table(table))
+    # Live shared/solo room board is authoritative while a live draft is active.
+    room = session.get("live_draft_room")
+    if isinstance(room, dict):
+        board = room.get("draft_board") or []
+        if isinstance(board, list):
+            for entry in board:
+                if not isinstance(entry, dict):
+                    continue
+                full = str(entry.get("fullName") or entry.get("Player") or "").strip()
+                if full and full not in names:
+                    names.append(full)
+    return names
 
 
 def lookup_drafted_player_info(session: dict[str, Any], player_name: str) -> dict[str, Any] | None:
