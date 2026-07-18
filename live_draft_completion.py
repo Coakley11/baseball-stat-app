@@ -250,13 +250,17 @@ def resolve_live_draft_lifecycle(
     if deleting == "in_progress":
         return LIFECYCLE_DELETING
     # Deletion completed — never re-enter ACTIVE even if a stale room pointer resurrects.
-    if deleting == "done":
+    if deleting == "done" or bool(session.get("_live_draft_force_setup_after_delete")):
         live_done = room if isinstance(room, dict) else session.get("live_draft_room")
         if isinstance(live_done, dict):
             session.pop("live_draft_room", None)
             session.pop("live_draft_state", None)
             session.pop("active_shared_draft_room_code", None)
+        session["_live_draft_deleting"] = "done"
         return LIFECYCLE_SETUP
+    if deleting == "failed":
+        # Stay on active draft so the commissioner can retry; error is shown in UI.
+        pass
 
     if bool(session.get("_live_draft_history_view")):
         return LIFECYCLE_HISTORICAL_READ_ONLY

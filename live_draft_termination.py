@@ -382,9 +382,11 @@ def _close_backend_room(
             updated["status"] = terminal_status
             updated["terminated_at"] = _utc_now_iso()
             updated["termination"] = terminal_status
-            updated["participants"] = {}
-            updated["joined_participants"] = {}
-            updated["team_claims"] = {}
+            if terminal_status in ("deleted", "ended", "closed"):
+                updated["participants"] = {}
+                updated["joined_participants"] = {}
+                updated["team_claims"] = {}
+                updated["resume_rejoined"] = {}
             room_blob = updated.get("room")
             if isinstance(room_blob, dict):
                 room_blob["status"] = terminal_status
@@ -886,6 +888,22 @@ def handle_shared_document_terminal(
     _mark_membership_left(session, code)
     _clear_runtime_pointers(session, clear_queues=True)
     bump_live_draft_page_epoch(session)
+    session[DELETING_STATUS_KEY] = "done"
+    session["_live_draft_force_setup_after_delete"] = True
+    session[SUPPRESS_FRAGMENTS_KEY] = int(session.get(PAGE_FRAGMENT_EPOCH_KEY) or 1)
+    session["_live_draft_exit_deleted_room"] = True
+    try:
+        from live_draft_delete_authority import note_delete_trace
+
+        note_delete_trace(
+            session,
+            "poll_saw_deleted_room",
+            room_code=code or None,
+            draft_id=draft_id or None,
+            status=status or room_status,
+        )
+    except ImportError:
+        pass
     return True
 
 

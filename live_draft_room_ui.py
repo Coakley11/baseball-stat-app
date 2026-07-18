@@ -592,52 +592,21 @@ def render_draft_room_code_panel(
     if not code:
         return
     prefix = str(key_prefix or "live_draft_room_code").strip() or "live_draft_room_code"
-    label = str(context_label or "Share this code so other managers can join").strip()
-    join = str(join_url or "").strip()
+    del show_copy, context_label, join_url  # retained for call-site compatibility
     value_dom_id = f"{prefix}_value_{code}"
     st.markdown(
         f"""
         <div class="ld-room-code-panel" id="{prefix}_panel_{code}">
             <div>
-                <div class="ld-room-code-label">Room Code</div>
+                <div class="ld-room-code-label">ROOM CODE</div>
                 <div class="ld-room-code-value" id="{value_dom_id}">{code}</div>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    try:
-        st.code(code, language=None)
-    except TypeError:
-        st.code(code)
-    cols = st.columns([2, 1, 2])
-    with cols[0]:
-        st.caption(label)
-    with cols[1]:
-        copy_key = f"{prefix}_copy_{code}"
-        if show_copy and st.button("Copy room code", key=copy_key, use_container_width=True):
-            # Best-effort clipboard via components; always leave code selectable above.
-            try:
-                import streamlit.components.v1 as components
-
-                components.html(
-                    f"""
-                    <script>
-                    (function() {{
-                      const text = {code!r};
-                      if (navigator.clipboard && navigator.clipboard.writeText) {{
-                        navigator.clipboard.writeText(text);
-                      }}
-                    }})();
-                    </script>
-                    """,
-                    height=0,
-                )
-            except Exception:
-                pass
-            st.success(f"Room code **{code}** ready — paste it to invite managers.")
-    if join:
-        st.markdown(f"**Join link:** [{join}]({join})")
+    # Intentionally no duplicate st.code, no Copy button, no share caption —
+    # the large boxed code is the single source of truth.
 
 
 def render_live_draft_room_code_header(

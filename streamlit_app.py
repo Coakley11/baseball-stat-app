@@ -22218,6 +22218,12 @@ elif active_page == "Live Draft Room":
                 except ImportError:
                     pass
                 _poll_changed = poll_shared_draft_room(st.session_state)
+                if st.session_state.pop("_live_draft_exit_deleted_room", None):
+                    st.session_state["_live_draft_deleting"] = "done"
+                    st.session_state["_live_draft_force_setup_after_delete"] = True
+                    st.info("This draft was deleted. Returning to setup…")
+                    st.rerun()
+                    st.stop()
                 if _poll_changed:
                     try:
                         from live_draft_ui_cache import invalidate_live_draft_ui_caches
@@ -23675,6 +23681,27 @@ elif active_page == "Live Draft Room":
                                 st.rerun()
                     elif setup_is_read_only(room):
                         st.caption("Draft setup is read-only after the first pick.")
+                else:
+                    # Active draft — hide Lobby Status / Shared Draft Room Ready.
+                    try:
+                        from live_draft_room_ui import render_live_draft_room_code_header
+
+                        render_live_draft_room_code_header(
+                            st,
+                            st.session_state,
+                            multiplayer=True,
+                            draft_in_progress=True,
+                            key_prefix="live_draft_active_header",
+                        )
+                    except ImportError:
+                        pass
+                    render_draft_status_summary_card(
+                        st,
+                        st.session_state,
+                        room,
+                        on_clock_team=_lobby_on_clock,
+                        pick_label=_lobby_pick,
+                    )
         except ImportError:
             pass
         try:
@@ -24112,290 +24139,37 @@ elif active_page == "Live Draft Room":
 
         with ldr_step(st.session_state, "timer_render_controls", st=st):
             st.markdown('<div class="live-draft-action-row">', unsafe_allow_html=True)
-            _status = str(room.get("status") or "")
-            ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
-            with ctrl1:
-                if st.button("⏸ Pause Draft", disabled=_status != "in_progress", key="live_draft_pause"):
-                    from live_draft_timer_logic import live_draft_pause_timer
+            try:
+                from live_draft_control_center_ui import render_live_draft_control_center
 
-                    live_draft_pause_timer(room)
-                    _persist_live_draft_room(room, reason="pause_draft")
-                    try:
-                        from live_draft_chat_system import maybe_post_draft_system_message
-
-                        maybe_post_draft_system_message(
-                            st.session_state,
-                            "draft_paused",
-                            pick_index=int(room.get("current_pick_index") or 0),
-                        )
-                    except ImportError:
-                        pass
-                    try:
-                        from live_draft_safe_mode import request_live_draft_rerun
-
-                        request_live_draft_rerun(st, st.session_state, "pause_draft", room=room)
-                    except ImportError:
-                        st.rerun()
-            with ctrl2:
-                if st.button("▶ Resume Draft", disabled=_status != "paused", key="live_draft_resume", type="primary"):
-                    from live_draft_timer_logic import live_draft_resume_timer
-
-                    room["status"] = "in_progress"
-                    pause_left = int(room.get("paused_remaining_seconds") or cfg.get("timer_seconds", 60))
-                    live_draft_resume_timer(room, pause_left)
-                    _persist_live_draft_room(room, reason="resume_draft")
-                    try:
-                        from live_draft_chat_system import maybe_post_draft_system_message
-
-                        maybe_post_draft_system_message(
-                            st.session_state,
-                            "draft_resumed",
-                            pick_index=int(room.get("current_pick_index") or 0),
-                        )
-                    except ImportError:
-                        pass
-                    try:
-                        from live_draft_safe_mode import request_live_draft_rerun
-
-                        request_live_draft_rerun(st, st.session_state, "resume_draft", room=room)
-                    except ImportError:
-                        st.rerun()
-            with ctrl3:
-                _is_commissioner = False
+                _cc = render_live_draft_control_center(
+                    st,
+                    st.session_state,
+                    room,
+                    cfg=cfg,
+                    persist_room=lambda r, reason: _persist_live_draft_room(r, reason=reason),
+                    developer_mode=bool(developer_mode_enabled()),
+                )
+                _is_commissioner = bool((_cc or {}).get("is_commissioner"))
+                _doc_h = (_cc or {}).get("document")
+            except ImportError:
+                _is_commissioner = True
                 _doc_h = None
-                try:
-                    from draft_room_shared_state import load_shared_room_document
-                    from shared_draft_permissions import is_canonical_commissioner
-
-                    _code_h = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
-                    _doc_h = load_shared_room_document(st.session_state, _code_h) if _code_h else None
-                    if _code_h:
-                        _is_commissioner = bool(is_canonical_commissioner(st.session_state, _doc_h))
-                    else:
-                        # Solo / no shared room — local owner is commissioner.
-                        _is_commissioner = True
-                except ImportError:
-                    try:
-                        from draft_room_membership import is_room_host
-
-                        _code_h = str(st.session_state.get("active_shared_draft_room_code") or "").strip().upper()
-                        _is_commissioner = bool(is_room_host(st.session_state, _doc_h)) if _code_h else True
-                    except ImportError:
-                        _is_commissioner = not bool(st.session_state.get("active_shared_draft_room_code"))
-                if _is_commissioner and st.button(
-                    "Save & Continue Later",
-                    key="live_draft_save_continue_btn",
-                    help="Commissioner only: park this shared draft for everyone. Resume via Continue Saved Draft.",
-                ):
-                    from live_draft_resumable_slot import save_and_continue_later
-
-                    result = save_and_continue_later(st.session_state, st=st, replace_existing=False)
-                    if result.get("needs_replace_confirm"):
-                        st.session_state["_live_draft_replace_resumable_confirm"] = True
-                        st.session_state["_live_draft_replace_resumable_message"] = result.get("message")
-                    elif result.get("ok"):
-                        st.rerun()
-                    else:
-                        st.error(str(result.get("message") or "Could not save draft for later."))
-                elif not _is_commissioner:
-                    if st.button(
-                        "Leave This Room",
-                        key="live_draft_leave_this_room_btn",
-                        help="Leave only your seat. The draft continues for everyone else.",
-                    ):
-                        st.session_state["_live_draft_leave_confirm"] = True
-            with ctrl4:
-                if _is_commissioner:
-                    if st.button(
-                        "End/Delete Draft for Everyone",
-                        key="live_draft_discard_btn",
-                        help="Commissioner only: permanently destroy this room for every participant.",
-                    ):
-                        st.session_state["_live_draft_discard_confirm"] = True
-                        st.session_state.pop("_live_draft_replace_resumable_confirm", None)
-                        st.session_state.pop("_live_draft_leave_confirm", None)
-
-            if st.session_state.get("_live_draft_leave_confirm"):
-                st.warning(
-                    "Leave this draft room? You will give up your claimed team. "
-                    "The draft will remain available to the other participants."
-                )
-                lc1, lc2 = st.columns(2)
-                with lc1:
-                    if st.button("Leave This Room", key="live_draft_leave_confirm_btn", type="primary"):
-                        from draft_room_context import leave_shared_draft_room
-
-                        st.session_state.pop("_live_draft_leave_confirm", None)
-                        leave_shared_draft_room(st.session_state)
-                        st.rerun()
-                with lc2:
-                    if st.button("Stay in Room", key="live_draft_leave_cancel_btn"):
-                        st.session_state.pop("_live_draft_leave_confirm", None)
-                        st.rerun()
-
-            if st.session_state.get("_live_draft_replace_resumable_confirm"):
-                st.warning(
-                    str(
-                        st.session_state.get("_live_draft_replace_resumable_message")
-                        or "A resumable draft is already saved. Saving this draft will replace it."
-                    )
-                )
-                rc1, rc2 = st.columns(2)
-                with rc1:
-                    if st.button(
-                        "Replace Saved Draft",
-                        key="live_draft_replace_resumable_confirm_btn",
-                        type="primary",
-                    ):
-                        from live_draft_resumable_slot import save_and_continue_later
-
-                        st.session_state.pop("_live_draft_replace_resumable_confirm", None)
-                        st.session_state.pop("_live_draft_replace_resumable_message", None)
-                        result = save_and_continue_later(
-                            st.session_state, st=st, replace_existing=True
-                        )
-                        if result.get("ok"):
-                            st.rerun()
-                        else:
-                            st.error(str(result.get("message") or "Could not replace saved draft."))
-                with rc2:
-                    if st.button("Keep Existing Saved Draft", key="live_draft_replace_resumable_cancel_btn"):
-                        st.session_state.pop("_live_draft_replace_resumable_confirm", None)
-                        st.session_state.pop("_live_draft_replace_resumable_message", None)
-                        st.rerun()
-
-            if st.session_state.get("_live_draft_discard_confirm"):
-                st.error(
-                    "Permanently delete this draft for every participant?\n\n"
-                    "All picks, teams, queues, chat, and progress will be removed. "
-                    "This cannot be undone.\n\n"
-                    "Guests who only need to exit should use **Leave This Room** instead.\n\n"
-                    "Choose **Save & Continue Later** if you want to finish another time."
-                )
-                dc1, dc2 = st.columns(2)
-                with dc1:
-                    if st.button(
-                        "End/Delete Draft for Everyone",
-                        key="live_draft_discard_confirm_btn",
-                        type="primary",
-                    ):
-                        from live_draft_termination import bump_live_draft_page_epoch
-
-                        st.session_state.pop("_live_draft_discard_confirm", None)
-                        st.session_state["_live_draft_deleting"] = "in_progress"
-                        st.session_state["_live_draft_controls_locked"] = True
-                        st.session_state.pop("_live_draft_timer_expired_pending", None)
-                        bump_live_draft_page_epoch(st.session_state)
-                        # Two-phase: paint "Deleting draft…" then execute discard on next run.
-                        st.rerun()
-                        st.stop()
-                with dc2:
-                    if st.button("Keep Draft", key="live_draft_discard_cancel_btn"):
-                        st.session_state.pop("_live_draft_discard_confirm", None)
-                        st.rerun()
-
-            # Distinct library save — historical record, not the resumable slot.
-            if st.button(
-                "Save to Draft Library",
-                key="live_draft_save_library_btn",
-                help="Save a historical copy to Saved Draft Library for analysis. Does not replace Save & Continue Later.",
-            ):
-                try:
-                    from fantasy_league_context import save_live_draft_league_context
-
-                    _team = str(
-                        st.session_state.get("draft_room_participant_team")
-                        or (room.get("config") or {}).get("your_team")
-                        or (room.get("config") or {}).get("user_team")
-                        or ((room.get("teams") or [""])[0])
-                        or "My Team"
-                    ).strip()
-                    save_live_draft_league_context(
-                        st.session_state, room, my_team_name=_team, save_only=True
-                    )
-                    st.success("Saved a historical copy to Draft Library.")
-                except Exception as _lib_save_exc:
-                    st.warning(f"Could not save to Draft Library: {_lib_save_exc}")
-
+                st.warning("Control Center unavailable — live_draft_control_center_ui missing.")
             st.markdown("</div>", unsafe_allow_html=True)
 
         with ldr_step(st.session_state, "timer_attach_callbacks", st=st):
-            with st.expander("Advanced draft controls", expanded=False):
-                adv1, adv2 = st.columns(2)
-                with adv1:
-                    if _is_commissioner:
-                        if st.button("↻ Reset Timer", disabled=_status != "in_progress", key="live_draft_reset_timer"):
-                            live_draft_reset_timer(room)
-                            _persist_live_draft_room(room, reason="reset_timer")
-                    _may_auto = False
-                    try:
-                        from shared_draft_permissions import participant_may_auto_pick
-
-                        _may_auto = participant_may_auto_pick(
-                            st.session_state,
-                            room,
-                            document=_doc_h,
-                        )
-                    except ImportError:
-                        _may_auto = bool(_is_commissioner)
-                    if st.button(
-                        "⚡ Auto Pick Now",
-                        disabled=(_status not in ("in_progress", "paused")) or (not _may_auto),
-                        key="live_draft_auto_now",
-                        help=(
-                            "Commissioner: auto-pick for the team on the clock. "
-                            "Guest: only when your claimed team is on the clock."
-                        ),
-                    ):
-                        if not _may_auto:
-                            st.warning("Auto Pick Now is only available when your team is on the clock.")
-                        else:
-                            if room.get("status") == "paused":
-                                room["status"] = "in_progress"
-                            ok, msg = live_draft_auto_pick(room, st.session_state)
-                            if ok:
-                                try:
-                                    from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
-
-                                    invalidate_live_draft_ui_caches(st.session_state)
-                                    invalidate_draft_assistant_scoring_cache(st.session_state)
-                                except ImportError:
-                                    st.session_state.pop("_live_draft_rec_cache", None)
-                                st.success(msg)
-                                try:
-                                    from live_draft_safe_mode import is_draft_truly_complete, request_live_draft_rerun
-
-                                    if is_draft_truly_complete(room):
-                                        request_live_draft_rerun(st, st.session_state, "auto_pick_complete", room=room)
-                                    else:
-                                        request_live_draft_rerun(st, st.session_state, "auto_pick", room=room)
-                                except ImportError:
-                                    st.rerun()
-                            else:
-                                st.warning(msg)
-                            _persist_live_draft_room(room, reason="auto_pick")
-                with adv2:
+            # Advanced expander kept for legacy leave duplicate only when guest.
+            if st.session_state.get("active_shared_draft_room_code") and not _is_commissioner:
+                with st.expander("Advanced draft controls", expanded=False):
                     try:
                         from draft_room_context import leave_shared_draft_room
-                        from draft_room_membership import is_room_host
-                        from draft_room_shared_state import load_shared_room_document
 
-                        _code_leave = str(
-                            st.session_state.get("active_shared_draft_room_code") or ""
-                        ).strip().upper()
-                        _doc_leave = (
-                            load_shared_room_document(st.session_state, _code_leave)
-                            if _code_leave
-                            else None
-                        )
-                        _host_leave = bool(is_room_host(st.session_state, _doc_leave)) if _code_leave else True
-                        if _code_leave and not _host_leave:
-                            if st.button("Leave This Room", key="live_draft_leave_btn"):
-                                st.session_state["_live_draft_leave_confirm"] = True
-                                st.rerun()
+                        if st.button("Leave This Room", key="live_draft_leave_btn"):
+                            st.session_state["_live_draft_leave_confirm"] = True
+                            st.rerun()
                     except ImportError:
                         pass
-        st.markdown("</div>", unsafe_allow_html=True)
         try:
             from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section_done, ldr_step
 

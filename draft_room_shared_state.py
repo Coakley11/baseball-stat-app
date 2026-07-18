@@ -264,11 +264,24 @@ def preserve_shared_room_participants(
     outgoing: dict[str, Any],
     existing: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Merge participants + joined_participants so stale host saves cannot drop guests."""
+    """Merge participants + joined_participants so stale host saves cannot drop guests.
+
+    Exception: terminal rooms (deleted/ended/closed) must keep the outgoing
+    participant wipe. Merging existing seats back was the deployed End/Delete
+    failure mode — status became deleted while memberships stayed alive, and
+    local clients kept drafting against the resurrected seat map.
+    """
     if not isinstance(outgoing, dict):
         return {}
     if not isinstance(existing, dict):
         return outgoing
+    out_status = str(outgoing.get("status") or "").strip().lower()
+    if out_status in ("deleted", "ended", "closed") or outgoing.get("deletion_generation"):
+        return outgoing
+    room_blob = outgoing.get("room") if isinstance(outgoing.get("room"), dict) else {}
+    if str(room_blob.get("status") or "").strip().lower() in ("deleted", "ended", "closed"):
+        return outgoing
+
     merged = copy.deepcopy(outgoing)
 
     existing_parts = dict(existing.get("participants") or {})
@@ -340,7 +353,15 @@ def preserve_shared_room_sidecars(
     outgoing: dict[str, Any],
     existing: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Preserve chat + participants + timer authority when writing a potentially stale document."""
+    """Preserve chat + participants + timer authority when writing a potentially stale document.
+
+    Terminal deletions skip participant/chat/timer resurrection entirely.
+    """
+    if not isinstance(outgoing, dict):
+        return {}
+    out_status = str(outgoing.get("status") or "").strip().lower()
+    if out_status in ("deleted", "ended", "closed") or outgoing.get("deletion_generation"):
+        return outgoing
     return preserve_shared_room_timer_authority(
         preserve_shared_room_chat(
             preserve_shared_room_participants(outgoing, existing),
