@@ -21,15 +21,20 @@ def _board_size(room: dict[str, Any]) -> int:
 
 
 def _total_expected_picks(room: dict[str, Any]) -> int:
+    """Prefer config teams×rounds — never trust a truncated pick_order alone."""
+    try:
+        from live_draft_safe_mode import total_expected_picks
+
+        return int(total_expected_picks(room) or 0)
+    except ImportError:
+        pass
     pick_order = room.get("pick_order") or []
-    if pick_order:
-        return len(pick_order)
     teams = room.get("teams") or []
     cfg = dict(room.get("config") or {})
     rounds = int(cfg.get("picks_per_team") or cfg.get("rounds") or 0)
     if teams and rounds:
         return len(teams) * rounds
-    return 0
+    return len(pick_order) if isinstance(pick_order, list) else 0
 
 
 def _candidate_names(scored: pd.DataFrame, limit: int = 8) -> list[str]:

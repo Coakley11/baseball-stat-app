@@ -10,7 +10,35 @@ from typing import Any
 LAST_PROCESSED_EXPIRATION_TOKEN_KEY = "last_processed_expiration_token"
 
 
+def ensure_full_pick_order(room: dict[str, Any]) -> list[dict[str, Any]]:
+    """Repair truncated pick_order from config so timer/autopick cannot stall after Pick 1."""
+    if not isinstance(room, dict):
+        return []
+    teams = [str(t).strip() for t in (room.get("teams") or []) if str(t).strip()]
+    cfg = dict(room.get("config") or {})
+    if not teams:
+        teams = [str(t).strip() for t in (cfg.get("teams") or []) if str(t).strip()]
+    rounds = int(cfg.get("picks_per_team") or cfg.get("rounds") or 0)
+    expected = len(teams) * rounds if teams and rounds else 0
+    existing = list(room.get("pick_order") or [])
+    if expected <= 0:
+        return [p for p in existing if isinstance(p, dict)]
+    if len(existing) >= expected:
+        room["pick_order"] = existing
+        return existing
+    order: list[dict[str, Any]] = []
+    pick_n = 1
+    for rnd in range(1, rounds + 1):
+        seq = teams if rnd % 2 == 1 else list(reversed(teams))
+        for team in seq:
+            order.append({"Pick": pick_n, "Round": rnd, "Team": team})
+            pick_n += 1
+    room["pick_order"] = order
+    return order
+
+
 def live_draft_current_slot(room: dict[str, Any]) -> dict[str, Any] | None:
+    ensure_full_pick_order(room)
     picks = room.get("pick_order", [])
     idx = int(room.get("current_pick_index", 0))
     if idx >= len(picks):
@@ -125,6 +153,7 @@ def resolve_live_draft_on_clock_slot(
     """Current pick slot — mirrors Live Draft Room banner recovery when index is stale."""
     if not isinstance(room, dict):
         return None
+    ensure_full_pick_order(room)
     slot = live_draft_current_slot(room)
     if isinstance(slot, dict) and str(slot.get("Team") or "").strip():
         return slot
@@ -136,6 +165,7 @@ def resolve_live_draft_on_clock_slot(
     idx = int(room.get("current_pick_index") or 0)
     if board_count < len(picks) and idx < board_count:
         idx = board_count
+        room["current_pick_index"] = idx
     if manual_recovery_available is False:
         return slot if isinstance(slot, dict) else None
     if 0 <= idx < len(picks) and isinstance(picks[idx], dict):

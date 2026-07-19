@@ -1,4 +1,4 @@
-"""Continue Saved Draft + Replace and Start New Draft consistency."""
+"""Continue Saved Draft + Disregard Saved Draft and Start New consistency."""
 
 from __future__ import annotations
 

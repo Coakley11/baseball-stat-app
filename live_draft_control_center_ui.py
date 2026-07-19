@@ -6,24 +6,25 @@ from typing import Any, Callable
 
 
 def _resolve_commissioner(session: dict[str, Any]) -> tuple[bool, Any]:
+    """Shared: exact commissioner_participant_id. Solo: local owner. Never fail-open for Shared."""
     doc = None
     try:
         from draft_room_shared_state import load_shared_room_document
-        from shared_draft_permissions import is_canonical_commissioner
+        from shared_draft_permissions import session_may_use_commissioner_draft_controls
 
         code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
         doc = load_shared_room_document(session, code) if code else None
-        if code:
-            return bool(is_canonical_commissioner(session, doc)), doc
-        return True, doc
+        return bool(session_may_use_commissioner_draft_controls(session, document=doc)), doc
     except ImportError:
         try:
             from draft_room_membership import is_room_host
 
             code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
-            return (bool(is_room_host(session, doc)) if code else True), doc
+            if code:
+                return bool(is_room_host(session, doc)), doc
+            return True, doc
         except ImportError:
-            return (not bool(session.get("active_shared_draft_room_code"))), None
+            return False, None
 
 
 def render_live_draft_control_center(
@@ -251,7 +252,7 @@ def render_commissioner_draft_actions(
         if st.button(
             "💾 Save & Continue Later",
             key="live_draft_save_continue_btn",
-            help="Park this draft and resume it later with the same picks, teams, and progress.",
+            help="Pause and preserve this unfinished draft so the commissioner can continue it later.",
             use_container_width=True,
         ):
             from live_draft_resumable_slot import save_and_continue_later
@@ -264,7 +265,7 @@ def render_commissioner_draft_actions(
                 st.rerun()
             else:
                 st.error(str(result.get("message") or "Could not save draft for later."))
-        st.caption("Park and resume later.")
+        st.caption("Pause unfinished draft for later.")
     with a2:
         try:
             from live_draft_delete_authority import (
@@ -283,7 +284,7 @@ def render_commissioner_draft_actions(
                 "🗑 End/Delete Draft for Everyone",
                 key="live_draft_discard_btn",
                 type="primary",
-                help="Permanently delete this draft for every participant. This cannot be undone.",
+                help="Permanently delete this draft and room for every participant. This cannot be undone.",
                 use_container_width=True,
                 on_click=on_show_end_delete_confirm,
             )
@@ -295,7 +296,7 @@ def render_commissioner_draft_actions(
                 key="live_draft_discard_btn",
                 type="primary",
                 use_container_width=True,
-                help="Permanently delete this draft for every participant. This cannot be undone.",
+                help="Permanently delete this draft and room for every participant. This cannot be undone.",
             ):
                 session["_live_draft_discard_confirm"] = True
         st.caption("Permanent — cannot be undone.")
@@ -311,13 +312,16 @@ def render_commissioner_draft_actions(
         st.warning(
             str(
                 session.get("_live_draft_replace_resumable_message")
-                or "A resumable draft is already saved. Saving this draft will replace it."
+                or (
+                    "An unfinished draft is already saved for later. "
+                    "Saving this draft will discard that unfinished saved draft."
+                )
             )
         )
         rc1, rc2 = st.columns(2)
         with rc1:
             if st.button(
-                "Replace Saved Draft",
+                "Discard Previous Saved Draft",
                 key="live_draft_replace_resumable_confirm_btn",
                 type="primary",
             ):
@@ -329,9 +333,9 @@ def render_commissioner_draft_actions(
                 if result.get("ok"):
                     st.rerun()
                 else:
-                    st.error(str(result.get("message") or "Could not replace saved draft."))
+                    st.error(str(result.get("message") or "Could not save draft for later."))
         with rc2:
-            if st.button("Keep Existing Saved Draft", key="live_draft_replace_resumable_cancel_btn"):
+            if st.button("Cancel", key="live_draft_replace_resumable_cancel_btn"):
                 session.pop("_live_draft_replace_resumable_confirm", None)
                 session.pop("_live_draft_replace_resumable_message", None)
                 st.rerun()

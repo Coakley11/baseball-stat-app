@@ -21,45 +21,131 @@ def current_canonical_participant_id(session: dict[str, Any]) -> str:
     try:
         from draft_room_participant_state import resolve_participant_id
 
-        return str(resolve_participant_id(session) or "").strip()
+        pid = str(resolve_participant_id(session) or "").strip()
+        if pid:
+            return pid
     except ImportError:
-        return str(
-            session.get("auth_user_id")
-            or session.get("_suite_auth_user_id")
-            or session.get("draft_room_participant_id")
-            or ""
-        ).strip()
+        pass
+    # Prefer durable auth uid even when Real Accounts is off (parked Continue Saved).
+    try:
+        from suite_auth import AUTH_USER_ID_KEY
+
+        auth_id = str(session.get(AUTH_USER_ID_KEY) or "").strip()
+        if auth_id:
+            return auth_id
+    except ImportError:
+        pass
+    return str(
+        session.get("auth_user_id")
+        or session.get("_suite_auth_user_id")
+        or session.get("draft_room_participant_id")
+        or ""
+    ).strip()
+
+
+def _participant_id_aliases(session: dict[str, Any]) -> set[str]:
+    """Ids that may represent the same person across park / auth-off / workspace paths."""
+    out: set[str] = set()
+    for raw in (
+        current_canonical_participant_id(session),
+        session.get("draft_room_participant_id"),
+        session.get("auth_user_id"),
+        session.get("_suite_auth_user_id"),
+    ):
+        val = str(raw or "").strip()
+        if val:
+            out.add(val)
+    try:
+        from suite_auth import AUTH_USER_ID_KEY
+
+        auth_id = str(session.get(AUTH_USER_ID_KEY) or "").strip()
+        if auth_id:
+            out.add(auth_id)
+    except ImportError:
+        pass
+    return out
 
 
 def is_canonical_commissioner(
     session: dict[str, Any],
     document: dict[str, Any] | None = None,
 ) -> bool:
-    """True only when the current participant is the room's commissioner.
+    """True when current identity matches room.commissioner_participant_id.
 
-    Never infer from Team A, workspace name, stale is_host flags, or generic aliases.
+    Never infer from Team A, workspace name alone, stale is_host flags, or guest aliases.
+    Auth uid and parked draft_room_participant_id are accepted as the same person.
     """
     host = commissioner_participant_id(document)
     if not host:
         return False
-    pid = current_canonical_participant_id(session)
-    if not pid:
-        return False
-    if pid == host:
-        return True
-    # Allow exact auth-user match only when create stamped host_user_id separately.
-    auth = str(session.get("auth_user_id") or session.get("_suite_auth_user_id") or "").strip()
-    if auth and auth == host:
-        return True
-    try:
-        from suite_auth import AUTH_USER_ID_KEY
+    return host in _participant_id_aliases(session)
 
-        auth2 = str(session.get(AUTH_USER_ID_KEY) or "").strip()
-        if auth2 and auth2 == host:
-            return True
+
+def session_may_use_commissioner_draft_controls(
+    session: dict[str, Any],
+    *,
+    document: dict[str, Any] | None = None,
+) -> bool:
+    """Save/Continue Later, End/Delete, Continue Saved Draft, Resume Continue Draft.
+
+    Shared Multiplayer: exact commissioner id on the authoritative room document.
+    No shared room code: local session owns the draft (Solo / pre-create).
+    """
+    code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+    if not code:
+        try:
+            from draft_room_context import resolve_shared_room_code
+
+            code = str(resolve_shared_room_code(session) or "").strip().upper()
+        except ImportError:
+            pass
+    if code:
+        doc = document
+        if not isinstance(doc, dict):
+            try:
+                from draft_room_shared_state import load_shared_room_document, load_shared_room
+
+                doc = load_shared_room_document(session, code) or load_shared_room(code)
+            except ImportError:
+                doc = None
+        return is_canonical_commissioner(session, doc if isinstance(doc, dict) else None)
+
+    # No join code — local owner controls (Solo or orphan setup room).
+    return True
+
+
+def can_continue_saved_draft_slot(session: dict[str, Any]) -> bool:
+    """Only the commissioner who owns the resumable Shared slot (or Solo owner)."""
+    try:
+        from live_draft_resumable_slot import get_resumable_live_draft_slot
+
+        slot = get_resumable_live_draft_slot(session)
     except ImportError:
-        pass
-    return False
+        slot = session.get("resumable_live_draft_slot")
+        if not isinstance(slot, dict):
+            slot = None
+    if not isinstance(slot, dict):
+        return False
+    code = str(slot.get("room_code") or "").strip().upper()
+    aliases = _participant_id_aliases(session)
+    stamped = str(
+        slot.get("commissioner_participant_id") or slot.get("participant_id") or ""
+    ).strip()
+    if stamped and stamped in aliases:
+        return True
+    if not code and not slot.get("is_shared"):
+        return True
+    if not code:
+        return False
+    try:
+        from draft_room_shared_state import load_shared_room
+
+        doc = load_shared_room(code)
+    except ImportError:
+        doc = None
+    if not isinstance(doc, dict):
+        return bool(stamped and stamped in aliases)
+    return is_canonical_commissioner(session, doc)
 
 
 def stamp_commissioner_on_document(

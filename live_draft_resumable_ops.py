@@ -1,6 +1,7 @@
-"""Durable Continue Saved Draft / Replace and Start New Draft operations.
+"""Durable Continue Saved Draft / Disregard Saved Draft and Start New operations.
 
 Button clicks must leave a visible receipt and never silently no-op after a rerun.
+Starting new always uses the mode currently selected in setup — never the parked slot.
 """
 
 from __future__ import annotations
@@ -194,14 +195,14 @@ def on_replace_request_click() -> None:
     begin_op(
         st.session_state,
         action=REPLACE_CONFIRM_PENDING,
-        button_label="Replace and Start New Draft",
+        button_label="Disregard Saved Draft and Start New",
         widget_key="live_draft_replace_saved_start_btn",
     )
     st.session_state["_live_draft_replace_confirm_pending"] = True
     st.session_state[OP_PENDING_KEY] = REPLACE_CONFIRM_PENDING
     set_op_flash(
         st.session_state,
-        "Confirm replacement below — the saved draft will be kept until a new room is created.",
+        "Confirm below — the unfinished saved draft will be discarded only after the new draft starts.",
         kind="info",
     )
 
@@ -212,7 +213,7 @@ def on_replace_confirm_click() -> None:
     begin_op(
         st.session_state,
         action=REPLACE_EXECUTE_PENDING,
-        button_label="Confirm Replace & Start",
+        button_label="Disregard Saved Draft and Start New",
         widget_key="live_draft_replace_saved_confirm_btn",
         confirmation_accepted=True,
     )
@@ -220,7 +221,7 @@ def on_replace_confirm_click() -> None:
     st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
     st.session_state.pop("_live_draft_start_replace_resumable_message", None)
     st.session_state[OP_PENDING_KEY] = REPLACE_EXECUTE_PENDING
-    set_op_flash(st.session_state, "Preparing a replacement draft…", kind="info")
+    set_op_flash(st.session_state, "Discarding saved draft and starting a new draft…", kind="info")
 
 
 def on_replace_cancel_click() -> None:
@@ -228,7 +229,7 @@ def on_replace_cancel_click() -> None:
 
     st.session_state.pop("_live_draft_replace_confirm_pending", None)
     note_op_step(st.session_state, "replace_cancelled")
-    set_op_flash(st.session_state, "Kept the saved draft.", kind="info")
+    set_op_flash(st.session_state, "Kept the unfinished saved draft.", kind="info")
 
 
 def _clear_force_setup_for_resume(session: dict[str, Any]) -> None:
@@ -249,6 +250,22 @@ def execute_continue_saved(session: dict[str, Any], *, st: Any | None = None) ->
     except ImportError as exc:
         finish_op(session, success=False, message=f"Continue unavailable: {exc}")
         return {"ok": False, "error": "import", "message": str(exc)}
+
+    try:
+        from shared_draft_permissions import can_continue_saved_draft_slot
+
+        if not can_continue_saved_draft_slot(session):
+            finish_op(
+                session,
+                success=False,
+                message=(
+                    "Only the commissioner who created this room can use Continue Saved Draft. "
+                    "Ask them for the room code and rejoin your reserved team."
+                ),
+            )
+            return {"ok": False, "error": "not_commissioner"}
+    except ImportError:
+        pass
 
     slot = get_resumable_live_draft_slot(session)
     if not slot:
@@ -272,16 +289,24 @@ def execute_continue_saved(session: dict[str, Any], *, st: Any | None = None) ->
         )
         return result
 
-    # Persist Resume Lobby before any rerun — required for refresh survival.
-    session["_live_draft_resume_lobby"] = True
-    note_op_step(session, "resume_lobby_installed", ok=True)
+    # Persist resume state before any rerun.
+    is_shared_slot = bool(slot.get("is_shared") or str(slot.get("room_code") or "").strip())
+    if is_shared_slot:
+        session["_live_draft_resume_lobby"] = True
+        lifecycle_target = "waiting_shared_lobby"
+        success_msg = "Resume Lobby opened — waiting for reserved teams before Continue Draft."
+    else:
+        session.pop("_live_draft_resume_lobby", None)
+        lifecycle_target = "active_draft"
+        success_msg = "Unfinished Solo draft restored — timer remains paused until you continue."
+    note_op_step(session, "resume_lobby_installed", ok=True, detail="shared" if is_shared_slot else "solo")
     note_op_step(session, "hydrate_complete", ok=True)
     life = _lifecycle(session)
     finish_op(
         session,
         success=True,
-        message="Resume Lobby opened — waiting for reserved teams before Continue Draft.",
-        lifecycle_target="waiting_shared_lobby",
+        message=success_msg,
+        lifecycle_target=lifecycle_target,
         rerun=True,
     )
     note_op_step(session, "lifecycle_after_continue", detail=life, lifecycle_after=life)
@@ -293,15 +318,32 @@ def build_replacement_live_room(
     *,
     slot: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
-    """Build a fresh Pick-1 room from sticky setup prefs / prior slot config."""
+    """Build a fresh Pick-1 room from the *current* setup selection (not the saved slot mode)."""
     import pandas as pd
+
+    try:
+        from live_draft_setup_mode import SETUP_MODE_SHARED, SETUP_MODE_SOLO, normalize_setup_mode
+    except ImportError:
+        SETUP_MODE_SHARED = "shared_multiplayer"
+        SETUP_MODE_SOLO = "solo"
+
+        def normalize_setup_mode(raw: str) -> str:
+            return SETUP_MODE_SHARED if "shared" in str(raw or "").lower() else SETUP_MODE_SOLO
+
+    # Authoritative new-draft mode = setup radio / preferred-next (never the parked slot).
+    setup_mode = normalize_setup_mode(
+        str(session.get("live_draft_setup_mode") or "").strip()
+        or str(session.get("preferred_next_draft_mode") or "").strip()
+        or SETUP_MODE_SOLO
+    )
+    prefer_shared = setup_mode == SETUP_MODE_SHARED
 
     prior = slot.get("room") if isinstance(slot.get("room"), dict) else {}
     cfg = dict(prior.get("config") or {})
     summary = dict(slot.get("summary") or {})
 
     def _int(key: str, *alts: Any, default: int = 0) -> int:
-        for src in (session.get(key), cfg.get(key), *alts):
+        for src in (session.get(key), *alts):
             try:
                 if src is not None and str(src).strip() != "":
                     return int(src)
@@ -309,11 +351,11 @@ def build_replacement_live_room(
                 continue
         return int(default)
 
+    # Prefer current setup widgets; fall back to slot config only for missing numbers.
     num_teams = _int("live_draft_team_count", cfg.get("num_teams"), summary.get("num_teams"), default=2)
     picks = _int("live_draft_picks_per_team", cfg.get("picks_per_team"), default=4)
     timer = _int("live_draft_timer_seconds", cfg.get("timer_seconds"), default=60)
     if timer <= 0:
-        # Timer widget may be a label — fall back to config / 60.
         label = str(session.get("live_draft_timer") or "").strip().lower()
         if "30" in label:
             timer = 30
@@ -324,18 +366,14 @@ def build_replacement_live_room(
         else:
             timer = int(cfg.get("timer_seconds") or 60)
 
-    teams = [str(t).strip() for t in (cfg.get("teams") or prior.get("teams") or []) if str(t).strip()]
-    if len(teams) < num_teams:
-        teams = [f"Team {chr(ord('A') + i)}" for i in range(num_teams)]
-    teams = teams[:num_teams]
-    host_team = str(
-        session.get("live_draft_host_team_pick")
-        or cfg.get("your_team")
-        or cfg.get("user_team")
-        or teams[0]
-    ).strip() or teams[0]
+    # Fresh team names for a new draft — do not inherit stale Shared identities.
+    teams = [f"Team {chr(ord('A') + i)}" for i in range(max(1, num_teams))]
+    # Commissioner defaults to Team A on a brand-new draft. Stale host picks from a
+    # parked Shared room must not force Team B.
+    host_team = teams[0]
+    session["live_draft_host_team_pick"] = host_team
+    session["room_your_team"] = host_team
 
-    # Minimal pool so create does not require the full Streamlit start handler.
     prior_pool = prior.get("pool")
     if isinstance(prior_pool, pd.DataFrame) and not prior_pool.empty:
         pool = prior_pool.copy()
@@ -347,14 +385,15 @@ def build_replacement_live_room(
             pool = pd.DataFrame(
                 [
                     {
-                        "playerID": f"rp{i}",
-                        "fullName": f"Replacement Player {i}",
+                        "playerID": f"np{i}",
+                        "fullName": f"Pool Player {i}",
                         "Primary Position": ["C", "1B", "2B", "3B", "SS", "OF", "OF", "DH"][i % 8],
                     }
                     for i in range(max(40, num_teams * picks + 8))
                 ]
             )
 
+    mode_stamp = SETUP_MODE_SHARED if prefer_shared else SETUP_MODE_SOLO
     try:
         from live_draft_state import live_draft_init_room
 
@@ -369,13 +408,24 @@ def build_replacement_live_room(
             "user_team": host_team,
             "your_team": host_team,
             "slots": dict(cfg.get("slots") or {}),
-            "draft_setup_mode": "shared_multiplayer" if slot.get("is_shared") or slot.get("room_code") else "solo",
+            "draft_setup_mode": mode_stamp,
             "projection_style": str(session.get("live_draft_proj_style") or cfg.get("projection_style") or "Balanced"),
             "projection_window": _int("live_draft_proj_window", cfg.get("projection_window"), default=3),
         }
+        # Prefer current live_slot_* widgets (zeros must stick).
+        try:
+            from live_draft_roster_slots import LIVE_SLOT_WIDGET_KEYS, session_slot_count
+
+            slots: dict[str, int] = {}
+            for pos, key in LIVE_SLOT_WIDGET_KEYS.items():
+                if key in session:
+                    slots[pos] = session_slot_count(session, key, 0)
+            if slots:
+                config["slots"] = slots
+        except Exception:
+            pass
         room = live_draft_init_room(config, pool)
     except Exception:
-        # Fallback shape matching create path.
         order = []
         pick_n = 1
         for rnd in range(1, picks + 1):
@@ -384,7 +434,7 @@ def build_replacement_live_room(
                 order.append({"Pick": pick_n, "Round": rnd, "Team": team})
                 pick_n += 1
         room = {
-            "draft_room_id": f"R{uuid.uuid4().hex[:6].upper()}",
+            "draft_room_id": f"N{uuid.uuid4().hex[:6].upper()}",
             "status": "not_started",
             "current_pick_index": 0,
             "config": {
@@ -394,7 +444,7 @@ def build_replacement_live_room(
                 "teams": teams,
                 "user_team": host_team,
                 "your_team": host_team,
-                "draft_setup_mode": "shared_multiplayer",
+                "draft_setup_mode": mode_stamp,
             },
             "teams": teams,
             "pick_order": order,
@@ -406,27 +456,38 @@ def build_replacement_live_room(
     room["status"] = "not_started"
     room["current_pick_index"] = 0
     room["draft_board"] = []
+    cfg_out = dict(room.get("config") or {})
+    cfg_out["draft_setup_mode"] = mode_stamp
+    cfg_out["your_team"] = host_team
+    cfg_out["user_team"] = host_team
+    room["config"] = cfg_out
+    try:
+        from live_draft_timer_logic import ensure_full_pick_order
+
+        ensure_full_pick_order(room)
+    except ImportError:
+        pass
     return room, host_team
 
 
 def execute_replace_transactional(session: dict[str, Any], *, st: Any | None = None) -> dict[str, Any]:
-    """Create the new Shared/Solo room first; only then tombstone the old saved room."""
+    """Discard the unfinished saved draft and start a new draft from the current setup mode."""
     try:
         from live_draft_resumable_slot import get_resumable_live_draft_slot
         from live_draft_setup_mode import (
             SETUP_MODE_SHARED,
+            SETUP_MODE_SOLO,
             finalize_shared_room_create,
-            get_preferred_next_draft_mode,
-            is_shared_multiplayer_intent,
+            normalize_setup_mode,
             set_live_draft_setup_mode,
         )
     except ImportError as exc:
-        finish_op(session, success=False, message=f"Replace unavailable: {exc}")
+        finish_op(session, success=False, message=f"Start new draft unavailable: {exc}")
         return {"ok": False, "error": "import", "message": str(exc)}
 
     slot = get_resumable_live_draft_slot(session)
     if not slot:
-        finish_op(session, success=False, message="Draft could not be replaced: no saved draft found.")
+        finish_op(session, success=False, message="No unfinished saved draft found to discard.")
         return {"ok": False, "error": "no_slot", "message": "No saved draft found."}
 
     # Keep an immutable copy so create failure cannot lose the saved draft.
@@ -441,14 +502,13 @@ def execute_replace_transactional(session: dict[str, Any], *, st: Any | None = N
         saved_room_code=old_code,
     )
 
-    # Capture sticky prefs (do not clear slot yet).
-    prefer_shared = bool(slot.get("is_shared")) or bool(old_code)
-    try:
-        prefer_shared = prefer_shared or is_shared_multiplayer_intent(session)
-        if not prefer_shared:
-            prefer_shared = get_preferred_next_draft_mode(session) == SETUP_MODE_SHARED
-    except Exception:
-        pass
+    # Authoritative mode = currently selected setup — never the parked Shared slot.
+    setup_mode = normalize_setup_mode(
+        str(session.get("live_draft_setup_mode") or "").strip()
+        or str(session.get("preferred_next_draft_mode") or "").strip()
+        or SETUP_MODE_SOLO
+    )
+    prefer_shared = setup_mode == SETUP_MODE_SHARED
     note_op_step(session, "prefs_captured", detail="shared" if prefer_shared else "solo")
 
     try:
@@ -458,12 +518,22 @@ def execute_replace_transactional(session: dict[str, Any], *, st: Any | None = N
         finish_op(
             session,
             success=False,
-            message=f"Draft could not be replaced: could not build new room ({exc}). Saved draft kept.",
+            message=f"Could not start a new draft ({exc}). Unfinished saved draft kept.",
         )
         return {"ok": False, "error": "build_failed", "message": str(exc), "slot_kept": True}
 
     note_op_step(session, "provisional_room_built", draft_id=new_room.get("draft_room_id"))
     _clear_force_setup_for_resume(session)
+
+    # Clear leftover Shared pointers so Solo start cannot hydrate lobby chrome.
+    if not prefer_shared:
+        for key in (
+            "active_shared_draft_room_code",
+            "active_shared_draft_room_id",
+            "_live_draft_resume_lobby",
+            "_live_draft_resume_reserved_teams",
+        ):
+            session.pop(key, None)
 
     if prefer_shared:
         set_live_draft_setup_mode(session, SETUP_MODE_SHARED)
@@ -477,14 +547,13 @@ def execute_replace_transactional(session: dict[str, Any], *, st: Any | None = N
                 session,
                 success=False,
                 message=(
-                    f"Draft could not be replaced: {err or 'shared room create failed'}. "
-                    "Saved draft kept."
+                    f"Could not start a new Shared draft: {err or 'shared room create failed'}. "
+                    "Unfinished saved draft kept."
                 ),
             )
             return {"ok": False, "error": "create_failed", "message": err, "slot_kept": True}
         note_op_step(session, "shared_room_create_verified", room_code=code, ok=True)
         new_code = code
-        # Ensure Pick 1 lobby is active in session even if create helper left status parked.
         live = session.get("live_draft_room")
         if not isinstance(live, dict):
             live = new_room
@@ -493,11 +562,27 @@ def execute_replace_transactional(session: dict[str, Any], *, st: Any | None = N
         live["current_pick_index"] = 0
         live["draft_board"] = []
         session["active_shared_draft_room_code"] = code
+        session["room_your_team"] = host_team
     else:
+        set_live_draft_setup_mode(session, SETUP_MODE_SOLO)
         new_room["status"] = "in_progress"
         new_room["current_pick_index"] = 0
         new_room["draft_board"] = []
+        cfg = dict(new_room.get("config") or {})
+        cfg["draft_setup_mode"] = SETUP_MODE_SOLO
+        cfg["your_team"] = host_team
+        cfg["user_team"] = host_team
+        new_room["config"] = cfg
         session["live_draft_room"] = new_room
+        session["room_your_team"] = host_team
+        session.pop("active_shared_draft_room_code", None)
+        try:
+            from live_draft_timer_logic import ensure_full_pick_order, live_draft_reset_timer
+
+            ensure_full_pick_order(new_room)
+            live_draft_reset_timer(new_room)
+        except ImportError:
+            pass
         new_code = ""
         note_op_step(session, "solo_room_activated", draft_id=new_room.get("draft_room_id"))
 
@@ -541,15 +626,17 @@ def execute_replace_transactional(session: dict[str, Any], *, st: Any | None = N
     except ImportError:
         pass
 
+    if prefer_shared:
+        success_msg = f"New Shared draft ready — join code **{new_code}**. Opening lobby at Pick 1…"
+        lifecycle_target = "waiting_shared_lobby"
+    else:
+        success_msg = "New Solo draft started at Pick 1."
+        lifecycle_target = "active_draft"
     finish_op(
         session,
         success=True,
-        message=(
-            f"Replacement draft ready"
-            + (f" — join code **{new_code}**" if new_code else "")
-            + ". Opening new lobby at Pick 1…"
-        ),
-        lifecycle_target="waiting_shared_lobby" if prefer_shared else "active_draft",
+        message=success_msg,
+        lifecycle_target=lifecycle_target,
         rerun=True,
     )
     return {
@@ -557,6 +644,7 @@ def execute_replace_transactional(session: dict[str, Any], *, st: Any | None = N
         "new_room_code": new_code,
         "old_room_code": old_code,
         "room": new_room,
+        "mode": "shared" if prefer_shared else "solo",
     }
 
 
@@ -580,7 +668,7 @@ def process_pending_resumable_ops(session: dict[str, Any], *, st: Any) -> bool:
         return False
 
     if pending == REPLACE_EXECUTE_PENDING:
-        set_op_flash(session, "Preparing a replacement draft…", kind="info")
+        set_op_flash(session, "Discarding saved draft and starting a new draft…", kind="info")
         result = execute_replace_transactional(session, st=st)
         if result.get("ok"):
             request_full_app_rerun(st, session, reason="replace_success")

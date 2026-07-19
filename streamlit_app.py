@@ -22537,9 +22537,18 @@ elif active_page == "Live Draft Room":
                         live_draft_setup_number_default(st.session_state, "live_draft_picks_per_team", 4)
                     )
                 except ImportError:
-                    live_proj_window = int(st.session_state.get("live_draft_proj_window") or 3)
-                    live_num_teams = int(st.session_state.get("live_draft_team_count") or 2)
-                    live_picks_per_team = int(st.session_state.get("live_draft_picks_per_team") or 4)
+                    def _num(key: str, default: int) -> int:
+                        raw = st.session_state.get(key)
+                        if raw is None or str(raw).strip() == "":
+                            return int(default)
+                        try:
+                            return int(raw)
+                        except (TypeError, ValueError):
+                            return int(default)
+
+                    live_proj_window = _num("live_draft_proj_window", 3)
+                    live_num_teams = _num("live_draft_team_count", 2)
+                    live_picks_per_team = _num("live_draft_picks_per_team", 4)
                 live_league_name = str(st.session_state.get("live_draft_league_name") or "My Fantasy League")
                 default_teams = _live_draft_default_teams(live_num_teams)
                 team_names = [
@@ -23204,7 +23213,15 @@ elif active_page == "Live Draft Room":
             if isinstance(_save_flash, dict) and _save_flash.get("message"):
                 st.success(str(_save_flash["message"]))
             _slot = get_resumable_live_draft_slot(st.session_state)
+            _may_continue_saved = False
             if isinstance(_slot, dict):
+                try:
+                    from shared_draft_permissions import can_continue_saved_draft_slot
+
+                    _may_continue_saved = bool(can_continue_saved_draft_slot(st.session_state))
+                except ImportError:
+                    _may_continue_saved = True
+            if isinstance(_slot, dict) and _may_continue_saved:
                 from live_draft_resumable_ops import (
                     on_continue_saved_click,
                     on_replace_cancel_click,
@@ -23217,6 +23234,7 @@ elif active_page == "Live Draft Room":
                 with st.container(border=True):
                     st.markdown("#### Continue Saved Draft")
                     st.caption(
+                        "Resume the unfinished draft you saved for later. "
                         f"**{_sum.get('mode_label')}** · {_sum.get('num_teams') or '—'} teams · "
                         f"Pick {_sum.get('current_pick')} of {_sum.get('total_picks')} · "
                         f"last saved {_sum.get('saved_at') or '—'}"
@@ -23228,35 +23246,35 @@ elif active_page == "Live Draft Room":
                             "Continue Saved Draft",
                             type="primary",
                             key="live_draft_continue_saved_btn",
-                            help="Restore the exact saved Live Draft into Resume Lobby (paused).",
+                            help="Resume the unfinished draft you saved for later.",
                             use_container_width=True,
                             on_click=on_continue_saved_click,
                         )
                     with _c2:
                         st.button(
-                            "Replace and Start New Draft",
+                            "Disregard Saved Draft and Start New",
                             key="live_draft_replace_saved_start_btn",
-                            help="Create a new draft first, then permanently discard the saved one.",
+                            help="Permanently discard the unfinished saved draft and start a new draft using the settings currently selected below.",
                             use_container_width=True,
                             on_click=on_replace_request_click,
                         )
                     if st.session_state.get("_live_draft_replace_confirm_pending"):
                         st.warning(
-                            "Replace the saved draft and start a new one? "
-                            "The saved live-draft progress will be permanently removed "
-                            "only after the new room is created successfully."
+                            "Disregard the saved draft and start a new draft?\n\n"
+                            "This permanently discards the unfinished saved draft. "
+                            "The new draft will use the Solo/Shared mode and settings currently selected below."
                         )
                         _ry, _rn = st.columns(2)
                         with _ry:
                             st.button(
-                                "Confirm Replace & Start",
+                                "Disregard Saved Draft and Start New",
                                 key="live_draft_replace_saved_confirm_btn",
                                 type="primary",
                                 on_click=on_replace_confirm_click,
                             )
                         with _rn:
                             st.button(
-                                "Keep Saved Draft",
+                                "Cancel",
                                 key="live_draft_replace_saved_cancel_btn",
                                 on_click=on_replace_cancel_click,
                             )
@@ -23505,9 +23523,9 @@ elif active_page == "Live Draft Room":
                     str(
                         st.session_state.get("_live_draft_start_replace_resumable_message")
                         or (
-                            "Replace the saved draft and start a new one? "
-                            "The saved live-draft progress will be permanently removed "
-                            "only after the new room is created successfully."
+                            "Disregard the saved draft and start a new draft?\n\n"
+                            "This permanently discards the unfinished saved draft. "
+                            "The new draft will use the Solo/Shared mode and settings currently selected below."
                         )
                     )
                 )
@@ -23517,14 +23535,14 @@ elif active_page == "Live Draft Room":
                         from live_draft_resumable_ops import on_replace_confirm_click
 
                         st.button(
-                            "Replace and Start New Draft",
+                            "Disregard Saved Draft and Start New",
                             key="live_draft_start_replace_confirm_btn",
                             type="primary",
                             on_click=on_replace_confirm_click,
                         )
                     except ImportError:
                         if st.button(
-                            "Replace and Start New Draft",
+                            "Disregard Saved Draft and Start New",
                             key="live_draft_start_replace_confirm_btn",
                             type="primary",
                         ):
@@ -23533,7 +23551,7 @@ elif active_page == "Live Draft Room":
                             on_start_new_live_draft()
                             st.rerun()
                 with sr2:
-                    if st.button("Keep Saved Draft", key="live_draft_start_replace_cancel_btn"):
+                    if st.button("Cancel", key="live_draft_start_replace_cancel_btn"):
                         st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
                         st.session_state.pop("_live_draft_start_replace_resumable_message", None)
                         st.rerun()

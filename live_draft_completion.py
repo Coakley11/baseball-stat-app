@@ -370,9 +370,17 @@ def resolve_live_draft_lifecycle(
         return LIFECYCLE_SETUP
     if status in ("complete", "completed") and bool(session.get("_live_draft_history_view")):
         return LIFECYCLE_HISTORICAL_READ_ONLY
-    # Completed without explicit history view → setup (temporary board lives in Simulator).
-    if status in ("complete", "completed") or is_live_draft_explicitly_complete(live):
-        return LIFECYCLE_SETUP
+    # Authoritative completion — keep ACTIVE so Save to Draft Library / Analyze show.
+    # Never treat a stale status=complete after Pick 1 as finished.
+    if is_live_draft_explicitly_complete(live):
+        return LIFECYCLE_ACTIVE_DRAFT
+    if status in ("complete", "completed"):
+        # Stale complete flag with incomplete board — keep drafting.
+        try:
+            live["status"] = "in_progress"
+        except Exception:
+            pass
+        status = "in_progress"
 
     # Resume lobby: shared room restored but waiting for reserved teams before Continue Draft.
     if bool(session.get("_live_draft_resume_lobby")) and status in (

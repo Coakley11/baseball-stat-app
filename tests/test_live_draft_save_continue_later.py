@@ -142,16 +142,21 @@ class SaveContinueLaterTests(unittest.TestCase):
         self.assertIsNone(host.get("live_draft_room"))
 
         guest = _coakley()
-        # Guest gets the same slot via shared room continue (simulate slot copy + code).
+        # Guest must not Continue Saved Draft even with a copied slot.
         guest[RESUMABLE_LIVE_DRAFT_SLOT_KEY] = dict(host[RESUMABLE_LIVE_DRAFT_SLOT_KEY])
-        result = continue_saved_draft(guest, st=None)
+        blocked = continue_saved_draft(guest, st=None)
+        self.assertFalse(blocked["ok"], blocked)
+        self.assertEqual(blocked.get("error"), "not_commissioner")
+        self.assertIsNone(guest.get("live_draft_room"))
+
+        result = continue_saved_draft(host, st=None)
         self.assertTrue(result["ok"], result)
-        restored = guest.get("live_draft_room")
+        restored = host.get("live_draft_room")
         self.assertIsInstance(restored, dict)
         self.assertEqual(int(restored.get("current_pick_index") or 0), 3)
         self.assertEqual(len(restored.get("draft_board") or []), 3)
         self.assertEqual(str(restored.get("status") or ""), "paused")
-        self.assertEqual(str(guest.get("active_shared_draft_room_code") or "").upper(), code)
+        self.assertEqual(str(host.get("active_shared_draft_room_code") or "").upper(), code)
 
     def test_only_one_slot_replace_requires_confirm(self) -> None:
         host = _daniel()
@@ -198,7 +203,8 @@ class SaveContinueLaterTests(unittest.TestCase):
         save_and_continue_later(host, st=None, replace_existing=True)
         warn = warn_if_starting_replaces_resumable(host)
         self.assertIsNotNone(warn)
-        self.assertIn("resumable draft", warn["message"].lower())
+        self.assertIn("unfinished draft", warn["message"].lower())
+        self.assertIn("disregard", warn["message"].lower())
 
 
 if __name__ == "__main__":

@@ -61,14 +61,28 @@ def _board_size(room: dict[str, Any]) -> int:
 
 
 def total_expected_picks(room: dict[str, Any]) -> int:
-    pick_order = room.get("pick_order") or []
-    if pick_order:
-        return len(pick_order)
-    teams = room.get("teams") or []
+    """Authoritative total = teams × picks_per_team when config is present.
+
+    Never trust a truncated ``pick_order`` over config (that caused Solo to
+    complete after Pick 1 when pick_order length was 1). When picks_per_team
+    is missing, return 0 so the draft is never treated as complete from a
+    short order alone (blocks premature Draft Library eligibility).
+    """
+    teams = [t for t in (room.get("teams") or []) if str(t).strip()]
     cfg = dict(room.get("config") or {})
+    if not teams:
+        teams = [t for t in (cfg.get("teams") or []) if str(t).strip()]
+    n_teams = len(teams) or int(cfg.get("num_teams") or 0)
     rounds = int(cfg.get("picks_per_team") or cfg.get("rounds") or 0)
-    if teams and rounds:
-        return len(teams) * rounds
+    config_total = n_teams * rounds if n_teams and rounds else 0
+    pick_order = room.get("pick_order") or []
+    order_len = len(pick_order) if isinstance(pick_order, list) else 0
+    if config_total > 0:
+        # Prefer config; only use pick_order when it is at least as long (full board).
+        if order_len >= config_total:
+            return order_len
+        return config_total
+    # No reliable configured total — do not invent completion from a short order.
     return 0
 
 

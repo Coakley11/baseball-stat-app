@@ -16,7 +16,8 @@ PARK_CLEAR_ACTIVE_KEYS = (
     "active_shared_draft_room_code",
     "draft_room_shared_meta",
     "draft_room_participant_team",
-    "draft_room_participant_id",
+    # Keep draft_room_participant_id — Continue Saved Draft must still match the
+    # stamped commissioner after park (auth-off paths fall back to workspace:*).
     "draft_room_participant_notes",
     "room_your_team",
     "live_draft_my_team",
@@ -238,6 +239,24 @@ def build_resumable_slot(
     except Exception:
         mode = "shared_multiplayer" if is_shared else "solo"
 
+    commissioner_id = ""
+    if code:
+        try:
+            from draft_room_shared_state import load_shared_room
+            from shared_draft_permissions import commissioner_participant_id
+
+            doc = load_shared_room(code)
+            commissioner_id = commissioner_participant_id(doc if isinstance(doc, dict) else None)
+        except ImportError:
+            pass
+    if not commissioner_id:
+        try:
+            from shared_draft_permissions import current_canonical_participant_id
+
+            commissioner_id = current_canonical_participant_id(session)
+        except ImportError:
+            commissioner_id = str(session.get("draft_room_participant_id") or "").strip()
+
     slot = {
         "kind": "resumable_live_draft_slot",
         "saved_at": _utc_now_iso(),
@@ -246,6 +265,7 @@ def build_resumable_slot(
         "draft_id": draft_id,
         "room_id": room_id,
         "room_code": code or None,
+        "commissioner_participant_id": commissioner_id or None,
         "summary": _build_summary(session, room, is_shared=is_shared),
         "room": _persist_room_blob(room),
         "queues": _collect_queues(session),
@@ -275,8 +295,9 @@ def save_resumable_live_draft_slot(
                 "needs_replace_confirm": True,
                 "existing": existing,
                 "message": (
-                    "A resumable draft is already saved. Saving this draft will replace it. "
-                    "Save the previous draft to Draft Library first if you want a historical copy."
+                    "An unfinished draft is already saved for later. "
+                    "Disregard the saved draft and start a new draft with the current one? "
+                    "This permanently discards the unfinished saved draft."
                 ),
             }
     session[RESUMABLE_LIVE_DRAFT_SLOT_KEY] = slot
@@ -352,6 +373,18 @@ def save_and_continue_later(
     if not isinstance(room, dict):
         return {"ok": False, "error": "no_active_room", "message": "No active Live Draft to save."}
 
+    try:
+        from shared_draft_permissions import session_may_use_commissioner_draft_controls
+
+        if not session_may_use_commissioner_draft_controls(session):
+            return {
+                "ok": False,
+                "error": "not_commissioner",
+                "message": "Only the commissioner who created this room can save it for later.",
+            }
+    except ImportError:
+        pass
+
     room = pause_and_persist_for_save(session, room)
     slot = build_resumable_slot(session, room)
     saved = save_resumable_live_draft_slot(
@@ -382,6 +415,21 @@ def continue_saved_draft(
     slot = get_resumable_live_draft_slot(session)
     if not slot:
         return {"ok": False, "error": "no_slot", "message": "No saved draft to continue."}
+
+    try:
+        from shared_draft_permissions import can_continue_saved_draft_slot
+
+        if not can_continue_saved_draft_slot(session):
+            return {
+                "ok": False,
+                "error": "not_commissioner",
+                "message": (
+                    "Only the commissioner who created this room can use Continue Saved Draft. "
+                    "Ask them for the room code and rejoin your reserved team."
+                ),
+            }
+    except ImportError:
+        pass
 
     draft_id = str(slot.get("draft_id") or "").strip()
     code = str(slot.get("room_code") or "").strip().upper()
@@ -452,7 +500,7 @@ def continue_saved_draft(
             "error": "missing_room",
             "message": (
                 "Saved draft data is incomplete or the shared room could not be loaded. "
-                "Try Replace and Start New Draft, or recreate the room."
+                "Try Disregard Saved Draft and Start New, or recreate the room."
             ),
         }
 
@@ -594,9 +642,10 @@ def warn_if_starting_replaces_resumable(session: dict[str, Any]) -> dict[str, An
     summary = resumable_slot_summary(slot)
     return {
         "message": (
-            "A resumable draft is already saved "
+            "An unfinished draft is already saved for later "
             f"({summary.get('mode_label')}, Pick {summary.get('current_pick')} of {summary.get('total_picks')}). "
-            "Starting a new draft will replace it. Save it to Draft Library first if you want to keep a historical copy."
+            "Disregard the saved draft and start a new draft? "
+            "This permanently discards the unfinished saved draft."
         ),
         "slot": slot,
         "summary": summary,

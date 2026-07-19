@@ -1854,6 +1854,29 @@ def _execute_live_draft_save_click(
         _set_draft_save_ui_flash(session, level="error", message="No active live draft room to save.")
         return
 
+    # Live Draft → library only after natural completion (full board).
+    try:
+        from live_draft_safe_mode import is_draft_truly_complete
+
+        if not is_draft_truly_complete(room):
+            _set_draft_save_ui_flash(
+                session,
+                level="error",
+                message=(
+                    "Save to Draft Library is only available after the draft completes. "
+                    "Use Save & Continue Later to pause an unfinished draft."
+                ),
+            )
+            return
+    except ImportError:
+        if str(room.get("status") or "").strip().lower() not in ("complete", "completed"):
+            _set_draft_save_ui_flash(
+                session,
+                level="error",
+                message="Save to Draft Library is only available after the draft completes.",
+            )
+            return
+
     save_team = _resolve_live_draft_save_team_name(room, team_name, session)
     draft_name = str(session.get(f"{key_prefix}_name_input") or "").strip()
     try:

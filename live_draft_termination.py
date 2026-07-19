@@ -21,7 +21,12 @@ ENDED_ROOM_CODES_KEY = "_live_draft_ended_room_codes"
 ENDED_DRAFT_IDS_KEY = "_live_draft_ended_draft_ids"
 ENDED_ROOM_IDS_KEY = "_live_draft_ended_room_ids"
 
-TERMINAL_ROOM_STATUSES = frozenset({"ended", "closed", "deleted", "completed", "complete"})
+# End/Delete (and similar) — permanently retired; never auto-restore.
+DELETED_ROOM_STATUSES = frozenset({"ended", "closed", "deleted"})
+# Natural draft completion — keep in session for Save to Draft Library / Analyze.
+COMPLETED_ROOM_STATUSES = frozenset({"complete", "completed"})
+# Broad terminal set for snapshots / shared-doc bookkeeping (not permanent retirement).
+TERMINAL_ROOM_STATUSES = DELETED_ROOM_STATUSES | COMPLETED_ROOM_STATUSES
 
 # Everything that can resurrect or paint an active live room after End/Delete.
 TERMINATION_CLEAR_KEYS = (
@@ -224,10 +229,15 @@ def is_live_draft_permanently_retired(
     room_code: str = "",
     room: dict[str, Any] | None = None,
 ) -> bool:
-    """True when this identity must never auto-restore as an active Live Draft."""
+    """True when this identity must never auto-restore as an active Live Draft.
+
+    Natural ``complete`` status is NOT retirement — a stale complete flag on an
+    unfinished board must not wipe the room, and a finished draft must stay
+    available for Save to Draft Library / Analyze.
+    """
     if isinstance(room, dict):
         status = str(room.get("status") or "").strip().lower()
-        if status in TERMINAL_ROOM_STATUSES:
+        if status in DELETED_ROOM_STATUSES:
             return True
         d, r, c = _ids_from_room(session, room)
         draft_id = draft_id or d
@@ -872,13 +882,17 @@ def handle_shared_document_terminal(
     session: dict[str, Any],
     document: dict[str, Any] | None,
 ) -> bool:
-    """If shared doc is ended/closed/deleted, clear local active runtime. Returns True if terminated."""
+    """If shared doc is ended/closed/deleted, clear local active runtime. Returns True if terminated.
+
+    Natural ``complete`` is not treated as End/Delete — participants keep the
+    finished room for library save / export.
+    """
     if not isinstance(document, dict):
         return False
     status = str(document.get("status") or "").strip().lower()
     room_blob = document.get("room") if isinstance(document.get("room"), dict) else {}
     room_status = str(room_blob.get("status") or "").strip().lower()
-    if status not in TERMINAL_ROOM_STATUSES and room_status not in TERMINAL_ROOM_STATUSES:
+    if status not in DELETED_ROOM_STATUSES and room_status not in DELETED_ROOM_STATUSES:
         return False
     code = str(document.get("room_code") or "").strip().upper()
     draft_id = str(
@@ -928,12 +942,13 @@ def repair_corrupted_live_draft_lifecycle(session: dict[str, Any]) -> dict[str, 
     if isinstance(room, dict):
         draft_id, room_id, code = _ids_from_room(session, room)
         status = str(room.get("status") or "").strip().lower()
-        if (
-            status in TERMINAL_ROOM_STATUSES
-            or is_live_draft_permanently_retired(
-                session, draft_id=draft_id, room_id=room_id, room_code=code, room=room
-            )
-        ):
+        # Never clear a naturally completed draft (library / analyze still needed).
+        # Never clear a stale ``complete`` flag on an unfinished board.
+        deleted_like = status in DELETED_ROOM_STATUSES
+        retired = is_live_draft_permanently_retired(
+            session, draft_id=draft_id, room_id=room_id, room_code=code, room=room
+        )
+        if deleted_like or (retired and status not in COMPLETED_ROOM_STATUSES):
             if status not in ("ended", "deleted") and room.get("draft_board"):
                 capture_last_draft_board_snapshot(session, room)
                 actions.append("preserve_snapshot")
