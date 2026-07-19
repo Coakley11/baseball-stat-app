@@ -19,6 +19,7 @@ _BLOCKED_RERUN_SOURCES = frozenset(
         "timer_fragment",
         "timer_fragment_zero",
         "page_autopick",
+        "solo_expire",
         "poll_shared_draft",
         "shared_draft_room_panel",
         "expired_pick_pending",
@@ -394,6 +395,7 @@ def is_rerun_allowed(session: dict[str, Any], source: str, *, room: dict[str, An
             "timer_fragment",
             "timer_fragment_zero",
             "page_autopick",
+            "solo_expire",
         ):
             return False, "draft_start_in_flight"
     except ImportError:
@@ -544,7 +546,7 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
             session["_live_draft_recs_pending_after_pick"] = True
         elif source in ("pause_draft", "resume_draft"):
             force_live_draft_expensive_recompute(session)
-        elif source in ("auto_pick", "page_autopick", "auto_pick_complete"):
+        elif source in ("auto_pick", "page_autopick", "auto_pick_complete", "solo_expire"):
             # Commit first, paint board/timer; analytics refresh on a later pass.
             try:
                 from live_draft_rerun_scope import mark_live_draft_optimistic_pick_tick

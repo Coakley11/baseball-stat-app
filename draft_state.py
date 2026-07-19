@@ -534,10 +534,14 @@ def add_player_to_draft_queue(session: dict[str, Any], player_name: str) -> tupl
             q.append(name)
             # Optimistic local update — no recommendation rebuild, no MP participant round-trip.
             sync_draft_queue(session, q, reason="add_to_queue", sync_participant=False)
+            session["_draft_queue_revision"] = int(session.get("_draft_queue_revision") or 0) + 1
+            session["_live_draft_queue_last_good"] = list(q)
             _note_queue_mutation_deferred(session, reason="add_to_queue")
     except ImportError:
         q.append(name)
         sync_draft_queue(session, q, reason="add_to_queue", sync_participant=False)
+        session["_draft_queue_revision"] = int(session.get("_draft_queue_revision") or 0) + 1
+        session["_live_draft_queue_last_good"] = list(q)
         _note_queue_mutation_deferred(session, reason="add_to_queue")
     if _latency:
         try:
@@ -678,15 +682,8 @@ def remove_player_from_user_draft_queue(
     for k in stale_keys:
         session.pop(k, None)
     session["_draft_queue_skip_sortable_once"] = True
-    try:
-        from draft_room_context import resolve_shared_room_code
-        from draft_room_participant_state import save_participant_workflow_from_session
-
-        code = str(resolve_shared_room_code(session) or "").strip().upper()
-        if code:
-            save_participant_workflow_from_session(session, code)
-    except ImportError:
-        pass
+    # Persistence is deferred — never block ✕ on a participant/cloud round-trip.
+    # Shared rooms flush via maybe_flush_deferred_draft_queue_autosave (~1s).
     return q, True
 
 

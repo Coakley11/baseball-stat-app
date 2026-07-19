@@ -12,7 +12,7 @@ from typing import Any
 
 DRAFT_QUEUE_PERSIST_DIRTY_KEY = "_draft_queue_persist_dirty"
 DRAFT_QUEUE_PERSIST_DIRTY_TS_KEY = "_draft_queue_persist_dirty_ts"
-DRAFT_QUEUE_AUTOSAVE_SEC = 3.0
+DRAFT_QUEUE_AUTOSAVE_SEC = 1.0
 
 
 def mark_draft_queue_persist_dirty(session: dict[str, Any]) -> None:

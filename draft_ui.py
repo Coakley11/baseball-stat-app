@@ -1030,6 +1030,21 @@ def render_draft_queue_panel(
     from draft_actions import _prune_drafted_from_queue, draft_action_context
     from draft_state import remove_player_from_user_draft_queue, reorder_user_draft_queue
 
+    def _queue_remove_token(pool_row: Any, pname: str) -> str:
+        pid = ""
+        if isinstance(pool_row, dict):
+            pid = str(pool_row.get("playerID") or "").strip()
+        elif pool_row is not None and hasattr(pool_row, "get"):
+            try:
+                pid = str(pool_row.get("playerID") or "").strip()
+            except Exception:
+                pid = ""
+        return pid or str(pname or "").strip()
+
+    def _on_live_queue_remove(token: str) -> None:
+        """Optimistic remove before the follow-up script paint."""
+        remove_player_from_user_draft_queue(st.session_state, token)
+
     container = st.sidebar if use_sidebar else st
     try:
         from draft_state import DRAFT_QUEUE_KEY
@@ -1176,10 +1191,11 @@ def render_draft_queue_panel(
         container.caption("Empty — add players with **⭐ Add to Queue** on recommendation cards.")
         return False
 
-    # Red sliding queue (streamlit_sortables) — sidebar + Live Draft + Simulator.
+    # Red sliding queue (streamlit_sortables) — disabled for Live Draft during
+    # stabilization (drag remounts fought ✕ remove). Simulator/sidebar may keep drag.
     # Wipe guard: never accept an empty sortable result over a populated queue.
-    # Arrows removed; drag is the only reorder control.
-    if len(queue) >= 2:
+    _enable_drag = len(queue) >= 2 and not str(key_prefix).startswith("live")
+    if _enable_drag:
         try:
             from streamlit_sortables import sort_items
 
@@ -1287,8 +1303,10 @@ def render_draft_queue_panel(
                         rerun = True
             session["_draft_queue_sortable_seen_rev"] = _q_rev
         except ImportError:
-            if len(queue) >= 2:
+            if _enable_drag:
                 container.caption("Drag reorder unavailable — install streamlit-sortables to reorder.")
+    elif str(key_prefix).startswith("live") and len(queue) >= 2:
+        container.caption("Queue order = add order (drag sorting paused for reliability).")
 
     ctx = draft_action_context(session)
     if ctx.get("is_your_pick") and ctx.get("current_pick"):
@@ -1360,25 +1378,17 @@ def render_draft_queue_panel(
             else:
                 extra = f"\n{metrics_line}" if metrics_line else ""
                 c_name.caption(label[:72] + ("…" if len(label) > 72 else "") + extra)
-            if c_rm.button("✕", key=f"{key_prefix}_rm_{idx}", help="Remove from queue"):
-                if str(key_prefix).startswith("live"):
-                    try:
-                        from live_draft_ux_latency import ACTION_REMOVE_QUEUE, note_ux_action
-
-                        note_ux_action(
-                            session, ACTION_REMOVE_QUEUE, source="queue_remove", detail=pname, st=st
-                        )
-                    except ImportError:
-                        pass
-                pid = ""
-                if isinstance(pool_row, dict):
-                    pid = str(pool_row.get("playerID") or "").strip()
-                elif pool_row is not None and hasattr(pool_row, "get"):
-                    try:
-                        pid = str(pool_row.get("playerID") or "").strip()
-                    except Exception:
-                        pid = ""
-                remove_player_from_user_draft_queue(session, pid or pname)
+            _rm_token = _queue_remove_token(pool_row, pname)
+            if str(key_prefix).startswith("live"):
+                c_rm.button(
+                    "✕",
+                    key=f"{key_prefix}_rm_{idx}",
+                    help="Remove from queue",
+                    on_click=_on_live_queue_remove,
+                    args=(_rm_token,),
+                )
+            elif c_rm.button("✕", key=f"{key_prefix}_rm_{idx}", help="Remove from queue"):
+                remove_player_from_user_draft_queue(session, _rm_token)
                 queue = [x for x in queue if x != pname]
                 rerun = True
             if render_draft_button(
@@ -1406,25 +1416,17 @@ def render_draft_queue_panel(
             cols[1].write(name_block)
             cols[2].write(meta["position"])
             cols[3].write(meta["team"][:18] + ("…" if len(meta["team"]) > 18 else ""))
-            if cols[4].button("✕", key=f"{key_prefix}_rm_{idx}", help="Remove from queue"):
-                if str(key_prefix).startswith("live"):
-                    try:
-                        from live_draft_ux_latency import ACTION_REMOVE_QUEUE, note_ux_action
-
-                        note_ux_action(
-                            session, ACTION_REMOVE_QUEUE, source="queue_remove", detail=pname, st=st
-                        )
-                    except ImportError:
-                        pass
-                pid = ""
-                if isinstance(pool_row, dict):
-                    pid = str(pool_row.get("playerID") or "").strip()
-                elif pool_row is not None and hasattr(pool_row, "get"):
-                    try:
-                        pid = str(pool_row.get("playerID") or "").strip()
-                    except Exception:
-                        pid = ""
-                remove_player_from_user_draft_queue(session, pid or pname)
+            _rm_token = _queue_remove_token(pool_row, pname)
+            if str(key_prefix).startswith("live"):
+                cols[4].button(
+                    "✕",
+                    key=f"{key_prefix}_rm_{idx}",
+                    help="Remove from queue",
+                    on_click=_on_live_queue_remove,
+                    args=(_rm_token,),
+                )
+            elif cols[4].button("✕", key=f"{key_prefix}_rm_{idx}", help="Remove from queue"):
+                remove_player_from_user_draft_queue(session, _rm_token)
                 queue = [x for x in queue if x != pname]
                 rerun = True
             if render_draft_button(

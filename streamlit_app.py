@@ -24351,22 +24351,58 @@ elif active_page == "Live Draft Room":
                     _timer_expired_fn(room)
                     or live_draft_seconds_remaining(room) <= 0
                     or st.session_state.get("_live_draft_timer_expired_pending")
+                    or st.session_state.get("_solo_timer_wake")
                 )
             )
         except ImportError:
-            _clock_expired = bool(st.session_state.get("_live_draft_timer_expired_pending"))
+            _clock_expired = bool(
+                st.session_state.get("_live_draft_timer_expired_pending")
+                or st.session_state.get("_solo_timer_wake")
+            )
 
         # Engine must still commit at 0s even when reconcile paused the timer UI
         # (safe_mode / rerun throttle / recovery caption). Missing this gate left the
         # clock stuck at 0 while page_complete kept firing.
         _process_expired_or_timer = bool(not _autopick_off and (_timer_ok or _clock_expired))
         _expired_result = None
+        _solo_expire = None
         _timer_bar_fallback = None  # "caption" | "recovery" | None
+
+        # Solo: one canonical expire_current_pick_and_advance — no shared latch maze.
+        _is_solo_draft = False
+        try:
+            from live_draft_solo_timer import is_solo_live_draft, run_solo_expire_if_needed
+
+            _is_solo_draft = bool(is_solo_live_draft(st.session_state, room))
+        except ImportError:
+            _is_solo_draft = False
 
         # Expire commit runs before Control Center buttons so a same-run Auto Pick /
         # Pause click cannot race the zero-second rollover. Timer bar paints after
         # Control Center + Chat so the visual order stays controls|chat → On Clock.
-        if _process_expired_or_timer:
+        if _process_expired_or_timer and _is_solo_draft:
+            try:
+                from live_draft_solo_timer import run_solo_expire_if_needed
+                from live_draft_timer_ui import note_live_draft_page_load
+
+                with ldr_step(st.session_state, "timer_note_page_load", st=st):
+                    note_live_draft_page_load(st.session_state, room)
+                st.session_state["_live_draft_page_owns_expired"] = True
+                with ldr_step(st.session_state, "solo_expire_current_pick", st=st):
+                    _solo_expire = run_solo_expire_if_needed(st.session_state, room)
+                if _solo_expire is not None:
+                    if _solo_expire.error:
+                        st.error(_solo_expire.error)
+                    elif _solo_expire.ok and _solo_expire.message:
+                        st.success(_solo_expire.message)
+                    if developer_mode_enabled() and _solo_expire.zero_to_commit_ms is not None:
+                        st.caption(
+                            f"Solo expire: zero→commit {_solo_expire.zero_to_commit_ms:.0f}ms · "
+                            f"commit→timer {_solo_expire.commit_to_next_timer_ms or 0:.0f}ms"
+                        )
+            except ImportError:
+                _timer_bar_fallback = "caption"
+        elif _process_expired_or_timer:
             try:
                 from live_draft_expired_pick import autopick_error_message, handle_expired_pick_on_page
                 from live_draft_timer_ui import note_live_draft_page_load
@@ -24448,7 +24484,11 @@ elif active_page == "Live Draft Room":
                 with ldr_step(st.session_state, "timer_render_countdown", st=st):
                     render_live_draft_timer_bar(st, st.session_state, room)
                 st.session_state.pop("_live_draft_page_owns_expired", None)
-                if _expired_result is not None and _expired_result.should_rerun:
+                _need_expire_rerun = bool(
+                    (_expired_result is not None and _expired_result.should_rerun)
+                    or (_solo_expire is not None and _solo_expire.should_rerun)
+                )
+                if _need_expire_rerun:
                     try:
                         import time as _time
 
@@ -24467,12 +24507,17 @@ elif active_page == "Live Draft Room":
                         ldr_rerun(
                             st.session_state,
                             "timer_handle_expired_pick",
-                            reason="page_autopick",
+                            reason="solo_expire" if _solo_expire is not None else "page_autopick",
                             st=st,
                         )
                     except ImportError:
                         pass
-                    request_live_draft_rerun(st, st.session_state, "page_autopick", room=room)
+                    request_live_draft_rerun(
+                        st,
+                        st.session_state,
+                        "solo_expire" if _solo_expire is not None else "page_autopick",
+                        room=room,
+                    )
             except ImportError:
                 _timer_bar_fallback = "caption"
 
@@ -24524,7 +24569,9 @@ elif active_page == "Live Draft Room":
                 from draft_ui import render_live_draft_queue_panel
 
                 if render_live_draft_queue_panel(st, st.session_state):
-                    st.session_state["_live_draft_defer_full_rerun"] = True
+                    # Queue already painted with optimistic local state this pass.
+                    # Do not schedule a second full-app rerun for add/remove-only.
+                    pass
             try:
                 from live_draft_render_checkpoints import note_live_draft_render_checkpoint
 

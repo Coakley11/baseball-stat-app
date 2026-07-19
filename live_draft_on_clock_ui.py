@@ -340,6 +340,16 @@ def render_live_on_clock_banner(
                 except ImportError:
                     pass
                 if may_expire and not session.get("_live_draft_page_owns_expired"):
+                    try:
+                        from live_draft_solo_timer import is_solo_live_draft
+
+                        if is_solo_live_draft(session, tick_room):
+                            # Solo page owns expire_current_pick_and_advance — banner never commits.
+                            session["_solo_timer_wake"] = True
+                            may_expire = False
+                    except ImportError:
+                        pass
+                if may_expire and not session.get("_live_draft_page_owns_expired"):
                     from live_draft_expired_pick import expire_pick_and_advance
 
                     expire_pick_and_advance(session, source="on_clock_banner_zero")
