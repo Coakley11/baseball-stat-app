@@ -46,15 +46,26 @@ class CreationTraceTests(unittest.TestCase):
     def test_no_still_working_after_draft_ready(self) -> None:
         session: dict = {}
         init_creation_trace(session, mode="new")
-        # Soft-timeout mid-create must not leave "Still working on Draft ready".
-        session["_live_draft_creation_trace"]["started_mono"] = __import__("time").monotonic() - 30.0
-        note_creation_step(session, "pool_build_start", ok=True)
-        self.assertTrue(session["_live_draft_creation_trace"].get("soft_timeout_step"))
+        # Soft-timeout is per-step duration, not total create elapsed.
+        note_creation_step(session, "pool_build_start", ok=True, step_ms=9000)
+        self.assertEqual(session["_live_draft_creation_trace"].get("soft_timeout_step"), "pool_build_start")
         finalize_creation_receipt(session, success=True, lifecycle="active_draft")
         self.assertIsNone(session["_live_draft_creation_trace"].get("soft_timeout_step"))
         label = user_facing_creation_status(session)
         self.assertNotIn("Still working", label)
         self.assertIn("Opening", label)
+
+    def test_soft_timeout_uses_step_ms_not_total(self) -> None:
+        session: dict = {}
+        init_creation_trace(session, mode="new")
+        session["_live_draft_creation_trace"]["started_mono"] = __import__("time").monotonic() - 20.0
+        session["_live_draft_creation_trace"]["elapsed_ms"] = 19000
+        # room_initialized itself only took 50ms — must NOT soft-timeout.
+        note_creation_step(session, "room_initialized", ok=True, step_ms=50)
+        self.assertNotEqual(
+            session["_live_draft_creation_trace"].get("soft_timeout_step"),
+            "room_initialized",
+        )
 
     def test_post_create_watchdog_surfaces_failed_step(self) -> None:
         from live_draft_creation_trace import (

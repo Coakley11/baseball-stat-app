@@ -14,15 +14,17 @@ POST_CREATE_DEADLINE_KEY = "_live_draft_post_create_deadline"
 POST_CREATE_FAIL_KEY = "_live_draft_post_create_transition_fail"
 POST_CREATE_WATCHDOG_SEC = 5.0
 
-# Soft thresholds — surface diagnostics before the hard 90s start TTL.
+# Soft thresholds are per-step duration (not total create elapsed).
 STEP_SOFT_TIMEOUT_SEC: dict[str, float] = {
-    "pool_build_start": 20.0,
-    "pool_build_end": 25.0,
-    "room_initialized": 8.0,
-    "shared_room_create_start": 15.0,
-    "commissioner_registered": 10.0,
-    "session_installed": 5.0,
-    "lifecycle_resolved": 5.0,
+    "pool_build_start": 8.0,
+    "pool_build_end": 8.0,
+    "room_initialized": 3.0,
+    "shared_room_create_start": 10.0,
+    "commissioner_registered": 8.0,
+    "session_installed": 3.0,
+    "lifecycle_resolved": 3.0,
+    "local_save_start": 5.0,
+    "persist_complete": 8.0,
 }
 
 USER_STEP_STATUS: dict[str, str] = {
@@ -110,10 +112,13 @@ def note_creation_step(
         trace = init_creation_trace(session, mode=str(session.get("_start_live_draft_mode") or ""))
     started_mono = float(trace.get("started_mono") or _mono())
     elapsed_ms = int(max(0.0, (_mono() - started_mono) * 1000))
+    prev_elapsed = int(trace.get("elapsed_ms") or 0)
+    step_ms = int(fields.get("step_ms") or max(0, elapsed_ms - prev_elapsed))
     entry = {
         "step": step,
         "ok": bool(ok),
         "elapsed_ms": elapsed_ms,
+        "step_ms": step_ms,
         "error": str(error or ""),
         "draft_id": str(fields.get("draft_id") or trace.get("draft_id") or ""),
         "room_id": str(fields.get("room_id") or trace.get("room_id") or ""),
@@ -139,13 +144,17 @@ def note_creation_step(
         trace["room_id"] = entry["room_id"]
     if entry["room_code"]:
         trace["room_code"] = entry["room_code"]
+    if fields.get("pool_live_count") is not None:
+        trace["pool_live_count"] = fields.get("pool_live_count")
     if not ok:
         trace["failure_summary"] = str(error or step)
         trace["success"] = False
     soft = STEP_SOFT_TIMEOUT_SEC.get(step)
-    if soft is not None and elapsed_ms >= int(soft * 1000):
+    # Soft timeout uses this step's duration — not total create time.
+    if soft is not None and step_ms >= int(soft * 1000):
         trace["soft_timeout_step"] = step
-        trace["soft_timeout_ms"] = elapsed_ms
+        trace["soft_timeout_ms"] = step_ms
+        trace["soft_timeout_total_ms"] = elapsed_ms
     session[CREATION_TRACE_KEY] = trace
 
     receipt = dict(session.get(CREATION_RECEIPT_KEY) or {})
@@ -153,6 +162,7 @@ def note_creation_step(
     receipt["selected_mode"] = trace.get("mode")
     receipt["started_time"] = trace.get("started_at")
     receipt["completed_step"] = step
+    receipt["current_step"] = step
     receipt["draft_id"] = trace.get("draft_id") or ""
     receipt["room_id"] = trace.get("room_id") or ""
     receipt["room_code"] = trace.get("room_code") or ""
@@ -160,10 +170,17 @@ def note_creation_step(
     receipt["lifecycle_after_creation"] = str(fields.get("lifecycle") or receipt.get("lifecycle_after_creation") or "")
     receipt["failure_summary"] = str(trace.get("failure_summary") or "")
     receipt["elapsed_ms"] = elapsed_ms
+    receipt["last_step_ms"] = step_ms
     receipt["force_setup_after_delete"] = entry["force_setup_after_delete"]
     receipt["deleting"] = entry["deleting"]
     receipt["start_in_flight"] = entry["start_in_flight"]
     receipt["page_generation"] = entry["page_generation"]
+    if fields.get("pool_live_count") is not None:
+        receipt["pool_live_count"] = fields.get("pool_live_count")
+    # Accumulate named step timings on the receipt.
+    for key, val in fields.items():
+        if str(key).endswith("_ms") and val is not None:
+            receipt[str(key)] = val
     session[CREATION_RECEIPT_KEY] = receipt
 
     try:
@@ -400,6 +417,9 @@ def user_facing_creation_status(session: dict[str, Any]) -> str:
     receipt = session.get(CREATION_RECEIPT_KEY) or {}
     trace = session.get(CREATION_TRACE_KEY) or {}
     step = str(trace.get("current_step") or "")
+    hard = session.get("_live_draft_creation_hard_warn") or session.get("_live_draft_creation_hard_abort")
+    if isinstance(hard, dict) and hard.get("detail"):
+        return str(hard["detail"])
     # Never keep "Still working on Draft ready" after successful create.
     if isinstance(receipt, dict) and receipt.get("creation_success") is True:
         if receipt.get("active_page_entered"):
@@ -411,14 +431,18 @@ def user_facing_creation_status(session: dict[str, Any]) -> str:
         return "Opening draft…"
     if step == "post_create_transition_failed" or step == "start_failed":
         return ""
-    if trace.get("soft_timeout_step") and step not in (
+    soft_step = str(trace.get("soft_timeout_step") or "")
+    if soft_step and soft_step not in (
         "first_render_ready",
         "rerun_requested",
         "active_page_entered",
     ):
+        soft_ms = int(trace.get("soft_timeout_ms") or trace.get("elapsed_ms") or 0)
+        total_ms = int(trace.get("elapsed_ms") or 0)
+        label = USER_STEP_STATUS.get(soft_step, soft_step)
         return (
-            f"Still working on **{USER_STEP_STATUS.get(step, step)}** "
-            f"({int(trace.get('elapsed_ms') or 0)} ms). Check Developer Mode creation receipt."
+            f"Still working on **{label}** "
+            f"(step {soft_ms} ms · total {total_ms} ms). Check Developer Mode creation receipt."
         )
     if not step:
         try:

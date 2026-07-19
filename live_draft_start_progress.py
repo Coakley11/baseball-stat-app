@@ -11,7 +11,8 @@ START_ERROR_KEY = "_live_draft_start_error"
 PENDING_ACTIVITY_EVENT_KEY = "_pending_live_draft_created_activity"
 MONO_START_KEY = "_live_draft_start_mono_t0"
 # Hard ceiling so "Preparing Draft…" cannot trap the user after a hung/exception path.
-START_IN_FLIGHT_TTL_SEC = 90.0
+# Hard ceiling — Solo create watchdog aborts earlier (~20s); this is the last resort.
+START_IN_FLIGHT_TTL_SEC = 25.0
 
 
 def _mono_t0(session: dict[str, Any]) -> float:
@@ -160,6 +161,13 @@ def flush_pending_live_draft_created_activity(session: dict[str, Any], room: dic
 
 def render_draft_start_progress(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
     expire_stale_live_draft_start(session)
+    hard = None
+    try:
+        from live_draft_solo_create import evaluate_creation_hard_watchdog
+
+        hard = evaluate_creation_hard_watchdog(session)
+    except ImportError:
+        hard = None
     try:
         from live_draft_creation_trace import (
             evaluate_post_create_watchdog,
@@ -186,6 +194,24 @@ def render_draft_start_progress(st: Any, session: dict[str, Any], *, developer_m
         if st.button("Dismiss creation error", key="live_draft_dismiss_start_error"):
             session.pop(START_ERROR_KEY, None)
             st.rerun()
+
+    if isinstance(hard, dict) and hard.get("level") == "abort" and hard.get("detail"):
+        st.error(hard["detail"])
+        room = session.get("live_draft_room")
+        if isinstance(room, dict) and open_preserved_created_draft is not None:
+            st.warning("A draft object may already exist — **Open Draft** will not create a duplicate.")
+            if st.button("Open Draft", key="live_draft_open_after_create_abort", type="primary"):
+                opened = open_preserved_created_draft(session)
+                if opened.get("ok"):
+                    st.rerun()
+                else:
+                    st.error(str(opened.get("reason") or "Could not open preserved draft."))
+        elif st.button("Retry create", key="live_draft_retry_after_create_abort"):
+            session.pop("_live_draft_creation_hard_abort", None)
+            session.pop(START_ERROR_KEY, None)
+            st.rerun()
+    elif isinstance(hard, dict) and hard.get("level") == "warn" and hard.get("detail"):
+        st.warning(hard["detail"])
 
     if isinstance(fail, dict) and fail.get("detail"):
         st.error(fail["detail"])

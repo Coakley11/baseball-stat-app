@@ -22374,6 +22374,17 @@ elif active_page == "Live Draft Room":
         st.caption(format_deploy_caption())
         render_live_draft_save_diagnostics(st)
         render_start_live_draft_dev_panel(st, st.session_state, developer_mode=True)
+    # If create is about to run, clear stale "Still working…" receipt BEFORE painting progress.
+    if st.session_state.get("_start_live_draft_pending"):
+        try:
+            from live_draft_creation_trace import init_creation_trace
+
+            _pending_mode = str(st.session_state.get("_start_live_draft_mode") or "new")
+            init_creation_trace(st.session_state, mode=_pending_mode)
+            st.session_state.pop("_live_draft_creation_hard_warn", None)
+            st.session_state.pop("_live_draft_creation_hard_abort", None)
+        except ImportError:
+            pass
     try:
         from live_draft_start_progress import render_draft_start_progress
 
@@ -22443,12 +22454,7 @@ elif active_page == "Live Draft Room":
         except ImportError:
             pass
         try:
-            try:
-                from live_draft_setup_persist import flush_live_draft_setup_persist
-
-                flush_live_draft_setup_persist(st, st.session_state, reason="live_draft_start")
-            except ImportError:
-                pass
+            # Minimal create: do not flush setup persist / cloud on the critical path.
             from draft_live_start import (
                 build_simulator_to_live_summary,
                 clear_stale_live_draft_for_simulator_start,
@@ -22465,10 +22471,13 @@ elif active_page == "Live Draft Room":
                 _begin_start(st.session_state, mode=_start_mode)
             try:
                 from live_draft_creation_trace import init_creation_trace, note_creation_step
+                from live_draft_solo_create import note_timed_step
 
-                init_creation_trace(st.session_state, mode=_start_mode)
+                # Trace may already be inited above when pending — keep same attempt.
+                if not st.session_state.get("_live_draft_creation_trace"):
+                    init_creation_trace(st.session_state, mode=_start_mode)
                 note_creation_step(st.session_state, "begin_live_draft_start", ok=True)
-                note_creation_step(st.session_state, "handler_begin", ok=True)
+                note_timed_step(st.session_state, "handler_begin", ok=True)
             except ImportError:
                 if mark_start_step:
                     mark_start_step(st.session_state, "handler_begin", click_received_ts=time.time())
@@ -22590,13 +22599,16 @@ elif active_page == "Live Draft Room":
                 slot_bench = session_slot_count(st.session_state, "live_slot_bench", 5)
                 fantasy_format = "5x5 Roto" if "Roto" in live_scoring else "Points League"
                 try:
-                    from live_draft_creation_trace import note_creation_step
+                    from live_draft_solo_create import note_timed_step
 
-                    note_creation_step(st.session_state, "pool_build_start", ok=True)
+                    _t_pool = _time_mod.perf_counter()
+                    note_timed_step(st.session_state, "pool_build_start", ok=True, t_step0=_t_pool)
                 except Exception:
+                    _t_pool = _time_mod.perf_counter()
                     if mark_start_step:
                         mark_start_step(st.session_state, "pool_build_start", pool_build_start_ts=_time_mod.time())
                 with st.spinner("Building player pool…"):
+                    # Cached when warm; cold Cloud first-build can take several seconds.
                     pool_live = get_cached_unified_projection_pool(
                         int(st.session_state.get("_lahman_max_year", year_max)),
                         int(live_proj_window),
@@ -22607,13 +22619,15 @@ elif active_page == "Live Draft Room":
                         int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
                     )
                 try:
-                    from live_draft_creation_trace import note_creation_step
+                    from live_draft_solo_create import note_timed_step
 
-                    note_creation_step(
+                    note_timed_step(
                         st.session_state,
                         "pool_build_end",
                         ok=True,
-                        pool_live_count=len(pool_live),
+                        t_step0=_t_pool,
+                        pool_live_count=int(len(pool_live)),
+                        pool_warm=bool((_time_mod.perf_counter() - _t_pool) < 1.0),
                     )
                 except Exception:
                     if mark_start_step:
@@ -22705,6 +22719,7 @@ elif active_page == "Live Draft Room":
                         config = freeze_slot_instances_on_config(config)
                     except ImportError:
                         pass
+                    _t_room = _time_mod.perf_counter()
                     new_room = live_draft_init_room(config, pool_live)
                     record_start_live_draft_diagnostics(st.session_state, live_room_created=True)
                     try:
@@ -22758,14 +22773,16 @@ elif active_page == "Live Draft Room":
 
                         stamp_room_setup_mode(new_room, st.session_state)
                         try:
-                            from live_draft_creation_trace import note_creation_step
+                            from live_draft_solo_create import note_timed_step
 
-                            note_creation_step(
+                            note_timed_step(
                                 st.session_state,
                                 "room_initialized",
                                 ok=True,
+                                t_step0=_t_room,
                                 draft_id=str(new_room.get("draft_room_id") or ""),
                                 room_id=str(new_room.get("draft_room_id") or ""),
+                                pick_order_len=len(new_room.get("pick_order") or []),
                             )
                         except ImportError:
                             pass
@@ -22856,56 +22873,50 @@ elif active_page == "Live Draft Room":
                                 except ImportError:
                                     pass
                         else:
-                            # Solo/simulator start — persist Solo only when the user chose Solo.
-                            # Never overwrite a sticky Shared preference from this path.
+                            # Solo/simulator — minimal path: install room, open page, defer force-save.
+                            _t_solo = _time_mod.perf_counter()
                             try:
                                 from live_draft_setup_mode import (
                                     SETUP_MODE_SHARED,
                                     get_preferred_next_draft_mode,
-                                    persist_live_draft_setup_mode_preference,
                                     request_live_draft_setup_mode,
                                 )
 
                                 preferred = get_preferred_next_draft_mode(st.session_state)
                                 if preferred != SETUP_MODE_SHARED:
+                                    # Session-only mode stamp — no force_disk on create critical path.
                                     request_live_draft_setup_mode(
-                                        st.session_state, SETUP_MODE_SOLO, persist=True, st=st
-                                    )
-                                else:
-                                    persist_live_draft_setup_mode_preference(
-                                        st.session_state, SETUP_MODE_SHARED, st=st
+                                        st.session_state, SETUP_MODE_SOLO, persist=False, st=None
                                     )
                             except ImportError:
                                 set_live_draft_setup_mode(
-                                    st.session_state, SETUP_MODE_SOLO, persist=True, st=st
+                                    st.session_state, SETUP_MODE_SOLO, persist=False, st=None
                                 )
                             live_draft_start(new_room)
                             st.session_state["live_draft_room"] = new_room
                             st.session_state["room_your_team"] = user_team
                             try:
-                                from live_draft_creation_trace import (
-                                    note_creation_step,
-                                    protect_new_room,
-                                )
+                                from live_draft_creation_trace import protect_new_room
+                                from live_draft_solo_create import mark_deferred_create_persist, note_timed_step
 
-                                note_creation_step(
+                                note_timed_step(
                                     st.session_state,
                                     "solo_started",
                                     ok=True,
+                                    t_step0=_t_solo,
                                     draft_id=str(new_room.get("draft_room_id") or ""),
                                     room_id=str(new_room.get("draft_room_id") or ""),
                                     lifecycle="active_draft",
                                 )
-                                note_creation_step(st.session_state, "session_installed", ok=True)
-                                protect_new_room(st.session_state)
-                            except ImportError:
-                                pass
-                            try:
-                                from user_page_preferences import persist_live_draft_setup_preferences
-
-                                persist_live_draft_setup_preferences(
-                                    st.session_state, st=st, force_disk=True
+                                note_timed_step(
+                                    st.session_state,
+                                    "session_installed",
+                                    ok=True,
+                                    t_step0=_t_solo,
+                                    draft_id=str(new_room.get("draft_room_id") or ""),
                                 )
+                                protect_new_room(st.session_state)
+                                mark_deferred_create_persist(st.session_state)
                             except ImportError:
                                 pass
                             try:
@@ -22947,23 +22958,16 @@ elif active_page == "Live Draft Room":
                                     f"Room ID **{new_room['draft_room_id']}**."
                                 )
                             st.success(st.session_state["_live_draft_start_feedback"])
+                            # Session-local canonical write only — force_save deferred until active page.
                             try:
-                                if mark_start_step:
-                                    mark_start_step(
-                                        st.session_state,
-                                        "local_save_start",
-                                        local_save_start_ts=_time_mod.time(),
-                                    )
-                            except Exception:
-                                pass
-                            _persist_live_draft_room(new_room, reason="start_draft")
-                            try:
-                                if mark_start_step:
-                                    mark_start_step(
-                                        st.session_state,
-                                        "local_save_end",
-                                        local_save_end_ts=_time_mod.time(),
-                                    )
+                                from live_draft_state import write_canonical_live_draft_state
+
+                                write_canonical_live_draft_state(
+                                    st.session_state,
+                                    new_room,
+                                    reason="start_draft",
+                                    local_edit=True,
+                                )
                             except Exception:
                                 pass
                             try:
@@ -23653,6 +23657,18 @@ elif active_page == "Live Draft Room":
             mark_active_draft_page_entered(
                 st.session_state, lifecycle=str(_live_draft_lifecycle or "")
             )
+        except ImportError:
+            pass
+        # Durable create persist after the active page is already entered (Solo minimal path).
+        try:
+            from live_draft_solo_create import flush_deferred_create_persist, needs_deferred_create_persist
+
+            if needs_deferred_create_persist(st.session_state):
+                flush_deferred_create_persist(
+                    st,
+                    st.session_state,
+                    persist_room_fn=_persist_live_draft_room,
+                )
         except ImportError:
             pass
         try:
