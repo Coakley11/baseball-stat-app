@@ -23032,6 +23032,27 @@ elif active_page == "Live Draft Room":
                 pass
             if _finish_start is not None:
                 _finish_start(st.session_state, ok=_start_handler_ok, error=_start_handler_err)
+            # Critical: after Draft ready, do not continue this script pass (it already
+            # painted setup/progress chrome). Rerun so the next full run enters active_draft
+            # from the top without a stuck "Still working" banner.
+            if _start_handler_ok:
+                try:
+                    from live_draft_creation_trace import note_creation_step
+
+                    note_creation_step(
+                        st.session_state,
+                        "rerun_requested",
+                        ok=True,
+                        lifecycle=_life_after,
+                        draft_id=str(
+                            (st.session_state.get("live_draft_room") or {}).get("draft_room_id")
+                            or ""
+                        ),
+                    )
+                except Exception:
+                    pass
+                st.rerun()
+                st.stop()
 
     market_df_live = load_fantasypros_market_data() if st.session_state.get("live_draft_room") else None
     if market_df_live is not None:
@@ -23627,6 +23648,14 @@ elif active_page == "Live Draft Room":
         _live_draft_lifecycle_room, dict
     ):
         try:
+            from live_draft_creation_trace import mark_active_draft_page_entered
+
+            mark_active_draft_page_entered(
+                st.session_state, lifecycle=str(_live_draft_lifecycle or "")
+            )
+        except ImportError:
+            pass
+        try:
             from live_draft_render_checkpoints import (
                 note_live_draft_render_checkpoint,
                 reset_live_draft_render_checkpoints,
@@ -23646,10 +23675,17 @@ elif active_page == "Live Draft Room":
             pass
         room = _live_draft_lifecycle_room
         # Queue-only fast paint: mutate already updated session; skip board/recs/timer/chat.
+        # Never fast-stop on the first paint after Solo/Shared create (post_create_open).
+        try:
+            from live_draft_creation_trace import POST_CREATE_OPEN_KEY
+
+            _post_create_open = bool(st.session_state.get(POST_CREATE_OPEN_KEY))
+        except ImportError:
+            _post_create_open = bool(st.session_state.get("_live_draft_post_create_open"))
         try:
             from live_draft_rerun_scope import consume_live_draft_queue_fast_paint
 
-            if consume_live_draft_queue_fast_paint(st.session_state):
+            if (not _post_create_open) and consume_live_draft_queue_fast_paint(st.session_state):
                 st.session_state["_live_draft_skip_queue_flush_this_run"] = True
                 st.subheader("Live Draft Queue")
                 try:

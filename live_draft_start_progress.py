@@ -160,6 +160,19 @@ def flush_pending_live_draft_created_activity(session: dict[str, Any], room: dic
 
 def render_draft_start_progress(st: Any, session: dict[str, Any], *, developer_mode: bool = False) -> None:
     expire_stale_live_draft_start(session)
+    try:
+        from live_draft_creation_trace import (
+            evaluate_post_create_watchdog,
+            open_preserved_created_draft,
+            render_creation_receipt_panel,
+        )
+
+        fail = evaluate_post_create_watchdog(session)
+    except ImportError:
+        fail = None
+        open_preserved_created_draft = None  # type: ignore[assignment]
+        render_creation_receipt_panel = None  # type: ignore[assignment]
+
     err = session.get(START_ERROR_KEY)
     if isinstance(err, dict) and err.get("error"):
         st.error(
@@ -173,6 +186,23 @@ def render_draft_start_progress(st: Any, session: dict[str, Any], *, developer_m
         if st.button("Dismiss creation error", key="live_draft_dismiss_start_error"):
             session.pop(START_ERROR_KEY, None)
             st.rerun()
+
+    if isinstance(fail, dict) and fail.get("detail"):
+        st.error(fail["detail"])
+        st.warning(
+            "The draft was created successfully, but the active page did not open. "
+            "Your draft is preserved — use **Open Draft** (does not create a duplicate)."
+        )
+        if open_preserved_created_draft is not None and st.button(
+            "Open Draft",
+            key="live_draft_open_preserved_after_transition_fail",
+            type="primary",
+        ):
+            opened = open_preserved_created_draft(session)
+            if opened.get("ok"):
+                st.rerun()
+            else:
+                st.error(str(opened.get("reason") or "Could not open preserved draft."))
 
     in_flight = is_live_draft_start_in_flight(session)
     if in_flight:
@@ -189,15 +219,15 @@ def render_draft_start_progress(st: Any, session: dict[str, Any], *, developer_m
                 label = user_facing_start_step(step)
             except ImportError:
                 label = "Starting…"
-        st.info(label)
+        if label:
+            st.info(label)
 
     if developer_mode:
-        try:
-            from live_draft_creation_trace import render_creation_receipt_panel
-
-            render_creation_receipt_panel(st, session, developer_mode=True)
-        except ImportError:
-            pass
+        if render_creation_receipt_panel is not None:
+            try:
+                render_creation_receipt_panel(st, session, developer_mode=True)
+            except Exception:
+                pass
         prog = session.get(START_PROGRESS_KEY)
         if isinstance(prog, dict):
             with st.expander("Draft start progress steps", expanded=bool(in_flight)):

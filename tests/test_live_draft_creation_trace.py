@@ -43,6 +43,52 @@ class CreationTraceTests(unittest.TestCase):
         self.assertIn("pool", label.lower())
         self.assertNotEqual(label, "Preparing Draft…")
 
+    def test_no_still_working_after_draft_ready(self) -> None:
+        session: dict = {}
+        init_creation_trace(session, mode="new")
+        # Soft-timeout mid-create must not leave "Still working on Draft ready".
+        session["_live_draft_creation_trace"]["started_mono"] = __import__("time").monotonic() - 30.0
+        note_creation_step(session, "pool_build_start", ok=True)
+        self.assertTrue(session["_live_draft_creation_trace"].get("soft_timeout_step"))
+        finalize_creation_receipt(session, success=True, lifecycle="active_draft")
+        self.assertIsNone(session["_live_draft_creation_trace"].get("soft_timeout_step"))
+        label = user_facing_creation_status(session)
+        self.assertNotIn("Still working", label)
+        self.assertIn("Opening", label)
+
+    def test_post_create_watchdog_surfaces_failed_step(self) -> None:
+        from live_draft_creation_trace import (
+            POST_CREATE_DEADLINE_KEY,
+            evaluate_post_create_watchdog,
+            open_preserved_created_draft,
+        )
+
+        session: dict = {
+            "live_draft_room": {
+                "draft_room_id": "SOLO-1",
+                "status": "in_progress",
+                "draft_board": [],
+                "teams": ["Team A"],
+                "pick_order": [{"Pick": 1, "Team": "Team A"}],
+                "config": {"draft_setup_mode": "solo", "timer_seconds": 30},
+            },
+            "_live_draft_force_setup_after_delete": True,
+        }
+        init_creation_trace(session, mode="new")
+        finalize_creation_receipt(session, success=True, lifecycle="active_draft")
+        # Expire watchdog immediately.
+        session[POST_CREATE_DEADLINE_KEY] = 0.0
+        # Force lifecycle back to setup path without wiping room (simulate gate).
+        session["_live_draft_force_setup_after_delete"] = True
+        session.pop("_live_draft_protect_new_room_until", None)
+        fail = evaluate_post_create_watchdog(session)
+        self.assertIsNotNone(fail)
+        self.assertIn("failed_step", fail or {})
+        opened = open_preserved_created_draft(session)
+        self.assertTrue(opened.get("ok"))
+        self.assertEqual(opened.get("draft_id"), "SOLO-1")
+        self.assertFalse(session.get("_live_draft_force_setup_after_delete"))
+
 
 if __name__ == "__main__":
     unittest.main()
