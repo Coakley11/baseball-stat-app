@@ -274,6 +274,13 @@ def arm_post_create_open(session: dict[str, Any], *, lifecycle: str = "") -> Non
 
 def mark_active_draft_page_entered(session: dict[str, Any], *, lifecycle: str = "") -> None:
     """Call when the active-draft / lobby renderer is entered after create."""
+    # Always clear leftover queue fast-paint — never abort active page for it.
+    try:
+        from live_draft_rerun_scope import clear_live_draft_queue_fast_paint
+
+        clear_live_draft_queue_fast_paint(session, reason="active_page_entered")
+    except ImportError:
+        session.pop("_live_draft_queue_fast_paint", None)
     if not session.pop(POST_CREATE_OPEN_KEY, None) and not session.get(POST_CREATE_DEADLINE_KEY):
         return
     session.pop(POST_CREATE_DEADLINE_KEY, None)

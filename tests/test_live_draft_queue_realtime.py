@@ -121,15 +121,21 @@ class QueueRealtimePersistTests(unittest.TestCase):
             self.assertFalse(maybe_flush_deferred_draft_queue_autosave(st, session))
             mock_save.assert_not_called()
 
-    def test_queue_fast_paint_flag_survives_expensive_check(self) -> None:
-        from live_draft_rerun_scope import QUEUE_FAST_PAINT_KEY, consume_live_draft_queue_fast_paint
+    def test_queue_tick_skips_expensive_without_fast_paint_stop(self) -> None:
+        from live_draft_rerun_scope import (
+            QUEUE_FAST_PAINT_KEY,
+            QUEUE_TICK_KEY,
+            consume_live_draft_queue_fast_paint,
+        )
 
         session: dict = {}
         mark_live_draft_queue_tick(session)
-        self.assertTrue(session.get(QUEUE_FAST_PAINT_KEY))
+        self.assertTrue(session.get(QUEUE_TICK_KEY))
+        self.assertFalse(session.get(QUEUE_FAST_PAINT_KEY))
         self.assertFalse(live_draft_expensive_recompute_required(session))
-        self.assertTrue(session.get(QUEUE_FAST_PAINT_KEY))
-        self.assertTrue(consume_live_draft_queue_fast_paint(session))
+        # Legacy leftover flag must never authorize a page-level stop.
+        session[QUEUE_FAST_PAINT_KEY] = True
+        self.assertFalse(consume_live_draft_queue_fast_paint(session))
         self.assertFalse(session.get(QUEUE_FAST_PAINT_KEY))
 
 

@@ -23690,35 +23690,26 @@ elif active_page == "Live Draft Room":
         except ImportError:
             pass
         room = _live_draft_lifecycle_room
-        # Queue-only fast paint: mutate already updated session; skip board/recs/timer/chat.
-        # Never fast-stop on the first paint after Solo/Shared create (post_create_open).
+        # NEVER page-level st.stop() for queue fast-paint — that left only Draft Queue
+        # visible after Solo create/Open Draft. Clear any leftover flag and continue.
         try:
-            from live_draft_creation_trace import POST_CREATE_OPEN_KEY
+            from live_draft_rerun_scope import (
+                QUEUE_FAST_PAINT_KEY,
+                clear_live_draft_queue_fast_paint,
+                consume_live_draft_queue_fast_paint,
+            )
+            from live_draft_render_checkpoints import note_active_page_receipt
 
-            _post_create_open = bool(st.session_state.get(POST_CREATE_OPEN_KEY))
+            _had_fast = bool(st.session_state.get(QUEUE_FAST_PAINT_KEY))
+            clear_live_draft_queue_fast_paint(st.session_state, reason="active_page_full_render")
+            # Legacy consume always returns False (never authorizes stop).
+            consume_live_draft_queue_fast_paint(st.session_state)
+            note_active_page_receipt(st.session_state, "active_page_render_started", True)
+            note_active_page_receipt(st.session_state, "queue_fast_paint_was_set", _had_fast)
+            note_active_page_receipt(st.session_state, "queue_fast_paint_cleared", True)
+            note_active_page_receipt(st.session_state, "page_level_queue_stop", False)
         except ImportError:
-            _post_create_open = bool(st.session_state.get("_live_draft_post_create_open"))
-        try:
-            from live_draft_rerun_scope import consume_live_draft_queue_fast_paint
-
-            if (not _post_create_open) and consume_live_draft_queue_fast_paint(st.session_state):
-                st.session_state["_live_draft_skip_queue_flush_this_run"] = True
-                st.subheader("Live Draft Queue")
-                try:
-                    from live_draft_queue_fragment import render_live_draft_queue_fragment
-
-                    render_live_draft_queue_fragment(st, st.session_state)
-                except ImportError:
-                    from draft_ui import render_live_draft_queue_panel
-
-                    render_live_draft_queue_panel(st, st.session_state)
-                # Sidebar mirror is painted earlier in the script; keep revision in sync.
-                st.session_state["_live_draft_queue_sidebar_mirror"] = list(
-                    st.session_state.get("draft_queue") or []
-                )
-                st.stop()
-        except ImportError:
-            pass
+            st.session_state.pop("_live_draft_queue_fast_paint", None)
         # Authoritative membership gate — guests without Join must not render this room.
         try:
             from draft_room_context import is_multiplayer_draft_active
@@ -24573,6 +24564,12 @@ elif active_page == "Live Draft Room":
                     _doc_h = (_cc or {}).get("document")
                 except ImportError:
                     st.warning("Control Center unavailable — live_draft_control_center_ui missing.")
+            try:
+                from live_draft_render_checkpoints import note_active_page_receipt
+
+                note_active_page_receipt(st.session_state, "control_center_complete", True)
+            except ImportError:
+                pass
 
         if _process_expired_or_timer and _timer_bar_fallback is None:
             try:
@@ -24673,9 +24670,13 @@ elif active_page == "Live Draft Room":
                     # Do not schedule a second full-app rerun for add/remove-only.
                     pass
             try:
-                from live_draft_render_checkpoints import note_live_draft_render_checkpoint
+                from live_draft_render_checkpoints import (
+                    note_active_page_receipt,
+                    note_live_draft_render_checkpoint,
+                )
 
                 note_live_draft_render_checkpoint(st.session_state, "queue", phase="completed", room=room)
+                note_active_page_receipt(st.session_state, "queue_complete", True)
                 note_live_draft_render_checkpoint(st.session_state, "board", phase="started", room=room)
             except ImportError:
                 pass
@@ -24735,6 +24736,16 @@ elif active_page == "Live Draft Room":
                 mark_ux_milestone(
                     st.session_state, "board_paint_done", rebuild="board_table", st=st
                 )
+            except ImportError:
+                pass
+            try:
+                from live_draft_render_checkpoints import (
+                    note_active_page_receipt,
+                    note_live_draft_render_checkpoint,
+                )
+
+                note_live_draft_render_checkpoint(st.session_state, "board", phase="completed", room=room)
+                note_active_page_receipt(st.session_state, "board_complete", True)
             except ImportError:
                 pass
             try:
@@ -24929,6 +24940,12 @@ elif active_page == "Live Draft Room":
                         st=st,
                         deferred=bool(_defer_recs),
                     )
+                except ImportError:
+                    pass
+                try:
+                    from live_draft_render_checkpoints import note_active_page_receipt
+
+                    note_active_page_receipt(st.session_state, "recommendations_complete", True)
                 except ImportError:
                     pass
                 _tracker_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
@@ -25418,6 +25435,12 @@ elif active_page == "Live Draft Room":
 
         st.subheader("Team Rosters")
         roster_df = live_draft_rosters_df(room)
+        try:
+            from live_draft_render_checkpoints import note_active_page_receipt
+
+            note_active_page_receipt(st.session_state, "rosters_complete", True)
+        except ImportError:
+            pass
         if roster_df.empty:
             st.caption("Rosters will appear after the first pick.")
         else:
@@ -25586,11 +25609,23 @@ elif active_page == "Live Draft Room":
             pass
         try:
             from live_draft_render_checkpoints import (
+                note_active_page_receipt,
                 note_live_draft_render_checkpoint,
                 render_live_draft_checkpoint_panel,
             )
 
             note_live_draft_render_checkpoint(st.session_state, "footer", phase="completed", room=room)
+            note_active_page_receipt(st.session_state, "active_page_render_complete", True)
+            try:
+                from live_draft_creation_trace import note_creation_step
+
+                note_creation_step(
+                    st.session_state,
+                    "active_page_render_complete",
+                    ok=True,
+                )
+            except ImportError:
+                pass
             render_live_draft_checkpoint_panel(st, st.session_state)
         except ImportError:
             pass

@@ -6,6 +6,7 @@ from typing import Any
 
 RENDER_CHECKPOINT_KEY = "_live_draft_render_checkpoints"
 RENDER_ABORT_KEY = "_live_draft_render_abort"
+ACTIVE_PAGE_RECEIPT_KEY = "_live_draft_active_page_receipt"
 
 
 def reset_live_draft_render_checkpoints(session: dict[str, Any]) -> None:
@@ -21,6 +22,27 @@ def reset_live_draft_render_checkpoints(session: dict[str, Any]) -> None:
         "draft_id": "",
     }
     session.pop(RENDER_ABORT_KEY, None)
+    session[ACTIVE_PAGE_RECEIPT_KEY] = {
+        "active_page_render_started": False,
+        "control_center_complete": False,
+        "queue_complete": False,
+        "board_complete": False,
+        "recommendations_complete": False,
+        "rosters_complete": False,
+        "active_page_render_complete": False,
+        "queue_fast_paint_cleared": False,
+        "queue_fast_paint_was_set": False,
+        "page_level_queue_stop": False,
+    }
+
+
+def note_active_page_receipt(session: dict[str, Any], key: str, value: Any = True) -> None:
+    receipt = session.get(ACTIVE_PAGE_RECEIPT_KEY)
+    if not isinstance(receipt, dict):
+        reset_live_draft_render_checkpoints(session)
+        receipt = session[ACTIVE_PAGE_RECEIPT_KEY]
+    receipt[str(key)] = value
+    session[ACTIVE_PAGE_RECEIPT_KEY] = receipt
 
 
 def note_live_draft_render_checkpoint(
@@ -92,8 +114,13 @@ def render_live_draft_checkpoint_panel(st: Any, session: dict[str, Any]) -> None
             return
     blob = session.get(RENDER_CHECKPOINT_KEY) if isinstance(session.get(RENDER_CHECKPOINT_KEY), dict) else {}
     abort = session.get(RENDER_ABORT_KEY) if isinstance(session.get(RENDER_ABORT_KEY), dict) else {}
+    receipt = session.get(ACTIVE_PAGE_RECEIPT_KEY) if isinstance(session.get(ACTIVE_PAGE_RECEIPT_KEY), dict) else {}
     order = list(blob.get("order") or [])
-    with st.expander("Live Draft render checkpoints (Developer Mode)", expanded=bool(abort)):
+    incomplete = bool(receipt) and not receipt.get("active_page_render_complete")
+    with st.expander(
+        "Live Draft render checkpoints (Developer Mode)",
+        expanded=bool(abort) or incomplete,
+    ):
         st.caption(
             f"page=`{blob.get('selected_page')}` · lifecycle=`{blob.get('lifecycle')}` · "
             f"gen=`{blob.get('page_generation')}` · epoch=`{blob.get('live_draft_epoch')}`"
@@ -102,6 +129,12 @@ def render_live_draft_checkpoint_panel(st: Any, session: dict[str, Any]) -> None
             f"room=`{blob.get('room_code')}` · draft=`{blob.get('draft_id')}` · "
             f"room_id=`{blob.get('room_id')}`"
         )
+        if receipt:
+            st.markdown("**Active page receipt**")
+            st.json(receipt)
+            ignored = session.get("_live_draft_queue_fast_paint_ignored")
+            if isinstance(ignored, dict):
+                st.caption(f"queue_fast_paint_ignored=`{ignored}`")
         try:
             from shared_live_draft_snapshot import SHARED_ROOM_SNAPSHOT_KEY
 
