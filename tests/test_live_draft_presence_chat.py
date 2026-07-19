@@ -265,7 +265,7 @@ class ChatSharedScopeTests(unittest.TestCase):
         scope_d = canonical_chat_scope(self.daniel)
         scope_c = canonical_chat_scope(self.coakley)
         self.assertEqual(scope_d, scope_c)
-        self.assertTrue(scope_d.startswith("league:"))
+        self.assertTrue(scope_d.startswith("room:"))
 
         with mock.patch(
             "draft_room_participant_state.resolve_participant_id",

@@ -2,24 +2,32 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import timedelta
 from typing import Any
 
 from live_draft_chat import (
     CHAT_COLLAPSED_KEY,
     CHAT_POLL_SEC,
+    CHAT_REPLY_TO_KEY,
     CHAT_SHOW_EARLIER_KEY,
     CHAT_VISIBLE_LIMIT,
+    MSG_TYPE_PRIVATE_REPLY,
+    MSG_TYPE_SYSTEM,
     append_live_draft_chat_message,
+    append_private_reply,
     chat_room_title,
     clear_system_chat_messages,
     count_earlier_user_messages,
     delete_chat_message,
+    find_chat_message_in_room,
     format_chat_timestamp,
     is_chat_commissioner,
     load_live_draft_chat,
     mark_chat_seen,
     message_mentions_viewer,
+    participant_may_view_message,
+    private_reply_label,
     refresh_live_draft_chat_if_newer,
     set_chat_disabled,
     unread_chat_count,
@@ -27,6 +35,7 @@ from live_draft_chat import (
 )
 
 CHAT_COMPOSER_KEY = "live_draft_chat_composer_text"
+CHAT_REPLY_CLIENT_ID_KEY = "_live_draft_chat_reply_client_id"
 
 
 def _escape_html(text: str) -> str:
@@ -118,6 +127,16 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.ld-aim-root) {
 .ld-aim-text { clear: both; white-space: pre-wrap; word-wrap: break-word; }
 .ld-aim-empty { color: #666; font-style: italic; font-size: 11px; padding: 4px 0; }
 .ld-aim-composer-note { font-size: 10px; color: #444; padding: 0 6px 4px 6px; }
+.ld-aim-private {
+  border-left: 3px solid #000080;
+  background: #f0f4ff;
+  padding: 4px 6px;
+  margin-top: 2px;
+}
+.ld-aim-private-label { font-size: 10px; font-weight: 700; color: #000080; }
+.ld-aim-reply-preview {
+  font-size: 10px; color: #444; font-style: italic; margin: 2px 0 4px 0;
+}
 </style>
 """
 
@@ -264,7 +283,8 @@ def _transcript_html(session: dict[str, Any], messages: list[dict[str, Any]]) ->
     parts = ['<div class="ld-aim-log" id="ld-aim-log">']
     for msg in messages:
         classes = ["ld-aim-row"]
-        if me and str(msg.get("participant_id") or "") == me:
+        is_private = str(msg.get("message_type") or "") == MSG_TYPE_PRIVATE_REPLY
+        if me and str(msg.get("participant_id") or msg.get("sender_participant_id") or "") == me:
             classes.append("mine")
         if message_mentions_viewer(msg, session):
             classes.append("mention")
@@ -273,12 +293,26 @@ def _transcript_html(session: dict[str, Any], messages: list[dict[str, Any]]) ->
         ts = _escape_html(format_chat_timestamp(str(msg.get("ts") or "")))
         text = _escape_html(str(msg.get("text") or ""))
         team_bit = f' <span class="ld-aim-team">— {team}</span>' if team else ""
-        parts.append(
-            f'<div class="{" ".join(classes)}">'
-            f'<div class="ld-aim-meta"><strong>{name}</strong>{team_bit}'
-            f'<span class="ld-aim-ts">{ts}</span></div>'
-            f'<div class="ld-aim-text">{text}</div></div>'
-        )
+        if is_private:
+            label = _escape_html(private_reply_label(msg))
+            preview = _escape_html(str(msg.get("reply_to_preview") or ""))
+            parts.append(
+                f'<div class="{" ".join(classes)}">'
+                f'<div class="ld-aim-meta"><strong>{name}</strong>{team_bit}'
+                f'<span class="ld-aim-ts">{ts}</span></div>'
+                f'<div class="ld-aim-private">'
+                f'<div class="ld-aim-private-label">{label}</div>'
+                f'<div class="ld-aim-reply-preview">Replying to: {preview}</div>'
+                f'<div class="ld-aim-text">{text}</div>'
+                f"</div></div>"
+            )
+        else:
+            parts.append(
+                f'<div class="{" ".join(classes)}">'
+                f'<div class="ld-aim-meta"><strong>{name}</strong>{team_bit}'
+                f'<span class="ld-aim-ts">{ts}</span></div>'
+                f'<div class="ld-aim-text">{text}</div></div>'
+            )
     parts.append("</div>")
     # Auto-scroll only on initial load / own send / when already near bottom.
     # Avoid yanking users who are reading older messages.
@@ -300,10 +334,25 @@ def _transcript_html(session: dict[str, Any], messages: list[dict[str, Any]]) ->
 
 def post_chat_message(session: dict[str, Any], text: str, *, composer_key: str = CHAT_COMPOSER_KEY) -> tuple[bool, str]:
     """Persist a chat message and clear composer state. Does not call st.rerun()."""
-    ok, err = append_live_draft_chat_message(session, text)
+    reply_to = str(session.get(CHAT_REPLY_TO_KEY) or "").strip()
+    if reply_to:
+        client_id = str(session.get(CHAT_REPLY_CLIENT_ID_KEY) or "").strip()
+        if not client_id:
+            client_id = uuid.uuid4().hex
+            session[CHAT_REPLY_CLIENT_ID_KEY] = client_id
+        ok, err = append_private_reply(
+            session,
+            reply_to_message_id=reply_to,
+            text=text,
+            client_message_id=client_id,
+        )
+    else:
+        ok, err = append_live_draft_chat_message(session, text)
     if ok:
         mark_chat_seen(session)
         session["_live_draft_chat_force_scroll"] = True
+        session.pop(CHAT_REPLY_TO_KEY, None)
+        session.pop(CHAT_REPLY_CLIENT_ID_KEY, None)
         try:
             session[composer_key] = ""
         except Exception:
@@ -414,11 +463,13 @@ def _chat_body(st: Any, session: dict[str, Any], *, form_key: str = "live_draft_
     refresh_live_draft_chat_if_newer(session)
     chat = load_live_draft_chat(session, force=True)
     all_messages = list(chat.get("messages") or [])
+    me = _current_participant_id(session)
     show_earlier = bool(session.get(CHAT_SHOW_EARLIER_KEY))
-    earlier = count_earlier_user_messages(all_messages)
+    earlier = count_earlier_user_messages(all_messages, participant_id=me)
     visible = user_visible_messages(
         all_messages,
         limit=20 if show_earlier else CHAT_VISIBLE_LIMIT,
+        participant_id=me,
     )
 
     title = chat_room_title(session)
@@ -448,15 +499,57 @@ def _chat_body(st: Any, session: dict[str, Any], *, form_key: str = "live_draft_
         if st.button("Show latest five", key="ld_chat_latest_five"):
             session[CHAT_SHOW_EARLIER_KEY] = False
 
+    # Compact Reply actions for eligible messages (fragment-local; no full-page rerun).
+    replyable = [
+        m
+        for m in visible
+        if str(m.get("message_type") or "") != MSG_TYPE_SYSTEM
+        and participant_may_view_message(m, me)
+        and str(m.get("sender_participant_id") or m.get("participant_id") or "") != me
+    ]
+    if replyable:
+        cols = st.columns(min(len(replyable), 5))
+        for idx, msg in enumerate(replyable[-5:]):
+            mid = str(msg.get("id") or msg.get("message_id") or "")
+            author = str(msg.get("display_name") or "Manager").split("@", 1)[0][:16]
+            with cols[idx % len(cols)]:
+                if st.button(
+                    f"Reply · {author}",
+                    key=f"ld_chat_reply_{mid}",
+                    help="Send a private reply only you and this author can see.",
+                ):
+                    session[CHAT_REPLY_TO_KEY] = mid
+                    session[CHAT_REPLY_CLIENT_ID_KEY] = uuid.uuid4().hex
+
+    reply_to = str(session.get(CHAT_REPLY_TO_KEY) or "").strip()
+    if reply_to:
+        original = find_chat_message_in_room(session, reply_to)
+        if isinstance(original, dict) and participant_may_view_message(original, me):
+            preview = str(original.get("text") or "")[:120]
+            to_name = str(original.get("display_name") or "Manager").split("@", 1)[0]
+            st.caption(f"Private reply to **{to_name}**")
+            st.caption(f"Replying to: {preview}")
+            if st.button("Cancel", key=f"{form_key}_reply_cancel"):
+                session.pop(CHAT_REPLY_TO_KEY, None)
+                session.pop(CHAT_REPLY_CLIENT_ID_KEY, None)
+        else:
+            session.pop(CHAT_REPLY_TO_KEY, None)
+            session.pop(CHAT_REPLY_CLIENT_ID_KEY, None)
+
     err = str(session.pop("_live_draft_chat_post_error", "") or "").strip()
     if err:
         st.caption(err)
 
     with st.form(form_key, clear_on_submit=True):
+        placeholder = (
+            "Type a private reply…"
+            if session.get(CHAT_REPLY_TO_KEY)
+            else "Type a message…"
+        )
         message = st.text_area(
             "Message",
             label_visibility="collapsed",
-            placeholder="Type a message…",
+            placeholder=placeholder,
             max_chars=400,
             height=68,
             key=f"{form_key}_input",
