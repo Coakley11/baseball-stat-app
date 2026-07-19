@@ -107,9 +107,30 @@ class QueueRealtimePersistTests(unittest.TestCase):
         with patch("baseball_persistent_state.force_save_baseball_state", return_value=True) as mock_save:
             self.assertFalse(maybe_flush_deferred_draft_queue_autosave(st, session))
             mock_save.assert_not_called()
-            session["_draft_queue_persist_dirty_ts"] = time.time() - (DRAFT_QUEUE_AUTOSAVE_SEC + 0.5)
+            session["_draft_queue_persist_dirty_ts"] = time.time() - (max(DRAFT_QUEUE_AUTOSAVE_SEC, 2.0) + 0.5)
             self.assertTrue(maybe_flush_deferred_draft_queue_autosave(st, session))
             mock_save.assert_called_once()
+
+    def test_flush_skipped_on_queue_fast_paint(self) -> None:
+        session: dict = {}
+        add_player_to_draft_queue(session, "Trea Turner")
+        session["_draft_queue_persist_dirty_ts"] = time.time() - 10.0
+        session["_live_draft_skip_queue_flush_this_run"] = True
+        st = MagicMock()
+        with patch("baseball_persistent_state.force_save_baseball_state") as mock_save:
+            self.assertFalse(maybe_flush_deferred_draft_queue_autosave(st, session))
+            mock_save.assert_not_called()
+
+    def test_queue_fast_paint_flag_survives_expensive_check(self) -> None:
+        from live_draft_rerun_scope import QUEUE_FAST_PAINT_KEY, consume_live_draft_queue_fast_paint
+
+        session: dict = {}
+        mark_live_draft_queue_tick(session)
+        self.assertTrue(session.get(QUEUE_FAST_PAINT_KEY))
+        self.assertFalse(live_draft_expensive_recompute_required(session))
+        self.assertTrue(session.get(QUEUE_FAST_PAINT_KEY))
+        self.assertTrue(consume_live_draft_queue_fast_paint(session))
+        self.assertFalse(session.get(QUEUE_FAST_PAINT_KEY))
 
 
 class QueueLatencyProbeTests(unittest.TestCase):

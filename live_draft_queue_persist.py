@@ -79,10 +79,19 @@ def flush_draft_queue_persist(
 
 
 def maybe_flush_deferred_draft_queue_autosave(st: Any, session: dict[str, Any]) -> bool:
-    """Debounced background flush while the user keeps editing the queue."""
+    """Debounced background flush while the user keeps editing the queue.
+
+    Never flush on the same script pass as a Live Draft queue-only fast paint
+    (``_live_draft_skip_queue_flush_this_run``) — that reintroduces force_save into
+    the click path and freezes the page for 60–90s on Cloud.
+    """
     if not is_draft_queue_persist_dirty(session):
         return False
+    if session.pop("_live_draft_skip_queue_flush_this_run", None):
+        return False
     ts = float(session.get(DRAFT_QUEUE_PERSIST_DIRTY_TS_KEY) or 0.0)
-    if ts <= 0 or (time.time() - ts) < DRAFT_QUEUE_AUTOSAVE_SEC:
+    # Prefer 2–5s settle so a full Live Draft paint never force-saves mid-click.
+    settle = max(float(DRAFT_QUEUE_AUTOSAVE_SEC), 2.0)
+    if ts <= 0 or (time.time() - ts) < settle:
         return False
     return flush_draft_queue_persist(st, session, reason="draft_queue_debounced_autosave")

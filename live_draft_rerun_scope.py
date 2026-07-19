@@ -6,6 +6,7 @@ from typing import Any
 
 TIMER_TICK_KEY = "_live_draft_timer_fragment_tick"
 QUEUE_TICK_KEY = "_live_draft_queue_only_tick"
+QUEUE_FAST_PAINT_KEY = "_live_draft_queue_fast_paint"
 PICK_TICK_KEY = "_live_draft_optimistic_pick_tick"
 EXPENSIVE_WORK_KEY = "_live_draft_force_expensive_recompute"
 
@@ -19,10 +20,20 @@ def mark_live_draft_timer_tick(session: dict[str, Any]) -> None:
 def mark_live_draft_queue_tick(session: dict[str, Any]) -> None:
     """Queue add/remove/reorder — paint queue only; keep cached recommendations."""
     session[QUEUE_TICK_KEY] = True
+    # Durable until the Live Draft fast-paint path consumes it (QUEUE_TICK is one-shot).
+    session[QUEUE_FAST_PAINT_KEY] = True
     session.pop(TIMER_TICK_KEY, None)
     session.pop(PICK_TICK_KEY, None)
     # Never force expensive recompute for queue-only mutations.
     session.pop(EXPENSIVE_WORK_KEY, None)
+
+
+def consume_live_draft_queue_fast_paint(session: dict[str, Any]) -> bool:
+    """Return True once when a queue mutation requested a light paint."""
+    if not session.pop(QUEUE_FAST_PAINT_KEY, None):
+        return False
+    session.pop(QUEUE_TICK_KEY, None)
+    return True
 
 
 def mark_live_draft_optimistic_pick_tick(session: dict[str, Any]) -> None:

@@ -12360,7 +12360,20 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     except Exception:
         _skip_sidebar_queue = False
     if _skip_sidebar_queue:
-        st.sidebar.caption("Draft Queue is shown in the Live Draft Room panel.")
+        # Read-only mirror of the same canonical draft_queue (no second interactive widgets).
+        _mirror = [
+            str(x).strip()
+            for x in (st.session_state.get("draft_queue") or st.session_state.get("_live_draft_queue_sidebar_mirror") or [])
+            if str(x).strip()
+        ]
+        st.session_state["_live_draft_queue_sidebar_mirror"] = list(_mirror)
+        if not _mirror:
+            st.sidebar.caption("Queue empty — add from Live Draft Room.")
+        else:
+            for _mi, _mname in enumerate(_mirror[:12]):
+                st.sidebar.caption(f"{_mi + 1}. {_mname[:40]}{'…' if len(_mname) > 40 else ''}")
+            if len(_mirror) > 12:
+                st.sidebar.caption(f"+{len(_mirror) - 12} more")
     else:
         try:
             if render_draft_queue_panel(
@@ -23632,6 +23645,28 @@ elif active_page == "Live Draft Room":
         except ImportError:
             pass
         room = _live_draft_lifecycle_room
+        # Queue-only fast paint: mutate already updated session; skip board/recs/timer/chat.
+        try:
+            from live_draft_rerun_scope import consume_live_draft_queue_fast_paint
+
+            if consume_live_draft_queue_fast_paint(st.session_state):
+                st.session_state["_live_draft_skip_queue_flush_this_run"] = True
+                st.subheader("Live Draft Queue")
+                try:
+                    from live_draft_queue_fragment import render_live_draft_queue_fragment
+
+                    render_live_draft_queue_fragment(st, st.session_state)
+                except ImportError:
+                    from draft_ui import render_live_draft_queue_panel
+
+                    render_live_draft_queue_panel(st, st.session_state)
+                # Sidebar mirror is painted earlier in the script; keep revision in sync.
+                st.session_state["_live_draft_queue_sidebar_mirror"] = list(
+                    st.session_state.get("draft_queue") or []
+                )
+                st.stop()
+        except ImportError:
+            pass
         # Authoritative membership gate — guests without Join must not render this room.
         try:
             from draft_room_context import is_multiplayer_draft_active
@@ -24368,7 +24403,8 @@ elif active_page == "Live Draft Room":
         _solo_expire = None
         _timer_bar_fallback = None  # "caption" | "recovery" | None
 
-        # Solo: one canonical expire_current_pick_and_advance — no shared latch maze.
+        # Solo: On-the-Clock banner fragment owns expire+display. Page is fallback only
+        # when the fragment has not handled a zero-cross recently (no fragment / first paint).
         _is_solo_draft = False
         try:
             from live_draft_solo_timer import is_solo_live_draft, run_solo_expire_if_needed
@@ -24382,24 +24418,34 @@ elif active_page == "Live Draft Room":
         # Control Center + Chat so the visual order stays controls|chat → On Clock.
         if _process_expired_or_timer and _is_solo_draft:
             try:
-                from live_draft_solo_timer import run_solo_expire_if_needed
+                import time as _solo_page_time
+
+                from live_draft_solo_timer import (
+                    SOLO_FRAGMENT_OWNED_EXPIRE_KEY,
+                    run_solo_expire_if_needed,
+                )
                 from live_draft_timer_ui import note_live_draft_page_load
 
                 with ldr_step(st.session_state, "timer_note_page_load", st=st):
                     note_live_draft_page_load(st.session_state, room)
-                st.session_state["_live_draft_page_owns_expired"] = True
-                with ldr_step(st.session_state, "solo_expire_current_pick", st=st):
-                    _solo_expire = run_solo_expire_if_needed(st.session_state, room)
-                if _solo_expire is not None:
-                    if _solo_expire.error:
-                        st.error(_solo_expire.error)
-                    elif _solo_expire.ok and _solo_expire.message:
-                        st.success(_solo_expire.message)
-                    if developer_mode_enabled() and _solo_expire.zero_to_commit_ms is not None:
-                        st.caption(
-                            f"Solo expire: zero→commit {_solo_expire.zero_to_commit_ms:.0f}ms · "
-                            f"commit→timer {_solo_expire.commit_to_next_timer_ms or 0:.0f}ms"
+                _owned_at = float(st.session_state.get(SOLO_FRAGMENT_OWNED_EXPIRE_KEY) or 0.0)
+                _fragment_recent = bool(_owned_at and (_solo_page_time.time() - _owned_at) < 2.0)
+                if not _fragment_recent:
+                    # Fallback only — never request a full-app rebuild for Solo expire.
+                    with ldr_step(st.session_state, "solo_expire_current_pick", st=st):
+                        _solo_expire = run_solo_expire_if_needed(
+                            st.session_state, room, request_full_rerun=False
                         )
+                    if _solo_expire is not None:
+                        if _solo_expire.error:
+                            st.error(_solo_expire.error)
+                        elif _solo_expire.ok and _solo_expire.message:
+                            st.success(_solo_expire.message)
+                        if developer_mode_enabled() and _solo_expire.zero_to_commit_ms is not None:
+                            st.caption(
+                                f"Solo expire: zero→commit {_solo_expire.zero_to_commit_ms:.0f}ms · "
+                                f"commit→timer {_solo_expire.commit_to_next_timer_ms or 0:.0f}ms"
+                            )
             except ImportError:
                 _timer_bar_fallback = "caption"
         elif _process_expired_or_timer:
@@ -24484,9 +24530,11 @@ elif active_page == "Live Draft Room":
                 with ldr_step(st.session_state, "timer_render_countdown", st=st):
                     render_live_draft_timer_bar(st, st.session_state, room)
                 st.session_state.pop("_live_draft_page_owns_expired", None)
+                # Solo never full-reruns on expire — that freezes the browser at 0 while
+                # the backend advances. Banner fragment already installed the next timer.
                 _need_expire_rerun = bool(
                     (_expired_result is not None and _expired_result.should_rerun)
-                    or (_solo_expire is not None and _solo_expire.should_rerun)
+                    and not _is_solo_draft
                 )
                 if _need_expire_rerun:
                     try:
@@ -24682,6 +24730,21 @@ elif active_page == "Live Draft Room":
                         slot,
                         next_pick=next_user_pick,
                     )
+                    if developer_mode_enabled():
+                        try:
+                            from live_draft_solo_timer import (
+                                VISIBLE_TIMER_COUNT_KEY,
+                                is_solo_live_draft,
+                            )
+
+                            if is_solo_live_draft(st.session_state, room):
+                                _vtc = int(st.session_state.get(VISIBLE_TIMER_COUNT_KEY) or 0)
+                                assert _vtc == 1, f"visible_timer_count == {_vtc}, expected 1"
+                                st.caption(f"Dev assert: visible_timer_count == {_vtc}")
+                        except AssertionError as _vtc_err:
+                            st.error(str(_vtc_err))
+                        except ImportError:
+                            pass
                 except ImportError:
                     remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
                     _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)

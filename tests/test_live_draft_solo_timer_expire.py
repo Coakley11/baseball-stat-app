@@ -157,5 +157,45 @@ class OptimisticQueueTests(unittest.TestCase):
         self.assertEqual(session[DRAFT_QUEUE_KEY], ["Aaron Judge", "Mookie Betts"])
 
 
+class SoloAuthoritativeTimerTests(unittest.TestCase):
+    def test_next_deadline_is_transition_plus_full_duration(self) -> None:
+        room = _four_pick_solo_room(timer_seconds=30)
+        session: dict = {"live_draft_setup_mode": "solo", "draft_queue": []}
+        expired_deadline = time.time() - 45.0
+        room["timer_deadline"] = expired_deadline
+        before = time.time()
+        result = expire_current_pick_and_advance(room, session=session)
+        after = time.time()
+        self.assertTrue(result.ok)
+        self.assertTrue(result.advanced)
+        self.assertIsNotNone(result.display)
+        deadline = float(room["timer_deadline"])
+        # Must NOT be expired_deadline + 30 (that yields a partially-expired clock).
+        self.assertGreater(deadline, expired_deadline + 40.0)
+        self.assertGreaterEqual(deadline, before + 29.5)
+        self.assertLessEqual(deadline, after + 30.5)
+        self.assertEqual(result.display.timer_duration, 30)
+        self.assertEqual(result.display.team, "Team B")
+        self.assertEqual(result.display.committed_picks, 1)
+        self.assertGreaterEqual(result.display.draft_revision, 1)
+        self.assertGreater(live_draft_seconds_remaining(room), 25)
+
+    def test_queued_player_removed_when_drafted(self) -> None:
+        room = _four_pick_solo_room(timer_seconds=5)
+        session: dict = {
+            "live_draft_setup_mode": "solo",
+            "draft_queue": ["Player 1", "Player 2", "Player 3"],
+        }
+        room["timer_deadline"] = time.time() - 1
+        # Force autopick to take first available (highest EFV = Player 1).
+        result = expire_current_pick_and_advance(room, session=session)
+        self.assertTrue(result.ok)
+        board = room.get("draft_board") or []
+        self.assertTrue(board)
+        drafted = str(board[-1].get("fullName") or "")
+        if drafted:
+            self.assertNotIn(drafted, session.get("draft_queue") or [])
+
+
 if __name__ == "__main__":
     unittest.main()

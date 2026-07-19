@@ -868,6 +868,13 @@ def _render_sidebar_timer_caption(st: Any, session: dict[str, Any], *, summary: 
     summary = summary or draft_status_summary(session)
     if not summary.get("live_draft_active"):
         return
+    # Live Draft Room already has one primary countdown — do not add a third clock.
+    try:
+        page = str(session.get("active_page") or "").strip()
+        if page == "Live Draft Room":
+            return
+    except Exception:
+        pass
     paused = session.get(SIDEBAR_TIMER_PAUSED_KEY)
     if paused is not None:
         st.sidebar.caption(f"Time Left: **{int(paused)}s** (paused)")

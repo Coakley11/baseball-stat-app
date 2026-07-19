@@ -345,85 +345,24 @@ def _render_js_countdown(st: Any, deadline: float, *, pick_index: int, session: 
 def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
     """Countdown that refreshes every second via Streamlit fragment when available.
 
-    Solo Draft uses a minimal wake-only owner: the page script runs
-    ``expire_current_pick_and_advance``; fragments never commit picks.
+    Solo Draft: no countdown here — the On-the-Clock banner is the single primary
+    clock and fragment expire owner (avoids duplicate TIME ON CLOCK + 0-freeze).
     """
     try:
-        from live_draft_solo_timer import SOLO_TIMER_WAKE_KEY, is_solo_live_draft, solo_clock_expired
+        from live_draft_solo_timer import (
+            install_solo_display_snapshot,
+            is_solo_live_draft,
+            record_visible_timer_count,
+        )
 
         if is_solo_live_draft(session, room):
             live_room = _resolve_live_room(session, room)
+            # Control Center must not paint a second countdown.
+            record_visible_timer_count(session, 0)
             if str(live_room.get("status") or "") == "paused":
-                remaining = live_draft_display_seconds(live_room)
-                st.markdown(f"**Draft paused** · {remaining}s on clock")
+                st.caption("Draft paused — use Resume in Control Center")
                 return
-            remaining = live_draft_seconds_remaining(live_room)
-            deadline = live_draft_timer_deadline(live_room)
-            if deadline is not None:
-                _render_js_countdown(
-                    st,
-                    float(deadline),
-                    pick_index=int(live_room.get("current_pick_index") or 0),
-                    session=session,
-                )
-            else:
-                st.markdown(f"**Time on clock:** {remaining}s")
-            if solo_clock_expired(live_room) or remaining <= 0:
-                session[SOLO_TIMER_WAKE_KEY] = True
-                st.caption("Auto-picking…")
-                # Wake-only fragment: never commit; page owns expire_current_pick_and_advance.
-                try:
-                    fragment = st.fragment
-                except AttributeError:
-                    fragment = None
-                if fragment is not None and not session.get("_live_draft_page_owns_expired"):
-
-                    @fragment(run_every=1)
-                    def _solo_wake_tick() -> None:
-                        tick_room = _resolve_live_room(session, room)
-                        if solo_clock_expired(tick_room):
-                            session[SOLO_TIMER_WAKE_KEY] = True
-                            try:
-                                from live_draft_safe_mode import request_live_draft_rerun
-
-                                request_live_draft_rerun(st, session, "solo_expire", room=tick_room)
-                            except ImportError:
-                                st.rerun()
-
-                    _solo_wake_tick()
-                return
-            # Time remains — light wake fragment only (no expire commit).
-            try:
-                fragment = st.fragment
-            except AttributeError:
-                fragment = None
-            if fragment is None:
-                return
-
-            @fragment(run_every=1)
-            def _solo_countdown_tick() -> None:
-                tick_room = _resolve_live_room(session, room)
-                rem = live_draft_seconds_remaining(tick_room)
-                dl = live_draft_timer_deadline(tick_room)
-                if dl is not None:
-                    _render_js_countdown(
-                        st,
-                        float(dl),
-                        pick_index=int(tick_room.get("current_pick_index") or 0),
-                        session=session,
-                    )
-                else:
-                    st.markdown(f"**Time on clock:** {rem}s")
-                if rem <= 0 or solo_clock_expired(tick_room):
-                    session[SOLO_TIMER_WAKE_KEY] = True
-                    try:
-                        from live_draft_safe_mode import request_live_draft_rerun
-
-                        request_live_draft_rerun(st, session, "solo_expire", room=tick_room)
-                    except ImportError:
-                        st.rerun()
-
-            _solo_countdown_tick()
+            install_solo_display_snapshot(session, live_room)
             return
     except ImportError:
         pass

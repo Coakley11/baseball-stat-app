@@ -228,6 +228,15 @@ def render_live_on_clock_banner(
         return
 
     try:
+        from live_draft_solo_timer import is_solo_live_draft, record_visible_timer_count
+
+        if is_solo_live_draft(session, live_room):
+            # Sole primary countdown for Solo Draft Room.
+            record_visible_timer_count(session, 1)
+    except ImportError:
+        pass
+
+    try:
         from live_draft_pick_timer import display_seconds_with_freeze, frozen_deadline, is_pick_submitting
 
         if is_pick_submitting(session):
@@ -325,52 +334,74 @@ def render_live_on_clock_banner(
             tick_deadline = live_draft_timer_deadline(tick_room)
             tick_idx = int(tick_room.get("current_pick_index") or pick_idx)
             remaining = live_draft_display_seconds(tick_room)
-        # When at zero, run the same idempotent expire path Control Center uses.
+        # When at zero: Solo fragment/banner installs next pick+full timer in-place.
+        # Shared rooms still poll; page/timer-authority owns multiparty CAS.
         try:
             from live_draft_timer_logic import live_draft_timer_expired_for_pick
 
             if live_draft_timer_expired_for_pick(tick_room):
-                # Page / timer-authority fragment owns the CAS commit. Banner only
-                # polls + paints so two devices cannot both invent an auto-pick.
-                may_expire = True
                 try:
-                    from live_draft_timer_authority import multiparty_may_run_autopick
+                    from live_draft_solo_timer import (
+                        expire_current_pick_and_advance,
+                        is_solo_live_draft,
+                        note_solo_fragment_owned_expire,
+                    )
 
-                    may_expire = bool(multiparty_may_run_autopick(session, tick_room))
-                except ImportError:
-                    pass
-                if may_expire and not session.get("_live_draft_page_owns_expired"):
-                    try:
-                        from live_draft_solo_timer import is_solo_live_draft
+                    if is_solo_live_draft(session, tick_room):
+                        note_solo_fragment_owned_expire(session)
+                        result = expire_current_pick_and_advance(
+                            tick_room, session=session, request_full_rerun=False
+                        )
+                        tick_room = _resolve_live_room(session, tick_room)
+                        if result.display is not None:
+                            tick_idx = int(result.display.pick_index)
+                            tick_deadline = result.display.timer_deadline
+                            remaining = int(result.display.remaining_seconds)
+                            tick_slot = dict(tick_slot)
+                            tick_slot["Team"] = result.display.team or tick_slot.get("Team")
+                            tick_slot["Pick"] = result.display.pick_number
+                        else:
+                            tick_slot = live_draft_current_slot(tick_room) or tick_slot
+                            tick_deadline = live_draft_timer_deadline(tick_room)
+                            tick_idx = int(tick_room.get("current_pick_index") or tick_idx)
+                            remaining = live_draft_display_seconds(tick_room)
+                        session["_live_draft_solo_board_stale"] = True
+                    else:
+                        may_expire = True
+                        try:
+                            from live_draft_timer_authority import multiparty_may_run_autopick
 
-                        if is_solo_live_draft(session, tick_room):
-                            # Solo page owns expire_current_pick_and_advance — banner never commits.
-                            session["_solo_timer_wake"] = True
-                            may_expire = False
-                    except ImportError:
-                        pass
-                if may_expire and not session.get("_live_draft_page_owns_expired"):
-                    from live_draft_expired_pick import expire_pick_and_advance
+                            may_expire = bool(multiparty_may_run_autopick(session, tick_room))
+                        except ImportError:
+                            pass
+                        if may_expire and not session.get("_live_draft_page_owns_expired"):
+                            from live_draft_expired_pick import expire_pick_and_advance
 
-                    expire_pick_and_advance(session, source="on_clock_banner_zero")
-                else:
-                    try:
-                        from draft_room_context import poll_shared_draft_room, reset_shared_draft_sync_gate
+                            expire_pick_and_advance(session, source="on_clock_banner_zero")
+                        else:
+                            try:
+                                from draft_room_context import (
+                                    poll_shared_draft_room,
+                                    reset_shared_draft_sync_gate,
+                                )
 
-                        reset_shared_draft_sync_gate(session)
-                        poll_shared_draft_room(session, force=True)
-                    except ImportError:
-                        pass
-                tick_room = _resolve_live_room(session, tick_room)
-                try:
-                    from shared_live_draft_snapshot import build_shared_live_draft_snapshot
+                                reset_shared_draft_sync_gate(session)
+                                poll_shared_draft_room(session, force=True)
+                            except ImportError:
+                                pass
+                        tick_room = _resolve_live_room(session, tick_room)
+                        try:
+                            from shared_live_draft_snapshot import build_shared_live_draft_snapshot
 
-                    snap = build_shared_live_draft_snapshot(session, room=tick_room)
-                    tick_idx = int(snap.get("current_pick_index") or tick_idx)
-                    tick_deadline = snap.get("turn_deadline")
-                    remaining = snap.get("seconds_remaining")
-                    if remaining is None:
-                        remaining = live_draft_display_seconds(tick_room)
+                            snap = build_shared_live_draft_snapshot(session, room=tick_room)
+                            tick_idx = int(snap.get("current_pick_index") or tick_idx)
+                            tick_deadline = snap.get("turn_deadline")
+                            remaining = snap.get("seconds_remaining")
+                            if remaining is None:
+                                remaining = live_draft_display_seconds(tick_room)
+                        except ImportError:
+                            remaining = live_draft_display_seconds(tick_room)
+                            tick_deadline = live_draft_timer_deadline(tick_room)
                 except ImportError:
                     remaining = live_draft_display_seconds(tick_room)
                     tick_deadline = live_draft_timer_deadline(tick_room)
@@ -382,6 +413,21 @@ def render_live_on_clock_banner(
             diag["timer_component_mounted"] = tick_deadline is not None
             diag["timer_component_last_render"] = time.time()
             session["_live_draft_timer_diag"] = diag
+        try:
+            from live_draft_solo_timer import is_solo_live_draft, record_visible_timer_count
+
+            if is_solo_live_draft(session, tick_room):
+                # Sole primary countdown for Solo (timer bar paints none).
+                record_visible_timer_count(session, 1)
+                # Background queue persist — never on the click critical path.
+                try:
+                    from live_draft_queue_persist import maybe_flush_deferred_draft_queue_autosave
+
+                    maybe_flush_deferred_draft_queue_autosave(st, session)
+                except ImportError:
+                    pass
+        except ImportError:
+            pass
         _render_on_clock_banner_html(
             st,
             tick_slot,
