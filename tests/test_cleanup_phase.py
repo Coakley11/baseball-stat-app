@@ -159,6 +159,9 @@ class LiveDraftUxTests(unittest.TestCase):
             def markdown(self, *_a, **_k) -> None:
                 pass
 
+            def caption(self, *_a, **_k) -> None:
+                pass
+
             def columns(self, n: int) -> list[_Col]:
                 self.cols = [_Col() for _ in range(n)]
                 return self.cols
@@ -167,7 +170,7 @@ class LiveDraftUxTests(unittest.TestCase):
         session: dict = {}
         render_live_draft_quick_nav(st, session)
         total_calls = sum(len(c.calls) for c in st.cols)
-        self.assertEqual(total_calls, 3)  # Assistant + Sleepers + Queue
+        self.assertEqual(total_calls, 3)  # Queue + Assistant + Sleepers
 
     def test_rec_card_metrics_include_core_fields(self) -> None:
         row = {
@@ -194,10 +197,9 @@ class LiveDraftUxTests(unittest.TestCase):
 
     def test_live_draft_room_wires_panels(self) -> None:
         text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
-        self.assertIn("render_live_draft_quick_nav", text)
-        self.assertIn("render_roster_tracker_panel", text)
+        self.assertIn("render_draft_decision_panel", text)
         self.assertIn("render_category_outlook_panel", text)
-        self.assertIn("render_position_scarcity_panel", text)
+        # Tall separate scarcity / roster checklist / quick-nav strips are no longer primary.
 
     def test_roster_tracker_updates_after_pick(self) -> None:
         from live_draft_roster_tracker import build_team_roster_tracker

@@ -177,6 +177,7 @@ class QuickNavTests(unittest.TestCase):
         button_calls = sum(col.button.call_count for col in cols)
         self.assertEqual(button_calls, len(LIVE_DRAFT_QUICK_NAV_PAGES) + 1)
         self.assertEqual(LIVE_DRAFT_QUICK_NAV_QUEUE_ACTION[1], "Queue")
+        st.caption.assert_called()
 
 
 class DraftFlowUpdateTests(unittest.TestCase):

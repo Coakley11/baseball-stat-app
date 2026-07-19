@@ -1948,3 +1948,178 @@ def render_position_scarcity_panel(
         f'<div class="ld-pos-heat-grid">{"".join(cells)}</div></div>',
         unsafe_allow_html=True,
     )
+
+
+def _scarcity_label(score: Any, *, strong_cut: float, weak_cut: float) -> str:
+    try:
+        if score is None or pd.isna(score):
+            return "—"
+        val = float(score)
+    except (TypeError, ValueError):
+        return "—"
+    if val >= strong_cut:
+        return "High"
+    if val >= weak_cut:
+        return "Medium"
+    return "Low"
+
+
+def render_draft_decision_panel(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    tracker: dict[str, Any],
+    available_df: Any,
+    gaps: list[str] | None = None,
+    room: dict[str, Any] | None = None,
+    page_label_fn: Any = None,
+) -> None:
+    """One compact Roster Status + Scarcity + Quick Tools strip for timed picks."""
+    lines = list(tracker.get("lines") or [])
+    open_gaps = {str(g).strip() for g in (gaps or tracker.get("gaps") or []) if str(g).strip()}
+    scarcity_by_pos: dict[str, dict[str, Any]] = {}
+    strong_cut = weak_cut = 0.0
+    if available_df is not None and not getattr(available_df, "empty", True):
+        try:
+            from live_draft_pick_scoring import _draft_compute_position_replacement
+            from live_draft_roster_slots import (
+                get_active_position_codes,
+                get_league_remaining_demand,
+                normalize_draft_slot_config,
+            )
+
+            cfg = normalize_draft_slot_config(dict((room or {}).get("config") or {}))
+            active = get_active_position_codes(cfg)
+            league_demand = get_league_remaining_demand(room, cfg)
+            _, rows = _draft_compute_position_replacement(
+                available_df,
+                active_positions=active,
+                league_demand=league_demand,
+            )
+            dropoffs = [
+                float(r.get("Scarcity Score"))
+                for r in rows
+                if r.get("Scarcity Score") is not None and not pd.isna(r.get("Scarcity Score"))
+            ]
+            if dropoffs:
+                strong_cut = float(np.percentile(dropoffs, 66))
+                weak_cut = float(np.percentile(dropoffs, 33))
+            for row in rows:
+                pos = str(row.get("Position") or "").strip()
+                if pos:
+                    scarcity_by_pos[pos] = row
+        except ImportError:
+            pass
+
+    # Build position rows from tracker lines (preferred) or scarcity keys.
+    pos_rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ln in lines:
+        code = str(ln.get("position") or ln.get("code") or ln.get("slot") or "").strip().upper()
+        if not code:
+            label = str(ln.get("label") or "").strip()
+            code = label.split()[0].strip("—-").upper() if label else ""
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        filled = bool(ln.get("filled"))
+        need_n = 1 if not filled else 0
+        scar = scarcity_by_pos.get(code) or {}
+        avail_n = int(scar.get("Quality Supply") or scar.get("Available") or 0)
+        drafted_n = 0
+        if isinstance(room, dict):
+            board = room.get("draft_board") or []
+            drafted_n = sum(
+                1
+                for r in board
+                if isinstance(r, dict)
+                and str(r.get("Primary Position") or r.get("Pos") or "").strip().upper() == code
+            )
+        score = scar.get("Scarcity Score")
+        pos_rows.append(
+            {
+                "pos": code,
+                "status": "✅ Filled" if filled else f"❌ Need {need_n}",
+                "available": avail_n,
+                "drafted": drafted_n,
+                "scarcity": _scarcity_label(score, strong_cut=strong_cut, weak_cut=weak_cut),
+                "need": code in open_gaps or not filled,
+            }
+        )
+    if not pos_rows and scarcity_by_pos:
+        for code, scar in sorted(scarcity_by_pos.items()):
+            need = code in open_gaps
+            pos_rows.append(
+                {
+                    "pos": code,
+                    "status": "❌ Need 1" if need else "✅ Filled",
+                    "available": int(scar.get("Quality Supply") or 0),
+                    "drafted": 0,
+                    "scarcity": _scarcity_label(
+                        scar.get("Scarcity Score"), strong_cut=strong_cut, weak_cut=weak_cut
+                    ),
+                    "need": need,
+                }
+            )
+
+    table_rows = "".join(
+        (
+            f"<tr{' style=\"background:#fff7ed;\"' if r.get('need') else ''}>"
+            f"<td><strong>{r['pos']}</strong></td>"
+            f"<td>{r['status']}</td>"
+            f"<td style=\"text-align:right;\">{r['available']}</td>"
+            f"<td style=\"text-align:right;\">{r['drafted']}</td>"
+            f"<td>{r['scarcity']}</td></tr>"
+        )
+        for r in pos_rows[:14]
+    )
+    filled = int(tracker.get("filled") or 0)
+    target = int(tracker.get("target") or 0)
+    progress = f"{filled}/{target}" if target else ""
+    st.markdown(
+        """
+        <style>
+        .ld-decision-panel {
+          border: 1px solid #cbd5e1; border-radius: 10px; padding: 8px 10px;
+          background: #f8fafc; margin: 4px 0 8px 0;
+        }
+        .ld-decision-title {
+          font-size: 11px; font-weight: 800; letter-spacing: 0.05em;
+          text-transform: uppercase; color: #64748b; margin-bottom: 6px;
+        }
+        .ld-decision-table {
+          width: 100%; border-collapse: collapse; font-size: 12px;
+        }
+        .ld-decision-table th, .ld-decision-table td {
+          padding: 3px 6px; border-bottom: 1px solid #e2e8f0; text-align: left;
+        }
+        .ld-decision-table th { color: #64748b; font-size: 10px; text-transform: uppercase; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    if table_rows:
+        st.markdown(
+            f'<div class="ld-decision-panel">'
+            f'<div class="ld-decision-title">Draft Decision · Roster & Scarcity'
+            f'{f" · {progress}" if progress else ""}</div>'
+            f'<table class="ld-decision-table"><thead><tr>'
+            f"<th>Pos</th><th>Roster</th><th>Avail</th><th>Drafted</th><th>Scarcity</th>"
+            f"</tr></thead><tbody>{table_rows}</tbody></table></div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.caption("Roster slots not configured.")
+
+    # Compact quick tools — no large tiles.
+    try:
+        from live_draft_navigation import render_live_draft_quick_nav_compact
+
+        render_live_draft_quick_nav_compact(st, session, page_label_fn=page_label_fn)
+    except ImportError:
+        try:
+            from live_draft_navigation import render_live_draft_quick_nav
+
+            render_live_draft_quick_nav(st, session, page_label_fn=page_label_fn)
+        except ImportError:
+            pass

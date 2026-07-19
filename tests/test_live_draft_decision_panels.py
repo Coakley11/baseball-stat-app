@@ -381,11 +381,11 @@ class DraftNavigationTests(unittest.TestCase):
         poll_fn.assert_called_once()
         self.assertNotIn(FORCE_SYNC_ON_RETURN_KEY, session)
 
-    def test_recommendations_heading_follows_quick_navigation(self) -> None:
+    def test_recommendations_heading_follows_decision_panel(self) -> None:
         text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
-        quick_idx = text.find("render_live_draft_quick_nav(st, st.session_state")
-        self.assertNotEqual(quick_idx, -1)
-        section = text[quick_idx : quick_idx + 6000]
+        decision_idx = text.find("render_draft_decision_panel(")
+        self.assertNotEqual(decision_idx, -1)
+        section = text[decision_idx : decision_idx + 8000]
         heading_idx = section.find('st.markdown("##### Recommendations")')
         rec_cards_idx = section.find("render_live_draft_rec_cards(")
         self.assertNotEqual(heading_idx, -1)

@@ -33,12 +33,82 @@ def _filter_player_from_df(df: Any, *, player_id: str = "", player_name: str = "
     name = str(player_name or "").strip().lower()
     if pid and "playerID" in out.columns:
         out = out[out["playerID"].astype(str).str.strip() != pid]
-    elif pid and "player_id" in out.columns:
+    if pid and "player_id" in out.columns:
         out = out[out["player_id"].astype(str).str.strip() != pid]
     name_col = "fullName" if "fullName" in out.columns else ("Player" if "Player" in out.columns else "")
     if name and name_col:
         out = out[out[name_col].astype(str).str.strip().str.lower() != name]
     return out
+
+
+def drafted_identity_sets(room: dict[str, Any] | None) -> tuple[set[str], set[str]]:
+    """Authoritative drafted IDs + normalized names from the committed Draft Board."""
+    ids: set[str] = set()
+    names: set[str] = set()
+    if not isinstance(room, dict):
+        return ids, names
+    try:
+        from live_draft_state import reconcile_drafted_player_ids
+
+        for pid in reconcile_drafted_player_ids(room) or []:
+            s = str(pid or "").strip()
+            if s:
+                ids.add(s)
+                ids.add(s.lower())
+    except ImportError:
+        pass
+    for pid in room.get("drafted_player_ids") or []:
+        s = str(pid or "").strip()
+        if s:
+            ids.add(s)
+            ids.add(s.lower())
+    for row in room.get("draft_board") or []:
+        if not isinstance(row, dict):
+            continue
+        pid = str(row.get("playerID") or row.get("player_id") or "").strip()
+        if pid:
+            ids.add(pid)
+            ids.add(pid.lower())
+        name = str(row.get("fullName") or row.get("Player") or "").strip()
+        if name:
+            names.add(name.lower())
+    return ids, names
+
+
+def filter_df_excluding_drafted(df: Any, room: dict[str, Any] | None) -> Any:
+    """Drop every drafted player from a recommendation/available table (id then name)."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    ids, names = drafted_identity_sets(room)
+    if not ids and not names:
+        return df
+    out = df
+    if ids and "playerID" in out.columns:
+        out = out[~out["playerID"].astype(str).str.strip().isin(ids)]
+        out = out[~out["playerID"].astype(str).str.strip().str.lower().isin(ids)]
+    if ids and "player_id" in out.columns:
+        out = out[~out["player_id"].astype(str).str.strip().isin(ids)]
+        out = out[~out["player_id"].astype(str).str.strip().str.lower().isin(ids)]
+    name_col = "fullName" if "fullName" in out.columns else ("Player" if "Player" in out.columns else "")
+    if names and name_col:
+        out = out[~out[name_col].astype(str).str.strip().str.lower().isin(names)]
+    return out
+
+
+def filter_recommendation_tables_for_drafted(
+    room: dict[str, Any] | None,
+    top_rec: Any,
+    best_avail: Any,
+    pos_fit: Any,
+    value_sleep: Any,
+) -> tuple[Any, Any, Any, Any]:
+    """Safety filter before paint — never show a drafted player as a recommendation."""
+    return (
+        filter_df_excluding_drafted(top_rec, room),
+        filter_df_excluding_drafted(best_avail, room),
+        filter_df_excluding_drafted(pos_fit, room),
+        filter_df_excluding_drafted(value_sleep, room),
+    )
 
 
 def patch_live_draft_caches_after_pick(
@@ -49,7 +119,7 @@ def patch_live_draft_caches_after_pick(
     player_name: str = "",
     top_n: int = 10,
 ) -> None:
-    """Keep prior recommendations visible minus the drafted player (Phase 2/4 bridge).
+    """Keep prior recommendations visible minus every drafted player (board-authoritative).
 
     Updates the cache key to the post-pick board fingerprint so the next paint hits
     without a full rescoring pass.
@@ -58,14 +128,17 @@ def patch_live_draft_caches_after_pick(
         return
     entry = session.get(REC_CACHE_KEY)
     if isinstance(entry, dict):
+        top = _filter_player_from_df(entry.get("top_rec"), player_id=player_id, player_name=player_name)
+        best = _filter_player_from_df(entry.get("best_avail"), player_id=player_id, player_name=player_name)
+        pos = _filter_player_from_df(entry.get("pos_fit"), player_id=player_id, player_name=player_name)
+        sleep = _filter_player_from_df(entry.get("value_sleep"), player_id=player_id, player_name=player_name)
+        top, best, pos, sleep = filter_recommendation_tables_for_drafted(room, top, best, pos, sleep)
         patched = {
             "key": live_draft_ui_cache_key(session, room, top_n=top_n, team=None),
-            "top_rec": _filter_player_from_df(entry.get("top_rec"), player_id=player_id, player_name=player_name),
-            "best_avail": _filter_player_from_df(entry.get("best_avail"), player_id=player_id, player_name=player_name),
-            "pos_fit": _filter_player_from_df(entry.get("pos_fit"), player_id=player_id, player_name=player_name),
-            "value_sleep": _filter_player_from_df(
-                entry.get("value_sleep"), player_id=player_id, player_name=player_name
-            ),
+            "top_rec": top,
+            "best_avail": best,
+            "pos_fit": pos,
+            "value_sleep": sleep,
             "optimistic_hold": True,
         }
         session[REC_CACHE_KEY] = patched
@@ -75,9 +148,10 @@ def patch_live_draft_caches_after_pick(
 
     avail = session.get(AVAILABLE_CACHE_KEY)
     if isinstance(avail, dict) and isinstance(avail.get("df"), pd.DataFrame):
+        df = _filter_player_from_df(avail.get("df"), player_id=player_id, player_name=player_name)
         session[AVAILABLE_CACHE_KEY] = {
             "key": available_pool_cache_key(room),
-            "df": _filter_player_from_df(avail.get("df"), player_id=player_id, player_name=player_name),
+            "df": filter_df_excluding_drafted(df, room),
         }
     else:
         session.pop(AVAILABLE_CACHE_KEY, None)
@@ -186,7 +260,12 @@ def live_draft_ui_cache_key(
         pool_sig = tuple(sorted(draft_pool_kwargs_from_session(session).items()))
     except ImportError:
         pass
-    return (idx, board_len, team_s, int(top_n), slots_key, rev, scoring, roster_sig, pool_sig)
+    drafted_ids, drafted_names = drafted_identity_sets(room)
+    drafted_sig = (
+        tuple(sorted(i for i in drafted_ids if i == i.lower() or " " not in i)[:64]),
+        tuple(sorted(drafted_names)[:64]),
+    )
+    return (idx, board_len, team_s, int(top_n), slots_key, rev, scoring, roster_sig, pool_sig, drafted_sig)
 
 
 def available_pool_cache_key(room: dict[str, Any]) -> tuple[Any, ...]:

@@ -76,8 +76,8 @@ def _go_body(session: dict[str, Any], target_page: str, prepare_canonical_scorin
     _apply_scheduled_page(session, target_page)
 
 
-def render_live_draft_quick_nav(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
-    """Compact navigation: Draft Assistant, Sleepers, and in-page Queue focus."""
+def render_live_draft_quick_nav_compact(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
+    """Small button row for Draft Queue / Assistant / Sleepers (decision panel)."""
     try:
         from shared_draft_context import prepare_canonical_scoring_context
     except ImportError:
@@ -95,36 +95,37 @@ def render_live_draft_quick_nav(st: Any, session: dict[str, Any], *, page_label_
     def _focus_queue() -> None:
         session["_live_draft_focus_queue"] = True
 
-    inject_live_draft_quick_nav_styles(st)
-    st.markdown(
-        '<div class="ld-quick-nav-wrap"><div class="ld-quick-nav-title">Quick navigation</div></div>',
-        unsafe_allow_html=True,
-    )
-    tiles = list(LIVE_DRAFT_QUICK_NAV_PAGES) + [LIVE_DRAFT_QUICK_NAV_QUEUE_ACTION]
+    st.caption("Quick Draft Tools")
+    tiles = [LIVE_DRAFT_QUICK_NAV_QUEUE_ACTION] + list(LIVE_DRAFT_QUICK_NAV_PAGES)
     cols = st.columns(len(tiles))
-    for col, (page, label, subtitle, theme) in zip(cols, tiles):
+    for col, (page, label, _subtitle, _theme) in zip(cols, tiles):
         with col:
-            col.markdown(
-                f'<div class="ld-quick-tile ld-quick-tile-{theme}">'
-                f'<div class="ld-quick-tile-label">{_with_page_icon(page, label, page_label_fn) if not page.startswith("__") else label}</div>'
-                f'<div class="ld-quick-tile-sub">{subtitle}</div></div>',
-                unsafe_allow_html=True,
-            )
             if page.startswith("__"):
                 col.button(
-                    "Jump →",
+                    "📋 Draft Queue",
                     key="live_draft_quick_nav_queue",
                     use_container_width=True,
                     on_click=_focus_queue,
                 )
             else:
+                short = label if len(label) < 28 else label[:25] + "…"
+                if "Assistant" in label or page == "Draft Assistant":
+                    short = "Draft Assistant"
+                elif "Sleeper" in label:
+                    short = "Fantasy Sleepers"
                 col.button(
-                    "Open →",
+                    short,
                     key=f"live_draft_quick_nav_{page.replace(' ', '_')}",
                     use_container_width=True,
                     on_click=_go,
                     args=(page,),
                 )
+
+
+def render_live_draft_quick_nav(st: Any, session: dict[str, Any], *, page_label_fn=None) -> None:
+    """Compact navigation: Draft Assistant, Sleepers, and in-page Queue focus."""
+    # Prefer the compact decision-panel tools during active draft.
+    render_live_draft_quick_nav_compact(st, session, page_label_fn=page_label_fn)
 
 
 def _apply_scheduled_page(session: dict[str, Any], target_page: str) -> None:

@@ -651,21 +651,19 @@ def live_draft_get_available(room: dict[str, Any] | None) -> pd.DataFrame:
         }
         pool = pool.loc[:, ~pool.columns.duplicated()].copy()
     drafted = set(reconcile_drafted_player_ids(room) or room.get("drafted_player_ids", []) or [])
-    if not drafted:
-        out = pool.copy()
-    elif "playerID" in pool.columns:
-        out = pool[~pool["playerID"].astype(str).isin({str(x) for x in drafted})].copy()
-    else:
-        drafted_names = {
-            str(row.get("fullName") or row.get("Player") or "").strip().lower()
-            for row in (room.get("draft_board") or [])
-            if isinstance(row, dict) and str(row.get("fullName") or row.get("Player") or "").strip()
-        }
-        name_col = "fullName" if "fullName" in pool.columns else ("Player" if "Player" in pool.columns else None)
-        if name_col and drafted_names:
-            out = pool[~pool[name_col].astype(str).str.strip().str.lower().isin(drafted_names)].copy()
-        else:
-            out = pool.copy()
+    drafted_ids = {str(x).strip() for x in drafted if str(x).strip()}
+    drafted_names = {
+        str(row.get("fullName") or row.get("Player") or "").strip().lower()
+        for row in (room.get("draft_board") or [])
+        if isinstance(row, dict) and str(row.get("fullName") or row.get("Player") or "").strip()
+    }
+    out = pool.copy()
+    if drafted_ids and "playerID" in out.columns:
+        out = out[~out["playerID"].astype(str).str.strip().isin(drafted_ids)].copy()
+    name_col = "fullName" if "fullName" in out.columns else ("Player" if "Player" in out.columns else None)
+    if name_col and drafted_names:
+        # Always apply name fallback so ID mismatches cannot leave drafted stars available.
+        out = out[~out[name_col].astype(str).str.strip().str.lower().isin(drafted_names)].copy()
     if isinstance(out, pd.DataFrame) and out.columns.duplicated().any():
         dupes = [str(c) for c in out.columns[out.columns.duplicated()].tolist()]
         room["_live_draft_pool_column_diag"] = {

@@ -36,6 +36,28 @@ def normalize_pick_source_label(source: str) -> str:
     return raw.replace("_", " ").title()
 
 
+def _pick_board_is_complete(room: dict[str, Any]) -> bool:
+    """True only when committed picks >= configured total picks.
+
+    Never complete solely because ``current_pick_index`` reached a short
+    ``pick_order`` length (that ended Solo drafts after Pick 1).
+    """
+    board = room.get("draft_board") or []
+    committed = len(board) if isinstance(board, list) else 0
+    try:
+        from live_draft_safe_mode import total_expected_picks
+
+        total = int(total_expected_picks(room) or 0)
+    except ImportError:
+        total = 0
+    if total <= 0:
+        pick_order = room.get("pick_order") or []
+        total = len(pick_order) if isinstance(pick_order, list) else 0
+    if total <= 0:
+        return False
+    return committed >= total
+
+
 def _safe_float(val: Any) -> float | None:
     try:
         if val is None or val == "":
@@ -287,7 +309,7 @@ def live_draft_make_pick(
         live_draft_bump_sync_revision(room, event="pick")
         if room.get("meta"):
             room["meta"].setdefault("turn_model", {})["current_pick_index"] = room["current_pick_index"]
-        if room["current_pick_index"] >= len(room.get("pick_order", [])):
+        if _pick_board_is_complete(room):
             room["status"] = "complete"
             live_draft_clear_timer(room)
         else:
@@ -301,7 +323,7 @@ def live_draft_make_pick(
             live_draft_bump_sync_revision(room, event="pick")
             if room.get("meta"):
                 room["meta"].setdefault("turn_model", {})["current_pick_index"] = room["current_pick_index"]
-            if room["current_pick_index"] >= len(room.get("pick_order", [])):
+            if _pick_board_is_complete(room):
                 room["status"] = "complete"
                 live_draft_clear_timer(room)
             else:
@@ -316,7 +338,22 @@ def live_draft_make_pick(
 
             pname = str(player_row.get("fullName") or player_row.get("Player") or "").strip()
             pid_s = str(player_row.get("playerID") or pid or "").strip()
-            remove_drafted_player_from_active_queues(session, pid_s or pname)
+            # Prefer ID; also remove by display name so queues never keep a drafted row.
+            if pid_s:
+                remove_drafted_player_from_active_queues(session, pid_s)
+            if pname:
+                remove_drafted_player_from_active_queues(session, pname)
+        except Exception:
+            pass
+        try:
+            from live_draft_ui_cache import patch_live_draft_caches_after_pick
+
+            patch_live_draft_caches_after_pick(
+                session,
+                room,
+                player_id=str(player_row.get("playerID") or pid or ""),
+                player_name=str(player_row.get("fullName") or player_row.get("Player") or ""),
+            )
         except Exception:
             pass
     return True, f"Drafted {player_row.get('fullName', 'player')} to {team}."

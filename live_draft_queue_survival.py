@@ -23,6 +23,10 @@ _ALLOWED_EMPTY_REASONS = frozenset(
     {
         "clear_queue",
         "remove_from_queue",
+        "sidebar_mirror_remove",
+        "drafted_room_wide",
+        "auto_remove_drafted",
+        "queue_paint_drop_drafted",
         "auth_user_switch",
         "auth_user_restore",
         "leave_shared_room",
@@ -233,6 +237,9 @@ def should_block_empty_queue_write(
     if not _names(old_queue):
         return False
     base = str(reason or "").strip()
+    # Prefix matches for drafted / mirror removes (e.g. drafted_room_wide:…).
+    if base.startswith(("drafted_", "auto_remove_drafted", "sidebar_mirror_")):
+        return False
     if base in _ALLOWED_EMPTY_REASONS:
         # Still protect in-flight same-scope edits from a racing empty hydrate.
         if base == "participant_hydrate" and (

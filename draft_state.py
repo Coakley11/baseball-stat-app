@@ -474,6 +474,13 @@ def sync_draft_queue(
         local_edit=True,
         sync_participant=bool(sync_participant),
     )
+    # Keep sidebar mirror identical to the single canonical queue.
+    if q:
+        session["_live_draft_queue_sidebar_mirror"] = list(q)
+        session["_live_draft_queue_last_good"] = list(q)
+    else:
+        session.pop("_live_draft_queue_last_good", None)
+        session.pop("_live_draft_queue_sidebar_mirror", None)
     try:
         from live_draft_rerun_scope import mark_live_draft_queue_tick
 
@@ -652,8 +659,10 @@ def remove_player_from_user_draft_queue(
 
     # Keep every mirror for this scope aligned immediately.
     session["_live_draft_queue_last_good"] = list(q)
+    session["_live_draft_queue_sidebar_mirror"] = list(q)
     if not q:
         session.pop("_live_draft_queue_last_good", None)
+        session.pop("_live_draft_queue_sidebar_mirror", None)
     session["_draft_queue_widget_epoch"] = int(session.get("_draft_queue_widget_epoch") or 0) + 1
     session["_draft_queue_revision"] = int(session.get("_draft_queue_revision") or 0) + 1
     session["_draft_queue_persist_dirty"] = True

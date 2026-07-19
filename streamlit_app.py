@@ -10214,7 +10214,11 @@ def live_draft_recommendations(room, top_n=8, team=None, session=None):
 
 def cached_live_draft_recommendations(session, room, top_n=8, team=None):
     """Reuse recommendation tables within the same pick when the board has not changed."""
-    from live_draft_ui_cache import REC_CACHE_KEY, live_draft_ui_cache_key
+    from live_draft_ui_cache import (
+        REC_CACHE_KEY,
+        filter_recommendation_tables_for_drafted,
+        live_draft_ui_cache_key,
+    )
 
     cache_key = live_draft_ui_cache_key(session, room, top_n=top_n, team=team)
     entry = session.get(REC_CACHE_KEY)
@@ -10235,7 +10239,14 @@ def cached_live_draft_recommendations(session, room, top_n=8, team=None):
                 record_cache_event(session, "live_draft_recommendations", hit=True)
             except ImportError:
                 pass
-        return entry["top_rec"], entry["best_avail"], entry["pos_fit"], entry["value_sleep"]
+        # Always re-filter against the committed board — stale optimistic patches must not keep stars.
+        return filter_recommendation_tables_for_drafted(
+            room,
+            entry.get("top_rec"),
+            entry.get("best_avail"),
+            entry.get("pos_fit"),
+            entry.get("value_sleep"),
+        )
     t0 = __import__("time").perf_counter()
     try:
         from page_perf_phases import record_cache_event, session_perf_phase
@@ -10249,6 +10260,9 @@ def cached_live_draft_recommendations(session, room, top_n=8, team=None):
         top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(
             room, top_n=top_n, team=team, session=session
         )
+    top_rec, best_avail, pos_fit, value_sleep = filter_recommendation_tables_for_drafted(
+        room, top_rec, best_avail, pos_fit, value_sleep
+    )
     try:
         from live_draft_perf import PHASE_RECOMMENDATIONS, record_cache_action
 
@@ -12360,10 +12374,10 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     except Exception:
         _skip_sidebar_queue = False
     if _skip_sidebar_queue:
-        # Read-only mirror of the same canonical draft_queue (no second interactive widgets).
+        # Same canonical draft_queue — compact X removes (no second sortable widget tree).
         _mirror = [
             str(x).strip()
-            for x in (st.session_state.get("draft_queue") or st.session_state.get("_live_draft_queue_sidebar_mirror") or [])
+            for x in (st.session_state.get("draft_queue") or [])
             if str(x).strip()
         ]
         st.session_state["_live_draft_queue_sidebar_mirror"] = list(_mirror)
@@ -12371,7 +12385,31 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
             st.sidebar.caption("Queue empty — add from Live Draft Room.")
         else:
             for _mi, _mname in enumerate(_mirror[:12]):
-                st.sidebar.caption(f"{_mi + 1}. {_mname[:40]}{'…' if len(_mname) > 40 else ''}")
+                _sc1, _sc2 = st.sidebar.columns([4, 1])
+                with _sc1:
+                    st.caption(f"{_mi + 1}. {_mname[:36]}{'…' if len(_mname) > 36 else ''}")
+                with _sc2:
+                    if st.button(
+                        "✕",
+                        key=f"sidebar_mirror_rm_{_mi}_{hash(_mname) & 0xFFFF:x}",
+                        help=f"Remove {_mname} from Draft Queue",
+                    ):
+                        try:
+                            from draft_state import remove_player_from_user_draft_queue
+
+                            remove_player_from_user_draft_queue(
+                                st.session_state,
+                                _mname,
+                                reason="sidebar_mirror_remove",
+                            )
+                        except ImportError:
+                            q = [
+                                p
+                                for p in (st.session_state.get("draft_queue") or [])
+                                if str(p).strip() != _mname
+                            ]
+                            st.session_state["draft_queue"] = q
+                        st.rerun()
             if len(_mirror) > 12:
                 st.sidebar.caption(f"+{len(_mirror) - 12} more")
     else:
@@ -24966,7 +25004,7 @@ elif active_page == "Live Draft Room":
                     try:
                         from live_draft_category_outlook import compute_category_outlook
                         from live_draft_roster_tracker import build_team_roster_tracker, roster_df_for_team
-                        from live_draft_room_ui import render_category_outlook_panel, render_roster_tracker_panel, render_position_scarcity_panel
+                        from live_draft_room_ui import render_draft_decision_panel
 
                         _decision_ctx = None
                         if _ui_cache_key is not None:
@@ -25050,23 +25088,34 @@ elif active_page == "Live Draft Room":
                             from page_perf_phases import session_perf_phase
 
                             with session_perf_phase(st.session_state, "position_scarcity"):
-                                render_roster_tracker_panel(st, _tracker)
-                                render_category_outlook_panel(st, _outlook)
-                                render_position_scarcity_panel(
+                                render_draft_decision_panel(
                                     st,
-                                    _available_cached,
+                                    st.session_state,
+                                    tracker=_tracker,
+                                    available_df=_available_cached,
                                     gaps=_gaps,
                                     room=room,
+                                    page_label_fn=page_option_label,
                                 )
                         except ImportError:
-                            render_roster_tracker_panel(st, _tracker)
-                            render_category_outlook_panel(st, _outlook)
-                            render_position_scarcity_panel(
+                            render_draft_decision_panel(
                                 st,
-                                _available_cached,
+                                st.session_state,
+                                tracker=_tracker,
+                                available_df=_available_cached,
                                 gaps=_gaps,
                                 room=room,
+                                page_label_fn=page_option_label,
                             )
+                        # Category outlook kept available for Developer Mode only (reduces scroll).
+                        if developer_mode_enabled():
+                            try:
+                                from live_draft_room_ui import render_category_outlook_panel
+
+                                with st.expander("Team Category Outlook (dev)", expanded=False):
+                                    render_category_outlook_panel(st, _outlook)
+                            except Exception:
+                                pass
                         try:
                             from live_draft_render_trace import ldr_section_done
 
@@ -25107,12 +25156,7 @@ elif active_page == "Live Draft Room":
                     )
                 except Exception:
                     pass
-                try:
-                    from live_draft_navigation import render_live_draft_quick_nav
-
-                    render_live_draft_quick_nav(st, st.session_state, page_label_fn=page_option_label)
-                except ImportError:
-                    pass
+                # Quick tools live inside the Draft Decision Panel (no second tall nav strip).
                 st.markdown("##### Recommendations")
                 try:
                     from live_draft_roster_enforcement import resolve_on_clock_enforcement
@@ -25403,12 +25447,8 @@ elif active_page == "Live Draft Room":
                         request_live_draft_rerun(st, st.session_state, "manual_pick", room=room)
                     except ImportError:
                         st.rerun()
-        if _draft_in_progress and not _pending_manual_pick:
-            render_contextual_page_nav(
-                "Live Draft Room",
-                "after_board",
-                label="Draft workflow…",
-            )
+        # Active Live Draft: skip "Continue analysis / settings on another page" nav.
+        # Quick Draft Tools in the Decision Panel cover Assistant / Sleepers / Queue.
 
         if developer_mode_enabled():
             try:
