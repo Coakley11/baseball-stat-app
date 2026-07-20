@@ -143,6 +143,7 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
         verdict=verdict,
         pick_source="Auto Pick",
         snapshot=chosen_dict,
+        session=session,
     )
 
     if session is not None:
@@ -162,6 +163,20 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
             )
         except ImportError:
             pass
+        if ok:
+            # Shared: commit through the same persist path as manual / expire picks.
+            try:
+                from live_draft_pick_commit import persist_applied_pick
+
+                persist_applied_pick(
+                    session,
+                    room,
+                    source="auto_pick_now",
+                    board_size_before=max(0, len(room.get("draft_board") or []) - 1),
+                    idx_before=max(0, int(room.get("current_pick_index") or 0) - 1),
+                )
+            except Exception:
+                pass
 
     return ok, msg
 

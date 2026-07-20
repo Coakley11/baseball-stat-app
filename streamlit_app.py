@@ -23771,10 +23771,55 @@ elif active_page == "Live Draft Room":
                     # Sticky error — do not silent-rerun (that looked like Continue Saved Draft no-op).
                     st.session_state["_live_draft_membership_gate_flash"] = (
                         "You are not joined to this shared draft room. "
-                        "Enter the room code and press Join, or use Continue Saved Draft."
+                        "Enter the room code below and press Join, or use Continue Saved Draft "
+                        "if you are the commissioner."
                     )
                     # Never set force_setup here — that wipes Continue Saved Draft on the next pass.
-                    st.info(st.session_state["_live_draft_membership_gate_flash"])
+                    st.warning(st.session_state["_live_draft_membership_gate_flash"])
+                    # Always provide a real rejoin path (do not hide the room-code input).
+                    try:
+                        from live_draft_setup_ui import render_guest_join_with_team_claim
+
+                        render_guest_join_with_team_claim(st, st.session_state)
+                    except ImportError:
+                        st.text_input("Room code", key="live_draft_join_code_input", placeholder="ABC123")
+                        st.caption("Join controls unavailable — return to Live Draft setup.")
+                    try:
+                        from shared_draft_permissions import can_continue_saved_draft_slot, is_canonical_commissioner
+                        from draft_room_shared_state import load_shared_room
+
+                        _code_try = str(
+                            st.session_state.get("live_draft_join_code_input")
+                            or st.session_state.get("_live_draft_last_room_code")
+                            or ""
+                        ).strip().upper()
+                        if can_continue_saved_draft_slot(st.session_state):
+                            st.caption("Commissioner: use Continue Saved Draft above on the setup page if the draft was parked.")
+                        elif _code_try:
+                            _doc_try = load_shared_room(_code_try)
+                            if isinstance(_doc_try, dict) and is_canonical_commissioner(
+                                st.session_state, _doc_try
+                            ):
+                                if st.button(
+                                    "Re-enter My Draft",
+                                    key="live_draft_commissioner_reattach_btn",
+                                    type="primary",
+                                ):
+                                    st.session_state["active_shared_draft_room_code"] = _code_try
+                                    try:
+                                        from draft_room_context import publish_shared_room_runtime
+
+                                        publish_shared_room_runtime(
+                                            st.session_state, _doc_try, reason="commissioner_reattach"
+                                        )
+                                    except Exception:
+                                        pass
+                                    st.rerun()
+                    except ImportError:
+                        pass
+                    if st.button("Back to Draft Setup", key="live_draft_membership_back_setup_btn"):
+                        st.session_state.pop("_live_draft_membership_gate_flash", None)
+                        st.rerun()
                     try:
                         from live_draft_render_checkpoints import render_live_draft_checkpoint_panel
 

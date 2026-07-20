@@ -130,8 +130,15 @@ def render_live_draft_control_center(
 
             if room.get("status") == "paused":
                 room["status"] = "in_progress"
+            # Capture expected pick so a double-click cannot advance twice.
+            expected_pick = int(room.get("current_pick_index") or 0)
             ok, msg = live_draft_auto_pick(room, session)
             if ok:
+                # Persist immediately so both clients see the new deadline before rerun.
+                try:
+                    persist_room(room, "auto_pick")
+                except Exception:
+                    pass
                 try:
                     from live_draft_ui_cache import (
                         invalidate_draft_assistant_scoring_cache,
@@ -142,6 +149,12 @@ def render_live_draft_control_center(
                     invalidate_draft_assistant_scoring_cache(session)
                 except ImportError:
                     session.pop("_live_draft_rec_cache", None)
+                session["_live_draft_auto_pick_now_diag"] = {
+                    "ok": True,
+                    "expected_pick": expected_pick,
+                    "after_pick": int(room.get("current_pick_index") or 0),
+                    "message": msg,
+                }
                 st.success(msg)
                 try:
                     from live_draft_safe_mode import is_draft_truly_complete, request_live_draft_rerun
@@ -152,7 +165,6 @@ def render_live_draft_control_center(
                     st.rerun()
             else:
                 st.warning(msg)
-            persist_room(room, "auto_pick")
     with bot2:
         if is_commissioner:
             if st.button(

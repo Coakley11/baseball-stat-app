@@ -108,11 +108,16 @@ def render_live_draft_quick_nav_compact(st: Any, session: dict[str, Any], *, pag
                     on_click=_focus_queue,
                 )
             else:
-                short = label if len(label) < 28 else label[:25] + "…"
-                if "Assistant" in label or page == "Draft Assistant":
-                    short = "Draft Assistant"
+                # Prefer the same page icon used in the sidebar nav.
+                icon_label = _with_page_icon(page, label, page_label_fn)
+                if "Assistant" in label or "Simulator" in page:
+                    short = icon_label if icon_label != label else f"🧠 {label}"
+                    if "Draft Assistant" not in short and "Assistant" in label:
+                        short = f"🧠 Draft Assistant"
                 elif "Sleeper" in label:
-                    short = "Fantasy Sleepers"
+                    short = icon_label if icon_label != label else f"💎 Fantasy Sleepers"
+                else:
+                    short = icon_label or label
                 col.button(
                     short,
                     key=f"live_draft_quick_nav_{page.replace(' ', '_')}",

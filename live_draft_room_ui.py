@@ -2039,7 +2039,8 @@ def render_draft_decision_panel(
         pos_rows.append(
             {
                 "pos": code,
-                "status": "✅ Filled" if filled else f"❌ Need {need_n}",
+                "status": "Filled" if filled else f"Need {need_n}",
+                "mark": "OK" if filled else "NEED",
                 "available": avail_n,
                 "drafted": drafted_n,
                 "scarcity": _scarcity_label(score, strong_cut=strong_cut, weak_cut=weak_cut),
@@ -2052,7 +2053,8 @@ def render_draft_decision_panel(
             pos_rows.append(
                 {
                     "pos": code,
-                    "status": "❌ Need 1" if need else "✅ Filled",
+                    "status": "Need 1" if need else "Filled",
+                    "mark": "NEED" if need else "OK",
                     "available": int(scar.get("Quality Supply") or 0),
                     "drafted": 0,
                     "scarcity": _scarcity_label(
@@ -2062,52 +2064,44 @@ def render_draft_decision_panel(
                 }
             )
 
-    table_rows = "".join(
-        (
-            f"<tr{' style=\"background:#fff7ed;\"' if r.get('need') else ''}>"
-            f"<td><strong>{r['pos']}</strong></td>"
-            f"<td>{r['status']}</td>"
-            f"<td style=\"text-align:right;\">{r['available']}</td>"
-            f"<td style=\"text-align:right;\">{r['drafted']}</td>"
-            f"<td>{r['scarcity']}</td></tr>"
-        )
-        for r in pos_rows[:14]
-    )
     filled = int(tracker.get("filled") or 0)
     target = int(tracker.get("target") or 0)
     progress = f"{filled}/{target}" if target else ""
+    # Mobile-safe plain markdown rows — Streamlit HTML <table> often blanks cell text on phones.
     st.markdown(
-        """
-        <style>
-        .ld-decision-panel {
-          border: 1px solid #cbd5e1; border-radius: 10px; padding: 8px 10px;
-          background: #f8fafc; margin: 4px 0 8px 0;
-        }
-        .ld-decision-title {
-          font-size: 11px; font-weight: 800; letter-spacing: 0.05em;
-          text-transform: uppercase; color: #64748b; margin-bottom: 6px;
-        }
-        .ld-decision-table {
-          width: 100%; border-collapse: collapse; font-size: 12px;
-        }
-        .ld-decision-table th, .ld-decision-table td {
-          padding: 3px 6px; border-bottom: 1px solid #e2e8f0; text-align: left;
-        }
-        .ld-decision-table th { color: #64748b; font-size: 10px; text-transform: uppercase; }
-        </style>
-        """,
-        unsafe_allow_html=True,
+        f"**Draft Decision · Roster & Scarcity**"
+        + (f" · {progress}" if progress else "")
     )
-    if table_rows:
-        st.markdown(
-            f'<div class="ld-decision-panel">'
-            f'<div class="ld-decision-title">Draft Decision · Roster & Scarcity'
-            f'{f" · {progress}" if progress else ""}</div>'
-            f'<table class="ld-decision-table"><thead><tr>'
-            f"<th>Pos</th><th>Roster</th><th>Avail</th><th>Drafted</th><th>Scarcity</th>"
-            f"</tr></thead><tbody>{table_rows}</tbody></table></div>",
-            unsafe_allow_html=True,
-        )
+    if pos_rows:
+        lines: list[str] = []
+        for r in pos_rows[:14]:
+            mark = "❌" if r.get("need") else "✅"
+            lines.append(
+                f"- **{r['pos']}** · {mark} {r['status']} · "
+                f"{r['available']} available · {r['drafted']} drafted · "
+                f"{r['scarcity']} scarcity"
+            )
+        st.markdown("\n".join(lines))
+        try:
+            # Desktop convenience: compact dataframe (still shows when HTML tables fail).
+            import pandas as pd
+
+            df = pd.DataFrame(
+                [
+                    {
+                        "Pos": r["pos"],
+                        "Roster": f"{'❌' if r.get('need') else '✅'} {r['status']}",
+                        "Avail": r["available"],
+                        "Drafted": r["drafted"],
+                        "Scarcity": r["scarcity"],
+                    }
+                    for r in pos_rows[:14]
+                ]
+            )
+            with st.expander("Table view", expanded=False):
+                st.dataframe(df, hide_index=True, use_container_width=True)
+        except Exception:
+            pass
     else:
         st.caption("Roster slots not configured.")
 

@@ -227,12 +227,74 @@ def clear_stale_shared_room_local_state(
     return diag
 
 
+def _local_membership_markers_present(session: dict[str, Any]) -> bool:
+    """True when this browser still looks joined (presence may be offline)."""
+    code = _room_code(session)
+    if not code:
+        return False
+    pid = _participant_id(session)
+    team = str(
+        session.get("draft_room_participant_team")
+        or session.get("room_your_team")
+        or ""
+    ).strip()
+    room = session.get("live_draft_room")
+    has_room = isinstance(room, dict) and bool(
+        room.get("draft_room_id") or room.get("draft_id") or room.get("status")
+    )
+    return bool(pid or team or has_room)
+
+
+def _try_reattach_from_document(
+    session: dict[str, Any],
+    doc: dict[str, Any],
+    *,
+    code: str,
+) -> bool:
+    """Restore team/pointers when the participant is still in the authoritative doc."""
+    pid = _participant_id(session)
+    if not pid:
+        # Prefer durable auth id over a freshly minted anonymous: id.
+        for key in ("auth_user_id", "_suite_auth_user_id"):
+            cand = str(session.get(key) or "").strip()
+            if cand and not cand.startswith("anonymous:"):
+                pid = cand
+                session["draft_room_participant_id"] = pid
+                break
+    if not pid:
+        return False
+    ok, team = participant_in_document(doc, pid)
+    if not ok:
+        return False
+    session["active_shared_draft_room_code"] = str(code or "").strip().upper()
+    if team:
+        session["draft_room_participant_team"] = team
+        session["room_your_team"] = team
+    try:
+        from draft_room_context import publish_shared_room_runtime
+
+        publish_shared_room_runtime(session, doc, reason="membership_reattach")
+    except Exception:
+        blob = doc.get("room") if isinstance(doc.get("room"), dict) else None
+        if isinstance(blob, dict):
+            session["live_draft_room"] = dict(blob)
+    session[MEMBERSHIP_GATE_DIAG_KEY] = {
+        "ok": True,
+        "reason": "reattached",
+        "room_code": code,
+        "participant_id": pid,
+        "team": team,
+    }
+    return True
+
+
 def repair_stale_shared_room_session(
     session: dict[str, Any],
     *,
     force_document_load: bool = True,
+    allow_soft_miss: bool = True,
 ) -> dict[str, Any]:
-    """If local active shared pointer is not authoritatively joined, wipe it and stay on setup."""
+    """Wipe local pointers only when membership is confirmed gone (not on soft miss)."""
     code = _room_code(session)
     if not code and not isinstance(session.get("live_draft_room"), dict):
         return {"repaired": False, "reason": "nothing_to_repair"}
@@ -245,16 +307,41 @@ def repair_stale_shared_room_session(
             if not sync.get("room_code") and not room.get("room_code"):
                 return {"repaired": False, "reason": "solo_live_draft"}
 
+    doc = (
+        load_authoritative_shared_document(session, code, force=force_document_load)
+        if code
+        else None
+    )
     ok, reason = can_render_shared_live_draft(
         session,
-        document=load_authoritative_shared_document(session, code, force=force_document_load)
-        if code
-        else None,
+        document=doc if isinstance(doc, dict) else None,
         require_team_claim=False,
     )
     if ok:
         return {"repaired": False, "reason": "membership_valid", "room_code": code}
 
+    # Soft miss: temporary load failure / auth blip — keep membership pointers.
+    soft_reasons = {"room_missing", "no_participant_id"}
+    if allow_soft_miss and reason in soft_reasons and _local_membership_markers_present(session):
+        session[MEMBERSHIP_GATE_DIAG_KEY] = {
+            "ok": False,
+            "reason": reason,
+            "soft_miss": True,
+            "kept_membership": True,
+            "room_code": code,
+        }
+        return {
+            "repaired": False,
+            "reason": f"soft_miss:{reason}",
+            "room_code": code,
+            "kept_membership": True,
+        }
+
+    # Confirmed document load: try reattach before wiping.
+    if isinstance(doc, dict) and _try_reattach_from_document(session, doc, code=code):
+        return {"repaired": False, "reason": "reattached", "room_code": code}
+
+    # Hard fail only: doc says not a member / terminal / tombstone.
     diag = clear_stale_shared_room_local_state(session, reason=reason)
     diag["repaired"] = True
     diag["prior_room_code"] = code
@@ -294,14 +381,38 @@ def _resume_lobby_may_render(session: dict[str, Any], reason: str) -> tuple[bool
 
 
 def assert_or_repair_before_shared_render(session: dict[str, Any]) -> tuple[bool, str]:
-    """Call before painting active shared draft UI. Returns (may_render, reason)."""
+    """Call before painting active shared draft UI. Returns (may_render, reason).
+
+    Soft misses (temporary room_missing / auth blip) keep membership and allow
+    render. Hard fails (confirmed not in document) clear local pointers.
+    """
     code = _room_code(session)
     if not code:
         # No shared code — solo path may still render.
         return True, "solo_or_setup"
-    ok, reason = can_render_shared_live_draft(session, require_team_claim=False)
+
+    doc = load_authoritative_shared_document(session, code)
+    ok, reason = can_render_shared_live_draft(
+        session, document=doc if isinstance(doc, dict) else None, require_team_claim=False
+    )
     if ok:
         return True, reason
+
+    # Soft miss with local membership still present — do not kick out.
+    if reason in {"room_missing", "no_participant_id"} and _local_membership_markers_present(session):
+        session[MEMBERSHIP_GATE_DIAG_KEY] = {
+            "ok": False,
+            "reason": reason,
+            "soft_miss": True,
+            "kept_membership": True,
+            "room_code": code,
+        }
+        return True, f"soft_miss:{reason}"
+
+    # Authoritative doc available — reattach if still a member under another id key.
+    if isinstance(doc, dict) and _try_reattach_from_document(session, doc, code=code):
+        return True, "reattached"
+
     # Continue Saved Draft / Resume Lobby: never wipe hydrated room on soft miss.
     resume_allow = _resume_lobby_may_render(session, reason)
     if resume_allow is not None:
@@ -323,8 +434,7 @@ def assert_or_repair_before_shared_render(session: dict[str, Any]) -> tuple[bool
         pass
     # Parked / saved_for_later documents with reserved teams — keep lobby pointers.
     try:
-        doc = load_authoritative_shared_document(session, code)
-        status = str((doc or {}).get("status") or "").strip().lower()
+        status = str((doc or {}).get("status") or "").strip().lower() if isinstance(doc, dict) else ""
         reserved = (doc or {}).get("resume_reserved_teams") if isinstance(doc, dict) else None
         if status in ("saved_for_later", "parked", "paused") and isinstance(reserved, dict) and reserved:
             session[MEMBERSHIP_GATE_DIAG_KEY] = {
@@ -337,5 +447,10 @@ def assert_or_repair_before_shared_render(session: dict[str, Any]) -> tuple[bool
             return True, f"saved_for_later:{reason}"
     except Exception:
         pass
-    repair_stale_shared_room_session(session)
+
+    # Confirmed hard failure — wipe only when document loaded and membership gone,
+    # or terminal/tombstone. Never wipe solely because one read returned None.
+    if reason in {"room_missing"} and _local_membership_markers_present(session):
+        return True, f"soft_miss:{reason}"
+    repair_stale_shared_room_session(session, allow_soft_miss=False)
     return False, reason

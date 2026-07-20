@@ -95,7 +95,8 @@ class MembershipGateTests(unittest.TestCase):
         ok, reason = can_render_shared_live_draft(guest, document=doc, require_team_claim=True)
         self.assertTrue(ok, reason)
 
-    def test_stale_repair_clears_local_pointer(self) -> None:
+    def test_stale_repair_soft_miss_keeps_membership(self) -> None:
+        """Temporary room_missing must not kick a still-joined participant."""
         session = {
             "auth_user_id": "clp11-id",
             "draft_room_participant_id": "clp11-id",
@@ -108,9 +109,32 @@ class MembershipGateTests(unittest.TestCase):
             return_value=None,
         ):
             diag = repair_stale_shared_room_session(session)
+        self.assertFalse(diag.get("repaired"))
+        self.assertTrue(diag.get("kept_membership"))
+        self.assertEqual(session.get(ACTIVE_SHARED_ROOM_CODE_KEY), "GONE99")
+        self.assertIsInstance(session.get("live_draft_room"), dict)
+
+    def test_stale_repair_clears_when_confirmed_not_member(self) -> None:
+        session = {
+            "auth_user_id": "clp11-id",
+            "draft_room_participant_id": "clp11-id",
+            ACTIVE_SHARED_ROOM_CODE_KEY: "ROOM01",
+            "live_draft_room": {"draft_room_id": "old", "status": "in_progress"},
+            "draft_room_participant_team": "Team B",
+        }
+        doc = {
+            "room_code": "ROOM01",
+            "status": "in_progress",
+            "participants": {"someone-else": {"team": "Team A"}},
+            "room": {"draft_room_id": "old", "status": "in_progress"},
+        }
+        with mock.patch(
+            "shared_room_membership_gate.load_authoritative_shared_document",
+            return_value=doc,
+        ):
+            diag = repair_stale_shared_room_session(session, allow_soft_miss=False)
         self.assertTrue(diag.get("repaired"))
         self.assertNotIn(ACTIVE_SHARED_ROOM_CODE_KEY, session)
-        self.assertIsNone(session.get("live_draft_room"))
 
     def test_restore_does_not_auto_bind_unverified_newest(self) -> None:
         """Local membership map alone must not attach CLP11 to a room they never joined."""

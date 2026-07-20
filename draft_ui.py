@@ -2173,21 +2173,39 @@ def render_live_manual_draft_panel(
         )
 
     if not should_render or paused or not draft_in_progress:
-        st.info(_waiting_status_message())
+        wait_msg = _waiting_status_message()
+        st.info(wait_msg)
         st.selectbox(
             "Available players",
             player_options,
             key="live_draft_player_view_only",
             disabled=True,
         )
+        disable_reason = turn_disable_reason or (
+            "Draft is paused" if paused else "Not your turn"
+        )
+        if "Waiting for" in wait_msg:
+            disable_reason = wait_msg.replace("**", "")
         diag_base.update(
             {
-                "draft_button_rendered": False,
+                "draft_button_rendered": True,
                 "draft_button_enabled": False,
                 "manual_draft_panel_skipped": not should_render,
-                "draft_action_disable_reason": turn_disable_reason or "not_your_turn",
+                "draft_action_disable_reason": disable_reason,
+                "draft_button_disable_reason": disable_reason,
             }
         )
+        st.markdown('<div class="live-draft-manual-panel">', unsafe_allow_html=True)
+        st.button(
+            "Draft Player",
+            key=f"{MANUAL_DRAFT_BUTTON_KEY}_waiting",
+            type="primary",
+            disabled=True,
+            use_container_width=True,
+            help=str(disable_reason)[:200],
+        )
+        st.caption(disable_reason)
+        st.markdown("</div>", unsafe_allow_html=True)
         return _finish(diag_base)
 
     widget_key = manual_draft_candidate_widget_key(room)
@@ -2228,11 +2246,6 @@ def render_live_manual_draft_panel(
     diag_base["draft_button_enabled"] = button_enabled
     diag_base["draft_button_disable_reason"] = "" if button_enabled else (disable_reason or "cannot_draft")
 
-    if not button_enabled:
-        st.caption(disable_reason or "Cannot draft this player right now.")
-        diag_base["draft_button_rendered"] = False
-        return _finish(diag_base)
-
     st.markdown('<div class="live-draft-manual-panel">', unsafe_allow_html=True)
     diag_base["candidate_source"] = pool_source
 
@@ -2244,13 +2257,26 @@ def render_live_manual_draft_panel(
             widget_key=widget_key,
         )
 
-    st.button(
-        "Draft Player",
-        key=MANUAL_DRAFT_BUTTON_KEY,
-        type="primary",
-        use_container_width=True,
-        on_click=_on_manual_draft_click,
-    )
+    # Always paint Draft Player — never hide it when unavailable.
+    if button_enabled:
+        st.button(
+            "Draft Player",
+            key=MANUAL_DRAFT_BUTTON_KEY,
+            type="primary",
+            use_container_width=True,
+            on_click=_on_manual_draft_click,
+        )
+    else:
+        reason_txt = disable_reason or "Cannot draft this player right now."
+        st.button(
+            "Draft Player",
+            key=f"{MANUAL_DRAFT_BUTTON_KEY}_disabled",
+            type="primary",
+            disabled=True,
+            use_container_width=True,
+            help=str(reason_txt)[:200],
+        )
+        st.caption(reason_txt)
 
     pending = session.get(PENDING_MANUAL_PICK_KEY)
     if isinstance(pending, dict) and pending.get("player_name"):
