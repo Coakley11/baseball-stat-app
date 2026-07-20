@@ -107,9 +107,17 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
     if session is not None and not used_rec_cache:
         session["_live_draft_autopick_used_rec_cache"] = False
 
+    # Authoritative Draft Setup Auto-Pick Rule — never invent a separate formula.
+    rule_key = str(configured_rule or "balanced recommendation").strip() or "balanced recommendation"
+    skip_reason = ""
+    if used_rec_cache and rule_key.lower() != "balanced recommendation":
+        # Cached tables are balanced-scored; rescore with the configured rule.
+        used_rec_cache = False
+        skip_reason = "Ignored balanced recommendation cache for configured auto-pick rule."
+
     if not used_rec_cache:
         rec_scored, gaps = score_available_for_rule(
-            available, roster_df, "balanced recommendation", target_counts, config=cfg
+            available, roster_df, rule_key, target_counts, config=cfg
         )
     if rec_scored.empty:
         return False, "No eligible recommendation for auto-pick."
@@ -117,22 +125,6 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
     chosen = rec_scored.iloc[0]
     chosen_dict = chosen.to_dict()
     top_rec_name = str(chosen.get("fullName") or chosen.get("Player") or "").strip()
-    skip_reason = ""
-    rule_pick_name = ""
-
-    # Prefer the #1 cached balanced recommendation for timer autopick; only score a
-    # secondary configured rule when the operator did not use balanced recommendation.
-    if configured_rule.strip().lower() != "balanced recommendation" and not used_rec_cache:
-        rule_scored, _ = score_available_for_rule(
-            available, roster_df, configured_rule, target_counts, config=cfg
-        )
-        if not rule_scored.empty:
-            rule_pick_name = str(rule_scored.iloc[0].get("fullName") or rule_scored.iloc[0].get("Player") or "").strip()
-            if rule_pick_name and rule_pick_name != top_rec_name:
-                skip_reason = (
-                    f"Configured rule '{configured_rule}' would pick {rule_pick_name}; "
-                    f"using top recommendation {top_rec_name}."
-                )
 
     from live_draft_pick_engine import build_structured_pick_verdict
 
@@ -158,7 +150,7 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
                 selected_auto_pick_reason=verdict if ok else msg,
                 auto_pick_rule_configured=configured_rule,
                 top_recommendation_skipped_reason=skip_reason or None,
-                configured_rule_would_pick=rule_pick_name or None,
+                configured_rule_would_pick=top_rec_name if ok else None,
                 auto_pick_from_queue=False,
             )
         except ImportError:

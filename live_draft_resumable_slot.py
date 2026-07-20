@@ -8,6 +8,9 @@ from typing import Any
 RESUMABLE_LIVE_DRAFT_SLOT_KEY = "resumable_live_draft_slot"
 REPLACE_RESUMABLE_CONFIRM_KEY = "_live_draft_replace_resumable_confirm"
 SAVE_CONTINUE_FLASH_KEY = "_live_draft_save_continue_flash"
+PENDING_SAVE_CONTINUE_KEY = "_live_draft_pending_save_continue"
+SAVE_CONTINUE_TRACE_KEY = "_live_draft_save_continue_trace"
+SAVING_FOR_LATER_UI_KEY = "_live_draft_saving_for_later_ui"
 
 # Cleared when parking a draft into the resumable slot (not tombstoned).
 PARK_CLEAR_ACTIVE_KEYS = (
@@ -39,6 +42,86 @@ PARK_CLEAR_ACTIVE_KEYS = (
     "_simulator_to_live_show_confirm",
     "_live_draft_history_view",
 )
+
+
+def note_save_continue_trace(session: dict[str, Any], stage: str, **fields: Any) -> dict[str, Any]:
+    """Trace Save & Continue Later for deploy diagnostics (click → setup)."""
+    import time
+
+    trace = dict(session.get(SAVE_CONTINUE_TRACE_KEY) or {})
+    stages = list(trace.get("stages") or [])
+    entry = {"stage": stage, "ts": time.time()}
+    entry.update({k: v for k, v in fields.items() if v is not None})
+    stages.append(entry)
+    trace["stages"] = stages[-24:]
+    trace["last_stage"] = stage
+    trace.update({k: v for k, v in fields.items() if v is not None})
+    session[SAVE_CONTINUE_TRACE_KEY] = trace
+    return trace
+
+
+def on_save_continue_later_click() -> None:
+    """Streamlit on_click — queue save before fragment/poll can steal the rerun."""
+    try:
+        import streamlit as st
+
+        session = st.session_state
+    except Exception:
+        return
+    note_save_continue_trace(session, "button_click_received")
+    session[PENDING_SAVE_CONTINUE_KEY] = {
+        "queued_at": __import__("time").time(),
+        "replace_existing": False,
+    }
+    session[SAVING_FOR_LATER_UI_KEY] = True
+    # Freeze drafting immediately on click (before page body re-runs).
+    room = session.get("live_draft_room")
+    if isinstance(room, dict):
+        try:
+            from live_draft_timer_logic import live_draft_pause_timer
+
+            if str(room.get("status") or "") == "in_progress":
+                live_draft_pause_timer(room)
+            room["status"] = "saved_for_later"
+            room["paused"] = True
+            room["timer_paused"] = True
+            room.pop("pick_deadline_ts", None)
+            room.pop("timer_deadline", None)
+            session["live_draft_room"] = room
+            note_save_continue_trace(session, "timer_stopped_local", status=room.get("status"))
+        except Exception as exc:
+            note_save_continue_trace(session, "timer_stop_failed", error=str(exc)[:160])
+
+
+def process_pending_save_continue(session: dict[str, Any], *, st: Any | None = None) -> dict[str, Any]:
+    """Execute queued Save & Continue Later at page entry (same pattern as manual pick)."""
+    pending = session.pop(PENDING_SAVE_CONTINUE_KEY, None)
+    if not isinstance(pending, dict):
+        return {"processed": False, "ok": False}
+    note_save_continue_trace(session, "save_transaction_entered")
+    session[SAVING_FOR_LATER_UI_KEY] = True
+    replace_existing = bool(pending.get("replace_existing"))
+    result = save_and_continue_later(session, st=st, replace_existing=replace_existing)
+    note_save_continue_trace(
+        session,
+        "save_transaction_finished",
+        ok=bool(result.get("ok")),
+        error=result.get("error"),
+        needs_replace=bool(result.get("needs_replace_confirm")),
+    )
+    if result.get("needs_replace_confirm"):
+        session["_live_draft_replace_resumable_confirm"] = True
+        session["_live_draft_replace_resumable_message"] = result.get("message")
+        session.pop(SAVING_FOR_LATER_UI_KEY, None)
+    elif result.get("ok"):
+        note_save_continue_trace(session, "setup_page_requested")
+        session.pop(SAVING_FOR_LATER_UI_KEY, None)
+    else:
+        session.pop(SAVING_FOR_LATER_UI_KEY, None)
+        session["_live_draft_save_continue_error"] = str(
+            result.get("message") or result.get("error") or "Could not save draft for later."
+        )
+    return {"processed": True, **result}
 
 
 def _utc_now_iso() -> str:
@@ -179,6 +262,7 @@ def _collect_queues(session: dict[str, Any]) -> dict[str, Any]:
 
 def pause_and_persist_for_save(session: dict[str, Any], room: dict[str, Any]) -> dict[str, Any]:
     """Pause timer and park the shared backend as saved_for_later when applicable."""
+    note_save_continue_trace(session, "pause_and_persist_entered")
     try:
         from live_draft_timer_logic import live_draft_pause_timer
 
@@ -193,7 +277,9 @@ def pause_and_persist_for_save(session: dict[str, Any], room: dict[str, Any]) ->
     room["paused"] = True
     room["timer_paused"] = True
     room.pop("pick_deadline_ts", None)
+    room.pop("timer_deadline", None)
     session["live_draft_room"] = room
+    note_save_continue_trace(session, "room_status_changed", status="saved_for_later")
     code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
     if code:
         try:
@@ -208,19 +294,33 @@ def pause_and_persist_for_save(session: dict[str, Any], room: dict[str, Any]) ->
                     stamp_resume_reserved_on_document(updated)
                 except ImportError:
                     updated["status"] = "saved_for_later"
+                updated["status"] = "saved_for_later"
                 updated["room"] = _persist_room_blob(room)
                 if isinstance(updated.get("room"), dict):
                     updated["room"]["status"] = "saved_for_later"
                     updated["room"]["paused"] = True
                 get_shared_room_store().save(updated)
+                note_save_continue_trace(
+                    session,
+                    "shared_room_parked",
+                    room_code=code,
+                    revision=updated.get("revision"),
+                )
                 try:
                     from draft_room_shared_state import invalidate_shared_room_document_cache
 
                     invalidate_shared_room_document_cache(session, code)
                 except Exception:
                     pass
-        except Exception:
-            pass
+            else:
+                note_save_continue_trace(session, "shared_room_missing", room_code=code)
+                session["_live_draft_save_continue_backend_error"] = (
+                    f"Shared room {code} could not be loaded for Save & Continue Later."
+                )
+        except Exception as exc:
+            note_save_continue_trace(session, "shared_room_park_failed", error=str(exc)[:200])
+            session["_live_draft_save_continue_backend_error"] = str(exc)[:200]
+            raise
     return room
 
 
@@ -369,6 +469,7 @@ def save_and_continue_later(
     replace_existing: bool = False,
 ) -> dict[str, Any]:
     """Pause, persist into the single resumable slot, and return to setup."""
+    note_save_continue_trace(session, "save_and_continue_later_entered")
     room = session.get("live_draft_room")
     if not isinstance(room, dict):
         return {"ok": False, "error": "no_active_room", "message": "No active Live Draft to save."}
@@ -377,23 +478,39 @@ def save_and_continue_later(
         from shared_draft_permissions import session_may_use_commissioner_draft_controls
 
         if not session_may_use_commissioner_draft_controls(session):
+            note_save_continue_trace(session, "commissioner_authorization_failed")
             return {
                 "ok": False,
                 "error": "not_commissioner",
                 "message": "Only the commissioner who created this room can save it for later.",
             }
+        note_save_continue_trace(session, "commissioner_authorized")
     except ImportError:
         pass
 
-    room = pause_and_persist_for_save(session, room)
+    try:
+        room = pause_and_persist_for_save(session, room)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": "backend_park_failed",
+            "message": f"Could not park the shared room: {exc}",
+        }
     slot = build_resumable_slot(session, room)
     saved = save_resumable_live_draft_slot(
         session, slot, st=st, replace_existing=replace_existing
     )
     if not saved.get("ok"):
+        note_save_continue_trace(
+            session,
+            "resumable_slot_blocked",
+            needs_replace=bool(saved.get("needs_replace_confirm")),
+        )
         return saved
+    note_save_continue_trace(session, "resumable_slot_written")
 
     park_active_to_setup_after_save(session, st=st)
+    note_save_continue_trace(session, "full_app_rerun_requested")
     summary = resumable_slot_summary(slot)
     session[SAVE_CONTINUE_FLASH_KEY] = {
         "message": (

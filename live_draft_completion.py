@@ -353,20 +353,15 @@ def resolve_live_draft_lifecycle(
         session.pop("live_draft_room", None)
         return LIFECYCLE_SETUP
     if status in ("saved_for_later", "parked"):
-        # Parked shared draft — Resume Lobby (explicit continue or reserved map).
+        # Explicit Continue Saved Draft sets `_live_draft_resume_lobby`.
+        # Save & Continue Later parks everyone to Draft Setup (not Resume Lobby).
         if bool(session.get("_live_draft_resume_lobby")):
             return LIFECYCLE_WAITING_SHARED_LOBBY
-        try:
-            from live_draft_resume_lobby import reserved_team_owners
-            from draft_room_shared_state import load_shared_room
-
-            doc = load_shared_room(code) if code else None
-            if isinstance(doc, dict) and reserved_team_owners(doc):
-                session["_live_draft_resume_lobby"] = True
-                return LIFECYCLE_WAITING_SHARED_LOBBY
-        except Exception:
-            pass
         session.pop("live_draft_room", None)
+        session.pop("live_draft_state", None)
+        # Guests should not keep the join code as an active room pointer.
+        if not session.get("resumable_live_draft_slot"):
+            session.pop("active_shared_draft_room_code", None)
         return LIFECYCLE_SETUP
     if status in ("complete", "completed") and bool(session.get("_live_draft_history_view")):
         return LIFECYCLE_HISTORICAL_READ_ONLY

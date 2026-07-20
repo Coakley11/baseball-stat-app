@@ -292,8 +292,7 @@ def _mount_js_countdown(
                 const el = doc.getElementById("{el_id}");
                 if (!el) return;
                 const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
-                // Never leave a frozen 0s label while the server advances the pick.
-                el.textContent = rem > 0 ? (rem + "s") : "Auto-picking…";
+                el.textContent = rem > 0 ? (rem + "s") : "0";
                 if (rem > 0) window.setTimeout(tick, 1000);
               }}
               tick();
@@ -320,7 +319,7 @@ def _mount_js_countdown(
           if (!el) return;
           function tick() {{
             const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
-            el.textContent = rem > 0 ? (rem + "s") : "Auto-picking…";
+            el.textContent = rem > 0 ? (rem + "s") : "0";
             if (rem > 0) window.setTimeout(tick, 1000);
           }}
           tick();
@@ -487,9 +486,9 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
             with ldr_step(session, "timer_skip_fragment_expired", st=st):
                 session[EXPIRED_PICK_PENDING_KEY] = True
                 _render_timer_static(st, session, live_room, source="static_expired_no_fragment")
-                st.caption("Auto-picking…")
             # Recovery fragment: keep ticking while at 0 so backoff → retry does not
             # require a manual click (previous freeze root cause).
+            # Auto-picking status is owned by the On-the-Clock banner only.
             if fragment is None:
                 return
 
@@ -607,7 +606,8 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                         st.rerun()
                         return
                 elif _guest_waiting_for_host_autopick(session, tick_room):
-                    st.caption("Auto-picking…")
+                    # Status text owned by On-the-Clock — do not duplicate here.
+                    pass
                 elif should_fragment_trigger_full_rerun(session, tick_room):
                     session[EXPIRED_PICK_PENDING_KEY] = True
                     try:
@@ -640,10 +640,11 @@ def _render_timer_static(st: Any, session: dict[str, Any], room: dict[str, Any],
         record_multiplayer_sync_diagnostics(session, room=room)
     except ImportError:
         pass
-    # Always surface Auto-picking on expired clocks (including fragment ticks).
+    # Auto-picking status is owned by the primary On-the-Clock banner only.
+    # Do not paint duplicate "Auto-picking…" captions here (timer bar / fragment).
     if int(remaining or 0) <= 0 and str(room.get("status") or "") == "in_progress" and not submitting:
-        st.markdown("**Auto-picking…**")
         session["_live_draft_timer_autopick_ui"] = True
+        st.markdown(f"**Time on clock:** 0s")
         return
     if source != "fragment_tick":
         if str(room.get("status") or "") == "paused":

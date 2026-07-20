@@ -827,8 +827,23 @@ def publish_shared_room_runtime(
                     return None
             except ImportError:
                 runtime["status"] = doc_status
-        elif doc_status in ("in_progress", "paused", "not_started", "waiting", "complete"):
+        elif doc_status in (
+            "in_progress",
+            "paused",
+            "not_started",
+            "waiting",
+            "complete",
+            "saved_for_later",
+            "parked",
+        ):
             runtime["status"] = doc_status
+            if doc_status in ("saved_for_later", "parked"):
+                # Guests must leave the live room when the commissioner parks.
+                session["_live_draft_saved_for_later_notice"] = (
+                    "The commissioner saved this draft for later. Returning to Draft Setup…"
+                )
+                # Clear resume-lobby auto-entry so lifecycle parks everyone to setup.
+                session.pop("_live_draft_resume_lobby", None)
 
     existing = session.get(LIVE_DRAFT_ROOM_KEY)
     doc_rev = int(document.get("revision") or 0)

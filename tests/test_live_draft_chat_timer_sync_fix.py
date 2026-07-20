@@ -292,15 +292,17 @@ class TimerZeroAndRevisionSyncTests(unittest.TestCase):
         reset_shared_room_store_for_tests(None)
         self._tmp.cleanup()
 
-    def test_expired_timer_shows_auto_picking_not_zero(self) -> None:
+    def test_expired_timer_shows_zero_without_duplicate_auto_picking(self) -> None:
         st = mock.MagicMock()
         room = _room(pick_index=0)
         room["timer_deadline"] = time.time() - 1
         session: dict = {LIVE_DRAFT_ROOM_KEY: room}
         _render_timer_static(st, session, room, source="static")
         md = " ".join(str(c.args[0]) for c in st.markdown.call_args_list if c.args)
-        self.assertIn("Auto-picking", md)
-        self.assertNotIn("Time on clock: 0", md)
+        # Timer bar owns countdown only — Auto-picking lives under On-the-Clock.
+        self.assertNotIn("Auto-picking", md)
+        self.assertTrue(session.get("_live_draft_timer_autopick_ui"))
+        self.assertIn("0s", md)
 
     def test_guest_discards_stale_revision(self) -> None:
         code, _doc = create_and_host_shared_room(self.host, _room(), store=self.store)

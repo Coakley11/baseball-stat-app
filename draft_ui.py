@@ -474,9 +474,6 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
     except ImportError:
         pass
 
-    session.pop("_live_draft_manual_pick_in_flight", None)
-    # Phase 2: keep patched recommendation caches (commit_manual_live_pick already patched).
-    # Do not wipe _live_draft_rec_cache here.
     session.pop("_rec_card_commit_in_flight", None)
     try:
         from live_draft_pick_timer import clear_pick_submit_state
@@ -484,6 +481,11 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
         clear_pick_submit_state(session)
     except ImportError:
         pass
+
+    # Keep poll-skip guard after success — cleared by streamlit_app after ~5s.
+    # Clearing in_flight here allowed shared poll to overwrite the committed pick.
+    if not ok:
+        session.pop("_live_draft_manual_pick_in_flight", None)
 
     # Phase 2: paint board on this same Streamlit run — no second full-page rerun.
     should_rerun = False
@@ -1198,10 +1200,9 @@ def render_draft_queue_panel(
         container.caption("Empty — add players with **⭐ Add to Queue** on recommendation cards.")
         return False
 
-    # Red sliding queue (streamlit_sortables) — disabled for Live Draft during
-    # stabilization (drag remounts fought ✕ remove). Simulator/sidebar may keep drag.
-    # Wipe guard: never accept an empty sortable result over a populated queue.
-    _enable_drag = len(queue) >= 2 and not str(key_prefix).startswith("live")
+    # Red sliding queue (streamlit_sortables) — Live Draft + simulator.
+    # Guards below reject wipe/stale/resurrect payloads; ✕ uses skip-once.
+    _enable_drag = len(queue) >= 2
     if _enable_drag:
         try:
             from streamlit_sortables import sort_items
@@ -1312,8 +1313,8 @@ def render_draft_queue_panel(
         except ImportError:
             if _enable_drag:
                 container.caption("Drag reorder unavailable — install streamlit-sortables to reorder.")
-    elif str(key_prefix).startswith("live") and len(queue) >= 2:
-        container.caption("Queue order = add order (drag sorting paused for reliability).")
+    elif len(queue) >= 2:
+        container.caption("Add another player to enable red drag reorder.")
 
     ctx = draft_action_context(session)
     if ctx.get("is_your_pick") and ctx.get("current_pick"):
@@ -2250,8 +2251,12 @@ def render_live_manual_draft_panel(
     diag_base["candidate_source"] = pool_source
 
     def _on_manual_draft_click() -> None:
+        snap = session.get(MANUAL_CANDIDATE_SNAPSHOT_KEY)
+        snap = snap if isinstance(snap, dict) else {}
         queue_manual_draft_pick(
             session,
+            player_name=str(snap.get("name") or session.get(widget_key) or visible_name or "").strip(),
+            player_id=str(snap.get("id") or visible_id or "").strip() or None,
             pool_source=str(pool_source or ""),
             candidate_source="manual_panel_selectbox_on_click",
             widget_key=widget_key,

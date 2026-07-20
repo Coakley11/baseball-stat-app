@@ -2008,7 +2008,8 @@ def render_draft_decision_panel(
                 pos = str(row.get("Position") or "").strip()
                 if pos:
                     scarcity_by_pos[pos] = row
-        except ImportError:
+        except Exception:
+            # Scarcity enrichment is optional — never blank the primary roster rows.
             pass
 
     # Build position rows from tracker lines (preferred) or scarcity keys.
@@ -2082,10 +2083,9 @@ def render_draft_decision_panel(
                 f"{r['scarcity']} scarcity"
             )
         st.markdown("\n".join(lines))
+        # Optional desktop table — never import pandas locally (shadows module `pd`
+        # and caused UnboundLocalError on phones before the markdown rows painted).
         try:
-            # Desktop convenience: compact dataframe (still shows when HTML tables fail).
-            import pandas as pd
-
             df = pd.DataFrame(
                 [
                     {

@@ -14557,13 +14557,32 @@ try:
 
         if st.session_state.get(PENDING_MANUAL_PICK_KEY):
             _early_pending_pick = process_pending_manual_draft_pick(st, st.session_state)
+            # Keep result for Live Draft Room poll-skip (second process is a no-op).
+            st.session_state["_live_draft_last_pending_pick_result"] = _early_pending_pick
             # Phase 2: do not request a second full-page rerun — continue into page paint.
             if _early_pending_pick.get("ok"):
                 st.session_state["_live_draft_pending_pick_painted"] = True
+                # Hold poll overwrite until shared revision catches up (~5s).
+                st.session_state["_live_draft_manual_pick_in_flight"] = True
+                st.session_state["_live_draft_manual_pick_guard_until"] = (
+                    __import__("time").time() + 5.0
+                )
             elif _early_pending_pick.get("processed") and not _early_pending_pick.get("ok"):
                 st.session_state["_live_draft_pick_flash_error"] = str(
                     _early_pending_pick.get("error") or _early_pending_pick.get("message") or "Manual pick failed."
                 )
+    except ImportError:
+        pass
+
+    try:
+        from live_draft_resumable_slot import PENDING_SAVE_CONTINUE_KEY, process_pending_save_continue
+
+        if st.session_state.get(PENDING_SAVE_CONTINUE_KEY):
+            _save_result = process_pending_save_continue(st.session_state, st=st)
+            if _save_result.get("ok"):
+                st.rerun()
+            elif _save_result.get("needs_replace_confirm"):
+                st.rerun()
     except ImportError:
         pass
 
@@ -22080,10 +22099,27 @@ elif active_page == "Live Draft Room":
     try:
         from draft_ui import process_pending_manual_draft_pick
 
-        _pending_pick_result = process_pending_manual_draft_pick(st, st.session_state)
+        _pending_pick_result = st.session_state.pop(
+            "_live_draft_last_pending_pick_result", None
+        ) or {"processed": False}
+        if not _pending_pick_result.get("processed"):
+            _pending_pick_result = process_pending_manual_draft_pick(st, st.session_state)
+            if _pending_pick_result.get("ok"):
+                st.session_state["_live_draft_manual_pick_in_flight"] = True
+                st.session_state["_live_draft_manual_pick_guard_until"] = (
+                    __import__("time").time() + 5.0
+                )
         if _pending_pick_result.get("processed") and not _pending_pick_result.get("ok"):
             st.error(str(_pending_pick_result.get("error") or _pending_pick_result.get("message") or "Manual pick failed."))
     except ImportError:
+        pass
+    # Expire manual-pick poll guard after the hold window.
+    try:
+        _guard_until = float(st.session_state.get("_live_draft_manual_pick_guard_until") or 0)
+        if _guard_until and __import__("time").time() >= _guard_until:
+            st.session_state.pop("_live_draft_manual_pick_in_flight", None)
+            st.session_state.pop("_live_draft_manual_pick_guard_until", None)
+    except Exception:
         pass
     from live_draft_state import prepare_live_draft_state
 
@@ -23278,6 +23314,9 @@ elif active_page == "Live Draft Room":
                 st.success(str(_ended["message"]))
         except ImportError:
             pass
+        _park_notice = st.session_state.pop("_live_draft_saved_for_later_notice", None)
+        if _park_notice:
+            st.info(str(_park_notice))
         try:
             from live_draft_resumable_slot import (
                 SAVE_CONTINUE_FLASH_KEY,

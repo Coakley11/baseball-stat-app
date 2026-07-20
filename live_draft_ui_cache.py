@@ -25,19 +25,40 @@ def invalidate_live_draft_ui_caches(session: dict[str, Any] | None) -> None:
     session.pop(WHY_COLUMN_CACHE_KEY, None)
 
 
+def _fold_player_name(name: Any) -> str:
+    """Lower + accent-folded name so José Ramírez matches Jose Ramirez."""
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    try:
+        from player_name_normalization import normalize_player_name_for_merge
+
+        folded = str(normalize_player_name_for_merge(raw) or "").strip()
+        if folded:
+            return folded
+    except ImportError:
+        pass
+    return raw.lower()
+
+
 def _filter_player_from_df(df: Any, *, player_id: str = "", player_name: str = "") -> Any:
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return df
     out = df
     pid = str(player_id or "").strip()
     name = str(player_name or "").strip().lower()
+    folded = _fold_player_name(player_name) if player_name else ""
     if pid and "playerID" in out.columns:
         out = out[out["playerID"].astype(str).str.strip() != pid]
     if pid and "player_id" in out.columns:
         out = out[out["player_id"].astype(str).str.strip() != pid]
     name_col = "fullName" if "fullName" in out.columns else ("Player" if "Player" in out.columns else "")
     if name and name_col:
-        out = out[out[name_col].astype(str).str.strip().str.lower() != name]
+        lowered = out[name_col].astype(str).str.strip().str.lower()
+        keep = lowered != name
+        if folded:
+            keep = keep & (out[name_col].map(_fold_player_name) != folded)
+        out = out[keep]
     return out
 
 
@@ -72,6 +93,9 @@ def drafted_identity_sets(room: dict[str, Any] | None) -> tuple[set[str], set[st
         name = str(row.get("fullName") or row.get("Player") or "").strip()
         if name:
             names.add(name.lower())
+            folded = _fold_player_name(name)
+            if folded:
+                names.add(folded)
     return ids, names
 
 
@@ -91,7 +115,9 @@ def filter_df_excluding_drafted(df: Any, room: dict[str, Any] | None) -> Any:
         out = out[~out["player_id"].astype(str).str.strip().str.lower().isin(ids)]
     name_col = "fullName" if "fullName" in out.columns else ("Player" if "Player" in out.columns else "")
     if names and name_col:
-        out = out[~out[name_col].astype(str).str.strip().str.lower().isin(names)]
+        lowered = out[name_col].astype(str).str.strip().str.lower()
+        folded = out[name_col].map(_fold_player_name)
+        out = out[~lowered.isin(names) & ~folded.isin(names)]
     return out
 
 

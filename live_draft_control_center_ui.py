@@ -261,23 +261,28 @@ def render_commissioner_draft_actions(
     st.markdown("**Draft Actions**")
     a1, a2 = st.columns(2)
     with a1:
-        if st.button(
+        try:
+            from live_draft_resumable_slot import (
+                SAVING_FOR_LATER_UI_KEY,
+                on_save_continue_later_click,
+            )
+        except ImportError:
+            on_save_continue_later_click = None  # type: ignore[assignment]
+            SAVING_FOR_LATER_UI_KEY = "_live_draft_saving_for_later_ui"
+        saving = bool(session.get(SAVING_FOR_LATER_UI_KEY))
+        if saving:
+            st.info("Saving draft for later…")
+        st.button(
             "💾 Save & Continue Later",
             key="live_draft_save_continue_btn",
             help="Pause and preserve this unfinished draft so the commissioner can continue it later.",
             use_container_width=True,
-        ):
-            from live_draft_resumable_slot import save_and_continue_later
-
-            result = save_and_continue_later(session, st=st, replace_existing=False)
-            if result.get("needs_replace_confirm"):
-                session["_live_draft_replace_resumable_confirm"] = True
-                session["_live_draft_replace_resumable_message"] = result.get("message")
-            elif result.get("ok"):
-                st.rerun()
-            else:
-                st.error(str(result.get("message") or "Could not save draft for later."))
+            disabled=saving,
+            on_click=on_save_continue_later_click if on_save_continue_later_click else None,
+        )
         st.caption("Pause unfinished draft for later.")
+        if session.get("_live_draft_save_continue_error"):
+            st.error(str(session.pop("_live_draft_save_continue_error", "") or "Save failed."))
     with a2:
         try:
             from live_draft_delete_authority import (

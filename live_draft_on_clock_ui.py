@@ -178,6 +178,16 @@ def _render_on_clock_banner_html(
     )
 
 
+def _emit_primary_auto_picking_status(st: Any, session: dict[str, Any]) -> None:
+    """Single authoritative Auto-picking label for the On-the-Clock area."""
+    count = int(session.get("visible_auto_picking_status_count") or 0) + 1
+    session["visible_auto_picking_status_count"] = count
+    session["_live_draft_timer_autopick_ui"] = True
+    st.caption("Auto-picking…")
+    if bool(session.get("developer_mode") or session.get("_developer_mode")) and count != 1:
+        st.caption(f"Dev assert: visible_auto_picking_status_count == {count} (expected 1)")
+
+
 def render_live_on_clock_banner(
     st: Any,
     session: dict[str, Any],
@@ -187,6 +197,8 @@ def render_live_on_clock_banner(
     next_pick: int | None = None,
 ) -> None:
     """Render blue On-the-Clock banner with client-side 1 Hz countdown."""
+    # Reset per full-page paint; fragment ticks may increment once more.
+    session["visible_auto_picking_status_count"] = 0
     try:
         from app_page_generation import fragment_allowed
 
@@ -271,16 +283,22 @@ def render_live_on_clock_banner(
     except ImportError:
         use_fragment = live_room.get("status") == "in_progress"
 
+    remaining_now = live_draft_display_seconds(live_room)
     if not use_fragment or deadline is None:
         _render_on_clock_banner_html(
             st,
             slot_view,
-            live_draft_display_seconds(live_room),
+            remaining_now,
             next_pick=next_pick_view,
             pick_index=pick_idx,
             deadline=deadline,
             flash=clock_flash,
         )
+        if (
+            int(remaining_now or 0) <= 0
+            and str(live_room.get("status") or "") == "in_progress"
+        ):
+            _emit_primary_auto_picking_status(st, session)
         _mark_on_clock_done()
         return
 
@@ -290,12 +308,17 @@ def render_live_on_clock_banner(
         _render_on_clock_banner_html(
             st,
             slot_view,
-            live_draft_display_seconds(live_room),
+            remaining_now,
             next_pick=next_pick_view,
             pick_index=pick_idx,
             deadline=deadline,
             flash=clock_flash,
         )
+        if (
+            int(remaining_now or 0) <= 0
+            and str(live_room.get("status") or "") == "in_progress"
+        ):
+            _emit_primary_auto_picking_status(st, session)
         _mark_on_clock_done()
         return
 
@@ -437,6 +460,13 @@ def render_live_on_clock_banner(
             deadline=tick_deadline,
             flash=False,
         )
+        if (
+            int(remaining or 0) <= 0
+            and str(tick_room.get("status") or "") == "in_progress"
+        ):
+            # Fragment re-paint: keep a single Auto-picking caption under On-the-Clock.
+            session["visible_auto_picking_status_count"] = 0
+            _emit_primary_auto_picking_status(st, session)
 
     _banner_tick()
     _mark_on_clock_done()
