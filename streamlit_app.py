@@ -9419,7 +9419,17 @@ def simulate_draft_lab(pool_df, teams=("Team A", "Team B", "Team C", "Team D"), 
             current_pick=int(pick["Pick"]),
             category_needs=category_needs,
         )
-        chosen = scored.sort_values(["Decision Score", "Draft Fit Score", "Expected Fantasy Value"], ascending=False).iloc[0].copy()
+        if scored is None or getattr(scored, "empty", True):
+            continue
+        from recommendation_schema import missing_ranking_columns, safe_sort_recommendations
+
+        if missing_ranking_columns(scored):
+            continue
+        chosen = safe_sort_recommendations(
+            scored,
+            ["Decision Score", "Draft Fit Score", "Expected Fantasy Value"],
+            ascending=False,
+        ).iloc[0].copy()
         chosen["Round"] = pick["Round"]
         chosen["Pick"] = pick["Pick"]
         chosen["Fantasy Team"] = team
@@ -9937,17 +9947,32 @@ def apply_draft_pick_scoring(
         except ImportError:
             return _run_scoring()
     except ImportError:
-        pass
-    scored = available.copy()
-    roster_df = roster_df if roster_df is not None else pd.DataFrame()
-    target_counts = target_counts or {}
-    slot_cfg = {"slots": dict(target_counts)} if target_counts else {}
-    gaps = _live_draft_roster_needs(roster_df, target_counts, config=slot_cfg)
-    if needed_positions is None:
-        needed_positions = gaps if gaps else []
-    if return_position_summary:
-        return scored, gaps, []
-    return scored, gaps
+        # Never return an unscored pool that callers will sort on ranking columns.
+        # Fail closed: empty frame so UI shows "unavailable" instead of KeyError.
+        try:
+            from recommendation_schema import recommendation_schema_diagnostics
+
+            import streamlit as st
+
+            st.session_state["_recommendation_schema_diag"] = recommendation_schema_diagnostics(
+                available,
+                path="streamlit_app.apply_draft_pick_scoring.ImportError",
+                extra={"status": "scoring_module_unavailable"},
+            )
+        except Exception:
+            pass
+        gaps: list = []
+        try:
+            roster_df = roster_df if roster_df is not None else pd.DataFrame()
+            target_counts = target_counts or {}
+            slot_cfg = {"slots": dict(target_counts)} if target_counts else {}
+            gaps = _live_draft_roster_needs(roster_df, target_counts, config=slot_cfg)
+        except Exception:
+            gaps = list(needed_positions or [])
+        empty = pd.DataFrame()
+        if return_position_summary:
+            return empty, gaps, []
+        return empty, gaps
 
 
 def calculate_draft_fit_score(available, roster_df, **kwargs):
@@ -10256,10 +10281,29 @@ def cached_live_draft_recommendations(session, room, top_n=8, team=None):
             top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(
                 room, top_n=top_n, team=team, session=session
             )
-    except ImportError:
-        top_rec, best_avail, pos_fit, value_sleep = live_draft_recommendations(
-            room, top_n=top_n, team=team, session=session
-        )
+    except Exception as exc:
+        # Recoverable: keep draft board/timer/queue usable when scoring crashes.
+        try:
+            from recommendation_schema import (
+                USER_REC_UNAVAILABLE,
+                recommendation_schema_diagnostics,
+            )
+
+            session["_live_draft_recommendations_error"] = f"{type(exc).__name__}: {exc}"
+            session["_recommendation_schema_diag"] = recommendation_schema_diagnostics(
+                None,
+                path="cached_live_draft_recommendations",
+                extra={
+                    "status": "exception",
+                    "exception_type": type(exc).__name__,
+                    "exception": str(exc),
+                    "user_message": USER_REC_UNAVAILABLE,
+                },
+            )
+        except Exception:
+            session["_live_draft_recommendations_error"] = f"{type(exc).__name__}: {exc}"
+        empty = __import__("pandas").DataFrame()
+        return empty, empty, empty, empty
     top_rec, best_avail, pos_fit, value_sleep = filter_recommendation_tables_for_drafted(
         room, top_rec, best_avail, pos_fit, value_sleep
     )
@@ -20136,7 +20180,16 @@ elif active_page == "Draft Assistant Simulator":
                     if str(r.get("Position") or "") in _active_pos
                 ]
 
-            recs_ranked = available.sort_values("Draft Fit Score", ascending=False).copy()
+            from recommendation_schema import missing_ranking_columns, safe_sort_recommendations
+
+            if missing_ranking_columns(available):
+                recs_ranked = pd.DataFrame()
+                st.session_state["_draft_assistant_rec_unavailable"] = True
+            else:
+                recs_ranked = safe_sort_recommendations(
+                    available, ["Draft Fit Score"], ascending=False
+                ).copy()
+                st.session_state.pop("_draft_assistant_rec_unavailable", None)
 
             if _da_key is not None:
                 try:
@@ -20161,7 +20214,14 @@ elif active_page == "Draft Assistant Simulator":
             median_scarcity_dropoff = float(np.median(_drop_vals)) if _drop_vals else None
 
         if recs_ranked.empty and not available.empty:
-            recs_ranked = available.sort_values("Draft Fit Score", ascending=False).copy()
+            from recommendation_schema import missing_ranking_columns, safe_sort_recommendations
+
+            if not missing_ranking_columns(available):
+                recs_ranked = safe_sort_recommendations(
+                    available, ["Draft Fit Score"], ascending=False
+                ).copy()
+            else:
+                st.session_state["_draft_assistant_rec_unavailable"] = True
 
         from recommendation_dedupe import (
             add_recommendation_rank_column,
@@ -25453,6 +25513,27 @@ elif active_page == "Live Draft Room":
                     pass
                 # Quick tools live inside the Draft Decision Panel (no second tall nav strip).
                 st.markdown("##### Recommendations")
+                _rec_err = str(st.session_state.pop("_live_draft_recommendations_error", "") or "").strip()
+                _rec_diag = dict(st.session_state.get("_recommendation_schema_diag") or {})
+                if _rec_err or str(_rec_diag.get("status") or "") in (
+                    "exception",
+                    "scoring_failed",
+                    "scoring_module_unavailable",
+                    "missing_after_score",
+                ):
+                    try:
+                        from recommendation_schema import USER_REC_UNAVAILABLE
+
+                        st.info(USER_REC_UNAVAILABLE)
+                    except ImportError:
+                        st.info(
+                            "Recommendations could not be loaded right now. "
+                            "You can continue drafting from the available-player list."
+                        )
+                    if developer_mode_enabled():
+                        with st.expander("Recommendation diagnostics (admin)", expanded=False):
+                            st.code(_rec_err or str(_rec_diag.get("exception") or "schema issue"))
+                            st.json(_rec_diag)
                 try:
                     from live_draft_roster_enforcement import resolve_on_clock_enforcement
 
