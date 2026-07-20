@@ -1947,9 +1947,19 @@ def apply_waiver_move_pairs(
         if context_has_roster_slots(context):
             open_slots = resolve_context_open_position_needs(context, my_roster_df)
             if open_slots:
-                result["position_warnings"].append(
-                    f"Roster has open required slots: {', '.join(open_slots)}"
-                )
+                try:
+                    from fantasy_roster_validation import evaluate_team_roster, missing_position_message
+
+                    coverage = evaluate_team_roster(
+                        roster_df=my_roster_df,
+                        context=context,
+                    )
+                    for code in coverage.get("missing_positions") or []:
+                        result["position_warnings"].append(missing_position_message(code))
+                except ImportError:
+                    result["position_warnings"].append(
+                        f"Roster has open required slots: {', '.join(open_slots)}"
+                    )
     except ImportError:
         pass
 

@@ -13339,16 +13339,34 @@ def render_scheduled_navigation_diagnostics() -> None:
         )
 
 
-def open_waiver_wire_from_lineup_slot(slot_label: str = "") -> None:
-    """Streamlit on_click — open Waiver Wire with a lineup slot position filter applied."""
+def open_waiver_wire_from_lineup_slot(slot_label: str = "", *, position_code: str = "") -> None:
+    """Streamlit on_click — open Waiver Wire in position-correction mode for a missing slot."""
     try:
         from draft_archive_ui import FANTASY_WAIVER_PAGE, schedule_fantasy_analysis_navigation
+        from fantasy_roster_validation import activate_waiver_position_correction, normalize_position_code
         from fantasy_waiver_wire_ui import WAIVER_POSITION_FILTER_KEY
         from fantasy_weekly_lineup import waiver_filter_for_slot_label
     except ImportError:
         navigate_to_page("Waiver Wire / Add-Drop Center", from_callback=True)
         return
-    filt = waiver_filter_for_slot_label(str(slot_label or ""))
+
+    code = normalize_position_code(position_code) if str(position_code or "").strip() else ""
+    filt = ""
+    if not code:
+        filt = waiver_filter_for_slot_label(str(slot_label or ""))
+        if not filt:
+            raw = str(slot_label or "").strip().upper()
+            if raw in {"C", "1B", "2B", "3B", "SS", "OF", "P"}:
+                filt = raw
+            elif raw in {"DH", "UTIL", "DH/UTIL"}:
+                filt = "DH/UTIL"
+        if filt == "DH/UTIL":
+            code = "DH"
+        elif filt:
+            code = normalize_position_code(filt)
+
+    if code:
+        filt = activate_waiver_position_correction(st.session_state, code)
     if filt:
         st.session_state[WAIVER_POSITION_FILTER_KEY] = filt
     else:
@@ -22754,6 +22772,28 @@ elif active_page == "Live Draft Room":
                 except ImportError:
                     pass
                 total_picks = int(live_num_teams) * int(live_picks_per_team)
+                _setup_slots = {
+                    "C": slot_c, "1B": slot_1b, "2B": slot_2b, "3B": slot_3b,
+                    "SS": slot_ss, "OF": slot_of, "DH": slot_dh, "P": slot_p,
+                    "BN": slot_bench,
+                }
+                try:
+                    from fantasy_roster_validation import (
+                        LIVE_DRAFT_SETUP_ERROR,
+                        ensure_bench_slots_for_extra_picks,
+                        validate_live_draft_setup,
+                    )
+
+                    _setup_check = validate_live_draft_setup(
+                        picks_per_team=int(live_picks_per_team),
+                        slots=_setup_slots,
+                    )
+                except ImportError:
+                    LIVE_DRAFT_SETUP_ERROR = (
+                        "Draft picks per team must be greater than or equal to the number of required roster positions."
+                    )
+                    _setup_check = {"ok": True, "error": ""}
+                    ensure_bench_slots_for_extra_picks = None  # type: ignore[assignment]
                 if pool_live.empty:
                     _start_handler_err = "Could not build a player pool. Check your data files and try again."
                     record_start_live_draft_diagnostics(st.session_state, start_live_draft_error=_start_handler_err)
@@ -22764,7 +22804,15 @@ elif active_page == "Live Draft Room":
                     )
                     record_start_live_draft_diagnostics(st.session_state, start_live_draft_error=_start_handler_err)
                     st.error(_start_handler_err)
+                elif not _setup_check.get("ok"):
+                    _start_handler_err = str(_setup_check.get("error") or LIVE_DRAFT_SETUP_ERROR)
+                    record_start_live_draft_diagnostics(st.session_state, start_live_draft_error=_start_handler_err)
+                    st.error(_start_handler_err)
                 else:
+                    if ensure_bench_slots_for_extra_picks is not None:
+                        _setup_slots = ensure_bench_slots_for_extra_picks(
+                            _setup_slots, int(live_picks_per_team)
+                        )
                     config = {
                         "league_name": live_league_name.strip() or "My Fantasy League",
                         "num_teams": int(live_num_teams),
@@ -22781,11 +22829,7 @@ elif active_page == "Live Draft Room":
                         "teams": [str(t).strip() or default_teams[i] for i, t in enumerate(team_names)],
                         "user_team": user_team,
                         "your_team": user_team,
-                        "slots": {
-                            "C": slot_c, "1B": slot_1b, "2B": slot_2b, "3B": slot_3b,
-                            "SS": slot_ss, "OF": slot_of, "DH": slot_dh, "P": slot_p,
-                            "BN": slot_bench,
-                        },
+                        "slots": dict(_setup_slots),
                     }
                     try:
                         from live_draft_roster_slots import freeze_slot_instances_on_config

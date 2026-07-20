@@ -143,25 +143,61 @@ def build_open_slot_prompts(
     if not open_slots:
         return []
 
+    try:
+        from fantasy_roster_validation import missing_position_message, open_waiver_button_label
+    except ImportError:
+        missing_position_message = None  # type: ignore[assignment]
+        open_waiver_button_label = None  # type: ignore[assignment]
+
     rows: list[dict[str, str]] = []
     of_labels = [label for label in open_slots if label.base_slot == "OF"]
     other_labels = [label for label in open_slots if label.base_slot != "OF"]
 
     for label in other_labels:
+        code = str(label.base_slot or "").strip().upper()
+        if missing_position_message is not None:
+            text = missing_position_message(code)
+            button = open_waiver_button_label(code)
+        else:
+            text = f"{label.label} is empty"
+            button = "Open Waiver Wire"
         rows.append(
             {
-                "text": f"{label.label} is empty",
+                "text": text,
                 "waiver_label": _waiver_slot_label_for_open_prompt(label),
+                "button_label": button,
+                "position_code": code,
             }
         )
 
     if len(of_labels) == 1:
-        rows.append({"text": f"{of_labels[0].label} is empty", "waiver_label": "Outfield"})
-    elif len(of_labels) > 1:
+        if missing_position_message is not None:
+            text = missing_position_message("OF")
+            button = open_waiver_button_label("OF")
+        else:
+            text = f"{of_labels[0].label} is empty"
+            button = "Open Waiver Wire"
         rows.append(
             {
-                "text": f"{len(of_labels)} Outfield spots are empty",
+                "text": text,
                 "waiver_label": "Outfield",
+                "button_label": button,
+                "position_code": "OF",
+            }
+        )
+    elif len(of_labels) > 1:
+        if missing_position_message is not None:
+            text = f"Missing {len(of_labels)} outfielders"
+            button = open_waiver_button_label("OF")
+        else:
+            text = f"{len(of_labels)} Outfield spots are empty"
+            button = "Open Waiver Wire"
+        rows.append(
+            {
+                "text": text,
+                "waiver_label": "Outfield",
+                "button_label": button,
+                "position_code": "OF",
             }
         )
     return rows
@@ -215,7 +251,7 @@ def _render_open_slots_and_validation(
             with btn_col:
                 if on_open_waiver_wire is not None:
                     st.button(
-                        "Open Waiver Wire",
+                        str(row.get("button_label") or "Open Waiver Wire"),
                         key=f"{prefix}_waiver_{row['waiver_label']}_{idx}_{int(selected_week)}",
                         on_click=on_open_waiver_wire,
                         args=(row["waiver_label"],),

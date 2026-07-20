@@ -442,8 +442,9 @@ class LineupPersistenceTests(unittest.TestCase):
         rows = build_open_slot_prompts(labels, {"C": "Catcher One", "1B": "", "2B": "Middle Man"})
         texts = [row["text"] for row in rows]
         self.assertEqual(len(rows), 1)
-        self.assertIn("First Base is empty", texts[0])
+        self.assertIn("Missing first baseman", texts[0])
         self.assertEqual(rows[0]["waiver_label"], "First Base")
+        self.assertIn("First Basemen", rows[0].get("button_label") or "")
 
     def test_live_draft_configuration_source(self) -> None:
         from fantasy_league_lineup_format import configuration_source_for_context

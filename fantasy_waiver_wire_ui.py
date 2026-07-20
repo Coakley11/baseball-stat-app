@@ -577,6 +577,29 @@ def render_waiver_wire_page(
         return
 
     try:
+        from fantasy_roster_validation import (
+            clear_waiver_position_correction,
+            is_waiver_position_correction_active,
+            waiver_correction_banner,
+            WAIVER_CORRECTION_POSITION_KEY,
+        )
+
+        banner = waiver_correction_banner(session)
+        if banner:
+            st.info(banner)
+            code = str(session.get(WAIVER_CORRECTION_POSITION_KEY) or "").strip().upper()
+            if code and not str(session.get(WAIVER_POSITION_FILTER_KEY) or "").strip():
+                session[WAIVER_POSITION_FILTER_KEY] = "DH/UTIL" if code == "DH" else code
+            if st.button("Exit position correction", key="waiver_exit_position_correction"):
+                clear_waiver_position_correction(session)
+                session[WAIVER_POSITION_FILTER_KEY] = "All positions"
+                st.rerun()
+        elif is_waiver_position_correction_active(session):
+            clear_waiver_position_correction(session)
+    except ImportError:
+        pass
+
+    try:
         from fantasy_waiver_wire import resolve_waiver_league_context
 
         hydrated = resolve_waiver_league_context(session)

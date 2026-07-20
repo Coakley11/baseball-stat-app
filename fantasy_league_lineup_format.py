@@ -342,6 +342,28 @@ def save_league_lineup_format(
         result["errors"].append("Choose at least one starting position.")
         return result
 
+    try:
+        from fantasy_roster_validation import (
+            no_expansion_draft_allowed,
+            validate_commissioner_lineup_slot_count,
+        )
+
+        suggested, _counts = detect_roster_size_hint(context)
+        capacity = max(1, int(roster_capacity or suggested or len(lineup_slots)))
+        count_check = validate_commissioner_lineup_slot_count(
+            starter_count=len(lineup_slots),
+            drafted_roster_size=capacity,
+        )
+        if not count_check.get("ok"):
+            result["errors"].append(str(count_check.get("error") or "Invalid lineup format."))
+            return result
+        if no_expansion_draft_allowed(context).get("allowed"):
+            result["errors"].append("Expansion drafts are not supported.")
+            return result
+        roster_capacity = capacity
+    except ImportError:
+        pass
+
     source = configuration_source or configuration_source_for_context(context)
     if not source:
         ctx_type = str(context.get("context_type") or "")
@@ -361,7 +383,8 @@ def save_league_lineup_format(
         from fantasy_shared_league_store import push_league_context_to_shared
 
         push_league_context_to_shared(session, updated)
-    except ImportError:
+    except Exception:
+        # Local / unconfigured Supabase must not block commissioner lineup setup.
         pass
     try:
         import streamlit as st

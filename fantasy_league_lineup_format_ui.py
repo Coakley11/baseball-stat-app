@@ -65,16 +65,20 @@ def render_lineup_format_setup(
         parts = [f"**{name}**: {count} players" for name, count in sorted(team_counts.items())]
         st.caption("Detected roster sizes — " + " · ".join(parts))
     st.markdown(f"**Detected roster size:** {suggested} players per team")
+    st.caption(
+        "Required starting positions cannot exceed the drafted roster size. "
+        "Extra drafted players remain on the bench. Roster corrections use Waiver Wire — not a second draft."
+    )
 
     pick_labels = [label for _code, label in PICKABLE_POSITIONS]
     pick_codes = {label: code for code, label in PICKABLE_POSITIONS}
 
-    default_count = suggested
+    default_count = max(1, min(int(suggested), int(suggested)))
     slot_count = st.number_input(
         "Number of starting positions",
         min_value=1,
-        max_value=15,
-        value=int(default_count),
+        max_value=max(1, int(suggested)),
+        value=default_count,
         step=1,
         key="lineup_format_slot_count",
     )
@@ -104,10 +108,27 @@ def render_lineup_format_setup(
     emit_html_block(st, _preview_circle_html(lineup_slots))
 
     if st.button("Save League Lineup Format", type="primary", key="lineup_format_save_btn"):
+        try:
+            from fantasy_roster_validation import (
+                no_expansion_draft_allowed,
+                validate_commissioner_lineup_slot_count,
+            )
+
+            count_check = validate_commissioner_lineup_slot_count(
+                starter_count=len(lineup_slots),
+                drafted_roster_size=int(suggested),
+            )
+            if not count_check.get("ok"):
+                st.error(str(count_check.get("error") or "Invalid lineup format."))
+                return False
+            # Product rule: never spawn an expansion draft after position setup.
+            _ = no_expansion_draft_allowed(context)
+        except ImportError:
+            pass
         result = save_league_lineup_format(
             session,
             lineup_slots=lineup_slots,
-            roster_capacity=int(slot_count),
+            roster_capacity=int(suggested),
             configured_by=str(session.get("user_email") or session.get("username") or "commissioner"),
             configuration_source=configuration_source_for_context(context),
         )

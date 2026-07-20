@@ -195,9 +195,9 @@ class OpenSlotPromptTests(unittest.TestCase):
         labels = build_slot_key_labels(["C", "1B", "3B", "UTIL"])
         rows = build_open_slot_prompts(labels, {"C": "Mookie Betts", "1B": "Bench Hitter", "3B": "", "UTIL": ""})
         texts = [r["text"] for r in rows]
-        self.assertEqual(texts, ["Third Base is empty", "UTIL is empty"])
-        self.assertNotIn("Catcher is empty", texts)
-        self.assertNotIn("First Base is empty", texts)
+        self.assertEqual(texts, ["Missing third baseman", "Missing utility player"])
+        self.assertNotIn("Missing catcher", texts)
+        self.assertNotIn("Missing first baseman", texts)
 
     def test_single_of_open_uses_slot_label(self) -> None:
         labels = build_slot_key_labels(["OF", "OF", "OF"])
@@ -205,14 +205,14 @@ class OpenSlotPromptTests(unittest.TestCase):
             labels, {"OF": "", "OF_2": "Mookie Betts", "OF_3": "Bench Hitter"}
         )
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["text"], "OF 1 is empty")
+        self.assertEqual(rows[0]["text"], "Missing outfielder")
         self.assertEqual(rows[0]["waiver_label"], "Outfield")
 
     def test_multiple_of_open_combined(self) -> None:
         labels = build_slot_key_labels(["OF", "OF", "OF"])
         rows = build_open_slot_prompts(labels, {"OF": "", "OF_2": "", "OF_3": "Mookie Betts"})
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["text"], "2 Outfield spots are empty")
+        self.assertEqual(rows[0]["text"], "Missing 2 outfielders")
         self.assertEqual(rows[0]["waiver_label"], "Outfield")
 
     def test_waiver_labels_for_standard_positions(self) -> None:
