@@ -25,7 +25,10 @@ def normalize_dedupe_queue(raw):
     seen = set()
     out = []
     for x in raw:
-        s = str(x).strip()
+        if isinstance(x, dict):
+            s = str(x.get("fullName") or x.get("Player") or x.get("name") or "").strip()
+        else:
+            s = str(x).strip()
         if s and s not in seen:
             seen.add(s)
             out.append(s)

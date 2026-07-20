@@ -93,10 +93,16 @@ class RerunGateTests(unittest.TestCase):
         from live_draft_expired_pick import RERUN_LOOP_PREVENTED_KEY
 
         session: dict = {"_live_draft_rerun_count": 20}
-        allowed, reason = is_rerun_allowed(session, "page_autopick")
+        # Passive poll/timer ticks remain soft-throttled…
+        allowed, reason = is_rerun_allowed(session, "poll_fragment")
         self.assertFalse(allowed)
         self.assertEqual(reason, "excessive_reruns_blocked")
         self.assertFalse(bool(session.get(RERUN_LOOP_PREVENTED_KEY)))
+        # …but local zero→auto and manual pick paints must never wait.
+        allowed_local, _ = is_rerun_allowed(session, "page_autopick")
+        self.assertTrue(allowed_local)
+        allowed_manual, _ = is_rerun_allowed(session, "manual_pick")
+        self.assertTrue(allowed_manual)
 
 
 class ManualRecoveryTests(unittest.TestCase):

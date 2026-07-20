@@ -228,7 +228,6 @@ class PersistAppliedPickTests(unittest.TestCase):
 
 
 class ExpiredPickPerfTests(unittest.TestCase):
-    @patch("live_draft_expired_pick.persist_applied_pick")
     @patch("live_draft_expired_pick.run_autopick_selection", return_value=(True, "Drafted Aaron Judge."))
     @patch("live_draft_expired_pick.sync_expected_revision", return_value=None)
     @patch("live_draft_expired_pick._multiplayer_autopick_allowed", return_value=True)
@@ -237,25 +236,19 @@ class ExpiredPickPerfTests(unittest.TestCase):
         _host: MagicMock,
         _rev: MagicMock,
         _sel: MagicMock,
-        mock_persist: MagicMock,
     ) -> None:
         from live_draft_expired_pick import EXPIRED_PICK_PERF_KEY, format_expired_pick_perf
 
-        mock_persist.return_value = PickCommitResult(
-            ok=True,
-            message="Drafted Aaron Judge.",
-            error="",
-            commit_path="single_user",
-            board_size_before=4,
-            board_size_after=5,
-            current_pick_index_before=4,
-            current_pick_index_after=5,
-        )
-        session: dict = {"live_draft_room": _room(), "_live_draft_persist_perf": {"shared_commit_ms": 12}}
+        room = _room()
+        # Shared finalize path already persisted inside auto_pick; expire synthesizes commit.
+        # Keep the clock expired so run_expired_autopick_once enters the commit path.
+        room["draft_board"].append({"playerID": "p1", "fullName": "Aaron Judge"})
+        room["current_pick_index"] = 5
+        room["timer_deadline"] = time.time() - 1.0
+        session: dict = {"live_draft_room": room, "_live_draft_persist_perf": {"shared_commit_ms": 12}}
         result = run_expired_autopick_once(session, session["live_draft_room"])
-        self.assertTrue(result.ok)
-        mock_persist.assert_called_once()
-        self.assertTrue(mock_persist.call_args.kwargs.get("fast_path"))
+        self.assertTrue(result.ok, result)
+        _sel.assert_called_once()
         perf = session.get(EXPIRED_PICK_PERF_KEY) or {}
         self.assertIn("total_ms", perf)
         self.assertIn("recommendation_ms", perf)

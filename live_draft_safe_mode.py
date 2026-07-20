@@ -28,6 +28,19 @@ _BLOCKED_RERUN_SOURCES = frozenset(
     }
 )
 
+# Local pick commits and zero→auto transitions must never wait on passive-poll throttle.
+_LOCAL_IMMEDIATE_RERUN_SOURCES = frozenset(
+    {
+        "manual_pick",
+        "local_pick_paint",
+        "optimistic_pick",
+        "timer_fragment_zero",
+        "solo_expire",
+        "page_autopick",
+        "expired_pick_pending",
+    }
+)
+
 # Remote revision apply must always repaint — not subject to passive-receiver rerun budget
 _POLL_APPLY_RERUN_SOURCES = frozenset({"poll_apply", "poll_remote_revision"})
 
@@ -423,6 +436,13 @@ def is_rerun_allowed(session: dict[str, Any], source: str, *, room: dict[str, An
 
     count = int(session.get("_live_draft_rerun_count") or 0)
     if count > 8 and source in _BLOCKED_RERUN_SOURCES:
+        # Soft throttle only applies to passive poll/timer ticks.
+        # Local manual picks and zero→auto transitions must never wait.
+        if (
+            source in _LOCAL_IMMEDIATE_RERUN_SOURCES
+            or session.get("_live_draft_local_pick_paint_pending")
+        ):
+            return True, ""
         # Soft throttle only. Never latch permanent RERUN_LOOP_PREVENTED here — that flag
         # used to activate safe_mode and stop expired-pick commits while the clock sat at 0.
         return False, "excessive_reruns_blocked"

@@ -441,6 +441,7 @@ def commit_manual_live_pick(
             verdict=verdict_text,
             pick_source=source_label,
             snapshot=dict(player_row),
+            session=session,
             enrich_pick_context=False,
         )
     if not ok:
@@ -458,56 +459,48 @@ def commit_manual_live_pick(
         return result
 
     try:
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY
+        from live_draft_pick_persist import mark_applied_pick_guard
 
-        session[LIVE_DRAFT_ROOM_KEY] = room
         if guard:
             mark_applied_pick_guard(session, guard)
-        if live_draft_perf_action is not None:
-            with live_draft_perf_action(session, "cache_patch", phase=PHASE_PICK_CACHE_INVALIDATE):
-                try:
-                    from live_draft_ui_cache import patch_live_draft_caches_after_pick
-
-                    patch_live_draft_caches_after_pick(
-                        session,
-                        room,
-                        player_id=player_id,
-                        player_name=player_name,
-                    )
-                except ImportError:
-                    try:
-                        from live_draft_ui_cache import invalidate_live_draft_ui_caches
-
-                        invalidate_live_draft_ui_caches(session)
-                    except ImportError:
-                        session.pop("_live_draft_rec_cache", None)
-        else:
-            try:
-                from live_draft_ui_cache import patch_live_draft_caches_after_pick
-
-                patch_live_draft_caches_after_pick(
-                    session,
-                    room,
-                    player_id=player_id,
-                    player_name=player_name,
-                )
-            except ImportError:
-                session.pop("_live_draft_rec_cache", None)
-        try:
-            from live_draft_rerun_scope import mark_live_draft_optimistic_pick_tick
-
-            mark_live_draft_optimistic_pick_tick(session)
-        except ImportError:
-            pass
-        _diag(
-            local_optimistic_update_applied=True,
-            board_size_after=len(room.get("draft_board") or []),
-            current_pick_index_after=int(room.get("current_pick_index") or 0),
-        )
-        if str(source).startswith("rec_card") or session.get("_rec_card_commit_in_flight"):
-            _diag(rec_card_commit_started=True)
     except ImportError:
         pass
+
+    # Shared side effects for every manual pick (queue, caches, snapshot, paint gate).
+    if live_draft_perf_action is not None:
+        with live_draft_perf_action(session, "cache_patch", phase=PHASE_PICK_CACHE_INVALIDATE):
+            finalized = finalize_live_draft_pick_transition(
+                session,
+                room,
+                source=source_label,
+                player_id=player_id,
+                player_name=player_name,
+                board_size_before=board_before,
+                idx_before=idx_before,
+                persist=False,
+                fast_path=bool(optimistic),
+                request_immediate_paint=True,
+            )
+    else:
+        finalized = finalize_live_draft_pick_transition(
+            session,
+            room,
+            source=source_label,
+            player_id=player_id,
+            player_name=player_name,
+            board_size_before=board_before,
+            idx_before=idx_before,
+            persist=False,
+            fast_path=bool(optimistic),
+            request_immediate_paint=True,
+        )
+    _diag(
+        local_optimistic_update_applied=True,
+        board_size_after=len(room.get("draft_board") or []),
+        current_pick_index_after=int(room.get("current_pick_index") or 0),
+    )
+    if str(source).startswith("rec_card") or session.get("_rec_card_commit_in_flight"):
+        _diag(rec_card_commit_started=True)
 
     if optimistic:
         try:
@@ -550,6 +543,7 @@ def commit_manual_live_pick(
     if not persisted.ok:
         try:
             from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY, get_shared_room_store, publish_shared_room_runtime
+            from live_draft_state import LIVE_DRAFT_ROOM_KEY
 
             code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
             if code:
@@ -576,6 +570,9 @@ def commit_manual_live_pick(
                 pass
         except ImportError:
             pass
+    else:
+        # Keep finalized local state even if durable persist failed.
+        _ = finalized
     _diag(
         commit_function_returned=True,
         manual_pick_success=persisted.ok,
@@ -585,8 +582,236 @@ def commit_manual_live_pick(
     return persisted
 
 
+def finalize_live_draft_pick_transition(
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    source: str,
+    player_id: str = "",
+    player_name: str = "",
+    board_size_before: int | None = None,
+    idx_before: int | None = None,
+    persist: bool = True,
+    fast_path: bool = False,
+    request_immediate_paint: bool = True,
+    zero_to_commit_ms: float | None = None,
+) -> PickCommitResult:
+    """Post-mutation side effects every pick path must run (manual, auto, expire).
+
+    Assumes ``live_draft_make_pick`` already mutated the in-memory room.
+    """
+    import time
+
+    t0 = time.perf_counter()
+    board_before = int(board_size_before if board_size_before is not None else max(0, len(room.get("draft_board") or []) - 1))
+    idx_b = int(idx_before if idx_before is not None else max(0, int(room.get("current_pick_index") or 0) - 1))
+    pid = str(player_id or "").strip()
+    pname = str(player_name or "").strip()
+    if not pid or not pname:
+        board = list(room.get("draft_board") or [])
+        last = board[-1] if board and isinstance(board[-1], dict) else {}
+        pid = pid or str(last.get("playerID") or last.get("player_id") or "").strip()
+        pname = pname or str(last.get("fullName") or last.get("Player") or "").strip()
+
+    try:
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY
+
+        session[LIVE_DRAFT_ROOM_KEY] = room
+    except ImportError:
+        session["live_draft_room"] = room
+
+    # Queue prune — drafted players must leave every active queue surface immediately.
+    try:
+        from draft_state import remove_drafted_player_from_active_queues
+
+        if pid:
+            remove_drafted_player_from_active_queues(session, pid)
+        if pname and pname != pid:
+            remove_drafted_player_from_active_queues(session, pname)
+    except Exception:
+        pass
+
+    # Align Solo expire guard with the pick that was just committed (pre-advance index).
+    try:
+        from live_draft_solo_timer import SOLO_EXPIRE_APPLIED_KEY
+
+        room[SOLO_EXPIRE_APPLIED_KEY] = f"{_draft_id_safe(room)}|{idx_b}|{board_before}"
+    except Exception:
+        pass
+
+    # Idempotency key: draft + pick index + revision (pre-commit board size as stand-in
+    # when revision has not bumped yet). Fragments sharing this key must not re-pick.
+    try:
+        from live_draft_canonical_snapshot import auto_pick_idempotency_key
+
+        key = auto_pick_idempotency_key(room, pick_index=idx_b, board_size=board_before)
+        session["_live_draft_last_auto_pick_idempotency_key"] = key
+        room["_last_auto_pick_idempotency_key"] = key
+    except Exception:
+        pass
+
+    # Patch recommendation tables + invalidate Draft Assistant caches so drafted
+    # players cannot reappear on the next paint.
+    try:
+        from live_draft_ui_cache import (
+            invalidate_draft_assistant_scoring_cache,
+            invalidate_draft_assistant_why_cache,
+            patch_live_draft_caches_after_pick,
+        )
+
+        patch_live_draft_caches_after_pick(session, room, player_id=pid, player_name=pname)
+        invalidate_draft_assistant_scoring_cache(session)
+        invalidate_draft_assistant_why_cache(session)
+    except Exception:
+        session.pop("_live_draft_rec_cache", None)
+        session.pop("_draft_assistant_scoring_cache", None)
+
+    snap = {}
+    try:
+        from live_draft_canonical_snapshot import (
+            install_canonical_live_draft_snapshot,
+            note_pick_transition,
+        )
+
+        snap = install_canonical_live_draft_snapshot(session, room, state_source=f"pick:{source}")
+        note_pick_transition(
+            session,
+            event="pick_committed",
+            draft_id=str(snap.get("draft_id") or ""),
+            pick_index=int(snap.get("current_pick_index") or 0),
+            revision=int(snap.get("revision") or 0),
+            team_on_clock=str(snap.get("team_on_clock") or ""),
+            player_id=pid,
+            player_name=pname,
+            elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+            extra={
+                "source": source,
+                "zero_to_commit_ms": zero_to_commit_ms,
+                "board_size": int(snap.get("board_size") or 0),
+            },
+        )
+    except Exception:
+        pass
+
+    if request_immediate_paint:
+        try:
+            from live_draft_rerun_scope import mark_live_draft_optimistic_pick_tick
+
+            mark_live_draft_optimistic_pick_tick(session)
+        except ImportError:
+            pass
+        try:
+            from live_draft_safe_mode import reset_poll_rerun_budget
+
+            # Local pick commits must never be delayed by passive-poll rerun throttles.
+            reset_poll_rerun_budget(session)
+        except ImportError:
+            session.pop("_live_draft_rerun_count", None)
+        session["_live_draft_local_pick_paint_pending"] = True
+        session["_live_draft_recs_pending_after_pick"] = True
+
+    result = PickCommitResult(
+        ok=True,
+        message=f"Pick committed ({source}).",
+        error="",
+        commit_path=f"finalize:{source}",
+        board_size_before=board_before,
+        board_size_after=len(room.get("draft_board") or []),
+        current_pick_index_before=idx_b,
+        current_pick_index_after=int(room.get("current_pick_index") or 0),
+    )
+    if persist:
+        persisted = persist_applied_pick(
+            session,
+            room,
+            source=source,
+            board_size_before=board_before,
+            idx_before=idx_b,
+            fast_path=fast_path,
+        )
+        if not persisted.ok:
+            return persisted
+        result = persisted
+        result.commit_path = f"finalize+persist:{source}"
+    return result
+
+
+def _draft_id_safe(room: dict[str, Any]) -> str:
+    return str(room.get("draft_room_id") or room.get("room_id") or room.get("draft_id") or "").strip()
+
+
+def commit_live_draft_pick(
+    session: dict[str, Any],
+    room: dict[str, Any],
+    player_row: dict[str, Any],
+    *,
+    source: str,
+    verdict: str | None = None,
+    optimistic: bool = False,
+    persist: bool = True,
+    fast_path: bool = False,
+) -> PickCommitResult:
+    """Authoritative pick transition: mutate → side effects → persist → snapshot."""
+    board_before = len(room.get("draft_board") or [])
+    idx_before = int(room.get("current_pick_index") or 0)
+    player_id = str(player_row.get("playerID") or player_row.get("player_id") or "").strip()
+    player_name = str(player_row.get("fullName") or player_row.get("Player") or "").strip()
+    try:
+        from live_draft_pick_engine import build_structured_pick_verdict, normalize_pick_source_label
+
+        source_label = normalize_pick_source_label(source)
+        verdict_text = verdict or build_structured_pick_verdict(dict(player_row), pick_source=source_label)
+    except ImportError:
+        source_label = str(source or "Manual Pick")
+        verdict_text = verdict or f"Draft ({source})"
+
+    ok, msg = live_draft_make_pick(
+        room,
+        player_row,
+        verdict=verdict_text,
+        pick_source=source_label,
+        snapshot=dict(player_row),
+        session=session,
+        enrich_pick_context=False,
+    )
+    if not ok:
+        return PickCommitResult(
+            ok=False,
+            message=msg,
+            error="live_make_pick_failed",
+            commit_path="commit_live_draft_pick",
+            board_size_before=board_before,
+            board_size_after=board_before,
+            current_pick_index_before=idx_before,
+            current_pick_index_after=idx_before,
+        )
+    result = finalize_live_draft_pick_transition(
+        session,
+        room,
+        source=source_label,
+        player_id=player_id,
+        player_name=player_name,
+        board_size_before=board_before,
+        idx_before=idx_before,
+        persist=persist and not optimistic,
+        fast_path=fast_path or optimistic,
+        request_immediate_paint=True,
+    )
+    if optimistic and result.ok:
+        try:
+            from live_draft_pick_persist import mark_pick_persist_dirty
+
+            mark_pick_persist_dirty(session, room, source=source_label)
+        except ImportError:
+            pass
+    if result.ok:
+        result.message = msg
+    return result
+
+
 def run_autopick_selection(room: dict[str, Any], session: dict[str, Any] | None = None) -> tuple[bool, str]:
     """Select and apply auto-pick to room (make_pick only — caller persists)."""
     from live_draft_autopick import live_draft_auto_pick
 
     return live_draft_auto_pick(room, session=session)
+

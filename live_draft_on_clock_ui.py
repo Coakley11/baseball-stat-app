@@ -216,9 +216,23 @@ def render_live_on_clock_banner(
         mark_ux_milestone(session, "on_clock_paint_start", rebuild="on_clock", st=st)
 
     live_room = _resolve_live_room(session, room)
-    slot_view = dict(slot)
+    try:
+        from live_draft_canonical_snapshot import apply_canonical_to_slot_views, render_canonical_diag_line
+
+        canon = apply_canonical_to_slot_views(session, live_room, refresh=True)
+        if isinstance(slot, dict) and canon.get("team_on_clock"):
+            slot = dict(slot)
+            slot["Team"] = canon["team_on_clock"]
+            if canon.get("current_pick") is not None:
+                slot["Pick"] = canon["current_pick"]
+            if canon.get("round") is not None:
+                slot["Round"] = canon["round"]
+        pick_idx = int(canon.get("current_pick_index") if canon.get("current_pick_index") is not None else live_room.get("current_pick_index") or 0)
+        render_canonical_diag_line(st, session, label="On the Clock")
+    except ImportError:
+        pick_idx = int(live_room.get("current_pick_index") or 0)
+    slot_view = dict(slot) if isinstance(slot, dict) else {}
     next_pick_view = next_pick
-    pick_idx = int(live_room.get("current_pick_index") or 0)
     try:
         from live_draft_ux import on_clock_should_flash
 

@@ -362,7 +362,31 @@ def expire_current_pick_and_advance(
     bump_solo_draft_revision(session, room)
     commit_to_next_timer_ms = (time.perf_counter() - t_timer0) * 1000.0
     display = install_solo_display_snapshot(session, room, now=transition)
-    # Prune drafted players from the private queue immediately (name + id).
+    try:
+        from live_draft_canonical_snapshot import (
+            install_canonical_live_draft_snapshot,
+            note_pick_transition,
+        )
+
+        snap = install_canonical_live_draft_snapshot(session, room, state_source="solo_expire")
+        note_pick_transition(
+            session,
+            event="solo_expire_advanced",
+            draft_id=str(snap.get("draft_id") or ""),
+            pick_index=int(snap.get("current_pick_index") or 0),
+            revision=int(snap.get("revision") or 0),
+            team_on_clock=str(snap.get("team_on_clock") or ""),
+            elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+            extra={
+                "zero_to_commit_ms": zero_to_commit_ms,
+                "commit_to_next_timer_ms": commit_to_next_timer_ms,
+                "committed": committed,
+            },
+        )
+    except Exception:
+        pass
+    # Queue / rec caches already handled by finalize inside auto_pick; keep a
+    # best-effort prune for older auto_pick paths that skipped finalize.
     try:
         from draft_state import remove_drafted_player_from_active_queues
 

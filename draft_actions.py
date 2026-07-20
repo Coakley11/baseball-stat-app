@@ -425,26 +425,45 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
                 except ImportError:
                     room = repair_stale_live_draft_progress(dict(room))
                     session[LIVE_DRAFT_ROOM_KEY] = room
-                # Prefer authoritative shared snapshot so queue captions match the board.
+                # Prefer the per-render canonical Live Draft snapshot so sidebar,
+                # banner, and actions never disagree on pick / team / revision.
                 try:
-                    from shared_live_draft_snapshot import (
-                        build_shared_live_draft_snapshot,
-                        refresh_shared_live_draft_snapshot,
-                    )
+                    from live_draft_canonical_snapshot import apply_canonical_to_slot_views
 
-                    snap = refresh_shared_live_draft_snapshot(session) if session.get(
-                        "active_shared_draft_room_code"
-                    ) else build_shared_live_draft_snapshot(session, room=room)
+                    canon = apply_canonical_to_slot_views(session, room, refresh=True)
                     progress = analyze_live_draft_progress(room)
-                    if snap.get("room_status") in ("in_progress", "paused"):
+                    if canon.get("status") in ("in_progress", "paused") or progress.get("draft_status") in (
+                        "in_progress",
+                        "paused",
+                    ):
                         progress = dict(progress)
-                        progress["current_pick"] = snap.get("current_pick")
-                        progress["current_pick_index"] = snap.get("current_pick_index")
-                        progress["on_clock_team"] = snap.get("on_clock_team") or ""
-                        progress["draft_status"] = snap.get("room_status") or progress.get("draft_status")
-                        progress["draft_complete"] = bool(snap.get("draft_complete"))
+                        progress["current_pick"] = canon.get("current_pick")
+                        progress["current_pick_index"] = canon.get("current_pick_index")
+                        progress["on_clock_team"] = canon.get("team_on_clock") or ""
+                        progress["draft_status"] = canon.get("status") or progress.get("draft_status")
+                        progress["draft_complete"] = str(canon.get("status") or "") == "complete"
+                        progress["revision"] = canon.get("revision")
                 except ImportError:
-                    progress = analyze_live_draft_progress(room)
+                    # Prefer authoritative shared snapshot so queue captions match the board.
+                    try:
+                        from shared_live_draft_snapshot import (
+                            build_shared_live_draft_snapshot,
+                            refresh_shared_live_draft_snapshot,
+                        )
+
+                        snap = refresh_shared_live_draft_snapshot(session) if session.get(
+                            "active_shared_draft_room_code"
+                        ) else build_shared_live_draft_snapshot(session, room=room)
+                        progress = analyze_live_draft_progress(room)
+                        if snap.get("room_status") in ("in_progress", "paused"):
+                            progress = dict(progress)
+                            progress["current_pick"] = snap.get("current_pick")
+                            progress["current_pick_index"] = snap.get("current_pick_index")
+                            progress["on_clock_team"] = snap.get("on_clock_team") or ""
+                            progress["draft_status"] = snap.get("room_status") or progress.get("draft_status")
+                            progress["draft_complete"] = bool(snap.get("draft_complete"))
+                    except ImportError:
+                        progress = analyze_live_draft_progress(room)
                 ctx["draft_status"] = str(progress.get("draft_status") or "")
                 ctx["draft_complete"] = bool(progress.get("draft_complete"))
                 ctx["draft_complete_reason"] = str(progress.get("draft_complete_reason") or "")
@@ -452,6 +471,7 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
                 ctx["on_clock_team"] = progress.get("on_clock_team") or ""
                 ctx["total_picks"] = int(progress.get("total_picks") or 0)
                 ctx["current_pick_index"] = progress.get("current_pick_index")
+                ctx["revision"] = progress.get("revision")
                 if not progress.get("draft_complete"):
                     live_room = room
         except ImportError:

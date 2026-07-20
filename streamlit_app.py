@@ -10198,10 +10198,28 @@ def replay_simulator_board_on_live_room(room, board_df) -> dict:
     )
 
 
-def live_draft_make_pick(room, player_row, verdict="Manual pick", *, pick_source="", snapshot=None):
+def live_draft_make_pick(
+    room,
+    player_row,
+    verdict="Manual pick",
+    *,
+    pick_source="",
+    snapshot=None,
+    session=None,
+    enrich_pick_context=True,
+):
     from live_draft_pick_engine import live_draft_make_pick as _make_pick
 
-    return _make_pick(room, player_row, verdict=verdict, pick_source=pick_source, snapshot=snapshot)
+    sess = session if session is not None else st.session_state
+    return _make_pick(
+        room,
+        player_row,
+        verdict=verdict,
+        pick_source=pick_source,
+        snapshot=snapshot,
+        session=sess,
+        enrich_pick_context=enrich_pick_context,
+    )
 
 
 def live_draft_auto_pick(room, session=None):
@@ -24496,6 +24514,19 @@ elif active_page == "Live Draft Room":
             idx = int(room.get("current_pick_index") or 0)
             if 0 <= idx < len(picks) and isinstance(picks[idx], dict):
                 slot = picks[idx]
+        try:
+            from live_draft_canonical_snapshot import apply_canonical_to_slot_views
+
+            _canon = apply_canonical_to_slot_views(st.session_state, room, refresh=True)
+            if isinstance(slot, dict) and _canon.get("team_on_clock"):
+                slot = dict(slot)
+                slot["Team"] = _canon["team_on_clock"]
+                if _canon.get("current_pick") is not None:
+                    slot["Pick"] = _canon["current_pick"]
+                if _canon.get("round") is not None:
+                    slot["Round"] = _canon["round"]
+        except ImportError:
+            pass
         try:
             from live_draft_safe_mode import compute_draft_status, is_draft_truly_complete, live_draft_is_in_progress, total_expected_picks
             from draft_ui import PENDING_MANUAL_PICK_KEY

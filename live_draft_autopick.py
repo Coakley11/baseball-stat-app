@@ -44,8 +44,19 @@ def _candidate_names(scored: pd.DataFrame, limit: int = 8) -> list[str]:
     return [str(x) for x in scored.head(limit)[col].astype(str).tolist() if str(x).strip()]
 
 
-def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = None) -> tuple[bool, str]:
-    """Select and apply auto-pick — queue-first when enabled, else #1 recommendation."""
+def live_draft_auto_pick(
+    room: dict[str, Any],
+    session: dict[str, Any] | None = None,
+    *,
+    persist: bool = True,
+    finalize: bool = True,
+) -> tuple[bool, str]:
+    """Select and apply auto-pick — queue-first when enabled, else #1 recommendation.
+
+    Mutations always go through ``live_draft_make_pick``. When ``finalize`` is True,
+    shared post-pick side effects (queue prune, cache patch, canonical snapshot,
+    immediate-paint gate) run via ``finalize_live_draft_pick_transition``.
+    """
     try:
         from live_draft_timer_logic import resolve_live_draft_on_clock_slot
 
@@ -61,6 +72,26 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
 
     if str(room.get("status") or "") == "paused":
         return False, "Draft is paused — resume before auto-picking."
+
+    # Fragment / page double-fire guard: claim this pick before mutating.
+    claim_key = ""
+    if session is not None:
+        try:
+            from live_draft_canonical_snapshot import auto_pick_idempotency_key
+
+            claim_key = auto_pick_idempotency_key(room)
+            last = str(session.get("_live_draft_last_auto_pick_idempotency_key") or "")
+            inflight = str(session.get("_live_draft_in_flight_auto_pick_key") or "")
+            if claim_key and claim_key == last:
+                return True, "Auto-pick already applied for this pick."
+            if claim_key and claim_key == inflight:
+                return True, "Auto-pick already in progress for this pick."
+            if claim_key and claim_key == str(room.get("_last_auto_pick_idempotency_key") or ""):
+                return True, "Auto-pick already applied for this pick."
+            if claim_key:
+                session["_live_draft_in_flight_auto_pick_key"] = claim_key
+        except ImportError:
+            claim_key = ""
 
     available = live_draft_get_available(room)
     if available.empty:
@@ -78,13 +109,26 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
     target_counts = live_draft_target_counts(cfg)
     configured_rule = str(cfg.get("auto_pick_rule", "balanced recommendation") or "balanced recommendation")
 
+    board_before = _board_size(room)
+    idx_before = int(room.get("current_pick_index") or 0)
+
     # Prefer the manager's draft queue when queue auto-pick is enabled (default on).
     queue_enabled = cfg.get("queue_auto_pick", cfg.get("auto_pick_from_queue", True))
     if queue_enabled is None:
         queue_enabled = True
     if bool(queue_enabled) and session is not None:
-        queue_ok, queue_msg = _try_queue_auto_pick(room, session, available, team)
+        queue_ok, queue_msg = _try_queue_auto_pick(
+            room,
+            session,
+            available,
+            team,
+            board_before=board_before,
+            idx_before=idx_before,
+            persist=persist,
+            finalize=finalize,
+        )
         if queue_ok:
+            session.pop("_live_draft_in_flight_auto_pick_key", None)
             return True, queue_msg
 
     rec_scored = pd.DataFrame()
@@ -120,11 +164,14 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
             available, roster_df, rule_key, target_counts, config=cfg
         )
     if rec_scored.empty:
+        if session is not None:
+            session.pop("_live_draft_in_flight_auto_pick_key", None)
         return False, "No eligible recommendation for auto-pick."
 
     chosen = rec_scored.iloc[0]
     chosen_dict = chosen.to_dict()
     top_rec_name = str(chosen.get("fullName") or chosen.get("Player") or "").strip()
+    player_id = str(chosen_dict.get("playerID") or chosen_dict.get("player_id") or "").strip()
 
     from live_draft_pick_engine import build_structured_pick_verdict
 
@@ -155,20 +202,25 @@ def live_draft_auto_pick(room: dict[str, Any], session: dict[str, Any] | None = 
             )
         except ImportError:
             pass
-        if ok:
-            # Shared: commit through the same persist path as manual / expire picks.
+        if ok and finalize:
             try:
-                from live_draft_pick_commit import persist_applied_pick
+                from live_draft_pick_commit import finalize_live_draft_pick_transition
 
-                persist_applied_pick(
+                finalize_live_draft_pick_transition(
                     session,
                     room,
-                    source="auto_pick_now",
-                    board_size_before=max(0, len(room.get("draft_board") or []) - 1),
-                    idx_before=max(0, int(room.get("current_pick_index") or 0) - 1),
+                    source="Auto Pick",
+                    player_id=player_id,
+                    player_name=top_rec_name,
+                    board_size_before=board_before,
+                    idx_before=idx_before,
+                    persist=persist,
+                    fast_path=True,
+                    request_immediate_paint=True,
                 )
             except Exception:
                 pass
+        session.pop("_live_draft_in_flight_auto_pick_key", None)
 
     return ok, msg
 
@@ -182,6 +234,11 @@ def _try_queue_auto_pick(
     session: dict[str, Any],
     available: pd.DataFrame,
     team: str,
+    *,
+    board_before: int = 0,
+    idx_before: int = 0,
+    persist: bool = True,
+    finalize: bool = True,
 ) -> tuple[bool, str]:
     """Draft the first still-available queued player for the on-clock team.
 
@@ -263,6 +320,7 @@ def _try_queue_auto_pick(
     from live_draft_pick_engine import build_structured_pick_verdict
 
     verdict = build_structured_pick_verdict(chosen_dict, pick_source="Queue Auto Pick", gaps=[])
+    player_id = str(chosen_dict.get("playerID") or chosen_dict.get("player_id") or "").strip()
     ok, msg = live_draft_make_pick(
         room,
         chosen_dict,
@@ -272,16 +330,6 @@ def _try_queue_auto_pick(
         session=session,
     )
     if ok:
-        try:
-            from draft_state import remove_drafted_player_from_active_queues
-
-            remove_drafted_player_from_active_queues(session, chosen_name)
-        except Exception:
-            # Best-effort queue cleanup — pick already applied.
-            q = [x for x in (session.get("draft_queue") or []) if _normalize_player_key(
-                str(x.get("fullName") if isinstance(x, dict) else x)
-            ) != _normalize_player_key(chosen_name)]
-            session["draft_queue"] = q
         try:
             from live_draft_expired_pick import record_autopick_diagnostics
 
@@ -294,5 +342,35 @@ def _try_queue_auto_pick(
             )
         except ImportError:
             pass
+        if finalize:
+            try:
+                from live_draft_pick_commit import finalize_live_draft_pick_transition
+
+                finalize_live_draft_pick_transition(
+                    session,
+                    room,
+                    source="Queue Auto Pick",
+                    player_id=player_id,
+                    player_name=chosen_name,
+                    board_size_before=board_before,
+                    idx_before=idx_before,
+                    persist=persist,
+                    fast_path=True,
+                    request_immediate_paint=True,
+                )
+            except Exception:
+                # Fall back to best-effort queue prune if finalize is unavailable.
+                try:
+                    from draft_state import remove_drafted_player_from_active_queues
+
+                    remove_drafted_player_from_active_queues(session, chosen_name)
+                except Exception:
+                    q = [
+                        x
+                        for x in (session.get("draft_queue") or [])
+                        if _normalize_player_key(str(x.get("fullName") if isinstance(x, dict) else x))
+                        != _normalize_player_key(chosen_name)
+                    ]
+                    session["draft_queue"] = q
         return True, msg or f"Queue auto-picked {chosen_name}."
     return False, msg or ""

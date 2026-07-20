@@ -5,7 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from live_draft_pick_commit import persist_applied_pick, resolve_live_room, run_autopick_selection, sync_expected_revision
+from live_draft_pick_commit import (
+    PickCommitResult,
+    persist_applied_pick,
+    resolve_live_room,
+    run_autopick_selection,
+    sync_expected_revision,
+)
 from live_draft_timer_logic import (
     build_expiration_token,
     expiration_already_processed,
@@ -547,6 +553,8 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
 
     try:
         t0 = time.perf_counter()
+        # Auto-pick already finalizes + persists via the shared commit path.
+        # Expire ownership is: claim token → one auto-pick → mark processed.
         ok_select, select_msg = run_autopick_selection(room, session)
         record_expired_pick_perf(
             session,
@@ -586,26 +594,28 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
                 error=select_msg or "Auto-pick selection failed.",
             )
 
-        t0 = time.perf_counter()
-        commit = persist_applied_pick(
-            session,
-            room,
-            source=f"timer_autopick:{source}",
-            expected_revision=expected_revision,
+        board_after = len(room.get("draft_board") or [])
+        idx_after = _pick_index(room)
+        # Synthesize commit result from the shared finalize path (already persisted).
+        commit = PickCommitResult(
+            ok=True,
+            message=select_msg or "Pick saved.",
+            error="",
+            commit_path="timer_autopick:shared_finalize",
             board_size_before=board_before,
-            idx_before=idx_before,
-            fast_path=True,
+            board_size_after=board_after,
+            current_pick_index_before=idx_before,
+            current_pick_index_after=idx_after,
+            expected_revision=expected_revision,
         )
-        persist_ms = _perf_ms(t0)
-        # persist_applied_pick records sub-bucket keys when fast_path/profiling enabled
-        sub = dict(session.get("_live_draft_persist_perf") or {})
+        persist_ms = 0.0
         record_expired_pick_perf(
             session,
-            shared_commit_ms=sub.get("shared_commit_ms"),
-            board_save_ms=sub.get("board_save_ms"),
-            cloud_write_ms=sub.get("cloud_write_ms"),
-            activity_ms=sub.get("activity_ms"),
-            poll_diag_ms=sub.get("poll_diag_ms"),
+            shared_commit_ms=0.0,
+            board_save_ms=0.0,
+            cloud_write_ms=0.0,
+            activity_ms=0.0,
+            poll_diag_ms=0.0,
             persist_total_ms=persist_ms,
         )
 
