@@ -24917,15 +24917,18 @@ elif active_page == "Live Draft Room":
                     )
                     if developer_mode_enabled():
                         try:
-                            from live_draft_solo_timer import (
-                                VISIBLE_TIMER_COUNT_KEY,
-                                is_solo_live_draft,
-                            )
+                            from live_draft_solo_timer import VISIBLE_TIMER_COUNT_KEY
 
-                            if is_solo_live_draft(st.session_state, room):
-                                _vtc = int(st.session_state.get(VISIBLE_TIMER_COUNT_KEY) or 0)
-                                assert _vtc == 1, f"visible_timer_count == {_vtc}, expected 1"
-                                st.caption(f"Dev assert: visible_timer_count == {_vtc}")
+                            _vtc = int(st.session_state.get(VISIBLE_TIMER_COUNT_KEY) or 0)
+                            assert _vtc == 1, f"visible_timer_count == {_vtc}, expected 1"
+                            st.caption(f"Dev assert: visible_timer_count == {_vtc}")
+                            _apc = int(st.session_state.get("visible_auto_picking_status_count") or 0)
+                            # Count may be 0 while time remains; when expired must be 1.
+                            if st.session_state.get("_live_draft_timer_autopick_ui"):
+                                assert _apc == 1, (
+                                    f"visible_auto_picking_status_count == {_apc}, expected 1"
+                                )
+                                st.caption(f"Dev assert: visible_auto_picking_status_count == {_apc}")
                         except AssertionError as _vtc_err:
                             st.error(str(_vtc_err))
                         except ImportError:

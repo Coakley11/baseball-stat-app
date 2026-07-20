@@ -245,6 +245,9 @@ def render_live_on_clock_banner(
         if is_solo_live_draft(session, live_room):
             # Sole primary countdown for Solo Draft Room.
             record_visible_timer_count(session, 1)
+        else:
+            # Shared: On-the-Clock is the sole visible countdown.
+            record_visible_timer_count(session, 1)
     except ImportError:
         pass
 
@@ -390,28 +393,37 @@ def render_live_on_clock_banner(
                             remaining = live_draft_display_seconds(tick_room)
                         session["_live_draft_solo_board_stale"] = True
                     else:
-                        may_expire = True
+                        # Shared: page/timer-bar owns expire CAS. Banner force-polls
+                        # so guests converge within ~1s — never invent a local pick.
                         try:
                             from live_draft_timer_authority import multiparty_may_run_autopick
 
-                            may_expire = bool(multiparty_may_run_autopick(session, tick_room))
-                        except ImportError:
-                            pass
-                        if may_expire and not session.get("_live_draft_page_owns_expired"):
-                            from live_draft_expired_pick import expire_pick_and_advance
+                            # Signature is session-only; wrong arity used to TypeError
+                            # into the outer except and skip force-poll entirely.
+                            _ = bool(multiparty_may_run_autopick(session))
+                        except Exception as exc:
+                            session["_live_draft_on_clock_zero_diag"] = {
+                                "authority_check_error": f"{type(exc).__name__}: {exc}"[:160],
+                            }
+                        try:
+                            from draft_room_context import (
+                                poll_shared_draft_room,
+                                reset_shared_draft_sync_gate,
+                            )
 
-                            expire_pick_and_advance(session, source="on_clock_banner_zero")
-                        else:
-                            try:
-                                from draft_room_context import (
-                                    poll_shared_draft_room,
-                                    reset_shared_draft_sync_gate,
-                                )
-
-                                reset_shared_draft_sync_gate(session)
-                                poll_shared_draft_room(session, force=True)
-                            except ImportError:
-                                pass
+                            reset_shared_draft_sync_gate(session)
+                            changed = bool(poll_shared_draft_room(session, force=True))
+                            session["_live_draft_on_clock_zero_diag"] = {
+                                **dict(session.get("_live_draft_on_clock_zero_diag") or {}),
+                                "force_poll": True,
+                                "poll_changed": changed,
+                                "ts": time.time(),
+                            }
+                        except Exception as exc:
+                            session["_live_draft_on_clock_zero_diag"] = {
+                                **dict(session.get("_live_draft_on_clock_zero_diag") or {}),
+                                "force_poll_error": f"{type(exc).__name__}: {exc}"[:160],
+                            }
                         tick_room = _resolve_live_room(session, tick_room)
                         try:
                             from shared_live_draft_snapshot import build_shared_live_draft_snapshot
@@ -422,14 +434,24 @@ def render_live_on_clock_banner(
                             remaining = snap.get("seconds_remaining")
                             if remaining is None:
                                 remaining = live_draft_display_seconds(tick_room)
+                            on_clock = str(snap.get("on_clock_team") or "").strip()
+                            if on_clock:
+                                tick_slot = dict(tick_slot)
+                                tick_slot["Team"] = on_clock
+                            if snap.get("current_pick") is not None:
+                                tick_slot = dict(tick_slot)
+                                tick_slot["Pick"] = snap.get("current_pick")
                         except ImportError:
                             remaining = live_draft_display_seconds(tick_room)
                             tick_deadline = live_draft_timer_deadline(tick_room)
                 except ImportError:
                     remaining = live_draft_display_seconds(tick_room)
                     tick_deadline = live_draft_timer_deadline(tick_room)
-        except Exception:
-            pass
+        except Exception as exc:
+            session["_live_draft_on_clock_zero_diag"] = {
+                **dict(session.get("_live_draft_on_clock_zero_diag") or {}),
+                "banner_zero_error": f"{type(exc).__name__}: {exc}"[:160],
+            }
         record_timer_diagnostics(session, tick_room, source="on_clock_banner_tick")
         if session.get("_live_draft_timer_diag"):
             diag = dict(session["_live_draft_timer_diag"])
@@ -439,9 +461,9 @@ def render_live_on_clock_banner(
         try:
             from live_draft_solo_timer import is_solo_live_draft, record_visible_timer_count
 
+            # Sole primary countdown (Solo and Shared) — timer bar paints none.
+            record_visible_timer_count(session, 1)
             if is_solo_live_draft(session, tick_room):
-                # Sole primary countdown for Solo (timer bar paints none).
-                record_visible_timer_count(session, 1)
                 # Background queue persist — never on the click critical path.
                 try:
                     from live_draft_queue_persist import maybe_flush_deferred_draft_queue_autosave

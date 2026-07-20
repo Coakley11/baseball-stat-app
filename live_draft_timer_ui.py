@@ -146,7 +146,7 @@ def sync_live_draft_timer_state(session: dict[str, Any], room: dict[str, Any]) -
                 document = get_shared_room_store().load(room_code) if room_code else None
                 may_publish = bool(is_room_host(session, document))
                 try:
-                    may_publish = may_publish and multiparty_may_run_autopick(session, live_room)
+                    may_publish = may_publish and multiparty_may_run_autopick(session)
                 except Exception:
                     pass
                 if may_publish:
@@ -366,6 +366,19 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
     except ImportError:
         pass
 
+    # Shared Multiplayer: On-the-Clock owns the visible countdown. Timer bar still
+    # owns fragment expire/poll — but must not paint a second clock.
+    _shared_demote_paint = False
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+        from live_draft_solo_timer import record_visible_timer_count
+
+        if is_multiplayer_draft_active(session):
+            _shared_demote_paint = True
+            record_visible_timer_count(session, 0)
+    except ImportError:
+        pass
+
     try:
         from app_page_generation import fragment_allowed
 
@@ -409,8 +422,9 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
         live_room = _resolve_live_room(session, room)
     if str(live_room.get("status") or "") == "paused":
         with ldr_step(session, "timer_bar_paused_render", st=st):
-            remaining = live_draft_display_seconds(live_room)
-            st.markdown(f"**Draft paused** · {remaining}s on clock")
+            if not _shared_demote_paint:
+                remaining = live_draft_display_seconds(live_room)
+                st.markdown(f"**Draft paused** · {remaining}s on clock")
             record_timer_diagnostics(session, live_room, source="paused")
         return
     try:
@@ -423,9 +437,10 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                 remaining = display_seconds_with_freeze(session, live_room)
                 fdl = frozen_deadline(session, live_room)
                 pick_idx = int(live_room.get("current_pick_index") or 0)
-                if fdl is not None:
+                if (not _shared_demote_paint) and fdl is not None:
                     _render_js_countdown(st, float(fdl), pick_index=pick_idx, session=session)
-                st.caption(f"Submitting pick… ({remaining}s frozen)")
+                if not _shared_demote_paint:
+                    st.caption(f"Submitting pick… ({remaining}s frozen)")
             return
     except ImportError:
         pass
@@ -450,10 +465,11 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                 remaining = live_draft_display_seconds(live_room)
                 record_safe_mode_diagnostics(session, timer_fragment_active=False, timer_should_run=False)
                 deadline = live_draft_timer_deadline(live_room)
-                if deadline is not None:
-                    _render_js_countdown(st, float(deadline), pick_index=int(live_room.get("current_pick_index") or 0), session=session)
-                else:
-                    st.markdown(f"**Time on clock:** {remaining}s")
+                if not _shared_demote_paint:
+                    if deadline is not None:
+                        _render_js_countdown(st, float(deadline), pick_index=int(live_room.get("current_pick_index") or 0), session=session)
+                    else:
+                        st.markdown(f"**Time on clock:** {remaining}s")
             return
         if not can_run and _expired_now:
             session[EXPIRED_PICK_PENDING_KEY] = True
@@ -469,7 +485,7 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
         deadline = live_draft_timer_deadline(live_room)
         pick_idx = int(live_room.get("current_pick_index") or 0)
     with ldr_step(session, "timer_bar_js_countdown", st=st, has_deadline=deadline is not None):
-        if deadline is not None:
+        if (not _shared_demote_paint) and deadline is not None:
             _render_js_countdown(st, float(deadline), pick_index=pick_idx, session=session)
 
     with ldr_step(session, "timer_attach_fragment", st=st):
@@ -625,6 +641,17 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
 
 def _render_timer_static(st: Any, session: dict[str, Any], room: dict[str, Any], *, source: str = "static") -> None:
     # Fine-grained static tracing removed — stall is on the post-timer-zero rerun path.
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+
+        if is_multiplayer_draft_active(session):
+            # Shared countdown paint is owned by On-the-Clock only.
+            record_timer_diagnostics(session, room, source=source)
+            if int(live_draft_display_seconds(room) or 0) <= 0 and str(room.get("status") or "") == "in_progress":
+                session["_live_draft_timer_autopick_ui"] = True
+            return
+    except ImportError:
+        pass
     try:
         from live_draft_pick_timer import display_seconds_with_freeze, is_pick_submitting
 
