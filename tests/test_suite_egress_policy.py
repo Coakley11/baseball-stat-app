@@ -28,6 +28,19 @@ class SuiteEgressPolicyTests(unittest.TestCase):
         with patch.dict(os.environ, {"SUITE_LOW_EGRESS": "1"}):
             self.assertTrue(low_egress_mode({}))
 
+    def test_low_egress_mode_st_secrets(self) -> None:
+        class _Secrets(dict):
+            pass
+
+        secrets = _Secrets(SUITE_LOW_EGRESS="1")
+        with patch.dict(os.environ, {"SUITE_LOW_EGRESS": ""}, clear=False):
+            with patch("streamlit.secrets", secrets, create=True):
+                # Import path uses `import streamlit as st` then st.secrets
+                import streamlit as st
+
+                with patch.object(st, "secrets", secrets, create=True):
+                    self.assertTrue(low_egress_mode({}))
+
     def test_low_egress_mode_session(self) -> None:
         session: dict = {}
         self.assertFalse(low_egress_mode(session))

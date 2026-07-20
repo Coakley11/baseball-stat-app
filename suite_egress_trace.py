@@ -277,12 +277,20 @@ def reset_run_egress_summary() -> None:
 
 def format_egress_summary_markdown(summary: dict[str, Any] | None = None) -> str:
     data = summary or get_run_egress_summary()
+    low = False
+    try:
+        from suite_egress_policy import low_egress_mode
+
+        low = bool(low_egress_mode())
+    except Exception:
+        low = False
     lines = [
         f"**Supabase egress (this session run):** reads={data.get('reads', 0)}, "
         f"writes={data.get('writes', 0)}, "
         f"download≈{_human_bytes(int(data.get('bytes_in') or 0))}",
         f"full_room={data.get('full_room_loads', 0)}, chat={data.get('chat_loads', 0)}, "
         f"head={data.get('head_loads', 0)}, poll/min≈{data.get('poll_calls_per_minute', '—')}",
+        f"low_egress_active={low}",
     ]
     by_table = data.get("by_table") or {}
     if by_table:

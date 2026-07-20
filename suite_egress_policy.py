@@ -22,6 +22,20 @@ def low_egress_mode(session: dict[str, Any] | None = None) -> bool:
     try:
         import streamlit as st  # noqa: WPS433
 
+        # Streamlit Cloud secrets are exposed via st.secrets, not always os.environ.
+        try:
+            secret_val = st.secrets.get("SUITE_LOW_EGRESS", None)
+            if secret_val is None:
+                block = st.secrets.get("suite_activity")
+                if block is not None:
+                    try:
+                        secret_val = block.get("suite_low_egress", None)  # type: ignore[union-attr]
+                    except Exception:
+                        secret_val = None
+            if str(secret_val or "").strip().lower() in ("1", "true", "yes", "on"):
+                return True
+        except Exception:
+            pass
         if st.session_state.get(LOW_EGRESS_SESSION_KEY):
             return True
         if str(st.query_params.get("low_egress", "")).strip().lower() in ("1", "true", "yes"):
