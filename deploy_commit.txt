@@ -1,1 +1,2 @@
-81f869c
+8ea2274  # auto-generated; Streamlit Cloud reads this at runtime
+branch: dev
