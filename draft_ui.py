@@ -1674,8 +1674,36 @@ def on_start_new_live_draft() -> None:
         from live_draft_setup_persist import flush_live_draft_setup_persist
 
         flush_live_draft_setup_persist(st, st.session_state, reason="live_draft_start")
-    except ImportError:
+    except Exception:
         pass
+    # Validate in the button callback so invalid setups always persist the exact
+    # error beside Start Draft — even when a resumable-slot gate would otherwise
+    # return early without arming ``_start_live_draft_pending``.
+    try:
+        from live_draft_start_setup import gate_start_new_live_draft_click
+
+        gate = gate_start_new_live_draft_click(st.session_state)
+        if gate.get("armed"):
+            mark_start_live_draft_clicked(st.session_state)
+        return
+    except Exception:
+        # Fall through to legacy arming only when the gate helper is unavailable.
+        # Prefer fail-closed validation over silent start when possible.
+        try:
+            from live_draft_start_setup import (
+                LIVE_DRAFT_SETUP_ERROR,
+                fail_closed_setup_check,
+                store_setup_validation_error,
+            )
+
+            check = fail_closed_setup_check(st.session_state, solo_mode=True)
+            if not check.get("ok"):
+                store_setup_validation_error(
+                    st.session_state, str(check.get("error") or LIVE_DRAFT_SETUP_ERROR)
+                )
+                return
+        except Exception:
+            pass
     try:
         from live_draft_resumable_slot import warn_if_starting_replaces_resumable
 
@@ -1687,7 +1715,7 @@ def on_start_new_live_draft() -> None:
         st.session_state.pop("_live_draft_start_replace_resumable_ok", None)
         st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
         st.session_state.pop("_live_draft_start_replace_resumable_message", None)
-    except ImportError:
+    except Exception:
         pass
     mark_start_live_draft_clicked(st.session_state)
     st.session_state["_start_live_draft_mode"] = "new"

@@ -512,6 +512,33 @@ def execute_replace_transactional(session: dict[str, Any], *, st: Any | None = N
     note_op_step(session, "prefs_captured", detail="shared" if prefer_shared else "solo")
 
     try:
+        from live_draft_start_setup import (
+            LIVE_DRAFT_SETUP_ERROR,
+            fail_closed_setup_check,
+            store_setup_validation_error,
+        )
+
+        _replace_check = fail_closed_setup_check(session, solo_mode=not prefer_shared)
+        if not _replace_check.get("ok"):
+            err = str(_replace_check.get("error") or LIVE_DRAFT_SETUP_ERROR)
+            store_setup_validation_error(session, err)
+            session["resumable_live_draft_slot"] = slot_backup
+            finish_op(
+                session,
+                success=False,
+                message=err,
+            )
+            note_op_step(session, "setup_validation_blocked", ok=False, detail=err)
+            return {
+                "ok": False,
+                "error": "setup_validation",
+                "message": err,
+                "slot_kept": True,
+            }
+    except ImportError:
+        pass
+
+    try:
         new_room, host_team = build_replacement_live_room(session, slot=slot)
     except Exception as exc:
         session["resumable_live_draft_slot"] = slot_backup

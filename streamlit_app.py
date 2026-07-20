@@ -22699,17 +22699,127 @@ elif active_page == "Live Draft Room":
                     _t_pool = _time_mod.perf_counter()
                     if mark_start_step:
                         mark_start_step(st.session_state, "pool_build_start", pool_build_start_ts=_time_mod.time())
-                with st.spinner("Building player pool…"):
-                    # Cached when warm; cold Cloud first-build can take several seconds.
-                    pool_live = get_cached_unified_projection_pool(
-                        int(st.session_state.get("_lahman_max_year", year_max)),
-                        int(live_proj_window),
-                        str(fantasy_format),
-                        str(live_proj_style),
-                        bool(st.session_state.get("draft_use_ml_blend", False)),
-                        float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
-                        int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
+                total_picks = int(live_num_teams) * int(live_picks_per_team)
+                _setup_slots = {
+                    "C": slot_c, "1B": slot_1b, "2B": slot_2b, "3B": slot_3b,
+                    "SS": slot_ss, "OF": slot_of, "DH": slot_dh, "P": slot_p,
+                    "BN": slot_bench,
+                }
+                store_setup_validation_error = None
+                clear_setup_validation_error = None
+                record_start_path_diagnostics = None
+                try:
+                    from live_draft_setup_mode import is_solo_draft_mode
+
+                    _solo_mode = bool(is_solo_draft_mode(st.session_state))
+                except ImportError:
+                    _solo_mode = not _prepare_shared
+                try:
+                    from live_draft_start_setup import (
+                        LIVE_DRAFT_SETUP_ERROR,
+                        clear_setup_validation_error,
+                        fail_closed_setup_check,
+                        record_start_path_diagnostics,
+                        store_setup_validation_error,
                     )
+
+                    _setup_check = fail_closed_setup_check(
+                        st.session_state,
+                        picks_per_team=int(live_picks_per_team),
+                        slots=_setup_slots,
+                        solo_mode=_solo_mode,
+                    )
+                    record_start_path_diagnostics(
+                        st.session_state,
+                        button_clicked=True,
+                        num_teams=int(live_num_teams),
+                        picks_per_team=int(live_picks_per_team),
+                        required_starting_positions=int(
+                            _setup_check.get("required_starting_positions") or 0
+                        ),
+                        roster_slots=dict(_setup_check.get("slots") or _setup_slots),
+                        validation_ok=bool(_setup_check.get("ok")),
+                        validation_error=str(_setup_check.get("error") or ""),
+                        solo_mode=_solo_mode,
+                        shared_mode=bool(_prepare_shared),
+                        draft_creation_attempted=False,
+                        gate="pending_handler_pre_pool",
+                    )
+                except ImportError:
+                    LIVE_DRAFT_SETUP_ERROR = (
+                        "Draft picks per team must be greater than or equal to the number of required roster positions."
+                    )
+                    try:
+                        from fantasy_roster_validation import (
+                            ensure_bench_slots_for_extra_picks,
+                            validate_live_draft_setup,
+                        )
+
+                        _raw = validate_live_draft_setup(
+                            picks_per_team=int(live_picks_per_team),
+                            slots=_setup_slots,
+                        )
+                        _setup_check = {
+                            "ok": bool(_raw.get("ok")),
+                            "error": str(_raw.get("error") or "") if not _raw.get("ok") else "",
+                            "slots_for_room": (
+                                ensure_bench_slots_for_extra_picks(
+                                    _setup_slots, int(live_picks_per_team)
+                                )
+                                if _raw.get("ok")
+                                else dict(_setup_slots)
+                            ),
+                            "required_starting_positions": int(_raw.get("required_positions") or 0),
+                        }
+                    except ImportError:
+                        # Never fail-open: block create when validation helpers are unavailable.
+                        _setup_check = {
+                            "ok": False,
+                            "error": LIVE_DRAFT_SETUP_ERROR,
+                            "slots_for_room": dict(_setup_slots),
+                            "required_starting_positions": 0,
+                        }
+                if not _setup_check.get("ok"):
+                    _start_handler_err = str(
+                        _setup_check.get("error") or LIVE_DRAFT_SETUP_ERROR
+                    )
+                    if store_setup_validation_error:
+                        store_setup_validation_error(st.session_state, _start_handler_err)
+                    else:
+                        try:
+                            from live_draft_start_setup import store_setup_validation_error as _store_err
+
+                            _store_err(st.session_state, _start_handler_err)
+                        except ImportError:
+                            st.session_state["_live_draft_setup_validation_error"] = _start_handler_err
+                    record_start_live_draft_diagnostics(
+                        st.session_state, start_live_draft_error=_start_handler_err
+                    )
+                    if record_start_path_diagnostics:
+                        record_start_path_diagnostics(
+                            st.session_state,
+                            draft_creation_attempted=False,
+                            final_status="setup_validation_blocked",
+                        )
+                    st.error(_start_handler_err)
+                    pool_live = None
+                else:
+                    if clear_setup_validation_error:
+                        clear_setup_validation_error(st.session_state)
+                    _setup_slots = dict(
+                        _setup_check.get("slots_for_room") or _setup_slots
+                    )
+                    with st.spinner("Building player pool…"):
+                        # Cached when warm; cold Cloud first-build can take several seconds.
+                        pool_live = get_cached_unified_projection_pool(
+                            int(st.session_state.get("_lahman_max_year", year_max)),
+                            int(live_proj_window),
+                            str(fantasy_format),
+                            str(live_proj_style),
+                            bool(st.session_state.get("draft_use_ml_blend", False)),
+                            float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
+                            int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
+                        )
                 try:
                     from live_draft_solo_create import note_timed_step
 
@@ -22718,7 +22828,7 @@ elif active_page == "Live Draft Room":
                         "pool_build_end",
                         ok=True,
                         t_step0=_t_pool,
-                        pool_live_count=int(len(pool_live)),
+                        pool_live_count=int(len(pool_live)) if pool_live is not None else 0,
                         pool_warm=bool((_time_mod.perf_counter() - _t_pool) < 1.0),
                     )
                 except Exception:
@@ -22727,10 +22837,11 @@ elif active_page == "Live Draft Room":
                             st.session_state,
                             "pool_build_end",
                             pool_build_end_ts=_time_mod.time(),
-                            pool_loaded=True,
-                            pool_live_count=len(pool_live),
+                            pool_loaded=pool_live is not None,
+                            pool_live_count=len(pool_live) if pool_live is not None else 0,
                         )
-                record_start_live_draft_diagnostics(st.session_state, pool_live_count=len(pool_live))
+                if pool_live is not None:
+                    record_start_live_draft_diagnostics(st.session_state, pool_live_count=len(pool_live))
                 try:
                     if _from_simulator:
                         sim_board, sim_pick_count, sim_board_source, sim_teams = resolve_simulator_board_for_live_start(
@@ -22771,61 +22882,9 @@ elif active_page == "Live Draft Room":
                             user_team = host_pick
                 except ImportError:
                     pass
-                total_picks = int(live_num_teams) * int(live_picks_per_team)
-                _setup_slots = {
-                    "C": slot_c, "1B": slot_1b, "2B": slot_2b, "3B": slot_3b,
-                    "SS": slot_ss, "OF": slot_of, "DH": slot_dh, "P": slot_p,
-                    "BN": slot_bench,
-                }
-                store_setup_validation_error = None
-                clear_setup_validation_error = None
-                record_start_path_diagnostics = None
-                try:
-                    from live_draft_setup_mode import is_solo_draft_mode
-
-                    _solo_mode = bool(is_solo_draft_mode(st.session_state))
-                except ImportError:
-                    _solo_mode = not _prepare_shared
-                try:
-                    from live_draft_start_setup import (
-                        LIVE_DRAFT_SETUP_ERROR,
-                        clear_setup_validation_error,
-                        evaluate_live_draft_start_setup,
-                        record_start_path_diagnostics,
-                        store_setup_validation_error,
-                    )
-
-                    _setup_check = evaluate_live_draft_start_setup(
-                        st.session_state,
-                        picks_per_team=int(live_picks_per_team),
-                        slots=_setup_slots,
-                        solo_mode=_solo_mode,
-                    )
-                    record_start_path_diagnostics(
-                        st.session_state,
-                        button_clicked=True,
-                        num_teams=int(live_num_teams),
-                        picks_per_team=int(live_picks_per_team),
-                        required_starting_positions=int(
-                            _setup_check.get("required_starting_positions") or 0
-                        ),
-                        roster_slots=dict(_setup_check.get("slots") or _setup_slots),
-                        validation_ok=bool(_setup_check.get("ok")),
-                        validation_error=str(_setup_check.get("error") or ""),
-                        solo_mode=_solo_mode,
-                        shared_mode=bool(_prepare_shared),
-                        draft_creation_attempted=False,
-                    )
-                except ImportError:
-                    LIVE_DRAFT_SETUP_ERROR = (
-                        "Draft picks per team must be greater than or equal to the number of required roster positions."
-                    )
-                    _setup_check = {
-                        "ok": True,
-                        "error": "",
-                        "slots_for_room": _setup_slots,
-                    }
-                if pool_live.empty:
+                if pool_live is None:
+                    pass
+                elif pool_live.empty:
                     _start_handler_err = "Could not build a player pool. Check your data files and try again."
                     record_start_live_draft_diagnostics(st.session_state, start_live_draft_error=_start_handler_err)
                     if store_setup_validation_error:
@@ -22840,28 +22899,8 @@ elif active_page == "Live Draft Room":
                         store_setup_validation_error(st.session_state, _start_handler_err)
                     st.error(_start_handler_err)
                 elif not _setup_check.get("ok"):
-                    _start_handler_err = str(
-                        _setup_check.get("error") or LIVE_DRAFT_SETUP_ERROR
-                    )
-                    # Persist so the message stays visible near Start Draft after this run.
-                    if store_setup_validation_error:
-                        store_setup_validation_error(st.session_state, _start_handler_err)
-                    record_start_live_draft_diagnostics(
-                        st.session_state, start_live_draft_error=_start_handler_err
-                    )
-                    if record_start_path_diagnostics:
-                        record_start_path_diagnostics(
-                            st.session_state,
-                            draft_creation_attempted=False,
-                            final_status="setup_validation_blocked",
-                        )
-                    st.error(_start_handler_err)
+                    pass
                 else:
-                    if clear_setup_validation_error:
-                        clear_setup_validation_error(st.session_state)
-                    _setup_slots = dict(
-                        _setup_check.get("slots_for_room") or _setup_slots
-                    )
                     if record_start_path_diagnostics:
                         record_start_path_diagnostics(
                             st.session_state,
@@ -23746,12 +23785,9 @@ elif active_page == "Live Draft Room":
                         else ""
                     )
                 )
-                _setup_err = peek_setup_validation_error(st.session_state)
-                if _setup_err:
-                    st.error(_setup_err)
                 render_start_path_diagnostics(st, st.session_state)
             except ImportError:
-                pass
+                _preview = None
 
             b_start, b_reset, b_restore = st.columns([2, 2, 1])
             with b_start:
@@ -23763,6 +23799,16 @@ elif active_page == "Live Draft Room":
                     help=_start_help or None,
                     on_click=on_start_new_live_draft,
                 )
+                try:
+                    from live_draft_start_setup import peek_setup_validation_error
+
+                    _setup_err = peek_setup_validation_error(st.session_state)
+                except ImportError:
+                    _setup_err = str(
+                        st.session_state.get("_live_draft_setup_validation_error") or ""
+                    ).strip()
+                if _setup_err:
+                    st.error(_setup_err)
             with b_reset:
                 reset_live = st.button(
                     "End/Delete Draft",
