@@ -169,6 +169,15 @@ class SharedJoinRolesAndDeleteTests(unittest.TestCase):
         self.coakley.pop("active_shared_draft_room_code", None)
         self.assertEqual(resolve_live_draft_lifecycle(self.coakley), LIFECYCLE_SETUP)
 
+    def test_solo_host_may_auto_pick_any_on_clock_team(self) -> None:
+        room = _two_team_room(status="in_progress")
+        room["config"] = dict(room.get("config") or {})
+        room["config"]["draft_setup_mode"] = "solo"
+        room["current_pick_index"] = 1
+        session = {"live_draft_setup_mode": "solo", "live_draft_room": room}
+        self.assertTrue(participant_may_auto_pick(session, room, on_clock_team="Team B"))
+        self.assertTrue(participant_may_auto_pick(session, room, on_clock_team="Team A"))
+
     @mock.patch("draft_room_membership.shared_room_requires_auth", return_value=False)
     @mock.patch("draft_room_membership.ensure_authenticated_for_shared_room", return_value=(True, ""))
     def test_auto_pick_permissions(self, *_mocks: object) -> None:

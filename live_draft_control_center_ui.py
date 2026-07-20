@@ -46,10 +46,19 @@ def render_live_draft_control_center(
     status = str(room.get("status") or "")
     is_commissioner, doc = _resolve_commissioner(session)
     may_auto = False
+    on_clock_for_auto = ""
+    try:
+        from live_draft_canonical_snapshot import get_live_draft_paint_snapshot
+
+        on_clock_for_auto = str(get_live_draft_paint_snapshot(session).get("team_on_clock") or "")
+    except ImportError:
+        on_clock_for_auto = ""
     try:
         from shared_draft_permissions import participant_may_auto_pick
 
-        may_auto = participant_may_auto_pick(session, room, document=doc)
+        may_auto = participant_may_auto_pick(
+            session, room, document=doc, on_clock_team=on_clock_for_auto
+        )
     except ImportError:
         may_auto = bool(is_commissioner)
 
@@ -70,6 +79,13 @@ def render_live_draft_control_center(
 
             live_draft_pause_timer(room)
             persist_room(room, "pause_draft")
+            try:
+                from live_draft_canonical_snapshot import invalidate_live_draft_paint, note_action_timing
+
+                note_action_timing(session, "pause_draft_click")
+                invalidate_live_draft_paint(session)
+            except ImportError:
+                pass
             try:
                 from live_draft_chat_system import maybe_post_draft_system_message
 

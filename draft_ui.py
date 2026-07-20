@@ -30,24 +30,77 @@ def format_queue_player_label(player_name: str, meta: dict[str, str] | None = No
     return f"{name} — {pos} — {team}"
 
 
-def format_queue_player_metrics_line(pool_row: Any) -> str:
+def score_queue_player_for_on_clock_team(
+    session: dict[str, Any],
+    pool_row: Any,
+    *,
+    room: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Score one queue row with the on-clock team's roster context (same engine as recs)."""
+    if pool_row is None:
+        return None
+    try:
+        import pandas as pd
+
+        from live_draft_canonical_snapshot import get_live_draft_paint_snapshot
+        from live_draft_pick_scoring import live_draft_target_counts, score_available_for_rule
+
+        live = room if isinstance(room, dict) else session.get("live_draft_room")
+        if not isinstance(live, dict):
+            return None
+        paint = get_live_draft_paint_snapshot(session)
+        team = str(paint.get("team_on_clock") or "").strip()
+        if not team:
+            return None
+        if isinstance(pool_row, pd.Series):
+            row_df = pd.DataFrame([pool_row.to_dict()])
+        elif isinstance(pool_row, dict):
+            row_df = pd.DataFrame([dict(pool_row)])
+        else:
+            return None
+        roster_df = pd.DataFrame((live.get("rosters") or {}).get(team, []))
+        cfg = dict(live.get("config") or {})
+        cfg["current_pick"] = paint.get("current_pick") or cfg.get("current_pick")
+        cfg["room"] = live
+        target_counts = live_draft_target_counts(cfg)
+        rule_key = str(cfg.get("auto_pick_rule") or "balanced recommendation")
+        scored, _ = score_available_for_rule(row_df, roster_df, rule_key, target_counts, config=cfg)
+        if scored.empty:
+            return None
+        return scored.iloc[0].to_dict()
+    except Exception:
+        return None
+
+
+def format_queue_player_metrics_line(pool_row: Any, session: dict[str, Any] | None = None, room: dict[str, Any] | None = None) -> str:
     """Proj: line plus Decision Score / Roster Fit for queue rows."""
     if pool_row is None:
         return ""
     try:
         from player_photos import compact_fantasy_stat_line, decision_score_display, roster_fit_display
 
+        scored_row = pool_row
+        if session is not None:
+            try:
+                from draft_ui import score_queue_player_for_on_clock_team
+
+                scored_row = score_queue_player_for_on_clock_team(session, pool_row, room=room) or pool_row
+            except ImportError:
+                scored_row = pool_row
+
         bits: list[str] = []
-        stat_line = compact_fantasy_stat_line(pool_row)
+        stat_line = compact_fantasy_stat_line(scored_row)
         if stat_line:
             bits.append(stat_line)
-        ds = decision_score_display(pool_row)
-        rf = roster_fit_display(pool_row)
+        ds = decision_score_display(scored_row)
+        rf = roster_fit_display(scored_row)
         score_bits: list[str] = []
         if ds and ds != "Not available":
             score_bits.append(f"Decision Score {ds}")
-        if rf and rf != "Not available":
+        if rf and rf not in ("Not available", "Roster Fit calculating…", "0.00"):
             score_bits.append(f"Roster Fit {rf}")
+        elif rf == "Roster Fit calculating…":
+            score_bits.append(rf)
         if score_bits:
             bits.append(" · ".join(score_bits))
         return " · ".join(bits)
@@ -1370,7 +1423,7 @@ def render_draft_queue_panel(
                 container.markdown(f"**{idx + 1}. {pname}**")
             c_name, c_rm, c_draft = container.columns([0.62, 0.18, 0.20])
             label = format_queue_player_label(pname, meta)
-            metrics_line = format_queue_player_metrics_line(pool_row)
+            metrics_line = format_queue_player_metrics_line(pool_row, session=session, room=room)
             if _queue_photos:
                 headshot = render_queue_headshot_html(photo_info)
                 short = label[:72] + ("…" if len(label) > 72 else "")
@@ -1417,7 +1470,7 @@ def render_draft_queue_panel(
                 cols[0].markdown(render_queue_headshot_html(photo_info), unsafe_allow_html=True)
             else:
                 cols[0].write(f"{idx + 1}")
-            metrics_line = format_queue_player_metrics_line(pool_row)
+            metrics_line = format_queue_player_metrics_line(pool_row, session=session, room=room)
             name_block = pname
             if metrics_line:
                 name_block = f"{pname}\n{metrics_line}"

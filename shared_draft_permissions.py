@@ -173,7 +173,14 @@ def participant_may_auto_pick(
     document: dict[str, Any] | None = None,
     on_clock_team: str = "",
 ) -> bool:
-    """Auto Pick Now: commissioner always; guest only when their claimed team is on clock."""
+    """Auto Pick Now: solo host always; commissioner always; guest only when their team is on clock."""
+    try:
+        from live_draft_solo_timer import is_solo_live_draft
+
+        if is_solo_live_draft(session, room):
+            return True
+    except ImportError:
+        pass
     if is_canonical_commissioner(session, document):
         return True
     team = ""

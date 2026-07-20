@@ -692,6 +692,12 @@ def finalize_live_draft_pick_transition(
         )
     except Exception:
         pass
+    try:
+        from live_draft_canonical_snapshot import invalidate_live_draft_paint
+
+        invalidate_live_draft_paint(session)
+    except ImportError:
+        pass
 
     if request_immediate_paint:
         try:

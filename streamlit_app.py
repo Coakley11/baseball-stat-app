@@ -23787,12 +23787,20 @@ elif active_page == "Live Draft Room":
                 live_proj_window = st.selectbox("Projection Window (years)", _live_proj_window_options, key="live_draft_proj_window", on_change=_live_draft_setting_changed)
 
             st.subheader("Roster Settings")
+            try:
+                from user_page_preferences import live_draft_setup_number_default as _ld_setup_default
+            except ImportError:
+                _ld_setup_default = lambda _s, _k, fb: fb  # type: ignore[misc,assignment]
             for _slot_key, _slot_default in [
                 ("live_slot_c", 1), ("live_slot_1b", 1), ("live_slot_2b", 1), ("live_slot_3b", 1),
                 ("live_slot_ss", 1), ("live_slot_of", 3), ("live_slot_dh", 1), ("live_slot_p", 0),
                 ("live_slot_bench", 5),
             ]:
-                validate_number_state(_slot_key, _slot_default, min_value=0)
+                validate_number_state(
+                    _slot_key,
+                    _ld_setup_default(st.session_state, _slot_key, _slot_default),
+                    min_value=0,
+                )
             rs1, rs2, rs3, rs4 = st.columns(4)
             with rs1:
                 slot_c = st.number_input("C", min_value=0, max_value=3, step=1, key="live_slot_c", on_change=_live_draft_setting_changed)
@@ -24517,7 +24525,7 @@ elif active_page == "Live Draft Room":
         try:
             from live_draft_canonical_snapshot import apply_canonical_to_slot_views
 
-            _canon = apply_canonical_to_slot_views(st.session_state, room, refresh=True)
+            _canon = apply_canonical_to_slot_views(st.session_state, room, refresh=False)
             if isinstance(slot, dict) and _canon.get("team_on_clock"):
                 slot = dict(slot)
                 slot["Team"] = _canon["team_on_clock"]
@@ -24526,7 +24534,20 @@ elif active_page == "Live Draft Room":
                 if _canon.get("round") is not None:
                     slot["Round"] = _canon["round"]
         except ImportError:
-            pass
+            _canon = {}
+        try:
+            from live_draft_canonical_snapshot import begin_live_draft_paint
+
+            _paint = begin_live_draft_paint(st.session_state, room, state_source="live_draft_room_page")
+            if isinstance(slot, dict):
+                slot = dict(slot)
+                slot["Team"] = _paint.get("team_on_clock") or slot.get("Team")
+                if _paint.get("current_pick") is not None:
+                    slot["Pick"] = _paint.get("current_pick")
+                if _paint.get("round") is not None:
+                    slot["Round"] = _paint.get("round")
+        except ImportError:
+            _paint = _canon if isinstance(_canon, dict) else {}
         try:
             from live_draft_safe_mode import compute_draft_status, is_draft_truly_complete, live_draft_is_in_progress, total_expected_picks
             from draft_ui import PENDING_MANUAL_PICK_KEY
@@ -24685,10 +24706,21 @@ elif active_page == "Live Draft Room":
         except ImportError:
             pass
         if not _shared_lobby_view:
-            pick_num = min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks
+            _hdr_pick = (_paint.get("current_pick") if isinstance(_paint, dict) else None) or (
+                min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks
+            )
+            pick_num = int(_hdr_pick) if _hdr_pick is not None else min(picks_done + 1, total_picks)
             pick_label = f"Pick {pick_num} of {total_picks}"
-            on_clock_team = str(slot.get("Team") or "—") if isinstance(slot, dict) else "—"
-            round_no = str(slot.get("Round") or "—") if isinstance(slot, dict) else "—"
+            on_clock_team = str(
+                (_paint.get("team_on_clock") if isinstance(_paint, dict) else None)
+                or (slot.get("Team") if isinstance(slot, dict) else "")
+                or "—"
+            )
+            round_no = str(
+                (_paint.get("round") if isinstance(_paint, dict) else None)
+                or (slot.get("Round") if isinstance(slot, dict) else "")
+                or "—"
+            )
             try:
                 from live_draft_room_ui import render_live_draft_league_header
 
@@ -24708,9 +24740,20 @@ elif active_page == "Live Draft Room":
                     f"Pick {pick_num} of {total_picks}"
                 )
         else:
-            on_clock_team = str(slot.get("Team") or "—") if isinstance(slot, dict) else "—"
-            round_no = str(slot.get("Round") or "—") if isinstance(slot, dict) else "—"
-            pick_num = min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks
+            on_clock_team = str(
+                (_paint.get("team_on_clock") if isinstance(_paint, dict) else None)
+                or (slot.get("Team") if isinstance(slot, dict) else "")
+                or "—"
+            )
+            round_no = str(
+                (_paint.get("round") if isinstance(_paint, dict) else None)
+                or (slot.get("Round") if isinstance(slot, dict) else "")
+                or "—"
+            )
+            _hdr_pick = (_paint.get("current_pick") if isinstance(_paint, dict) else None) or (
+                min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks
+            )
+            pick_num = int(_hdr_pick) if _hdr_pick is not None else min(picks_done + 1, total_picks)
             pick_label = f"Pick {pick_num} of {total_picks}"
         _status_label = str(_derived_status or room.get("status", "")).replace("_", " ").title()
         if not _shared_lobby_view:
@@ -24895,11 +24938,28 @@ elif active_page == "Live Draft Room":
                 _owned_at = float(st.session_state.get(SOLO_FRAGMENT_OWNED_EXPIRE_KEY) or 0.0)
                 _fragment_recent = bool(_owned_at and (_solo_page_time.time() - _owned_at) < 2.0)
                 if not _fragment_recent:
-                    # Fallback only — never request a full-app rebuild for Solo expire.
                     with ldr_step(st.session_state, "solo_expire_current_pick", st=st):
                         _solo_expire = run_solo_expire_if_needed(
                             st.session_state, room, request_full_rerun=False
                         )
+                    if _solo_expire is not None and _solo_expire.ok and (_solo_expire.advanced or _solo_expire.complete):
+                        try:
+                            from live_draft_canonical_snapshot import invalidate_live_draft_paint, note_action_timing
+
+                            invalidate_live_draft_paint(st.session_state)
+                            note_action_timing(
+                                st.session_state,
+                                "solo_expire_page_fallback",
+                                zero_to_commit_ms=_solo_expire.zero_to_commit_ms,
+                            )
+                        except ImportError:
+                            pass
+                        try:
+                            from live_draft_safe_mode import request_live_draft_rerun
+
+                            request_live_draft_rerun(st, st.session_state, "solo_expire", room=room)
+                        except Exception:
+                            st.rerun()
                     if _solo_expire is not None:
                         if _solo_expire.error:
                             st.error(_solo_expire.error)

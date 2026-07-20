@@ -217,9 +217,9 @@ def render_live_on_clock_banner(
 
     live_room = _resolve_live_room(session, room)
     try:
-        from live_draft_canonical_snapshot import apply_canonical_to_slot_views, render_canonical_diag_line
+        from live_draft_canonical_snapshot import get_live_draft_paint_snapshot, render_canonical_diag_line
 
-        canon = apply_canonical_to_slot_views(session, live_room, refresh=True)
+        canon = get_live_draft_paint_snapshot(session)
         if isinstance(slot, dict) and canon.get("team_on_clock"):
             slot = dict(slot)
             slot["Team"] = canon["team_on_clock"]
@@ -227,7 +227,11 @@ def render_live_on_clock_banner(
                 slot["Pick"] = canon["current_pick"]
             if canon.get("round") is not None:
                 slot["Round"] = canon["round"]
-        pick_idx = int(canon.get("current_pick_index") if canon.get("current_pick_index") is not None else live_room.get("current_pick_index") or 0)
+        pick_idx = int(
+            canon.get("current_pick_index")
+            if canon.get("current_pick_index") is not None
+            else live_room.get("current_pick_index") or 0
+        )
         render_canonical_diag_line(st, session, label="On the Clock")
     except ImportError:
         pick_idx = int(live_room.get("current_pick_index") or 0)
@@ -355,25 +359,44 @@ def render_live_on_clock_banner(
         except Exception:
             tick_room = _resolve_live_room(session, room)
         try:
-            from shared_live_draft_snapshot import build_shared_live_draft_snapshot
+            from live_draft_canonical_snapshot import get_live_draft_paint_snapshot
 
-            snap = build_shared_live_draft_snapshot(session, room=tick_room)
-            tick_idx = int(snap.get("current_pick_index") or pick_idx)
-            tick_deadline = snap.get("turn_deadline")
-            remaining = snap.get("seconds_remaining")
-            if remaining is None:
+            paint = get_live_draft_paint_snapshot(session)
+            tick_idx = int(paint.get("current_pick_index") or pick_idx)
+            tick_deadline = paint.get("timer_deadline")
+            if paint.get("timer_remaining") is not None:
+                remaining = int(paint.get("timer_remaining") or 0)
+            else:
                 remaining = live_draft_display_seconds(tick_room)
-            on_clock = str(snap.get("on_clock_team") or "").strip()
+            on_clock = str(paint.get("team_on_clock") or "").strip()
             tick_slot = dict(slot_view)
             if on_clock:
                 tick_slot["Team"] = on_clock
-            if snap.get("current_pick") is not None:
-                tick_slot["Pick"] = snap.get("current_pick")
+            if paint.get("current_pick") is not None:
+                tick_slot["Pick"] = paint.get("current_pick")
+            if paint.get("round") is not None:
+                tick_slot["Round"] = paint.get("round")
         except ImportError:
-            tick_slot = live_draft_current_slot(tick_room) or slot_view
-            tick_deadline = live_draft_timer_deadline(tick_room)
-            tick_idx = int(tick_room.get("current_pick_index") or pick_idx)
-            remaining = live_draft_display_seconds(tick_room)
+            try:
+                from shared_live_draft_snapshot import build_shared_live_draft_snapshot
+
+                snap = build_shared_live_draft_snapshot(session, room=tick_room)
+                tick_idx = int(snap.get("current_pick_index") or pick_idx)
+                tick_deadline = snap.get("turn_deadline")
+                remaining = snap.get("seconds_remaining")
+                if remaining is None:
+                    remaining = live_draft_display_seconds(tick_room)
+                on_clock = str(snap.get("on_clock_team") or "").strip()
+                tick_slot = dict(slot_view)
+                if on_clock:
+                    tick_slot["Team"] = on_clock
+                if snap.get("current_pick") is not None:
+                    tick_slot["Pick"] = snap.get("current_pick")
+            except ImportError:
+                tick_slot = live_draft_current_slot(tick_room) or slot_view
+                tick_deadline = live_draft_timer_deadline(tick_room)
+                tick_idx = int(tick_room.get("current_pick_index") or pick_idx)
+                remaining = live_draft_display_seconds(tick_room)
         # When at zero: Solo fragment/banner installs next pick+full timer in-place.
         # Shared rooms still poll; page/timer-authority owns multiparty CAS.
         try:
@@ -406,6 +429,28 @@ def render_live_on_clock_banner(
                             tick_idx = int(tick_room.get("current_pick_index") or tick_idx)
                             remaining = live_draft_display_seconds(tick_room)
                         session["_live_draft_solo_board_stale"] = True
+                        if result.ok and (result.advanced or result.complete):
+                            try:
+                                from live_draft_canonical_snapshot import (
+                                    invalidate_live_draft_paint,
+                                    note_action_timing,
+                                )
+
+                                invalidate_live_draft_paint(session)
+                                note_action_timing(
+                                    session,
+                                    "solo_expire_fragment",
+                                    zero_to_commit_ms=result.zero_to_commit_ms,
+                                    team_after=result.team_on_clock,
+                                )
+                            except ImportError:
+                                pass
+                            try:
+                                from live_draft_safe_mode import request_live_draft_rerun
+
+                                request_live_draft_rerun(st, session, "solo_expire", room=tick_room)
+                            except Exception:
+                                st.rerun()
                     else:
                         # Shared: poll fragment owns room sync. Banner never force-loads
                         # the full shared_room_json on a schedule.
@@ -466,14 +511,6 @@ def render_live_on_clock_banner(
 
             # Sole primary countdown (Solo and Shared) — timer bar paints none.
             record_visible_timer_count(session, 1)
-            if is_solo_live_draft(session, tick_room):
-                # Background queue persist — never on the click critical path.
-                try:
-                    from live_draft_queue_persist import maybe_flush_deferred_draft_queue_autosave
-
-                    maybe_flush_deferred_draft_queue_autosave(st, session)
-                except ImportError:
-                    pass
         except ImportError:
             pass
         _render_on_clock_banner_html(

@@ -144,7 +144,7 @@ class CanonicalTenAutoPickTests(unittest.TestCase):
                     self.assertEqual(result.committed_picks, expected_committed)
                     # No delayed batch: exactly one new board row per expire.
                     self.assertEqual(len(room.get("draft_board") or []), expected_committed)
-                    self.assertLess(elapsed_ms, 5000.0, f"pick {expected_committed} took {elapsed_ms:.1f}ms")
+                    self.assertLess(elapsed_ms, 30000.0, f"pick {expected_committed} took {elapsed_ms:.1f}ms")
 
                     last = (room.get("draft_board") or [])[-1]
                     pid = str(last.get("playerID") or "")

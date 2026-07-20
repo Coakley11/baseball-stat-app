@@ -425,17 +425,30 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
                 except ImportError:
                     room = repair_stale_live_draft_progress(dict(room))
                     session[LIVE_DRAFT_ROOM_KEY] = room
-                # Prefer the per-render canonical Live Draft snapshot so sidebar,
-                # banner, and actions never disagree on pick / team / revision.
+                progress = analyze_live_draft_progress(room)
                 try:
-                    from live_draft_canonical_snapshot import apply_canonical_to_slot_views
+                    from live_draft_canonical_snapshot import (
+                        context_fields_from_snapshot,
+                        get_live_draft_paint_snapshot,
+                    )
 
-                    canon = apply_canonical_to_slot_views(session, room, refresh=True)
-                    progress = analyze_live_draft_progress(room)
-                    if canon.get("status") in ("in_progress", "paused") or progress.get("draft_status") in (
-                        "in_progress",
-                        "paused",
-                    ):
+                    paint = get_live_draft_paint_snapshot(session)
+                    fields = context_fields_from_snapshot(session, paint, room=room)
+                    progress = dict(progress)
+                    progress["current_pick"] = fields.get("current_pick")
+                    progress["current_pick_index"] = fields.get("current_pick_index")
+                    progress["on_clock_team"] = fields.get("on_clock_team") or ""
+                    progress["draft_status"] = fields.get("draft_status") or progress.get("draft_status")
+                    progress["draft_complete"] = bool(fields.get("draft_complete"))
+                    progress["revision"] = fields.get("revision")
+                    ctx["round"] = fields.get("round")
+                    ctx["paint_token"] = fields.get("paint_token")
+                    ctx["snapshot_id"] = fields.get("snapshot_id")
+                except ImportError:
+                    try:
+                        from live_draft_canonical_snapshot import apply_canonical_to_slot_views
+
+                        canon = apply_canonical_to_slot_views(session, room, refresh=False)
                         progress = dict(progress)
                         progress["current_pick"] = canon.get("current_pick")
                         progress["current_pick_index"] = canon.get("current_pick_index")
@@ -443,27 +456,8 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
                         progress["draft_status"] = canon.get("status") or progress.get("draft_status")
                         progress["draft_complete"] = str(canon.get("status") or "") == "complete"
                         progress["revision"] = canon.get("revision")
-                except ImportError:
-                    # Prefer authoritative shared snapshot so queue captions match the board.
-                    try:
-                        from shared_live_draft_snapshot import (
-                            build_shared_live_draft_snapshot,
-                            refresh_shared_live_draft_snapshot,
-                        )
-
-                        snap = refresh_shared_live_draft_snapshot(session) if session.get(
-                            "active_shared_draft_room_code"
-                        ) else build_shared_live_draft_snapshot(session, room=room)
-                        progress = analyze_live_draft_progress(room)
-                        if snap.get("room_status") in ("in_progress", "paused"):
-                            progress = dict(progress)
-                            progress["current_pick"] = snap.get("current_pick")
-                            progress["current_pick_index"] = snap.get("current_pick_index")
-                            progress["on_clock_team"] = snap.get("on_clock_team") or ""
-                            progress["draft_status"] = snap.get("room_status") or progress.get("draft_status")
-                            progress["draft_complete"] = bool(snap.get("draft_complete"))
                     except ImportError:
-                        progress = analyze_live_draft_progress(room)
+                        pass
                 ctx["draft_status"] = str(progress.get("draft_status") or "")
                 ctx["draft_complete"] = bool(progress.get("draft_complete"))
                 ctx["draft_complete_reason"] = str(progress.get("draft_complete_reason") or "")
@@ -474,6 +468,11 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
                 ctx["revision"] = progress.get("revision")
                 if not progress.get("draft_complete"):
                     live_room = room
+                cfg = dict(room.get("config") or {})
+                your_team = str(cfg.get("user_team") or cfg.get("your_team") or session.get("room_your_team") or "").strip()
+                ctx["your_team"] = your_team
+                on_clock = str(ctx.get("on_clock_team") or "").strip()
+                ctx["is_your_pick"] = bool(your_team and on_clock and your_team == on_clock)
         except ImportError:
             pass
 
@@ -730,42 +729,36 @@ def draft_status_summary(session: dict[str, Any]) -> dict[str, Any]:
         pick_n = None
     on_clock = str(ctx.get("on_clock_team") or "").strip()
     room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else None
-    if not on_clock and pick_n is not None and not ctx.get("draft_complete"):
-        try:
-            from draft_room_state import get_canonical_draft_board
-
-            board = get_canonical_draft_board(session)
-            if hasattr(board, "columns") and "Pick" in board.columns and "Team" in board.columns:
-                match = board[board["Pick"].astype(int) == pick_n]
-                if not match.empty:
-                    on_clock = str(match.iloc[0].get("Team") or "").strip()
-        except Exception:
-            pass
-    if not on_clock and isinstance(room, dict):
-        try:
-            from live_draft_state import analyze_live_draft_progress
-
-            progress = analyze_live_draft_progress(room)
-            on_clock = str(progress.get("on_clock_team") or "").strip()
-            if pick_n is None and progress.get("current_pick") is not None:
-                try:
-                    pick_n = int(progress.get("current_pick"))
-                except (TypeError, ValueError):
-                    pick_n = None
-        except ImportError:
-            pass
+    round_no = ctx.get("round")
+    if round_no is None and pick_n is not None:
+        round_no = _draft_round_for_pick(session, pick_n)
     timer_seconds: int | None = None
     if ctx.get("live_draft_active") and isinstance(room, dict) and str(room.get("status") or "") == "in_progress":
         try:
-            from live_draft_timer_logic import ensure_live_draft_timer_for_pick, live_draft_seconds_remaining
+            paint = None
+            from live_draft_canonical_snapshot import get_live_draft_paint_snapshot
 
-            ensure_live_draft_timer_for_pick(room)
-            timer_seconds = int(live_draft_seconds_remaining(room))
+            paint = get_live_draft_paint_snapshot(session)
+            if paint.get("timer_remaining") is not None:
+                timer_seconds = int(paint.get("timer_remaining") or 0)
         except ImportError:
+            paint = None
+        if timer_seconds is None:
+            try:
+                from live_draft_timer_logic import ensure_live_draft_timer_for_pick, live_draft_seconds_remaining
+
+                ensure_live_draft_timer_for_pick(room)
+                timer_seconds = int(live_draft_seconds_remaining(room))
+            except ImportError:
+                timer_seconds = None
+    elif ctx.get("live_draft_active") and isinstance(room, dict) and str(room.get("status") or "") == "paused":
+        try:
+            timer_seconds = int(room.get("paused_remaining_seconds") or 0)
+        except (TypeError, ValueError):
             timer_seconds = None
     return {
         **ctx,
-        "round": _draft_round_for_pick(session, pick_n),
+        "round": round_no,
         "pick": pick_n,
         "current_pick": pick_n,
         "on_clock_team": on_clock or None,

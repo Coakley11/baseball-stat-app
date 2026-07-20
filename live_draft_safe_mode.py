@@ -38,6 +38,11 @@ _LOCAL_IMMEDIATE_RERUN_SOURCES = frozenset(
         "solo_expire",
         "page_autopick",
         "expired_pick_pending",
+        "pause_draft",
+        "resume_draft",
+        "reset_timer",
+        "auto_pick",
+        "auto_pick_complete",
     }
 )
 
@@ -564,8 +569,13 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
             except ImportError:
                 mark_live_draft_timer_tick(session)
             session["_live_draft_recs_pending_after_pick"] = True
-        elif source in ("pause_draft", "resume_draft"):
-            force_live_draft_expensive_recompute(session)
+        elif source in ("pause_draft", "resume_draft", "reset_timer"):
+            try:
+                from live_draft_rerun_scope import mark_live_draft_optimistic_pick_tick
+
+                mark_live_draft_optimistic_pick_tick(session)
+            except ImportError:
+                mark_live_draft_timer_tick(session)
         elif source in ("auto_pick", "page_autopick", "auto_pick_complete", "solo_expire"):
             # Commit first, paint board/timer; analytics refresh on a later pass.
             try:
