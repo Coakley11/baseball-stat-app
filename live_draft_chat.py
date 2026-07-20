@@ -17,6 +17,7 @@ except Exception:  # pragma: no cover - Windows without tzdata
 
 CHAT_DOC_KEY = "chat"
 CHAT_SESSION_CACHE_KEY = "_live_draft_chat_cache"
+CHAT_STATUS_DOC_KEY = "_live_draft_chat_status_doc"
 CHAT_LAST_SEEN_REV_KEY = "_live_draft_chat_last_seen_rev"
 CHAT_LAST_SEEN_IDS_KEY = "_live_draft_chat_last_seen_ids"
 CHAT_COLLAPSED_KEY = "_live_draft_chat_collapsed"
@@ -539,6 +540,18 @@ def load_live_draft_chat(
         "viewer_participant_id": viewer,
         "chat": copy.deepcopy(visible),
     }
+    if isinstance(sidecar, dict):
+        session[CHAT_STATUS_DOC_KEY] = {
+            "room_code": code,
+            "revision": int(sidecar.get("revision") or 0),
+            "host_user_id": str(sidecar.get("host_user_id") or ""),
+            "host_participant_id": str(sidecar.get("host_participant_id") or ""),
+            "joined_participants": copy.deepcopy(sidecar.get("joined_participants") or {}),
+            "participants": copy.deepcopy(sidecar.get("participants") or {}),
+            "room": session.get("live_draft_room")
+            if isinstance(session.get("live_draft_room"), dict)
+            else {},
+        }
     return visible
 
 
@@ -569,6 +582,18 @@ def refresh_live_draft_chat_if_newer(session: dict[str, Any]) -> bool:
         "chat_scope": scope,
         "viewer_participant_id": viewer,
         "chat": copy.deepcopy(remote),
+    }
+    # Lightweight membership from the same sidecar — chat status must not full-load.
+    session[CHAT_STATUS_DOC_KEY] = {
+        "room_code": code,
+        "revision": int(sidecar.get("revision") or 0),
+        "host_user_id": str(sidecar.get("host_user_id") or ""),
+        "host_participant_id": str(sidecar.get("host_participant_id") or ""),
+        "joined_participants": copy.deepcopy(sidecar.get("joined_participants") or {}),
+        "participants": copy.deepcopy(sidecar.get("participants") or {}),
+        "room": session.get("live_draft_room")
+        if isinstance(session.get("live_draft_room"), dict)
+        else {},
     }
     if unchanged:
         return False

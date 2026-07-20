@@ -11,6 +11,7 @@ from live_draft_chat import (
     CHAT_POLL_SEC,
     CHAT_REPLY_TO_KEY,
     CHAT_SHOW_EARLIER_KEY,
+    CHAT_STATUS_DOC_KEY,
     CHAT_VISIBLE_LIMIT,
     MSG_TYPE_PRIVATE_REPLY,
     MSG_TYPE_SYSTEM,
@@ -33,6 +34,9 @@ from live_draft_chat import (
     unread_chat_count,
     user_visible_messages,
 )
+
+CHAT_FRAGMENT_ACTIVE_KEY = "_live_draft_chat_fragment_active"
+CHAT_POLL_INTERVAL_KEY = "_live_draft_chat_poll_interval_sec"
 
 CHAT_COMPOSER_KEY = "live_draft_chat_composer_text"
 CHAT_REPLY_CLIENT_ID_KEY = "_live_draft_chat_reply_client_id"
@@ -205,44 +209,79 @@ def dedupe_chat_participant_rows(rows: list[dict[str, Any]]) -> list[dict[str, A
     return list(by_uid.values())
 
 
+def _chat_status_document_local(session: dict[str, Any]) -> dict[str, Any] | None:
+    """Membership snapshot for the status line — never initiates a full-room GET.
+
+    Prefers the lightweight fields stamped by the chat sidecar refresh, then the
+    soft-cached shared document from the draft poll owner.
+    """
+    stamped = session.get(CHAT_STATUS_DOC_KEY)
+    if isinstance(stamped, dict) and (
+        stamped.get("participants") is not None
+        or stamped.get("joined_participants") is not None
+        or stamped.get("host_user_id")
+        or stamped.get("host_participant_id")
+    ):
+        return stamped
+    try:
+        from draft_room_shared_state import peek_shared_room_document_cache
+
+        code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
+        peeked = peek_shared_room_document_cache(session, code) if code else None
+        if isinstance(peeked, dict):
+            return peeked
+    except ImportError:
+        pass
+    # Last resort: session presence cache + local room (still no network).
+    joined = session.get("_live_draft_joined_participants_cache")
+    if isinstance(joined, dict) and joined:
+        return {
+            "joined_participants": joined,
+            "participants": {},
+            "room": session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else {},
+            "host_user_id": str(
+                (session.get("draft_room_shared_meta") or {}).get("host_user_id") or ""
+            ),
+            "host_participant_id": str(
+                (session.get("draft_room_shared_meta") or {}).get("host_participant_id") or ""
+            ),
+        }
+    return None
+
+
 def format_chat_participant_status_line(session: dict[str, Any]) -> str:
-    """HTML status row — each authenticated manager once."""
+    """HTML status row — each authenticated manager once.
+
+    Must never call ``load_shared_room`` / initiate a full-room download during
+    scheduled chat refreshes.
+    """
     try:
         from live_draft_presence import required_human_participant_rows
 
         room = session.get("live_draft_room") or {}
-        rows = required_human_participant_rows(session, room if isinstance(room, dict) else {})
+        doc = _chat_status_document_local(session)
+        rows = required_human_participant_rows(
+            session,
+            room if isinstance(room, dict) else {},
+            document=doc if isinstance(doc, dict) else None,
+            allow_network=False,
+        )
         rows = dedupe_chat_participant_rows(rows)
-        # Host / commissioner first when identifiable.
-        try:
-            from draft_room_membership import is_room_host
-            from draft_room_participant_state import resolve_participant_id
+        # Host / commissioner first when identifiable (local metadata only).
+        host_id = ""
+        if isinstance(doc, dict):
+            host_id = str(doc.get("host_user_id") or doc.get("host_participant_id") or "").strip().lower()
+        if not host_id:
+            meta = session.get("draft_room_shared_meta")
+            if isinstance(meta, dict):
+                host_id = str(meta.get("host_user_id") or meta.get("host_participant_id") or "").strip().lower()
 
-            host_pid = str(resolve_participant_id(session) or "").strip().lower()
-            if host_pid:
-                # Keep relative order but bubble current host if present.
-                pass
-            doc = None
-            try:
-                from draft_room_shared_state import load_shared_room
+        def _sort_key(r: dict[str, Any]) -> tuple:
+            uid = canonical_chat_participant_key(r)
+            is_host = bool(host_id and uid == host_id) or bool(r.get("is_host"))
+            return (0 if is_host else 1, str(r.get("team_name") or ""), str(r.get("display_name") or ""))
 
-                code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
-                doc = load_shared_room(code) if code else None
-            except Exception:
-                doc = None
-            host_id = ""
-            if isinstance(doc, dict):
-                host_id = str(doc.get("host_user_id") or doc.get("host_participant_id") or "").strip().lower()
-
-            def _sort_key(r: dict[str, Any]) -> tuple:
-                uid = canonical_chat_participant_key(r)
-                is_host = bool(host_id and uid == host_id)
-                return (0 if is_host else 1, str(r.get("team_name") or ""), str(r.get("display_name") or ""))
-
-            rows = sorted(rows, key=_sort_key)
-            _ = is_room_host  # import kept for future host checks
-        except ImportError:
-            pass
+        rows = sorted(rows, key=_sort_key)
 
         bits: list[str] = []
         for row in rows[:8]:
@@ -422,7 +461,15 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
     mark_chat_seen(session, chat_preview)
 
     try:
-        poll_interval = timedelta(seconds=float(CHAT_POLL_SEC))
+        try:
+            from suite_egress_policy import shared_draft_poll_interval_sec
+
+            interval_sec = float(shared_draft_poll_interval_sec(session))
+        except Exception:
+            interval_sec = float(CHAT_POLL_SEC)
+        session[CHAT_POLL_INTERVAL_KEY] = interval_sec
+        session[CHAT_FRAGMENT_ACTIVE_KEY] = True
+        poll_interval = timedelta(seconds=interval_sec)
 
         @st.fragment(run_every=poll_interval)
         def _chat_fragment() -> None:
@@ -430,6 +477,7 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
 
         _chat_fragment()
     except Exception:
+        session[CHAT_FRAGMENT_ACTIVE_KEY] = False
         _chat_body(st, session, form_key="live_draft_chat_form_fallback")
 
     if is_chat_commissioner(session):

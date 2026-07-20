@@ -526,16 +526,22 @@ class LocalFileSharedRoomStore:
         return head
 
     def load_chat_sidecar(self, room_code: str) -> dict[str, Any] | None:
-        """Chat + revision metadata only — never a full shared_room_json download."""
+        """Chat + lightweight membership — never a full shared_room_json download."""
         doc = self.load(room_code)
         if not isinstance(doc, dict):
             return None
         chat = doc.get("chat") if isinstance(doc.get("chat"), dict) else {}
+        joined = doc.get("joined_participants") if isinstance(doc.get("joined_participants"), dict) else {}
+        participants = doc.get("participants") if isinstance(doc.get("participants"), dict) else {}
         return {
             "room_code": str(doc.get("room_code") or room_code).upper(),
             "revision": int(doc.get("revision") or 0),
             "status": str(doc.get("status") or ""),
             "updated_at": str(doc.get("updated_at") or ""),
+            "host_user_id": str(doc.get("host_user_id") or ""),
+            "host_participant_id": str(doc.get("host_participant_id") or ""),
+            "joined_participants": copy.deepcopy(joined),
+            "participants": copy.deepcopy(participants),
             "chat": copy.deepcopy(chat),
             "_egress_kind": "chat_sidecar",
         }
@@ -663,6 +669,23 @@ def load_shared_room_document(
             "document": document if isinstance(document, dict) else None,
         }
     return document if isinstance(document, dict) else None
+
+
+def peek_shared_room_document_cache(
+    session: dict[str, Any] | None,
+    room_code: str = "",
+) -> dict[str, Any] | None:
+    """Return soft-cached shared document without network I/O."""
+    if not isinstance(session, dict):
+        return None
+    code = str(room_code or "").strip().upper()
+    cache = session.get(SHARED_DOC_SOFT_CACHE_KEY)
+    if not isinstance(cache, dict):
+        return None
+    if code and str(cache.get("room_code") or "").strip().upper() != code:
+        return None
+    doc = cache.get("document")
+    return doc if isinstance(doc, dict) else None
 
 
 def invalidate_shared_room_document_cache(session: dict[str, Any] | None, room_code: str = "") -> None:

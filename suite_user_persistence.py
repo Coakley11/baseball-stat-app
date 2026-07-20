@@ -281,6 +281,18 @@ def _cloud_autosave_blocked_reason(
             return None
     elif st.session_state.get("_suite_workspace_sync_skipped_no_apply"):
         return "workspace_sync_not_applied"
+    try:
+        from suite_egress_policy import cloud_autosave_allowed, mark_cloud_autosave
+
+        allowed, throttle_reason = cloud_autosave_allowed(
+            st, app_id, save_reason=save_reason or "autosave"
+        )
+        if not allowed:
+            return throttle_reason or "autosave_throttled"
+        # mark_cloud_autosave is called after a successful write — keep import for clarity.
+        _ = mark_cloud_autosave
+    except ImportError:
+        pass
     if app_id != "baseball":
         return None
     local_players = _workspace_comparison_players(state)
@@ -1337,7 +1349,7 @@ def force_autosave(
         import hashlib
         import json
 
-        from suite_cloud_state import load_cloud_full_session, save_cloud_full_session, session_page_summary
+        from suite_cloud_state import save_cloud_full_session, session_page_summary
 
         block_key = _autosave_block_key(app_id)
         bypass_block = reason in (
@@ -1379,7 +1391,15 @@ def force_autosave(
         if cloud_block:
             st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
         else:
-            saved_cloud = bool(save_cloud_full_session(app_id, state, page=page, summary=summary))
+            saved_cloud = bool(
+                save_cloud_full_session(
+                    app_id,
+                    state,
+                    page=page,
+                    summary=summary,
+                    skip_metrics_merge_read=True,
+                )
+            )
         if saved_disk or saved_cloud:
             st.session_state[f"_suite_autosave_fp::{app_id}"] = fp
             st.session_state[_restored_fp_key(app_id)] = fp
@@ -1387,8 +1407,14 @@ def force_autosave(
             if reason == "page_change":
                 _release_user_page_ownership_after_save(st, str(state.get("active_page") or ""))
             if saved_cloud:
-                _, cloud_ts = load_cloud_full_session(app_id)
-                st.session_state[_applied_cloud_ts_key(app_id)] = cloud_ts or _utc_now_iso()
+                # Avoid an immediate full_session readback after a successful write.
+                st.session_state[_applied_cloud_ts_key(app_id)] = _utc_now_iso()
+                try:
+                    from suite_egress_policy import mark_cloud_autosave
+
+                    mark_cloud_autosave(st)
+                except ImportError:
+                    pass
             st.session_state["_suite_persist_last_save_at"] = _utc_now_iso()
             st.session_state["_suite_persist_last_save_disk"] = saved_disk
             st.session_state["_suite_persist_last_save_cloud"] = saved_cloud
@@ -1466,14 +1492,23 @@ def autosave_if_changed(
                 st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
             else:
                 saved_cloud = bool(
-                    save_cloud_full_session(app_id, state, page=page, summary=summary)
+                    save_cloud_full_session(
+                        app_id,
+                        state,
+                        page=page,
+                        summary=summary,
+                        skip_metrics_merge_read=True,
+                    )
                 )
                 if saved_cloud:
-                    from suite_cloud_state import load_cloud_full_session
+                    # No immediate full_session readback after a successful write.
+                    st.session_state[_applied_cloud_ts_key(app_id)] = _utc_now_iso()
+                    try:
+                        from suite_egress_policy import mark_cloud_autosave
 
-                    _, cloud_ts_after = load_cloud_full_session(app_id)
-                    if cloud_ts_after:
-                        st.session_state[_applied_cloud_ts_key(app_id)] = cloud_ts_after
+                        mark_cloud_autosave(st)
+                    except ImportError:
+                        pass
         except Exception as exc:
             cloud_err = str(exc)
         if saved_disk or saved_cloud:

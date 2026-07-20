@@ -32,6 +32,8 @@ _TABLE_SETTINGS = "suite_user_settings"
 _SAVED_ITEM_CONFLICT_COLS = "user_id,app,item_type,item_key"
 _FULL_SESSION_KEY = "full_session"
 _READ_CACHE_KEY = "_suite_supabase_get_cache"
+# Process-local metrics cache so routine full_session autosaves can skip a merge GET.
+_METRICS_MERGE_CACHE: dict[str, dict[str, Any]] = {}
 # Multi-writer tables must never be served from a session GET cache — another
 # browser/account can advance the document while this session still holds a hit.
 _NO_GET_CACHE_TABLES = frozenset(
@@ -74,10 +76,21 @@ def invalidate_shared_draft_room_read_cache() -> None:
     _invalidate_read_cache_for_table("baseball_shared_draft_rooms")
 
 
+def remember_metrics_merge_cache(scoped_app_key: str, metrics: dict[str, Any] | None) -> None:
+    if scoped_app_key and isinstance(metrics, dict):
+        _METRICS_MERGE_CACHE[scoped_app_key] = dict(metrics)
+
+
 def _row_to_state_dict(row: dict[str, Any], *, logical: str) -> dict[str, Any]:
     metrics = row.get("metrics")
     if not isinstance(metrics, dict):
         metrics = {}
+    try:
+        app_key = str(row.get("app") or "").strip()
+        if app_key and metrics:
+            remember_metrics_merge_cache(app_key, metrics)
+    except Exception:
+        pass
     page = str(row.get("page") or "")
     if not page.strip():
         full_session = metrics.get(_FULL_SESSION_KEY)
@@ -177,32 +190,44 @@ def load_current_states_summary() -> dict[str, dict[str, Any]]:
     return out
 
 
-def _merge_state_metrics(scoped_app_key: str, incoming: dict[str, Any] | None) -> dict[str, Any]:
-    """Shallow-merge metrics; preserve ``full_session`` when incoming omits it."""
+def _merge_state_metrics(
+    scoped_app_key: str,
+    incoming: dict[str, Any] | None,
+    *,
+    allow_network: bool = True,
+) -> dict[str, Any]:
+    """Shallow-merge metrics; preserve ``full_session`` when incoming omits it.
+
+    Cold start always probes once. When the process cache is warm, skip further
+    merge GETs (``allow_network`` retained for callers; warm cache wins).
+    """
+    _ = allow_network
     new_metrics = dict(incoming or {})
-    try:
-        params: dict[str, str] = {
-            "select": "metrics",
-            "app": f"eq.{scoped_app_key}",
-        }
-        uid = _cloud_user_id()
-        if uid:
-            params["user_id"] = f"eq.{uid}"
-        rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
-        prior: dict[str, Any] = {}
-        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
-            raw = rows[0].get("metrics")
-            if isinstance(raw, dict):
-                prior = raw
-        if not prior:
-            return new_metrics
-        merged = dict(prior)
-        merged.update(new_metrics)
-        if _FULL_SESSION_KEY not in new_metrics and _FULL_SESSION_KEY in prior:
-            merged[_FULL_SESSION_KEY] = prior[_FULL_SESSION_KEY]
-        return merged
-    except Exception:
+    prior: dict[str, Any] = dict(_METRICS_MERGE_CACHE.get(scoped_app_key) or {})
+    if not prior:
+        try:
+            params: dict[str, str] = {
+                "select": "metrics",
+                "app": f"eq.{scoped_app_key}",
+            }
+            uid = _cloud_user_id()
+            if uid:
+                params["user_id"] = f"eq.{uid}"
+            rows = _request("GET", _TABLE_STATE, params=params, prefer="return=representation")
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                raw = rows[0].get("metrics")
+                if isinstance(raw, dict):
+                    prior = raw
+                    _METRICS_MERGE_CACHE[scoped_app_key] = dict(prior)
+        except Exception:
+            prior = dict(_METRICS_MERGE_CACHE.get(scoped_app_key) or {})
+    if not prior:
         return new_metrics
+    merged = dict(prior)
+    merged.update(new_metrics)
+    if _FULL_SESSION_KEY not in new_metrics and _FULL_SESSION_KEY in prior:
+        merged[_FULL_SESSION_KEY] = prior[_FULL_SESSION_KEY]
+    return merged
 
 
 def _now_iso() -> str:
@@ -499,16 +524,24 @@ def save_current_state(
     page: str = "",
     summary: str = "",
     metrics: dict[str, Any] | None = None,
+    skip_metrics_merge_read: bool = False,
 ) -> None:
     logical_app = normalize_app_key(app)
     app_key = _scoped_storage_app(app)
     if logical_app not in ACTIVE_APP_KEYS:
         return
+    # Routine full_session autosaves: merge from process cache, not a GET every write.
+    allow_network = not (
+        skip_metrics_merge_read
+        and isinstance(metrics, dict)
+        and _FULL_SESSION_KEY in metrics
+    )
+    merged_metrics = _merge_state_metrics(app_key, metrics, allow_network=allow_network)
     body: dict[str, Any] = {
         "app": app_key,
         "page": page or "",
         "summary": summary or "",
-        "metrics": _merge_state_metrics(app_key, metrics),
+        "metrics": merged_metrics,
         "updated_at": _now_iso(),
     }
     uid = _cloud_user_id()
@@ -520,6 +553,7 @@ def save_current_state(
         json_body=body,
         prefer="resolution=merge-duplicates,return=minimal",
     )
+    remember_metrics_merge_cache(app_key, merged_metrics)
 
 
 def upsert_resume_item(

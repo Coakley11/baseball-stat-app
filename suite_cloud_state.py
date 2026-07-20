@@ -437,6 +437,7 @@ def save_cloud_full_session(
     *,
     page: str = "",
     summary: str = "",
+    skip_metrics_merge_read: bool = False,
 ) -> bool:
     """Persist full_session to Supabase. Returns True when cloud write succeeds."""
     if not state:
@@ -455,6 +456,7 @@ def save_cloud_full_session(
             page=page or "",
             summary=summary or "Last session",
             metrics={FULL_SESSION_KEY: copy.deepcopy(state)},
+            skip_metrics_merge_read=skip_metrics_merge_read,
         )
         invalidate_cloud_full_session_cache(app_id)
         return True

@@ -86,7 +86,9 @@ def lightweight_workspace_meta_check(st: Any, app_id: str) -> bool:
 
 def cloud_autosave_allowed(st: Any, app_id: str, *, save_reason: str = "") -> tuple[bool, str]:
     ss = st.session_state
-    if low_egress_mode(ss) and save_reason not in ("page_change", "manual", "reset", "shared_draft_join", "force"):
+    reason = str(save_reason or "autosave").strip() or "autosave"
+    # Low-egress only suppresses routine autosaves — explicit user actions still persist.
+    if low_egress_mode(ss) and reason in ("", "autosave"):
         return False, "low_egress_mode"
     try:
         from draft_room_context import is_multiplayer_draft_active
@@ -95,9 +97,9 @@ def cloud_autosave_allowed(st: Any, app_id: str, *, save_reason: str = "") -> tu
     if app_id == "baseball" and is_multiplayer_draft_active(ss):
         min_iv = MULTIPLAYER_CLOUD_AUTOSAVE_INTERVAL_SEC
         last = float(ss.get("_suite_last_cloud_autosave_ts") or 0)
-        if save_reason == "autosave" and time.time() - last < min_iv:
+        if reason == "autosave" and time.time() - last < min_iv:
             return False, "multiplayer_autosave_throttled"
-    if save_reason == "autosave":
+    if reason == "autosave":
         last = float(ss.get("_suite_last_cloud_autosave_ts") or 0)
         if time.time() - last < CLOUD_AUTOSAVE_MIN_INTERVAL_SEC:
             return False, "autosave_throttled"

@@ -318,11 +318,15 @@ def required_human_participant_rows(
     room: dict[str, Any],
     *,
     document: dict[str, Any] | None = None,
+    allow_network: bool = True,
 ) -> list[dict[str, Any]]:
     """One row per configured required human seat (not per visible participant).
 
     Denominator for ``Participants joined X of Y`` is always len(required teams).
     Open seats appear as Waiting even when the host's participant list is stale.
+
+    When ``allow_network`` is False (chat status line / scheduled refresh), never
+    call ``load_shared_room`` — use the provided document or empty placeholders.
     """
     try:
         from live_draft_team_ownership import (
@@ -334,7 +338,7 @@ def required_human_participant_rows(
         return []
 
     doc = document
-    if not isinstance(doc, dict):
+    if not isinstance(doc, dict) and allow_network:
         code = str(session.get("active_shared_draft_room_code") or "").strip().upper()
         if code:
             try:

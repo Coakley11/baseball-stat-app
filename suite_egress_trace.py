@@ -17,6 +17,7 @@ from typing import Any, Iterator
 
 _SOURCE: ContextVar[str] = ContextVar("suite_egress_source", default="unknown")
 _KIND: ContextVar[str] = ContextVar("suite_egress_kind", default="")
+_CALLER: ContextVar[str] = ContextVar("suite_egress_caller", default="")
 
 _PROCESS_TOTALS: dict[str, Any] = {
     "reads": 0,
@@ -42,6 +43,7 @@ class EgressEvent:
     cached: bool = False
     path: str = ""
     kind: str = ""
+    caller: str = ""
 
 
 @dataclass
@@ -53,6 +55,7 @@ class EgressRunSummary:
     by_table: dict[str, dict[str, int]] = field(default_factory=dict)
     by_source: dict[str, dict[str, int]] = field(default_factory=dict)
     by_kind: dict[str, int] = field(default_factory=dict)
+    full_room_by_caller: dict[str, int] = field(default_factory=dict)
     events: list[EgressEvent] = field(default_factory=list)
     full_room_loads: int = 0
     forced_loads: int = 0
@@ -74,6 +77,7 @@ class EgressRunSummary:
             "by_table": self.by_table,
             "by_source": self.by_source,
             "by_kind": self.by_kind,
+            "full_room_by_caller": self.full_room_by_caller,
             "event_count": len(self.events),
             "full_room_loads": self.full_room_loads,
             "forced_loads": self.forced_loads,
@@ -108,7 +112,27 @@ def set_egress_source(source: str) -> None:
 
 def note_egress_kind(kind: str) -> None:
     """Tag the next request(s) in this context (full_room / chat_sidecar / head / poll)."""
-    _KIND.set(str(kind or "").strip())
+    kind_s = str(kind or "").strip()
+    _KIND.set(kind_s)
+    if kind_s == "full_room":
+        caller = _SOURCE.get() or "unknown"
+        try:
+            import inspect
+
+            for frame in inspect.stack()[1:8]:
+                mod = str(frame.filename or "").replace("\\", "/")
+                if "suite_egress_trace" in mod or "draft_room_supabase_store" in mod:
+                    continue
+                if "site-packages" in mod:
+                    continue
+                base = mod.rsplit("/", 1)[-1]
+                caller = f"{base}:{frame.function}"
+                break
+        except Exception:
+            pass
+        _CALLER.set(caller)
+    else:
+        _CALLER.set("")
 
 
 @contextmanager
@@ -144,6 +168,7 @@ def record_egress(
     table = _table_from_path(path)
     source = _SOURCE.get()
     kind = str(_KIND.get() or "").strip()
+    caller = str(_CALLER.get() or "").strip()
     event = EgressEvent(
         method=method.upper(),
         table=table,
@@ -153,6 +178,7 @@ def record_egress(
         cached=cached,
         path=path,
         kind=kind,
+        caller=caller,
     )
     summary = _session_bucket()
     if summary is not None:
@@ -190,6 +216,11 @@ def _apply_event(summary: EgressRunSummary, event: EgressEvent) -> None:
         summary.by_kind[kind] = int(summary.by_kind.get(kind) or 0) + (0 if event.cached else 1)
         if kind == "full_room":
             summary.full_room_loads += 0 if event.cached else 1
+            if not event.cached:
+                label = event.caller or event.source or "unknown"
+                summary.full_room_by_caller[label] = int(
+                    summary.full_room_by_caller.get(label) or 0
+                ) + 1
         elif kind == "chat_sidecar":
             summary.chat_loads += 0 if event.cached else 1
         elif kind == "head":
@@ -276,6 +307,12 @@ def format_egress_summary_markdown(summary: dict[str, Any] | None = None) -> str
     if by_kind:
         lines.append("")
         lines.append("**By kind:** " + ", ".join(f"{k}={v}" for k, v in sorted(by_kind.items())))
+    full_callers = data.get("full_room_by_caller") or {}
+    if full_callers:
+        lines.append("")
+        lines.append("**Full-room callers:**")
+        for caller, count in sorted(full_callers.items(), key=lambda kv: -kv[1]):
+            lines.append(f"- `{caller}`: {count}")
     return "\n".join(lines)
 
 

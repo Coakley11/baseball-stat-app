@@ -21,6 +21,7 @@ from draft_room_shared_state import (
     shared_document_room_blob,
 )
 from live_draft_chat import (
+    CHAT_STATUS_DOC_KEY,
     CHAT_VISIBLE_LIMIT,
     append_live_draft_chat_message,
     load_live_draft_chat,
@@ -257,8 +258,8 @@ class ParticipantDedupeTests(unittest.TestCase):
         rows = required_human_participant_rows(session, room, document=doc)
         self.assertEqual(len(rows), 2)
         session["live_draft_room"] = room
-        with mock.patch("draft_room_shared_state.load_shared_room", return_value=doc):
-            line = format_chat_participant_status_line(session)
+        session[CHAT_STATUS_DOC_KEY] = doc
+        line = format_chat_participant_status_line(session)
         self.assertEqual(line.count("daniel.cohen11"), 1)
         self.assertEqual(line.count("coakley11"), 1)
         self.assertNotIn(" ·  · ", line)

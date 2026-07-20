@@ -156,7 +156,7 @@ class SupabaseSharedRoomStore:
         }
 
     def load_chat_sidecar(self, room_code: str) -> dict[str, Any] | None:
-        """Fetch chat + revision only — avoids downloading full shared_room_json."""
+        """Fetch chat + minimal membership — avoids downloading full shared_room_json."""
         code = str(room_code or "").strip().upper()
         if not code:
             return None
@@ -173,12 +173,18 @@ class SupabaseSharedRoomStore:
             if note_egress_kind:
                 note_egress_kind("chat_sidecar")
             try:
-                # PostgREST JSON path projection — chat object only, not the full room blob.
+                # PostgREST JSON path projection — chat + membership only, not the full room blob.
                 rows = _request(
                     "GET",
                     _TABLE,
                     params={
-                        "select": "room_code,revision,status,updated_at,chat:shared_room_json->chat",
+                        "select": (
+                            "room_code,revision,status,updated_at,host_user_id,"
+                            "chat:shared_room_json->chat,"
+                            "joined_participants:shared_room_json->joined_participants,"
+                            "participants:shared_room_json->participants,"
+                            "host_participant_id:shared_room_json->host_participant_id"
+                        ),
                         "room_code": f"eq.{code}",
                         "limit": "1",
                     },
@@ -192,11 +198,23 @@ class SupabaseSharedRoomStore:
         chat = row.get("chat")
         if not isinstance(chat, dict):
             chat = {}
+        joined = row.get("joined_participants")
+        if not isinstance(joined, dict):
+            joined = {}
+        participants = row.get("participants")
+        if not isinstance(participants, dict):
+            participants = {}
         return {
             "room_code": str(row.get("room_code") or code).upper(),
             "revision": int(row.get("revision") or 0),
             "status": str(row.get("status") or ""),
             "updated_at": str(row.get("updated_at") or ""),
+            "host_user_id": str(row.get("host_user_id") or ""),
+            "host_participant_id": str(
+                row.get("host_participant_id") or ""
+            ),
+            "joined_participants": copy.deepcopy(joined),
+            "participants": copy.deepcopy(participants),
             "chat": copy.deepcopy(chat),
             "_egress_kind": "chat_sidecar",
         }
@@ -321,7 +339,21 @@ class SupabaseSharedRoomStore:
         if expected_revision is not None and current_rev != int(expected_revision):
             return False, self.load(code)
 
-        current = self.load(code)
+        # Callers (chat/presence) already hold a just-loaded full document. Reuse it
+        # when it looks complete so routine writes do not pay a second full-room GET.
+        looks_complete = isinstance(document, dict) and (
+            isinstance(document.get("room"), dict)
+            or isinstance(document.get("participants"), dict)
+            or "chat" in document
+            or "joined_participants" in document
+        )
+        if looks_complete:
+            current = document
+        else:
+            current = self.load(code)
+            if not isinstance(current, dict):
+                return False, None
+
         payload = sanitize_shared_room_document(preserve_shared_room_sidecars(document, current))
         row = document_to_row(payload)
         try:
@@ -337,7 +369,8 @@ class SupabaseSharedRoomStore:
                     "revision": f"eq.{current_rev}",
                 },
                 json_body=patch_body,
-                prefer="return=representation",
+                # Frequent chat/presence writers do not need the returned row body.
+                prefer="return=minimal",
             )
         except SharedRoomSupabaseError:
             refreshed = self.load(code)
@@ -346,9 +379,12 @@ class SupabaseSharedRoomStore:
             refreshed = self.load(code)
             return False, refreshed
 
+        # Minimal responses are empty on success — trust the submitted payload.
+        if rows is None or rows == [] or (isinstance(rows, list) and not rows):
+            return True, payload
         if isinstance(rows, list) and rows and isinstance(rows[0], dict):
             saved = row_to_document(rows[0])
-            return True, saved
+            return True, saved or payload
 
         refreshed = self.load(code)
         return False, refreshed

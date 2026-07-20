@@ -64,33 +64,35 @@ class SupabaseSharedRoomStoreTests(unittest.TestCase):
     def test_save_if_revision_conflict_returns_current(self) -> None:
         store = SupabaseSharedRoomStore()
         doc = _sample_document(revision=2)
-        current_row = document_to_row(_sample_document(revision=1))
+        current_row = document_to_row(_sample_document(revision=2))
 
         with patch("draft_room_supabase_store._request") as mock_request:
             mock_request.side_effect = [
-                [current_row],  # load before save
-                [],  # PATCH no rows -> conflict
-                [current_row],  # reload
+                [{"room_code": "ABC123", "revision": 2, "status": "", "updated_at": ""}],  # head
+                [current_row],  # full load on conflict
             ]
             ok, saved = store.save_if_revision(doc, expected_revision=1)
         self.assertFalse(ok)
         self.assertIsNotNone(saved)
         assert saved is not None
-        self.assertEqual(saved["revision"], 1)
+        self.assertEqual(saved["revision"], 2)
 
     def test_save_if_revision_success(self) -> None:
         store = SupabaseSharedRoomStore()
-        doc = _sample_document(revision=2)
-        saved_row = document_to_row(doc)
+        doc = _sample_document(revision=1)
+        doc["chat"] = {"messages": [], "chat_revision": 1}
 
         with patch("draft_room_supabase_store._request") as mock_request:
             mock_request.side_effect = [
-                [document_to_row(_sample_document(revision=1))],
-                [saved_row],
+                [{"room_code": "ABC123", "revision": 1, "status": "", "updated_at": ""}],  # head
+                [],  # PATCH return=minimal
             ]
             ok, saved = store.save_if_revision(doc, expected_revision=1)
         self.assertTrue(ok)
-        self.assertEqual(saved["revision"], 2)
+        self.assertIsNotNone(saved)
+        assert saved is not None
+        self.assertEqual(saved["revision"], 1)
+        self.assertEqual(mock_request.call_args_list[1].kwargs.get("prefer"), "return=minimal")
 
     def test_exists_and_load(self) -> None:
         store = SupabaseSharedRoomStore()
