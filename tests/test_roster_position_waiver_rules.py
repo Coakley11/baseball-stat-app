@@ -131,9 +131,10 @@ class SimulatorUploadedIsolationTests(unittest.TestCase):
         from pathlib import Path
 
         src = Path("streamlit_app.py").read_text(encoding="utf-8")
-        self.assertIn("validate_live_draft_setup(", src)
+        self.assertIn("evaluate_live_draft_start_setup(", src)
         start = src.find("def simulate_draft_lab")
         lab_region = src[start : start + 2500]
+        self.assertNotIn("evaluate_live_draft_start_setup", lab_region)
         self.assertNotIn("validate_live_draft_setup", lab_region)
 
     def test_uploaded_draft_does_not_use_live_draft_setup_validation(self) -> None:
