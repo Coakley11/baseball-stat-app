@@ -616,6 +616,12 @@ def active_participant_team(session: dict[str, Any]) -> str:
                     session[ACTIVE_PARTICIPANT_ID_KEY] = pid
                     session[ACTIVE_PARTICIPANT_TEAM_KEY] = scoped
                     return scoped
+                # Session cache before full-room fetch (egress: avoid shared_room_json on polls).
+                cached_team = str(session.get(ACTIVE_PARTICIPANT_TEAM_KEY) or "").strip()
+                cached_pid = str(session.get(ACTIVE_PARTICIPANT_ID_KEY) or "").strip()
+                if cached_team and (not cached_pid or cached_pid == pid):
+                    session[ACTIVE_PARTICIPANT_ID_KEY] = pid
+                    return cached_team
                 try:
                     from draft_room_shared_state import load_shared_room
 

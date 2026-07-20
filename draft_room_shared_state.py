@@ -46,6 +46,36 @@ _PRIVATE_DOCUMENT_KEYS = frozenset(
     }
 )
 
+# Never persist reconstructible / heavy scoring payloads on the shared wire.
+_SHARED_ROOM_HEAVY_KEYS = frozenset(
+    {
+        "pool",
+        "pool_records",
+        "pool_columns",
+        "recommendations",
+        "top_rec",
+        "best_avail",
+        "pos_fit",
+        "value_sleep",
+        "_live_draft_rec_cache",
+        "available_df",
+        "player_photos",
+        "photos",
+        "headshots",
+    }
+)
+
+
+def strip_shared_room_heavy_payload(room_blob: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep only canonical shared draft state — drop pools and derived tables."""
+    if not isinstance(room_blob, dict):
+        return {}
+    out = dict(room_blob)
+    for key in _SHARED_ROOM_HEAVY_KEYS:
+        out.pop(key, None)
+    out.pop("pool", None)
+    return out
+
 _PARTICIPANT_PUBLIC_KEYS = frozenset(
     {
         "assigned_team",
@@ -113,9 +143,13 @@ def sanitize_shared_room_document(document: dict[str, Any]) -> dict[str, Any]:
             from live_draft_state import is_runtime_room, room_to_persist_dict
 
             if is_runtime_room(room):
-                out["room"] = room_to_persist_dict(room, compact_pool=True)
+                out["room"] = strip_shared_room_heavy_payload(
+                    room_to_persist_dict(room, compact_pool=True)
+                )
+            else:
+                out["room"] = strip_shared_room_heavy_payload(room)
         except ImportError:
-            pass
+            out["room"] = strip_shared_room_heavy_payload(room)
     try:
         from draft_room_json_sanitize import sanitize_shared_room_json
 
@@ -148,7 +182,7 @@ def shared_room_document(
 ) -> dict[str, Any]:
     """Wrap canonical live draft blob with multiplayer metadata."""
     blob = room_to_persist_dict(live_room, compact_pool=True) if live_room.get("pool") is not None else copy.deepcopy(live_room)
-    blob.pop("pool", None)
+    blob = strip_shared_room_heavy_payload(blob)
     # Guarantee team list on the shared document so guest open-team lookup cannot
     # diverge from the host session lobby (empty document.room.teams → "No teams").
     try:
@@ -223,8 +257,12 @@ def bump_revision(document: dict[str, Any], *, live_room: dict[str, Any] | None 
     out["revision"] = int(out.get("revision") or 0) + 1
     out["updated_at"] = _utc_now_iso()
     if live_room is not None:
-        out["room"] = room_to_persist_dict(live_room, compact_pool=True)
+        out["room"] = strip_shared_room_heavy_payload(
+            room_to_persist_dict(live_room, compact_pool=True)
+        )
         out["status"] = str(live_room.get("status") or out.get("status") or "")
+    elif isinstance(out.get("room"), dict):
+        out["room"] = strip_shared_room_heavy_payload(out.get("room"))
     return out
 
 
@@ -379,6 +417,8 @@ class SharedRoomStore(Protocol):
 
     def load_head(self, room_code: str) -> dict[str, Any] | None: ...
 
+    def load_chat_sidecar(self, room_code: str) -> dict[str, Any] | None: ...
+
     def save(self, document: dict[str, Any]) -> dict[str, Any]: ...
 
     def save_if_revision(
@@ -484,6 +524,21 @@ class LocalFileSharedRoomStore:
                 head["current_pick_index"] = int(room.get("current_pick_index") or 0)
                 head["timer_deadline"] = room.get("timer_deadline")
         return head
+
+    def load_chat_sidecar(self, room_code: str) -> dict[str, Any] | None:
+        """Chat + revision metadata only — never a full shared_room_json download."""
+        doc = self.load(room_code)
+        if not isinstance(doc, dict):
+            return None
+        chat = doc.get("chat") if isinstance(doc.get("chat"), dict) else {}
+        return {
+            "room_code": str(doc.get("room_code") or room_code).upper(),
+            "revision": int(doc.get("revision") or 0),
+            "status": str(doc.get("status") or ""),
+            "updated_at": str(doc.get("updated_at") or ""),
+            "chat": copy.deepcopy(chat),
+            "_egress_kind": "chat_sidecar",
+        }
 
     def save(self, document: dict[str, Any]) -> dict[str, Any]:
         code = str(document.get("room_code") or "").strip().upper()
@@ -709,11 +764,16 @@ def find_shared_room_document_by_draft_room_id(
 
 
 def _merge_runtime_pool(existing: dict[str, Any], runtime: dict[str, Any]) -> None:
-    """Keep richer scoring columns from the local pool when a compact shared sync is thinner."""
+    """Keep local scoring pool when shared docs omit pools; merge when both exist."""
     import pandas as pd
 
     existing_pool = existing.get("pool")
     incoming = runtime.get("pool")
+    # Egress hotfix: shared documents no longer carry pool_records — preserve local.
+    if incoming is None or (isinstance(incoming, pd.DataFrame) and incoming.empty):
+        if isinstance(existing_pool, pd.DataFrame) and not existing_pool.empty:
+            runtime["pool"] = existing_pool
+        return
     if not isinstance(incoming, pd.DataFrame) or incoming.empty:
         return
     if not isinstance(existing_pool, pd.DataFrame) or existing_pool.empty:

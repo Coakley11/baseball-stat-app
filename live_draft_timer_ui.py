@@ -173,8 +173,9 @@ def _sync_room_on_timer_tick(session: dict[str, Any], room: dict[str, Any]) -> t
         if is_multiplayer_draft_active(session):
             now = time.time()
             last = float(session.get("_live_draft_timer_poll_ts") or 0)
-            interval = min(1.0, float(shared_draft_poll_interval_sec(session)))
-            # At expiration, poll every tick so non-hosts converge immediately.
+            interval = float(shared_draft_poll_interval_sec(session))
+            # At expiration, poll more often — but never invent a second owner when the
+            # dedicated poll fragment is active (head-first, no force full-doc).
             try:
                 expired = bool(
                     live_draft_timer_expired_for_pick(room)
@@ -182,17 +183,22 @@ def _sync_room_on_timer_tick(session: dict[str, Any], room: dict[str, Any]) -> t
                 )
             except Exception:
                 expired = False
-            if expired:
-                interval = 0.5
-            # Prefer the dedicated poll fragment — but still force a poll at zero
-            # so guests do not wait 20–30s on a stale pick/deadline.
-            if session.get("_live_draft_poll_fragment_active") and not expired:
+            if expired and not session.get("_live_draft_poll_fragment_active"):
+                try:
+                    from suite_egress_policy import low_egress_mode
+
+                    interval = min(interval, 2.0 if low_egress_mode(session) else 1.0)
+                except Exception:
+                    interval = min(interval, 1.0)
+            # Prefer the dedicated poll fragment — do not schedule overlapping room polls.
+            if session.get("_live_draft_poll_fragment_active"):
                 live_room = sync_live_draft_timer_state(session, room)
                 return live_room, False
             if now - last >= interval:
                 session["_live_draft_timer_poll_ts"] = now
                 reset_shared_draft_sync_gate(session)
-                changed = bool(poll_shared_draft_room(session, force=bool(expired)))
+                # Head-first (force=False). Full doc only when revision advances.
+                changed = bool(poll_shared_draft_room(session, force=False))
     except ImportError:
         pass
     live_room = sync_live_draft_timer_state(session, room)

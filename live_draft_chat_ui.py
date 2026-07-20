@@ -460,8 +460,9 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
 
 
 def _chat_body(st: Any, session: dict[str, Any], *, form_key: str = "live_draft_chat_form") -> None:
+    # One sidecar fetch updates the cache; paint from cache (no second forced full load).
     refresh_live_draft_chat_if_newer(session)
-    chat = load_live_draft_chat(session, force=True)
+    chat = load_live_draft_chat(session, force=False)
     all_messages = list(chat.get("messages") or [])
     me = _current_participant_id(session)
     show_earlier = bool(session.get(CHAT_SHOW_EARLIER_KEY))

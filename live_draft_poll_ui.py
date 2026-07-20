@@ -114,6 +114,12 @@ def _run_shared_poll(session: dict[str, Any]) -> bool:
         from draft_room_context import poll_shared_draft_room, reset_shared_draft_sync_gate
     except ImportError:
         return False
+    try:
+        from suite_egress_trace import record_poll_call
+
+        record_poll_call()
+    except ImportError:
+        pass
     reset_shared_draft_sync_gate(session)
     return bool(poll_shared_draft_room(session))
 
@@ -146,16 +152,23 @@ def render_live_draft_poll_fragment(st: Any, session: dict[str, Any]) -> None:
         record_live_poll_diagnostics(session, live_poll_enabled=False)
         return
 
-    # Prefer ~1s during active drafts so guests converge within the 1–2s budget.
-    interval_sec = min(1.0, float(shared_draft_poll_interval_sec(session)))
+    # Honor suite_egress_policy (2.5s normal / ~8s low-egress). Never cap with min(1.0, …).
+    interval_sec = float(shared_draft_poll_interval_sec(session))
+    # Near deadline: tighten toward the policy floor, but never below 1s in low-egress.
     try:
+        from suite_egress_policy import low_egress_mode
+
         room = session.get("live_draft_room")
         if isinstance(room, dict) and str(room.get("status") or "") == "in_progress":
             dl = room.get("timer_deadline")
             if dl is not None and float(dl) <= time.time() + 2.0:
-                interval_sec = 0.5
+                if low_egress_mode(session):
+                    interval_sec = min(interval_sec, 2.0)
+                else:
+                    interval_sec = min(interval_sec, 1.0)
     except Exception:
         pass
+    interval_sec = max(1.0, float(interval_sec))
     record_live_poll_diagnostics(
         session,
         live_poll_enabled=True,

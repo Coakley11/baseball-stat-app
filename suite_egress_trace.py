@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 _SOURCE: ContextVar[str] = ContextVar("suite_egress_source", default="unknown")
+_KIND: ContextVar[str] = ContextVar("suite_egress_kind", default="")
 
 _PROCESS_TOTALS: dict[str, Any] = {
     "reads": 0,
@@ -23,6 +24,11 @@ _PROCESS_TOTALS: dict[str, Any] = {
     "bytes_in": 0,
     "bytes_out": 0,
     "by_table": defaultdict(lambda: {"reads": 0, "writes": 0, "bytes_in": 0}),
+    "full_room_loads": 0,
+    "forced_loads": 0,
+    "chat_loads": 0,
+    "head_loads": 0,
+    "poll_calls": 0,
 }
 
 
@@ -35,6 +41,7 @@ class EgressEvent:
     source: str
     cached: bool = False
     path: str = ""
+    kind: str = ""
 
 
 @dataclass
@@ -45,9 +52,20 @@ class EgressRunSummary:
     bytes_out: int = 0
     by_table: dict[str, dict[str, int]] = field(default_factory=dict)
     by_source: dict[str, dict[str, int]] = field(default_factory=dict)
+    by_kind: dict[str, int] = field(default_factory=dict)
     events: list[EgressEvent] = field(default_factory=list)
+    full_room_loads: int = 0
+    forced_loads: int = 0
+    chat_loads: int = 0
+    head_loads: int = 0
+    poll_calls: int = 0
+    poll_window_start: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
+        import time
+
+        now = time.time()
+        window = max(1.0, now - float(self.poll_window_start or now))
         return {
             "reads": self.reads,
             "writes": self.writes,
@@ -55,7 +73,14 @@ class EgressRunSummary:
             "bytes_out": self.bytes_out,
             "by_table": self.by_table,
             "by_source": self.by_source,
+            "by_kind": self.by_kind,
             "event_count": len(self.events),
+            "full_room_loads": self.full_room_loads,
+            "forced_loads": self.forced_loads,
+            "chat_loads": self.chat_loads,
+            "head_loads": self.head_loads,
+            "poll_calls": self.poll_calls,
+            "poll_calls_per_minute": round(self.poll_calls * 60.0 / window, 2),
         }
 
 
@@ -81,6 +106,11 @@ def set_egress_source(source: str) -> None:
     _SOURCE.set(str(source or "unknown").strip() or "unknown")
 
 
+def note_egress_kind(kind: str) -> None:
+    """Tag the next request(s) in this context (full_room / chat_sidecar / head / poll)."""
+    _KIND.set(str(kind or "").strip())
+
+
 @contextmanager
 def egress_source(source: str) -> Iterator[None]:
     token = _SOURCE.set(str(source or "unknown").strip() or "unknown")
@@ -88,6 +118,19 @@ def egress_source(source: str) -> Iterator[None]:
         yield
     finally:
         _SOURCE.reset(token)
+
+
+def record_poll_call() -> None:
+    """Count scheduled shared-room poll attempts (admin egress diagnostics)."""
+    import time
+
+    summary = _session_bucket()
+    if summary is None:
+        _PROCESS_TOTALS["poll_calls"] = int(_PROCESS_TOTALS.get("poll_calls") or 0) + 1
+        return
+    if not summary.poll_window_start:
+        summary.poll_window_start = time.time()
+    summary.poll_calls += 1
 
 
 def record_egress(
@@ -100,6 +143,7 @@ def record_egress(
 ) -> None:
     table = _table_from_path(path)
     source = _SOURCE.get()
+    kind = str(_KIND.get() or "").strip()
     event = EgressEvent(
         method=method.upper(),
         table=table,
@@ -108,6 +152,7 @@ def record_egress(
         source=source,
         cached=cached,
         path=path,
+        kind=kind,
     )
     summary = _session_bucket()
     if summary is not None:
@@ -140,6 +185,17 @@ def _apply_event(summary: EgressRunSummary, event: EgressEvent) -> None:
         src["bytes_in"] += event.bytes_in
     summary.bytes_out += event.bytes_out
     row["bytes_out"] += event.bytes_out
+    kind = str(event.kind or "").strip()
+    if kind:
+        summary.by_kind[kind] = int(summary.by_kind.get(kind) or 0) + (0 if event.cached else 1)
+        if kind == "full_room":
+            summary.full_room_loads += 0 if event.cached else 1
+        elif kind == "chat_sidecar":
+            summary.chat_loads += 0 if event.cached else 1
+        elif kind == "head":
+            summary.head_loads += 0 if event.cached else 1
+        elif kind == "forced":
+            summary.forced_loads += 0 if event.cached else 1
 
 
 def _apply_process_event(event: EgressEvent) -> None:
@@ -153,6 +209,13 @@ def _apply_process_event(event: EgressEvent) -> None:
     if not event.cached:
         _PROCESS_TOTALS["bytes_in"] += event.bytes_in
         bucket["bytes_in"] += event.bytes_in
+    kind = str(event.kind or "").strip()
+    if kind == "full_room" and not event.cached:
+        _PROCESS_TOTALS["full_room_loads"] = int(_PROCESS_TOTALS.get("full_room_loads") or 0) + 1
+    elif kind == "chat_sidecar" and not event.cached:
+        _PROCESS_TOTALS["chat_loads"] = int(_PROCESS_TOTALS.get("chat_loads") or 0) + 1
+    elif kind == "head" and not event.cached:
+        _PROCESS_TOTALS["head_loads"] = int(_PROCESS_TOTALS.get("head_loads") or 0) + 1
 
 
 def get_run_egress_summary() -> dict[str, Any]:
@@ -165,6 +228,10 @@ def get_run_egress_summary() -> dict[str, Any]:
         "bytes_in": _PROCESS_TOTALS["bytes_in"],
         "bytes_out": _PROCESS_TOTALS["bytes_out"],
         "by_table": dict(_PROCESS_TOTALS["by_table"]),
+        "full_room_loads": _PROCESS_TOTALS.get("full_room_loads", 0),
+        "chat_loads": _PROCESS_TOTALS.get("chat_loads", 0),
+        "head_loads": _PROCESS_TOTALS.get("head_loads", 0),
+        "poll_calls": _PROCESS_TOTALS.get("poll_calls", 0),
     }
 
 
@@ -182,7 +249,9 @@ def format_egress_summary_markdown(summary: dict[str, Any] | None = None) -> str
     lines = [
         f"**Supabase egress (this session run):** reads={data.get('reads', 0)}, "
         f"writes={data.get('writes', 0)}, "
-        f"download≈{ _human_bytes(int(data.get('bytes_in') or 0))}",
+        f"download≈{_human_bytes(int(data.get('bytes_in') or 0))}",
+        f"full_room={data.get('full_room_loads', 0)}, chat={data.get('chat_loads', 0)}, "
+        f"head={data.get('head_loads', 0)}, poll/min≈{data.get('poll_calls_per_minute', '—')}",
     ]
     by_table = data.get("by_table") or {}
     if by_table:
@@ -203,6 +272,10 @@ def format_egress_summary_markdown(summary: dict[str, Any] | None = None) -> str
                 f"- `{source}`: reads={row.get('reads', 0)}, "
                 f"download≈{_human_bytes(int(row.get('bytes_in') or 0))}"
             )
+    by_kind = data.get("by_kind") or {}
+    if by_kind:
+        lines.append("")
+        lines.append("**By kind:** " + ", ".join(f"{k}={v}" for k, v in sorted(by_kind.items())))
     return "\n".join(lines)
 
 

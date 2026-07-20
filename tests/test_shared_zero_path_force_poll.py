@@ -10,11 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestSharedZeroPathArity(unittest.TestCase):
-    def test_on_clock_calls_multiparty_with_session_only(self) -> None:
+    def test_on_clock_does_not_dual_expire_or_force_full_poll(self) -> None:
         src = (ROOT / "live_draft_on_clock_ui.py").read_text(encoding="utf-8")
-        self.assertIn("multiparty_may_run_autopick(session)", src)
         self.assertNotIn("multiparty_may_run_autopick(session, tick_room)", src)
         self.assertNotIn('expire_pick_and_advance(session, source="on_clock_banner_zero")', src)
+        self.assertNotIn("poll_shared_draft_room(session, force=True)", src)
 
     def test_timer_ui_calls_multiparty_with_session_only(self) -> None:
         src = (ROOT / "live_draft_timer_ui.py").read_text(encoding="utf-8")

@@ -115,6 +115,92 @@ class SupabaseSharedRoomStore:
         doc = result.get("document")
         return doc if isinstance(doc, dict) else None
 
+    def load_head(self, room_code: str) -> dict[str, Any] | None:
+        """Lightweight revision probe — no shared_room_json download."""
+        code = str(room_code or "").strip().upper()
+        if not code:
+            return None
+        try:
+            from suite_egress_trace import egress_source, note_egress_kind
+
+            ctx = egress_source("shared_room_head")
+        except ImportError:
+            from contextlib import nullcontext
+
+            ctx = nullcontext()
+            note_egress_kind = None  # type: ignore[assignment]
+        with ctx:
+            if note_egress_kind:
+                note_egress_kind("head")
+            try:
+                rows = _request(
+                    "GET",
+                    _TABLE,
+                    params={
+                        "select": "room_code,revision,status,updated_at",
+                        "room_code": f"eq.{code}",
+                        "limit": "1",
+                    },
+                    prefer="return=representation",
+                )
+            except RuntimeError:
+                return None
+        if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+            return None
+        row = rows[0]
+        return {
+            "room_code": str(row.get("room_code") or code).upper(),
+            "revision": int(row.get("revision") or 1),
+            "status": str(row.get("status") or ""),
+            "updated_at": str(row.get("updated_at") or ""),
+        }
+
+    def load_chat_sidecar(self, room_code: str) -> dict[str, Any] | None:
+        """Fetch chat + revision only — avoids downloading full shared_room_json."""
+        code = str(room_code or "").strip().upper()
+        if not code:
+            return None
+        try:
+            from suite_egress_trace import egress_source, note_egress_kind
+
+            ctx = egress_source("shared_room_chat")
+        except ImportError:
+            from contextlib import nullcontext
+
+            ctx = nullcontext()
+            note_egress_kind = None  # type: ignore[assignment]
+        with ctx:
+            if note_egress_kind:
+                note_egress_kind("chat_sidecar")
+            try:
+                # PostgREST JSON path projection — chat object only, not the full room blob.
+                rows = _request(
+                    "GET",
+                    _TABLE,
+                    params={
+                        "select": "room_code,revision,status,updated_at,chat:shared_room_json->chat",
+                        "room_code": f"eq.{code}",
+                        "limit": "1",
+                    },
+                    prefer="return=representation",
+                )
+            except RuntimeError:
+                return None
+        if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+            return None
+        row = rows[0]
+        chat = row.get("chat")
+        if not isinstance(chat, dict):
+            chat = {}
+        return {
+            "room_code": str(row.get("room_code") or code).upper(),
+            "revision": int(row.get("revision") or 0),
+            "status": str(row.get("status") or ""),
+            "updated_at": str(row.get("updated_at") or ""),
+            "chat": copy.deepcopy(chat),
+            "_egress_kind": "chat_sidecar",
+        }
+
     def load_with_diagnostics(self, room_code: str) -> dict[str, Any]:
         code = str(room_code or "").strip().upper()
         if not code:
@@ -127,25 +213,37 @@ class SupabaseSharedRoomStore:
                 "room_code_queried": "",
             }
         try:
-            rows = _request(
-                "GET",
-                _TABLE,
-                params={
-                    "select": "room_code,host_user_id,shared_room_json,revision,status,created_at,updated_at",
-                    "room_code": f"eq.{code}",
-                    "limit": "1",
-                },
-                prefer="return=representation",
-            )
-        except RuntimeError as exc:
-            return {
-                "found": False,
-                "document": None,
-                "reason": "query_error",
-                "query_error": str(exc),
-                "backend": "supabase",
-                "room_code_queried": code,
-            }
+            from suite_egress_trace import egress_source, note_egress_kind
+
+            ctx = egress_source("shared_room_full")
+        except ImportError:
+            from contextlib import nullcontext
+
+            ctx = nullcontext()
+            note_egress_kind = None  # type: ignore[assignment]
+        with ctx:
+            if note_egress_kind:
+                note_egress_kind("full_room")
+            try:
+                rows = _request(
+                    "GET",
+                    _TABLE,
+                    params={
+                        "select": "room_code,host_user_id,shared_room_json,revision,status,created_at,updated_at",
+                        "room_code": f"eq.{code}",
+                        "limit": "1",
+                    },
+                    prefer="return=representation",
+                )
+            except RuntimeError as exc:
+                return {
+                    "found": False,
+                    "document": None,
+                    "reason": "query_error",
+                    "query_error": str(exc),
+                    "backend": "supabase",
+                    "room_code_queried": code,
+                }
         if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
             return {
                 "found": False,
@@ -172,34 +270,6 @@ class SupabaseSharedRoomStore:
             "query_error": None,
             "backend": "supabase",
             "room_code_queried": code,
-        }
-
-    def load_head(self, room_code: str) -> dict[str, Any] | None:
-        """Lightweight revision probe — no shared_room_json download."""
-        code = str(room_code or "").strip().upper()
-        if not code:
-            return None
-        try:
-            rows = _request(
-                "GET",
-                _TABLE,
-                params={
-                    "select": "room_code,revision,status,updated_at",
-                    "room_code": f"eq.{code}",
-                    "limit": "1",
-                },
-                prefer="return=representation",
-            )
-        except RuntimeError:
-            return None
-        if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
-            return None
-        row = rows[0]
-        return {
-            "room_code": str(row.get("room_code") or code).upper(),
-            "revision": int(row.get("revision") or 1),
-            "status": str(row.get("status") or ""),
-            "updated_at": str(row.get("updated_at") or ""),
         }
 
     def save(self, document: dict[str, Any]) -> dict[str, Any]:

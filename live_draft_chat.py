@@ -336,10 +336,21 @@ def _resolve_author(session: dict[str, Any]) -> tuple[str, str, str]:
     display_name = "Manager"
     team = ""
     try:
-        from draft_room_participant_state import active_participant_team, resolve_participant_id
+        from draft_room_participant_state import (
+            ACTIVE_PARTICIPANT_TEAM_KEY,
+            active_participant_team,
+            resolve_participant_id,
+        )
 
         participant_id = str(resolve_participant_id(session) or "").strip()
-        team = str(active_participant_team(session) or "").strip()
+        # Prefer session-cached team so chat polls never pull full shared_room_json.
+        team = str(
+            session.get(ACTIVE_PARTICIPANT_TEAM_KEY)
+            or session.get("room_your_team")
+            or ""
+        ).strip()
+        if not team:
+            team = str(active_participant_team(session) or "").strip()
     except ImportError:
         pass
     try:
@@ -405,8 +416,13 @@ def chat_room_title(session: dict[str, Any]) -> str:
 
 
 def _viewer_participant_id(session: dict[str, Any]) -> str:
-    pid, _, _ = _resolve_author(session)
-    return pid
+    """Participant id only — must not load the full shared room (chat poll path)."""
+    try:
+        from draft_room_participant_state import resolve_participant_id
+
+        return str(resolve_participant_id(session) or "").strip()
+    except ImportError:
+        return str(session.get("draft_room_participant_id") or "").strip()
 
 
 def _chat_for_viewer(chat: dict[str, Any], participant_id: str) -> dict[str, Any]:
@@ -460,6 +476,36 @@ def mark_chat_seen(session: dict[str, Any], chat: dict[str, Any] | None = None) 
     ]
 
 
+def _load_chat_sidecar_document(session: dict[str, Any], code: str) -> dict[str, Any] | None:
+    """Load chat + revision only — never the full shared_room_json blob."""
+    try:
+        from draft_room_shared_state import get_shared_room_store
+    except ImportError:
+        return None
+    store = get_shared_room_store()
+    sidecar = None
+    if hasattr(store, "load_chat_sidecar"):
+        try:
+            sidecar = store.load_chat_sidecar(code)
+        except Exception:
+            sidecar = None
+    if isinstance(sidecar, dict):
+        return sidecar
+    # Fallback for older stores — still prefer not to invalidate soft cache.
+    try:
+        doc = store.load(code)
+    except Exception:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    return {
+        "room_code": code,
+        "revision": int(doc.get("revision") or 0),
+        "chat": doc.get("chat") if isinstance(doc.get("chat"), dict) else {},
+        "_egress_kind": "full_room_fallback",
+    }
+
+
 def load_live_draft_chat(
     session: dict[str, Any],
     *,
@@ -481,17 +527,9 @@ def load_live_draft_chat(
         and isinstance(cache.get("chat"), dict)
     ):
         return normalize_chat_payload(cache.get("chat"))
-    doc: dict[str, Any] | None = None
-    try:
-        from draft_room_shared_state import get_shared_room_store, invalidate_shared_room_document_cache
-
-        # Always read the authoritative shared store — never a per-user soft cache alone.
-        if force:
-            invalidate_shared_room_document_cache(session, code)
-        doc = get_shared_room_store().load(code)
-    except Exception:
-        doc = None
-    chat = normalize_chat_payload((doc or {}).get(CHAT_DOC_KEY))
+    sidecar = _load_chat_sidecar_document(session, code)
+    chat_raw = (sidecar or {}).get("chat") if isinstance(sidecar, dict) else None
+    chat = normalize_chat_payload(chat_raw)
     if scope and not chat.get("chat_scope"):
         chat["chat_scope"] = scope
     visible = _chat_for_viewer(chat, viewer)
@@ -505,38 +543,35 @@ def load_live_draft_chat(
 
 
 def refresh_live_draft_chat_if_newer(session: dict[str, Any]) -> bool:
-    """Pull chat from shared store. Returns True when visible messages changed."""
+    """Pull chat sidecar from shared store. Returns True when visible messages changed."""
     code = _active_room_code(session)
     if not code:
         return False
-    try:
-        from draft_room_shared_state import get_shared_room_store, invalidate_shared_room_document_cache
-
-        invalidate_shared_room_document_cache(session, code)
-        doc = get_shared_room_store().load(code)
-    except Exception:
-        return False
-    if not isinstance(doc, dict):
+    sidecar = _load_chat_sidecar_document(session, code)
+    if not isinstance(sidecar, dict):
         return False
     scope = canonical_chat_scope(session)
     viewer = _viewer_participant_id(session)
-    remote_full = normalize_chat_payload(doc.get(CHAT_DOC_KEY))
+    remote_full = normalize_chat_payload(sidecar.get(CHAT_DOC_KEY) or sidecar.get("chat"))
     if scope and not remote_full.get("chat_scope"):
         remote_full["chat_scope"] = scope
     remote = _chat_for_viewer(remote_full, viewer)
     local = normalize_chat_payload((session.get(CHAT_SESSION_CACHE_KEY) or {}).get("chat"))
-    if (
+    unchanged = (
         int(remote.get("chat_revision") or 0) == int(local.get("chat_revision") or 0)
         and remote.get("messages") == local.get("messages")
         and bool(remote.get("chat_disabled")) == bool(local.get("chat_disabled"))
-    ):
-        return False
+    )
+    # Always stamp cache after the sidecar GET so load_live_draft_chat(force=False)
+    # in the same refresh cycle does not issue a second Supabase read.
     session[CHAT_SESSION_CACHE_KEY] = {
         "room_code": code,
         "chat_scope": scope,
         "viewer_participant_id": viewer,
         "chat": copy.deepcopy(remote),
     }
+    if unchanged:
+        return False
     return True
 
 

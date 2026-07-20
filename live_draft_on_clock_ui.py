@@ -393,37 +393,26 @@ def render_live_on_clock_banner(
                             remaining = live_draft_display_seconds(tick_room)
                         session["_live_draft_solo_board_stale"] = True
                     else:
-                        # Shared: page/timer-bar owns expire CAS. Banner force-polls
-                        # so guests converge within ~1s — never invent a local pick.
-                        try:
-                            from live_draft_timer_authority import multiparty_may_run_autopick
+                        # Shared: poll fragment owns room sync. Banner never force-loads
+                        # the full shared_room_json on a schedule.
+                        if not session.get("_live_draft_poll_fragment_active"):
+                            try:
+                                from draft_room_context import (
+                                    poll_shared_draft_room,
+                                    reset_shared_draft_sync_gate,
+                                )
 
-                            # Signature is session-only; wrong arity used to TypeError
-                            # into the outer except and skip force-poll entirely.
-                            _ = bool(multiparty_may_run_autopick(session))
-                        except Exception as exc:
-                            session["_live_draft_on_clock_zero_diag"] = {
-                                "authority_check_error": f"{type(exc).__name__}: {exc}"[:160],
-                            }
-                        try:
-                            from draft_room_context import (
-                                poll_shared_draft_room,
-                                reset_shared_draft_sync_gate,
-                            )
-
-                            reset_shared_draft_sync_gate(session)
-                            changed = bool(poll_shared_draft_room(session, force=True))
-                            session["_live_draft_on_clock_zero_diag"] = {
-                                **dict(session.get("_live_draft_on_clock_zero_diag") or {}),
-                                "force_poll": True,
-                                "poll_changed": changed,
-                                "ts": time.time(),
-                            }
-                        except Exception as exc:
-                            session["_live_draft_on_clock_zero_diag"] = {
-                                **dict(session.get("_live_draft_on_clock_zero_diag") or {}),
-                                "force_poll_error": f"{type(exc).__name__}: {exc}"[:160],
-                            }
+                                reset_shared_draft_sync_gate(session)
+                                changed = bool(poll_shared_draft_room(session, force=False))
+                                session["_live_draft_on_clock_zero_diag"] = {
+                                    "force_poll": False,
+                                    "poll_changed": changed,
+                                    "ts": time.time(),
+                                }
+                            except Exception as exc:
+                                session["_live_draft_on_clock_zero_diag"] = {
+                                    "poll_error": f"{type(exc).__name__}: {exc}"[:160],
+                                }
                         tick_room = _resolve_live_room(session, tick_room)
                         try:
                             from shared_live_draft_snapshot import build_shared_live_draft_snapshot
