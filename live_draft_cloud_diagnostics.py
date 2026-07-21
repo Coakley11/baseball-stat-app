@@ -19,18 +19,27 @@ MAX_LOG = 120
 
 
 def _qp_get(st: Any, name: str) -> str:
+    raw = None
     try:
         raw = getattr(st, "query_params", None)
-        if raw is None:
-            return ""
-        val = raw.get(name)
+        if raw is not None:
+            val = raw.get(name)
+            if val is not None:
+                if isinstance(val, list):
+                    return str(val[0] or "").strip()
+                return str(val).strip()
     except Exception:
+        pass
+    try:
+        legacy = st.experimental_get_query_params()
+        raw = legacy.get(name)
+    except Exception:
+        raw = None
+    if raw is None:
         return ""
-    if val is None:
-        return ""
-    if isinstance(val, list):
-        return str(val[0] or "").strip()
-    return str(val).strip()
+    if isinstance(raw, list):
+        return str(raw[0] or "").strip()
+    return str(raw).strip()
 
 
 def _qp_flag(st: Any, name: str) -> bool:
@@ -94,6 +103,13 @@ def _admin_ok(st: Any | None = None, session: dict[str, Any] | None = None) -> b
             ss = getattr(st, "session_state", None)
         except Exception:
             ss = None
+    if st is not None:
+        if _qp_flag(st, "ld_accept") and (
+            _qp_flag(st, "ld_canary") or _streamlit_cloud_runtime()
+        ):
+            if isinstance(ss, dict):
+                bootstrap_cloud_accept_mode(st, ss)
+            return True
     if isinstance(ss, dict) and cloud_accept_active(ss):
         return True
     try:
