@@ -122,10 +122,12 @@ class TestSoloExpireLoopNoSupabase(unittest.TestCase):
         ) as flush:
             scheduled = schedule_solo_cloud_expire_poll(st, session, room)
             self.assertTrue(scheduled)
+            scheduled_again = schedule_solo_cloud_expire_poll(st, session, room)
+            self.assertTrue(scheduled_again)
+            self.assertEqual(rerun.call_count, 2)
             poll.assert_not_called()
             supa_req.assert_not_called()
             flush.assert_not_called()
-            rerun.assert_called_once()
             args = rerun.call_args[0]
             self.assertEqual(args[2], "solo_cloud_poll")
 

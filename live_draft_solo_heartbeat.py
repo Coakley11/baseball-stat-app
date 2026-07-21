@@ -204,11 +204,8 @@ def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict
         session[SOLO_HEARTBEAT_LAST_TICK_AT_KEY] = time.time()
     except ImportError:
         pass
-    now = time.time()
-    last = float(session.get("_solo_cloud_poll_at") or 0.0)
-    if now - last < 1.0:
-        return False
-    session["_solo_cloud_poll_at"] = now
+    # Always chain the next full-page pass — a 1s throttle here deadlocked after the
+    # first rerun when Cloud rendered the follow-up page in under one second.
     try:
         from live_draft_safe_mode import request_live_draft_rerun
 
