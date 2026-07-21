@@ -218,6 +218,21 @@ def wait_for_deploy(page, target_sha: str, *, timeout_s: int = 900) -> str:
     return seen
 
 
+def all_frames_text(page) -> str:
+    return page.evaluate(
+        """() => {
+          function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+          return roots().map((root) => (root.body ? root.body.innerText : '')).join('\\n');
+        }"""
+    )
+
+
+def drafted_pick_count(text: str) -> int:
+    board_rows = len(re.findall(r"Round\s+\d+", text, re.I))
+    explicit = len(re.findall(r"Pick\s+\d+\s*:", text))
+    return max(board_rows, explicit)
+
+
 def stamp_ok(stamp: dict[str, Any]) -> bool:
     cc = int(stamp.get("cc_mounts") or 0)
     manual = int(stamp.get("manual_mounts") or 0)
@@ -375,7 +390,7 @@ def main() -> int:
 
             soak_end = time.time() + 420
             expirations_dom = 0
-            picks_before = len(re.findall(r"Pick \d+:", text))
+            picks_before = drafted_pick_count(text)
             manual_done = auto_done = pause_done = resume_done = reset_done = False
             queue_add_done = queue_remove_done = False
             timer_samples: list[int] = []
@@ -388,14 +403,14 @@ def main() -> int:
             nav_back_done = False
 
             while time.time() < soak_end:
-                text = page.inner_text("body", timeout=20000)
+                text = all_frames_text(page)
                 stamp = parse_acceptance_stamp(text)
                 if stamp:
                     heartbeat_samples.append(int(stamp.get("hb_ticks") or 0))
                     expiration_commits_samples.append(int(stamp.get("exp_commits") or 0))
                     report["acceptance_stamp_final"] = stamp
 
-                picks_now = len(re.findall(r"Pick \d+:", text))
+                picks_now = drafted_pick_count(text)
                 if picks_now > picks_before:
                     expirations_dom += picks_now - picks_before
                     picks_before = picks_now

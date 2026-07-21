@@ -315,19 +315,24 @@ def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict
 
 
 def solo_page_expire_poll_active(session: dict[str, Any], room: dict[str, Any] | None) -> bool:
-    """Use page-level 1 Hz expire on Streamlit Cloud (all Solo drafts, not only ld_accept)."""
+    """Page-level 1 Hz poll disabled — JS countdown + fragment heartbeat + wake-at-zero."""
     try:
-        from live_draft_cloud_diagnostics import cloud_accept_active, streamlit_cloud_runtime
-        from live_draft_solo_timer import is_solo_live_draft
+        from live_draft_cloud_diagnostics import cloud_accept_active
     except ImportError:
-        return False
-    if not isinstance(room, dict) or not is_solo_live_draft(session, room):
-        return False
-    if str(room.get("status") or "") != "in_progress":
-        return False
-    if streamlit_cloud_runtime():
-        return True
-    return bool(cloud_accept_active(session))
+        cloud_accept_active = lambda _s: False  # type: ignore[assignment,misc]
+    # Local acceptance harness may still force page poll for diagnostics.
+    if cloud_accept_active(session):
+        try:
+            from live_draft_cloud_diagnostics import streamlit_cloud_runtime
+            from live_draft_solo_timer import is_solo_live_draft
+        except ImportError:
+            return False
+        if not isinstance(room, dict) or not is_solo_live_draft(session, room):
+            return False
+        if str(room.get("status") or "") != "in_progress":
+            return False
+        return not streamlit_cloud_runtime()
+    return False
 
 
 def solo_cloud_page_poll_active(session: dict[str, Any], room: dict[str, Any] | None) -> bool:
@@ -594,13 +599,6 @@ def render_solo_live_draft_heartbeat(st: Any, session: dict[str, Any], room: dic
 
 def render_solo_expire_watchdog(st: Any, session: dict[str, Any]) -> None:
     """Secondary 1 Hz expire path when the primary heartbeat stops ticking (Cloud headless)."""
-    try:
-        from live_draft_cloud_diagnostics import cloud_accept_active
-
-        if not cloud_accept_active(session):
-            return
-    except ImportError:
-        return
     try:
         from live_draft_solo_timer import is_solo_live_draft
     except ImportError:

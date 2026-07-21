@@ -33,11 +33,12 @@ class TestSoloPagePollGating(unittest.TestCase):
             self.assertFalse(solo_page_expire_poll_active(session, room))
             self.assertFalse(solo_cloud_page_poll_active(session, room))
 
-    def test_streamlit_cloud_solo_uses_page_poll_without_ld_accept(self) -> None:
+    def test_streamlit_cloud_solo_uses_fragment_not_page_poll(self) -> None:
         room = _in_progress_solo_room()
         session = {"live_draft_setup_mode": "solo", "live_draft_room": room}
         with mock.patch("live_draft_cloud_diagnostics.streamlit_cloud_runtime", return_value=True):
-            self.assertTrue(solo_page_expire_poll_active(session, room))
+            self.assertFalse(solo_page_expire_poll_active(session, room))
+            self.assertFalse(solo_cloud_page_poll_active(session, room))
 
     def test_ld_accept_local_harness_can_use_page_poll(self) -> None:
         room = _in_progress_solo_room()
@@ -112,11 +113,12 @@ class TestSoloExpireLoopNoSupabase(unittest.TestCase):
             "draft_queue": [],
             "_live_draft_heavy_paint_done": True,
             "_live_draft_control_center_mount_log": [{"run_seq": 1}],
+            "_live_draft_cloud_accept_mode": True,
         }
         st = mock.MagicMock()
         st.rerun = mock.MagicMock()
         with mock.patch(
-            "live_draft_cloud_diagnostics.streamlit_cloud_runtime", return_value=True
+            "live_draft_cloud_diagnostics.streamlit_cloud_runtime", return_value=False
         ), mock.patch("live_draft_safe_mode.request_live_draft_rerun", return_value=True) as rerun, mock.patch(
             "draft_room_context.poll_shared_draft_room"
         ) as poll, mock.patch("suite_storage_supabase._request") as supa_req, mock.patch(
@@ -139,10 +141,11 @@ class TestSoloExpireLoopNoSupabase(unittest.TestCase):
             "draft_queue": [],
             "_live_draft_heavy_paint_done": True,
             "_live_draft_control_center_mount_log": [{"run_seq": 1}],
+            "_live_draft_cloud_accept_mode": True,
         }
         st = mock.MagicMock()
         with mock.patch(
-            "live_draft_cloud_diagnostics.streamlit_cloud_runtime", return_value=True
+            "live_draft_cloud_diagnostics.streamlit_cloud_runtime", return_value=False
         ), mock.patch("live_draft_safe_mode.request_live_draft_rerun", return_value=True) as rerun, mock.patch(
             "draft_room_context.poll_shared_draft_room"
         ) as poll, mock.patch("suite_storage_supabase._request") as supa_req:

@@ -25002,10 +25002,8 @@ elif active_page == "Live Draft Room":
 
                 if is_solo_live_draft(st.session_state, room):
                     render_solo_timer_wake_button(st, st.session_state, room)
-                    if not solo_page_expire_poll_active(st.session_state, room):
-                        render_solo_live_draft_heartbeat(st, st.session_state, room)
-                        render_solo_expire_watchdog(st, st.session_state)
-                    # Cloud page poll is scheduled once at end of paint (after Control Center).
+                    render_solo_live_draft_heartbeat(st, st.session_state, room)
+                    render_solo_expire_watchdog(st, st.session_state)
             except ImportError:
                 pass
 
@@ -26364,10 +26362,10 @@ elif active_page == "Live Draft Room":
 
     # Deferred full-app refresh after queue mutations — never mid-pass after Draft Queue.
     try:
-        from live_draft_solo_heartbeat import schedule_solo_cloud_expire_poll
+        from live_draft_solo_heartbeat import schedule_solo_cloud_expire_poll, solo_page_expire_poll_active
 
         _poll_room = st.session_state.get("live_draft_room")
-        if isinstance(_poll_room, dict):
+        if isinstance(_poll_room, dict) and solo_page_expire_poll_active(st.session_state, _poll_room):
             schedule_solo_cloud_expire_poll(st, st.session_state, _poll_room)
     except ImportError:
         pass
