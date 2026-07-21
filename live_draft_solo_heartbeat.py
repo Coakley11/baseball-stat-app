@@ -18,7 +18,7 @@ SOLO_WAKE_PENDING_RERUN_KEY = "_solo_timer_wake_pending_rerun"
 SOLO_IDLE_EGRESS_KEY = "_solo_timer_idle_egress"
 SOLO_CLOUD_POLL_MIN_INTERVAL_KEY = "_solo_cloud_poll_min_interval_sec"
 SOLO_CLOUD_POLL_LAST_AT_KEY = "_solo_cloud_poll_last_at"
-SOLO_CLOUD_POLL_INTERVAL_SEC = 3.0
+SOLO_CLOUD_POLL_INTERVAL_SEC = 2.0
 
 
 def solo_banner_uses_static_paint(session: dict[str, Any]) -> bool:

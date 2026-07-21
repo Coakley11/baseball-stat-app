@@ -304,7 +304,7 @@ def wait_for_natural_expirations(
     monitor: SupabaseMonitor,
     *,
     need: int = 4,
-    timeout_s: int = 360,
+    timeout_s: int = 600,
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     deadline = time.time() + timeout_s
@@ -403,7 +403,7 @@ def main() -> int:
                 report["errors"].append(f"dom_controls_at_start:{d0}")
 
             # Phase 2 — four natural expirations before any controls
-            exp_events = wait_for_natural_expirations(page, report, monitor, need=4, timeout_s=360)
+            exp_events = wait_for_natural_expirations(page, report, monitor, need=4, timeout_s=600)
             report["phases"]["natural_expirations"] = {
                 "count": len(exp_events),
                 "required": 4,

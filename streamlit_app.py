@@ -24997,13 +24997,11 @@ elif active_page == "Live Draft Room":
                     render_solo_expire_watchdog,
                     render_solo_live_draft_heartbeat,
                     render_solo_timer_wake_button,
-                    solo_page_expire_poll_active,
                 )
 
                 if is_solo_live_draft(st.session_state, room):
                     render_solo_timer_wake_button(st, st.session_state, room)
-                    if not solo_page_expire_poll_active(st.session_state, room):
-                        render_solo_live_draft_heartbeat(st, st.session_state, room)
+                    render_solo_live_draft_heartbeat(st, st.session_state, room)
                     render_solo_expire_watchdog(st, st.session_state)
             except ImportError:
                 pass
