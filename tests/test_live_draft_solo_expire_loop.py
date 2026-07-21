@@ -33,12 +33,11 @@ class TestSoloPagePollGating(unittest.TestCase):
             self.assertFalse(solo_page_expire_poll_active(session, room))
             self.assertFalse(solo_cloud_page_poll_active(session, room))
 
-    def test_streamlit_cloud_solo_uses_fragment_not_page_poll(self) -> None:
+    def test_streamlit_cloud_solo_uses_throttled_page_poll(self) -> None:
         room = _in_progress_solo_room()
         session = {"live_draft_setup_mode": "solo", "live_draft_room": room}
         with mock.patch("live_draft_cloud_diagnostics.streamlit_cloud_runtime", return_value=True):
-            self.assertFalse(solo_page_expire_poll_active(session, room))
-            self.assertFalse(solo_cloud_page_poll_active(session, room))
+            self.assertTrue(solo_page_expire_poll_active(session, room))
 
     def test_ld_accept_local_harness_can_use_page_poll(self) -> None:
         room = _in_progress_solo_room()
@@ -114,6 +113,7 @@ class TestSoloExpireLoopNoSupabase(unittest.TestCase):
             "_live_draft_heavy_paint_done": True,
             "_live_draft_control_center_mount_log": [{"run_seq": 1}],
             "_live_draft_cloud_accept_mode": True,
+            "_solo_cloud_poll_last_at": time.time(),
         }
         st = mock.MagicMock()
         st.rerun = mock.MagicMock()

@@ -16,6 +16,9 @@ ON_CLOCK_BANNER_PAINT_TOKEN_KEY = "_on_clock_banner_paint_token"
 SOLO_WAKE_BUTTON_LABEL = "solo-timer-wake"
 SOLO_WAKE_PENDING_RERUN_KEY = "_solo_timer_wake_pending_rerun"
 SOLO_IDLE_EGRESS_KEY = "_solo_timer_idle_egress"
+SOLO_CLOUD_POLL_MIN_INTERVAL_KEY = "_solo_cloud_poll_min_interval_sec"
+SOLO_CLOUD_POLL_LAST_AT_KEY = "_solo_cloud_poll_last_at"
+SOLO_CLOUD_POLL_INTERVAL_SEC = 3.0
 
 
 def solo_banner_uses_static_paint(session: dict[str, Any]) -> bool:
@@ -292,16 +295,19 @@ def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict
         session[SOLO_HEARTBEAT_LAST_TICK_AT_KEY] = time.time()
     except ImportError:
         pass
-    # Client-side JS owns the 1 Hz countdown between expirations. Only keep the server
-    # loop near zero (or right after a commit) so Cloud does not rerun the full page
-    # every second — that prevented Control Center from painting and caused egress storms.
-    if (
-        not expired
-        and remaining_after is not None
-        and remaining_after > 2
-        and not session.get(SOLO_WAKE_PENDING_RERUN_KEY)
-    ):
+    now = time.time()
+    min_iv = float(session.get(SOLO_CLOUD_POLL_MIN_INTERVAL_KEY) or SOLO_CLOUD_POLL_INTERVAL_SEC)
+    last_poll = float(session.get(SOLO_CLOUD_POLL_LAST_AT_KEY) or 0.0)
+    should_rerun = bool(
+        expired
+        or session.get(SOLO_WAKE_PENDING_RERUN_KEY)
+        or (remaining_after is not None and remaining_after <= 2)
+        or not last_poll
+        or (now - last_poll) >= min_iv
+    )
+    if not should_rerun:
         return False
+    session[SOLO_CLOUD_POLL_LAST_AT_KEY] = now
     try:
         from live_draft_safe_mode import request_live_draft_rerun
 
@@ -315,24 +321,24 @@ def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict
 
 
 def solo_page_expire_poll_active(session: dict[str, Any], room: dict[str, Any] | None) -> bool:
-    """Page-level 1 Hz poll disabled — JS countdown + fragment heartbeat + wake-at-zero."""
+    """Low-rate page poll on Streamlit Cloud when the expire fragment may stall."""
+    try:
+        from live_draft_cloud_diagnostics import streamlit_cloud_runtime
+        from live_draft_solo_timer import is_solo_live_draft
+    except ImportError:
+        return False
+    if not isinstance(room, dict) or not is_solo_live_draft(session, room):
+        return False
+    if str(room.get("status") or "") != "in_progress":
+        return False
+    if streamlit_cloud_runtime():
+        return True
     try:
         from live_draft_cloud_diagnostics import cloud_accept_active
+
+        return bool(cloud_accept_active(session))
     except ImportError:
-        cloud_accept_active = lambda _s: False  # type: ignore[assignment,misc]
-    # Local acceptance harness may still force page poll for diagnostics.
-    if cloud_accept_active(session):
-        try:
-            from live_draft_cloud_diagnostics import streamlit_cloud_runtime
-            from live_draft_solo_timer import is_solo_live_draft
-        except ImportError:
-            return False
-        if not isinstance(room, dict) or not is_solo_live_draft(session, room):
-            return False
-        if str(room.get("status") or "") != "in_progress":
-            return False
-        return not streamlit_cloud_runtime()
-    return False
+        return False
 
 
 def solo_cloud_page_poll_active(session: dict[str, Any], room: dict[str, Any] | None) -> bool:
