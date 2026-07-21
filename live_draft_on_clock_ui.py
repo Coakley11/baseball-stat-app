@@ -305,6 +305,63 @@ def render_live_on_clock_banner(
         use_fragment = live_room.get("status") == "in_progress"
 
     remaining_now = live_draft_display_seconds(live_room)
+
+    _solo_draft = False
+    try:
+        from live_draft_solo_timer import (
+            get_solo_display_snapshot,
+            install_solo_display_snapshot,
+            is_solo_live_draft,
+        )
+
+        _solo_draft = bool(is_solo_live_draft(session, live_room))
+    except ImportError:
+        _solo_draft = False
+
+    # Solo: paint banner once with JS deadline countdown. A 1 Hz fragment that remounts
+    # components.html every tick caused ghost/stale timers on Streamlit Cloud.
+    if _solo_draft and use_fragment and deadline is not None:
+        try:
+            from live_draft_solo_heartbeat import solo_banner_uses_static_paint
+
+            if solo_banner_uses_static_paint(session):
+                install_solo_display_snapshot(session, live_room)
+                snap = get_solo_display_snapshot(session, live_room)
+                remaining_now = int(snap.get("remaining_seconds") or remaining_now)
+                if snap.get("timer_deadline") is not None:
+                    deadline = float(snap["timer_deadline"])
+                try:
+                    from live_draft_cloud_diagnostics import render_surface_stamp
+
+                    render_surface_stamp(
+                        st,
+                        session,
+                        component="on_clock_banner",
+                        render_owner="page_static_js",
+                        room=live_room,
+                        extra={"remaining": remaining_now},
+                    )
+                except ImportError:
+                    pass
+                _render_on_clock_banner_html(
+                    st,
+                    slot_view,
+                    remaining_now,
+                    next_pick=next_pick_view,
+                    pick_index=pick_idx,
+                    deadline=deadline,
+                    flash=clock_flash,
+                )
+                if (
+                    int(remaining_now or 0) <= 0
+                    and str(live_room.get("status") or "") == "in_progress"
+                ):
+                    _emit_primary_auto_picking_status(st, session)
+                _mark_on_clock_done()
+                return
+        except ImportError:
+            pass
+
     if not use_fragment or deadline is None:
         _render_on_clock_banner_html(
             st,
@@ -528,21 +585,55 @@ def render_live_on_clock_banner(
             diag["timer_component_last_render"] = time.time()
             session["_live_draft_timer_diag"] = diag
         try:
-            from live_draft_solo_timer import is_solo_live_draft, record_visible_timer_count
+            from live_draft_solo_timer import record_visible_timer_count
 
-            # Sole primary countdown (Solo and Shared) — timer bar paints none.
             record_visible_timer_count(session, 1)
         except ImportError:
             pass
-        _render_on_clock_banner_html(
-            st,
-            tick_slot,
-            int(remaining or 0),
-            next_pick=next_pick_view,
-            pick_index=tick_idx,
-            deadline=tick_deadline,
-            flash=False,
-        )
+        try:
+            from live_draft_solo_heartbeat import shared_banner_should_repaint
+
+            force_repaint = int(remaining or 0) <= 0 and str(tick_room.get("status") or "") == "in_progress"
+            if shared_banner_should_repaint(
+                session,
+                pick_index=tick_idx,
+                deadline=float(tick_deadline) if tick_deadline is not None else None,
+                force=force_repaint,
+            ):
+                try:
+                    from live_draft_cloud_diagnostics import note_fragment_owner, render_surface_stamp
+
+                    note_fragment_owner(session, "shared_on_clock_banner", delta=1)
+                    render_surface_stamp(
+                        st,
+                        session,
+                        component="on_clock_banner",
+                        render_owner="shared_banner_fragment",
+                        room=tick_room,
+                        fragment_id="shared-banner",
+                        extra={"remaining": int(remaining or 0)},
+                    )
+                except ImportError:
+                    pass
+                _render_on_clock_banner_html(
+                    st,
+                    tick_slot,
+                    int(remaining or 0),
+                    next_pick=next_pick_view,
+                    pick_index=tick_idx,
+                    deadline=tick_deadline,
+                    flash=False,
+                )
+        except ImportError:
+            _render_on_clock_banner_html(
+                st,
+                tick_slot,
+                int(remaining or 0),
+                next_pick=next_pick_view,
+                pick_index=tick_idx,
+                deadline=tick_deadline,
+                flash=False,
+            )
         if (
             int(remaining or 0) <= 0
             and str(tick_room.get("status") or "") == "in_progress"

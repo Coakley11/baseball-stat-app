@@ -923,13 +923,10 @@ def _render_sidebar_timer_caption(st: Any, session: dict[str, Any], *, summary: 
     summary = summary or draft_status_summary(session)
     if not summary.get("live_draft_active"):
         return
-    # Live Draft Room already has one primary countdown — do not add a third clock.
-    try:
-        page = str(session.get("active_page") or "").strip()
-        if page == "Live Draft Room":
-            return
-    except Exception:
-        pass
+    page = str(session.get("active_page") or session.get("active_page_name") or "").strip()
+    if page == "Live Draft Room":
+        _render_live_draft_room_sidebar_snapshot(st, session, summary=summary)
+        return
     paused = session.get(SIDEBAR_TIMER_PAUSED_KEY)
     if paused is not None:
         st.sidebar.caption(f"Time Left: **{int(paused)}s** (paused)")
@@ -959,6 +956,66 @@ def _render_sidebar_timer_caption(st: Any, session: dict[str, Any], *, summary: 
             pass
 
 
+def _render_live_draft_room_sidebar_snapshot(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    summary: dict[str, Any] | None = None,
+) -> None:
+    """Live Draft Room sidebar mirrors the canonical snapshot — no fragment, no sync loop."""
+    from draft_actions import draft_status_summary
+
+    summary = summary or draft_status_summary(session)
+    room = session.get("live_draft_room")
+    remaining: int | None = None
+    paused: int | None = None
+    try:
+        from live_draft_solo_timer import get_solo_display_snapshot, is_solo_live_draft
+
+        if is_solo_live_draft(session, room if isinstance(room, dict) else None):
+            snap = get_solo_display_snapshot(session, room if isinstance(room, dict) else None)
+            status = str(snap.get("status") or "")
+            if status == "paused":
+                paused = int(snap.get("remaining_seconds") or 0)
+            else:
+                remaining = int(snap.get("remaining_seconds") or 0)
+    except ImportError:
+        pass
+    if remaining is None and paused is None:
+        try:
+            from live_draft_canonical_snapshot import get_live_draft_paint_snapshot
+
+            paint = get_live_draft_paint_snapshot(session)
+            if paint.get("timer_remaining") is not None:
+                remaining = int(paint.get("timer_remaining") or 0)
+        except ImportError:
+            pass
+    if remaining is None and paused is None:
+        remaining = summary.get("timer_seconds")
+        if isinstance(room, dict) and str(room.get("status") or "") == "paused":
+            try:
+                paused = int(room.get("paused_remaining_seconds") or 0)
+            except (TypeError, ValueError):
+                paused = None
+    try:
+        from live_draft_cloud_diagnostics import render_surface_stamp
+
+        render_surface_stamp(
+            st,
+            session,
+            component="sidebar_timer",
+            render_owner="snapshot_copy",
+            room=room if isinstance(room, dict) else None,
+        )
+    except ImportError:
+        pass
+    if paused is not None:
+        st.sidebar.caption(f"Time remaining: **{int(paused)}s** (paused)")
+        return
+    if remaining is not None:
+        st.sidebar.caption(f"Time remaining: **{int(remaining)}s**")
+
+
 def render_draft_sidebar_timer(
     st: Any,
     session: dict[str, Any],
@@ -983,6 +1040,11 @@ def render_draft_sidebar_timer(
         return
     refresh_sidebar_timer_session(session, summary=summary)
     _render_sidebar_timer_caption(st, session, summary=summary)
+
+    page = str(session.get("active_page") or session.get("active_page_name") or "").strip()
+    if page == "Live Draft Room":
+        # Snapshot copy only — solo heartbeat owns the 1 Hz expire loop on the main page.
+        return
 
     fragment = getattr(st, "fragment", None)
     if fragment is None:

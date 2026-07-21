@@ -1,6 +1,6 @@
 # Live Draft state owners (Phase 1 audit)
 
-**Last updated:** 2026-07-20  
+**Last updated:** 2026-07-21  
 **Authoritative room:** `session["live_draft_room"]` — `current_pick_index`, `draft_board`, `status`, `timer_deadline`, `revision`.  
 **Canonical paint (read-only for UI):** `live_draft_canonical_snapshot.get_live_draft_paint_snapshot(session)` — frozen per page paint via `begin_live_draft_paint()`.
 
@@ -25,7 +25,8 @@
 |---------|--------|--------|
 | Page header pick/team | `streamlit_app.py` Live Draft Room | **Fixed** — paint → slot, removed `picks_done + 1` |
 | Sidebar status | `draft_ui.render_draft_sidebar_status` → `draft_status_summary` | Uses paint via `draft_actions` |
-| On-the-clock banner | `live_draft_on_clock_ui` | Solo: paint in fragment tick |
+| On-the-clock banner | `live_draft_on_clock_ui` | Solo: **static JS countdown** (one paint per pick); Shared: fragment repaints only on pick/deadline change |
+| Sidebar timer | `draft_ui._render_live_draft_room_sidebar_snapshot` | Live Draft Room: snapshot copy only — **no fragment** |
 | Draft authorization | `draft_actions.draft_action_context` | Paint-first |
 | Queue caption | `draft_actions` / `draft_ui` | Paint team |
 | Control center Auto Pick | `live_draft_control_center_ui` | Paint `team_on_clock` |
@@ -57,16 +58,17 @@
 
 | Surface | Calls `expire_current_pick_and_advance`? | Role |
 |---------|------------------------------------------|------|
-| On-the-clock banner fragment (`live_draft_on_clock_ui`) | **Yes** — sole Solo production owner | Detects deadline, runs auto-pick once, advances board |
-| Sidebar timer fragment (`draft_ui.render_draft_sidebar_timer`) | **No** — display + caption only | Mirrors countdown; never commits picks |
+| Solo heartbeat fragment (`live_draft_solo_heartbeat`) | **Yes** — sole Solo production owner | 1 Hz expire-only loop; **does not** remount banner HTML |
+| On-the-clock banner (`live_draft_on_clock_ui`) | **No** (Solo) | Paints once per pick with JS deadline countdown |
+| Sidebar timer (`draft_ui.render_draft_sidebar_timer`) | **No** | Live Draft Room: canonical snapshot caption only |
 | Draft Control Center Auto Pick Now | Uses `live_draft_auto_pick` (manual path, not timer expire) | User-initiated, not timer-driven |
-| AppTest `full_page_force_expire` / `matrix_force_expire` buttons | Test harness only | Direct expire for deterministic AppTest |
+| Page script fallback (`run_solo_expire_if_needed`) | Only when heartbeat inactive | First paint / no-fragment canary mode |
 
-**Production invariant:** exactly one effective Solo expiration owner — the on-the-clock banner fragment tick. Idempotency guards (`SOLO_EXPIRE_APPLIED_KEY`, auto-pick idempotency keys) prevent double-advance if a fragment re-fires.
+**Production invariant:** exactly **one** effective Solo 1 Hz fragment (`solo_heartbeat`). Banner HTML must not repaint every second (Cloud ghost timers). Sidebar and blue card both derive remaining time from the same deadline/snapshot during each full-page paint.
 
 ## AppTest sidebar timer skip (test harness only)
 
-Full-page AppTests set `_fp_sidebar_timer_skipped=True` (or `_live_draft_apptest_skip_sidebar_timer`) so `render_draft_sidebar_timer` **does not** install its `@fragment(run_every=1)` loop. This avoids duplicate Streamlit widgets and stale duplicate expire/test buttons in AppTest runs. **Production never sets these flags** — the sidebar fragment remains display-only in all environments.
+Full-page AppTests set `_fp_sidebar_timer_skipped=True` (or `_live_draft_apptest_skip_sidebar_timer`) so tests avoid duplicate widgets. **Production Live Draft Room** also skips the sidebar timer fragment — snapshot copy only (2026-07-21).
 
 ## Remaining known limitations
 

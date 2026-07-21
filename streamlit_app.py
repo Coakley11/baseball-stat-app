@@ -22015,6 +22015,27 @@ elif active_page == DRAFT_LAB_PAGE:
 
 elif active_page == "Live Draft Room":
     try:
+        from live_draft_cloud_canary import render_live_draft_cloud_canary
+
+        if render_live_draft_cloud_canary(st, st.session_state):
+            try:
+                from live_draft_cloud_diagnostics import finish_run
+
+                finish_run(st.session_state, source="cloud_canary")
+            except ImportError:
+                pass
+            _page_perf_end(active_page)
+            save_page_state(active_page)
+            st.stop()
+    except ImportError:
+        pass
+    try:
+        from live_draft_cloud_diagnostics import begin_run
+
+        begin_run(st.session_state, source="live_draft_room")
+    except ImportError:
+        pass
+    try:
         from app_page_generation import note_page_renderer
 
         note_page_renderer(st.session_state, "render_live_draft_page", selected_page=active_page)
@@ -22082,7 +22103,15 @@ elif active_page == "Live Draft Room":
         st.error(
             f"LDR TRACE BOOT ERROR: {type(_ldr_trace_boot_exc).__name__}: {_ldr_trace_boot_exc}"
         )
-    _maybe_render_account_pref_sync(active_page)
+    _skip_account_pref_poll = False
+    try:
+        from live_draft_cloud_diagnostics import solo_skip_remote_poll
+
+        _skip_account_pref_poll = solo_skip_remote_poll(st.session_state)
+    except ImportError:
+        _skip_account_pref_poll = False
+    if not _skip_account_pref_poll:
+        _maybe_render_account_pref_sync(active_page)
     try:
         from live_draft_render_trace import ldr_section_done
 
@@ -24834,6 +24863,16 @@ elif active_page == "Live Draft Room":
             def ldr_step(*_a, **_k):  # type: ignore[misc]
                 return _ldr_nullcontext()
 
+        if _draft_in_progress and not _draft_is_complete and room and isinstance(room, dict):
+            try:
+                from live_draft_solo_timer import is_solo_live_draft
+                from live_draft_solo_heartbeat import render_solo_live_draft_heartbeat
+
+                if is_solo_live_draft(st.session_state, room):
+                    render_solo_live_draft_heartbeat(st, st.session_state, room)
+            except ImportError:
+                pass
+
         st.markdown('<div class="live-draft-controls">', unsafe_allow_html=True)
         with ldr_step(st.session_state, "timer_enter", st=st):
             _timer_ok = bool(
@@ -24931,6 +24970,13 @@ elif active_page == "Live Draft Room":
                     note_live_draft_page_load(st.session_state, room)
                 _owned_at = float(st.session_state.get(SOLO_FRAGMENT_OWNED_EXPIRE_KEY) or 0.0)
                 _fragment_recent = bool(_owned_at and (_solo_page_time.time() - _owned_at) < 2.0)
+                try:
+                    from live_draft_solo_heartbeat import solo_heartbeat_active
+
+                    if solo_heartbeat_active(st.session_state):
+                        _fragment_recent = True
+                except ImportError:
+                    pass
                 if not _fragment_recent:
                     with ldr_step(st.session_state, "solo_expire_current_pick", st=st):
                         _solo_expire = run_solo_expire_if_needed(
@@ -26186,6 +26232,20 @@ elif active_page == "Live Draft Room":
 
         mark_ux_milestone(st.session_state, "page_complete", rebuild="full_page", st=st)
         settle_ux_action(st.session_state, where="app_settled", st=st)
+    except ImportError:
+        pass
+
+    if developer_mode_enabled():
+        try:
+            from live_draft_cloud_diagnostics import render_admin_diag_panel
+
+            render_admin_diag_panel(st, st.session_state)
+        except ImportError:
+            pass
+    try:
+        from live_draft_cloud_diagnostics import finish_run
+
+        finish_run(st.session_state, source="live_draft_room")
     except ImportError:
         pass
 
