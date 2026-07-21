@@ -403,7 +403,8 @@ def main() -> int:
 
             soak_end = time.time() + 540
             expirations_dom = 0
-            picks_before = drafted_pick_count(text)
+            start_pick_idx = on_clock_pick_index(text) or 1
+            picks_before = max(0, start_pick_idx - 1)
             manual_done = auto_done = pause_done = resume_done = reset_done = False
             queue_add_done = queue_remove_done = False
             timer_samples: list[int] = []
