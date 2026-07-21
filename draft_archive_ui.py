@@ -527,12 +527,15 @@ def render_persistence_durability_banner(st: Any, session: dict[str, Any]) -> bo
     except ImportError:
         return True
     status = evaluate_cloud_durability_status(session)
-    if status.get("durable_persistence"):
-        st.success(f"**Persistence:** {status.get('durability_label')}")
+    from ui_user_copy import SAVE_STATUS_HEADING, format_save_status_banner
+
+    label, warning, ok = format_save_status_banner(status)
+    if ok:
+        st.success(f"**{SAVE_STATUS_HEADING}:** {label}")
         return True
-    st.error(f"**Persistence:** {status.get('durability_label')}")
-    if status.get("durability_warning"):
-        st.warning(str(status["durability_warning"]))
+    st.error(f"**{SAVE_STATUS_HEADING}:** {label}")
+    if warning:
+        st.warning(warning)
     return False
 
 
@@ -1548,8 +1551,12 @@ def _render_post_save_actions(
             f"({team_count} teams, {player_count} players on your roster)."
         )
     else:
-        st.success(f"Saved **{entry.get('draft_name')}** ({player_count} players).")
-    st.caption("Saved to Saved Draft Library. Saving does not change your Active Draft unless you choose Set Active.")
+        from ui_user_copy import DRAFT_SAVED_WITH_PLAYERS
+
+        st.success(DRAFT_SAVED_WITH_PLAYERS.format(name=entry.get("draft_name"), count=player_count))
+    from ui_user_copy import SAVE_DRAFT_CAPTION
+
+    st.caption(SAVE_DRAFT_CAPTION)
     if draft_id:
         st.info("Would you like to make this your Active Draft?")
         yes_col, no_col = st.columns(2)
@@ -1687,15 +1694,19 @@ def _on_analyze_draft_click(key_prefix: str = "live_draft_complete") -> None:
         )
     except Exception as exc:
         push_ok = False
+        from ui_user_copy import DRAFT_LAB_LOAD_FAILED, format_user_error
+
         session[_DRAFT_ANALYZE_UI_FLASH_KEY] = {
             "level": "error",
-            "message": f"Could not load completed draft into Draft Lab: {exc}",
+            "message": format_user_error(exc),
         }
         return
     if not push_ok:
+        from ui_user_copy import DRAFT_LAB_LOAD_FAILED
+
         session[_DRAFT_ANALYZE_UI_FLASH_KEY] = {
             "level": "error",
-            "message": "Could not load completed draft into Draft Lab — check Developer Mode diagnostics.",
+            "message": DRAFT_LAB_LOAD_FAILED,
         }
         return
     schedule_analyze_completed_draft_navigation(session)
@@ -2887,19 +2898,9 @@ def _shared_league_success_message(
     count_text: str,
     readback: dict[str, Any],
 ) -> str:
-    return (
-        f"Shared League Saved. "
-        f"{league_label} was saved successfully. "
-        f"Canonical league ID: {canonical_id or '—'}. "
-        f"Saved draft ID: {draft_id or '—'}. "
-        f"League context ID: {context_id or '—'}. "
-        f"Active team: {my_team}. "
-        f"Roster counts: {count_text}. "
-        f"Raw archive found: {bool(readback.get('raw_archive_found'))}. "
-        f"Visible archive found: {bool(readback.get('visible_archive_found'))}. "
-        f"Disk readback found: {bool(readback.get('disk_readback_found'))}. "
-        f"{_shared_league_cloud_status_line(readback)}"
-    )
+    from ui_user_copy import format_shared_league_success
+
+    return format_shared_league_success(league_label=league_label, my_team=my_team)
 
 
 def _shared_league_cloud_status_line(readback: dict[str, Any]) -> str:
@@ -2967,13 +2968,13 @@ def _finalize_shared_league_creation_success(
         "key_prefix": key_prefix,
     }
     if not shared_push_ok:
-        st.warning("Shared backend push did not confirm success; local league context is active.")
+        from ui_user_copy import SHARED_LEAGUE_LOCAL_ONLY
+
+        st.warning(SHARED_LEAGUE_LOCAL_ONLY)
     if readback.get("cloud_enabled") and readback.get("cloud_unavailable") and not readback.get("cloud_readback_found"):
-        st.warning(
-            "Cloud persistence could not be verified right now: "
-            f"{readback.get('cloud_verification_warning') or 'Cloud temporarily unavailable'}. "
-            "Local disk save succeeded; retry sign-out/sign-in later to confirm cloud durability."
-        )
+        from ui_user_copy import SHARED_LEAGUE_BACKUP_UNCONFIRMED
+
+        st.warning(SHARED_LEAGUE_BACKUP_UNCONFIRMED)
     _merge_shared_league_diag(
         session,
         create_request_status="completed",
@@ -4977,17 +4978,13 @@ def _render_saved_draft_library_page_body(
             _disk_n = int(_empty_diag.get("disk_saved_draft_count") or 0)
             _cloud_any = max(_cloud_active, _cloud_owned, _cloud_legacy)
             if _cloud_any > 0 and _session_n == 0:
-                st.error(
-                    "Saved drafts exist in cloud storage but were **not restored into this session**. "
-                    "Open **Persistence diagnostics** below for workspace / account details. "
-                    "This is usually a restore-path issue (wrong workspace key or user_id scope), "
-                    "not lost data."
-                )
+                from ui_user_copy import LIBRARY_NOT_RESTORED
+
+                st.error(LIBRARY_NOT_RESTORED)
             elif _disk_n > 0 and _session_n == 0:
-                st.warning(
-                    f"Disk has **{_disk_n}** saved draft(s) but the session loaded **0**. "
-                    "Cloud-first restore may have picked an empty cloud row — check Persistence diagnostics."
-                )
+                from ui_user_copy import LIBRARY_EMPTY_SLOT
+
+                st.warning(LIBRARY_EMPTY_SLOT)
         except ImportError:
             pass
         st.info(

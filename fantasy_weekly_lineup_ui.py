@@ -337,7 +337,9 @@ def render_weekly_lineup_section(
         st.success(str(drop_flash))
 
     if session.pop("weekly_lineup_save_flash", None):
-        st.success("Lineup saved.")
+        from ui_user_copy import LINEUP_SAVED
+
+        st.success(LINEUP_SAVED)
 
     if f"{prefix}_selected_week" not in session:
         session[f"{prefix}_selected_week"] = week_options[0]

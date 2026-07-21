@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-ERR_LOGIN_REQUIRED = "Please log in to join this shared draft room."
-ERR_LOGIN_REQUIRED_CREATE = "Please log in to create a shared draft room."
+ERR_LOGIN_REQUIRED = "Sign in to join this shared draft room."
+ERR_LOGIN_REQUIRED_CREATE = "Sign in to create a shared draft room."
 ERR_TEAM_ALREADY_ASSIGNED = "This team is already assigned."
 ERR_HOST_ONLY_RESET = "Only the room host can reset this draft."
 ERR_MEMBERSHIP_CHANGED = "Your room membership changed. Please refresh."

@@ -446,11 +446,10 @@ def user_facing_creation_status(session: dict[str, Any]) -> str:
     ):
         soft_ms = int(trace.get("soft_timeout_ms") or trace.get("elapsed_ms") or 0)
         total_ms = int(trace.get("elapsed_ms") or 0)
-        label = USER_STEP_STATUS.get(soft_step, soft_step)
-        return (
-            f"Still working on **{label}** "
-            f"(step {soft_ms} ms · total {total_ms} ms). Check Developer Mode creation receipt."
-        )
+        del soft_ms, total_ms
+        from ui_user_copy import CREATION_STILL_WORKING
+
+        return CREATION_STILL_WORKING
     if not step:
         try:
             from live_draft_start_progress import START_PROGRESS_KEY

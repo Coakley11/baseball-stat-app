@@ -255,7 +255,9 @@ def render_baseball_account_sidebar(st: Any) -> None:
                     or ""
                 ).strip()
                 if err:
-                    st.warning(f"Workspace ownership error: {err}")
+                    from ui_user_copy import WORKSPACE_OWNERSHIP_WARNING
+
+                    st.warning(WORKSPACE_OWNERSHIP_WARNING)
                 trace = session.get("_suite_workspace_ownership_trace")
                 if isinstance(trace, dict) and trace:
                     st.caption(
@@ -263,7 +265,9 @@ def render_baseball_account_sidebar(st: Any) -> None:
                         f"owned=`{trace.get('owned')}` · cloud=`{trace.get('cloud_key')}`"
                     )
         else:
-            st.caption("Sign in to unlock shared drafts and cloud saves.")
+            from ui_user_copy import SIGN_IN_PROMPT
+
+            st.caption(SIGN_IN_PROMPT)
 
         try:
             from suite_auth import render_auth_panel

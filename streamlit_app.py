@@ -21163,32 +21163,26 @@ elif active_page == "Draft Room Simulator":
                         and int(result.get("supabase_row_pick_count_after_write") or 0) >= picks
                         and picks > 0
                     ):
-                        st.success(
-                            f"Saved {picks} pick(s) to disk and cloud "
-                            f"(Supabase readback: {result.get('supabase_row_pick_count_after_write')}, "
-                            f"payload: {cloud_n}). "
-                            f"Cloud: {result.get('cloud_timestamp_before') or '—'} → "
-                            f"{result.get('cloud_timestamp_after') or result.get('supabase_row_updated_at_after_write') or '—'}"
-                        )
+                        from ui_user_copy import DRAFT_BOARD_SAVED_ACCOUNT
+
+                        st.success(DRAFT_BOARD_SAVED_ACCOUNT.format(count=picks))
                     elif result.get("saved") and picks > 0 and result.get("direct_cloud_save_attempted"):
-                        cloud_key = result.get("cloud_app_key") or result.get("cloud_target_app_id") or "—"
-                        ws = result.get("active_workspace_id") or "—"
-                        st.warning(
-                            f"Saved {picks} pick(s) to disk; cloud readback failed "
-                            f"(readback={result.get('supabase_row_pick_count_after_write')}, "
-                            f"payload={cloud_n}, key=`{cloud_key}`, workspace=`{ws}`). "
-                            f"Error: {result.get('cloud_write_error') or result.get('error') or 'unknown'}"
-                        )
+                        from ui_user_copy import DRAFT_BOARD_BACKUP_FAILED
+
+                        st.warning(DRAFT_BOARD_BACKUP_FAILED.format(count=picks))
                     elif result.get("saved") and picks > 0:
-                        st.warning(
-                            f"Saved {picks} pick(s) to disk only (disk payload: {disk_n}). "
-                            f"Cloud error: {result.get('error') or 'unknown'}"
-                        )
+                        from ui_user_copy import DRAFT_BOARD_DEVICE_ONLY
+
+                        st.warning(DRAFT_BOARD_DEVICE_ONLY.format(count=picks))
                     else:
-                        st.error(f"Save failed: {result.get('error') or 'unknown'}")
+                        from ui_user_copy import DRAFT_BOARD_SAVE_FAILED
+
+                        st.error(DRAFT_BOARD_SAVE_FAILED)
                 except Exception as exc:
                     record_manual_save_error(st.session_state, exc)
-                    st.error(f"Save failed: {type(exc).__name__}: {exc}")
+                    from ui_user_copy import DRAFT_BOARD_SAVE_FAILED, format_user_error
+
+                    st.error(format_user_error(exc, developer_mode=developer_mode_enabled()))
 
             if developer_mode_enabled():
                 render_manual_save_readback_panel(st)

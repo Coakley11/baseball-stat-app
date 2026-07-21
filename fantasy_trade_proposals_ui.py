@@ -330,7 +330,7 @@ def _process_incoming_accept_forms(
             }
             if persist_fn:
                 persist_fn(session, st, reason="trade_proposal_accepted")
-            st.success("Trade Accepted")
+            st.success("Trade accepted. Both rosters have been updated.")
         else:
             msg = "Accept trade returned no proposal and no error."
             session["_last_trade_response_submit_error"] = msg
@@ -424,7 +424,7 @@ def submit_trade_proposal_from_analyzer(
         }
         if persist_fn:
             persist_fn(session, st, reason="trade_proposal_created")
-        st.success(f"Trade proposed to **{other_team}**.")
+        st.success(f"Trade offer sent to **{other_team}**.")
         st.rerun()
     else:
         msg = "Propose trade returned no proposal and no error."
@@ -536,7 +536,7 @@ def _render_proposal_card(
                 else:
                     if persist_fn:
                         persist_fn(session, st, reason="trade_proposal_declined")
-                    st.warning("Trade Declined")
+                    st.warning("Trade declined.")
                     st.rerun()
         if not TRADE_PHASE1_SIMPLE and _validate_ui_trade_shape(current_give_players, current_get_players):
             st.caption("To counter, select the players you would give and receive in the analyzer above.")
@@ -673,20 +673,18 @@ def render_trade_proposals_section(
         st.error(submit_err)
     last_ok = session.get("_last_trade_proposal_submit_ok")
     if isinstance(last_ok, dict) and str(last_ok.get("trade_id") or "").strip():
-        st.success(
-            f"Trade proposed to **{last_ok.get('recipient_team') or '—'}** · "
-            f"id `{last_ok.get('trade_id') or '—'}`"
-        )
+        from ui_user_copy import TRADE_PROPOSED
+
+        st.success(TRADE_PROPOSED)
 
     response_err = str(session.get("_last_trade_response_submit_error") or "").strip()
     if response_err:
         st.error(response_err)
     last_accept = session.get("_last_trade_response_submit_ok")
     if isinstance(last_accept, dict) and str(last_accept.get("trade_id") or "").strip():
-        st.success(
-            f"Trade accepted from **{last_accept.get('proposer_team') or '—'}** · "
-            f"id `{last_accept.get('trade_id') or '—'}`"
-        )
+        from ui_user_copy import TRADE_ACCEPTED
+
+        st.success(TRADE_ACCEPTED)
 
     expires_at = ""
     if not TRADE_PHASE1_SIMPLE:
@@ -774,7 +772,7 @@ def render_trade_proposals_section(
                         }
                         if persist_fn:
                             persist_fn(session, st, reason="trade_proposal_created")
-                        st.success(f"Trade proposed to **{other_team}**.")
+                        st.success(f"Trade offer sent to **{other_team}**.")
                     else:
                         msg = "Propose trade returned no proposal and no error."
                         session["_last_trade_proposal_submit_error"] = msg

@@ -395,7 +395,14 @@ def render_import_team_name_diagnostics_panel(
     review: dict[str, Any] | None = None,
     parsed_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
-    """Show which team-name source feeds each import workflow step."""
+    """Show which team-name source feeds each import workflow step (Developer Mode)."""
+    try:
+        from suite_workspace import can_show_developer_tools
+
+        if not can_show_developer_tools(st=st):
+            return build_import_team_name_diagnostics(session, review=review, parsed_df=parsed_df)
+    except ImportError:
+        pass
     diag = build_import_team_name_diagnostics(session, review=review, parsed_df=parsed_df)
     if not (
         diag.get("parsed_csv_teams")
@@ -449,17 +456,17 @@ def render_import_team_name_diagnostics_panel(
         claim = diag.get("shared_league_claim_teams") or []
 
         if room and parsed and parsed != room:
-            st.info(
-                "Draft Room League setup names differ from the parsed CSV. "
-                "Import validation and Create Shared League use **CSV teams**, not `room_team_names`."
-            )
+            from ui_user_copy import IMPORT_ROOM_MISMATCH
+
+            st.info(IMPORT_ROOM_MISMATCH)
         if diag.get("board_applied") and parsed and parsed != board:
-            st.warning(
-                "Board teams differ from the parsed CSV. The board may have been edited separately "
-                "or not refreshed from the latest validated import."
-            )
+            from ui_user_copy import IMPORT_BOARD_MISMATCH
+
+            st.warning(IMPORT_BOARD_MISMATCH)
         if shared and parsed and parsed != shared:
-            st.warning("Create Shared League team list differs from parsed CSV teams.")
+            from ui_user_copy import IMPORT_TEAM_MISMATCH
+
+            st.warning(IMPORT_TEAM_MISMATCH)
         if diag.get("league_created") and shared and shared != claim:
             st.warning(
                 "Active league claim teams differ from the Create Shared League team list."
@@ -470,7 +477,9 @@ def render_import_team_name_diagnostics_panel(
             and diag.get("parsed_matches_board")
             and (not shared or diag.get("parsed_matches_shared_league"))
         ):
-            st.success("Parsed CSV team names match the board and shared-league team lists.")
+            from ui_user_copy import IMPORT_TEAMS_MATCH
+
+            st.success(IMPORT_TEAMS_MATCH)
 
         board_diag = build_import_board_state_diagnostics(session)
         if board_diag:
@@ -975,19 +984,18 @@ def render_shared_league_creation_panel(
                 league_id = str((context.get("metadata") or {}).get("league_id") or "").strip()
                 if persist_ok:
                     session["workflow_sidebar_flash"] = (
-                        f"Saved **{league_name}** to Saved Drafts (not active). "
-                        f"Claimed **{my_team}** on the saved league."
-                        + (f" League ID: `{league_id}`." if league_id else "")
-                        + " Use **Set Active** in Saved Draft Library when ready."
+                        f"Saved **{league_name}** to your Draft Library (not active). "
+                        f"Claimed **{my_team}** on the saved league. "
+                        "Use **Set Active** in Saved Draft Library when ready."
                     )
                 else:
                     session["workflow_sidebar_flash"] = (
-                        f"Saved **{league_name}** in this session, but disk/cloud persist did not verify. "
-                        "Open **Saved Draft Library** → Persistence probe before invite/trade testing."
+                        f"Saved **{league_name}** in this session (not active). "
+                        f"Claimed **{my_team}** on the saved league."
                     )
                     st.warning(
-                        "Imported league is in session only — cloud/disk save did not verify. "
-                        "Check the Persistence probe (cloud readback count should be > 0)."
+                        "Imported league is in this session only — save did not verify. "
+                        "Open **Saved Draft Library** and save again before testing invites or trades."
                     )
                 session["_draft_library_last_saved_id"] = str(entry.get("draft_id") or "")
                 try:
@@ -1002,7 +1010,9 @@ def render_shared_league_creation_panel(
                     pass
                 st.rerun()
             except Exception as exc:
-                st.error(f"Could not save imported league: {exc}")
+                from ui_user_copy import format_user_error
+
+                st.error(format_user_error(exc))
 
 
 def render_validated_draft_import(
@@ -1233,7 +1243,8 @@ def render_import_pending_banner(st: Any, session: dict[str, Any]) -> None:
     exact = int(summary.get("exact") or 0)
     needs = int(summary.get("close") or 0) + int(summary.get("ambiguous") or 0) + int(summary.get("invalid") or 0)
     st.info(
-        f"**Draft import ready for review** — {exact} exact match(es), {needs} row(s) need confirmation. "
+        f"**Your uploaded draft is ready to review** — {exact} exact match(es), "
+        f"{needs} row(s) need confirmation. "
         "Use the **Import existing draft** section below to validate names, apply to the board, "
         "or create a shared league."
     )

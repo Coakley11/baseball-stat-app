@@ -1542,13 +1542,17 @@ def show_persistence_messages(st: Any) -> None:
     if warn:
         st.warning(str(warn))
     if st.session_state.pop(_SESSION_CLOUD_BANNER_KEY, None):
-        st.success("Restored your last session from the cloud")
+        from ui_user_copy import SESSION_RESTORED_BANNER
+
+        st.success(SESSION_RESTORED_BANNER)
     else:
         banner = st.session_state.pop(_SESSION_BANNER_KEY, None)
         if banner:
             st.success(str(banner))
     if st.session_state.pop(_SESSION_SAVED_FLASH_KEY, False):
-        st.toast("Settings saved", icon="💾")
+        from ui_user_copy import SETTINGS_SAVED_TOAST
+
+        st.toast(SETTINGS_SAVED_TOAST, icon="💾")
 
 
 def reset_confirm_session_key(app_id: str) -> str:
@@ -1617,7 +1621,9 @@ def render_reset_controls(
         pass
     pending = bool(st.session_state.get(reset_confirm_session_key(app_id)))
     with st.sidebar.expander("Saved session", expanded=pending):
-        st.caption("Your last page, filters, and inputs reload automatically.")
+        from ui_user_copy import SAVED_SESSION_CAPTION
+
+        st.caption(SAVED_SESSION_CAPTION)
         if pending:
             st.warning("This clears saved preferences for this app. Continue?")
             c1, c2 = st.columns(2)
