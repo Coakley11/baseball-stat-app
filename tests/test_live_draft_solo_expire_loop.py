@@ -33,21 +33,22 @@ class TestSoloPagePollGating(unittest.TestCase):
             self.assertFalse(solo_page_expire_poll_active(session, room))
             self.assertFalse(solo_cloud_page_poll_active(session, room))
 
-    def test_streamlit_cloud_solo_uses_throttled_page_poll(self) -> None:
+    def test_streamlit_cloud_solo_uses_wake_owner_not_page_poll(self) -> None:
         room = _in_progress_solo_room()
         session = {"live_draft_setup_mode": "solo", "live_draft_room": room}
         with mock.patch("live_draft_cloud_diagnostics.streamlit_cloud_runtime", return_value=True):
-            self.assertTrue(solo_page_expire_poll_active(session, room))
+            self.assertFalse(solo_page_expire_poll_active(session, room))
+            from live_draft_solo_expire_chain import solo_expire_owner
 
-    def test_ld_accept_local_harness_can_use_page_poll(self) -> None:
+            self.assertEqual(solo_expire_owner(session), "wake")
+
+    def test_local_solo_uses_fragment_owner(self) -> None:
         room = _in_progress_solo_room()
-        session = {
-            "live_draft_setup_mode": "solo",
-            "live_draft_room": room,
-            "_live_draft_cloud_accept_mode": True,
-        }
+        session = {"live_draft_setup_mode": "solo", "live_draft_room": room}
         with mock.patch("live_draft_cloud_diagnostics.streamlit_cloud_runtime", return_value=False):
-            self.assertTrue(solo_page_expire_poll_active(session, room))
+            from live_draft_solo_expire_chain import solo_expire_owner
+
+            self.assertEqual(solo_expire_owner(session), "fragment")
 
 
 class TestOrdinarySoloExpirePipeline(unittest.TestCase):
@@ -131,7 +132,7 @@ class TestSoloExpireLoopNoSupabase(unittest.TestCase):
             supa_req.assert_not_called()
             flush.assert_not_called()
 
-    def test_page_poll_chains_rerun_near_zero(self) -> None:
+    def test_page_poll_retired(self) -> None:
         room = _in_progress_solo_room()
         room["timer_deadline"] = time.time() + 1.0
         session = {
@@ -141,18 +142,16 @@ class TestSoloExpireLoopNoSupabase(unittest.TestCase):
             "draft_queue": [],
             "_live_draft_heavy_paint_done": True,
             "_live_draft_control_center_mount_log": [{"run_seq": 1}],
-            "_live_draft_cloud_accept_mode": True,
         }
         st = mock.MagicMock()
         with mock.patch(
-            "live_draft_cloud_diagnostics.streamlit_cloud_runtime", return_value=False
+            "live_draft_cloud_diagnostics.streamlit_cloud_runtime", return_value=True
         ), mock.patch("live_draft_safe_mode.request_live_draft_rerun", return_value=True) as rerun, mock.patch(
             "draft_room_context.poll_shared_draft_room"
         ) as poll, mock.patch("suite_storage_supabase._request") as supa_req:
             scheduled = schedule_solo_cloud_expire_poll(st, session, room)
-            self.assertTrue(scheduled)
-            rerun.assert_called_once()
-            self.assertEqual(rerun.call_args[0][2], "solo_cloud_poll")
+            self.assertFalse(scheduled)
+            rerun.assert_not_called()
             poll.assert_not_called()
             supa_req.assert_not_called()
 
@@ -174,6 +173,20 @@ class TestSoloExpireLoopNoSupabase(unittest.TestCase):
         self.assertEqual(report["idle_ticks"], 2)
         self.assertEqual(report["idle_reads_per_min"], 0.0)
         self.assertEqual(report["idle_writes_per_min"], 0.0)
+
+
+class TestSoloExpireChain(unittest.TestCase):
+    def test_expire_chain_records_commit_stages(self) -> None:
+        from live_draft_solo_expire_chain import note_solo_expire_chain, solo_expire_chain_summary
+
+        session: dict = {}
+        note_solo_expire_chain(session, "deadline_crossed", source="wake")
+        note_solo_expire_chain(session, "expire_entered", source="wake")
+        note_solo_expire_chain(session, "autopick_attempted", source="expire")
+        note_solo_expire_chain(session, "commit_confirmed", source="wake", pick_index=2)
+        summary = solo_expire_chain_summary(session)
+        self.assertEqual(summary["commits"], 1)
+        self.assertIn("commit_confirmed", summary["stages_tail"])
 
 
 if __name__ == "__main__":

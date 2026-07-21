@@ -24993,16 +24993,10 @@ elif active_page == "Live Draft Room":
         if _draft_in_progress and not _draft_is_complete and room and isinstance(room, dict):
             try:
                 from live_draft_solo_timer import is_solo_live_draft
-                from live_draft_solo_heartbeat import (
-                    render_solo_expire_watchdog,
-                    render_solo_live_draft_heartbeat,
-                    render_solo_timer_wake_button,
-                )
+                from live_draft_solo_heartbeat import render_solo_expire_owner
 
                 if is_solo_live_draft(st.session_state, room):
-                    render_solo_timer_wake_button(st, st.session_state, room)
-                    render_solo_live_draft_heartbeat(st, st.session_state, room)
-                    render_solo_expire_watchdog(st, st.session_state)
+                    render_solo_expire_owner(st, st.session_state, room)
             except ImportError:
                 pass
 
@@ -25100,6 +25094,13 @@ elif active_page == "Live Draft Room":
                     note_live_draft_page_load(st.session_state, room)
                 _owned_at = float(st.session_state.get(SOLO_FRAGMENT_OWNED_EXPIRE_KEY) or 0.0)
                 _fragment_recent = bool(_owned_at and (_solo_page_time.time() - _owned_at) < 2.0)
+                try:
+                    from live_draft_solo_expire_chain import solo_expire_owner
+
+                    if solo_expire_owner(st.session_state) == "wake":
+                        _fragment_recent = True
+                except ImportError:
+                    pass
                 _clock_is_zero = bool(solo_clock_expired(room)) if callable(solo_clock_expired) else False
                 try:
                     from live_draft_solo_heartbeat import solo_heartbeat_recent
@@ -26361,11 +26362,11 @@ elif active_page == "Live Draft Room":
 
     # Deferred full-app refresh after queue mutations — never mid-pass after Draft Queue.
     try:
-        from live_draft_solo_heartbeat import schedule_solo_cloud_expire_poll, solo_page_expire_poll_active
+        from live_draft_solo_expire_chain import render_solo_expire_chain_probe
 
-        _poll_room = st.session_state.get("live_draft_room")
-        if isinstance(_poll_room, dict) and solo_page_expire_poll_active(st.session_state, _poll_room):
-            schedule_solo_cloud_expire_poll(st, st.session_state, _poll_room)
+        _probe_room = st.session_state.get("live_draft_room")
+        if isinstance(_probe_room, dict):
+            render_solo_expire_chain_probe(st, st.session_state, _probe_room)
     except ImportError:
         pass
 

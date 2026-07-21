@@ -131,7 +131,7 @@ def emit_solo_timer_wake_click(st: Any, *, deadline: float | None = None) -> Non
 
 
 def render_solo_timer_wake_button(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
-    """Hidden control — JS clicks at countdown zero when fragments stall on Cloud."""
+    """Hidden control — JS clicks at countdown zero; sole Cloud expiration owner."""
     try:
         from live_draft_solo_timer import is_solo_live_draft
 
@@ -141,7 +141,30 @@ def render_solo_timer_wake_button(st: Any, session: dict[str, Any], room: dict[s
         return
     if str(room.get("status") or "") != "in_progress":
         return
+    try:
+        from live_draft_solo_expire_chain import note_solo_expire_chain, solo_expire_owner
+
+        if solo_expire_owner(session) != "wake":
+            return
+    except ImportError:
+        pass
     btn_key = solo_timer_wake_button_key(session, room)
+    st.markdown(
+        """<style>
+        button[aria-label="solo-timer-wake"],
+        button[title="solo-timer-wake"] {
+          position: fixed !important;
+          left: 0 !important;
+          top: 0 !important;
+          width: 1px !important;
+          height: 1px !important;
+          opacity: 0.01 !important;
+          z-index: 9999 !important;
+          pointer-events: auto !important;
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
     try:
         clicked = st.button(
             SOLO_WAKE_BUTTON_LABEL,
@@ -155,6 +178,19 @@ def render_solo_timer_wake_button(st: Any, session: dict[str, Any], room: dict[s
     pending_wake = bool(session.pop("_solo_timer_wake", None))
     if not (clicked or pending_wake or pending_rerun):
         return
+    try:
+        from live_draft_solo_expire_chain import note_solo_expire_chain
+
+        note_solo_expire_chain(
+            session,
+            "wake_received",
+            source="wake",
+            clicked=bool(clicked),
+            pending_rerun=pending_rerun,
+            pending_wake=pending_wake,
+        )
+    except ImportError:
+        pass
     result = run_solo_expire_tick(st, session, source="wake")
     need_rerun = bool(pending_rerun or pending_wake or clicked)
     if result is not None and result.ok and (result.advanced or result.complete):
@@ -238,112 +274,28 @@ def get_solo_timer_idle_egress_report(session: dict[str, Any]) -> dict[str, Any]
 
 
 def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
-    """Streamlit Cloud Solo: 1 Hz full-page poll — authoritative expire when fragments stall."""
-    if not solo_page_expire_poll_active(session, room):
-        return False
-    page = str(session.get("active_page") or session.get("active_page_name") or "").strip()
-    if page and page != "Live Draft Room":
-        return False
-    try:
-        from app_page_generation import fragment_allowed
-
-        if not fragment_allowed(session, expected_page="Live Draft Room"):
-            return False
-    except ImportError:
-        pass
-    try:
-        from live_draft_heavy_paint_ui import DEFER_HEAVY_LOADING_KEY, HEAVY_PAINT_DONE_KEY
-        from live_draft_cloud_diagnostics import CONTROL_CENTER_MOUNT_KEY
-
-        cc_log = list(session.get(CONTROL_CENTER_MOUNT_KEY) or [])
-        if not session.get(HEAVY_PAINT_DONE_KEY) and not cc_log:
-            if not session.get(DEFER_HEAVY_LOADING_KEY):
-                return False
-    except ImportError:
-        pass
-    try:
-        from suite_egress_policy import block_cloud_autosave_for_poll_sync
-
-        block_cloud_autosave_for_poll_sync(session)
-    except ImportError:
-        pass
-    expired = False
-    remaining_after = None
-    try:
-        from suite_egress_trace import egress_source
-
-        with egress_source("solo_timer_loop"):
-            result = run_solo_expire_tick(st, session, source="page_poll")
-    except ImportError:
-        result = run_solo_expire_tick(st, session, source="page_poll")
-    if result is not None and getattr(result, "ok", False) and (
-        getattr(result, "advanced", False) or getattr(result, "complete", False)
-    ):
-        expired = True
-    tick_room = _resolve_tick_room(session) or room
-    try:
-        from live_draft_timer_logic import live_draft_seconds_remaining
-
-        remaining_after = int(live_draft_seconds_remaining(tick_room))
-    except ImportError:
-        remaining_after = None
-    note_solo_timer_poll_tick(session, expired=expired)
-    session[SOLO_HEARTBEAT_TICK_KEY] = int(session.get(SOLO_HEARTBEAT_TICK_KEY) or 0) + 1
-    try:
-        from live_draft_solo_heartbeat_diagnostics import SOLO_HEARTBEAT_LAST_TICK_AT_KEY
-
-        session[SOLO_HEARTBEAT_LAST_TICK_AT_KEY] = time.time()
-    except ImportError:
-        pass
-    now = time.time()
-    min_iv = float(session.get(SOLO_CLOUD_POLL_MIN_INTERVAL_KEY) or SOLO_CLOUD_POLL_INTERVAL_SEC)
-    last_poll = float(session.get(SOLO_CLOUD_POLL_LAST_AT_KEY) or 0.0)
-    should_rerun = bool(
-        expired
-        or session.get(SOLO_WAKE_PENDING_RERUN_KEY)
-        or (remaining_after is not None and remaining_after <= 2)
-        or not last_poll
-        or (now - last_poll) >= min_iv
-    )
-    if not should_rerun:
-        return False
-    session[SOLO_CLOUD_POLL_LAST_AT_KEY] = now
-    try:
-        from live_draft_safe_mode import request_live_draft_rerun
-
-        return bool(request_live_draft_rerun(st, session, "solo_cloud_poll", room=tick_room))
-    except ImportError:
-        try:
-            st.rerun()
-            return True
-        except Exception:
-            return False
+    """Retired — Solo expiration uses one owner (wake on Cloud, fragment locally)."""
+    return False
 
 
 def solo_page_expire_poll_active(session: dict[str, Any], room: dict[str, Any] | None) -> bool:
-    """Low-rate page poll on Streamlit Cloud when the expire fragment may stall."""
-    try:
-        from live_draft_cloud_diagnostics import streamlit_cloud_runtime
-        from live_draft_solo_timer import is_solo_live_draft
-    except ImportError:
-        return False
-    if not isinstance(room, dict) or not is_solo_live_draft(session, room):
-        return False
-    if str(room.get("status") or "") != "in_progress":
-        return False
-    if streamlit_cloud_runtime():
-        return True
-    try:
-        from live_draft_cloud_diagnostics import cloud_accept_active
-
-        return bool(cloud_accept_active(session))
-    except ImportError:
-        return False
+    return False
 
 
 def solo_cloud_page_poll_active(session: dict[str, Any], room: dict[str, Any] | None) -> bool:
-    """Back-compat alias for mount gating."""
-    return solo_page_expire_poll_active(session, room)
+    return False
+
+
+def render_solo_expire_owner(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
+    """Mount exactly one Solo server expiration owner."""
+    try:
+        from live_draft_solo_expire_chain import solo_expire_owner
+    except ImportError:
+        solo_expire_owner = lambda _s: "fragment"  # type: ignore[assignment,misc]
+    owner = solo_expire_owner(session)
+    render_solo_timer_wake_button(st, session, room)
+    if owner == "fragment":
+        render_solo_live_draft_heartbeat(st, session, room)
 
 
 def _log_tick(
@@ -424,11 +376,22 @@ def _after_expire_success(
 
 
 def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "heartbeat") -> Any | None:
-    """Authoritative Solo expire step — safe to call from heartbeat or page fallback."""
+    """Authoritative Solo expire step — single owner entry (wake or fragment)."""
     tick_room = _resolve_tick_room(session)
     if not isinstance(tick_room, dict):
         _log_tick(session, None, phase=f"{source}_no_room")
         return None
+    try:
+        from live_draft_solo_expire_chain import note_solo_expire_chain, solo_expire_owner
+
+        note_solo_expire_chain(
+            session,
+            "expire_entered",
+            source=source,
+            owner=solo_expire_owner(session),
+        )
+    except ImportError:
+        pass
     try:
         from live_draft_solo_timer import (
             SOLO_EXPIRE_APPLIED_KEY,
@@ -459,8 +422,32 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
     )
 
     if not solo_clock_expired(tick_room):
+        try:
+            from live_draft_solo_expire_chain import note_solo_expire_chain
+
+            note_solo_expire_chain(
+                session,
+                "expire_rejected",
+                source=source,
+                reason="not_expired",
+                remaining=remaining,
+            )
+        except ImportError:
+            pass
         return None
 
+    try:
+        from live_draft_solo_expire_chain import note_solo_expire_chain
+
+        note_solo_expire_chain(
+            session,
+            "deadline_crossed",
+            source=source,
+            remaining=remaining,
+            deadline=deadline,
+        )
+    except ImportError:
+        pass
     note_solo_fragment_owned_expire(session)
     from live_draft_solo_timer import expire_current_pick_and_advance
 
@@ -492,6 +479,19 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
     )
 
     if result.ok and (result.advanced or result.complete):
+        try:
+            from live_draft_solo_expire_chain import note_solo_expire_chain
+
+            note_solo_expire_chain(
+                session,
+                "commit_confirmed",
+                source=source,
+                reason=getattr(result, "reason", ""),
+                pick_index=int(tick_room.get("current_pick_index") or 0),
+                new_deadline=tick_room.get("timer_deadline"),
+            )
+        except ImportError:
+            pass
         rerun_ok = _after_expire_success(
             st, session, tick_room, result, commit_source=source
         )
@@ -506,12 +506,33 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
             rerender_requested=True,
             rerender_completed=rerun_ok,
         )
+    elif result is not None:
+        try:
+            from live_draft_solo_expire_chain import note_solo_expire_chain
+
+            note_solo_expire_chain(
+                session,
+                "expire_rejected",
+                source=source,
+                reason=getattr(result, "reason", ""),
+                error=getattr(result, "error", ""),
+            )
+        except ImportError:
+            pass
     return result
 
 
 def render_solo_live_draft_heartbeat(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
-    """Mount the sole Solo 1 Hz fragment — expire at zero, no banner repaints."""
+    """Mount the sole Solo 1 Hz fragment — local-only expiration owner."""
     del room  # always read authoritative room from session on each tick
+    try:
+        from live_draft_solo_expire_chain import solo_expire_owner
+
+        if solo_expire_owner(session) != "fragment":
+            session.pop(SOLO_HEARTBEAT_ACTIVE_KEY, None)
+            return
+    except ImportError:
+        pass
     try:
         from live_draft_solo_timer import is_solo_live_draft
 
@@ -604,32 +625,5 @@ def render_solo_live_draft_heartbeat(st: Any, session: dict[str, Any], room: dic
 
 
 def render_solo_expire_watchdog(st: Any, session: dict[str, Any]) -> None:
-    """Secondary 1 Hz expire path when the primary heartbeat stops ticking (Cloud headless)."""
-    try:
-        from live_draft_solo_timer import is_solo_live_draft
-    except ImportError:
-        return
-    live = _resolve_tick_room(session)
-    if not isinstance(live, dict) or not is_solo_live_draft(session, live):
-        return
-    if str(live.get("status") or "") != "in_progress":
-        return
-    fragment = getattr(st, "fragment", None)
-    if fragment is None:
-        return
-
-    @fragment(run_every=1)
-    def _solo_expire_watchdog() -> None:
-        if solo_heartbeat_recent(session, max_age_sec=2.5):
-            return
-        try:
-            run_solo_expire_tick(st, session, source="watchdog")
-        except Exception as exc:
-            try:
-                from live_draft_solo_heartbeat_diagnostics import note_solo_heartbeat_error
-
-                note_solo_heartbeat_error(session, exc)
-            except ImportError:
-                pass
-
-    _solo_expire_watchdog()
+    """Retired — Solo expiration uses one owner (wake on Cloud, fragment locally)."""
+    return

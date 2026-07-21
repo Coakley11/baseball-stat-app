@@ -261,6 +261,17 @@ def expire_current_pick_and_advance(
     snapshot = build_solo_expire_snapshot(room)
     guard = _guard_token(snapshot)
     if str(room.get(SOLO_EXPIRE_APPLIED_KEY) or "") == guard:
+        try:
+            from live_draft_solo_expire_chain import note_solo_expire_chain
+
+            note_solo_expire_chain(
+                session,
+                "idempotent_skip",
+                source="expire",
+                guard=guard,
+            )
+        except ImportError:
+            pass
         if snapshot.total_configured_picks > 0 and snapshot.committed_picks >= snapshot.total_configured_picks:
             room["status"] = "complete"
             live_draft_clear_timer(room)
@@ -319,6 +330,12 @@ def expire_current_pick_and_advance(
 
     t_commit0 = time.perf_counter()
     board_before_expire = int(snapshot.committed_picks)
+    try:
+        from live_draft_solo_expire_chain import note_solo_expire_chain
+
+        note_solo_expire_chain(session, "autopick_attempted", source="expire", team=snapshot.team)
+    except ImportError:
+        pass
     try:
         from live_draft_autopick import live_draft_auto_pick
 

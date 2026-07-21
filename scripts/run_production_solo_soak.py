@@ -85,6 +85,30 @@ def scrape_state(page) -> dict[str, Any]:
         return {}
 
 
+def scrape_expire_chain(page) -> dict[str, Any]:
+    try:
+        raw = page.evaluate(
+            """() => {
+              function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+              for (const root of roots()) {
+                const el = root.querySelector('#solo-expire-chain');
+                if (!el) continue;
+                return {
+                  owner: el.getAttribute('data-owner') || '',
+                  commits: parseInt(el.getAttribute('data-commits') || '0', 10),
+                  last: el.getAttribute('data-last') || '',
+                  chain: el.getAttribute('data-chain') || '',
+                  log: el.getAttribute('data-log') || '',
+                };
+              }
+              return {};
+            }"""
+        )
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
 def parse_acceptance_stamp(text: str) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for line in text.splitlines():
@@ -314,11 +338,17 @@ def wait_for_natural_expirations(
     monitor.begin_idle_window()
     timer_samples: list[int] = []
     last_low_timer_at: float | None = None
+    chain_samples: list[dict[str, Any]] = []
 
     while time.time() < deadline and len(events) < need:
         page.wait_for_timeout(1500)
         cur = scrape_state(page)
         stamp = parse_acceptance_stamp(all_frames_text(page))
+        chain = scrape_expire_chain(page)
+        if chain:
+            report["expire_chain_final"] = chain
+            if not chain_samples or chain_samples[-1].get("commits") != chain.get("commits"):
+                chain_samples.append({**chain, "ts": time.time()})
         if stamp:
             report["acceptance_stamp_final"] = stamp
         tval = cur.get("timer")
@@ -339,6 +369,8 @@ def wait_for_natural_expirations(
             evt["stamp"] = stamp
             evt["hb_ticks"] = stamp.get("hb_ticks")
             evt["exp_commits"] = stamp.get("exp_commits")
+            evt["chain_commits"] = chain.get("commits")
+            evt["chain_last"] = chain.get("last")
             evt["pick_before"] = last_pick
             evt["pick_after"] = pick_now
             events.append(evt)
@@ -355,6 +387,7 @@ def wait_for_natural_expirations(
             report.setdefault("errors", []).append(f"timer_frozen_at_zero_before_exp_{len(events)+1}")
 
     report["natural_expiration_events"] = events
+    report["expire_chain_samples"] = chain_samples[-24:]
     report["timer_samples_during_expirations"] = timer_samples[-40:]
     report["idle_egress_during_countdown"] = monitor.idle_rates()
     return events
@@ -463,8 +496,14 @@ def main() -> int:
             report["latencies"] = latencies
 
             final_stamp = parse_acceptance_stamp(all_frames_text(page))
+            final_chain = scrape_expire_chain(page)
             report["acceptance_stamp_final"] = final_stamp
-            report["expiration_commits"] = int(final_stamp.get("exp_commits") or len(exp_events))
+            report["expire_chain_final"] = final_chain or report.get("expire_chain_final") or {}
+            report["expiration_commits"] = max(
+                int(final_stamp.get("exp_commits") or 0),
+                int((report.get("expire_chain_final") or {}).get("commits") or 0),
+                len(exp_events),
+            )
             report["heartbeat_ticks"] = int(final_stamp.get("hb_ticks") or 0)
             report["board_advances"] = [e.get("board_delta") for e in exp_events]
             report["new_deadlines"] = [e.get("timer_after") for e in exp_events]
@@ -476,7 +515,31 @@ def main() -> int:
             )
             report["full_room_loads"] = monitor.full_room_loads
             report["full_room_callers"] = monitor.full_room_callers
-            report["solo_poll_owner"] = final_stamp.get("solo_poll") or "local_page_js_countdown"
+            report["solo_poll_owner"] = (
+                (report.get("expire_chain_final") or {}).get("owner")
+                or final_stamp.get("solo_poll")
+                or "wake_cloud"
+            )
+            if len(exp_events) < 4:
+                chain = report.get("expire_chain_final") or {}
+                report["expire_chain_diagnosis"] = {
+                    "owner": chain.get("owner"),
+                    "commits": chain.get("commits"),
+                    "last_stage": chain.get("last"),
+                    "chain": chain.get("chain"),
+                }
+                if not chain:
+                    report["errors"].append("expire_chain_probe_missing")
+                elif int(chain.get("commits") or 0) == 0:
+                    last = str(chain.get("last") or "")
+                    if last == "wake_received" and "deadline_crossed" not in str(chain.get("chain") or ""):
+                        report["errors"].append("wake_received_but_no_deadline_crossed")
+                    elif "deadline_crossed" in str(chain.get("chain") or "") and "commit_confirmed" not in str(
+                        chain.get("chain") or ""
+                    ):
+                        report["errors"].append("deadline_crossed_but_no_commit")
+                    elif not last:
+                        report["errors"].append("expire_chain_empty_no_server_ticks")
 
             egress_high = (
                 float(report["idle_supabase_reads_per_min"] or 0) > 2.0
