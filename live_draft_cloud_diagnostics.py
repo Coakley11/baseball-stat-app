@@ -18,6 +18,25 @@ BLOCKING_OPS_KEY = "_live_draft_cloud_blocking_ops"
 MAX_LOG = 120
 
 
+def _qp_get(st: Any, name: str) -> str:
+    try:
+        raw = getattr(st, "query_params", None)
+        if raw is None:
+            return ""
+        val = raw.get(name)
+    except Exception:
+        return ""
+    if val is None:
+        return ""
+    if isinstance(val, list):
+        return str(val[0] or "").strip()
+    return str(val).strip()
+
+
+def _qp_flag(st: Any, name: str) -> bool:
+    return _qp_get(st, name).lower() in ("1", "true", "yes", "on")
+
+
 def _streamlit_cloud_runtime() -> bool:
     import os
 
@@ -39,21 +58,10 @@ def bootstrap_cloud_accept_mode(st: Any, session: dict[str, Any]) -> bool:
     """Enable admin diagnostics/canary for internal Cloud acceptance (?ld_accept=1)."""
     if session.get(CLOUD_ACCEPT_KEY):
         return True
-    raw = None
-    ld_canary_raw = None
-    try:
-        qp = getattr(st, "query_params", None)
-        if qp is not None:
-            raw = qp.get("ld_accept")
-            ld_canary_raw = qp.get("ld_canary")
-    except Exception:
+    if not _qp_flag(st, "ld_accept"):
         return False
-    if raw is None or str(raw).strip().lower() not in ("1", "true", "yes", "on"):
-        return False
-    paired_canary = str(ld_canary_raw or "").strip().lower() in ("1", "true", "yes", "on")
-    allowed = paired_canary
-    if not allowed:
-        allowed = _streamlit_cloud_runtime()
+    paired_canary = _qp_flag(st, "ld_canary")
+    allowed = paired_canary or _streamlit_cloud_runtime()
     if not allowed:
         try:
             from suite_workspace import is_admin_session
@@ -70,7 +78,7 @@ def bootstrap_cloud_accept_mode(st: Any, session: dict[str, Any]) -> bool:
     except ImportError:
         pass
     session[CLOUD_ACCEPT_KEY] = True
-    if str(ld_canary_raw or "").strip().lower() in ("1", "true", "yes", "on"):
+    if paired_canary:
         session[CANARY_MODE_KEY] = True
     return True
 
@@ -138,15 +146,9 @@ def cloud_canary_requested(st: Any, session: dict[str, Any]) -> bool:
     bootstrap_cloud_accept_mode(st, session)
     if session.get(CANARY_MODE_KEY):
         return True
-    try:
-        qp = getattr(st, "query_params", None)
-        if qp is not None:
-            raw = qp.get("ld_canary")
-            if raw is not None and str(raw).strip().lower() in ("1", "true", "yes", "on"):
-                session[CANARY_MODE_KEY] = True
-                return True
-    except Exception:
-        pass
+    if _qp_flag(st, "ld_canary"):
+        session[CANARY_MODE_KEY] = True
+        return True
     return False
 
 
