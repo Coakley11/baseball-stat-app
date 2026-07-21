@@ -183,6 +183,23 @@ def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict
         return False
     if str(room.get("status") or "") != "in_progress":
         return False
+    page = str(session.get("active_page") or session.get("active_page_name") or "").strip()
+    if page and page != "Live Draft Room":
+        return False
+    try:
+        from app_page_generation import fragment_allowed
+
+        if not fragment_allowed(session, expected_page="Live Draft Room"):
+            return False
+    except ImportError:
+        pass
+    try:
+        from live_draft_heavy_paint_ui import HEAVY_PAINT_DONE_KEY
+
+        if not session.get(HEAVY_PAINT_DONE_KEY):
+            return False
+    except ImportError:
+        pass
     run_solo_expire_tick(st, session, source="page_poll")
     session[SOLO_HEARTBEAT_TICK_KEY] = int(session.get(SOLO_HEARTBEAT_TICK_KEY) or 0) + 1
     try:
@@ -193,7 +210,7 @@ def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict
         pass
     now = time.time()
     last = float(session.get("_solo_cloud_poll_at") or 0.0)
-    if now - last < 0.85:
+    if now - last < 1.0:
         return False
     session["_solo_cloud_poll_at"] = now
     try:
