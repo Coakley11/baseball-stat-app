@@ -150,6 +150,12 @@ def render_solo_live_draft_heartbeat(st: Any, session: dict[str, Any], room: dic
                         zero_to_commit_ms=result.zero_to_commit_ms,
                         team_after=result.team_on_clock,
                     )
+                    try:
+                        from live_draft_cloud_diagnostics import note_expiration_commit
+
+                        note_expiration_commit(session, source="solo_heartbeat")
+                    except ImportError:
+                        pass
                 except ImportError:
                     pass
                 session["_live_draft_solo_board_stale"] = True

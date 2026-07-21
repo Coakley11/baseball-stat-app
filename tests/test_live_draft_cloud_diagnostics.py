@@ -7,7 +7,10 @@ from live_draft_cloud_diagnostics import (
     _qp_get,
     bootstrap_cloud_accept_mode,
     control_center_mount_summary,
+    get_acceptance_snapshot,
     note_control_center_mount,
+    note_expiration_commit,
+    note_manual_panel_mount,
 )
 
 
@@ -45,3 +48,14 @@ def test_control_center_mount_summary():
     summary = control_center_mount_summary(session)
     assert "render_live_draft_control_center" in summary
     assert "mounts=1" in summary
+
+
+def test_acceptance_snapshot_tracks_mounts_and_expirations():
+    session: dict = {}
+    note_control_center_mount(session, source="render_live_draft_control_center")
+    note_manual_panel_mount(session, source="render_live_manual_draft_panel")
+    note_expiration_commit(session, source="solo_heartbeat")
+    snap = get_acceptance_snapshot(session)
+    assert snap["control_center_mounts"] == 1
+    assert snap["manual_panel_mounts"] == 1
+    assert snap["expiration_commits"] == 1

@@ -53,6 +53,8 @@ def get_start_stage_report(session: dict[str, Any]) -> dict[str, Any]:
 def mark_defer_heavy_first_paint(session: dict[str, Any]) -> None:
     """Skip recommendations/photos/decision panels on the first active-page paint."""
     session[DEFER_HEAVY_PAINT_KEY] = True
+    session.pop("_live_draft_defer_heavy_loading", None)
+    session.pop("_live_draft_heavy_paint_done", None)
 
 
 def should_defer_heavy_first_paint(session: dict[str, Any]) -> bool:

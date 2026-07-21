@@ -16,6 +16,8 @@ CLOUD_ACCEPT_KEY = "_live_draft_cloud_accept_mode"
 START_STAGE_LOG_KEY = "_live_draft_cloud_start_stage_log"
 BLOCKING_OPS_KEY = "_live_draft_cloud_blocking_ops"
 CONTROL_CENTER_MOUNT_KEY = "_live_draft_control_center_mount_log"
+MANUAL_PANEL_MOUNT_KEY = "_live_draft_manual_panel_mount_log"
+EXPIRATION_COMMIT_KEY = "_live_draft_expiration_commit_count"
 MAX_LOG = 120
 
 
@@ -137,6 +139,112 @@ def note_control_center_mount(session: dict[str, Any], *, source: str = "control
         }
     )
     session[CONTROL_CENTER_MOUNT_KEY] = log[-MAX_LOG:]
+
+
+def control_center_mount_count(session: dict[str, Any]) -> int:
+    seq = int(session.get(RUN_SEQ_KEY) or 0)
+    log = list(session.get(CONTROL_CENTER_MOUNT_KEY) or [])
+    return sum(1 for row in log if isinstance(row, dict) and int(row.get("run_seq") or 0) == seq)
+
+
+def note_manual_panel_mount(session: dict[str, Any], *, source: str = "manual_panel") -> None:
+    log = list(session.get(MANUAL_PANEL_MOUNT_KEY) or [])
+    log.append(
+        {
+            "ts": time.time(),
+            "source": str(source),
+            "run_seq": int(session.get(RUN_SEQ_KEY) or 0),
+        }
+    )
+    session[MANUAL_PANEL_MOUNT_KEY] = log[-MAX_LOG:]
+
+
+def manual_panel_mount_count(session: dict[str, Any]) -> int:
+    seq = int(session.get(RUN_SEQ_KEY) or 0)
+    log = list(session.get(MANUAL_PANEL_MOUNT_KEY) or [])
+    return sum(1 for row in log if isinstance(row, dict) and int(row.get("run_seq") or 0) == seq)
+
+
+def manual_panel_mount_summary(session: dict[str, Any]) -> str:
+    log = list(session.get(MANUAL_PANEL_MOUNT_KEY) or [])
+    if not log:
+        return "none"
+    return f"mounts={len(log)} last={log[-1].get('source')} seq={log[-1].get('run_seq')}"
+
+
+def note_expiration_commit(session: dict[str, Any], *, source: str = "solo_heartbeat") -> None:
+    session[EXPIRATION_COMMIT_KEY] = int(session.get(EXPIRATION_COMMIT_KEY) or 0) + 1
+    log = list(session.get(ACTION_LOG_KEY) or [])
+    log.append(
+        {
+            "action": "expiration_commit",
+            "source": str(source),
+            "count": int(session.get(EXPIRATION_COMMIT_KEY) or 0),
+            "received_at": time.time(),
+        }
+    )
+    session[ACTION_LOG_KEY] = log[-MAX_LOG:]
+
+
+def expiration_commit_count(session: dict[str, Any]) -> int:
+    return int(session.get(EXPIRATION_COMMIT_KEY) or 0)
+
+
+def get_acceptance_snapshot(session: dict[str, Any], room: dict[str, Any] | None = None) -> dict[str, Any]:
+    fields = _snapshot_fields(session, room)
+    try:
+        from live_draft_heavy_paint_ui import HEAVY_PAINT_DONE_KEY, heavy_fragment_mount_count
+
+        heavy_done = bool(session.get(HEAVY_PAINT_DONE_KEY))
+        heavy_mounts = heavy_fragment_mount_count(session)
+    except ImportError:
+        heavy_done = False
+        heavy_mounts = 0
+    try:
+        from live_draft_solo_heartbeat import SOLO_HEARTBEAT_TICK_KEY, solo_heartbeat_active
+
+        hb_ticks = int(session.get(SOLO_HEARTBEAT_TICK_KEY) or 0)
+        hb_active = solo_heartbeat_active(session)
+    except ImportError:
+        hb_ticks = 0
+        hb_active = False
+    runs = list(session.get(RUN_LOG_KEY) or [])
+    render_seq = [int(r.get("seq") or 0) for r in runs[-6:] if isinstance(r, dict)]
+    return {
+        "control_center_mounts": control_center_mount_count(session),
+        "manual_panel_mounts": manual_panel_mount_count(session),
+        "heavy_fragment_mounts": heavy_mounts,
+        "heavy_paint_done": heavy_done,
+        "paint_token": fields.get("paint_token"),
+        "render_sequence": render_seq,
+        "fragment_owners": dict(session.get(FRAGMENT_OWNERS_KEY) or {}),
+        "draft_id": fields.get("draft_id"),
+        "pick_index": fields.get("pick_index"),
+        "revision": fields.get("revision"),
+        "heartbeat_ticks": hb_ticks,
+        "heartbeat_active": hb_active,
+        "expiration_commits": expiration_commit_count(session),
+        "run_seq": int(session.get(RUN_SEQ_KEY) or 0),
+    }
+
+
+def render_acceptance_stamp(st: Any, session: dict[str, Any], room: dict[str, Any] | None = None) -> None:
+    if not cloud_accept_active(session):
+        return
+    snap = get_acceptance_snapshot(session, room)
+    st.caption(
+        "LDR accept · "
+        f"cc_mounts={snap.get('control_center_mounts')} · "
+        f"manual_mounts={snap.get('manual_panel_mounts')} · "
+        f"paint_tok={snap.get('paint_token') or '—'} · "
+        f"run_seq={snap.get('render_sequence') or '—'} · "
+        f"frag={snap.get('fragment_owners') or '—'} · "
+        f"id={snap.get('draft_id') or '—'} · "
+        f"pick={snap.get('pick_index') if snap.get('pick_index') is not None else '—'} · "
+        f"rev={snap.get('revision') or '—'} · "
+        f"hb_ticks={snap.get('heartbeat_ticks')} · "
+        f"exp_commits={snap.get('expiration_commits')}"
+    )
 
 
 def control_center_mount_summary(session: dict[str, Any]) -> str:
@@ -374,8 +482,15 @@ def render_admin_diag_panel(st: Any, session: dict[str, Any]) -> None:
     if not _admin_ok(st, session):
         return
     with st.expander("Live Draft Cloud diagnostics", expanded=False):
+        snap = get_acceptance_snapshot(session)
+        st.caption(f"Acceptance snapshot: {snap}")
         st.caption(f"Fragment owners: {fragment_owner_summary(session)}")
         st.caption(f"Control center mounts: {control_center_mount_summary(session)}")
+        st.caption(f"Manual panel mounts: {manual_panel_mount_summary(session)}")
+        st.caption(
+            f"Heartbeat ticks: {snap.get('heartbeat_ticks')} · active={snap.get('heartbeat_active')} · "
+            f"expiration commits: {snap.get('expiration_commits')}"
+        )
         st.caption(
             f"Solo no-fragment: {solo_no_fragment_mode(session)} · canary: {bool(session.get(CANARY_MODE_KEY))} · "
             f"cloud_accept: {cloud_accept_active(session)}"

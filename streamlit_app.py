@@ -23079,6 +23079,14 @@ elif active_page == "Live Draft Room":
                             st.session_state,
                             draft_creation_attempted=True,
                         )
+                    _accept_timer_seconds = LIVE_DRAFT_TIMER_CHOICES[live_timer_label]
+                    try:
+                        from live_draft_cloud_diagnostics import CANARY_MODE_KEY, cloud_accept_active
+
+                        if cloud_accept_active(st.session_state) and not st.session_state.get(CANARY_MODE_KEY):
+                            _accept_timer_seconds = 15
+                    except ImportError:
+                        pass
                     config = {
                         "league_name": live_league_name.strip() or "My Fantasy League",
                         "num_teams": int(live_num_teams),
@@ -23086,7 +23094,7 @@ elif active_page == "Live Draft Room":
                         "draft_type": "snake",
                         "scoring_type": live_scoring,
                         "fantasy_format": fantasy_format,
-                        "timer_seconds": LIVE_DRAFT_TIMER_CHOICES[live_timer_label],
+                        "timer_seconds": _accept_timer_seconds,
                         "auto_pick_rule": live_auto_rule,
                         "projection_style": live_proj_style,
                         "projection_window": int(live_proj_window),
@@ -25090,6 +25098,12 @@ elif active_page == "Live Draft Room":
                                 "solo_expire_page_fallback",
                                 zero_to_commit_ms=_solo_expire.zero_to_commit_ms,
                             )
+                            try:
+                                from live_draft_cloud_diagnostics import note_expiration_commit
+
+                                note_expiration_commit(st.session_state, source="page_fallback")
+                            except ImportError:
+                                pass
                         except ImportError:
                             pass
                         try:
@@ -25307,30 +25321,39 @@ elif active_page == "Live Draft Room":
                 )
             except ImportError:
                 pass
-            st.markdown('<div class="live-draft-board-panel">', unsafe_allow_html=True)
-            st.subheader("Draft Board")
-            board_df = live_draft_build_board_df(room)
-            if board_df.empty:
-                st.caption("No picks yet.")
-            else:
-                _highlight_board_row = False
-                try:
-                    from live_draft_ux import (
-                        consume_latest_board_row_highlight,
-                        note_live_draft_board_pick_flash,
-                    )
+            with st.container(border=True):
+                st.subheader("Draft Board")
+                board_df = live_draft_build_board_df(room)
+                if board_df.empty:
+                    st.caption("No picks yet.")
+                else:
+                    _highlight_board_row = False
+                    try:
+                        from live_draft_ux import (
+                            consume_latest_board_row_highlight,
+                            note_live_draft_board_pick_flash,
+                        )
 
-                    note_live_draft_board_pick_flash(st.session_state, st, len(board_df))
-                    _highlight_board_row = consume_latest_board_row_highlight(st.session_state)
-                except ImportError:
-                    pass
-                _board_display = format_fantasy_table(clean_ui_columns(board_df))
-                try:
-                    from live_draft_perf import PHASE_BOARD_TABLE, live_draft_perf_action
+                        note_live_draft_board_pick_flash(st.session_state, st, len(board_df))
+                        _highlight_board_row = consume_latest_board_row_highlight(st.session_state)
+                    except ImportError:
+                        pass
+                    _board_display = format_fantasy_table(clean_ui_columns(board_df))
+                    try:
+                        from live_draft_perf import PHASE_BOARD_TABLE, live_draft_perf_action
 
-                    with live_draft_perf_action(
-                        st.session_state, "board_table", phase=PHASE_BOARD_TABLE
-                    ):
+                        with live_draft_perf_action(
+                            st.session_state, "board_table", phase=PHASE_BOARD_TABLE
+                        ):
+                            render_output_table(
+                                _board_display,
+                                key="live_draft_board",
+                                file_name="live_draft_board.csv",
+                                display_rows=80,
+                                style_cols=["Fantasy Edge", "Player Grade"],
+                                highlight_last_row=_highlight_board_row,
+                            )
+                    except ImportError:
                         render_output_table(
                             _board_display,
                             key="live_draft_board",
@@ -25339,16 +25362,6 @@ elif active_page == "Live Draft Room":
                             style_cols=["Fantasy Edge", "Player Grade"],
                             highlight_last_row=_highlight_board_row,
                         )
-                except ImportError:
-                    render_output_table(
-                        _board_display,
-                        key="live_draft_board",
-                        file_name="live_draft_board.csv",
-                        display_rows=80,
-                        style_cols=["Fantasy Edge", "Player Grade"],
-                        highlight_last_row=_highlight_board_row,
-                    )
-            st.markdown("</div>", unsafe_allow_html=True)
             try:
                 from live_draft_ux_latency import mark_ux_milestone
 
@@ -25425,589 +25438,596 @@ elif active_page == "Live Draft Room":
                 except ImportError:
                     remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
                     _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
-                if _defer_heavy_paint:
-                    st.caption(
-                        "Draft is live — controls and timer are ready. "
-                        "Loading recommendations and decision tools…"
-                    )
-                if not _defer_heavy_paint:
-                    _rec_team = str(on_clock_team or slot.get("Team") or "").strip() or None
-                    _LIVE_REC_TOP_N = 10
-                    _skip_for_setup = False
-                    try:
-                        from live_draft_start_progress import is_live_draft_start_in_flight
-
-                        _skip_for_setup = is_live_draft_start_in_flight(st.session_state)
-                    except ImportError:
-                        pass
-                    try:
-                        from live_draft_setup_persist import should_skip_live_draft_recommendations
-
-                        if should_skip_live_draft_recommendations(st.session_state, room):
-                            _skip_for_setup = True
-                    except ImportError:
-                        pass
-                    # Active/picking rooms must never stay blank because start_in_flight stuck
-                    # or a timer/queue tick deferred scoring with an empty cache.
-                    _room_status = str(room.get("status") or "").strip()
-                    _room_picking = _room_status in ("in_progress", "paused") or bool(
-                        room.get("draft_board")
-                    )
-                    if _room_picking:
-                        _skip_for_setup = False
-                    _expensive_ok = True
-                    try:
-                        from live_draft_rerun_scope import live_draft_expensive_recompute_required
-
-                        _expensive_ok = live_draft_expensive_recompute_required(st.session_state)
-                    except ImportError:
-                        pass
-                    _defer_recs = bool(_skip_for_setup or not _expensive_ok)
-                    top_rec = best_avail = pos_fit = value_sleep = None
-                    _rec_entry = None
-                    if not _defer_recs:
-                        top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
-                            st.session_state,
-                            room,
-                            top_n=_LIVE_REC_TOP_N,
-                            team=_rec_team,
-                        )
-                    else:
-                        # Timer-only tick / setup: reuse last good cache — never blank player rows.
-                        try:
-                            from live_draft_ui_cache import REC_CACHE_KEY
-
-                            _rec_entry = st.session_state.get(REC_CACHE_KEY)
-                        except ImportError:
-                            _rec_entry = st.session_state.get("_live_draft_rec_cache")
-                        if isinstance(_rec_entry, dict) and _rec_entry.get("top_rec") is not None:
-                            top_rec = _rec_entry.get("top_rec")
-                            best_avail = _rec_entry.get("best_avail")
-                            pos_fit = _rec_entry.get("pos_fit")
-                            value_sleep = _rec_entry.get("value_sleep")
-                        # Empty/missing cache would blank the UI — compute once for active rooms.
-                        if top_rec is None or getattr(top_rec, "empty", True):
-                            if _room_picking or not _skip_for_setup:
-                                top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
-                                    st.session_state,
-                                    room,
-                                    top_n=_LIVE_REC_TOP_N,
-                                    team=_rec_team,
-                                )
-                                _defer_recs = False
-                    if top_rec is None:
-                        top_rec = pd.DataFrame()
-                    if best_avail is None:
-                        best_avail = pd.DataFrame()
-                    if pos_fit is None:
-                        pos_fit = pd.DataFrame()
-                    if value_sleep is None:
-                        value_sleep = pd.DataFrame()
-                    # Last-chance: active room with empty tables after defer path — force recompute.
-                    if _room_picking and getattr(top_rec, "empty", True):
-                        top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
-                            st.session_state,
-                            room,
-                            top_n=_LIVE_REC_TOP_N,
-                            team=_rec_team,
-                        )
-                        _defer_recs = False
-                        if top_rec is None:
-                            top_rec = pd.DataFrame()
-                        if best_avail is None:
-                            best_avail = pd.DataFrame()
-                        if pos_fit is None:
-                            pos_fit = pd.DataFrame()
-                        if value_sleep is None:
-                            value_sleep = pd.DataFrame()
-                    try:
-                        from live_draft_start_progress import flush_pending_live_draft_created_activity, mark_start_step
-
-                        flush_pending_live_draft_created_activity(st.session_state, room)
-                        mark_start_step(st.session_state, "recommendations_loaded", recommendations_loaded=True)
-                    except ImportError:
-                        pass
-                    try:
-                        from live_draft_ui_cache import (
-                            cached_live_draft_get_available,
-                            get_cached_live_draft_decision_context,
-                            live_draft_ui_cache_key,
-                            store_live_draft_decision_context,
-                        )
-
-                        _ui_cache_key = live_draft_ui_cache_key(
-                            st.session_state,
-                            room,
-                            top_n=_LIVE_REC_TOP_N,
-                            team=_rec_team,
-                        )
-                        _available_cached = cached_live_draft_get_available(st.session_state, room)
-                    except ImportError:
-                        _ui_cache_key = None
-                        _available_cached = live_draft_get_available(room)
-                    try:
-                        from draft_room_runtime_diagnostics import record_scoring_pipeline_stage
-
-                        record_scoring_pipeline_stage(st.session_state, "displayed", _available_cached)
-                    except Exception:
-                        pass
-                    try:
-                        from live_draft_render_trace import ldr_section_done
-
-                        ldr_section_done(
-                            st.session_state,
-                            "room_recommendations",
-                            st=st,
-                            deferred=bool(_defer_recs),
-                        )
-                    except ImportError:
-                        pass
-                    try:
-                        from live_draft_render_checkpoints import note_active_page_receipt
-
-                        note_active_page_receipt(st.session_state, "recommendations_complete", True)
-                    except ImportError:
-                        pass
-                    _tracker_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
-                    _gaps: list[str] = []
-                    _category_needs: list[str] = []
-                    if _tracker_team and _tracker_team != "—":
-                        try:
-                            from live_draft_render_trace import ldr_section
-
-                            ldr_section(
-                                st.session_state,
-                                "room_decision_panels",
-                                st=st,
-                                tracker_team=str(_tracker_team),
-                            )
-                        except ImportError:
-                            pass
-                        try:
-                            from live_draft_category_outlook import compute_category_outlook
-                            from live_draft_roster_tracker import build_team_roster_tracker, roster_df_for_team
-                            from live_draft_room_ui import render_draft_decision_panel
-
-                            _decision_ctx = None
-                            if _ui_cache_key is not None:
-                                _decision_ctx = get_cached_live_draft_decision_context(
-                                    st.session_state,
-                                    room,
-                                    tracker_team=_tracker_team,
-                                    cache_key=_ui_cache_key,
-                                )
-                            if _decision_ctx:
+                def _paint_heavy_recommendations_body() -> None:
+                                _rec_team = str(on_clock_team or slot.get("Team") or "").strip() or None
+                                _LIVE_REC_TOP_N = 10
+                                _skip_for_setup = False
                                 try:
-                                    from live_draft_perf import PHASE_DECISION_CONTEXT, record_cache_action
+                                    from live_draft_start_progress import is_live_draft_start_in_flight
 
-                                    record_cache_action(
-                                        st.session_state,
-                                        "decision_context",
-                                        phase=PHASE_DECISION_CONTEXT,
-                                        hit=True,
-                                    )
-                                except ImportError:
-                                    try:
-                                        from page_perf_phases import record_cache_event
-
-                                        record_cache_event(st.session_state, "live_draft_decision_context", hit=True)
-                                    except ImportError:
-                                        pass
-                                _tracker = _decision_ctx["tracker"]
-                                _outlook = _decision_ctx["outlook"]
-                                _gaps = list(_decision_ctx.get("gaps") or [])
-                                _category_needs = list(_decision_ctx.get("category_needs") or [])
-                            else:
-                                _decision_t0 = __import__("time").perf_counter()
-                                try:
-                                    from page_perf_phases import record_cache_event, session_perf_phase
-
-                                    record_cache_event(st.session_state, "live_draft_decision_context", hit=False)
-                                    with session_perf_phase(st.session_state, "roster_tracker"):
-                                        _tracker = build_team_roster_tracker(room, _tracker_team)
-                                    _roster_df = roster_df_for_team(room, _tracker_team)
-                                    with session_perf_phase(st.session_state, "category_outlook"):
-                                        _outlook = compute_category_outlook(
-                                            _roster_df,
-                                            _available_cached,
-                                            config=cfg,
-                                            roster_gaps=_tracker.get("open_positions"),
-                                        )
-                                except ImportError:
-                                    _tracker = build_team_roster_tracker(room, _tracker_team)
-                                    _roster_df = roster_df_for_team(room, _tracker_team)
-                                    _outlook = compute_category_outlook(
-                                        _roster_df,
-                                        _available_cached,
-                                        config=cfg,
-                                        roster_gaps=_tracker.get("open_positions"),
-                                    )
-                                try:
-                                    from live_draft_perf import PHASE_DECISION_CONTEXT, record_cache_action
-
-                                    record_cache_action(
-                                        st.session_state,
-                                        "decision_context",
-                                        phase=PHASE_DECISION_CONTEXT,
-                                        hit=False,
-                                        elapsed_sec=__import__("time").perf_counter() - _decision_t0,
-                                    )
+                                    _skip_for_setup = is_live_draft_start_in_flight(st.session_state)
                                 except ImportError:
                                     pass
-                                _gaps = list(_tracker.get("gaps") or [])
-                                _category_needs = list(_outlook.get("needs_attention") or [])
-                                if _ui_cache_key is not None:
-                                    store_live_draft_decision_context(
-                                        st.session_state,
-                                        cache_key=_ui_cache_key,
-                                        tracker_team=_tracker_team,
-                                        tracker=_tracker,
-                                        outlook=_outlook,
-                                        gaps=_gaps,
-                                        category_needs=_category_needs,
-                                    )
-                            try:
-                                from page_perf_phases import session_perf_phase
-
-                                with session_perf_phase(st.session_state, "position_scarcity"):
-                                    render_draft_decision_panel(
-                                        st,
-                                        st.session_state,
-                                        tracker=_tracker,
-                                        available_df=_available_cached,
-                                        gaps=_gaps,
-                                        room=room,
-                                        page_label_fn=page_option_label,
-                                    )
-                            except ImportError:
-                                render_draft_decision_panel(
-                                    st,
-                                    st.session_state,
-                                    tracker=_tracker,
-                                    available_df=_available_cached,
-                                    gaps=_gaps,
-                                    room=room,
-                                    page_label_fn=page_option_label,
-                                )
-                            # Category outlook kept available for Developer Mode only (reduces scroll).
-                            if developer_mode_enabled():
                                 try:
-                                    from live_draft_room_ui import render_category_outlook_panel
+                                    from live_draft_setup_persist import should_skip_live_draft_recommendations
 
-                                    with st.expander("Team Category Outlook (dev)", expanded=False):
-                                        render_category_outlook_panel(st, _outlook)
+                                    if should_skip_live_draft_recommendations(st.session_state, room):
+                                        _skip_for_setup = True
+                                except ImportError:
+                                    pass
+                                # Active/picking rooms must never stay blank because start_in_flight stuck
+                                # or a timer/queue tick deferred scoring with an empty cache.
+                                _room_status = str(room.get("status") or "").strip()
+                                _room_picking = _room_status in ("in_progress", "paused") or bool(
+                                    room.get("draft_board")
+                                )
+                                if _room_picking:
+                                    _skip_for_setup = False
+                                _expensive_ok = True
+                                try:
+                                    from live_draft_rerun_scope import live_draft_expensive_recompute_required
+
+                                    _expensive_ok = live_draft_expensive_recompute_required(st.session_state)
+                                except ImportError:
+                                    pass
+                                _defer_recs = bool(_skip_for_setup or not _expensive_ok)
+                                top_rec = best_avail = pos_fit = value_sleep = None
+                                _rec_entry = None
+                                if not _defer_recs:
+                                    top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
+                                        st.session_state,
+                                        room,
+                                        top_n=_LIVE_REC_TOP_N,
+                                        team=_rec_team,
+                                    )
+                                else:
+                                    # Timer-only tick / setup: reuse last good cache — never blank player rows.
+                                    try:
+                                        from live_draft_ui_cache import REC_CACHE_KEY
+
+                                        _rec_entry = st.session_state.get(REC_CACHE_KEY)
+                                    except ImportError:
+                                        _rec_entry = st.session_state.get("_live_draft_rec_cache")
+                                    if isinstance(_rec_entry, dict) and _rec_entry.get("top_rec") is not None:
+                                        top_rec = _rec_entry.get("top_rec")
+                                        best_avail = _rec_entry.get("best_avail")
+                                        pos_fit = _rec_entry.get("pos_fit")
+                                        value_sleep = _rec_entry.get("value_sleep")
+                                    # Empty/missing cache would blank the UI — compute once for active rooms.
+                                    if top_rec is None or getattr(top_rec, "empty", True):
+                                        if _room_picking or not _skip_for_setup:
+                                            top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
+                                                st.session_state,
+                                                room,
+                                                top_n=_LIVE_REC_TOP_N,
+                                                team=_rec_team,
+                                            )
+                                            _defer_recs = False
+                                if top_rec is None:
+                                    top_rec = pd.DataFrame()
+                                if best_avail is None:
+                                    best_avail = pd.DataFrame()
+                                if pos_fit is None:
+                                    pos_fit = pd.DataFrame()
+                                if value_sleep is None:
+                                    value_sleep = pd.DataFrame()
+                                # Last-chance: active room with empty tables after defer path — force recompute.
+                                if _room_picking and getattr(top_rec, "empty", True):
+                                    top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
+                                        st.session_state,
+                                        room,
+                                        top_n=_LIVE_REC_TOP_N,
+                                        team=_rec_team,
+                                    )
+                                    _defer_recs = False
+                                    if top_rec is None:
+                                        top_rec = pd.DataFrame()
+                                    if best_avail is None:
+                                        best_avail = pd.DataFrame()
+                                    if pos_fit is None:
+                                        pos_fit = pd.DataFrame()
+                                    if value_sleep is None:
+                                        value_sleep = pd.DataFrame()
+                                try:
+                                    from live_draft_start_progress import flush_pending_live_draft_created_activity, mark_start_step
+
+                                    flush_pending_live_draft_created_activity(st.session_state, room)
+                                    mark_start_step(st.session_state, "recommendations_loaded", recommendations_loaded=True)
+                                except ImportError:
+                                    pass
+                                try:
+                                    from live_draft_ui_cache import (
+                                        cached_live_draft_get_available,
+                                        get_cached_live_draft_decision_context,
+                                        live_draft_ui_cache_key,
+                                        store_live_draft_decision_context,
+                                    )
+
+                                    _ui_cache_key = live_draft_ui_cache_key(
+                                        st.session_state,
+                                        room,
+                                        top_n=_LIVE_REC_TOP_N,
+                                        team=_rec_team,
+                                    )
+                                    _available_cached = cached_live_draft_get_available(st.session_state, room)
+                                except ImportError:
+                                    _ui_cache_key = None
+                                    _available_cached = live_draft_get_available(room)
+                                try:
+                                    from draft_room_runtime_diagnostics import record_scoring_pipeline_stage
+
+                                    record_scoring_pipeline_stage(st.session_state, "displayed", _available_cached)
                                 except Exception:
                                     pass
-                            try:
-                                from live_draft_render_trace import ldr_section_done
+                                try:
+                                    from live_draft_render_trace import ldr_section_done
 
-                                ldr_section_done(st.session_state, "room_decision_panels", st=st)
-                            except ImportError:
-                                pass
-                        except Exception as _ldr_decision_exc:
-                            try:
-                                from live_draft_render_trace import ldr_exception
+                                    ldr_section_done(
+                                        st.session_state,
+                                        "room_recommendations",
+                                        st=st,
+                                        deferred=bool(_defer_recs),
+                                    )
+                                except ImportError:
+                                    pass
+                                try:
+                                    from live_draft_render_checkpoints import note_active_page_receipt
 
-                                ldr_exception(
-                                    st.session_state,
-                                    "room_decision_panels",
-                                    _ldr_decision_exc,
-                                    st=st,
-                                )
-                            except ImportError:
-                                pass
-                            # Never abort recommendation cards when decision panels fail.
-                            try:
-                                st.warning(
-                                    "Decision panels unavailable this pass — "
-                                    f"{type(_ldr_decision_exc).__name__}: {_ldr_decision_exc}"
-                                )
-                            except Exception:
-                                pass
-                    try:
-                        from applied_math_context import cache_live_draft_ami_context
+                                    note_active_page_receipt(st.session_state, "recommendations_complete", True)
+                                except ImportError:
+                                    pass
+                                _tracker_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
+                                _gaps: list[str] = []
+                                _category_needs: list[str] = []
+                                if _tracker_team and _tracker_team != "—":
+                                    try:
+                                        from live_draft_render_trace import ldr_section
 
-                        cache_live_draft_ami_context(
-                            st.session_state,
-                            page="Live Draft Room",
-                            room=room,
-                            top_rec_df=top_rec,
-                            best_avail_df=best_avail,
-                            pos_fit_df=pos_fit,
-                            value_sleep_df=value_sleep,
-                        )
-                    except Exception:
-                        pass
-                    # Quick tools live inside the Draft Decision Panel (no second tall nav strip).
-                    st.markdown("##### Recommendations")
-                    _rec_err = str(st.session_state.pop("_live_draft_recommendations_error", "") or "").strip()
-                    _rec_diag = dict(st.session_state.get("_recommendation_schema_diag") or {})
-                    if _rec_err or str(_rec_diag.get("status") or "") in (
-                        "exception",
-                        "scoring_failed",
-                        "scoring_module_unavailable",
-                        "missing_after_score",
-                    ):
-                        try:
-                            from recommendation_schema import USER_REC_UNAVAILABLE
+                                        ldr_section(
+                                            st.session_state,
+                                            "room_decision_panels",
+                                            st=st,
+                                            tracker_team=str(_tracker_team),
+                                        )
+                                    except ImportError:
+                                        pass
+                                    try:
+                                        from live_draft_category_outlook import compute_category_outlook
+                                        from live_draft_roster_tracker import build_team_roster_tracker, roster_df_for_team
+                                        from live_draft_room_ui import render_draft_decision_panel
 
-                            st.info(USER_REC_UNAVAILABLE)
-                        except ImportError:
-                            st.info(
-                                "Recommendations could not be loaded right now. "
-                                "You can continue drafting from the available-player list."
-                            )
-                        if developer_mode_enabled():
-                            with st.expander("Recommendation diagnostics (admin)", expanded=False):
-                                st.code(_rec_err or str(_rec_diag.get("exception") or "schema issue"))
-                                st.json(_rec_diag)
-                    try:
-                        from live_draft_roster_enforcement import resolve_on_clock_enforcement
+                                        _decision_ctx = None
+                                        if _ui_cache_key is not None:
+                                            _decision_ctx = get_cached_live_draft_decision_context(
+                                                st.session_state,
+                                                room,
+                                                tracker_team=_tracker_team,
+                                                cache_key=_ui_cache_key,
+                                            )
+                                        if _decision_ctx:
+                                            try:
+                                                from live_draft_perf import PHASE_DECISION_CONTEXT, record_cache_action
 
-                        _enf = resolve_on_clock_enforcement(room, on_clock_team=str(on_clock_team or ""))
-                        if _enf.get("active") and _enf.get("message"):
-                            st.warning(str(_enf["message"]))
-                    except ImportError:
-                        pass
-                    try:
-                        from live_draft_room_ui import (
-                            add_why_this_pick_column,
-                            build_visible_rec_render_input,
-                            render_live_draft_rec_cards,
-                            render_live_draft_rec_summary_banner,
-                            render_visible_rec_render_input_diagnostic,
-                        )
+                                                record_cache_action(
+                                                    st.session_state,
+                                                    "decision_context",
+                                                    phase=PHASE_DECISION_CONTEXT,
+                                                    hit=True,
+                                                )
+                                            except ImportError:
+                                                try:
+                                                    from page_perf_phases import record_cache_event
 
-                        try:
-                            from live_draft_ui_cache import REC_CACHE_KEY
+                                                    record_cache_event(st.session_state, "live_draft_decision_context", hit=True)
+                                                except ImportError:
+                                                    pass
+                                            _tracker = _decision_ctx["tracker"]
+                                            _outlook = _decision_ctx["outlook"]
+                                            _gaps = list(_decision_ctx.get("gaps") or [])
+                                            _category_needs = list(_decision_ctx.get("category_needs") or [])
+                                        else:
+                                            _decision_t0 = __import__("time").perf_counter()
+                                            try:
+                                                from page_perf_phases import record_cache_event, session_perf_phase
 
-                            _rec_entry_paint = st.session_state.get(REC_CACHE_KEY)
-                        except ImportError:
-                            _rec_entry_paint = st.session_state.get("_live_draft_rec_cache")
-                        if developer_mode_enabled():
-                            _rec_paint_diag = build_visible_rec_render_input(
-                                rec_df=top_rec,
-                                available_df=_available_cached,
-                                on_clock_team=str(_rec_team or on_clock_team or ""),
-                                max_cards=6,
-                                defer_recs=bool(_defer_recs),
-                                skip_for_setup=bool(_skip_for_setup),
-                                expensive_ok=bool(_expensive_ok),
-                                cache_key=_ui_cache_key,
-                                rec_cache_entry=_rec_entry_paint,
-                                room_status=str(room.get("status") or ""),
-                            )
-                            render_visible_rec_render_input_diagnostic(
-                                st, st.session_state, _rec_paint_diag
-                            )
+                                                record_cache_event(st.session_state, "live_draft_decision_context", hit=False)
+                                                with session_perf_phase(st.session_state, "roster_tracker"):
+                                                    _tracker = build_team_roster_tracker(room, _tracker_team)
+                                                _roster_df = roster_df_for_team(room, _tracker_team)
+                                                with session_perf_phase(st.session_state, "category_outlook"):
+                                                    _outlook = compute_category_outlook(
+                                                        _roster_df,
+                                                        _available_cached,
+                                                        config=cfg,
+                                                        roster_gaps=_tracker.get("open_positions"),
+                                                    )
+                                            except ImportError:
+                                                _tracker = build_team_roster_tracker(room, _tracker_team)
+                                                _roster_df = roster_df_for_team(room, _tracker_team)
+                                                _outlook = compute_category_outlook(
+                                                    _roster_df,
+                                                    _available_cached,
+                                                    config=cfg,
+                                                    roster_gaps=_tracker.get("open_positions"),
+                                                )
+                                            try:
+                                                from live_draft_perf import PHASE_DECISION_CONTEXT, record_cache_action
 
-                        if _defer_recs and (top_rec is None or getattr(top_rec, "empty", True)):
-                            st.caption("Loading recommendations…")
-                        else:
-                            try:
-                                from live_draft_ux import FANTASY_EDGE_TOOLTIP, ROSTER_FIT_TOOLTIP
+                                                record_cache_action(
+                                                    st.session_state,
+                                                    "decision_context",
+                                                    phase=PHASE_DECISION_CONTEXT,
+                                                    hit=False,
+                                                    elapsed_sec=__import__("time").perf_counter() - _decision_t0,
+                                                )
+                                            except ImportError:
+                                                pass
+                                            _gaps = list(_tracker.get("gaps") or [])
+                                            _category_needs = list(_outlook.get("needs_attention") or [])
+                                            if _ui_cache_key is not None:
+                                                store_live_draft_decision_context(
+                                                    st.session_state,
+                                                    cache_key=_ui_cache_key,
+                                                    tracker_team=_tracker_team,
+                                                    tracker=_tracker,
+                                                    outlook=_outlook,
+                                                    gaps=_gaps,
+                                                    category_needs=_category_needs,
+                                                )
+                                        try:
+                                            from page_perf_phases import session_perf_phase
 
-                                st.markdown(
-                                    f'**Fantasy Edge** <span title="{FANTASY_EDGE_TOOLTIP}">ⓘ</span> · '
-                                    f'**Roster Fit** <span title="{ROSTER_FIT_TOOLTIP}">ⓘ</span> — '
-                                    "Tap **Why Recommended** on any card for category impact, scarcity, and fit details.",
-                                    unsafe_allow_html=True,
-                                )
-                            except ImportError:
-                                st.caption(
-                                    "**Fantasy Edge** shows value vs market; **Roster Fit** adjusts for your open slots. "
-                                    "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
-                                )
-                            render_live_draft_rec_summary_banner(st, top_rec, gaps=_gaps)
-                            # Cards stay outside the queue fragment so Add uses a full-app
-                            # paint and remounts the board_col queue (fixes empty-queue bug).
-                            try:
-                                render_live_draft_rec_cards(
-                                    st,
-                                    st.session_state,
-                                    room,
-                                    top_rec,
-                                    max_cards=6,
-                                    multiplayer=_multiplayer_draft,
-                                    fmt_rate_4=fmt_rate_4,
-                                    fmt_int=fmt_int,
-                                    gaps=_gaps,
-                                    category_needs=_category_needs,
-                                )
-                            except Exception as _rec_card_exc:
-                                st.error(
-                                    f"Recommendation cards failed to paint: "
-                                    f"{type(_rec_card_exc).__name__}: {_rec_card_exc}"
-                                )
-                    except ImportError:
-                        _render_live_draft_rec_cards(top_rec, max_cards=6)
+                                            with session_perf_phase(st.session_state, "position_scarcity"):
+                                                render_draft_decision_panel(
+                                                    st,
+                                                    st.session_state,
+                                                    tracker=_tracker,
+                                                    available_df=_available_cached,
+                                                    gaps=_gaps,
+                                                    room=room,
+                                                    page_label_fn=page_option_label,
+                                                )
+                                        except ImportError:
+                                            render_draft_decision_panel(
+                                                st,
+                                                st.session_state,
+                                                tracker=_tracker,
+                                                available_df=_available_cached,
+                                                gaps=_gaps,
+                                                room=room,
+                                                page_label_fn=page_option_label,
+                                            )
+                                        # Category outlook kept available for Developer Mode only (reduces scroll).
+                                        if developer_mode_enabled():
+                                            try:
+                                                from live_draft_room_ui import render_category_outlook_panel
 
-                    rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
-                    rec_cols = [
-                        "fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank",
-                        "Fantasy Edge", "Survival Probability", "Survival Label",
-                        "Draft Fit Score", "Decision Score",
-                        "Why this pick",
-                    ]
-                    try:
-                        from live_draft_ux import REC_TABLE_SORT_OPTIONS, apply_survival_display_columns, sort_recommendation_table
+                                                with st.expander("Team Category Outlook (dev)", expanded=False):
+                                                    render_category_outlook_panel(st, _outlook)
+                                            except Exception:
+                                                pass
+                                        try:
+                                            from live_draft_render_trace import ldr_section_done
 
-                        _rec_sort_labels = list(REC_TABLE_SORT_OPTIONS.keys())
-                        _rec_sort_choice = st.selectbox(
-                            "Sort recommendations by",
-                            _rec_sort_labels,
-                            index=0,
-                            key="live_draft_rec_table_sort",
-                            help=(
-                                "Reorders the same recommendation pool. "
-                                "It does not run a different recommendation algorithm."
-                            ),
-                        )
-                        st.caption(
-                            "Sort changes display order only — the recommended player set stays the same."
-                        )
-                        _rec_sort_col = REC_TABLE_SORT_OPTIONS.get(_rec_sort_choice, "Decision Score")
+                                            ldr_section_done(st.session_state, "room_decision_panels", st=st)
+                                        except ImportError:
+                                            pass
+                                    except Exception as _ldr_decision_exc:
+                                        try:
+                                            from live_draft_render_trace import ldr_exception
 
-                        def _prepare_live_rec_table(df: pd.DataFrame) -> pd.DataFrame:
-                            from table_dataframe_guard import ensure_dataframe
+                                            ldr_exception(
+                                                st.session_state,
+                                                "room_decision_panels",
+                                                _ldr_decision_exc,
+                                                st=st,
+                                            )
+                                        except ImportError:
+                                            pass
+                                        # Never abort recommendation cards when decision panels fail.
+                                        try:
+                                            st.warning(
+                                                "Decision panels unavailable this pass — "
+                                                f"{type(_ldr_decision_exc).__name__}: {_ldr_decision_exc}"
+                                            )
+                                        except Exception:
+                                            pass
+                                try:
+                                    from applied_math_context import cache_live_draft_ami_context
 
-                            frame = ensure_dataframe(df, caller="_prepare_live_rec_table")
-                            if frame.empty:
-                                return frame
-                            sorted_df = sort_recommendation_table(frame, _rec_sort_col)
-                            return ensure_dataframe(
-                                apply_survival_display_columns(sorted_df),
-                                caller="_prepare_live_rec_table.survival",
-                            )
-                    except ImportError:
-                        def _prepare_live_rec_table(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[misc]
-                            from table_dataframe_guard import ensure_dataframe
+                                    cache_live_draft_ami_context(
+                                        st.session_state,
+                                        page="Live Draft Room",
+                                        room=room,
+                                        top_rec_df=top_rec,
+                                        best_avail_df=best_avail,
+                                        pos_fit_df=pos_fit,
+                                        value_sleep_df=value_sleep,
+                                    )
+                                except Exception:
+                                    pass
+                                # Quick tools live inside the Draft Decision Panel (no second tall nav strip).
+                                st.markdown("##### Recommendations")
+                                _rec_err = str(st.session_state.pop("_live_draft_recommendations_error", "") or "").strip()
+                                _rec_diag = dict(st.session_state.get("_recommendation_schema_diag") or {})
+                                if _rec_err or str(_rec_diag.get("status") or "") in (
+                                    "exception",
+                                    "scoring_failed",
+                                    "scoring_module_unavailable",
+                                    "missing_after_score",
+                                ):
+                                    try:
+                                        from recommendation_schema import USER_REC_UNAVAILABLE
 
-                            return ensure_dataframe(df, caller="_prepare_live_rec_table.fallback")
+                                        st.info(USER_REC_UNAVAILABLE)
+                                    except ImportError:
+                                        st.info(
+                                            "Recommendations could not be loaded right now. "
+                                            "You can continue drafting from the available-player list."
+                                        )
+                                    if developer_mode_enabled():
+                                        with st.expander("Recommendation diagnostics (admin)", expanded=False):
+                                            st.code(_rec_err or str(_rec_diag.get("exception") or "schema issue"))
+                                            st.json(_rec_diag)
+                                try:
+                                    from live_draft_roster_enforcement import resolve_on_clock_enforcement
 
-                    _pool_for_why = room.get("pool")
-                    try:
-                        from live_draft_ui_cache import enrich_live_draft_recommendations_with_why
+                                    _enf = resolve_on_clock_enforcement(room, on_clock_team=str(on_clock_team or ""))
+                                    if _enf.get("active") and _enf.get("message"):
+                                        st.warning(str(_enf["message"]))
+                                except ImportError:
+                                    pass
+                                try:
+                                    from live_draft_room_ui import (
+                                        add_why_this_pick_column,
+                                        build_visible_rec_render_input,
+                                        render_live_draft_rec_cards,
+                                        render_live_draft_rec_summary_banner,
+                                        render_visible_rec_render_input_diagnostic,
+                                    )
 
-                        _why_tables = enrich_live_draft_recommendations_with_why(
-                            st.session_state,
-                            _ui_cache_key,
-                            {
-                                "top_rec": top_rec,
-                                "best_avail": best_avail,
-                                "pos_fit": pos_fit,
-                                "value_sleep": value_sleep,
-                            },
-                            gaps=_gaps,
-                            category_needs=_category_needs,
-                            pool_df=_pool_for_why,
-                            config=cfg,
-                        )
-                        top_rec = _why_tables["top_rec"]
-                        best_avail = _why_tables["best_avail"]
-                        pos_fit = _why_tables["pos_fit"]
-                        value_sleep = _why_tables["value_sleep"]
-                    except ImportError:
-                        from live_draft_room_ui import add_why_this_pick_column
+                                    try:
+                                        from live_draft_ui_cache import REC_CACHE_KEY
 
-                        top_rec = add_why_this_pick_column(
-                            top_rec, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
-                        )
-                        best_avail = add_why_this_pick_column(
-                            best_avail, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
-                        )
-                        pos_fit = add_why_this_pick_column(
-                            pos_fit, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
-                        )
-                        value_sleep = add_why_this_pick_column(
-                            value_sleep, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
-                        )
-                    try:
-                        from table_dataframe_guard import ensure_dataframe
+                                        _rec_entry_paint = st.session_state.get(REC_CACHE_KEY)
+                                    except ImportError:
+                                        _rec_entry_paint = st.session_state.get("_live_draft_rec_cache")
+                                    if developer_mode_enabled():
+                                        _rec_paint_diag = build_visible_rec_render_input(
+                                            rec_df=top_rec,
+                                            available_df=_available_cached,
+                                            on_clock_team=str(_rec_team or on_clock_team or ""),
+                                            max_cards=6,
+                                            defer_recs=bool(_defer_recs),
+                                            skip_for_setup=bool(_skip_for_setup),
+                                            expensive_ok=bool(_expensive_ok),
+                                            cache_key=_ui_cache_key,
+                                            rec_cache_entry=_rec_entry_paint,
+                                            room_status=str(room.get("status") or ""),
+                                        )
+                                        render_visible_rec_render_input_diagnostic(
+                                            st, st.session_state, _rec_paint_diag
+                                        )
 
-                        top_rec = ensure_dataframe(top_rec, caller="live_draft.top_rec")
-                        best_avail = ensure_dataframe(best_avail, caller="live_draft.best_avail")
-                        pos_fit = ensure_dataframe(pos_fit, caller="live_draft.pos_fit")
-                        value_sleep = ensure_dataframe(value_sleep, caller="live_draft.value_sleep")
-                    except ImportError:
-                        if top_rec is None:
-                            top_rec = pd.DataFrame()
-                        if best_avail is None:
-                            best_avail = pd.DataFrame()
-                        if pos_fit is None:
-                            pos_fit = pd.DataFrame()
-                        if value_sleep is None:
-                            value_sleep = pd.DataFrame()
-                    with rec_tabs[0]:
-                        _top_show = top_rec[[c for c in rec_cols if c in top_rec.columns]].rename(columns={"fullName": "Player"})
-                        _top_show = _prepare_live_rec_table(_top_show)
-                        try:
-                            from live_draft_perf import PHASE_REC_SECTION, live_draft_perf_action
+                                    if _defer_recs and (top_rec is None or getattr(top_rec, "empty", True)):
+                                        st.caption("Loading recommendations…")
+                                    else:
+                                        try:
+                                            from live_draft_ux import FANTASY_EDGE_TOOLTIP, ROSTER_FIT_TOOLTIP
 
-                            with live_draft_perf_action(st.session_state, "rec:Top Picks", phase=PHASE_REC_SECTION):
-                                render_output_table(
-                                    format_fantasy_table(clean_ui_columns(_top_show)),
-                                    key="live_draft_rec_top",
-                                    file_name="live_draft_top_recommendations.csv",
-                                    display_rows=10,
-                                    style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
-                                )
-                        except ImportError:
-                            render_output_table(
-                                format_fantasy_table(clean_ui_columns(_top_show)),
-                                key="live_draft_rec_top",
-                                file_name="live_draft_top_recommendations.csv",
-                                display_rows=10,
-                                style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
-                            )
-                    with rec_tabs[1]:
-                        _bpa_show = best_avail[[c for c in rec_cols if c in best_avail.columns]].rename(columns={"fullName": "Player"})
-                        _bpa_show = _prepare_live_rec_table(_bpa_show)
-                        render_output_table(
-                            format_fantasy_table(clean_ui_columns(_bpa_show)),
-                            key="live_draft_rec_bpa",
-                            file_name="live_draft_best_available.csv",
-                            display_rows=10,
-                            style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
-                        )
-                    with rec_tabs[2]:
-                        if pos_fit.empty:
-                            st.caption("No specific positional need flagged — take best value.")
-                        else:
-                            _pos_show = pos_fit[[c for c in rec_cols if c in pos_fit.columns]].rename(columns={"fullName": "Player"})
-                            _pos_show = _prepare_live_rec_table(_pos_show)
-                            render_output_table(
-                                format_fantasy_table(clean_ui_columns(_pos_show)),
-                                key="live_draft_rec_pos",
-                                file_name="live_draft_positional_fits.csv",
-                                display_rows=10,
-                                style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
-                            )
-                    with rec_tabs[3]:
-                        _val_show = value_sleep[[c for c in rec_cols if c in value_sleep.columns]].rename(columns={"fullName": "Player"})
-                        _val_show = _prepare_live_rec_table(_val_show)
-                        render_output_table(
-                            format_fantasy_table(clean_ui_columns(_val_show)),
-                            key="live_draft_rec_value",
-                            file_name="live_draft_value_sleepers.csv",
-                            display_rows=10,
-                            style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
-                        )
-                    if developer_mode_enabled():
-                        try:
-                            from page_diagnostics import inline_diagnostics_enabled
-                        except ImportError:
-                            inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
-                        if inline_diagnostics_enabled(developer_mode_enabled()):
-                            with st.expander("Draft Scoring Breakdown", expanded=False):
-                                st.caption("Component contributions from the draft scoring engine.")
-                                _ld_brk_opts = [""] + (top_rec["fullName"].astype(str).tolist() if not top_rec.empty else [])
-                                _ld_brk_player = st.selectbox("Inspect player", _ld_brk_opts, key="live_draft_breakdown_player")
-                                render_draft_scoring_breakdown(
-                                    top_rec if not top_rec.empty else pd.DataFrame(),
-                                    player_name=_ld_brk_player if _ld_brk_player else None,
-                                    key_suffix="live",
-                                )
+                                            st.markdown(
+                                                f'**Fantasy Edge** <span title="{FANTASY_EDGE_TOOLTIP}">ⓘ</span> · '
+                                                f'**Roster Fit** <span title="{ROSTER_FIT_TOOLTIP}">ⓘ</span> — '
+                                                "Tap **Why Recommended** on any card for category impact, scarcity, and fit details.",
+                                                unsafe_allow_html=True,
+                                            )
+                                        except ImportError:
+                                            st.caption(
+                                                "**Fantasy Edge** shows value vs market; **Roster Fit** adjusts for your open slots. "
+                                                "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
+                                            )
+                                        render_live_draft_rec_summary_banner(st, top_rec, gaps=_gaps)
+                                        # Cards stay outside the queue fragment so Add uses a full-app
+                                        # paint and remounts the board_col queue (fixes empty-queue bug).
+                                        try:
+                                            render_live_draft_rec_cards(
+                                                st,
+                                                st.session_state,
+                                                room,
+                                                top_rec,
+                                                max_cards=6,
+                                                multiplayer=_multiplayer_draft,
+                                                fmt_rate_4=fmt_rate_4,
+                                                fmt_int=fmt_int,
+                                                gaps=_gaps,
+                                                category_needs=_category_needs,
+                                            )
+                                        except Exception as _rec_card_exc:
+                                            st.error(
+                                                f"Recommendation cards failed to paint: "
+                                                f"{type(_rec_card_exc).__name__}: {_rec_card_exc}"
+                                            )
+                                except ImportError:
+                                    _render_live_draft_rec_cards(top_rec, max_cards=6)
+
+                                rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
+                                rec_cols = [
+                                    "fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank",
+                                    "Fantasy Edge", "Survival Probability", "Survival Label",
+                                    "Draft Fit Score", "Decision Score",
+                                    "Why this pick",
+                                ]
+                                try:
+                                    from live_draft_ux import REC_TABLE_SORT_OPTIONS, apply_survival_display_columns, sort_recommendation_table
+
+                                    _rec_sort_labels = list(REC_TABLE_SORT_OPTIONS.keys())
+                                    _rec_sort_choice = st.selectbox(
+                                        "Sort recommendations by",
+                                        _rec_sort_labels,
+                                        index=0,
+                                        key="live_draft_rec_table_sort",
+                                        help=(
+                                            "Reorders the same recommendation pool. "
+                                            "It does not run a different recommendation algorithm."
+                                        ),
+                                    )
+                                    st.caption(
+                                        "Sort changes display order only — the recommended player set stays the same."
+                                    )
+                                    _rec_sort_col = REC_TABLE_SORT_OPTIONS.get(_rec_sort_choice, "Decision Score")
+
+                                    def _prepare_live_rec_table(df: pd.DataFrame) -> pd.DataFrame:
+                                        from table_dataframe_guard import ensure_dataframe
+
+                                        frame = ensure_dataframe(df, caller="_prepare_live_rec_table")
+                                        if frame.empty:
+                                            return frame
+                                        sorted_df = sort_recommendation_table(frame, _rec_sort_col)
+                                        return ensure_dataframe(
+                                            apply_survival_display_columns(sorted_df),
+                                            caller="_prepare_live_rec_table.survival",
+                                        )
+                                except ImportError:
+                                    def _prepare_live_rec_table(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[misc]
+                                        from table_dataframe_guard import ensure_dataframe
+
+                                        return ensure_dataframe(df, caller="_prepare_live_rec_table.fallback")
+
+                                _pool_for_why = room.get("pool")
+                                try:
+                                    from live_draft_ui_cache import enrich_live_draft_recommendations_with_why
+
+                                    _why_tables = enrich_live_draft_recommendations_with_why(
+                                        st.session_state,
+                                        _ui_cache_key,
+                                        {
+                                            "top_rec": top_rec,
+                                            "best_avail": best_avail,
+                                            "pos_fit": pos_fit,
+                                            "value_sleep": value_sleep,
+                                        },
+                                        gaps=_gaps,
+                                        category_needs=_category_needs,
+                                        pool_df=_pool_for_why,
+                                        config=cfg,
+                                    )
+                                    top_rec = _why_tables["top_rec"]
+                                    best_avail = _why_tables["best_avail"]
+                                    pos_fit = _why_tables["pos_fit"]
+                                    value_sleep = _why_tables["value_sleep"]
+                                except ImportError:
+                                    from live_draft_room_ui import add_why_this_pick_column
+
+                                    top_rec = add_why_this_pick_column(
+                                        top_rec, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
+                                    )
+                                    best_avail = add_why_this_pick_column(
+                                        best_avail, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
+                                    )
+                                    pos_fit = add_why_this_pick_column(
+                                        pos_fit, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
+                                    )
+                                    value_sleep = add_why_this_pick_column(
+                                        value_sleep, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
+                                    )
+                                try:
+                                    from table_dataframe_guard import ensure_dataframe
+
+                                    top_rec = ensure_dataframe(top_rec, caller="live_draft.top_rec")
+                                    best_avail = ensure_dataframe(best_avail, caller="live_draft.best_avail")
+                                    pos_fit = ensure_dataframe(pos_fit, caller="live_draft.pos_fit")
+                                    value_sleep = ensure_dataframe(value_sleep, caller="live_draft.value_sleep")
+                                except ImportError:
+                                    if top_rec is None:
+                                        top_rec = pd.DataFrame()
+                                    if best_avail is None:
+                                        best_avail = pd.DataFrame()
+                                    if pos_fit is None:
+                                        pos_fit = pd.DataFrame()
+                                    if value_sleep is None:
+                                        value_sleep = pd.DataFrame()
+                                with rec_tabs[0]:
+                                    _top_show = top_rec[[c for c in rec_cols if c in top_rec.columns]].rename(columns={"fullName": "Player"})
+                                    _top_show = _prepare_live_rec_table(_top_show)
+                                    try:
+                                        from live_draft_perf import PHASE_REC_SECTION, live_draft_perf_action
+
+                                        with live_draft_perf_action(st.session_state, "rec:Top Picks", phase=PHASE_REC_SECTION):
+                                            render_output_table(
+                                                format_fantasy_table(clean_ui_columns(_top_show)),
+                                                key="live_draft_rec_top",
+                                                file_name="live_draft_top_recommendations.csv",
+                                                display_rows=10,
+                                                style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                                            )
+                                    except ImportError:
+                                        render_output_table(
+                                            format_fantasy_table(clean_ui_columns(_top_show)),
+                                            key="live_draft_rec_top",
+                                            file_name="live_draft_top_recommendations.csv",
+                                            display_rows=10,
+                                            style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                                        )
+                                with rec_tabs[1]:
+                                    _bpa_show = best_avail[[c for c in rec_cols if c in best_avail.columns]].rename(columns={"fullName": "Player"})
+                                    _bpa_show = _prepare_live_rec_table(_bpa_show)
+                                    render_output_table(
+                                        format_fantasy_table(clean_ui_columns(_bpa_show)),
+                                        key="live_draft_rec_bpa",
+                                        file_name="live_draft_best_available.csv",
+                                        display_rows=10,
+                                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                                    )
+                                with rec_tabs[2]:
+                                    if pos_fit.empty:
+                                        st.caption("No specific positional need flagged — take best value.")
+                                    else:
+                                        _pos_show = pos_fit[[c for c in rec_cols if c in pos_fit.columns]].rename(columns={"fullName": "Player"})
+                                        _pos_show = _prepare_live_rec_table(_pos_show)
+                                        render_output_table(
+                                            format_fantasy_table(clean_ui_columns(_pos_show)),
+                                            key="live_draft_rec_pos",
+                                            file_name="live_draft_positional_fits.csv",
+                                            display_rows=10,
+                                            style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                                        )
+                                with rec_tabs[3]:
+                                    _val_show = value_sleep[[c for c in rec_cols if c in value_sleep.columns]].rename(columns={"fullName": "Player"})
+                                    _val_show = _prepare_live_rec_table(_val_show)
+                                    render_output_table(
+                                        format_fantasy_table(clean_ui_columns(_val_show)),
+                                        key="live_draft_rec_value",
+                                        file_name="live_draft_value_sleepers.csv",
+                                        display_rows=10,
+                                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                                    )
+                                if developer_mode_enabled():
+                                    try:
+                                        from page_diagnostics import inline_diagnostics_enabled
+                                    except ImportError:
+                                        inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+                                    if inline_diagnostics_enabled(developer_mode_enabled()):
+                                        with st.expander("Draft Scoring Breakdown", expanded=False):
+                                            st.caption("Component contributions from the draft scoring engine.")
+                                            _ld_brk_opts = [""] + (top_rec["fullName"].astype(str).tolist() if not top_rec.empty else [])
+                                            _ld_brk_player = st.selectbox("Inspect player", _ld_brk_opts, key="live_draft_breakdown_player")
+                                            render_draft_scoring_breakdown(
+                                                top_rec if not top_rec.empty else pd.DataFrame(),
+                                                player_name=_ld_brk_player if _ld_brk_player else None,
+                                                key_suffix="live",
+                                            )
+
+                try:
+                    from live_draft_heavy_paint_ui import render_deferred_heavy_paint_fragment
+
+                    render_deferred_heavy_paint_fragment(
+                        st,
+                        st.session_state,
+                        _paint_heavy_recommendations_body,
+                    )
+                except ImportError:
+                    if not _defer_heavy_paint:
+                        _paint_heavy_recommendations_body()
 
                 from draft_ui import render_live_manual_draft_panel
 
@@ -26050,22 +26070,6 @@ elif active_page == "Live Draft Room":
                         request_live_draft_rerun(st, st.session_state, "manual_pick", room=room)
                     except ImportError:
                         st.rerun()
-                if _defer_heavy_paint:
-                    try:
-                        from live_draft_fast_solo_start import (
-                            clear_defer_heavy_first_paint,
-                            note_start_stage,
-                        )
-
-                        note_start_stage(
-                            st.session_state,
-                            "first_page_rendered",
-                            deferred_heavy=True,
-                        )
-                        clear_defer_heavy_first_paint(st.session_state)
-                    except ImportError:
-                        pass
-                    st.rerun()
         # Active Live Draft: skip "Continue analysis / settings on another page" nav.
         # Quick Draft Tools in the Decision Panel cover Assistant / Sleepers / Queue.
 
@@ -26358,13 +26362,20 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
 
-    if developer_mode_enabled():
-        try:
-            from live_draft_cloud_diagnostics import render_admin_diag_panel
+    try:
+        from live_draft_cloud_diagnostics import _admin_ok, render_acceptance_stamp, render_admin_diag_panel
 
+        render_acceptance_stamp(st, st.session_state, room if isinstance(room, dict) else None)
+        if _admin_ok(st, st.session_state):
             render_admin_diag_panel(st, st.session_state)
-        except ImportError:
-            pass
+    except ImportError:
+        if developer_mode_enabled():
+            try:
+                from live_draft_cloud_diagnostics import render_admin_diag_panel
+
+                render_admin_diag_panel(st, st.session_state)
+            except ImportError:
+                pass
     try:
         from live_draft_cloud_diagnostics import finish_run
 

@@ -2075,6 +2075,12 @@ def render_live_manual_draft_panel(
 
     Returns True when caller should rerun.
     """
+    try:
+        from live_draft_cloud_diagnostics import note_manual_panel_mount
+
+        note_manual_panel_mount(session, source="render_live_manual_draft_panel")
+    except ImportError:
+        pass
     from draft_actions import draft_action_context, resolve_manual_draft_panel_gate
 
     ctx = draft_action_context(session)
