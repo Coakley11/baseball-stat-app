@@ -144,7 +144,10 @@ def note_control_center_mount(session: dict[str, Any], *, source: str = "control
 def control_center_mount_count(session: dict[str, Any]) -> int:
     seq = int(session.get(RUN_SEQ_KEY) or 0)
     log = list(session.get(CONTROL_CENTER_MOUNT_KEY) or [])
-    return sum(1 for row in log if isinstance(row, dict) and int(row.get("run_seq") or 0) == seq)
+    per_run = sum(1 for row in log if isinstance(row, dict) and int(row.get("run_seq") or 0) == seq)
+    if per_run > 0:
+        return per_run
+    return 1 if log else 0
 
 
 def note_manual_panel_mount(session: dict[str, Any], *, source: str = "manual_panel") -> None:
@@ -162,7 +165,10 @@ def note_manual_panel_mount(session: dict[str, Any], *, source: str = "manual_pa
 def manual_panel_mount_count(session: dict[str, Any]) -> int:
     seq = int(session.get(RUN_SEQ_KEY) or 0)
     log = list(session.get(MANUAL_PANEL_MOUNT_KEY) or [])
-    return sum(1 for row in log if isinstance(row, dict) and int(row.get("run_seq") or 0) == seq)
+    per_run = sum(1 for row in log if isinstance(row, dict) and int(row.get("run_seq") or 0) == seq)
+    if per_run > 0:
+        return per_run
+    return 1 if log else 0
 
 
 def manual_panel_mount_summary(session: dict[str, Any]) -> str:

@@ -172,6 +172,53 @@ def render_solo_timer_wake_button(st: Any, session: dict[str, Any], room: dict[s
             pass
 
 
+def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
+    """Cloud acceptance: 1 Hz full-page poll when fragments stall (headless Cloud)."""
+    try:
+        from live_draft_cloud_diagnostics import cloud_accept_active
+        from live_draft_solo_timer import is_solo_live_draft
+    except ImportError:
+        return False
+    if not cloud_accept_active(session) or not is_solo_live_draft(session, room):
+        return False
+    if str(room.get("status") or "") != "in_progress":
+        return False
+    run_solo_expire_tick(st, session, source="page_poll")
+    session[SOLO_HEARTBEAT_TICK_KEY] = int(session.get(SOLO_HEARTBEAT_TICK_KEY) or 0) + 1
+    try:
+        from live_draft_solo_heartbeat_diagnostics import SOLO_HEARTBEAT_LAST_TICK_AT_KEY
+
+        session[SOLO_HEARTBEAT_LAST_TICK_AT_KEY] = time.time()
+    except ImportError:
+        pass
+    now = time.time()
+    last = float(session.get("_solo_cloud_poll_at") or 0.0)
+    if now - last < 0.85:
+        return False
+    session["_solo_cloud_poll_at"] = now
+    try:
+        from live_draft_safe_mode import request_live_draft_rerun
+
+        return bool(request_live_draft_rerun(st, session, "solo_cloud_poll", room=room))
+    except ImportError:
+        try:
+            st.rerun()
+            return True
+        except Exception:
+            return False
+
+
+def solo_cloud_page_poll_active(session: dict[str, Any], room: dict[str, Any] | None) -> bool:
+    try:
+        from live_draft_cloud_diagnostics import cloud_accept_active
+        from live_draft_solo_timer import is_solo_live_draft
+    except ImportError:
+        return False
+    if not isinstance(room, dict) or not cloud_accept_active(session):
+        return False
+    return is_solo_live_draft(session, room) and str(room.get("status") or "") == "in_progress"
+
+
 def _log_tick(
     session: dict[str, Any],
     room: dict[str, Any] | None,

@@ -24995,20 +24995,25 @@ elif active_page == "Live Draft Room":
                 from live_draft_solo_timer import is_solo_live_draft
                 from live_draft_solo_heartbeat import render_solo_live_draft_heartbeat
 
-                if is_solo_live_draft(st.session_state, room):
+        if is_solo_live_draft(st.session_state, room):
                     try:
-                        from live_draft_solo_heartbeat import render_solo_timer_wake_button
+                        from live_draft_cloud_diagnostics import cloud_accept_active
+                        from live_draft_solo_heartbeat import (
+                            render_solo_timer_wake_button,
+                            solo_cloud_page_poll_active,
+                        )
 
                         render_solo_timer_wake_button(st, st.session_state, room)
-                    except ImportError:
-                        pass
-                    render_solo_live_draft_heartbeat(st, st.session_state, room)
-                    try:
-                        from live_draft_solo_heartbeat import render_solo_expire_watchdog
+                        if not solo_cloud_page_poll_active(st.session_state, room):
+                            render_solo_live_draft_heartbeat(st, st.session_state, room)
+                            try:
+                                from live_draft_solo_heartbeat import render_solo_expire_watchdog
 
-                        render_solo_expire_watchdog(st, st.session_state)
+                                render_solo_expire_watchdog(st, st.session_state)
+                            except ImportError:
+                                pass
                     except ImportError:
-                        pass
+                        render_solo_live_draft_heartbeat(st, st.session_state, room)
             except ImportError:
                 pass
 
@@ -26366,6 +26371,15 @@ elif active_page == "Live Draft Room":
         pass
 
     # Deferred full-app refresh after queue mutations — never mid-pass after Draft Queue.
+    try:
+        from live_draft_solo_heartbeat import schedule_solo_cloud_expire_poll
+
+        _poll_room = st.session_state.get("live_draft_room")
+        if isinstance(_poll_room, dict):
+            schedule_solo_cloud_expire_poll(st, st.session_state, _poll_room)
+    except ImportError:
+        pass
+
     if st.session_state.pop("_live_draft_defer_full_rerun", None):
         try:
             from live_draft_render_checkpoints import note_live_draft_render_checkpoint
