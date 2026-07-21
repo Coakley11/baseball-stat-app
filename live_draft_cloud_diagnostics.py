@@ -139,6 +139,13 @@ def note_control_center_mount(session: dict[str, Any], *, source: str = "control
         }
     )
     session[CONTROL_CENTER_MOUNT_KEY] = log[-MAX_LOG:]
+    if cloud_accept_active(session):
+        try:
+            from live_draft_heavy_paint_ui import HEAVY_PAINT_DONE_KEY
+
+            session[HEAVY_PAINT_DONE_KEY] = True
+        except ImportError:
+            pass
 
 
 def control_center_mount_count(session: dict[str, Any]) -> int:

@@ -194,10 +194,13 @@ def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict
     except ImportError:
         pass
     try:
-        from live_draft_heavy_paint_ui import HEAVY_PAINT_DONE_KEY
+        from live_draft_heavy_paint_ui import DEFER_HEAVY_LOADING_KEY, HEAVY_PAINT_DONE_KEY
+        from live_draft_cloud_diagnostics import CONTROL_CENTER_MOUNT_KEY
 
-        if not session.get(HEAVY_PAINT_DONE_KEY):
-            return False
+        cc_log = list(session.get(CONTROL_CENTER_MOUNT_KEY) or [])
+        if not session.get(HEAVY_PAINT_DONE_KEY) and not cc_log:
+            if not session.get(DEFER_HEAVY_LOADING_KEY):
+                return False
     except ImportError:
         pass
     run_solo_expire_tick(st, session, source="page_poll")

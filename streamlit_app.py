@@ -25002,7 +25002,11 @@ elif active_page == "Live Draft Room":
 
                 if is_solo_live_draft(st.session_state, room):
                     render_solo_timer_wake_button(st, st.session_state, room)
-                    if not solo_cloud_page_poll_active(st.session_state, room):
+                    if solo_cloud_page_poll_active(st.session_state, room):
+                        from live_draft_solo_heartbeat import schedule_solo_cloud_expire_poll
+
+                        schedule_solo_cloud_expire_poll(st, st.session_state, room)
+                    else:
                         render_solo_live_draft_heartbeat(st, st.session_state, room)
                         render_solo_expire_watchdog(st, st.session_state)
             except ImportError:
