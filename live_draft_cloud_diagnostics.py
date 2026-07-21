@@ -12,10 +12,54 @@ ACTION_LOG_KEY = "_live_draft_cloud_action_timing_log"
 FRAGMENT_OWNERS_KEY = "_live_draft_fragment_owner_counts"
 SOLO_NO_FRAGMENT_KEY = "_live_draft_solo_no_fragment_mode"
 CANARY_MODE_KEY = "_live_draft_cloud_canary_mode"
+CLOUD_ACCEPT_KEY = "_live_draft_cloud_accept_mode"
+START_STAGE_LOG_KEY = "_live_draft_cloud_start_stage_log"
+BLOCKING_OPS_KEY = "_live_draft_cloud_blocking_ops"
 MAX_LOG = 120
 
 
-def _admin_ok(st: Any | None = None) -> bool:
+def bootstrap_cloud_accept_mode(st: Any, session: dict[str, Any]) -> bool:
+    """Enable admin diagnostics/canary for internal Cloud acceptance (?ld_accept=1)."""
+    if session.get(CLOUD_ACCEPT_KEY):
+        return True
+    raw = None
+    ld_canary_raw = None
+    try:
+        qp = getattr(st, "query_params", None)
+        if qp is not None:
+            raw = qp.get("ld_accept")
+            ld_canary_raw = qp.get("ld_canary")
+    except Exception:
+        return False
+    if raw is None or str(raw).strip().lower() not in ("1", "true", "yes", "on"):
+        return False
+    try:
+        from suite_workspace import is_admin_session, set_developer_mode_user
+
+        if not is_admin_session(st=st):
+            return False
+        set_developer_mode_user(session, True, source="ld_accept_query")
+    except ImportError:
+        return False
+    session[CLOUD_ACCEPT_KEY] = True
+    if str(ld_canary_raw or "").strip().lower() in ("1", "true", "yes", "on"):
+        session[CANARY_MODE_KEY] = True
+    return True
+
+
+def cloud_accept_active(session: dict[str, Any]) -> bool:
+    return bool(session.get(CLOUD_ACCEPT_KEY))
+
+
+def _admin_ok(st: Any | None = None, session: dict[str, Any] | None = None) -> bool:
+    ss = session
+    if ss is None and st is not None:
+        try:
+            ss = getattr(st, "session_state", None)
+        except Exception:
+            ss = None
+    if isinstance(ss, dict) and cloud_accept_active(ss):
+        return True
     try:
         from suite_workspace import can_show_developer_tools
 
@@ -63,6 +107,7 @@ def solo_skip_remote_poll(session: dict[str, Any]) -> bool:
 
 
 def cloud_canary_requested(st: Any, session: dict[str, Any]) -> bool:
+    bootstrap_cloud_accept_mode(st, session)
     if session.get(CANARY_MODE_KEY):
         return True
     try:
@@ -75,6 +120,25 @@ def cloud_canary_requested(st: Any, session: dict[str, Any]) -> bool:
     except Exception:
         pass
     return False
+
+
+def log_start_stage(session: dict[str, Any], stage: str, *, elapsed_ms: int = 0, **fields: Any) -> None:
+    log = list(session.get(START_STAGE_LOG_KEY) or [])
+    log.append({"stage": str(stage), "elapsed_ms": int(elapsed_ms), "ts": time.time(), **fields})
+    session[START_STAGE_LOG_KEY] = log[-MAX_LOG:]
+
+
+def note_blocking_op(session: dict[str, Any], name: str, *, duration_ms: int, **fields: Any) -> None:
+    ops = list(session.get(BLOCKING_OPS_KEY) or [])
+    ops.append({"name": str(name), "duration_ms": int(duration_ms), "ts": time.time(), **fields})
+    session[BLOCKING_OPS_KEY] = ops[-MAX_LOG:]
+    if int(duration_ms) >= 500:
+        try:
+            from live_draft_perf import record_slow_path
+
+            record_slow_path(session, str(name), duration_ms=int(duration_ms), **fields)
+        except ImportError:
+            pass
 
 
 def begin_run(session: dict[str, Any], *, source: str = "page") -> dict[str, Any]:
@@ -241,11 +305,28 @@ def render_surface_stamp(
 
 
 def render_admin_diag_panel(st: Any, session: dict[str, Any]) -> None:
-    if not _admin_ok(st):
+    if not _admin_ok(st, session):
         return
     with st.expander("Live Draft Cloud diagnostics", expanded=False):
         st.caption(f"Fragment owners: {fragment_owner_summary(session)}")
-        st.caption(f"Solo no-fragment: {solo_no_fragment_mode(session)} · canary: {bool(session.get(CANARY_MODE_KEY))}")
+        st.caption(
+            f"Solo no-fragment: {solo_no_fragment_mode(session)} · canary: {bool(session.get(CANARY_MODE_KEY))} · "
+            f"cloud_accept: {cloud_accept_active(session)}"
+        )
+        stages = list(session.get(START_STAGE_LOG_KEY) or [])[-12:]
+        if stages:
+            st.markdown("**Start Draft stages**")
+            for row in stages:
+                st.caption(
+                    f"{row.get('stage')} · {row.get('elapsed_ms')}ms · "
+                    f"{', '.join(f'{k}={v}' for k, v in row.items() if k not in ('stage', 'elapsed_ms', 'ts'))}"
+                )
+        blockers = list(session.get(BLOCKING_OPS_KEY) or [])
+        if blockers:
+            worst = max(blockers, key=lambda x: int(x.get("duration_ms") or 0))
+            st.caption(
+                f"Longest blocking op: {worst.get('name')} · {worst.get('duration_ms')}ms"
+            )
         runs = list(session.get(RUN_LOG_KEY) or [])[-8:]
         if runs:
             st.markdown("**Recent runs**")

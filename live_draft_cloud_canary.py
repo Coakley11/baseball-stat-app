@@ -9,12 +9,15 @@ CANARY_TEAMS = ("Team A", "Team B")
 CANARY_PICKS_PER_TEAM = 2
 
 
-def _admin_ok(st: Any) -> bool:
+def _admin_ok(st: Any, session: dict[str, Any]) -> bool:
     try:
-        from suite_workspace import can_show_developer_tools
+        from live_draft_cloud_diagnostics import bootstrap_cloud_accept_mode
 
-        return bool(can_show_developer_tools(st=st))
-    except Exception:
+        bootstrap_cloud_accept_mode(st, session)
+        from live_draft_cloud_diagnostics import _admin_ok as diag_admin_ok
+
+        return bool(diag_admin_ok(st, session))
+    except ImportError:
         return False
 
 
@@ -55,6 +58,19 @@ def ensure_canary_room(session: dict[str, Any]) -> dict[str, Any]:
         ensure_full_pick_order(room)
     if live_draft_reset_timer is not None:
         live_draft_reset_timer(room)
+    try:
+        import pandas as pd
+
+        room["pool"] = pd.DataFrame(
+            [
+                {"playerID": "p1", "fullName": "Player One", "Primary Position": "1B", "Expected Fantasy Value": 90, "Model Rank": 1, "Market Rank": 1, "Fantasy Edge": 0},
+                {"playerID": "p2", "fullName": "Player Two", "Primary Position": "C", "Expected Fantasy Value": 85, "Model Rank": 2, "Market Rank": 2, "Fantasy Edge": 0},
+                {"playerID": "p3", "fullName": "Player Three", "Primary Position": "OF", "Expected Fantasy Value": 80, "Model Rank": 3, "Market Rank": 3, "Fantasy Edge": 0},
+                {"playerID": "p4", "fullName": "Player Four", "Primary Position": "P", "Expected Fantasy Value": 75, "Model Rank": 4, "Market Rank": 4, "Fantasy Edge": 0},
+            ]
+        )
+    except Exception:
+        pass
     session["live_draft_room"] = room
     session.pop("active_shared_draft_room_code", None)
     session["live_draft_setup_mode"] = "solo"
@@ -82,8 +98,8 @@ def render_live_draft_cloud_canary(st: Any, session: dict[str, Any]) -> bool:
             return False
     except ImportError:
         return False
-    if not _admin_ok(st):
-        st.warning("Cloud canary requires Developer Mode.")
+    if not _admin_ok(st, session):
+        st.warning("Cloud canary requires Developer Mode or ?ld_accept=1 (admin).")
         return True
 
     session[CANARY_MODE_KEY] = True
@@ -148,6 +164,23 @@ def render_live_draft_cloud_canary(st: Any, session: dict[str, Any]) -> bool:
                 pass
             st.rerun()
 
+    if st.button("Reset Timer", key="canary_reset_timer"):
+        try:
+            from live_draft_timer_logic import live_draft_reset_timer
+
+            live_draft_reset_timer(room)
+            session["live_draft_room"] = room
+        except ImportError:
+            pass
+        st.rerun()
+
+    try:
+        from live_draft_cloud_diagnostics import render_admin_diag_panel
+
+        render_admin_diag_panel(st, session)
+    except ImportError:
+        pass
+
     board = room.get("draft_board") or []
     st.markdown("**Draft Board**")
     if not board:
@@ -179,10 +212,4 @@ def render_live_draft_cloud_canary(st: Any, session: dict[str, Any]) -> bool:
                 pass
         st.rerun()
 
-    try:
-        from live_draft_cloud_diagnostics import render_admin_diag_panel
-
-        render_admin_diag_panel(st, session)
-    except ImportError:
-        pass
     return True

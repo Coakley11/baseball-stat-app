@@ -22015,6 +22015,12 @@ elif active_page == DRAFT_LAB_PAGE:
 
 elif active_page == "Live Draft Room":
     try:
+        from live_draft_cloud_diagnostics import bootstrap_cloud_accept_mode
+
+        bootstrap_cloud_accept_mode(st, st.session_state)
+    except ImportError:
+        pass
+    try:
         from live_draft_cloud_canary import render_live_draft_cloud_canary
 
         if render_live_draft_cloud_canary(st, st.session_state):
@@ -22910,17 +22916,67 @@ elif active_page == "Live Draft Room":
                     _setup_slots = dict(
                         _setup_check.get("slots_for_room") or _setup_slots
                     )
-                    with st.spinner("Building player pool…"):
-                        # Cached when warm; cold Cloud first-build can take several seconds.
-                        pool_live = get_cached_unified_projection_pool(
-                            int(st.session_state.get("_lahman_max_year", year_max)),
-                            int(live_proj_window),
-                            str(fantasy_format),
-                            str(live_proj_style),
-                            bool(st.session_state.get("draft_use_ml_blend", False)),
-                            float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
-                            int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
+                    try:
+                        from live_draft_fast_solo_start import (
+                            build_fast_market_pool,
+                            mark_deferred_full_pool,
+                            note_start_stage,
+                            should_use_fast_solo_pool,
                         )
+
+                        note_start_stage(st.session_state, "validation_completed")
+                        _use_fast_pool = should_use_fast_solo_pool(
+                            st.session_state,
+                            solo_mode=_solo_mode,
+                            from_simulator=_from_simulator,
+                            prepare_shared=_prepare_shared,
+                        )
+                    except ImportError:
+                        _use_fast_pool = False
+                        note_start_stage = None  # type: ignore[assignment]
+                    if _use_fast_pool:
+                        note_start_stage(st.session_state, "pool_build_start")
+                        pool_live = build_fast_market_pool(
+                            market_df_live,
+                            min_rows=max(400, int(total_picks) * 40),
+                        )
+                        try:
+                            mark_deferred_full_pool(
+                                st.session_state,
+                                params={
+                                    "lahman_max_year": int(st.session_state.get("_lahman_max_year", year_max)),
+                                    "draft_window": int(live_proj_window),
+                                    "fantasy_format": str(fantasy_format),
+                                    "projection_style": str(live_proj_style),
+                                    "use_ml_blend": bool(st.session_state.get("draft_use_ml_blend", False)),
+                                    "ml_blend_weight": float(
+                                        st.session_state.get("draft_ml_blend_weight", 0.12) or 0
+                                    ),
+                                    "ml_min_games_for_signal": int(
+                                        st.session_state.get("draft_ml_min_games_signal", 50) or 50
+                                    ),
+                                },
+                            )
+                        except ImportError:
+                            pass
+                        note_start_stage(
+                            st.session_state,
+                            "pool_build_end",
+                            pool_live_count=int(len(pool_live)) if pool_live is not None else 0,
+                            fast_pool=True,
+                        )
+                    else:
+                        with st.spinner("Building player pool…"):
+                            # Cached when warm; cold Cloud first-build can take several seconds.
+                            pool_live = get_cached_unified_projection_pool(
+                                int(st.session_state.get("_lahman_max_year", year_max)),
+                                int(live_proj_window),
+                                str(fantasy_format),
+                                str(live_proj_style),
+                                bool(st.session_state.get("draft_use_ml_blend", False)),
+                                float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
+                                int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
+                            )
                 try:
                     from live_draft_solo_create import note_timed_step
 
@@ -23207,6 +23263,16 @@ elif active_page == "Live Draft Room":
                             live_draft_start(new_room)
                             st.session_state["live_draft_room"] = new_room
                             st.session_state["room_your_team"] = user_team
+                            try:
+                                from live_draft_canonical_snapshot import begin_live_draft_paint
+                                from live_draft_fast_solo_start import note_start_stage
+
+                                begin_live_draft_paint(
+                                    st.session_state, new_room, state_source="solo_start"
+                                )
+                                note_start_stage(st.session_state, "canonical_snapshot_installed")
+                            except ImportError:
+                                pass
                             try:
                                 from live_draft_creation_trace import protect_new_room
                                 from live_draft_solo_create import mark_deferred_create_persist, note_timed_step
@@ -26232,6 +26298,13 @@ elif active_page == "Live Draft Room":
 
         mark_ux_milestone(st.session_state, "page_complete", rebuild="full_page", st=st)
         settle_ux_action(st.session_state, where="app_settled", st=st)
+    except ImportError:
+        pass
+
+    try:
+        from live_draft_fast_solo_start import maybe_build_deferred_full_pool
+
+        maybe_build_deferred_full_pool(st.session_state)
     except ImportError:
         pass
 
