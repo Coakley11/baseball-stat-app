@@ -15,6 +15,7 @@ CANARY_MODE_KEY = "_live_draft_cloud_canary_mode"
 CLOUD_ACCEPT_KEY = "_live_draft_cloud_accept_mode"
 START_STAGE_LOG_KEY = "_live_draft_cloud_start_stage_log"
 BLOCKING_OPS_KEY = "_live_draft_cloud_blocking_ops"
+CONTROL_CENTER_MOUNT_KEY = "_live_draft_control_center_mount_log"
 MAX_LOG = 120
 
 
@@ -124,6 +125,25 @@ def note_fragment_owner(session: dict[str, Any], owner: str, *, delta: int = 1) 
     counts = dict(session.get(FRAGMENT_OWNERS_KEY) or {})
     counts[str(owner)] = int(counts.get(str(owner), 0)) + int(delta)
     session[FRAGMENT_OWNERS_KEY] = counts
+
+
+def note_control_center_mount(session: dict[str, Any], *, source: str = "control_center") -> None:
+    log = list(session.get(CONTROL_CENTER_MOUNT_KEY) or [])
+    log.append(
+        {
+            "ts": time.time(),
+            "source": str(source),
+            "run_seq": int(session.get(RUN_SEQ_KEY) or 0),
+        }
+    )
+    session[CONTROL_CENTER_MOUNT_KEY] = log[-MAX_LOG:]
+
+
+def control_center_mount_summary(session: dict[str, Any]) -> str:
+    log = list(session.get(CONTROL_CENTER_MOUNT_KEY) or [])
+    if not log:
+        return "none"
+    return f"mounts={len(log)} last={log[-1].get('source')} seq={log[-1].get('run_seq')}"
 
 
 def fragment_owner_summary(session: dict[str, Any]) -> str:
@@ -355,10 +375,28 @@ def render_admin_diag_panel(st: Any, session: dict[str, Any]) -> None:
         return
     with st.expander("Live Draft Cloud diagnostics", expanded=False):
         st.caption(f"Fragment owners: {fragment_owner_summary(session)}")
+        st.caption(f"Control center mounts: {control_center_mount_summary(session)}")
         st.caption(
             f"Solo no-fragment: {solo_no_fragment_mode(session)} · canary: {bool(session.get(CANARY_MODE_KEY))} · "
             f"cloud_accept: {cloud_accept_active(session)}"
         )
+        try:
+            from live_draft_fast_solo_start import get_start_stage_report, should_defer_heavy_first_paint
+
+            stage_report = get_start_stage_report(session)
+            if stage_report:
+                st.markdown("**Start Draft stages (measured)**")
+                for name, row in stage_report.items():
+                    if not isinstance(row, dict):
+                        continue
+                    st.caption(
+                        f"{name} · {row.get('elapsed_ms', '—')}ms · "
+                        f"{', '.join(f'{k}={v}' for k, v in row.items() if k not in ('elapsed_ms', 'at'))}"
+                    )
+            if should_defer_heavy_first_paint(session):
+                st.caption("Heavy paint deferred for first active-page pass.")
+        except ImportError:
+            pass
         stages = list(session.get(START_STAGE_LOG_KEY) or [])[-12:]
         if stages:
             st.markdown("**Start Draft stages**")

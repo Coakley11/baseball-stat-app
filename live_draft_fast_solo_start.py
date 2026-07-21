@@ -8,6 +8,7 @@ from typing import Any
 DEFERRED_FULL_POOL_KEY = "_live_draft_deferred_full_pool_build"
 DEFERRED_FULL_POOL_DONE_KEY = "_live_draft_deferred_full_pool_done"
 START_STAGES_KEY = "_live_draft_start_stage_timings"
+DEFER_HEAVY_PAINT_KEY = "_live_draft_defer_heavy_first_paint"
 
 
 def _mono() -> float:
@@ -47,6 +48,19 @@ def note_start_stage(session: dict[str, Any], stage: str, **fields: Any) -> None
 
 def get_start_stage_report(session: dict[str, Any]) -> dict[str, Any]:
     return dict(session.get(START_STAGES_KEY) or {})
+
+
+def mark_defer_heavy_first_paint(session: dict[str, Any]) -> None:
+    """Skip recommendations/photos/decision panels on the first active-page paint."""
+    session[DEFER_HEAVY_PAINT_KEY] = True
+
+
+def should_defer_heavy_first_paint(session: dict[str, Any]) -> bool:
+    return bool(session.get(DEFER_HEAVY_PAINT_KEY))
+
+
+def clear_defer_heavy_first_paint(session: dict[str, Any]) -> None:
+    session.pop(DEFER_HEAVY_PAINT_KEY, None)
 
 
 def should_use_fast_solo_pool(

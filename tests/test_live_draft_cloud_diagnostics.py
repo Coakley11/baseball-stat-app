@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from live_draft_cloud_diagnostics import _qp_flag, _qp_get, bootstrap_cloud_accept_mode
+from live_draft_cloud_diagnostics import (
+    _qp_flag,
+    _qp_get,
+    bootstrap_cloud_accept_mode,
+    control_center_mount_summary,
+    note_control_center_mount,
+)
 
 
 class _QP:
@@ -31,3 +37,11 @@ def test_bootstrap_cloud_accept_mode_from_paired_canary_params():
     assert bootstrap_cloud_accept_mode(st, session) is True
     assert session.get("_live_draft_cloud_accept_mode") is True
     assert session.get("_live_draft_cloud_canary_mode") is True
+
+
+def test_control_center_mount_summary():
+    session: dict = {}
+    note_control_center_mount(session, source="render_live_draft_control_center")
+    summary = control_center_mount_summary(session)
+    assert "render_live_draft_control_center" in summary
+    assert "mounts=1" in summary

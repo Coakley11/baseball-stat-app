@@ -2341,17 +2341,16 @@ def render_live_manual_draft_panel(
                 "draft_button_disable_reason": disable_reason,
             }
         )
-        st.markdown('<div class="live-draft-manual-panel">', unsafe_allow_html=True)
-        st.button(
-            "Draft Player",
-            key=f"{MANUAL_DRAFT_BUTTON_KEY}_waiting",
-            type="primary",
-            disabled=True,
-            use_container_width=True,
-            help=str(disable_reason)[:200],
-        )
-        st.caption(disable_reason)
-        st.markdown("</div>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.button(
+                "Draft Player",
+                key=f"{MANUAL_DRAFT_BUTTON_KEY}_waiting",
+                type="primary",
+                disabled=True,
+                use_container_width=True,
+                help=str(disable_reason)[:200],
+            )
+            st.caption(disable_reason)
         return _finish(diag_base)
 
     widget_key = manual_draft_candidate_widget_key(room)
@@ -2392,47 +2391,45 @@ def render_live_manual_draft_panel(
     diag_base["draft_button_enabled"] = button_enabled
     diag_base["draft_button_disable_reason"] = "" if button_enabled else (disable_reason or "cannot_draft")
 
-    st.markdown('<div class="live-draft-manual-panel">', unsafe_allow_html=True)
-    diag_base["candidate_source"] = pool_source
+    with st.container(border=True):
+        diag_base["candidate_source"] = pool_source
 
-    def _on_manual_draft_click() -> None:
-        snap = session.get(MANUAL_CANDIDATE_SNAPSHOT_KEY)
-        snap = snap if isinstance(snap, dict) else {}
-        queue_manual_draft_pick(
-            session,
-            player_name=str(snap.get("name") or session.get(widget_key) or visible_name or "").strip(),
-            player_id=str(snap.get("id") or visible_id or "").strip() or None,
-            pool_source=str(pool_source or ""),
-            candidate_source="manual_panel_selectbox_on_click",
-            widget_key=widget_key,
-        )
+        def _on_manual_draft_click() -> None:
+            snap = session.get(MANUAL_CANDIDATE_SNAPSHOT_KEY)
+            snap = snap if isinstance(snap, dict) else {}
+            queue_manual_draft_pick(
+                session,
+                player_name=str(snap.get("name") or session.get(widget_key) or visible_name or "").strip(),
+                player_id=str(snap.get("id") or visible_id or "").strip() or None,
+                pool_source=str(pool_source or ""),
+                candidate_source="manual_panel_selectbox_on_click",
+                widget_key=widget_key,
+            )
 
-    # Always paint Draft Player — never hide it when unavailable.
-    if button_enabled:
-        st.button(
-            "Draft Player",
-            key=MANUAL_DRAFT_BUTTON_KEY,
-            type="primary",
-            use_container_width=True,
-            on_click=_on_manual_draft_click,
-        )
-    else:
-        reason_txt = disable_reason or "Cannot draft this player right now."
-        st.button(
-            "Draft Player",
-            key=f"{MANUAL_DRAFT_BUTTON_KEY}_disabled",
-            type="primary",
-            disabled=True,
-            use_container_width=True,
-            help=str(reason_txt)[:200],
-        )
-        st.caption(reason_txt)
+        # Always paint Draft Player — never hide it when unavailable.
+        if button_enabled:
+            st.button(
+                "Draft Player",
+                key=MANUAL_DRAFT_BUTTON_KEY,
+                type="primary",
+                use_container_width=True,
+                on_click=_on_manual_draft_click,
+            )
+        else:
+            reason_txt = disable_reason or "Cannot draft this player right now."
+            st.button(
+                "Draft Player",
+                key=f"{MANUAL_DRAFT_BUTTON_KEY}_disabled",
+                type="primary",
+                disabled=True,
+                use_container_width=True,
+                help=str(reason_txt)[:200],
+            )
+            st.caption(reason_txt)
 
-    pending = session.get(PENDING_MANUAL_PICK_KEY)
-    if isinstance(pending, dict) and pending.get("player_name"):
-        st.caption("Processing manual pick…")
-
-    st.markdown("</div>", unsafe_allow_html=True)
+        pending = session.get(PENDING_MANUAL_PICK_KEY)
+        if isinstance(pending, dict) and pending.get("player_name"):
+            st.caption("Processing manual pick…")
     record_live_draft_ui_diagnostics(
         session,
         {

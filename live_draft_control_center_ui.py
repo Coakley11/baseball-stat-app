@@ -66,6 +66,13 @@ def render_live_draft_control_center(
         st.markdown("### Draft Control Center")
         st.caption("Temporary actions for the currently active room.")
 
+    try:
+        from live_draft_cloud_diagnostics import note_control_center_mount
+
+        note_control_center_mount(session, source="render_live_draft_control_center")
+    except ImportError:
+        pass
+
     top1, top2 = st.columns(2)
     with top1:
         if st.button(
@@ -241,17 +248,16 @@ def render_control_center_with_live_chat(
 
     ctrl_col, chat_col = st.columns([1.0, 1.15])
     with ctrl_col:
-        st.markdown('<div class="live-draft-action-row">', unsafe_allow_html=True)
-        result = render_live_draft_control_center(
-            st,
-            session,
-            room,
-            cfg=cfg,
-            persist_room=persist_room,
-            developer_mode=developer_mode,
-            show_heading=True,
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
+        with st.container(border=True):
+            result = render_live_draft_control_center(
+                st,
+                session,
+                room,
+                cfg=cfg,
+                persist_room=persist_room,
+                developer_mode=developer_mode,
+                show_heading=True,
+            )
     with chat_col:
         if render_live_draft_chat_panel is not None:
             try:
