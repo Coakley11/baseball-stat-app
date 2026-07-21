@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -168,6 +169,51 @@ def countdown_values(text: str) -> list[int]:
     return vals
 
 
+def select_option_by_label(page, label: str, option: str) -> bool:
+    return bool(
+        page.evaluate(
+            """({label, option}) => {
+              function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+              for (const root of roots()) {
+                for (const sel of root.querySelectorAll('[data-baseweb=\"select\"]')) {
+                  const prev = sel.previousElementSibling;
+                  const text = ((prev && prev.innerText) || sel.innerText || '').replace(/\\s+/g,' ').trim();
+                  if (!text.includes(label)) continue;
+                  const input = sel.querySelector('input');
+                  if (input) {
+                    input.click();
+                    input.value = option;
+                    input.dispatchEvent(new Event('input', {bubbles:true}));
+                    input.dispatchEvent(new Event('change', {bubbles:true}));
+                    return true;
+                  }
+                }
+              }
+              return false;
+            }""",
+            {"label": label, "option": option},
+        )
+    )
+
+
+def wait_for_deploy(page, target_sha: str, *, timeout_s: int = 900) -> str:
+    deadline = time.time() + timeout_s
+    seen = ""
+    while time.time() < deadline:
+        try:
+            page.goto(PROD_URL, wait_until="domcontentloaded", timeout=120000)
+            page.wait_for_timeout(5000)
+            text = page.inner_text("body", timeout=20000)
+            m = re.search(r"baseball-dev-([a-f0-9]{7})", text, re.I)
+            seen = m.group(1).lower() if m else ""
+            if seen == target_sha.lower():
+                return seen
+        except Exception:
+            pass
+        page.wait_for_timeout(20000)
+    return seen
+
+
 def stamp_ok(stamp: dict[str, Any]) -> bool:
     cc = int(stamp.get("cc_mounts") or 0)
     manual = int(stamp.get("manual_mounts") or 0)
@@ -254,19 +300,29 @@ def main() -> int:
         )
         page = browser.new_page(viewport={"width": 1440, "height": 1400})
         try:
+            target_sha = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=Path(__file__).resolve().parent.parent,
+                text=True,
+            ).strip()
+            report["expected_build"] = f"baseball-dev-{target_sha}"
+            deploy_seen = wait_for_deploy(page, target_sha, timeout_s=600)
+            report["deploy_build_seen"] = deploy_seen or report.get("deploy_build_seen") or ""
+
             page.goto(PROD_URL, wait_until="domcontentloaded", timeout=120000)
-            page.wait_for_timeout(15000)
+            page.wait_for_timeout(12000)
             text = page.inner_text("body", timeout=20000)
-            m = re.search(r"baseball-dev-[a-f0-9]+", text, re.I)
-            report["deploy_build_seen"] = m.group(0) if m else ""
+            if not report["deploy_build_seen"]:
+                m = re.search(r"baseball-dev-[a-f0-9]+", text, re.I)
+                report["deploy_build_seen"] = m.group(0) if m else ""
 
             if "End/Delete Draft" in text:
                 click_btn(page, "End/Delete Draft")
                 page.wait_for_timeout(5000)
 
             set_number(page, "Number of Teams", "2")
-            set_number(page, "Picks per Team", "4")
-            set_number(page, "P", "0")
+            set_number(page, "Picks per Team", "8")
+            select_option_by_label(page, "Timer per Pick", "30 sec")
             page.wait_for_timeout(2000)
 
             t_click = time.time()
@@ -280,7 +336,7 @@ def main() -> int:
 
             first_usable = None
             heavy_paint = None
-            for _ in range(90):
+            for _ in range(120):
                 page.wait_for_timeout(1000)
                 text = page.inner_text("body", timeout=20000)
                 report["stages"] = extract_diag(page)
@@ -298,9 +354,11 @@ def main() -> int:
                     heavy_paint = time.time() - t_click
                     report["time_to_heavy_paint_s"] = round(heavy_paint, 2)
                     report["dom_samples"].append({"when": "heavy_paint", **d, "stamp": stamp})
-                if first_usable is not None and heavy_paint is not None:
+                if first_usable is not None:
                     break
 
+            if first_usable is None:
+                report["errors"].append("start_never_reached_active_controls")
             last_stamp = parse_acceptance_stamp(text)
             report["acceptance_stamp_final"] = last_stamp
             d0 = dom_counts(page)
@@ -493,7 +551,6 @@ def main() -> int:
             browser.close()
 
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    import subprocess
 
     repo = Path(__file__).resolve().parent.parent
     egress_tests = subprocess.run(
