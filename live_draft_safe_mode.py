@@ -216,7 +216,7 @@ def reconcile_live_draft_room(session: dict[str, Any], room: dict[str, Any]) -> 
     stale_status = bool(total > 0 and status_before == "complete" and board_before < total)
     stale_idx = bool(idx_before != board_before and board_before < total)
 
-    room = repair_stale_live_draft_progress(dict(room))
+    repair_stale_live_draft_progress(room)
     board = _board_size(room)
 
     if total > 0 and board < total:

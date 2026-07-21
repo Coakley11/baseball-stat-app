@@ -253,24 +253,33 @@ def persist_applied_pick(
                 write_canonical_live_draft_state(session, room, reason=source, local_edit=False)
             persist_perf["cloud_write_ms"] = int((time.perf_counter() - t_cloud) * 1000)
         elif not mp:
-            try:
-                from live_draft_state import patch_canonical_live_draft_pick_fields
+            if fast_path:
+                try:
+                    from live_draft_state import defer_live_draft_canonical_write
 
-                t_cloud = time.perf_counter()
-                if live_draft_perf_action is not None:
-                    with live_draft_perf_action(session, "canonical_patch", phase=PHASE_PICK_CANONICAL_PATCH):
+                    defer_live_draft_canonical_write(session, room, reason=source, local_edit=True)
+                    persist_perf["cloud_write_ms"] = 0
+                except ImportError:
+                    pass
+            else:
+                try:
+                    from live_draft_state import patch_canonical_live_draft_pick_fields
+
+                    t_cloud = time.perf_counter()
+                    if live_draft_perf_action is not None:
+                        with live_draft_perf_action(session, "canonical_patch", phase=PHASE_PICK_CANONICAL_PATCH):
+                            patch_canonical_live_draft_pick_fields(session, room, reason=source, local_edit=True)
+                    else:
                         patch_canonical_live_draft_pick_fields(session, room, reason=source, local_edit=True)
-                else:
-                    patch_canonical_live_draft_pick_fields(session, room, reason=source, local_edit=True)
-                persist_perf["cloud_write_ms"] = int((time.perf_counter() - t_cloud) * 1000)
-            except ImportError:
-                t_cloud = time.perf_counter()
-                if live_draft_perf_action is not None:
-                    with live_draft_perf_action(session, "canonical_full", phase=PHASE_PICK_CANONICAL_FULL):
+                    persist_perf["cloud_write_ms"] = int((time.perf_counter() - t_cloud) * 1000)
+                except ImportError:
+                    t_cloud = time.perf_counter()
+                    if live_draft_perf_action is not None:
+                        with live_draft_perf_action(session, "canonical_full", phase=PHASE_PICK_CANONICAL_FULL):
+                            write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
+                    else:
                         write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
-                else:
-                    write_canonical_live_draft_state(session, room, reason=source, local_edit=True)
-                persist_perf["cloud_write_ms"] = int((time.perf_counter() - t_cloud) * 1000)
+                    persist_perf["cloud_write_ms"] = int((time.perf_counter() - t_cloud) * 1000)
         if mp:
             try:
                 from live_draft_state import clear_live_draft_local_edit
@@ -642,11 +651,15 @@ def finalize_live_draft_pick_transition(
     # Idempotency key: draft + pick index + revision (pre-commit board size as stand-in
     # when revision has not bumped yet). Fragments sharing this key must not re-pick.
     try:
-        from live_draft_canonical_snapshot import auto_pick_idempotency_key
+        from live_draft_canonical_snapshot import auto_pick_idempotency_key, pick_commit_confirmed
 
-        key = auto_pick_idempotency_key(room, pick_index=idx_b, board_size=board_before)
-        session["_live_draft_last_auto_pick_idempotency_key"] = key
-        room["_last_auto_pick_idempotency_key"] = key
+        if pick_commit_confirmed(room, pick_index_before=idx_b, board_size_before=board_before):
+            key = auto_pick_idempotency_key(room, pick_index=idx_b, board_size=board_before)
+            session["_live_draft_last_auto_pick_idempotency_key"] = key
+            room["_last_auto_pick_idempotency_key"] = key
+        else:
+            session.pop("_live_draft_last_auto_pick_idempotency_key", None)
+            room.pop("_last_auto_pick_idempotency_key", None)
     except Exception:
         pass
 
@@ -699,7 +712,30 @@ def finalize_live_draft_pick_transition(
     except ImportError:
         pass
 
+    align_after = int(room.get("current_pick_index") or 0)
+    board_after = len(room.get("draft_board") or [])
+    if board_after != board_before + 1 and str(room.get("status") or "") != "complete":
+        result = PickCommitResult(
+            ok=False,
+            message="Pick did not advance board by exactly one.",
+            error="board_not_advanced",
+            commit_path=f"finalize:{source}",
+            board_size_before=board_before,
+            board_size_after=board_after,
+            current_pick_index_before=idx_b,
+            current_pick_index_after=align_after,
+        )
+        session.pop("_live_draft_in_flight_auto_pick_key", None)
+        return result
+
     if request_immediate_paint:
+        try:
+            from live_draft_canonical_snapshot import align_room_pick_index, begin_live_draft_paint
+
+            align_room_pick_index(room)
+            begin_live_draft_paint(session, room, state_source=f"pick:{source}")
+        except ImportError:
+            pass
         try:
             from live_draft_rerun_scope import mark_live_draft_optimistic_pick_tick
 

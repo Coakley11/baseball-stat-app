@@ -421,9 +421,10 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
                 try:
                     from live_draft_safe_mode import reconcile_live_draft_room
 
-                    room = reconcile_live_draft_room(session, room).room
+                    rec = reconcile_live_draft_room(session, room)
+                    room = rec.room
                 except ImportError:
-                    room = repair_stale_live_draft_progress(dict(room))
+                    repair_stale_live_draft_progress(room)
                     session[LIVE_DRAFT_ROOM_KEY] = room
                 progress = analyze_live_draft_progress(room)
                 try:

@@ -217,15 +217,18 @@ def apply_canonical_to_slot_views(
     refresh: bool = True,
 ) -> dict[str, Any]:
     """Return the paint snapshot for UI consumers — never rebuild mid-pass."""
-    paint = session.get(PAINT_SNAPSHOT_KEY)
-    if isinstance(paint, dict) and paint and not refresh:
-        return dict(paint)
-    if isinstance(paint, dict) and paint:
-        return dict(paint)
+    if not refresh:
+        paint = session.get(PAINT_SNAPSHOT_KEY)
+        if isinstance(paint, dict) and paint:
+            return dict(paint)
     live = room if isinstance(room, dict) else session.get("live_draft_room")
-    return install_canonical_live_draft_snapshot(
+    if isinstance(live, dict):
+        align_room_pick_index(live)
+    snap = install_canonical_live_draft_snapshot(
         session, live if isinstance(live, dict) else {}, state_source="ui_paint"
     )
+    session[CANONICAL_SNAPSHOT_KEY] = snap
+    return dict(snap)
 
 
 def context_fields_from_snapshot(
@@ -309,6 +312,47 @@ def auto_pick_idempotency_key(
     rev = _revision(room)
     board = int(board_size if board_size is not None else len(room.get("draft_board") or []))
     return f"{_draft_id(room)}|pick={idx}|rev={rev}|board={board}"
+
+
+def pick_commit_confirmed(
+    room: dict[str, Any] | None,
+    *,
+    pick_index_before: int,
+    board_size_before: int,
+) -> bool:
+    """True when the room reflects a committed pick that started at pick_index_before/board_size_before."""
+    if not isinstance(room, dict):
+        return False
+    idx_before = int(pick_index_before)
+    board_before = int(board_size_before)
+    board_now = len(room.get("draft_board") or [])
+    idx_now = int(room.get("current_pick_index") or 0)
+    return board_now >= board_before + 1 and idx_now >= idx_before + 1
+
+
+def idempotency_key_committed(room: dict[str, Any] | None, claim_key: str) -> bool:
+    """Parse an auto-pick idempotency key and verify the room actually advanced."""
+    if not claim_key or not isinstance(room, dict):
+        return False
+    try:
+        pick_part = claim_key.split("|pick=", 1)[1]
+        pick_idx = int(pick_part.split("|", 1)[0])
+        board_part = claim_key.split("|board=", 1)[1]
+        board_at = int(board_part)
+    except (IndexError, ValueError):
+        return False
+    return pick_commit_confirmed(room, pick_index_before=pick_idx, board_size_before=board_at)
+
+
+def clear_stale_auto_pick_idempotency(session: dict[str, Any], room: dict[str, Any]) -> None:
+    """Drop idempotency tokens that no longer match committed board state."""
+    for key_name in ("_live_draft_last_auto_pick_idempotency_key", "_live_draft_in_flight_auto_pick_key"):
+        token = str(session.get(key_name) or "")
+        if token and not idempotency_key_committed(room, token):
+            session.pop(key_name, None)
+    room_last = str(room.get("_last_auto_pick_idempotency_key") or "")
+    if room_last and not idempotency_key_committed(room, room_last):
+        room.pop("_last_auto_pick_idempotency_key", None)
 
 
 def format_canonical_diag_line(snap: dict[str, Any] | None) -> str:

@@ -379,8 +379,15 @@ def render_live_on_clock_banner(
         except ImportError:
             try:
                 from shared_live_draft_snapshot import build_shared_live_draft_snapshot
+                from live_draft_canonical_snapshot import (
+                    align_room_pick_index,
+                    install_canonical_live_draft_snapshot,
+                )
 
                 snap = build_shared_live_draft_snapshot(session, room=tick_room)
+                align_room_pick_index(tick_room)
+                install_canonical_live_draft_snapshot(session, tick_room, state_source="shared_fallback_sync")
+                session["_live_draft_shared_fallback_paint"] = dict(snap)
                 tick_idx = int(snap.get("current_pick_index") or pick_idx)
                 tick_deadline = snap.get("turn_deadline")
                 remaining = snap.get("seconds_remaining")
@@ -432,11 +439,16 @@ def render_live_on_clock_banner(
                         if result.ok and (result.advanced or result.complete):
                             try:
                                 from live_draft_canonical_snapshot import (
+                                    align_room_pick_index,
+                                    begin_live_draft_paint,
                                     invalidate_live_draft_paint,
                                     note_action_timing,
                                 )
 
                                 invalidate_live_draft_paint(session)
+                                tick_room = _resolve_live_room(session, tick_room)
+                                align_room_pick_index(tick_room)
+                                begin_live_draft_paint(session, tick_room, state_source="solo_expire_fragment")
                                 note_action_timing(
                                     session,
                                     "solo_expire_fragment",
@@ -475,8 +487,17 @@ def render_live_on_clock_banner(
                         tick_room = _resolve_live_room(session, tick_room)
                         try:
                             from shared_live_draft_snapshot import build_shared_live_draft_snapshot
+                            from live_draft_canonical_snapshot import (
+                                align_room_pick_index,
+                                install_canonical_live_draft_snapshot,
+                            )
 
                             snap = build_shared_live_draft_snapshot(session, room=tick_room)
+                            align_room_pick_index(tick_room)
+                            install_canonical_live_draft_snapshot(
+                                session, tick_room, state_source="shared_fallback_poll"
+                            )
+                            session["_live_draft_shared_fallback_paint"] = dict(snap)
                             tick_idx = int(snap.get("current_pick_index") or tick_idx)
                             tick_deadline = snap.get("turn_deadline")
                             remaining = snap.get("seconds_remaining")

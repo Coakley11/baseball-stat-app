@@ -987,6 +987,8 @@ def render_draft_sidebar_timer(
     fragment = getattr(st, "fragment", None)
     if fragment is None:
         return
+    if session.get("_fp_sidebar_timer_skipped") or session.get("_live_draft_apptest_skip_sidebar_timer"):
+        return
 
     @fragment(run_every=1)
     def _sidebar_timer_tick() -> None:

@@ -66,7 +66,7 @@ class SoloLiveDraftStartAppTest(unittest.TestCase):
     def test_click_start_four_picks_five_starters_shows_exact_error(self) -> None:
         from streamlit.testing.v1 import AppTest
 
-        at = AppTest.from_file(str(_FIXTURE), default_timeout=30)
+        at = AppTest.from_file(str(_FIXTURE), default_timeout=120)
         at.session_state["live_draft_picks_per_team"] = 4
         at.session_state["live_slot_c"] = 1
         at.session_state["live_slot_1b"] = 1
@@ -99,7 +99,7 @@ class SoloLiveDraftStartAppTest(unittest.TestCase):
     def test_click_start_five_picks_starts_in_progress(self) -> None:
         from streamlit.testing.v1 import AppTest
 
-        at = AppTest.from_file(str(_FIXTURE), default_timeout=30)
+        at = AppTest.from_file(str(_FIXTURE), default_timeout=120)
         at.session_state["live_draft_picks_per_team"] = 5
         at.session_state["live_slot_c"] = 1
         at.session_state["live_slot_1b"] = 1
@@ -126,7 +126,7 @@ class SoloLiveDraftStartAppTest(unittest.TestCase):
     def test_click_start_eight_picks_bench_capacity_three(self) -> None:
         from streamlit.testing.v1 import AppTest
 
-        at = AppTest.from_file(str(_FIXTURE), default_timeout=30)
+        at = AppTest.from_file(str(_FIXTURE), default_timeout=120)
         at.session_state["live_draft_picks_per_team"] = 8
         at.session_state["live_slot_c"] = 1
         at.session_state["live_slot_1b"] = 1

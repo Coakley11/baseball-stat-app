@@ -318,6 +318,7 @@ def expire_current_pick_and_advance(
         )
 
     t_commit0 = time.perf_counter()
+    board_before_expire = int(snapshot.committed_picks)
     try:
         from live_draft_autopick import live_draft_auto_pick
 
@@ -346,6 +347,21 @@ def expire_current_pick_and_advance(
     committed = len(board) if isinstance(board, list) else 0
     total = snapshot.total_configured_picks
     complete = bool(total > 0 and committed >= total) or str(room.get("status") or "") == "complete"
+    if not complete and committed <= board_before_expire:
+        try:
+            from live_draft_canonical_snapshot import clear_stale_auto_pick_idempotency
+
+            clear_stale_auto_pick_idempotency(session, room)
+        except ImportError:
+            pass
+        session.pop("_live_draft_in_flight_auto_pick_key", None)
+        return SoloExpireResult(
+            ok=False,
+            reason="autopick_no_advance",
+            error="Auto-pick reported success but the board did not advance.",
+            snapshot_before=snapshot,
+            zero_to_commit_ms=zero_to_commit_ms,
+        )
     if complete:
         room["status"] = "complete"
         live_draft_clear_timer(room)

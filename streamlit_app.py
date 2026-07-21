@@ -24707,9 +24707,9 @@ elif active_page == "Live Draft Room":
             pass
         if not _shared_lobby_view:
             _hdr_pick = (_paint.get("current_pick") if isinstance(_paint, dict) else None) or (
-                min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks
+                slot.get("Pick") if isinstance(slot, dict) else None
             )
-            pick_num = int(_hdr_pick) if _hdr_pick is not None else min(picks_done + 1, total_picks)
+            pick_num = int(_hdr_pick) if _hdr_pick is not None else (total_picks if _draft_is_complete else 1)
             pick_label = f"Pick {pick_num} of {total_picks}"
             on_clock_team = str(
                 (_paint.get("team_on_clock") if isinstance(_paint, dict) else None)
@@ -24751,9 +24751,9 @@ elif active_page == "Live Draft Room":
                 or "—"
             )
             _hdr_pick = (_paint.get("current_pick") if isinstance(_paint, dict) else None) or (
-                min(picks_done + 1, total_picks) if not _draft_is_complete else total_picks
+                slot.get("Pick") if isinstance(slot, dict) else None
             )
-            pick_num = int(_hdr_pick) if _hdr_pick is not None else min(picks_done + 1, total_picks)
+            pick_num = int(_hdr_pick) if _hdr_pick is not None else (total_picks if _draft_is_complete else 1)
             pick_label = f"Pick {pick_num} of {total_picks}"
         _status_label = str(_derived_status or room.get("status", "")).replace("_", " ").title()
         if not _shared_lobby_view:

@@ -77,17 +77,28 @@ def live_draft_auto_pick(
     claim_key = ""
     if session is not None:
         try:
-            from live_draft_canonical_snapshot import auto_pick_idempotency_key
+            from live_draft_canonical_snapshot import (
+                auto_pick_idempotency_key,
+                clear_stale_auto_pick_idempotency,
+                idempotency_key_committed,
+            )
 
+            clear_stale_auto_pick_idempotency(session, room)
             claim_key = auto_pick_idempotency_key(room)
             last = str(session.get("_live_draft_last_auto_pick_idempotency_key") or "")
             inflight = str(session.get("_live_draft_in_flight_auto_pick_key") or "")
-            if claim_key and claim_key == last:
-                return True, "Auto-pick already applied for this pick."
+            room_last = str(room.get("_last_auto_pick_idempotency_key") or "")
             if claim_key and claim_key == inflight:
-                return True, "Auto-pick already in progress for this pick."
-            if claim_key and claim_key == str(room.get("_last_auto_pick_idempotency_key") or ""):
+                if idempotency_key_committed(room, claim_key):
+                    return True, "Auto-pick already in progress for this pick."
+            if claim_key and (
+                (claim_key == last and idempotency_key_committed(room, claim_key))
+                or (claim_key == room_last and idempotency_key_committed(room, claim_key))
+            ):
                 return True, "Auto-pick already applied for this pick."
+            if claim_key and (claim_key == last or claim_key == room_last):
+                session.pop("_live_draft_last_auto_pick_idempotency_key", None)
+                room.pop("_last_auto_pick_idempotency_key", None)
             if claim_key:
                 session["_live_draft_in_flight_auto_pick_key"] = claim_key
         except ImportError:
@@ -159,6 +170,15 @@ def live_draft_auto_pick(
         used_rec_cache = False
         skip_reason = "Ignored balanced recommendation cache for configured auto-pick rule."
 
+    if used_rec_cache and not rec_scored.empty:
+        pid_col = "playerID" if "playerID" in rec_scored.columns else None
+        drafted = {str(x).strip() for x in (room.get("drafted_player_ids") or []) if str(x).strip()}
+        if pid_col and drafted:
+            rec_scored = rec_scored[~rec_scored[pid_col].astype(str).isin(drafted)]
+        if rec_scored.empty:
+            used_rec_cache = False
+            skip_reason = "Cached recommendations were stale — rescoring available pool."
+
     if not used_rec_cache:
         rec_scored, gaps = score_available_for_rule(
             available, roster_df, rule_key, target_counts, config=cfg
@@ -206,7 +226,7 @@ def live_draft_auto_pick(
             try:
                 from live_draft_pick_commit import finalize_live_draft_pick_transition
 
-                finalize_live_draft_pick_transition(
+                fin = finalize_live_draft_pick_transition(
                     session,
                     room,
                     source="Auto Pick",
@@ -218,9 +238,36 @@ def live_draft_auto_pick(
                     fast_path=True,
                     request_immediate_paint=True,
                 )
+                if not fin.ok:
+                    try:
+                        from live_draft_canonical_snapshot import pick_commit_confirmed
+
+                        if not pick_commit_confirmed(
+                            room, pick_index_before=idx_before, board_size_before=board_before
+                        ):
+                            session.pop("_live_draft_in_flight_auto_pick_key", None)
+                            return False, fin.message or msg
+                    except ImportError:
+                        session.pop("_live_draft_in_flight_auto_pick_key", None)
+                        return False, fin.message or msg
             except Exception:
                 pass
         session.pop("_live_draft_in_flight_auto_pick_key", None)
+
+    if ok:
+        board_after = _board_size(room)
+        idx_after = int(room.get("current_pick_index") or 0)
+        complete = str(room.get("status") or "") == "complete"
+        if not complete and (board_after <= board_before or idx_after <= idx_before):
+            if session is not None:
+                try:
+                    from live_draft_canonical_snapshot import clear_stale_auto_pick_idempotency
+
+                    clear_stale_auto_pick_idempotency(session, room)
+                except ImportError:
+                    pass
+                session.pop("_live_draft_in_flight_auto_pick_key", None)
+            return False, "Auto-pick did not advance the draft board."
 
     return ok, msg
 
