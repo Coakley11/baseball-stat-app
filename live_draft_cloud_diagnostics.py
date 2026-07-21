@@ -232,6 +232,19 @@ def get_acceptance_snapshot(session: dict[str, Any], room: dict[str, Any] | None
         hb_diag = last_heartbeat_tick_summary(session)
     except ImportError:
         pass
+    egress_idle: dict[str, Any] = {}
+    try:
+        from live_draft_solo_heartbeat import get_solo_timer_idle_egress_report
+
+        egress_idle = get_solo_timer_idle_egress_report(session)
+    except ImportError:
+        pass
+    try:
+        from suite_egress_trace import get_run_egress_summary
+
+        egress_summary = get_run_egress_summary()
+    except ImportError:
+        egress_summary = {}
     runs = list(session.get(RUN_LOG_KEY) or [])
     render_seq = [int(r.get("seq") or 0) for r in runs[-6:] if isinstance(r, dict)]
     return {
@@ -251,6 +264,15 @@ def get_acceptance_snapshot(session: dict[str, Any], room: dict[str, Any] | None
         "heartbeat_last_row": hb_diag.get("last_row"),
         "expiration_commits": expiration_commit_count(session),
         "run_seq": int(session.get(RUN_SEQ_KEY) or 0),
+        "solo_poll_owner": egress_idle.get("poll_owner") or "local_page",
+        "solo_idle_ticks": egress_idle.get("idle_ticks"),
+        "solo_idle_reads_per_min": egress_idle.get("idle_reads_per_min"),
+        "solo_idle_writes_per_min": egress_idle.get("idle_writes_per_min"),
+        "solo_idle_full_room_per_min": egress_idle.get("idle_full_room_per_min"),
+        "egress_reads_total": egress_summary.get("reads"),
+        "egress_writes_total": egress_summary.get("writes"),
+        "egress_full_room_total": egress_summary.get("full_room_loads"),
+        "egress_full_room_by_caller": egress_summary.get("full_room_by_caller"),
     }
 
 
@@ -269,7 +291,11 @@ def render_acceptance_stamp(st: Any, session: dict[str, Any], room: dict[str, An
         f"pick={snap.get('pick_index') if snap.get('pick_index') is not None else '—'} · "
         f"rev={snap.get('revision') or '—'} · "
         f"hb_ticks={snap.get('heartbeat_ticks')} · "
-        f"exp_commits={snap.get('expiration_commits')}"
+        f"exp_commits={snap.get('expiration_commits')} · "
+        f"solo_poll={snap.get('solo_poll_owner') or 'local_page'} · "
+        f"idle_rpm={snap.get('solo_idle_reads_per_min') if snap.get('solo_idle_reads_per_min') is not None else '—'} · "
+        f"idle_wpm={snap.get('solo_idle_writes_per_min') if snap.get('solo_idle_writes_per_min') is not None else '—'} · "
+        f"idle_full/min={snap.get('solo_idle_full_room_per_min') if snap.get('solo_idle_full_room_per_min') is not None else '—'}"
     )
 
 

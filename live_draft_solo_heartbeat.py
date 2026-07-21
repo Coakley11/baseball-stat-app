@@ -15,6 +15,7 @@ SOLO_HEARTBEAT_MOUNT_KEY = "_solo_live_draft_heartbeat_mount_seq"
 ON_CLOCK_BANNER_PAINT_TOKEN_KEY = "_on_clock_banner_paint_token"
 SOLO_WAKE_BUTTON_LABEL = "solo-timer-wake"
 SOLO_WAKE_PENDING_RERUN_KEY = "_solo_timer_wake_pending_rerun"
+SOLO_IDLE_EGRESS_KEY = "_solo_timer_idle_egress"
 
 
 def solo_banner_uses_static_paint(session: dict[str, Any]) -> bool:
@@ -172,6 +173,67 @@ def render_solo_timer_wake_button(st: Any, session: dict[str, Any], room: dict[s
             pass
 
 
+def note_solo_timer_poll_tick(session: dict[str, Any], *, expired: bool) -> dict[str, Any]:
+    """Track Supabase deltas during idle Solo countdown ticks (admin / acceptance diagnostics)."""
+    try:
+        from suite_egress_trace import get_run_egress_summary
+
+        summary = get_run_egress_summary()
+    except ImportError:
+        summary = {}
+    reads = int(summary.get("reads") or 0)
+    writes = int(summary.get("writes") or 0)
+    full_room = int(summary.get("full_room_loads") or 0)
+    now = time.time()
+    slot = dict(session.get(SOLO_IDLE_EGRESS_KEY) or {})
+    prev_reads = int(slot.get("last_reads") if slot.get("last_reads") is not None else reads)
+    prev_writes = int(slot.get("last_writes") if slot.get("last_writes") is not None else writes)
+    prev_full = int(slot.get("last_full_room") if slot.get("last_full_room") is not None else full_room)
+    delta_reads = max(0, reads - prev_reads)
+    delta_writes = max(0, writes - prev_writes)
+    delta_full = max(0, full_room - prev_full)
+    if not expired:
+        slot["idle_ticks"] = int(slot.get("idle_ticks") or 0) + 1
+        slot["idle_delta_reads"] = int(slot.get("idle_delta_reads") or 0) + delta_reads
+        slot["idle_delta_writes"] = int(slot.get("idle_delta_writes") or 0) + delta_writes
+        slot["idle_delta_full_room"] = int(slot.get("idle_delta_full_room") or 0) + delta_full
+    slot["last_reads"] = reads
+    slot["last_writes"] = writes
+    slot["last_full_room"] = full_room
+    slot["poll_owner"] = "local_page"
+    slot["last_tick_at"] = now
+    if not slot.get("window_started_at"):
+        slot["window_started_at"] = now
+    window = max(1.0, now - float(slot.get("window_started_at") or now))
+    idle_ticks = int(slot.get("idle_ticks") or 0)
+    slot["idle_reads_per_min"] = round(int(slot.get("idle_delta_reads") or 0) * 60.0 / window, 2)
+    slot["idle_writes_per_min"] = round(int(slot.get("idle_delta_writes") or 0) * 60.0 / window, 2)
+    slot["idle_full_room_per_min"] = round(int(slot.get("idle_delta_full_room") or 0) * 60.0 / window, 2)
+    session[SOLO_IDLE_EGRESS_KEY] = slot
+    return slot
+
+
+def get_solo_timer_idle_egress_report(session: dict[str, Any]) -> dict[str, Any]:
+    slot = dict(session.get(SOLO_IDLE_EGRESS_KEY) or {})
+    if not slot:
+        return {
+            "poll_owner": "local_page",
+            "idle_ticks": 0,
+            "idle_reads_per_min": 0.0,
+            "idle_writes_per_min": 0.0,
+            "idle_full_room_per_min": 0.0,
+        }
+    return {
+        "poll_owner": str(slot.get("poll_owner") or "local_page"),
+        "idle_ticks": int(slot.get("idle_ticks") or 0),
+        "idle_reads_per_min": float(slot.get("idle_reads_per_min") or 0.0),
+        "idle_writes_per_min": float(slot.get("idle_writes_per_min") or 0.0),
+        "idle_full_room_per_min": float(slot.get("idle_full_room_per_min") or 0.0),
+        "idle_delta_reads": int(slot.get("idle_delta_reads") or 0),
+        "idle_delta_writes": int(slot.get("idle_delta_writes") or 0),
+    }
+
+
 def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
     """Streamlit Cloud Solo: 1 Hz full-page poll — authoritative expire when fragments stall."""
     if not solo_page_expire_poll_active(session, room):
@@ -196,7 +258,25 @@ def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict
                 return False
     except ImportError:
         pass
-    run_solo_expire_tick(st, session, source="page_poll")
+    try:
+        from suite_egress_policy import block_cloud_autosave_for_poll_sync
+
+        block_cloud_autosave_for_poll_sync(session)
+    except ImportError:
+        pass
+    expired = False
+    try:
+        from suite_egress_trace import egress_source
+
+        with egress_source("solo_timer_loop"):
+            result = run_solo_expire_tick(st, session, source="page_poll")
+    except ImportError:
+        result = run_solo_expire_tick(st, session, source="page_poll")
+    if result is not None and getattr(result, "ok", False) and (
+        getattr(result, "advanced", False) or getattr(result, "complete", False)
+    ):
+        expired = True
+    note_solo_timer_poll_tick(session, expired=expired)
     session[SOLO_HEARTBEAT_TICK_KEY] = int(session.get(SOLO_HEARTBEAT_TICK_KEY) or 0) + 1
     try:
         from live_draft_solo_heartbeat_diagnostics import SOLO_HEARTBEAT_LAST_TICK_AT_KEY

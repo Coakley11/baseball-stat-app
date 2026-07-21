@@ -24997,17 +24997,15 @@ elif active_page == "Live Draft Room":
                     render_solo_expire_watchdog,
                     render_solo_live_draft_heartbeat,
                     render_solo_timer_wake_button,
-                    schedule_solo_cloud_expire_poll,
                     solo_page_expire_poll_active,
                 )
 
                 if is_solo_live_draft(st.session_state, room):
                     render_solo_timer_wake_button(st, st.session_state, room)
-                    if solo_page_expire_poll_active(st.session_state, room):
-                        schedule_solo_cloud_expire_poll(st, st.session_state, room)
-                    else:
+                    if not solo_page_expire_poll_active(st.session_state, room):
                         render_solo_live_draft_heartbeat(st, st.session_state, room)
                         render_solo_expire_watchdog(st, st.session_state)
+                    # Cloud page poll is scheduled once at end of paint (after Control Center).
             except ImportError:
                 pass
 

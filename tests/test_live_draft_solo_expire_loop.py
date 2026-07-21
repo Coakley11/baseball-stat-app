@@ -7,6 +7,8 @@ import unittest
 from unittest import mock
 
 from live_draft_solo_heartbeat import (
+    get_solo_timer_idle_egress_report,
+    note_solo_timer_poll_tick,
     run_solo_expire_tick,
     schedule_solo_cloud_expire_poll,
     solo_cloud_page_poll_active,
@@ -137,6 +139,18 @@ class TestSoloExpireLoopNoSupabase(unittest.TestCase):
         room = _in_progress_solo_room()
         session = {"live_draft_setup_mode": "solo", "live_draft_room": room}
         self.assertEqual(_poll_suppressed_reason(session), "solo_skip_remote_poll")
+
+    def test_idle_poll_tick_tracks_zero_egress_deltas(self) -> None:
+        room = _in_progress_solo_room()
+        session = {"live_draft_setup_mode": "solo", "live_draft_room": room}
+        with mock.patch("suite_egress_trace.get_run_egress_summary", return_value={"reads": 0, "writes": 0, "full_room_loads": 0}):
+            note_solo_timer_poll_tick(session, expired=False)
+            note_solo_timer_poll_tick(session, expired=False)
+        report = get_solo_timer_idle_egress_report(session)
+        self.assertEqual(report["poll_owner"], "local_page")
+        self.assertEqual(report["idle_ticks"], 2)
+        self.assertEqual(report["idle_reads_per_min"], 0.0)
+        self.assertEqual(report["idle_writes_per_min"], 0.0)
 
 
 if __name__ == "__main__":
