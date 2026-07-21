@@ -92,8 +92,9 @@ def ensure_canary_room(session: dict[str, Any]) -> dict[str, Any]:
 def render_live_draft_cloud_canary(st: Any, session: dict[str, Any]) -> bool:
     """Render minimal canary page. Returns True when canary handled the page."""
     try:
-        from live_draft_cloud_diagnostics import CANARY_MODE_KEY, cloud_canary_requested
+        from live_draft_cloud_diagnostics import CANARY_MODE_KEY, bootstrap_cloud_accept_mode, cloud_canary_requested
 
+        bootstrap_cloud_accept_mode(st, session)
         if not cloud_canary_requested(st, session):
             return False
     except ImportError:

@@ -21,11 +21,18 @@ MAX_LOG = 120
 def _streamlit_cloud_runtime() -> bool:
     import os
 
-    return bool(
-        os.environ.get("STREAMLIT_RUNTIME_ENVIRONMENT")
-        or os.environ.get("STREAMLIT_SERVER_HEADLESS")
-        or os.environ.get("STREAMLIT_CLOUD")
+    cloud_keys = (
+        "STREAMLIT_RUNTIME_ENVIRONMENT",
+        "STREAMLIT_SERVER_HEADLESS",
+        "STREAMLIT_CLOUD",
+        "STREAMLIT_CLOUD_COMMIT",
+        "STREAMLIT_CLOUD_BRANCH",
+        "STREAMLIT_SHARING_BASE_URL",
     )
+    if any(os.environ.get(k) for k in cloud_keys):
+        return True
+    host = str(os.environ.get("HOSTNAME") or "").lower()
+    return host.endswith(".streamlit.app") or "streamlit" in host
 
 
 def bootstrap_cloud_accept_mode(st: Any, session: dict[str, Any]) -> bool:
@@ -43,7 +50,10 @@ def bootstrap_cloud_accept_mode(st: Any, session: dict[str, Any]) -> bool:
         return False
     if raw is None or str(raw).strip().lower() not in ("1", "true", "yes", "on"):
         return False
-    allowed = _streamlit_cloud_runtime()
+    paired_canary = str(ld_canary_raw or "").strip().lower() in ("1", "true", "yes", "on")
+    allowed = paired_canary
+    if not allowed:
+        allowed = _streamlit_cloud_runtime()
     if not allowed:
         try:
             from suite_workspace import is_admin_session
