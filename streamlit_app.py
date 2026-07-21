@@ -26363,9 +26363,9 @@ elif active_page == "Live Draft Room":
         pass
 
     try:
-        from live_draft_cloud_diagnostics import _admin_ok, render_acceptance_stamp, render_admin_diag_panel
+        from live_draft_cloud_diagnostics import _admin_ok, render_acceptance_stamp_live, render_admin_diag_panel
 
-        render_acceptance_stamp(st, st.session_state, room if isinstance(room, dict) else None)
+        render_acceptance_stamp_live(st, st.session_state, room if isinstance(room, dict) else None)
         if _admin_ok(st, st.session_state):
             render_admin_diag_panel(st, st.session_state)
     except ImportError:

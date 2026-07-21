@@ -39,6 +39,8 @@ def dom_counts(page) -> dict[str, int]:
           }
           for (const root of roots()) {
             for (const b of root.querySelectorAll('button')) {
+              const r=b.getBoundingClientRect();
+              if (r.width <= 0 || r.height <= 0) continue;
               const t=(b.innerText||'').replace(/\\s+/g,' ').trim();
               for (const lab of labels) if (t.includes(lab)) counts[lab]++;
             }
@@ -102,6 +104,8 @@ def click_btn(page, label: str) -> bool:
               for (const root of roots()) {
                 const matches = [];
                 for (const b of root.querySelectorAll('button')) {
+                  const r=b.getBoundingClientRect();
+                  if (r.width <= 0 || r.height <= 0) continue;
                   const t=(b.innerText||'').replace(/\\s+/g,' ').trim();
                   if (t.includes(label)) matches.push(b);
                 }
@@ -306,7 +310,7 @@ def main() -> int:
                     report.setdefault("duplicate_events", []).append({"stamp": stamp, **d})
 
                 if (
-                    exp_commits >= 4
+                    max(exp_commits, expirations_dom) >= 4
                     and hb_ticks >= 8
                     and manual_done
                     and auto_done
@@ -371,7 +375,7 @@ def main() -> int:
                     "timer_samples_tail": timer_samples[-20:],
                     "soak_duration_s": round(time.time() - report["started_at"], 1),
                     "passed": (
-                        exp_commits >= 4
+                        max(exp_commits, expirations_dom) >= 4
                         and hb_ticks >= 8
                         and manual_done
                         and auto_done

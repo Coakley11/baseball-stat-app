@@ -247,6 +247,24 @@ def render_acceptance_stamp(st: Any, session: dict[str, Any], room: dict[str, An
     )
 
 
+def render_acceptance_stamp_live(
+    st: Any, session: dict[str, Any], room: dict[str, Any] | None = None
+) -> None:
+    """Refresh acceptance counters during fragment/heartbeat activity without full-page reruns."""
+    if not cloud_accept_active(session):
+        return
+    fragment = getattr(st, "fragment", None)
+    if fragment is None:
+        render_acceptance_stamp(st, session, room)
+        return
+
+    @fragment(run_every=2)
+    def _acceptance_stamp_fragment() -> None:
+        render_acceptance_stamp(st, session, room)
+
+    _acceptance_stamp_fragment()
+
+
 def control_center_mount_summary(session: dict[str, Any]) -> str:
     log = list(session.get(CONTROL_CENTER_MOUNT_KEY) or [])
     if not log:

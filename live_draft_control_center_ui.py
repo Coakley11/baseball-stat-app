@@ -231,7 +231,7 @@ def render_live_draft_control_center(
     return {"is_commissioner": is_commissioner, "document": doc}
 
 
-def render_control_center_with_live_chat(
+def _paint_control_center_with_live_chat(
     st: Any,
     session: dict[str, Any],
     room: dict[str, Any],
@@ -240,7 +240,7 @@ def render_control_center_with_live_chat(
     persist_room: Callable[[dict[str, Any], str], None],
     developer_mode: bool = False,
 ) -> dict[str, Any]:
-    """Control Center (left) + Live Chat (right), above the On-the-Clock timer card."""
+    """Paint Control Center + chat once inside a stable container tree."""
     try:
         from live_draft_chat_ui import render_live_draft_chat_panel
     except ImportError:
@@ -267,6 +267,47 @@ def render_control_center_with_live_chat(
         else:
             st.caption("Draft chat unavailable.")
     return result
+
+
+def render_control_center_with_live_chat(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    cfg: dict[str, Any],
+    persist_room: Callable[[dict[str, Any], str], None],
+    developer_mode: bool = False,
+) -> dict[str, Any]:
+    """Control Center (left) + Live Chat (right), above the On-the-Clock timer card."""
+    fragment = getattr(st, "fragment", None)
+    if fragment is None:
+        return _paint_control_center_with_live_chat(
+            st,
+            session,
+            room,
+            cfg=cfg,
+            persist_room=persist_room,
+            developer_mode=developer_mode,
+        )
+
+    @fragment
+    def _control_center_fragment() -> dict[str, Any]:
+        try:
+            from live_draft_cloud_diagnostics import note_fragment_owner
+
+            note_fragment_owner(session, "control_center_fragment", delta=0)
+        except ImportError:
+            pass
+        return _paint_control_center_with_live_chat(
+            st,
+            session,
+            room,
+            cfg=cfg,
+            persist_room=persist_room,
+            developer_mode=developer_mode,
+        )
+
+    return _control_center_fragment()
 
 
 def render_commissioner_draft_actions(

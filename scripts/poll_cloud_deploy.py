@@ -7,7 +7,7 @@ import time
 import urllib.request
 
 URL = (
-    "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/"
+    "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/~/+/"
     "?ld_accept=1&active_page=Live%20Draft%20Room"
 )
 TARGET = sys.argv[1] if len(sys.argv) > 1 else "815f6a9"
