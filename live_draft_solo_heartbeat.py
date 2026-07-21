@@ -173,15 +173,8 @@ def render_solo_timer_wake_button(st: Any, session: dict[str, Any], room: dict[s
 
 
 def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
-    """Cloud acceptance: 1 Hz full-page poll when fragments stall (headless Cloud)."""
-    try:
-        from live_draft_cloud_diagnostics import cloud_accept_active
-        from live_draft_solo_timer import is_solo_live_draft
-    except ImportError:
-        return False
-    if not cloud_accept_active(session) or not is_solo_live_draft(session, room):
-        return False
-    if str(room.get("status") or "") != "in_progress":
+    """Streamlit Cloud Solo: 1 Hz full-page poll — authoritative expire when fragments stall."""
+    if not solo_page_expire_poll_active(session, room):
         return False
     page = str(session.get("active_page") or session.get("active_page_name") or "").strip()
     if page and page != "Live Draft Room":
@@ -228,15 +221,25 @@ def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict
             return False
 
 
-def solo_cloud_page_poll_active(session: dict[str, Any], room: dict[str, Any] | None) -> bool:
+def solo_page_expire_poll_active(session: dict[str, Any], room: dict[str, Any] | None) -> bool:
+    """Use page-level 1 Hz expire on Streamlit Cloud (all Solo drafts, not only ld_accept)."""
     try:
-        from live_draft_cloud_diagnostics import cloud_accept_active
+        from live_draft_cloud_diagnostics import cloud_accept_active, streamlit_cloud_runtime
         from live_draft_solo_timer import is_solo_live_draft
     except ImportError:
         return False
-    if not isinstance(room, dict) or not cloud_accept_active(session):
+    if not isinstance(room, dict) or not is_solo_live_draft(session, room):
         return False
-    return is_solo_live_draft(session, room) and str(room.get("status") or "") == "in_progress"
+    if str(room.get("status") or "") != "in_progress":
+        return False
+    if streamlit_cloud_runtime():
+        return True
+    return bool(cloud_accept_active(session))
+
+
+def solo_cloud_page_poll_active(session: dict[str, Any], room: dict[str, Any] | None) -> bool:
+    """Back-compat alias for mount gating."""
+    return solo_page_expire_poll_active(session, room)
 
 
 def _log_tick(

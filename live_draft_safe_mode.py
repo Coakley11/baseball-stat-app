@@ -578,7 +578,9 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
                 mark_live_draft_optimistic_pick_tick(session)
             except ImportError:
                 mark_live_draft_timer_tick(session)
-        elif source in ("auto_pick", "page_autopick", "auto_pick_complete", "solo_expire", "solo_expire_wake", "solo_cloud_poll"):
+        elif source == "solo_cloud_poll":
+            mark_live_draft_timer_tick(session)
+        elif source in ("auto_pick", "page_autopick", "auto_pick_complete", "solo_expire", "solo_expire_wake"):
             # Commit first, paint board/timer; analytics refresh on a later pass.
             try:
                 from live_draft_rerun_scope import mark_live_draft_optimistic_pick_tick

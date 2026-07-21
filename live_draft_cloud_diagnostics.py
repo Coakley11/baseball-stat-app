@@ -66,6 +66,10 @@ def _streamlit_cloud_runtime() -> bool:
     return host.endswith(".streamlit.app") or "streamlit" in host
 
 
+def streamlit_cloud_runtime() -> bool:
+    return _streamlit_cloud_runtime()
+
+
 def bootstrap_cloud_accept_mode(st: Any, session: dict[str, Any]) -> bool:
     """Enable admin diagnostics/canary for internal Cloud acceptance (?ld_accept=1)."""
     if session.get(CLOUD_ACCEPT_KEY):

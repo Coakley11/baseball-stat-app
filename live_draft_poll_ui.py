@@ -12,6 +12,13 @@ LIVE_DRAFT_POLL_DIAG_KEY = "_live_draft_poll_diag"
 
 def _poll_suppressed_reason(session: dict[str, Any]) -> str:
     try:
+        from live_draft_cloud_diagnostics import solo_skip_remote_poll
+
+        if solo_skip_remote_poll(session):
+            return "solo_skip_remote_poll"
+    except ImportError:
+        pass
+    try:
         from app_page_generation import fragment_allowed
 
         if not fragment_allowed(session, expected_page="Live Draft Room"):
