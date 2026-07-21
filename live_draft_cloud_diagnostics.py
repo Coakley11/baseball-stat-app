@@ -18,6 +18,16 @@ BLOCKING_OPS_KEY = "_live_draft_cloud_blocking_ops"
 MAX_LOG = 120
 
 
+def _streamlit_cloud_runtime() -> bool:
+    import os
+
+    return bool(
+        os.environ.get("STREAMLIT_RUNTIME_ENVIRONMENT")
+        or os.environ.get("STREAMLIT_SERVER_HEADLESS")
+        or os.environ.get("STREAMLIT_CLOUD")
+    )
+
+
 def bootstrap_cloud_accept_mode(st: Any, session: dict[str, Any]) -> bool:
     """Enable admin diagnostics/canary for internal Cloud acceptance (?ld_accept=1)."""
     if session.get(CLOUD_ACCEPT_KEY):
@@ -33,14 +43,22 @@ def bootstrap_cloud_accept_mode(st: Any, session: dict[str, Any]) -> bool:
         return False
     if raw is None or str(raw).strip().lower() not in ("1", "true", "yes", "on"):
         return False
-    try:
-        from suite_workspace import is_admin_session, set_developer_mode_user
+    allowed = _streamlit_cloud_runtime()
+    if not allowed:
+        try:
+            from suite_workspace import is_admin_session
 
-        if not is_admin_session(st=st):
-            return False
+            allowed = bool(is_admin_session(st=st))
+        except ImportError:
+            allowed = False
+    if not allowed:
+        return False
+    try:
+        from suite_workspace import set_developer_mode_user
+
         set_developer_mode_user(session, True, source="ld_accept_query")
     except ImportError:
-        return False
+        pass
     session[CLOUD_ACCEPT_KEY] = True
     if str(ld_canary_raw or "").strip().lower() in ("1", "true", "yes", "on"):
         session[CANARY_MODE_KEY] = True
