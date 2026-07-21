@@ -24191,6 +24191,26 @@ elif active_page == "Live Draft Room":
         except ImportError:
             pass
         room = _live_draft_lifecycle_room
+        try:
+            from live_draft_navigation import BROWSING_AWAY_KEY
+
+            st.session_state.pop(BROWSING_AWAY_KEY, None)
+        except ImportError:
+            pass
+        try:
+            from live_draft_timer_logic import reconstruct_timer_deadline
+
+            if isinstance(room, dict):
+                reconstruct_timer_deadline(room)
+                try:
+                    from live_draft_solo_timer import install_solo_display_snapshot, is_solo_live_draft
+
+                    if is_solo_live_draft(st.session_state, room):
+                        install_solo_display_snapshot(st.session_state, room)
+                except ImportError:
+                    pass
+        except ImportError:
+            pass
         # NEVER page-level st.stop() for queue fast-paint — that left only Draft Queue
         # visible after Solo create/Open Draft. Clear any leftover flag and continue.
         try:
@@ -24976,7 +24996,19 @@ elif active_page == "Live Draft Room":
                 from live_draft_solo_heartbeat import render_solo_live_draft_heartbeat
 
                 if is_solo_live_draft(st.session_state, room):
+                    try:
+                        from live_draft_solo_heartbeat import render_solo_timer_wake_button
+
+                        render_solo_timer_wake_button(st, st.session_state, room)
+                    except ImportError:
+                        pass
                     render_solo_live_draft_heartbeat(st, st.session_state, room)
+                    try:
+                        from live_draft_solo_heartbeat import render_solo_expire_watchdog
+
+                        render_solo_expire_watchdog(st, st.session_state)
+                    except ImportError:
+                        pass
             except ImportError:
                 pass
 
@@ -25053,11 +25085,12 @@ elif active_page == "Live Draft Room":
         # when the fragment has not handled a zero-cross recently (no fragment / first paint).
         _is_solo_draft = False
         try:
-            from live_draft_solo_timer import is_solo_live_draft, run_solo_expire_if_needed
+            from live_draft_solo_timer import is_solo_live_draft, solo_clock_expired
 
             _is_solo_draft = bool(is_solo_live_draft(st.session_state, room))
         except ImportError:
             _is_solo_draft = False
+            solo_clock_expired = None  # type: ignore[misc, assignment]
 
         # Expire commit runs before Control Center buttons so a same-run Auto Pick /
         # Pause click cannot race the zero-second rollover. Timer bar paints after
@@ -25066,28 +25099,35 @@ elif active_page == "Live Draft Room":
             try:
                 import time as _solo_page_time
 
-                from live_draft_solo_timer import (
-                    SOLO_FRAGMENT_OWNED_EXPIRE_KEY,
-                    run_solo_expire_if_needed,
-                )
+                from live_draft_solo_timer import SOLO_FRAGMENT_OWNED_EXPIRE_KEY
                 from live_draft_timer_ui import note_live_draft_page_load
 
                 with ldr_step(st.session_state, "timer_note_page_load", st=st):
                     note_live_draft_page_load(st.session_state, room)
                 _owned_at = float(st.session_state.get(SOLO_FRAGMENT_OWNED_EXPIRE_KEY) or 0.0)
                 _fragment_recent = bool(_owned_at and (_solo_page_time.time() - _owned_at) < 2.0)
+                _clock_is_zero = bool(solo_clock_expired(room)) if callable(solo_clock_expired) else False
                 try:
-                    from live_draft_solo_heartbeat import solo_heartbeat_active
+                    from live_draft_solo_heartbeat import solo_heartbeat_recent
 
-                    if solo_heartbeat_active(st.session_state):
+                    if solo_heartbeat_recent(st.session_state, max_age_sec=2.5) and not _clock_is_zero:
                         _fragment_recent = True
                 except ImportError:
                     pass
                 if not _fragment_recent:
                     with ldr_step(st.session_state, "solo_expire_current_pick", st=st):
-                        _solo_expire = run_solo_expire_if_needed(
-                            st.session_state, room, request_full_rerun=False
-                        )
+                        try:
+                            from live_draft_solo_heartbeat import run_solo_expire_tick
+
+                            _solo_expire = run_solo_expire_tick(
+                                st, st.session_state, source="page_fallback"
+                            )
+                        except ImportError:
+                            from live_draft_solo_timer import run_solo_expire_if_needed
+
+                            _solo_expire = run_solo_expire_if_needed(
+                                st.session_state, room, request_full_rerun=False
+                            )
                     if _solo_expire is not None and _solo_expire.ok and (_solo_expire.advanced or _solo_expire.complete):
                         try:
                             from live_draft_canonical_snapshot import invalidate_live_draft_paint, note_action_timing
@@ -25109,7 +25149,10 @@ elif active_page == "Live Draft Room":
                         try:
                             from live_draft_safe_mode import request_live_draft_rerun
 
-                            request_live_draft_rerun(st, st.session_state, "solo_expire", room=room)
+                            if not request_live_draft_rerun(
+                                st, st.session_state, "solo_expire", room=room
+                            ):
+                                st.rerun()
                         except Exception:
                             st.rerun()
                     if _solo_expire is not None:

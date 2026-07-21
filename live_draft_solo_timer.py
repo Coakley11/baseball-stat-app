@@ -373,8 +373,10 @@ def expire_current_pick_and_advance(
         room["timer_handled_index"] = -1
         # Drop any stale token so the next pick can expire cleanly.
         room.pop("last_processed_expiration_token", None)
+        room.pop(SOLO_EXPIRE_APPLIED_KEY, None)
 
-    room[SOLO_EXPIRE_APPLIED_KEY] = guard
+    if complete:
+        room[SOLO_EXPIRE_APPLIED_KEY] = guard
     bump_solo_draft_revision(session, room)
     commit_to_next_timer_ms = (time.perf_counter() - t_timer0) * 1000.0
     display = install_solo_display_snapshot(session, room, now=transition)

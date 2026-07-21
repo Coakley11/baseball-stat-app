@@ -255,6 +255,10 @@ def main() -> int:
             heartbeat_samples: list[int] = []
             expiration_commits_samples: list[int] = []
 
+            nav_dom: dict[str, Any] = {}
+            nav_stamp: dict[str, Any] = {}
+            nav_back_done = False
+
             while time.time() < soak_end:
                 text = page.inner_text("body", timeout=20000)
                 stamp = parse_acceptance_stamp(text)
@@ -309,6 +313,22 @@ def main() -> int:
                 if not dom_controls_ok(d):
                     report.setdefault("duplicate_events", []).append({"stamp": stamp, **d})
 
+                if exp_commits >= 2 and not nav_back_done:
+                    page.goto(
+                        f"{BASE}/~/+/?ld_accept=1&active_page=Historical%20Explorer",
+                        wait_until="domcontentloaded",
+                        timeout=90000,
+                    )
+                    page.wait_for_timeout(4000)
+                    if not click_btn(page, "Return to Live Draft"):
+                        page.goto(PROD_URL, wait_until="domcontentloaded", timeout=90000)
+                    page.wait_for_timeout(12000)
+                    nav_dom = dom_counts(page)
+                    nav_stamp = parse_acceptance_stamp(page.inner_text("body", timeout=20000)) or {}
+                    report["dom_samples"].append({"when": "after_nav_back", **nav_dom, "stamp": nav_stamp})
+                    report["stages"] = extract_diag(page)
+                    nav_back_done = True
+
                 if (
                     max(exp_commits, expirations_dom) >= 4
                     and hb_ticks >= 8
@@ -317,6 +337,7 @@ def main() -> int:
                     and pause_done
                     and resume_done
                     and reset_done
+                    and nav_back_done
                 ):
                     break
                 page.wait_for_timeout(2000)
@@ -331,31 +352,23 @@ def main() -> int:
                 if click_btn(page, "Remove") or click_btn(page, "Clear Draft Queue"):
                     queue_remove_done = True
                     latencies["queue_remove_s"] = round(time.time() - t0, 2)
-
-            page.goto(
-                f"{BASE}/~/+/?ld_accept=1&active_page=Historical%20Explorer",
-                wait_until="domcontentloaded",
-                timeout=90000,
-            )
-            page.wait_for_timeout(5000)
-            page.goto(PROD_URL, wait_until="domcontentloaded", timeout=90000)
-            page.wait_for_timeout(12000)
-            nav_dom = dom_counts(page)
-            nav_stamp = parse_acceptance_stamp(page.inner_text("body", timeout=20000))
-            report["dom_samples"].append({"when": "after_nav_back", **nav_dom, "stamp": nav_stamp})
-            report["stages"] = extract_diag(page)
+                    if latencies["queue_remove_s"] > 3.5:
+                        report["errors"].append(f"queue_remove_slow:{latencies['queue_remove_s']}s")
 
             final_stamp = report.get("acceptance_stamp_final") or {}
             exp_commits = int(final_stamp.get("exp_commits") or 0)
             hb_ticks = int(final_stamp.get("hb_ticks") or 0)
-            if hb_ticks < 8:
-                report["errors"].append(f"heartbeat_ticks_low:{hb_ticks}")
+
             if exp_commits < 4:
                 report["errors"].append(f"expiration_commits_low:{exp_commits}")
-            if not dom_controls_ok(nav_dom):
+            if hb_ticks < 8:
+                report["errors"].append(f"heartbeat_ticks_low:{hb_ticks}")
+            if nav_back_done and not dom_controls_ok(nav_dom):
                 report["errors"].append(f"dom_duplicate_after_nav:{nav_dom.get('counts')}")
-            if not stamp_ok(nav_stamp):
+            if nav_back_done and not stamp_ok(nav_stamp):
                 report["errors"].append(f"mount_mismatch_after_nav:{nav_stamp}")
+            if not nav_back_done:
+                report["errors"].append("nav_back_not_run")
 
             report.update(
                 {
@@ -382,6 +395,7 @@ def main() -> int:
                         and pause_done
                         and resume_done
                         and reset_done
+                        and nav_back_done
                         and stamp_ok(final_stamp)
                         and stamp_ok(nav_stamp)
                         and dom_controls_ok(nav_dom)

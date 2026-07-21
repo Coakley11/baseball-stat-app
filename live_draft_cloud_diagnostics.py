@@ -208,6 +208,13 @@ def get_acceptance_snapshot(session: dict[str, Any], room: dict[str, Any] | None
     except ImportError:
         hb_ticks = 0
         hb_active = False
+    hb_diag: dict[str, Any] = {}
+    try:
+        from live_draft_solo_heartbeat_diagnostics import last_heartbeat_tick_summary
+
+        hb_diag = last_heartbeat_tick_summary(session)
+    except ImportError:
+        pass
     runs = list(session.get(RUN_LOG_KEY) or [])
     render_seq = [int(r.get("seq") or 0) for r in runs[-6:] if isinstance(r, dict)]
     return {
@@ -223,6 +230,8 @@ def get_acceptance_snapshot(session: dict[str, Any], room: dict[str, Any] | None
         "revision": fields.get("revision"),
         "heartbeat_ticks": hb_ticks,
         "heartbeat_active": hb_active,
+        "heartbeat_recent": hb_diag.get("recent"),
+        "heartbeat_last_row": hb_diag.get("last_row"),
         "expiration_commits": expiration_commit_count(session),
         "run_seq": int(session.get(RUN_SEQ_KEY) or 0),
     }

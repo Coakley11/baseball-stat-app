@@ -219,8 +219,17 @@ def render_live_draft_queue_fragment(st: Any, session: dict[str, Any]) -> None:
             except ImportError:
                 pass
         elif panel_rerun:
-            # Queue-only mutation (add/remove/reorder) — still finish the page paint.
-            session["_live_draft_defer_full_rerun"] = True
+            try:
+                from live_draft_safe_mode import request_live_draft_rerun
+
+                request_live_draft_rerun(
+                    st,
+                    session,
+                    "live_draft_queue",
+                    room=session.get("live_draft_room"),
+                )
+            except ImportError:
+                session["_live_draft_defer_full_rerun"] = True
 
         if USE_QUEUE_FRAGMENT and queue_mutated:
             painted = _queue_names(session)

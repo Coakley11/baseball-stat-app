@@ -39,11 +39,29 @@ def _emit_banner_html(
             (function() {{
               const deadline = {float(deadline)};
               const el = document.getElementById("{timer_id}");
-              if (!el) return;
+              function clickSoloWake() {{
+                try {{
+                  const doc = window.parent.document;
+                  for (const b of doc.querySelectorAll('button')) {{
+                    const title = (b.getAttribute('title') || b.getAttribute('aria-label') || '').toLowerCase();
+                    const text = (b.innerText || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                    if (title.includes('solo-timer-wake') || text === 'solo-timer-wake') {{
+                      b.click();
+                      return;
+                    }}
+                  }}
+                }} catch (e) {{}}
+              }}
               function tick() {{
                 const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
-                el.textContent = String(rem);
-                if (rem > 0) window.setTimeout(tick, 250);
+                if (el) el.textContent = String(rem);
+                if (rem <= 0) {{
+                  clickSoloWake();
+                  window.setTimeout(clickSoloWake, 200);
+                  window.setTimeout(clickSoloWake, 800);
+                  return;
+                }}
+                window.setTimeout(tick, 250);
               }}
               tick();
             }})();
@@ -322,7 +340,7 @@ def render_live_on_clock_banner(
     # components.html every tick caused ghost/stale timers on Streamlit Cloud.
     if _solo_draft and use_fragment and deadline is not None:
         try:
-            from live_draft_solo_heartbeat import solo_banner_uses_static_paint
+            from live_draft_solo_heartbeat import solo_banner_uses_static_paint, shared_banner_should_repaint
 
             if solo_banner_uses_static_paint(session):
                 install_solo_display_snapshot(session, live_room)
@@ -330,6 +348,13 @@ def render_live_on_clock_banner(
                 remaining_now = int(snap.get("remaining_seconds") or remaining_now)
                 if snap.get("timer_deadline") is not None:
                     deadline = float(snap["timer_deadline"])
+                if not shared_banner_should_repaint(
+                    session,
+                    pick_index=int(snap.get("pick_index") or pick_idx),
+                    deadline=deadline,
+                ):
+                    _mark_on_clock_done()
+                    return
                 try:
                     from live_draft_cloud_diagnostics import render_surface_stamp
 
