@@ -24993,27 +24993,18 @@ elif active_page == "Live Draft Room":
         if _draft_in_progress and not _draft_is_complete and room and isinstance(room, dict):
             try:
                 from live_draft_solo_timer import is_solo_live_draft
-                from live_draft_solo_heartbeat import render_solo_live_draft_heartbeat
+                from live_draft_solo_heartbeat import (
+                    render_solo_expire_watchdog,
+                    render_solo_live_draft_heartbeat,
+                    render_solo_timer_wake_button,
+                    solo_cloud_page_poll_active,
+                )
 
-        if is_solo_live_draft(st.session_state, room):
-                    try:
-                        from live_draft_cloud_diagnostics import cloud_accept_active
-                        from live_draft_solo_heartbeat import (
-                            render_solo_timer_wake_button,
-                            solo_cloud_page_poll_active,
-                        )
-
-                        render_solo_timer_wake_button(st, st.session_state, room)
-                        if not solo_cloud_page_poll_active(st.session_state, room):
-                            render_solo_live_draft_heartbeat(st, st.session_state, room)
-                            try:
-                                from live_draft_solo_heartbeat import render_solo_expire_watchdog
-
-                                render_solo_expire_watchdog(st, st.session_state)
-                            except ImportError:
-                                pass
-                    except ImportError:
+                if is_solo_live_draft(st.session_state, room):
+                    render_solo_timer_wake_button(st, st.session_state, room)
+                    if not solo_cloud_page_poll_active(st.session_state, room):
                         render_solo_live_draft_heartbeat(st, st.session_state, room)
+                        render_solo_expire_watchdog(st, st.session_state)
             except ImportError:
                 pass
 
