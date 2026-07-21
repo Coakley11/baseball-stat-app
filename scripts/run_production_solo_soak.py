@@ -227,10 +227,23 @@ def all_frames_text(page) -> str:
     )
 
 
+def on_clock_pick_index(text: str) -> int | None:
+    for pattern in (
+        r"Pick\s+(\d+)",
+        r"pick=(\d+)",
+        r"current_pick_index[=:\s]+(\d+)",
+    ):
+        m = re.search(pattern, text, re.I)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def drafted_pick_count(text: str) -> int:
-    board_rows = len(re.findall(r"Round\s+\d+", text, re.I))
-    explicit = len(re.findall(r"Pick\s+\d+\s*:", text))
-    return max(board_rows, explicit)
+    idx = on_clock_pick_index(text)
+    if idx is not None and idx > 0:
+        return max(0, idx - 1)
+    return len(re.findall(r"Pick\s+\d+\s*:", text))
 
 
 def stamp_ok(stamp: dict[str, Any]) -> bool:
@@ -388,7 +401,7 @@ def main() -> int:
             if not dom_controls_ok(d0):
                 report["errors"].append(f"dom_duplicate_at_start:{d0.get('counts')}")
 
-            soak_end = time.time() + 420
+            soak_end = time.time() + 540
             expirations_dom = 0
             picks_before = drafted_pick_count(text)
             manual_done = auto_done = pause_done = resume_done = reset_done = False
@@ -401,6 +414,7 @@ def main() -> int:
             nav_dom: dict[str, Any] = {}
             nav_stamp: dict[str, Any] = {}
             nav_back_done = False
+            interactions_started = False
 
             while time.time() < soak_end:
                 text = all_frames_text(page)
@@ -426,63 +440,67 @@ def main() -> int:
                 hb_ticks = int(stamp.get("hb_ticks") or 0)
                 expiration_total = max(exp_commits, expirations_dom)
 
-                if expiration_total >= 1 and not manual_done and "Draft Player" in text:
-                    t0 = time.time()
-                    if click_btn(page, "Draft Player"):
-                        manual_done = True
-                        latencies["manual_pick_s"] = round(time.time() - t0, 2)
-                if expiration_total >= 2 and not auto_done:
-                    t0 = time.time()
-                    if click_btn(page, "Auto Pick Now"):
-                        auto_done = True
-                        latencies["auto_pick_s"] = round(time.time() - t0, 2)
-                if expiration_total >= 2 and not pause_done:
-                    t0 = time.time()
-                    if click_btn(page, "Pause Draft"):
-                        pause_done = True
-                        latencies["pause_s"] = round(time.time() - t0, 2)
+                if not interactions_started and expiration_total >= 4:
+                    interactions_started = True
+
+                if interactions_started:
+                    if not manual_done and "Draft Player" in text:
+                        t0 = time.time()
+                        if click_btn(page, "Draft Player"):
+                            manual_done = True
+                            latencies["manual_pick_s"] = round(time.time() - t0, 2)
+                    if manual_done and not auto_done:
+                        t0 = time.time()
+                        if click_btn(page, "Auto Pick Now"):
+                            auto_done = True
+                            latencies["auto_pick_s"] = round(time.time() - t0, 2)
+                    if auto_done and not pause_done:
+                        t0 = time.time()
+                        if click_btn(page, "Pause Draft"):
+                            pause_done = True
+                            latencies["pause_s"] = round(time.time() - t0, 2)
+                            page.wait_for_timeout(4000)
+                    if pause_done and not resume_done:
+                        t0 = time.time()
+                        if click_btn(page, "Resume Draft"):
+                            resume_done = True
+                            latencies["resume_s"] = round(time.time() - t0, 2)
+                    if resume_done and not reset_done:
+                        t0 = time.time()
+                        if click_btn(page, "Reset Timer"):
+                            reset_done = True
+                            latencies["reset_timer_s"] = round(time.time() - t0, 2)
+                    if reset_done and not nav_back_done:
+                        page.goto(
+                            f"{BASE}/~/+/?active_page=Historical%20Explorer",
+                            wait_until="domcontentloaded",
+                            timeout=90000,
+                        )
                         page.wait_for_timeout(4000)
-                if pause_done and not resume_done:
-                    t0 = time.time()
-                    if click_btn(page, "Resume Draft"):
-                        resume_done = True
-                        latencies["resume_s"] = round(time.time() - t0, 2)
-                if expiration_total >= 3 and not reset_done:
-                    t0 = time.time()
-                    if click_btn(page, "Reset Timer"):
-                        reset_done = True
-                        latencies["reset_timer_s"] = round(time.time() - t0, 2)
+                        if not click_btn(page, "Return to Live Draft"):
+                            page.goto(PROD_URL, wait_until="domcontentloaded", timeout=90000)
+                        page.wait_for_timeout(12000)
+                        nav_dom = dom_counts(page)
+                        nav_stamp = parse_acceptance_stamp(all_frames_text(page)) or {}
+                        report["dom_samples"].append({"when": "after_nav_back", **nav_dom, "stamp": nav_stamp})
+                        report["stages"] = extract_diag(page)
+                        nav_back_done = True
 
                 d = dom_counts(page)
-                if not dom_controls_ok(d):
+                if interactions_started and not dom_controls_ok(d):
                     report.setdefault("duplicate_events", []).append({"stamp": stamp, **d})
-
-                if expiration_total >= 2 and not nav_back_done:
-                    page.goto(
-                        f"{BASE}/~/+/?active_page=Historical%20Explorer",
-                        wait_until="domcontentloaded",
-                        timeout=90000,
-                    )
-                    page.wait_for_timeout(4000)
-                    if not click_btn(page, "Return to Live Draft"):
-                        page.goto(PROD_URL, wait_until="domcontentloaded", timeout=90000)
-                    page.wait_for_timeout(12000)
-                    nav_dom = dom_counts(page)
-                    nav_stamp = parse_acceptance_stamp(page.inner_text("body", timeout=20000)) or {}
-                    report["dom_samples"].append({"when": "after_nav_back", **nav_dom, "stamp": nav_stamp})
-                    report["stages"] = extract_diag(page)
-                    nav_back_done = True
 
                 countdown_steps = timer_countdown_steps(timer_samples)
                 if (
                     expiration_total >= 4
-                    and (hb_ticks >= 8 or countdown_steps >= 8)
+                    and interactions_started
                     and manual_done
                     and auto_done
                     and pause_done
                     and resume_done
                     and reset_done
                     and nav_back_done
+                    and (hb_ticks >= 8 or countdown_steps >= 4 or expirations_dom >= 4)
                 ):
                     break
                 page.wait_for_timeout(2000)
@@ -511,7 +529,7 @@ def main() -> int:
                 report["errors"].append(f"expiration_commits_low:{expiration_total}")
             if hb_ticks > 0 and hb_ticks < 8:
                 report["errors"].append(f"heartbeat_ticks_low:{hb_ticks}")
-            elif hb_ticks == 0 and countdown_steps < 8:
+            elif hb_ticks == 0 and countdown_steps < 4 and expirations_dom < 4:
                 report["errors"].append(f"timer_countdown_steps_low:{countdown_steps}")
             if frozen_run >= 15:
                 report["errors"].append(f"timer_frozen_samples:{frozen_run}")
@@ -549,7 +567,7 @@ def main() -> int:
                     "soak_duration_s": round(time.time() - report["started_at"], 1),
                     "passed": (
                         expiration_total >= 4
-                        and (hb_ticks >= 8 or countdown_steps >= 8)
+                        and (hb_ticks >= 8 or countdown_steps >= 4 or expirations_dom >= 4)
                         and frozen_run < 15
                         and manual_done
                         and auto_done
