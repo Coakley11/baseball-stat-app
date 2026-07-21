@@ -265,6 +265,7 @@ def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict
     except ImportError:
         pass
     expired = False
+    remaining_after = None
     try:
         from suite_egress_trace import egress_source
 
@@ -276,6 +277,13 @@ def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict
         getattr(result, "advanced", False) or getattr(result, "complete", False)
     ):
         expired = True
+    tick_room = _resolve_tick_room(session) or room
+    try:
+        from live_draft_timer_logic import live_draft_seconds_remaining
+
+        remaining_after = int(live_draft_seconds_remaining(tick_room))
+    except ImportError:
+        remaining_after = None
     note_solo_timer_poll_tick(session, expired=expired)
     session[SOLO_HEARTBEAT_TICK_KEY] = int(session.get(SOLO_HEARTBEAT_TICK_KEY) or 0) + 1
     try:
@@ -284,12 +292,20 @@ def schedule_solo_cloud_expire_poll(st: Any, session: dict[str, Any], room: dict
         session[SOLO_HEARTBEAT_LAST_TICK_AT_KEY] = time.time()
     except ImportError:
         pass
-    # Always chain the next full-page pass — a 1s throttle here deadlocked after the
-    # first rerun when Cloud rendered the follow-up page in under one second.
+    # Client-side JS owns the 1 Hz countdown between expirations. Only keep the server
+    # loop near zero (or right after a commit) so Cloud does not rerun the full page
+    # every second — that prevented Control Center from painting and caused egress storms.
+    if (
+        not expired
+        and remaining_after is not None
+        and remaining_after > 2
+        and not session.get(SOLO_WAKE_PENDING_RERUN_KEY)
+    ):
+        return False
     try:
         from live_draft_safe_mode import request_live_draft_rerun
 
-        return bool(request_live_draft_rerun(st, session, "solo_cloud_poll", room=room))
+        return bool(request_live_draft_rerun(st, session, "solo_cloud_poll", room=tick_room))
     except ImportError:
         try:
             st.rerun()

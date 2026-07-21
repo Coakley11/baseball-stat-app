@@ -123,15 +123,35 @@ class TestSoloExpireLoopNoSupabase(unittest.TestCase):
             "live_draft_pick_persist.flush_deferred_pick_persist"
         ) as flush:
             scheduled = schedule_solo_cloud_expire_poll(st, session, room)
-            self.assertTrue(scheduled)
-            scheduled_again = schedule_solo_cloud_expire_poll(st, session, room)
-            self.assertTrue(scheduled_again)
-            self.assertEqual(rerun.call_count, 2)
+            self.assertFalse(scheduled)
+            rerun.assert_not_called()
             poll.assert_not_called()
             supa_req.assert_not_called()
             flush.assert_not_called()
-            args = rerun.call_args[0]
-            self.assertEqual(args[2], "solo_cloud_poll")
+
+    def test_page_poll_chains_rerun_near_zero(self) -> None:
+        room = _in_progress_solo_room()
+        room["timer_deadline"] = time.time() + 1.0
+        session = {
+            "live_draft_setup_mode": "solo",
+            "live_draft_room": room,
+            "active_page": "Live Draft Room",
+            "draft_queue": [],
+            "_live_draft_heavy_paint_done": True,
+            "_live_draft_control_center_mount_log": [{"run_seq": 1}],
+        }
+        st = mock.MagicMock()
+        with mock.patch(
+            "live_draft_cloud_diagnostics.streamlit_cloud_runtime", return_value=True
+        ), mock.patch("live_draft_safe_mode.request_live_draft_rerun", return_value=True) as rerun, mock.patch(
+            "draft_room_context.poll_shared_draft_room"
+        ) as poll, mock.patch("suite_storage_supabase._request") as supa_req:
+            scheduled = schedule_solo_cloud_expire_poll(st, session, room)
+            self.assertTrue(scheduled)
+            rerun.assert_called_once()
+            self.assertEqual(rerun.call_args[0][2], "solo_cloud_poll")
+            poll.assert_not_called()
+            supa_req.assert_not_called()
 
     def test_solo_skip_remote_poll_suppresses_shared_poller(self) -> None:
         from live_draft_poll_ui import _poll_suppressed_reason

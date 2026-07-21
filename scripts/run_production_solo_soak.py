@@ -166,6 +166,10 @@ def countdown_values(text: str) -> list[int]:
         vals.append(int(m.group(1)))
     for m in re.finditer(r"(\d+)s remaining", text, re.I):
         vals.append(int(m.group(1)))
+    for m in re.finditer(r'class="live-draft-timer[^"]*">(\d+)</span>', text):
+        vals.append(int(m.group(1)))
+    for m in re.finditer(r"live-draft-timer[^>]*>(\d+)<", text):
+        vals.append(int(m.group(1)))
     return vals
 
 

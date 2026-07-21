@@ -59,6 +59,7 @@ def _emit_banner_html(
                   clickSoloWake();
                   window.setTimeout(clickSoloWake, 200);
                   window.setTimeout(clickSoloWake, 800);
+                  window.setInterval(clickSoloWake, 750);
                   return;
                 }}
                 window.setTimeout(tick, 250);
