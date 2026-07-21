@@ -215,16 +215,35 @@ def dom_controls_ok(counts: dict[str, int]) -> bool:
     return True
 
 
+def scrape_deploy_build(page) -> str:
+    try:
+        raw = page.evaluate(
+            """() => {
+              function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+              for (const root of roots()) {
+                const el = root.querySelector('#solo-deploy-build');
+                if (el) return el.getAttribute('data-sha') || '';
+              }
+              return '';
+            }"""
+        )
+        return str(raw or "").strip().lower()
+    except Exception:
+        return ""
+
+
 def wait_for_deploy(page, target_sha: str, *, timeout_s: int = 480) -> str:
     deadline = time.time() + timeout_s
     seen = ""
     while time.time() < deadline:
         try:
             page.goto(PROD_URL, wait_until="domcontentloaded", timeout=120000)
-            page.wait_for_timeout(4000)
-            text = page.inner_text("body", timeout=20000)
-            m = re.search(r"baseball-dev-([a-f0-9]{7})", text, re.I)
-            seen = m.group(1).lower() if m else ""
+            page.wait_for_timeout(12000)
+            seen = scrape_deploy_build(page)
+            if not seen:
+                text = all_frames_text(page)
+                m = re.search(r"baseball-dev-([a-f0-9]{7})", text, re.I)
+                seen = m.group(1).lower() if m else ""
             if seen == target_sha.lower():
                 return seen
         except Exception:
@@ -416,11 +435,13 @@ def main() -> int:
                 ["git", "rev-parse", "--short", "HEAD"], cwd=repo, text=True
             ).strip()
             report["expected_build"] = f"baseball-dev-{target_sha}"
-            report["deploy_build_seen"] = wait_for_deploy(page, target_sha, timeout_s=360)
+            report["deploy_build_seen"] = wait_for_deploy(page, target_sha, timeout_s=480)
+            if not report["deploy_build_seen"]:
+                report.setdefault("errors", []).append(f"deploy_not_seen:expected={target_sha}")
 
             # Phase 1 — ordinary Solo start (no ld_accept / canary / dev flags)
             page.goto(PROD_URL, wait_until="domcontentloaded", timeout=120000)
-            page.wait_for_timeout(8000)
+            page.wait_for_timeout(12000)
             if "End/Delete Draft" in page.inner_text("body", timeout=20000):
                 click_btn(page, "End/Delete Draft", wait_ms=4000)
             set_number(page, "Number of Teams", "2")

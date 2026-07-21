@@ -61,12 +61,23 @@ def solo_expire_chain_summary(session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def render_solo_expire_chain_probe(st: Any, session: dict[str, Any], room: dict[str, Any] | None) -> None:
-    """Hidden DOM probe for production soak (no ld_accept required)."""
+def render_solo_deploy_probe(st: Any) -> None:
+    """Always-on hidden deploy marker for production soak deploy polling."""
     try:
-        from live_draft_solo_timer import is_solo_live_draft
+        from suite_deploy_marker import format_build_label, resolve_git_commit_short
     except ImportError:
         return
+    build = format_build_label()
+    sha = resolve_git_commit_short()
+    st.markdown(
+        f'<div id="solo-deploy-build" data-build="{build}" data-sha="{sha}"></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_solo_expire_chain_probe(st: Any, session: dict[str, Any], room: dict[str, Any] | None) -> None:
+    """Hidden DOM probes for production soak (no ld_accept required)."""
+    render_solo_deploy_probe(st)
     if not isinstance(room, dict) or not is_solo_live_draft(session, room):
         return
     if str(room.get("status") or "") not in ("in_progress", "paused"):

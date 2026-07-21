@@ -15,6 +15,8 @@ SOLO_HEARTBEAT_MOUNT_KEY = "_solo_live_draft_heartbeat_mount_seq"
 ON_CLOCK_BANNER_PAINT_TOKEN_KEY = "_on_clock_banner_paint_token"
 SOLO_WAKE_BUTTON_LABEL = "solo-timer-wake"
 SOLO_WAKE_PENDING_RERUN_KEY = "_solo_timer_wake_pending_rerun"
+SOLO_WAKE_QUERY_KEY = "solo_wake"
+SOLO_WAKE_QUERY_SEEN_KEY = "_solo_wake_query_token"
 SOLO_IDLE_EGRESS_KEY = "_solo_timer_idle_egress"
 SOLO_CLOUD_POLL_MIN_INTERVAL_KEY = "_solo_cloud_poll_min_interval_sec"
 SOLO_CLOUD_POLL_LAST_AT_KEY = "_solo_cloud_poll_last_at"
@@ -83,15 +85,25 @@ def solo_timer_wake_button_key(session: dict[str, Any], room: dict[str, Any]) ->
 
 
 def _click_solo_wake_button_js(*, deadline: float | None = None, repeat_ms: int = 0) -> str:
-    """Client-side wake — clicks hidden Streamlit button; server owns expire."""
+    """Client-side wake — URL navigation is primary on Cloud; button click is secondary."""
     deadline_js = "null" if deadline is None else f"{float(deadline):.3f}"
     repeat = max(0, int(repeat_ms))
     return f"""
     (function() {{
       const deadline = {deadline_js};
+      function triggerWakeUrl() {{
+        try {{
+          const win = window.top || window.parent || window;
+          const url = new URL(win.location.href);
+          url.searchParams.set("{SOLO_WAKE_QUERY_KEY}", String(Date.now()));
+          win.location.assign(url.toString());
+          return true;
+        }} catch (e) {{}}
+        return false;
+      }}
       function clickWake() {{
         try {{
-          const doc = window.parent.document;
+          const doc = (window.top || window.parent || window).document;
           for (const b of doc.querySelectorAll('button')) {{
             const title = (b.getAttribute('title') || b.getAttribute('aria-label') || '').toLowerCase();
             const text = (b.innerText || '').replace(/\\s+/g, ' ').trim().toLowerCase();
@@ -105,7 +117,7 @@ def _click_solo_wake_button_js(*, deadline: float | None = None, repeat_ms: int 
       }}
       function maybeWakeAtZero() {{
         if (deadline !== null && (deadline - Date.now() / 1000) > 0.25) return;
-        clickWake();
+        if (!triggerWakeUrl()) clickWake();
       }}
       maybeWakeAtZero();
       window.setTimeout(maybeWakeAtZero, 120);
@@ -128,6 +140,91 @@ def emit_solo_timer_wake_click(st: Any, *, deadline: float | None = None) -> Non
         )
     except ImportError:
         pass
+
+
+def _clear_solo_wake_query(st: Any) -> None:
+    try:
+        qp = getattr(st, "query_params", None)
+        if qp is not None and SOLO_WAKE_QUERY_KEY in qp:
+            del qp[SOLO_WAKE_QUERY_KEY]
+    except Exception:
+        pass
+
+
+def _solo_wake_query_token(st: Any) -> str:
+    try:
+        from live_draft_cloud_diagnostics import _qp_get
+
+        return _qp_get(st, SOLO_WAKE_QUERY_KEY)
+    except ImportError:
+        return ""
+
+
+def _handle_solo_wake_delivery(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    via: str,
+    clicked: bool = False,
+    pending_rerun: bool = False,
+    pending_wake: bool = False,
+) -> None:
+    try:
+        from live_draft_solo_expire_chain import note_solo_expire_chain
+
+        note_solo_expire_chain(
+            session,
+            "wake_received",
+            source="wake",
+            via=via,
+            clicked=clicked,
+            pending_rerun=pending_rerun,
+            pending_wake=pending_wake,
+        )
+    except ImportError:
+        pass
+    result = run_solo_expire_tick(st, session, source="wake")
+    need_rerun = bool(pending_rerun or pending_wake or clicked or via == "query")
+    if result is not None and result.ok and (result.advanced or result.complete):
+        need_rerun = True
+    if not need_rerun:
+        return
+    live = _resolve_tick_room(session) or room
+    rerun_ok = False
+    try:
+        from live_draft_safe_mode import request_live_draft_rerun
+
+        rerun_ok = bool(request_live_draft_rerun(st, session, "solo_expire_wake", room=live))
+    except ImportError:
+        pass
+    if not rerun_ok:
+        try:
+            st.rerun()
+        except Exception:
+            pass
+
+
+def process_solo_wake_query(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
+    """Consume ?solo_wake= from JS countdown zero-cross — sole Cloud wake delivery."""
+    token = _solo_wake_query_token(st)
+    if not token:
+        return False
+    try:
+        from live_draft_solo_expire_chain import solo_expire_owner
+
+        if solo_expire_owner(session) != "wake":
+            _clear_solo_wake_query(st)
+            return False
+    except ImportError:
+        pass
+    if token == str(session.get(SOLO_WAKE_QUERY_SEEN_KEY) or ""):
+        _clear_solo_wake_query(st)
+        return False
+    session[SOLO_WAKE_QUERY_SEEN_KEY] = token
+    _clear_solo_wake_query(st)
+    _handle_solo_wake_delivery(st, session, room, via="query")
+    return True
 
 
 def render_solo_timer_wake_button(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
@@ -178,38 +275,15 @@ def render_solo_timer_wake_button(st: Any, session: dict[str, Any], room: dict[s
     pending_wake = bool(session.pop("_solo_timer_wake", None))
     if not (clicked or pending_wake or pending_rerun):
         return
-    try:
-        from live_draft_solo_expire_chain import note_solo_expire_chain
-
-        note_solo_expire_chain(
-            session,
-            "wake_received",
-            source="wake",
-            clicked=bool(clicked),
-            pending_rerun=pending_rerun,
-            pending_wake=pending_wake,
-        )
-    except ImportError:
-        pass
-    result = run_solo_expire_tick(st, session, source="wake")
-    need_rerun = bool(pending_rerun or pending_wake or clicked)
-    if result is not None and result.ok and (result.advanced or result.complete):
-        need_rerun = True
-    if not need_rerun:
-        return
-    live = _resolve_tick_room(session) or room
-    rerun_ok = False
-    try:
-        from live_draft_safe_mode import request_live_draft_rerun
-
-        rerun_ok = bool(request_live_draft_rerun(st, session, "solo_expire_wake", room=live))
-    except ImportError:
-        pass
-    if not rerun_ok:
-        try:
-            st.rerun()
-        except Exception:
-            pass
+    _handle_solo_wake_delivery(
+        st,
+        session,
+        room,
+        via="button",
+        clicked=bool(clicked),
+        pending_rerun=pending_rerun,
+        pending_wake=pending_wake,
+    )
 
 
 def note_solo_timer_poll_tick(session: dict[str, Any], *, expired: bool) -> dict[str, Any]:
@@ -293,6 +367,8 @@ def render_solo_expire_owner(st: Any, session: dict[str, Any], room: dict[str, A
     except ImportError:
         solo_expire_owner = lambda _s: "fragment"  # type: ignore[assignment,misc]
     owner = solo_expire_owner(session)
+    if owner == "wake":
+        process_solo_wake_query(st, session, room)
     render_solo_timer_wake_button(st, session, room)
     if owner == "fragment":
         render_solo_live_draft_heartbeat(st, session, room)

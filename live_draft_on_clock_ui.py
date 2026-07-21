@@ -39,9 +39,19 @@ def _emit_banner_html(
             (function() {{
               const deadline = {float(deadline)};
               const el = document.getElementById("{timer_id}");
+              function triggerWakeUrl() {{
+                try {{
+                  const win = window.top || window.parent || window;
+                  const url = new URL(win.location.href);
+                  url.searchParams.set("solo_wake", String(Date.now()));
+                  win.location.assign(url.toString());
+                  return true;
+                }} catch (e) {{}}
+                return false;
+              }}
               function clickSoloWake() {{
                 try {{
-                  const doc = window.parent.document;
+                  const doc = (window.top || window.parent || window).document;
                   for (const b of doc.querySelectorAll('button')) {{
                     const title = (b.getAttribute('title') || b.getAttribute('aria-label') || '').toLowerCase();
                     const text = (b.innerText || '').replace(/\\s+/g, ' ').trim().toLowerCase();
@@ -52,14 +62,16 @@ def _emit_banner_html(
                   }}
                 }} catch (e) {{}}
               }}
+              function wakeAtZero() {{
+                if (!triggerWakeUrl()) clickSoloWake();
+              }}
               function tick() {{
                 const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
                 if (el) el.textContent = String(rem);
                 if (rem <= 0) {{
-                  clickSoloWake();
-                  window.setTimeout(clickSoloWake, 200);
-                  window.setTimeout(clickSoloWake, 800);
-                  window.setInterval(clickSoloWake, 750);
+                  wakeAtZero();
+                  window.setTimeout(wakeAtZero, 200);
+                  window.setTimeout(wakeAtZero, 800);
                   return;
                 }}
                 window.setTimeout(tick, 250);

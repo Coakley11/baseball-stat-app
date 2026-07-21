@@ -22590,6 +22590,12 @@ elif active_page == "Live Draft Room":
         render_draft_start_progress(st, st.session_state, developer_mode=developer_mode_enabled())
     except ImportError:
         pass
+    try:
+        from live_draft_solo_expire_chain import render_solo_deploy_probe
+
+        render_solo_deploy_probe(st)
+    except ImportError:
+        pass
 
     if "live_draft_room" not in st.session_state:
         st.session_state["live_draft_room"] = None
