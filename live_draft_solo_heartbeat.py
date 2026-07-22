@@ -461,9 +461,7 @@ def render_solo_expire_owner(st: Any, session: dict[str, Any], room: dict[str, A
     except ImportError:
         solo_expire_owner = lambda _s: "fragment"  # type: ignore[assignment,misc]
     owner = solo_expire_owner(session)
-    if owner == "wake":
-        render_solo_countdown_wake_component(st, session, room)
-    elif owner == "fragment":
+    if owner == "fragment":
         render_solo_live_draft_heartbeat(st, session, room)
 
 

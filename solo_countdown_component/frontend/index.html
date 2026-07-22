@@ -2,79 +2,116 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <script src="https://unpkg.com/streamlit-component-lib@2.0.0/dist/index.js"></script>
   </head>
   <body>
-    <div id="solo-countdown-root" style="display: none">
-      <span id="solo-countdown-timer" class="live-draft-timer">--</span>
-    </div>
     <div id="solo-expire-client" data-last="" data-chain="" style="display: none"></div>
     <script>
-      function noteClient(stage) {
-        try {
-          const node = document.getElementById("solo-expire-client");
-          if (!node) return;
-          const chain = String(node.getAttribute("data-chain") || "");
-          node.setAttribute("data-last", stage);
-          node.setAttribute(
-            "data-chain",
-            chain ? chain + "|" + stage : stage
-          );
-        } catch (e) {}
-      }
+      (function () {
+        const Streamlit = {
+          events: {
+            addEventListener: function (type, callback) {
+              if (type !== "streamlit:render") return;
+              window.__soloRenderHandler = callback;
+            },
+          },
+          setComponentReady: function () {
+            window.parent.postMessage(
+              { isStreamlitMessage: true, type: "streamlit:componentReady" },
+              "*"
+            );
+          },
+          setFrameHeight: function (height) {
+            window.parent.postMessage(
+              {
+                isStreamlitMessage: true,
+                type: "streamlit:setFrameHeight",
+                height: height,
+              },
+              "*"
+            );
+          },
+          setComponentValue: function (value) {
+            window.parent.postMessage(
+              {
+                isStreamlitMessage: true,
+                type: "streamlit:setComponentValue",
+                value: value,
+              },
+              "*"
+            );
+          },
+          RENDER_EVENT: "streamlit:render",
+        };
 
-      let activeToken = "";
-      let tickTimer = null;
-
-      function clearTick() {
-        if (tickTimer) {
-          clearTimeout(tickTimer);
-          tickTimer = null;
+        function noteClient(stage) {
+          try {
+            const node = document.getElementById("solo-expire-client");
+            if (!node) return;
+            const chain = String(node.getAttribute("data-chain") || "");
+            node.setAttribute("data-last", stage);
+            node.setAttribute(
+              "data-chain",
+              chain ? chain + "|" + stage : stage
+            );
+          } catch (e) {}
         }
-      }
 
-      function sendExpireToken(expireToken) {
-        if (!expireToken || activeToken !== expireToken) return;
-        const sentKey = "solo_expire_sent:" + expireToken;
-        try {
-          if (window.sessionStorage.getItem(sentKey)) return;
-          window.sessionStorage.setItem(sentKey, "1");
-        } catch (e) {}
-        noteClient("component_value_sent");
-        Streamlit.setComponentValue(expireToken);
-      }
+        let activeToken = "";
+        let tickTimer = null;
 
-      function onRender(event) {
-        clearTick();
-        const args = event.detail.args || {};
-        const deadline = Number(args.deadline || 0);
-        const expireToken = String(args.expire_token || "");
-        activeToken = expireToken;
-        const timerEl = document.getElementById("solo-countdown-timer");
-        if (!deadline || !expireToken) {
-          if (timerEl) timerEl.textContent = "--";
-          Streamlit.setFrameHeight(0);
-          return;
+        function clearTick() {
+          if (tickTimer) {
+            clearTimeout(tickTimer);
+            tickTimer = null;
+          }
         }
 
-        function tick() {
-          if (activeToken !== expireToken) return;
-          const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
-          if (timerEl) timerEl.textContent = String(rem);
-          if (rem <= 0) {
-            noteClient("browser_deadline_crossed");
-            sendExpireToken(expireToken);
+        function sendExpireToken(expireToken) {
+          if (!expireToken || activeToken !== expireToken) return;
+          const sentKey = "solo_expire_sent:" + expireToken;
+          try {
+            if (window.sessionStorage.getItem(sentKey)) return;
+            window.sessionStorage.setItem(sentKey, "1");
+          } catch (e) {}
+          noteClient("component_value_sent");
+          Streamlit.setComponentValue(expireToken);
+        }
+
+        function onRender(event) {
+          clearTick();
+          const args = (event && event.detail && event.detail.args) || {};
+          const deadline = Number(args.deadline || 0);
+          const expireToken = String(args.expire_token || "");
+          activeToken = expireToken;
+          if (!deadline || !expireToken) {
+            Streamlit.setFrameHeight(0);
             return;
           }
-          tickTimer = setTimeout(tick, 250);
-        }
-        tick();
-        Streamlit.setFrameHeight(0);
-      }
 
-      Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
-      Streamlit.setComponentReady();
-      Streamlit.setFrameHeight(0);
+          function tick() {
+            if (activeToken !== expireToken) return;
+            const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
+            if (rem <= 0) {
+              noteClient("browser_deadline_crossed");
+              sendExpireToken(expireToken);
+              return;
+            }
+            tickTimer = setTimeout(tick, 250);
+          }
+          tick();
+          Streamlit.setFrameHeight(0);
+        }
+
+        window.addEventListener("message", function (event) {
+          if (!event.data || !event.data.type) return;
+          if (event.data.type !== "streamlit:render") return;
+          onRender({ detail: { args: event.data.args || {} } });
+        });
+
+        Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
+        Streamlit.setComponentReady();
+        Streamlit.setFrameHeight(0);
+      })();
     </script>
   </body>
 </html>

@@ -307,6 +307,8 @@ def deploy_acceptable(seen: str, target: str) -> bool:
         "c875735",
         "a113d48",
         "1c88074",
+        "2590eb2",
+        "d2d781b",
     }
     return seen in acceptable
 
