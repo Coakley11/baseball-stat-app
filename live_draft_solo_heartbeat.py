@@ -206,6 +206,18 @@ def _handle_solo_wake_delivery(
             pass
 
 
+def _coerce_wake_token(component_value: Any) -> str:
+    if component_value is None:
+        return ""
+    if isinstance(component_value, dict):
+        for key in ("token", "expire_token", "value"):
+            text = str(component_value.get(key) or "").strip()
+            if text:
+                return text
+        return ""
+    return str(component_value).strip()
+
+
 def process_solo_component_wake(
     st: Any,
     session: dict[str, Any],
@@ -213,7 +225,7 @@ def process_solo_component_wake(
     component_value: str,
 ) -> bool:
     """Consume Streamlit component expire token — sole Cloud wake delivery."""
-    token = str(component_value or "").strip()
+    token = _coerce_wake_token(component_value)
     if not token:
         return False
     try:
@@ -289,7 +301,7 @@ def render_solo_countdown_wake_component(
     pick_index = int(room.get("current_pick_index") or 0)
     # Stable widget key — must not include deadline or Streamlit drops pending values.
     key = f"solo_countdown_wake_{draft_id}_{pick_index}"
-    value = render_solo_countdown_wake(st, room, key=key)
+    value = render_solo_countdown_wake(st, room, key=key, session=session)
     if not value:
         return False
     return process_solo_component_wake(st, session, room, value)

@@ -122,12 +122,17 @@ def render_solo_expire_chain_probe(st: Any, session: dict[str, Any], room: dict[
     summary = solo_expire_chain_summary(session)
     chain_s = "|".join(summary.get("stages_tail") or [])
     payload = json.dumps(summary.get("log_tail") or [], default=str)[:4000]
+    comp_diag = session.get("_solo_component_diag") or {}
+    comp_return = str(comp_diag.get("returned_token") or "")
+    comp_raw = str(comp_diag.get("raw_type") or "")
     st.markdown(
         f'<div id="solo-expire-chain" '
         f'data-owner="{summary.get("owner") or ""}" '
         f'data-commits="{summary.get("commits") or 0}" '
         f'data-last="{summary.get("last_stage") or ""}" '
         f'data-chain="{chain_s}" '
-        f'data-log="{payload.replace(chr(34), chr(39))}"></div>',
+        f'data-log="{payload.replace(chr(34), chr(39))}" '
+        f'data-component-return="{comp_return.replace(chr(34), chr(39))}" '
+        f'data-component-raw="{comp_raw.replace(chr(34), chr(39))}"></div>',
         unsafe_allow_html=True,
     )
