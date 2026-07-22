@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: #0f172a;
+        color: #f8fafc;
+        padding: 8px 12px;
+      }
+      #repro-countdown {
+        font-size: 42px;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+        line-height: 1;
+      }
+      #repro-label {
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        opacity: 0.75;
+        margin-bottom: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="repro-label">Countdown</div>
+    <div id="repro-countdown">--</div>
+    <div
+      id="repro-client"
+      data-last=""
+      data-chain=""
+      data-console=""
+      style="display: none"
+    ></div>
+    <script>
+      (function () {
+        function sendMessage(type, data) {
+          window.parent.postMessage(
+            Object.assign({ isStreamlitMessage: true, type: type }, data || {}),
+            "*"
+          );
+        }
+
+        function noteClient(stage, extra) {
+          try {
+            const node = document.getElementById("repro-client");
+            if (!node) return;
+            const chain = String(node.getAttribute("data-chain") || "");
+            node.setAttribute("data-last", stage);
+            node.setAttribute(
+              "data-chain",
+              chain ? chain + "|" + stage : stage
+            );
+            if (extra) {
+              node.setAttribute("data-console", String(extra).slice(0, 2000));
+            }
+          } catch (e) {}
+        }
+
+        function logClient(msg) {
+          noteClient("console", msg);
+          try {
+            console.log("[minimal_wake_repro]", msg);
+          } catch (e) {}
+        }
+
+        let activeToken = "";
+        let tickTimer = null;
+        let sentTokens = {};
+
+        function clearTick() {
+          if (tickTimer) {
+            clearTimeout(tickTimer);
+            tickTimer = null;
+          }
+        }
+
+        function sendExpireToken(expireToken) {
+          if (!expireToken || activeToken !== expireToken) return;
+          if (sentTokens[expireToken]) return;
+          sentTokens[expireToken] = true;
+          noteClient("component_value_sent");
+          logClient("setComponentValue " + expireToken);
+          sendMessage("streamlit:setComponentValue", { value: expireToken });
+        }
+
+        function onRender(event) {
+          clearTick();
+          const args = (event && event.detail && event.detail.args) || {};
+          const expireToken = String(args.expire_token || "");
+          const parts = expireToken.split("|");
+          const deadline = Number(parts[2] || 0);
+          activeToken = expireToken;
+          logClient("render token=" + expireToken);
+          if (!expireToken || !Number.isFinite(deadline) || deadline <= 0) {
+            sendMessage("streamlit:setFrameHeight", { height: 72 });
+            return;
+          }
+
+          const countdownEl = document.getElementById("repro-countdown");
+
+          function tick() {
+            if (activeToken !== expireToken) return;
+            const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
+            if (countdownEl) countdownEl.textContent = String(rem);
+            if (rem <= 0) {
+              noteClient("browser_deadline_crossed");
+              window.setTimeout(function () {
+                sendExpireToken(expireToken);
+              }, 0);
+              return;
+            }
+            tickTimer = window.setTimeout(tick, 250);
+          }
+          tick();
+          sendMessage("streamlit:setFrameHeight", { height: 72 });
+        }
+
+        window.addEventListener("message", function (event) {
+          if (!event.data || event.data.type !== "streamlit:render") return;
+          onRender({ detail: { args: event.data.args || {} } });
+        });
+
+        sendMessage("streamlit:componentReady", { apiVersion: 1 });
+        sendMessage("streamlit:setFrameHeight", { height: 72 });
+        logClient("componentReady iframe=" + String(window.location.href || ""));
+      })();
+    </script>
+  </body>
+</html>
