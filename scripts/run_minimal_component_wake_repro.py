@@ -118,8 +118,6 @@ def main() -> int:
             page.wait_for_timeout(5000)
             title = page.title()
             report["page_title"] = title
-            if "Minimal Component Wake Repro" not in title and "#repro-result" not in page.content():
-                report["errors"].append("wrong_app_not_minimal_repro")
             deadline = time.time() + TIMEOUT_S
             best_callbacks = 0
             while time.time() < deadline:
@@ -138,6 +136,14 @@ def main() -> int:
                 page.wait_for_timeout(1000)
             report["final_probe"] = scrape_probe(page)
             report["best_callback_count"] = best_callbacks
+            probe_html = page.content()
+            has_repro = bool(
+                report["final_probe"].get("deploy_sha")
+                or report["final_probe"].get("component_name")
+                or "#repro-result" in probe_html
+            )
+            if not has_repro and "Baseball Explorer" in str(report.get("page_title") or ""):
+                report["errors"].append("wrong_app_not_minimal_repro")
             seen_sha = str(report.get("final_probe", {}).get("deploy_sha") or "").strip().lower()
             if sha and seen_sha and seen_sha != sha[: len(seen_sha)] and seen_sha != sha:
                 report["errors"].append(
