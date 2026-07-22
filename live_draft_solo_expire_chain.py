@@ -50,7 +50,8 @@ def note_solo_expire_chain(
 
 EXPECTED_CHAIN_STAGES = (
     "browser_deadline_crossed",
-    "url_wake_triggered",
+    "component_value_sent",
+    "component_value_received",
     "wake_received",
     "expire_entered",
     "deadline_confirmed_expired",

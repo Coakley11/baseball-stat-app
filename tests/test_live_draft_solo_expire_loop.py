@@ -189,5 +189,31 @@ class TestSoloExpireChain(unittest.TestCase):
         self.assertIn("pick_committed", summary["stages_tail"])
 
 
+class TestSoloComponentWake(unittest.TestCase):
+    def test_build_and_parse_expire_token(self) -> None:
+        from live_draft_solo_countdown_component import build_solo_expire_token, parse_solo_expire_token
+
+        room = {"draft_room_id": "abc123", "current_pick_index": 2, "timer_deadline": 1000.5}
+        token = build_solo_expire_token(room)
+        parsed = parse_solo_expire_token(token)
+        assert parsed is not None
+        self.assertEqual(parsed["draft_id"], "abc123")
+        self.assertEqual(parsed["pick_index"], 2)
+        self.assertEqual(parsed["deadline"], 1000.5)
+
+    def test_process_component_wake_runs_expire(self) -> None:
+        from live_draft_solo_heartbeat import process_solo_component_wake
+        from live_draft_solo_countdown_component import build_solo_expire_token
+
+        room = _in_progress_solo_room()
+        room["timer_deadline"] = time.time() - 0.05
+        session = {"live_draft_setup_mode": "solo", "live_draft_room": room, "draft_queue": []}
+        session["_solo_expire_owner"] = "wake"
+        st = mock.MagicMock()
+        token = build_solo_expire_token(room)
+        ok = process_solo_component_wake(st, session, room, token)
+        self.assertTrue(ok)
+
+
 if __name__ == "__main__":
     unittest.main()

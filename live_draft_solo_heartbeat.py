@@ -17,6 +17,7 @@ SOLO_WAKE_BUTTON_LABEL = "solo-timer-wake"
 SOLO_WAKE_PENDING_RERUN_KEY = "_solo_timer_wake_pending_rerun"
 SOLO_WAKE_QUERY_KEY = "solo_wake"
 SOLO_WAKE_QUERY_SEEN_KEY = "_solo_wake_query_token"
+SOLO_COMPONENT_WAKE_SEEN_KEY = "_solo_component_wake_seen_token"
 SOLO_IDLE_EGRESS_KEY = "_solo_timer_idle_egress"
 SOLO_CLOUD_POLL_MIN_INTERVAL_KEY = "_solo_cloud_poll_min_interval_sec"
 SOLO_CLOUD_POLL_LAST_AT_KEY = "_solo_cloud_poll_last_at"
@@ -205,6 +206,93 @@ def _handle_solo_wake_delivery(
             pass
 
 
+def process_solo_component_wake(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    component_value: str,
+) -> bool:
+    """Consume Streamlit component expire token — sole Cloud wake delivery."""
+    token = str(component_value or "").strip()
+    if not token:
+        return False
+    try:
+        from live_draft_solo_expire_chain import note_solo_expire_chain, solo_expire_owner
+        from live_draft_solo_countdown_component import parse_solo_expire_token
+
+        if solo_expire_owner(session) != "wake":
+            return False
+        parsed = parse_solo_expire_token(token)
+        if not parsed:
+            note_solo_expire_chain(
+                session,
+                "expire_rejected",
+                source="component",
+                reason="bad_token",
+                token=token,
+            )
+            return False
+        if token == str(session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or ""):
+            return False
+        live = _resolve_tick_room(session) or room
+        live_draft_id = str(live.get("draft_room_id") or live.get("draft_id") or "").strip()
+        if parsed["draft_id"] and live_draft_id and parsed["draft_id"] != live_draft_id:
+            note_solo_expire_chain(
+                session,
+                "expire_rejected",
+                source="component",
+                reason="draft_mismatch",
+                token=token,
+            )
+            return False
+        if int(live.get("current_pick_index") or 0) != int(parsed["pick_index"]):
+            note_solo_expire_chain(
+                session,
+                "expire_rejected",
+                source="component",
+                reason="pick_mismatch",
+                token=token,
+            )
+            return False
+        session[SOLO_COMPONENT_WAKE_SEEN_KEY] = token
+        note_solo_expire_chain(
+            session,
+            "component_value_received",
+            source="component",
+            token=token,
+        )
+    except ImportError:
+        session[SOLO_COMPONENT_WAKE_SEEN_KEY] = token
+    _handle_solo_wake_delivery(st, session, room, via="component")
+    return True
+
+
+def render_solo_countdown_wake_component(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+) -> bool:
+    """Mount bidirectional countdown component; process returned expire token."""
+    try:
+        from live_draft_solo_countdown_component import build_solo_expire_token, render_solo_countdown_wake
+        from live_draft_solo_expire_chain import solo_expire_owner
+        from live_draft_solo_timer import is_solo_live_draft
+    except ImportError:
+        return False
+    if solo_expire_owner(session) != "wake":
+        return False
+    if not is_solo_live_draft(session, room):
+        return False
+    if str(room.get("status") or "") != "in_progress":
+        return False
+    token_hint = build_solo_expire_token(room)
+    key = f"solo_countdown_wake_{token_hint.replace('|', '_')[:80]}"
+    value = render_solo_countdown_wake(st, room, key=key)
+    if not value:
+        return False
+    return process_solo_component_wake(st, session, room, value)
+
+
 def process_solo_wake_query(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
     """Consume ?solo_wake= from JS countdown zero-cross — sole Cloud wake delivery."""
     token = _solo_wake_query_token(st)
@@ -374,9 +462,8 @@ def render_solo_expire_owner(st: Any, session: dict[str, Any], room: dict[str, A
         solo_expire_owner = lambda _s: "fragment"  # type: ignore[assignment,misc]
     owner = solo_expire_owner(session)
     if owner == "wake":
-        process_solo_wake_query(st, session, room)
-    render_solo_timer_wake_button(st, session, room)
-    if owner == "fragment":
+        render_solo_countdown_wake_component(st, session, room)
+    elif owner == "fragment":
         render_solo_live_draft_heartbeat(st, session, room)
 
 
@@ -444,16 +531,6 @@ def _after_expire_success(
         deadline=getattr(result, "timer_deadline", None) or tick_room.get("timer_deadline"),
         force=True,
     )
-    # Never st.rerun() from inside @fragment — it stalls run_every on Streamlit Cloud.
-    session[SOLO_WAKE_PENDING_RERUN_KEY] = True
-    try:
-        from live_draft_solo_timer import SOLO_TIMER_WAKE_KEY
-
-        session[SOLO_TIMER_WAKE_KEY] = time.time()
-    except ImportError:
-        session["_solo_timer_wake"] = time.time()
-    deadline = getattr(result, "timer_deadline", None) or tick_room.get("timer_deadline")
-    emit_solo_timer_wake_click(st, deadline=deadline)
     try:
         from live_draft_solo_expire_chain import note_solo_expire_chain
 
@@ -462,7 +539,7 @@ def _after_expire_success(
             "page_repaint_completed",
             source=commit_source,
             pick_index=int(tick_room.get("current_pick_index") or 0),
-            deadline=deadline,
+            deadline=getattr(result, "timer_deadline", None) or tick_room.get("timer_deadline"),
         )
     except ImportError:
         pass

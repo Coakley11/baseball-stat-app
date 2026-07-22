@@ -39,59 +39,10 @@ def _emit_banner_html(
             (function() {{
               const deadline = {float(deadline)};
               const el = document.getElementById("{timer_id}");
-              function noteClientStage(stage) {{
-                try {{
-                  const win = window.top || window.parent || window;
-                  const doc = win.document;
-                  let node = doc.getElementById("solo-expire-client");
-                  if (!node) {{
-                    node = doc.createElement("div");
-                    node.id = "solo-expire-client";
-                    node.style.display = "none";
-                    doc.body.appendChild(node);
-                  }}
-                  const chain = String(node.getAttribute("data-chain") || "");
-                  node.setAttribute("data-last", stage);
-                  node.setAttribute("data-chain", chain ? chain + "|" + stage : stage);
-                }} catch (e) {{}}
-              }}
-              function triggerWakeUrl() {{
-                try {{
-                  const win = window.top || window.parent || window;
-                  noteClientStage("url_wake_triggered");
-                  const url = new URL(win.location.href);
-                  url.searchParams.set("solo_wake", String(Date.now()));
-                  win.location.assign(url.toString());
-                  return true;
-                }} catch (e) {{}}
-                return false;
-              }}
-              function clickSoloWake() {{
-                try {{
-                  const doc = (window.top || window.parent || window).document;
-                  for (const b of doc.querySelectorAll('button')) {{
-                    const title = (b.getAttribute('title') || b.getAttribute('aria-label') || '').toLowerCase();
-                    const text = (b.innerText || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                    if (title.includes('solo-timer-wake') || text === 'solo-timer-wake') {{
-                      b.click();
-                      return;
-                    }}
-                  }}
-                }} catch (e) {{}}
-              }}
-              function wakeAtZero() {{
-                noteClientStage("browser_deadline_crossed");
-                if (!triggerWakeUrl()) clickSoloWake();
-              }}
               function tick() {{
                 const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
                 if (el) el.textContent = String(rem);
-                if (rem <= 0) {{
-                  wakeAtZero();
-                  window.setTimeout(wakeAtZero, 200);
-                  window.setTimeout(wakeAtZero, 800);
-                  return;
-                }}
+                if (rem <= 0) return;
                 window.setTimeout(tick, 250);
               }}
               tick();

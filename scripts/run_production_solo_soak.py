@@ -305,6 +305,8 @@ def deploy_acceptable(seen: str, target: str) -> bool:
         "9c5fa0c",
         "77c10b7",
         "c875735",
+        "a113d48",
+        "1c88074",
     }
     return seen in acceptable
 
@@ -453,6 +455,7 @@ def wait_for_natural_expirations(
     chain_samples: list[dict[str, Any]] = []
     client_samples: list[dict[str, Any]] = []
     wake_url_hits = 0
+    component_sent_hits = 0
     last_url = ""
 
     while time.time() < deadline and len(events) < need:
@@ -472,6 +475,8 @@ def wait_for_natural_expirations(
                 chain_samples.append(sample)
             if client and (not client_samples or client_samples[-1].get("chain") != client.get("chain")):
                 client_samples.append({**client, "ts": time.time()})
+            if "component_value_sent" in str(client.get("chain") or ""):
+                component_sent_hits += 1
         if stamp:
             report["acceptance_stamp_final"] = stamp
         tval = cur.get("timer")
@@ -513,8 +518,9 @@ def wait_for_natural_expirations(
     report["expire_chain_samples"] = chain_samples[-24:]
     report["expire_client_samples"] = client_samples[-24:]
     report["solo_wake_url_hits"] = wake_url_hits
-    if wake_url_hits > 40 and len(events) == 0:
-        report.setdefault("errors", []).append(f"solo_wake_navigation_loop:{wake_url_hits}")
+    report["component_value_sent_hits"] = component_sent_hits
+    if wake_url_hits > 0:
+        report.setdefault("errors", []).append(f"legacy_url_wake_detected:{wake_url_hits}")
     analyze_chain_break(report, report.get("expire_chain_final") or {}, scrape_client_chain(page))
     report["timer_samples_during_expirations"] = timer_samples[-40:]
     report["idle_egress_during_countdown"] = monitor.idle_rates()
@@ -580,8 +586,11 @@ def main() -> int:
                     report.get("expire_chain_final") or scrape_expire_chain(page),
                     scrape_client_chain(page),
                 )
-                if report.get("first_missing_chain_stage"):
-                    report["errors"].append(f"chain_break_at:{report['first_missing_chain_stage']}")
+                missing = report.get("first_missing_chain_stage")
+                if missing:
+                    report["errors"].append(f"chain_break_at:{missing}")
+                elif not (report.get("expire_chain_final") or {}).get("chain"):
+                    report["errors"].append("expire_chain_empty_no_server_ticks")
 
             # Phase 3 — interaction matrix (only after 4 natural expirations)
             interactions: dict[str, bool] = {}
