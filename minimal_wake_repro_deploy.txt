@@ -1,2 +1,1 @@
-local000  # auto-generated; minimal repro deploy marker
-branch: dev
+406bddb  # minimal component wake repro deploy marker
