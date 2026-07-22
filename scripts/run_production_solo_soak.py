@@ -99,6 +99,8 @@ def scrape_expire_chain(page) -> dict[str, Any]:
                   last: el.getAttribute('data-last') || '',
                   chain: el.getAttribute('data-chain') || '',
                   log: el.getAttribute('data-log') || '',
+                  component_return: el.getAttribute('data-component-return') || '',
+                  component_raw: el.getAttribute('data-component-raw') || '',
                 };
               }
               return {};

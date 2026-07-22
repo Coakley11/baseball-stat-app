@@ -1,5 +1,9 @@
 
 import streamlit as st
+try:
+    import solo_countdown_component  # noqa: F401 — register wake component at app import
+except ImportError:
+    pass
 import pandas as pd
 from dataframe_utils import (
     coerce_dataframe,
@@ -14805,6 +14809,16 @@ try:
 except ImportError:
     pass
 
+if active_page == "Live Draft Room":
+    _solo_wake_room = st.session_state.get("live_draft_room")
+    if isinstance(_solo_wake_room, dict):
+        try:
+            from live_draft_solo_heartbeat import render_solo_countdown_wake_component
+
+            render_solo_countdown_wake_component(st, st.session_state, _solo_wake_room)
+        except ImportError:
+            pass
+
 from baseball_ami_sidebar import render_baseball_insight_sidebar
 
 st.session_state["_suite_runtime_app_id"] = "baseball"
@@ -22304,12 +22318,6 @@ elif active_page == "Live Draft Room":
         pass
     _early_room = st.session_state.get("live_draft_room")
     if isinstance(_early_room, dict):
-        try:
-            from live_draft_solo_heartbeat import render_solo_countdown_wake_component
-
-            render_solo_countdown_wake_component(st, st.session_state, _early_room)
-        except ImportError:
-            pass
         try:
             from live_draft_safe_mode import reconcile_live_draft_room
 
