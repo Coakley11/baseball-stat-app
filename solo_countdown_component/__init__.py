@@ -99,13 +99,7 @@ def render_solo_countdown_wake(
         return None
 
     expire_token = build_solo_expire_token(room)
-    draft_id = str(room.get("draft_room_id") or room.get("draft_id") or "solo").strip()
-    pick_index = int(room.get("current_pick_index") or 0)
-    deadline_arg = int(math.ceil(float(deadline)))
     value = _COMPONENT(
-        draft_id=draft_id,
-        pick_index=pick_index,
-        deadline=deadline_arg,
         expire_token=expire_token,
         key=key,
         default=None,
@@ -117,7 +111,6 @@ def render_solo_countdown_wake(
             "mounted": True,
             "key": key,
             "expire_token": expire_token,
-            "deadline": deadline_arg,
             "returned_token": token,
             "raw_type": type(value).__name__ if value is not None else "",
             "component_api": "v1",

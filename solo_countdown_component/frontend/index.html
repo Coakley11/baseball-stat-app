@@ -49,8 +49,9 @@
         function onRender(event) {
           clearTick();
           const args = (event && event.detail && event.detail.args) || {};
-          const deadline = Number(args.deadline || 0);
           const expireToken = String(args.expire_token || "");
+          const parts = expireToken.split("|");
+          const deadline = Number(parts[2] || 0);
           activeToken = expireToken;
           if (!expireToken || !Number.isFinite(deadline) || deadline <= 0) {
             sendMessage("streamlit:setFrameHeight", { height: 0 });

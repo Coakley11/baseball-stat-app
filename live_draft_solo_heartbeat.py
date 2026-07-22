@@ -302,8 +302,7 @@ def render_solo_countdown_wake_component(
     key = f"solo_countdown_wake_{draft_id}_{pick_index}"
 
     def _on_component_change() -> None:
-        raw = st.session_state.get(key)
-        token = _coerce_wake_token(raw)
+        token = build_solo_expire_token(room)
         if token:
             process_solo_component_wake(st, session, room, token)
 
