@@ -87,19 +87,57 @@ def _record_delivery(source: str, token: str, raw: Any) -> bool:
     return True
 
 
+def _delivery_stats() -> dict[str, Any]:
+    callbacks = list(st.session_state.get(SESSION_CALLBACKS) or [])
+    seen = list(st.session_state.get(SESSION_SEEN_TOKENS) or [])
+    by_source: dict[str, int] = {}
+    for row in callbacks:
+        source = str(row.get("source") or "unknown")
+        by_source[source] = by_source.get(source, 0) + 1
+    duplicate_tokens = len(callbacks) - len(seen)
+    return {
+        "callback_count": len(callbacks),
+        "unique_tokens": len(seen),
+        "by_source": by_source,
+        "duplicate_deliveries": max(0, duplicate_tokens),
+        "missing_deliveries": max(0, REQUIRED_CYCLES - len(seen)),
+    }
+
+
+def _validate_results() -> dict[str, Any]:
+    stats = _delivery_stats()
+    seen = list(st.session_state.get(SESSION_SEEN_TOKENS) or [])
+    passed = (
+        len(seen) >= REQUIRED_CYCLES
+        and stats["duplicate_deliveries"] == 0
+        and stats["callback_count"] == len(seen)
+    )
+    return {
+        "passed": passed,
+        "required_cycles": REQUIRED_CYCLES,
+        **stats,
+        "received_tokens": seen,
+    }
+
+
 def _update_diag(*, key: str, token: str, raw_return: Any) -> None:
+    stats = _delivery_stats()
     st.session_state[SESSION_LAST_DIAG] = {
         "component_name": COMPONENT_NAME,
+        "component_registration": COMPONENT_NAME,
         "component_path": str(_FRONTEND_DIR),
         "widget_key": key,
         "expire_token": token,
         "raw_return": raw_return,
         "raw_return_type": type(raw_return).__name__ if raw_return is not None else "",
         "session_state_value": st.session_state.get(key),
-        "callback_count": len(st.session_state.get(SESSION_CALLBACKS) or []),
+        "callback_count": stats["callback_count"],
+        "unique_token_count": stats["unique_tokens"],
+        "delivery_by_source": stats["by_source"],
         "cycles_done": int(st.session_state.get(SESSION_CYCLES_DONE) or 0),
         "mount_count": int(st.session_state.get(SESSION_MOUNT_COUNT) or 0),
         "deploy_sha": _deploy_sha(),
+        "validation": _validate_results(),
     }
 
 
@@ -109,9 +147,19 @@ st.set_page_config(page_title="Minimal Component Wake Repro", layout="centered")
 cycles_done = int(st.session_state.get(SESSION_CYCLES_DONE) or 0)
 cycle = int(st.session_state.get(SESSION_CYCLE) or 0)
 if cycles_done >= REQUIRED_CYCLES:
-    st.success(f"PASS — {REQUIRED_CYCLES} component deliveries received")
+    validation = _validate_results()
     callbacks = list(st.session_state.get(SESSION_CALLBACKS) or [])
+    if validation.get("passed"):
+        st.success(
+            f"PASS — {REQUIRED_CYCLES} unique tokens, "
+            f"{len(callbacks)} callbacks, no duplicates"
+        )
+    else:
+        st.error("FAIL — delivery validation did not pass")
     st.metric("Callback count", len(callbacks))
+    st.metric("Unique tokens", validation.get("unique_tokens", 0))
+    st.subheader("Validation")
+    st.json(validation)
     st.subheader("Received token history")
     st.dataframe(callbacks, use_container_width=True)
     diag = dict(st.session_state.get(SESSION_LAST_DIAG) or {})
@@ -119,16 +167,18 @@ if cycles_done >= REQUIRED_CYCLES:
     st.json(diag)
     probe = json.dumps(
         {
-            "passed": True,
+            "passed": bool(validation.get("passed")),
             "callback_count": len(callbacks),
             "callbacks": callbacks,
+            "validation": validation,
             "diag": diag,
         },
         default=str,
     )[:8000]
     st.markdown(
         f'<div id="repro-deploy-build" data-sha="{_deploy_sha()}"></div>'
-        f'<div id="repro-result" data-passed="true" data-callbacks="{len(callbacks)}" '
+        f'<div id="repro-result" data-passed="{str(bool(validation.get("passed"))).lower()}" '
+        f'data-callbacks="{len(callbacks)}" '
         f'data-component-name="{COMPONENT_NAME}" data-widget-key="done" '
         f'data-payload="{probe.replace(chr(34), chr(39))}"></div>',
         unsafe_allow_html=True,
@@ -186,18 +236,20 @@ if callbacks:
     st.subheader("Received token history")
     st.dataframe(callbacks, use_container_width=True)
 
+validation = _validate_results()
 probe = json.dumps(
     {
-        "passed": False,
+        "passed": bool(validation.get("passed")),
         "callback_count": len(callbacks),
         "callbacks": callbacks,
+        "validation": validation,
         "diag": diag,
     },
     default=str,
 )[:8000]
 st.markdown(
     f'<div id="repro-deploy-build" data-sha="{_deploy_sha()}"></div>'
-    f'<div id="repro-result" data-passed="false" data-callbacks="{len(callbacks)}" '
+    f'<div id="repro-result" data-passed="{str(bool(validation.get("passed"))).lower()}" data-callbacks="{len(callbacks)}" '
     f'data-component-name="{COMPONENT_NAME}" data-widget-key="{key}" '
     f'data-payload="{probe.replace(chr(34), chr(39))}"></div>',
     unsafe_allow_html=True,

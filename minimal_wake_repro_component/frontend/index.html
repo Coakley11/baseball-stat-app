@@ -33,6 +33,7 @@
       data-last=""
       data-chain=""
       data-console=""
+      data-iframe-url=""
       style="display: none"
     ></div>
     <script>
@@ -123,6 +124,16 @@
           if (!event.data || event.data.type !== "streamlit:render") return;
           onRender({ detail: { args: event.data.args || {} } });
         });
+
+        try {
+          const node = document.getElementById("repro-client");
+          if (node) {
+            node.setAttribute(
+              "data-iframe-url",
+              String(window.location.href || "")
+            );
+          }
+        } catch (e) {}
 
         sendMessage("streamlit:componentReady", { apiVersion: 1 });
         sendMessage("streamlit:setFrameHeight", { height: 72 });
