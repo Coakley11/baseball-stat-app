@@ -111,10 +111,6 @@ def render_solo_deploy_probe(st: Any) -> None:
 def render_solo_expire_chain_probe(st: Any, session: dict[str, Any], room: dict[str, Any] | None) -> None:
     """Hidden DOM probes for production soak (no ld_accept required)."""
     render_solo_deploy_probe(st)
-    st.markdown(
-        '<div id="solo-expire-client" data-last="" data-chain="" style="display:none"></div>',
-        unsafe_allow_html=True,
-    )
     try:
         from live_draft_solo_timer import is_solo_live_draft
     except ImportError:

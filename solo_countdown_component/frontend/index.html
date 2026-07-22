@@ -7,41 +7,12 @@
     <div id="solo-expire-client" data-last="" data-chain="" style="display: none"></div>
     <script>
       (function () {
-        const Streamlit = {
-          events: {
-            addEventListener: function (type, callback) {
-              if (type !== "streamlit:render") return;
-              window.__soloRenderHandler = callback;
-            },
-          },
-          setComponentReady: function () {
-            window.parent.postMessage(
-              { isStreamlitMessage: true, type: "streamlit:componentReady" },
-              "*"
-            );
-          },
-          setFrameHeight: function (height) {
-            window.parent.postMessage(
-              {
-                isStreamlitMessage: true,
-                type: "streamlit:setFrameHeight",
-                height: height,
-              },
-              "*"
-            );
-          },
-          setComponentValue: function (value) {
-            window.parent.postMessage(
-              {
-                isStreamlitMessage: true,
-                type: "streamlit:setComponentValue",
-                value: value,
-              },
-              "*"
-            );
-          },
-          RENDER_EVENT: "streamlit:render",
-        };
+        function sendMessage(type, data) {
+          window.parent.postMessage(
+            Object.assign({ isStreamlitMessage: true, type: type }, data || {}),
+            "*"
+          );
+        }
 
         function noteClient(stage) {
           try {
@@ -58,6 +29,7 @@
 
         let activeToken = "";
         let tickTimer = null;
+        let renderCount = 0;
 
         function clearTick() {
           if (tickTimer) {
@@ -74,7 +46,7 @@
             window.sessionStorage.setItem(sentKey, "1");
           } catch (e) {}
           noteClient("component_value_sent");
-          Streamlit.setComponentValue(expireToken);
+          sendMessage("streamlit:setComponentValue", { value: expireToken });
         }
 
         function onRender(event) {
@@ -83,8 +55,9 @@
           const deadline = Number(args.deadline || 0);
           const expireToken = String(args.expire_token || "");
           activeToken = expireToken;
-          if (!deadline || !expireToken) {
-            Streamlit.setFrameHeight(0);
+          renderCount += 1;
+          if (!expireToken || !Number.isFinite(deadline) || deadline <= 0) {
+            sendMessage("streamlit:setFrameHeight", { height: 0 });
             return;
           }
 
@@ -93,24 +66,24 @@
             const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
             if (rem <= 0) {
               noteClient("browser_deadline_crossed");
-              sendExpireToken(expireToken);
+              window.setTimeout(function () {
+                sendExpireToken(expireToken);
+              }, 0);
               return;
             }
-            tickTimer = setTimeout(tick, 250);
+            tickTimer = window.setTimeout(tick, 250);
           }
           tick();
-          Streamlit.setFrameHeight(0);
+          sendMessage("streamlit:setFrameHeight", { height: 0 });
         }
 
         window.addEventListener("message", function (event) {
-          if (!event.data || !event.data.type) return;
-          if (event.data.type !== "streamlit:render") return;
+          if (!event.data || event.data.type !== "streamlit:render") return;
           onRender({ detail: { args: event.data.args || {} } });
         });
 
-        Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
-        Streamlit.setComponentReady();
-        Streamlit.setFrameHeight(0);
+        sendMessage("streamlit:componentReady", { apiVersion: 1 });
+        sendMessage("streamlit:setFrameHeight", { height: 0 });
       })();
     </script>
   </body>

@@ -285,6 +285,16 @@ def render_solo_countdown_wake_component(
         return False
     if str(room.get("status") or "") != "in_progress":
         return False
+    try:
+        from live_draft_canonical_snapshot import get_live_draft_paint_snapshot
+
+        canon = get_live_draft_paint_snapshot(session)
+        if isinstance(canon, dict) and canon.get("timer_deadline") is not None:
+            room["timer_deadline"] = float(canon["timer_deadline"])
+        if isinstance(canon, dict) and canon.get("current_pick_index") is not None:
+            room["current_pick_index"] = int(canon["current_pick_index"])
+    except ImportError:
+        pass
     token_hint = build_solo_expire_token(room)
     key = f"solo_countdown_wake_{token_hint.replace('|', '_')[:80]}"
     value = render_solo_countdown_wake(st, room, key=key)
@@ -461,7 +471,9 @@ def render_solo_expire_owner(st: Any, session: dict[str, Any], room: dict[str, A
     except ImportError:
         solo_expire_owner = lambda _s: "fragment"  # type: ignore[assignment,misc]
     owner = solo_expire_owner(session)
-    if owner == "fragment":
+    if owner == "wake":
+        render_solo_countdown_wake_component(st, session, room)
+    elif owner == "fragment":
         render_solo_live_draft_heartbeat(st, session, room)
 
 

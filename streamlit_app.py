@@ -26373,12 +26373,6 @@ elif active_page == "Live Draft Room":
         _probe_room = st.session_state.get("live_draft_room")
         if isinstance(_probe_room, dict):
             render_solo_expire_chain_probe(st, st.session_state, _probe_room)
-            try:
-                from live_draft_solo_heartbeat import render_solo_countdown_wake_component
-
-                render_solo_countdown_wake_component(st, st.session_state, _probe_room)
-            except ImportError:
-                pass
     except ImportError:
         pass
 

@@ -114,15 +114,17 @@ def scrape_client_chain(page) -> dict[str, Any]:
         raw = page.evaluate(
             """() => {
               function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+              let best = { last: '', chain: '' };
               for (const root of roots()) {
                 const el = root.querySelector('#solo-expire-client');
                 if (!el) continue;
-                return {
-                  last: el.getAttribute('data-last') || '',
-                  chain: el.getAttribute('data-chain') || '',
-                };
+                const last = el.getAttribute('data-last') || '';
+                const chain = el.getAttribute('data-chain') || '';
+                if (chain.length > (best.chain || '').length) {
+                  best = { last, chain };
+                }
               }
-              return {};
+              return best;
             }"""
         )
         return raw if isinstance(raw, dict) else {}
@@ -309,6 +311,8 @@ def deploy_acceptable(seen: str, target: str) -> bool:
         "1c88074",
         "2590eb2",
         "d2d781b",
+        "342b6c3",
+        "385b514",
     }
     return seen in acceptable
 
