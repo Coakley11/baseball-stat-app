@@ -301,10 +301,15 @@ def render_solo_countdown_wake_component(
     pick_index = int(room.get("current_pick_index") or 0)
     # Stable widget key — must not include deadline or Streamlit drops pending values.
     key = f"solo_countdown_wake_{draft_id}_{pick_index}"
-    value = render_solo_countdown_wake(st, room, key=key, session=session)
-    if not value:
-        return False
-    return process_solo_component_wake(st, session, room, value)
+    token_hint = build_solo_expire_token(room)
+
+    def _on_expire() -> None:
+        process_solo_component_wake(st, session, room, token_hint)
+
+    value = render_solo_countdown_wake(st, room, key=key, session=session, on_expire=_on_expire)
+    if value:
+        return process_solo_component_wake(st, session, room, value)
+    return False
 
 
 def process_solo_wake_query(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:

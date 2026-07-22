@@ -141,6 +141,7 @@ def render_solo_countdown_wake(
     *,
     key: str,
     session: dict[str, Any] | None = None,
+    on_expire: Any | None = None,
 ) -> str | None:
     """Mount zero-height countdown component; returns expire token when deadline crosses zero."""
     if str(room.get("status") or "") != "in_progress":
@@ -168,6 +169,7 @@ def render_solo_countdown_wake(
     draft_id = str(room.get("draft_room_id") or room.get("draft_id") or "solo").strip()
     pick_index = int(room.get("current_pick_index") or 0)
     deadline_arg = int(math.ceil(float(deadline)))
+    expire_cb = on_expire if callable(on_expire) else (lambda: None)
     result = _COMPONENT(
         data={
             "draft_id": draft_id,
@@ -176,7 +178,7 @@ def render_solo_countdown_wake(
             "expire_token": expire_token,
         },
         key=key,
-        on_expire_change=lambda: None,
+        on_expire_change=expire_cb,
     )
     token = _coerce_component_token(getattr(result, "expire", None))
     if isinstance(session, dict):
@@ -188,5 +190,6 @@ def render_solo_countdown_wake(
             "returned_token": token,
             "raw_type": type(getattr(result, "expire", None)).__name__,
             "component_api": "v2",
+            "result_keys": sorted(str(k) for k in result.keys()) if hasattr(result, "keys") else [],
         }
     return token or None
