@@ -285,18 +285,10 @@ def render_solo_countdown_wake_component(
         return False
     if str(room.get("status") or "") != "in_progress":
         return False
-    try:
-        from live_draft_canonical_snapshot import get_live_draft_paint_snapshot
-
-        canon = get_live_draft_paint_snapshot(session)
-        if isinstance(canon, dict) and canon.get("timer_deadline") is not None:
-            room["timer_deadline"] = float(canon["timer_deadline"])
-        if isinstance(canon, dict) and canon.get("current_pick_index") is not None:
-            room["current_pick_index"] = int(canon["current_pick_index"])
-    except ImportError:
-        pass
-    token_hint = build_solo_expire_token(room)
-    key = f"solo_countdown_wake_{token_hint.replace('|', '_')[:80]}"
+    draft_id = str(room.get("draft_room_id") or room.get("draft_id") or "solo").strip()
+    pick_index = int(room.get("current_pick_index") or 0)
+    # Stable widget key — must not include deadline or Streamlit drops pending values.
+    key = f"solo_countdown_wake_{draft_id}_{pick_index}"
     value = render_solo_countdown_wake(st, room, key=key)
     if not value:
         return False

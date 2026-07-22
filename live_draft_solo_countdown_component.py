@@ -82,5 +82,8 @@ def render_solo_countdown_wake(
     )
     if value is None:
         return None
-    token = str(value).strip()
+    if isinstance(value, dict):
+        token = str(value.get("value") or value.get("expire_token") or "").strip()
+    else:
+        token = str(value).strip()
     return token or None

@@ -29,7 +29,7 @@
 
         let activeToken = "";
         let tickTimer = null;
-        let renderCount = 0;
+        let sentTokens = {};
 
         function clearTick() {
           if (tickTimer) {
@@ -40,11 +40,8 @@
 
         function sendExpireToken(expireToken) {
           if (!expireToken || activeToken !== expireToken) return;
-          const sentKey = "solo_expire_sent:" + expireToken;
-          try {
-            if (window.sessionStorage.getItem(sentKey)) return;
-            window.sessionStorage.setItem(sentKey, "1");
-          } catch (e) {}
+          if (sentTokens[expireToken]) return;
+          sentTokens[expireToken] = true;
           noteClient("component_value_sent");
           sendMessage("streamlit:setComponentValue", { value: expireToken });
         }
@@ -55,7 +52,6 @@
           const deadline = Number(args.deadline || 0);
           const expireToken = String(args.expire_token || "");
           activeToken = expireToken;
-          renderCount += 1;
           if (!expireToken || !Number.isFinite(deadline) || deadline <= 0) {
             sendMessage("streamlit:setFrameHeight", { height: 0 });
             return;
