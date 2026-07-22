@@ -72,6 +72,7 @@ def render_solo_countdown_wake(
     *,
     key: str,
     session: dict[str, Any] | None = None,
+    on_change: Any | None = None,
 ) -> str | None:
     """Mount zero-height countdown component; returns expire token when deadline crosses zero."""
     if not component_frontend_ready():
@@ -108,6 +109,7 @@ def render_solo_countdown_wake(
         expire_token=expire_token,
         key=key,
         default=None,
+        on_change=on_change,
     )
     token = _coerce_component_token(value)
     if isinstance(session, dict):

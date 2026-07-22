@@ -300,7 +300,20 @@ def render_solo_countdown_wake_component(
     draft_id = str(room.get("draft_room_id") or room.get("draft_id") or "solo").strip()
     pick_index = int(room.get("current_pick_index") or 0)
     key = f"solo_countdown_wake_{draft_id}_{pick_index}"
-    value = render_solo_countdown_wake(st, room, key=key, session=session)
+
+    def _on_component_change() -> None:
+        raw = st.session_state.get(key)
+        token = _coerce_wake_token(raw)
+        if token:
+            process_solo_component_wake(st, session, room, token)
+
+    value = render_solo_countdown_wake(
+        st,
+        room,
+        key=key,
+        session=session,
+        on_change=_on_component_change,
+    )
     if not value:
         return False
     return process_solo_component_wake(st, session, room, value)
@@ -474,7 +487,9 @@ def render_solo_expire_owner(st: Any, session: dict[str, Any], room: dict[str, A
     except ImportError:
         solo_expire_owner = lambda _s: "fragment"  # type: ignore[assignment,misc]
     owner = solo_expire_owner(session)
-    if owner == "fragment":
+    if owner == "wake":
+        render_solo_countdown_wake_component(st, session, room)
+    elif owner == "fragment":
         render_solo_live_draft_heartbeat(st, session, room)
 
 

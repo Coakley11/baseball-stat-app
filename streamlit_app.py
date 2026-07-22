@@ -14861,16 +14861,6 @@ try:
 except ImportError:
     pass
 
-if active_page == "Live Draft Room":
-    _solo_wake_room = st.session_state.get("live_draft_room")
-    if isinstance(_solo_wake_room, dict):
-        try:
-            from live_draft_solo_heartbeat import render_solo_countdown_wake_component
-
-            render_solo_countdown_wake_component(st, st.session_state, _solo_wake_room)
-        except ImportError:
-            pass
-
 try:
     from global_fantasy_settings_state import mirror_canonical_to_all_aliases
 
