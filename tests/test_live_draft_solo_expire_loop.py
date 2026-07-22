@@ -180,13 +180,13 @@ class TestSoloExpireChain(unittest.TestCase):
         from live_draft_solo_expire_chain import note_solo_expire_chain, solo_expire_chain_summary
 
         session: dict = {}
-        note_solo_expire_chain(session, "deadline_crossed", source="wake")
+        note_solo_expire_chain(session, "deadline_confirmed_expired", source="wake")
         note_solo_expire_chain(session, "expire_entered", source="wake")
         note_solo_expire_chain(session, "autopick_attempted", source="expire")
-        note_solo_expire_chain(session, "commit_confirmed", source="wake", pick_index=2)
+        note_solo_expire_chain(session, "pick_committed", source="wake", pick_index=2)
         summary = solo_expire_chain_summary(session)
         self.assertEqual(summary["commits"], 1)
-        self.assertIn("commit_confirmed", summary["stages_tail"])
+        self.assertIn("pick_committed", summary["stages_tail"])
 
 
 if __name__ == "__main__":

@@ -185,7 +185,7 @@ def _handle_solo_wake_delivery(
     except ImportError:
         pass
     result = run_solo_expire_tick(st, session, source="wake")
-    need_rerun = bool(pending_rerun or pending_wake or clicked or via == "query")
+    need_rerun = bool(pending_rerun or pending_wake or clicked)
     if result is not None and result.ok and (result.advanced or result.complete):
         need_rerun = True
     if not need_rerun:
@@ -223,6 +223,12 @@ def process_solo_wake_query(st: Any, session: dict[str, Any], room: dict[str, An
         return False
     session[SOLO_WAKE_QUERY_SEEN_KEY] = token
     _clear_solo_wake_query(st)
+    try:
+        from live_draft_solo_expire_chain import note_solo_expire_chain
+
+        note_solo_expire_chain(session, "url_wake_triggered", source="wake", token=token)
+    except ImportError:
+        pass
     _handle_solo_wake_delivery(st, session, room, via="query")
     return True
 
@@ -448,6 +454,18 @@ def _after_expire_success(
         session["_solo_timer_wake"] = time.time()
     deadline = getattr(result, "timer_deadline", None) or tick_room.get("timer_deadline")
     emit_solo_timer_wake_click(st, deadline=deadline)
+    try:
+        from live_draft_solo_expire_chain import note_solo_expire_chain
+
+        note_solo_expire_chain(
+            session,
+            "page_repaint_completed",
+            source=commit_source,
+            pick_index=int(tick_room.get("current_pick_index") or 0),
+            deadline=deadline,
+        )
+    except ImportError:
+        pass
     return True
 
 
@@ -517,7 +535,7 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
 
         note_solo_expire_chain(
             session,
-            "deadline_crossed",
+            "deadline_confirmed_expired",
             source=source,
             remaining=remaining,
             deadline=deadline,
@@ -560,7 +578,7 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
 
             note_solo_expire_chain(
                 session,
-                "commit_confirmed",
+                "pick_committed",
                 source=source,
                 reason=getattr(result, "reason", ""),
                 pick_index=int(tick_room.get("current_pick_index") or 0),

@@ -391,6 +391,18 @@ def expire_current_pick_and_advance(
         # Drop any stale token so the next pick can expire cleanly.
         room.pop("last_processed_expiration_token", None)
         room.pop(SOLO_EXPIRE_APPLIED_KEY, None)
+        try:
+            from live_draft_solo_expire_chain import note_solo_expire_chain
+
+            note_solo_expire_chain(
+                session,
+                "new_deadline_installed",
+                source="expire",
+                deadline=room["timer_deadline"],
+                duration=duration,
+            )
+        except ImportError:
+            pass
 
     if complete:
         room[SOLO_EXPIRE_APPLIED_KEY] = guard
@@ -418,6 +430,18 @@ def expire_current_pick_and_advance(
                 "committed": committed,
             },
         )
+        try:
+            from live_draft_solo_expire_chain import note_solo_expire_chain
+
+            note_solo_expire_chain(
+                session,
+                "canonical_state_updated",
+                source="expire",
+                pick_index=int(snap.get("current_pick_index") or 0),
+                revision=int(snap.get("revision") or 0),
+            )
+        except ImportError:
+            pass
     except Exception:
         pass
     # Queue / rec caches already handled by finalize inside auto_pick; keep a

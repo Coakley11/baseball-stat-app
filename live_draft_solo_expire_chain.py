@@ -43,9 +43,31 @@ def note_solo_expire_chain(
     log = list(session.get(SOLO_EXPIRE_CHAIN_KEY) or [])
     log.append(row)
     session[SOLO_EXPIRE_CHAIN_KEY] = log[-MAX_CHAIN:]
-    if stage == "commit_confirmed":
+    if stage in ("commit_confirmed", "pick_committed"):
         session[SOLO_EXPIRE_COMMIT_COUNT_KEY] = int(session.get(SOLO_EXPIRE_COMMIT_COUNT_KEY) or 0) + 1
     return row
+
+
+EXPECTED_CHAIN_STAGES = (
+    "browser_deadline_crossed",
+    "url_wake_triggered",
+    "wake_received",
+    "expire_entered",
+    "deadline_confirmed_expired",
+    "autopick_attempted",
+    "pick_committed",
+    "canonical_state_updated",
+    "new_deadline_installed",
+    "page_repaint_completed",
+)
+
+
+def first_missing_chain_stage(stages: list[str]) -> str:
+    seen = set(stages)
+    for stage in EXPECTED_CHAIN_STAGES:
+        if stage not in seen:
+            return stage
+    return ""
 
 
 def solo_expire_chain_summary(session: dict[str, Any]) -> dict[str, Any]:
@@ -78,6 +100,14 @@ def render_solo_deploy_probe(st: Any) -> None:
 def render_solo_expire_chain_probe(st: Any, session: dict[str, Any], room: dict[str, Any] | None) -> None:
     """Hidden DOM probes for production soak (no ld_accept required)."""
     render_solo_deploy_probe(st)
+    st.markdown(
+        '<div id="solo-expire-client" data-last="" data-chain="" style="display:none"></div>',
+        unsafe_allow_html=True,
+    )
+    try:
+        from live_draft_solo_timer import is_solo_live_draft
+    except ImportError:
+        return
     if not isinstance(room, dict) or not is_solo_live_draft(session, room):
         return
     if str(room.get("status") or "") not in ("in_progress", "paused"):

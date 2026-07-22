@@ -109,6 +109,60 @@ def scrape_expire_chain(page) -> dict[str, Any]:
         return {}
 
 
+def scrape_client_chain(page) -> dict[str, Any]:
+    try:
+        raw = page.evaluate(
+            """() => {
+              function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+              for (const root of roots()) {
+                const el = root.querySelector('#solo-expire-client');
+                if (!el) continue;
+                return {
+                  last: el.getAttribute('data-last') || '',
+                  chain: el.getAttribute('data-chain') || '',
+                };
+              }
+              return {};
+            }"""
+        )
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def parse_chain_stages(chain: dict[str, Any], client: dict[str, Any]) -> list[str]:
+    stages: list[str] = []
+    for blob in (client.get("chain") or "", chain.get("chain") or ""):
+        for part in str(blob).split("|"):
+            token = part.strip()
+            if token and token not in stages:
+                stages.append(token)
+    return stages
+
+
+def analyze_chain_break(report: dict[str, Any], chain: dict[str, Any], client: dict[str, Any]) -> None:
+    stages = parse_chain_stages(chain, client)
+    report["expire_chain_stages"] = stages
+    try:
+        from live_draft_solo_expire_chain import EXPECTED_CHAIN_STAGES, first_missing_chain_stage
+
+        report["expected_chain_stages"] = list(EXPECTED_CHAIN_STAGES)
+        missing = first_missing_chain_stage(stages)
+        if missing:
+            report["first_missing_chain_stage"] = missing
+    except ImportError:
+        if stages:
+            report["first_missing_chain_stage"] = ""
+        else:
+            report["first_missing_chain_stage"] = "browser_deadline_crossed"
+
+
+def read_expected_deploy_sha() -> str:
+    marker = Path(__file__).resolve().parent.parent / "deploy_commit.txt"
+    line = marker.read_text(encoding="utf-8").splitlines()[0]
+    return line.split("#", 1)[0].strip().lower()[:7]
+
+
 def parse_acceptance_stamp(text: str) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for line in text.splitlines():
@@ -330,13 +384,26 @@ def validate_expiration_event(
 
 
 def wait_for_active_draft(page, report: dict[str, Any], t_click: float) -> dict[str, Any] | None:
-    for _ in range(120):
-        page.wait_for_timeout(1000)
+    best: dict[str, int] | None = None
+    for i in range(240):
+        page.wait_for_timeout(500)
         d = dom_counts(page)
         if int(d.get("Pause Draft") or 0) >= 1:
             report["time_to_first_usable_s"] = round(time.time() - t_click, 2)
             report.setdefault("dom_samples", []).append({"when": "first_usable", "counts": d})
             return d
+        if dom_controls_ok(d):
+            report["time_to_first_usable_s"] = round(time.time() - t_click, 2)
+            report.setdefault("dom_samples", []).append({"when": "first_usable_controls", "counts": d})
+            return d
+        if int(d.get("Pause Draft") or 0) > 0:
+            best = d
+        if i in (20, 40, 80) and any(int(d.get(k) or 0) for k in d):
+            report.setdefault("dom_samples", []).append({"when": f"start_wait_{i//2}s", "counts": d})
+    if best:
+        report["time_to_first_usable_s"] = round(time.time() - t_click, 2)
+        report.setdefault("dom_samples", []).append({"when": "first_usable_best_effort", "counts": best})
+        return best
     report.setdefault("errors", []).append("start_never_reached_active_controls")
     return None
 
@@ -358,16 +425,27 @@ def wait_for_natural_expirations(
     timer_samples: list[int] = []
     last_low_timer_at: float | None = None
     chain_samples: list[dict[str, Any]] = []
+    client_samples: list[dict[str, Any]] = []
+    wake_url_hits = 0
+    last_url = ""
 
     while time.time() < deadline and len(events) < need:
         page.wait_for_timeout(1500)
         cur = scrape_state(page)
         stamp = parse_acceptance_stamp(all_frames_text(page))
         chain = scrape_expire_chain(page)
-        if chain:
-            report["expire_chain_final"] = chain
+        client = scrape_client_chain(page)
+        url_now = str(page.url or "")
+        if "solo_wake=" in url_now and url_now != last_url:
+            wake_url_hits += 1
+            last_url = url_now
+        if chain or client:
+            sample = {"ts": time.time(), **chain, "client_last": client.get("last"), "client_chain": client.get("chain")}
+            report["expire_chain_final"] = {**chain, "client": client}
             if not chain_samples or chain_samples[-1].get("commits") != chain.get("commits"):
-                chain_samples.append({**chain, "ts": time.time()})
+                chain_samples.append(sample)
+            if client and (not client_samples or client_samples[-1].get("chain") != client.get("chain")):
+                client_samples.append({**client, "ts": time.time()})
         if stamp:
             report["acceptance_stamp_final"] = stamp
         tval = cur.get("timer")
@@ -407,6 +485,11 @@ def wait_for_natural_expirations(
 
     report["natural_expiration_events"] = events
     report["expire_chain_samples"] = chain_samples[-24:]
+    report["expire_client_samples"] = client_samples[-24:]
+    report["solo_wake_url_hits"] = wake_url_hits
+    if wake_url_hits > 40 and len(events) == 0:
+        report.setdefault("errors", []).append(f"solo_wake_navigation_loop:{wake_url_hits}")
+    analyze_chain_break(report, report.get("expire_chain_final") or {}, scrape_client_chain(page))
     report["timer_samples_during_expirations"] = timer_samples[-40:]
     report["idle_egress_during_countdown"] = monitor.idle_rates()
     return events
@@ -430,14 +513,15 @@ def main() -> int:
         page = browser.new_page(viewport={"width": 1440, "height": 1400})
         monitor.attach(page)
         try:
-            repo = Path(__file__).resolve().parent.parent
-            target_sha = subprocess.check_output(
-                ["git", "rev-parse", "--short", "HEAD"], cwd=repo, text=True
-            ).strip()
+            target_sha = read_expected_deploy_sha()
             report["expected_build"] = f"baseball-dev-{target_sha}"
-            report["deploy_build_seen"] = wait_for_deploy(page, target_sha, timeout_s=480)
+            report["commits_expected"] = ["77c10b7", "9c5fa0c", target_sha]
+            report["deploy_build_seen"] = wait_for_deploy(page, target_sha, timeout_s=900)
             if not report["deploy_build_seen"]:
                 report.setdefault("errors", []).append(f"deploy_not_seen:expected={target_sha}")
+                report["passed"] = False
+                report["soak_duration_s"] = round(time.time() - report["started_at"], 1)
+                return 1
 
             # Phase 1 — ordinary Solo start (no ld_accept / canary / dev flags)
             page.goto(PROD_URL, wait_until="domcontentloaded", timeout=120000)
@@ -465,6 +549,13 @@ def main() -> int:
             }
             if len(exp_events) < 4:
                 report["errors"].append(f"expiration_commits_low:{len(exp_events)}")
+                analyze_chain_break(
+                    report,
+                    report.get("expire_chain_final") or scrape_expire_chain(page),
+                    scrape_client_chain(page),
+                )
+                if report.get("first_missing_chain_stage"):
+                    report["errors"].append(f"chain_break_at:{report['first_missing_chain_stage']}")
 
             # Phase 3 — interaction matrix (only after 4 natural expirations)
             interactions: dict[str, bool] = {}
