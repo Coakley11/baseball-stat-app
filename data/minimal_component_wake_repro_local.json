@@ -1,0 +1,15 @@
+{
+  "environment": "local",
+  "target_url": "http://localhost:8766",
+  "deploy_sha": "acf62d9",
+  "passed": true,
+  "callback_count": 4,
+  "unique_tokens": 4,
+  "delivery_by_source": { "on_change": 4 },
+  "duplicate_deliveries": 0,
+  "component_registration_name": "minimal_wake_repro",
+  "component_iframe_url": "http://localhost:8766/component/minimal_component_wake_repro.minimal_wake_repro/index.html?streamlitUrl=http%3A%2F%2Flocalhost%3A8766%2F",
+  "raw_return_value": null,
+  "session_state_value": null,
+  "notes": "All four expirations delivered via on_change only; return_value path unused locally."
+}

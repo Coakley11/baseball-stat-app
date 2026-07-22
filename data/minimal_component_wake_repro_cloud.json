@@ -1,0 +1,24 @@
+{
+  "environment": "streamlit_cloud",
+  "target_url": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app",
+  "expected_branch": "minimal-wake-repro",
+  "expected_deploy_sha": "acf62d9",
+  "pushed_branch_head": "dcb101a",
+  "passed": false,
+  "blocked": true,
+  "blocker": "cloud_app_still_on_dev_branch",
+  "observed_page_title": "Daniel Cohen Baseball Explorer (Streamlit)",
+  "repro_markers_present": false,
+  "callback_count": 0,
+  "errors": [
+    "repro_markers_missing",
+    "callbacks_low:0",
+    "client_never_sent_component_value",
+    "python_never_received_component_value"
+  ],
+  "cloud_logs": {
+    "available": false,
+    "reason": "Manage-console access required"
+  },
+  "next_step": "Streamlit Cloud -> Manage app -> Settings -> switch branch to minimal-wake-repro (entry streamlit_app.py), Reboot, then rerun scripts/run_minimal_component_wake_repro.py acf62d9"
+}
