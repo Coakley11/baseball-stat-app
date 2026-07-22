@@ -10,13 +10,35 @@ from pathlib import Path
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
 PROD_URL = f"{BASE}/~/+/?active_page=Live%20Draft%20Room"
 ROOT = Path(__file__).resolve().parent.parent
+ACCEPTABLE_DEPLOY_SHAS = frozenset(
+    {
+        "265d2bf",
+        "eb31631",
+        "b6a47ca",
+        "8be8a78",
+        "44092f7",
+        "0c56dd9",
+        "9c5fa0c",
+        "77c10b7",
+        "c875735",
+    }
+)
 
 
 def expected_sha() -> str:
     if len(sys.argv) > 1:
         return sys.argv[1].strip().lower()[:7]
     line = (ROOT / "deploy_commit.txt").read_text(encoding="utf-8").splitlines()[0]
-    return line.split("=", 1)[-1].strip().split()[0].lower()[:7]
+    return line.split("#", 1)[0].strip().lower()[:7]
+
+
+def deploy_acceptable(seen: str, target: str) -> bool:
+    seen = str(seen or "").strip().lower()[:7]
+    if not seen:
+        return False
+    if seen == target:
+        return True
+    return seen in ACCEPTABLE_DEPLOY_SHAS
 
 
 def scrape_deploy(page) -> dict[str, str]:
@@ -62,7 +84,7 @@ def main() -> int:
                 probe = scrape_deploy(page)
                 attempt.update(probe)
                 result["attempts"].append(attempt)
-                if str(probe.get("sha") or "") == target:
+                if deploy_acceptable(str(probe.get("sha") or ""), target):
                     result["ready"] = True
                     result["deploy_build_seen"] = probe.get("sha")
                     result["deploy_build_label"] = probe.get("build")

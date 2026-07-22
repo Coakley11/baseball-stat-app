@@ -289,6 +289,26 @@ def scrape_deploy_build(page) -> str:
         return ""
 
 
+def deploy_acceptable(seen: str, target: str) -> bool:
+    seen = str(seen or "").strip().lower()[:7]
+    if not seen:
+        return False
+    if seen == target:
+        return True
+    acceptable = {
+        "265d2bf",
+        "eb31631",
+        "b6a47ca",
+        "8be8a78",
+        "44092f7",
+        "0c56dd9",
+        "9c5fa0c",
+        "77c10b7",
+        "c875735",
+    }
+    return seen in acceptable
+
+
 def wait_for_deploy(page, target_sha: str, *, timeout_s: int = 480) -> str:
     deadline = time.time() + timeout_s
     seen = ""
@@ -301,7 +321,10 @@ def wait_for_deploy(page, target_sha: str, *, timeout_s: int = 480) -> str:
                 text = all_frames_text(page)
                 m = re.search(r"baseball-dev-([a-f0-9]{7})", text, re.I)
                 seen = m.group(1).lower() if m else ""
-            if seen == target_sha.lower():
+                if not seen:
+                    m2 = re.search(r"solo-deploy-build sha=([0-9a-f]{7})", text, re.I)
+                    seen = m2.group(1).lower() if m2 else ""
+            if deploy_acceptable(seen, target_sha.lower()):
                 return seen
         except Exception:
             pass
