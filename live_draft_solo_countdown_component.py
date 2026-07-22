@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any
 
@@ -72,10 +73,11 @@ def render_solo_countdown_wake(
     expire_token = build_solo_expire_token(room)
     draft_id = str(room.get("draft_room_id") or room.get("draft_id") or "solo").strip()
     pick_index = int(room.get("current_pick_index") or 0)
+    deadline_arg = int(math.ceil(float(deadline)))
     value = _component()(
         draft_id=draft_id,
         pick_index=pick_index,
-        deadline=float(deadline),
+        deadline=deadline_arg,
         expire_token=expire_token,
         key=key,
         default=None,

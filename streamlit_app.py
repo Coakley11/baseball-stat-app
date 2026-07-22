@@ -22305,6 +22305,12 @@ elif active_page == "Live Draft Room":
     _early_room = st.session_state.get("live_draft_room")
     if isinstance(_early_room, dict):
         try:
+            from live_draft_solo_heartbeat import render_solo_countdown_wake_component
+
+            render_solo_countdown_wake_component(st, st.session_state, _early_room)
+        except ImportError:
+            pass
+        try:
             from live_draft_safe_mode import reconcile_live_draft_room
 
             reconcile_live_draft_room(st.session_state, _early_room)
