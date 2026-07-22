@@ -31,6 +31,9 @@ def scrape_deploy(page) -> dict[str, str]:
                 build: el.getAttribute('data-build') || '',
               };
             }
+            const html = root.documentElement ? root.documentElement.innerHTML : '';
+            const m = html.match(/solo-deploy-build sha=([0-9a-f]{7})/i);
+            if (m) return { sha: m[1].toLowerCase(), build: '' };
           }
           return { sha: '', build: '' };
         }"""

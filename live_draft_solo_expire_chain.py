@@ -92,9 +92,19 @@ def render_solo_deploy_probe(st: Any) -> None:
     build = format_build_label()
     sha = resolve_git_commit_short()
     st.markdown(
+        f"<!-- solo-deploy-build sha={sha} build={build} -->\n"
         f'<div id="solo-deploy-build" data-build="{build}" data-sha="{sha}"></div>',
         unsafe_allow_html=True,
     )
+    try:
+        import streamlit.components.v1 as components
+
+        components.html(
+            f'<div id="solo-deploy-build" data-build="{build}" data-sha="{sha}"></div>',
+            height=0,
+        )
+    except ImportError:
+        pass
 
 
 def render_solo_expire_chain_probe(st: Any, session: dict[str, Any], room: dict[str, Any] | None) -> None:

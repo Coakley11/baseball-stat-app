@@ -277,6 +277,9 @@ def scrape_deploy_build(page) -> str:
               for (const root of roots()) {
                 const el = root.querySelector('#solo-deploy-build');
                 if (el) return el.getAttribute('data-sha') || '';
+                const html = root.documentElement ? root.documentElement.innerHTML : '';
+                const m = html.match(/solo-deploy-build sha=([0-9a-f]{7})/i);
+                if (m) return m[1];
               }
               return '';
             }"""
