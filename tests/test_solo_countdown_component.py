@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from solo_countdown_component import (
     build_solo_expire_token,
@@ -13,6 +14,16 @@ from solo_countdown_component import (
 
 
 class SoloCountdownComponentPackagingTests(unittest.TestCase):
+    def test_frontend_index_exists(self) -> None:
+        index = get_component_frontend_dir() / "index.html"
+        self.assertTrue(index.is_file())
+        content = index.read_text(encoding="utf-8")
+        self.assertIn("streamlit:componentReady", content)
+        self.assertIn("apiVersion: 1", content)
+        self.assertIn("streamlit:setComponentValue", content)
+        self.assertIn("solo-expire-client", content)
+        self.assertNotIn("location.assign", content)
+
     def test_component_ready(self) -> None:
         self.assertTrue(component_frontend_ready())
 
@@ -24,15 +35,6 @@ class SoloCountdownComponentPackagingTests(unittest.TestCase):
         self.assertEqual(parsed["draft_id"], "abc123")
         self.assertEqual(parsed["pick_index"], 2)
         self.assertEqual(parsed["deadline"], 1000.5)
-
-    def test_v2_js_handshake(self) -> None:
-        from solo_countdown_component import _SOLO_COUNTDOWN_JS
-
-        self.assertIn("setTriggerValue", _SOLO_COUNTDOWN_JS)
-        self.assertIn("browser_deadline_crossed", _SOLO_COUNTDOWN_JS)
-        self.assertIn("component_value_sent", _SOLO_COUNTDOWN_JS)
-        self.assertNotIn("location.assign", _SOLO_COUNTDOWN_JS)
-        self.assertNotIn("setComponentValue", _SOLO_COUNTDOWN_JS)
 
 
 if __name__ == "__main__":

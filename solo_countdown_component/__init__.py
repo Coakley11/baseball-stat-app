@@ -1,4 +1,4 @@
-"""Bidirectional Solo countdown — Streamlit v2 component wake at deadline zero."""
+"""Bidirectional Solo countdown — Streamlit component wake at deadline zero."""
 
 from __future__ import annotations
 
@@ -6,81 +6,12 @@ import math
 from pathlib import Path
 from typing import Any
 
-import streamlit as st
+import streamlit.components.v1 as components
 
 _FRONTEND_DIR = (Path(__file__).resolve().parent / "frontend").resolve()
-
-_SOLO_COUNTDOWN_JS = """
-export default function(component) {
-  const { data, setTriggerValue, parentElement } = component;
-  const args = data || {};
-  const deadline = Number(args.deadline || 0);
-  const expireToken = String(args.expire_token || "");
-  let activeToken = expireToken;
-  let tickTimer = null;
-  let sentTokens = {};
-
-  function noteClient(stage) {
-    try {
-      let node = parentElement.querySelector("#solo-expire-client");
-      if (!node) {
-        node = document.createElement("div");
-        node.id = "solo-expire-client";
-        node.setAttribute("data-last", "");
-        node.setAttribute("data-chain", "");
-        node.style.display = "none";
-        parentElement.appendChild(node);
-      }
-      const chain = String(node.getAttribute("data-chain") || "");
-      node.setAttribute("data-last", stage);
-      node.setAttribute(
-        "data-chain",
-        chain ? chain + "|" + stage : stage
-      );
-    } catch (e) {}
-  }
-
-  function clearTick() {
-    if (tickTimer) {
-      clearTimeout(tickTimer);
-      tickTimer = null;
-    }
-  }
-
-  function sendExpireToken(token) {
-    if (!token || activeToken !== token || sentTokens[token]) return;
-    sentTokens[token] = true;
-    noteClient("component_value_sent");
-    setTriggerValue("expire", token);
-  }
-
-  function tick() {
-    if (activeToken !== expireToken) return;
-    const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
-    if (rem <= 0) {
-      noteClient("browser_deadline_crossed");
-      window.setTimeout(function () {
-        sendExpireToken(expireToken);
-      }, 0);
-      return;
-    }
-    tickTimer = window.setTimeout(tick, 250);
-  }
-
-  if (!expireToken || !Number.isFinite(deadline) || deadline <= 0) {
-    return () => clearTick();
-  }
-
-  clearTick();
-  tick();
-  return () => clearTick();
-}
-"""
-
-_COMPONENT = st.components.v2.component(
+_COMPONENT = components.declare_component(
     "solo_countdown_wake",
-    js=_SOLO_COUNTDOWN_JS,
-    isolate_styles=False,
+    path=str(_FRONTEND_DIR),
 )
 
 
@@ -89,7 +20,7 @@ def get_component_frontend_dir() -> Path:
 
 
 def component_frontend_ready() -> bool:
-    return bool(_SOLO_COUNTDOWN_JS.strip())
+    return (_FRONTEND_DIR / "index.html").is_file()
 
 
 def build_solo_expire_token(room: dict[str, Any]) -> str:
@@ -141,9 +72,10 @@ def render_solo_countdown_wake(
     *,
     key: str,
     session: dict[str, Any] | None = None,
-    on_expire: Any | None = None,
 ) -> str | None:
     """Mount zero-height countdown component; returns expire token when deadline crosses zero."""
+    if not component_frontend_ready():
+        return None
     if str(room.get("status") or "") != "in_progress":
         return None
     try:
@@ -169,18 +101,15 @@ def render_solo_countdown_wake(
     draft_id = str(room.get("draft_room_id") or room.get("draft_id") or "solo").strip()
     pick_index = int(room.get("current_pick_index") or 0)
     deadline_arg = int(math.ceil(float(deadline)))
-    expire_cb = on_expire if callable(on_expire) else (lambda: None)
-    result = _COMPONENT(
-        data={
-            "draft_id": draft_id,
-            "pick_index": pick_index,
-            "deadline": deadline_arg,
-            "expire_token": expire_token,
-        },
+    value = _COMPONENT(
+        draft_id=draft_id,
+        pick_index=pick_index,
+        deadline=deadline_arg,
+        expire_token=expire_token,
         key=key,
-        on_expire_change=expire_cb,
+        default=None,
     )
-    token = _coerce_component_token(getattr(result, "expire", None))
+    token = _coerce_component_token(value)
     if isinstance(session, dict):
         session["_solo_component_diag"] = {
             "mounted": True,
@@ -188,8 +117,7 @@ def render_solo_countdown_wake(
             "expire_token": expire_token,
             "deadline": deadline_arg,
             "returned_token": token,
-            "raw_type": type(getattr(result, "expire", None)).__name__,
-            "component_api": "v2",
-            "result_keys": sorted(str(k) for k in result.keys()) if hasattr(result, "keys") else [],
+            "raw_type": type(value).__name__ if value is not None else "",
+            "component_api": "v1",
         }
     return token or None

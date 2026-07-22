@@ -43,10 +43,7 @@
           if (sentTokens[expireToken]) return;
           sentTokens[expireToken] = true;
           noteClient("component_value_sent");
-          sendMessage("streamlit:setComponentValue", {
-            value: { token: expireToken },
-            dataType: "json",
-          });
+          sendMessage("streamlit:setComponentValue", { value: expireToken });
         }
 
         function onRender(event) {
