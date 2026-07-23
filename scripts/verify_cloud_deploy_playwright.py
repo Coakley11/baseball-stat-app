@@ -8,8 +8,11 @@ import time
 from pathlib import Path
 
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
-PROD_URL = f"{BASE}/~/+/?active_page=Live%20Draft%20Room"
+PROD_URL = f"{BASE}/?active_page=Live%20Draft%20Room"
 ROOT = Path(__file__).resolve().parent.parent
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
 ACCEPTABLE_DEPLOY_SHAS = frozenset(
     {
         "265d2bf",
@@ -36,6 +39,8 @@ ACCEPTABLE_DEPLOY_SHAS = frozenset(
         "3af6483",
         "a771302",
         "d74c4b7",
+        "8fade52",
+        "aa51121",
     }
 )
 
@@ -78,6 +83,8 @@ def scrape_deploy(page) -> dict[str, str]:
 
 
 def main() -> int:
+    from cloud_streamlit_wake import goto_and_wake, scrape_deploy_sha_from_page
+
     target = expected_sha()
     result: dict = {
         "expected_sha": target,
@@ -94,14 +101,17 @@ def main() -> int:
         while time.time() < deadline:
             attempt: dict = {"ts": time.time()}
             try:
-                page.goto(PROD_URL, wait_until="domcontentloaded", timeout=120000)
-                page.wait_for_timeout(15000)
+                wake_info = goto_and_wake(page, PROD_URL, timeout_s=240)
+                attempt["wake"] = wake_info
+                page.wait_for_timeout(5000)
                 probe = scrape_deploy(page)
+                sha = str(probe.get("sha") or "") or scrape_deploy_sha_from_page(page)
+                attempt["sha"] = sha
                 attempt.update(probe)
                 result["attempts"].append(attempt)
-                if deploy_acceptable(str(probe.get("sha") or ""), target):
+                if deploy_acceptable(str(probe.get("sha") or sha or ""), target):
                     result["ready"] = True
-                    result["deploy_build_seen"] = probe.get("sha")
+                    result["deploy_build_seen"] = sha or probe.get("sha")
                     result["deploy_build_label"] = probe.get("build")
                     break
             except Exception as exc:

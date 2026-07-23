@@ -11,9 +11,13 @@ from pathlib import Path
 from typing import Any
 
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
-PROD_URL = f"{BASE}/~/+/?active_page=Live%20Draft%20Room"
-DIAG_URL = f"{BASE}/~/+/?ld_accept=1&active_page=Live%20Draft%20Room"
+# Legacy ~/+/ URLs return HTTP 400 on current Streamlit Community Cloud routing.
+PROD_URL = f"{BASE}/?active_page=Live%20Draft%20Room"
+DIAG_URL = f"{BASE}/?ld_accept=1&active_page=Live%20Draft%20Room"
 REPORT_PATH = Path(__file__).resolve().parent.parent / "data" / "cloud_production_solo_soak.json"
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
 
 SCRAPE_STATE_JS = """() => {
   function roots() {
@@ -288,9 +292,31 @@ def scrape_deploy_build(page) -> str:
               return '';
             }"""
         )
-        return str(raw or "").strip().lower()
+        sha = str(raw or "").strip().lower()
+        if sha:
+            return sha
     except Exception:
-        return ""
+        pass
+    try:
+        html = page.content()
+        for pattern in (
+            r'solo-deploy-build sha=([0-9a-f]{7})',
+            r'id="solo-deploy-build"[^>]*data-sha="([0-9a-f]{7})"',
+            r'baseball-dev-([0-9a-f]{7})',
+        ):
+            m = re.search(pattern, html, re.I)
+            if m:
+                return m.group(1).lower()
+    except Exception:
+        pass
+    try:
+        text = all_frames_text(page)
+        m = re.search(r"baseball-dev-([0-9a-f]{7})", text, re.I)
+        if m:
+            return m.group(1).lower()
+    except Exception:
+        pass
+    return ""
 
 
 def deploy_acceptable(seen: str, target: str) -> bool:
@@ -324,30 +350,44 @@ def deploy_acceptable(seen: str, target: str) -> bool:
         "3af6483",
         "a771302",
         "d74c4b7",
+        "8fade52",
+        "aa51121",
     }
     return seen in acceptable
 
 
+def page_app_ready(page) -> bool:
+    try:
+        from cloud_streamlit_wake import all_frames_text, is_app_asleep, is_app_waking
+
+        text = all_frames_text(page)
+        if is_app_asleep(text) or is_app_waking(text):
+            return False
+        low = text.lower()
+        return len(text.strip()) > 80 or "live draft" in low or "start new live draft" in low
+    except Exception:
+        return False
+
+
 def wait_for_deploy(page, target_sha: str, *, timeout_s: int = 480) -> str:
+    from cloud_streamlit_wake import ensure_app_awake, goto_and_wake, scrape_deploy_sha_from_page
+
     deadline = time.time() + timeout_s
     seen = ""
     while time.time() < deadline:
         try:
-            page.goto(PROD_URL, wait_until="domcontentloaded", timeout=120000)
-            page.wait_for_timeout(12000)
-            seen = scrape_deploy_build(page)
-            if not seen:
-                text = all_frames_text(page)
-                m = re.search(r"baseball-dev-([a-f0-9]{7})", text, re.I)
-                seen = m.group(1).lower() if m else ""
-                if not seen:
-                    m2 = re.search(r"solo-deploy-build sha=([0-9a-f]{7})", text, re.I)
-                    seen = m2.group(1).lower() if m2 else ""
+            goto_and_wake(page, PROD_URL, timeout_s=min(240, int(deadline - time.time())))
+            for _ in range(24):
+                if page_app_ready(page):
+                    break
+                ensure_app_awake(page, timeout_s=30)
+                page.wait_for_timeout(5000)
+            seen = scrape_deploy_sha_from_page(page)
             if deploy_acceptable(seen, target_sha.lower()):
                 return seen
         except Exception:
             pass
-        page.wait_for_timeout(15000)
+        page.wait_for_timeout(10000)
     return seen
 
 
@@ -569,12 +609,16 @@ def main() -> int:
             if not report["deploy_build_seen"]:
                 report.setdefault("errors", []).append(f"deploy_not_seen:expected={target_sha}")
                 report["passed"] = False
+                report["verification_status"] = "not_yet_verified_deploy_unknown"
                 report["soak_duration_s"] = round(time.time() - report["started_at"], 1)
+                REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+                REPORT_PATH.write_text(json.dumps(report, indent=2), encoding="utf-8")
                 return 1
 
             # Phase 1 — ordinary Solo start (no ld_accept / canary / dev flags)
-            page.goto(PROD_URL, wait_until="domcontentloaded", timeout=120000)
-            page.wait_for_timeout(12000)
+            from cloud_streamlit_wake import goto_and_wake
+
+            goto_and_wake(page, PROD_URL, timeout_s=180)
             if "End/Delete Draft" in page.inner_text("body", timeout=20000):
                 click_btn(page, "End/Delete Draft", wait_ms=4000)
             set_number(page, "Number of Teams", "2")
@@ -643,7 +687,7 @@ def main() -> int:
                 if latencies["queue_remove_s"] > 3.5:
                     report["errors"].append(f"queue_remove_slow:{latencies['queue_remove_s']}s")
 
-                page.goto(f"{BASE}/~/+/?active_page=Historical%20Explorer", wait_until="domcontentloaded", timeout=90000)
+                page.goto(f"{BASE}/?active_page=Historical%20Explorer", wait_until="domcontentloaded", timeout=90000)
                 page.wait_for_timeout(3000)
                 nav_ok = click_btn(page, "Return to Live Draft")
                 if not nav_ok:
