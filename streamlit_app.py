@@ -10179,8 +10179,23 @@ def live_draft_init_room(config, pool_df):
 
 
 def live_draft_start(room):
+    try:
+        from live_draft_solo_component_diagnostics import (
+            maybe_apply_solo_diag_timer_at_deadline_creation,
+            record_solo_diag_deadline_after_reset,
+        )
+
+        maybe_apply_solo_diag_timer_at_deadline_creation(st, st.session_state, room, phase="initial")
+    except ImportError:
+        pass
     room["status"] = "in_progress"
     live_draft_reset_timer(room)
+    try:
+        from live_draft_solo_component_diagnostics import record_solo_diag_deadline_after_reset
+
+        record_solo_diag_deadline_after_reset(st.session_state, room)
+    except ImportError:
+        pass
 
 
 def _find_live_pool_row(available, player_name: str):

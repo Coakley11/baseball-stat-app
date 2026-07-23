@@ -57,15 +57,69 @@ def solo_diag_timer_seconds(session: dict[str, Any], room: dict[str, Any] | None
 
 
 def apply_solo_diag_timer_to_room(session: dict[str, Any], room: dict[str, Any]) -> bool:
-    """Apply test-only timer override to an active room (does not affect normal users)."""
+    """Apply test-only timer override to room config (query-param gated)."""
     sec = solo_diag_timer_seconds(session, room)
     if sec is None:
+        return False
+    if session.get(SOLO_DIAG_TIMER_SESSION_KEY) is None:
         return False
     room["_solo_diag_timer_seconds"] = int(sec)
     cfg = dict(room.get("config") or {})
     cfg["timer_seconds"] = int(sec)
     room["config"] = cfg
     return True
+
+
+SOLO_DIAG_DEADLINE_KEY = "_solo_diag_deadline_applied"
+
+
+def maybe_apply_solo_diag_timer_at_deadline_creation(
+    st: Any | None,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    phase: str = "initial",
+) -> bool:
+    """Apply ?solo_diag_timer=N immediately before the first deadline is installed."""
+    bootstrap_solo_component_diag(st, session)
+    if session.get(SOLO_DIAG_TIMER_SESSION_KEY) is None:
+        return False
+    if not apply_solo_diag_timer_to_room(session, room):
+        return False
+    try:
+        from live_draft_timer_logic import live_draft_timer_deadline
+    except ImportError:
+        live_draft_timer_deadline = None  # type: ignore[assignment,misc]
+    row = {
+        "phase": str(phase),
+        "timer_seconds": int(session[SOLO_DIAG_TIMER_SESSION_KEY]),
+        "applied_at": time.time(),
+        "pick_index": int(room.get("current_pick_index") or 0),
+    }
+    session[SOLO_DIAG_DEADLINE_KEY] = row
+    return True
+
+
+def record_solo_diag_deadline_after_reset(session: dict[str, Any], room: dict[str, Any]) -> None:
+    """Capture the server deadline immediately after live_draft_reset_timer."""
+    if session.get(SOLO_DIAG_TIMER_SESSION_KEY) is None:
+        return
+    try:
+        from live_draft_timer_logic import live_draft_seconds_remaining, live_draft_timer_deadline
+    except ImportError:
+        return
+    deadline = live_draft_timer_deadline(room)
+    remaining = live_draft_seconds_remaining(room) if str(room.get("status") or "") == "in_progress" else None
+    row = dict(session.get(SOLO_DIAG_DEADLINE_KEY) or {})
+    row.update(
+        {
+            "deadline": float(deadline) if deadline is not None else None,
+            "remaining_seconds": remaining,
+            "recorded_at": time.time(),
+            "config_timer_seconds": int((room.get("config") or {}).get("timer_seconds") or 0),
+        }
+    )
+    session[SOLO_DIAG_DEADLINE_KEY] = row
 
 
 def record_solo_component_mount_attempt(
@@ -142,8 +196,8 @@ def render_solo_component_mount_probe(st: Any, session: dict[str, Any], room: di
         return
     if not is_solo_live_draft(session, room):
         return
-    apply_solo_diag_timer_to_room(session, room)
     row = dict(session.get(SOLO_MOUNT_DIAG_KEY) or {})
+    diag_deadline = dict(session.get(SOLO_DIAG_DEADLINE_KEY) or {})
     payload = json.dumps(row, default=str)[:3500]
     st.markdown(
         f'<div id="solo-component-mount-diag" '
@@ -158,6 +212,9 @@ def render_solo_component_mount_probe(st: Any, session: dict[str, Any], room: di
         f'data-key-changed="{1 if row.get("key_changed") else 0}" '
         f'data-deadline-changed="{1 if row.get("deadline_changed") else 0}" '
         f'data-token="{str(row.get("expire_token") or "").replace(chr(34), chr(39))}" '
+        f'data-diag-timer="{int(diag_deadline.get("timer_seconds") or 0)}" '
+        f'data-diag-remaining="{diag_deadline.get("remaining_seconds") if diag_deadline.get("remaining_seconds") is not None else ""}" '
+        f'data-diag-deadline="{diag_deadline.get("deadline") if diag_deadline.get("deadline") is not None else ""}" '
         f'data-json="{payload.replace(chr(34), chr(39))}"></div>',
         unsafe_allow_html=True,
     )

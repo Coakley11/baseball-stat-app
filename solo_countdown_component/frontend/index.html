@@ -106,6 +106,12 @@
         function onRender(event) {
           clearTick();
           clearCheckpoint();
+          const prevDeadline = activeDeadline;
+          const prevToken = activeToken;
+          const remBeforeMs =
+            prevDeadline > 0
+              ? Math.max(0, Math.ceil(prevDeadline * 1000 - Date.now()))
+              : 0;
           remountCount += 1;
           const args = (event && event.detail && event.detail.args) || {};
           const expireToken = String(args.expire_token || "");
@@ -133,6 +139,23 @@
 
           const nowSec = Date.now() / 1000;
           const initialRemMs = Math.max(0, Math.ceil(deadline * 1000 - Date.now()));
+          if (remountCount > 1) {
+            noteClient(
+              "iframe_remount",
+              "n=" +
+                remountCount +
+                " rem_before_ms=" +
+                remBeforeMs +
+                " rem_after_ms=" +
+                initialRemMs +
+                " deadline_changed=" +
+                (prevDeadline !== deadline ? 1 : 0) +
+                " token_changed=" +
+                (prevToken !== expireToken ? 1 : 0) +
+                " abs_deadline=" +
+                deadline
+            );
+          }
           noteClient("countdown_started", "initial_rem_ms=" + initialRemMs);
           if (initialRemMs <= 0) {
             noteClient("deadline_already_expired", "deadline=" + deadline);
