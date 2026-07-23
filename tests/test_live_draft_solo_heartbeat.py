@@ -30,6 +30,18 @@ class TestSoloHeartbeatModule(unittest.TestCase):
         self.assertNotIn("_render_on_clock_banner_html", src)
         self.assertIn("expire_current_pick_and_advance", src)
 
+    def test_component_on_change_reads_session_state(self) -> None:
+        src = (ROOT / "live_draft_solo_heartbeat.py").read_text(encoding="utf-8")
+        start = src.index("def _on_component_change")
+        block = src[start : start + 260]
+        self.assertIn("st.session_state.get(key)", block)
+        self.assertNotIn("build_solo_expire_token(room)", block)
+
+    def test_component_wake_uses_on_change_only(self) -> None:
+        src = (ROOT / "live_draft_solo_heartbeat.py").read_text(encoding="utf-8")
+        self.assertNotIn("return process_solo_component_wake(st, session, room, value)", src)
+        self.assertIn("on_change=_on_component_change", src)
+
     def test_shared_banner_repaint_token(self) -> None:
         from live_draft_solo_heartbeat import shared_banner_should_repaint
 

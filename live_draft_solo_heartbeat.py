@@ -286,7 +286,7 @@ def render_solo_countdown_wake_component(
 ) -> bool:
     """Mount bidirectional countdown component; process returned expire token."""
     try:
-        from live_draft_solo_countdown_component import build_solo_expire_token, render_solo_countdown_wake
+        from live_draft_solo_countdown_component import render_solo_countdown_wake
         from live_draft_solo_expire_chain import solo_expire_owner
         from live_draft_solo_timer import is_solo_live_draft
     except ImportError:
@@ -302,20 +302,19 @@ def render_solo_countdown_wake_component(
     key = f"solo_countdown_wake_{draft_id}_{pick_index}"
 
     def _on_component_change() -> None:
-        token = build_solo_expire_token(room)
+        raw = st.session_state.get(key)
+        token = _coerce_wake_token(raw)
         if token:
             process_solo_component_wake(st, session, room, token)
 
-    value = render_solo_countdown_wake(
+    mounted = render_solo_countdown_wake(
         st,
         room,
         key=key,
         session=session,
         on_change=_on_component_change,
     )
-    if not value:
-        return False
-    return process_solo_component_wake(st, session, room, value)
+    return mounted is not None
 
 
 def process_solo_wake_query(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
