@@ -328,6 +328,10 @@ def render_solo_countdown_wake_component(
         session=session,
         on_change=_on_component_change,
     )
+    if mounted:
+        token = _coerce_wake_token(mounted)
+        if token:
+            process_solo_component_wake(st, session, room, token)
     return mounted is not None
 
 

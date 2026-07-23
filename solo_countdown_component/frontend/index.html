@@ -156,6 +156,10 @@
                 " abs_deadline=" +
                 deadline
             );
+            if (initialRemMs <= 0) {
+              delete sentTokens[expireToken];
+              noteClient("expire_token_resend_allowed", expireToken);
+            }
           }
           noteClient("countdown_started", "initial_rem_ms=" + initialRemMs);
           if (initialRemMs <= 0) {
