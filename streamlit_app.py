@@ -22062,6 +22062,14 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
     try:
+        from live_draft_solo_delivery_diag import enable_delivery_diag_from_query, try_delivery_diag_case_a
+
+        enable_delivery_diag_from_query(st, st.session_state)
+        if try_delivery_diag_case_a(st, st.session_state):
+            st.stop()
+    except ImportError:
+        pass
+    try:
         from app_page_generation import note_page_renderer
 
         note_page_renderer(st.session_state, "render_live_draft_page", selected_page=active_page)
@@ -24742,6 +24750,13 @@ elif active_page == "Live Draft Room":
             _derived_status = str(room.get("status") or "")
             _pending_manual_pick = False
             PENDING_MANUAL_PICK_KEY = "_pending_manual_draft_pick"
+        try:
+            from live_draft_solo_delivery_diag import try_delivery_diag_case_b
+
+            if try_delivery_diag_case_b(st, st.session_state, room):
+                st.stop()
+        except ImportError:
+            pass
         team_list = list(room.get("teams", []))
         user_team = str(cfg.get("user_team") or cfg.get("your_team") or "").strip()
         if not user_team and team_list:
@@ -25022,7 +25037,17 @@ elif active_page == "Live Draft Room":
                 from live_draft_solo_heartbeat import render_solo_expire_owner
 
                 if is_solo_live_draft(st.session_state, room):
-                    render_solo_expire_owner(st, st.session_state, room)
+                    _solo_diag_mounted = False
+                    try:
+                        from live_draft_solo_delivery_diag import try_delivery_diag_mount_cd
+
+                        _solo_diag_mounted = bool(
+                            try_delivery_diag_mount_cd(st, st.session_state, room)
+                        )
+                    except ImportError:
+                        pass
+                    if not _solo_diag_mounted:
+                        render_solo_expire_owner(st, st.session_state, room)
             except ImportError:
                 pass
 

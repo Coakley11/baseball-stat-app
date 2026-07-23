@@ -85,9 +85,10 @@
           if (!expireToken || activeToken !== expireToken) return;
           if (sentTokens[expireToken]) return;
           sentTokens[expireToken] = true;
+          noteClient("iframe_setComponentValue_called");
           noteClient("setComponentValue_called");
-          noteClient("component_value_sent");
           sendMessage("streamlit:setComponentValue", { value: expireToken });
+          noteClient("component_value_sent");
         }
 
         function startCheckpoint(expireToken, deadline) {

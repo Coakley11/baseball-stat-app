@@ -45,6 +45,13 @@ def note_solo_expire_chain(
     session[SOLO_EXPIRE_CHAIN_KEY] = log[-MAX_CHAIN:]
     if stage in ("commit_confirmed", "pick_committed"):
         session[SOLO_EXPIRE_COMMIT_COUNT_KEY] = int(session.get(SOLO_EXPIRE_COMMIT_COUNT_KEY) or 0) + 1
+    if stage == "pick_committed":
+        try:
+            from live_draft_solo_delivery_diag import note_pick_committed_if_diag
+
+            note_pick_committed_if_diag(session, source=str(source or ""))
+        except ImportError:
+            pass
     return row
 
 

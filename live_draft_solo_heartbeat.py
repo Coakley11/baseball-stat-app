@@ -302,9 +302,23 @@ def render_solo_countdown_wake_component(
     key = f"solo_countdown_wake_{draft_id}_{pick_index}"
 
     def _on_component_change() -> None:
+        try:
+            from live_draft_solo_delivery_diag import note_production_on_change_if_diag
+
+            note_production_on_change_if_diag(st, session, room, key)
+        except ImportError:
+            pass
         raw = st.session_state.get(key)
         token = _coerce_wake_token(raw)
         if token:
+            try:
+                from live_draft_solo_delivery_diag import delivery_diag_active, note_delivery_stage
+
+                if delivery_diag_active(st, session):
+                    note_delivery_stage(session, "token_coercion_complete", token=token)
+                    note_delivery_stage(session, "process_solo_component_wake_entered", token=token)
+            except ImportError:
+                pass
             process_solo_component_wake(st, session, room, token)
 
     mounted = render_solo_countdown_wake(

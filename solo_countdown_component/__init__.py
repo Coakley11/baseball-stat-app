@@ -66,6 +66,22 @@ def _coerce_component_token(value: Any) -> str:
     return str(value).strip()
 
 
+def mount_solo_countdown_wake_direct(
+    room: dict[str, Any],
+    *,
+    key: str,
+    on_change: Any | None = None,
+) -> Any:
+    """Minimal-repro mount: declare_component only, no deadline guards."""
+    expire_token = build_solo_expire_token(room)
+    return _COMPONENT(
+        expire_token=expire_token,
+        key=key,
+        default=None,
+        on_change=on_change,
+    )
+
+
 def render_solo_countdown_wake(
     st: Any,
     room: dict[str, Any],
