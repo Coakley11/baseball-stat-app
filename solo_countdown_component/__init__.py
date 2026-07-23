@@ -91,14 +91,49 @@ def render_solo_countdown_wake(
             deadline = float(raw_deadline)
     if deadline is None:
         if isinstance(session, dict):
-            session["_solo_component_diag"] = {
-                "mounted": False,
-                "reason": "no_deadline",
-                "key": key,
-            }
+            try:
+                from live_draft_solo_component_diagnostics import record_solo_component_mount_attempt
+
+                record_solo_component_mount_attempt(
+                    session,
+                    room,
+                    key=key,
+                    mounted=False,
+                    reason="no_deadline",
+                )
+            except ImportError:
+                session["_solo_component_diag"] = {
+                    "mounted": False,
+                    "reason": "no_deadline",
+                    "key": key,
+                }
         return None
 
     expire_token = build_solo_expire_token(room)
+    remaining_seconds = None
+    try:
+        from live_draft_timer_logic import live_draft_seconds_remaining
+
+        remaining_seconds = live_draft_seconds_remaining(room)
+    except ImportError:
+        pass
+
+    try:
+        from live_draft_solo_component_diagnostics import record_solo_component_mount_attempt
+
+        record_solo_component_mount_attempt(
+            session if isinstance(session, dict) else {},
+            room,
+            key=key,
+            mounted=False,
+            reason="pre_mount",
+            expire_token=expire_token,
+            deadline=float(deadline),
+            remaining_seconds=remaining_seconds,
+        )
+    except ImportError:
+        pass
+
     value = _COMPONENT(
         expire_token=expire_token,
         key=key,
@@ -107,12 +142,28 @@ def render_solo_countdown_wake(
     )
     token = _coerce_component_token(value)
     if isinstance(session, dict):
-        session["_solo_component_diag"] = {
-            "mounted": True,
-            "key": key,
-            "expire_token": expire_token,
-            "returned_token": token,
-            "raw_type": type(value).__name__ if value is not None else "",
-            "component_api": "v1",
-        }
+        try:
+            from live_draft_solo_component_diagnostics import record_solo_component_mount_attempt
+
+            record_solo_component_mount_attempt(
+                session,
+                room,
+                key=key,
+                mounted=True,
+                reason="",
+                expire_token=expire_token,
+                deadline=float(deadline),
+                remaining_seconds=remaining_seconds,
+                widget_return_type=type(value).__name__ if value is not None else "",
+                returned_token=token,
+            )
+        except ImportError:
+            session["_solo_component_diag"] = {
+                "mounted": True,
+                "key": key,
+                "expire_token": expire_token,
+                "returned_token": token,
+                "raw_type": type(value).__name__ if value is not None else "",
+                "component_api": "v1",
+            }
     return token or None

@@ -112,6 +112,12 @@ def render_solo_expire_chain_probe(st: Any, session: dict[str, Any], room: dict[
     """Hidden DOM probes for production soak (no ld_accept required)."""
     render_solo_deploy_probe(st)
     try:
+        from live_draft_solo_component_diagnostics import render_solo_component_mount_probe
+
+        render_solo_component_mount_probe(st, session, room)
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_timer import is_solo_live_draft
     except ImportError:
         return

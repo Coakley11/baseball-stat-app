@@ -4,7 +4,18 @@
     <meta charset="UTF-8" />
   </head>
   <body>
-    <div id="solo-expire-client" data-last="" data-chain="" style="display: none"></div>
+    <div
+      id="solo-expire-client"
+      data-last=""
+      data-chain=""
+      data-remounts="0"
+      data-deadline=""
+      data-token=""
+      data-remaining-ms=""
+      data-browser-time=""
+      data-checkpoint=""
+      style="display: none"
+    ></div>
     <script>
       (function () {
         function sendMessage(type, data) {
@@ -14,7 +25,7 @@
           );
         }
 
-        function noteClient(stage) {
+        function noteClient(stage, extra) {
           try {
             const node = document.getElementById("solo-expire-client");
             if (!node) return;
@@ -24,12 +35,18 @@
               "data-chain",
               chain ? chain + "|" + stage : stage
             );
+            if (extra) {
+              node.setAttribute("data-checkpoint", String(extra).slice(0, 2000));
+            }
           } catch (e) {}
         }
 
         let activeToken = "";
         let tickTimer = null;
+        let checkpointTimer = null;
         let sentTokens = {};
+        let remountCount = 0;
+        let activeDeadline = 0;
 
         function clearTick() {
           if (tickTimer) {
@@ -38,29 +55,93 @@
           }
         }
 
+        function clearCheckpoint() {
+          if (checkpointTimer) {
+            clearInterval(checkpointTimer);
+            checkpointTimer = null;
+          }
+        }
+
+        function updateDiagFields(expireToken, deadline) {
+          try {
+            const node = document.getElementById("solo-expire-client");
+            if (!node) return;
+            node.setAttribute("data-remounts", String(remountCount));
+            node.setAttribute("data-token", expireToken || "");
+            node.setAttribute("data-deadline", String(deadline || ""));
+            node.setAttribute(
+              "data-browser-time",
+              String(Math.floor(Date.now() / 1000))
+            );
+            const remMs = Math.max(
+              0,
+              Math.ceil(deadline * 1000 - Date.now())
+            );
+            node.setAttribute("data-remaining-ms", String(remMs));
+          } catch (e) {}
+        }
+
         function sendExpireToken(expireToken) {
           if (!expireToken || activeToken !== expireToken) return;
           if (sentTokens[expireToken]) return;
           sentTokens[expireToken] = true;
+          noteClient("setComponentValue_called");
           noteClient("component_value_sent");
           sendMessage("streamlit:setComponentValue", { value: expireToken });
         }
 
+        function startCheckpoint(expireToken, deadline) {
+          clearCheckpoint();
+          checkpointTimer = window.setInterval(function () {
+            if (activeToken !== expireToken) return;
+            const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
+            updateDiagFields(expireToken, deadline);
+            noteClient(
+              "lifecycle_checkpoint",
+              "rem=" + rem + " remounts=" + remountCount
+            );
+          }, 5000);
+        }
+
         function onRender(event) {
           clearTick();
+          clearCheckpoint();
+          remountCount += 1;
           const args = (event && event.detail && event.detail.args) || {};
           const expireToken = String(args.expire_token || "");
           const parts = expireToken.split("|");
           const deadline = Number(parts[2] || 0);
           activeToken = expireToken;
+          activeDeadline = deadline;
+          noteClient("render_event_received");
+          noteClient("token_received", expireToken);
+          noteClient("deadline_received", String(deadline));
+          updateDiagFields(expireToken, deadline);
+
           if (!expireToken || !Number.isFinite(deadline) || deadline <= 0) {
+            noteClient(
+              "render_rejected",
+              !expireToken
+                ? "missing_token"
+                : !Number.isFinite(deadline)
+                ? "invalid_deadline"
+                : "deadline_le_zero"
+            );
             sendMessage("streamlit:setFrameHeight", { height: 0 });
             return;
+          }
+
+          const nowSec = Date.now() / 1000;
+          const initialRemMs = Math.max(0, Math.ceil(deadline * 1000 - Date.now()));
+          noteClient("countdown_started", "initial_rem_ms=" + initialRemMs);
+          if (initialRemMs <= 0) {
+            noteClient("deadline_already_expired", "deadline=" + deadline);
           }
 
           function tick() {
             if (activeToken !== expireToken) return;
             const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
+            updateDiagFields(expireToken, deadline);
             if (rem <= 0) {
               noteClient("browser_deadline_crossed");
               window.setTimeout(function () {
@@ -71,6 +152,7 @@
             tickTimer = window.setTimeout(tick, 250);
           }
           tick();
+          startCheckpoint(expireToken, deadline);
           sendMessage("streamlit:setFrameHeight", { height: 0 });
         }
 
@@ -79,6 +161,7 @@
           onRender({ detail: { args: event.data.args || {} } });
         });
 
+        noteClient("iframe_script_loaded", String(window.location.href || ""));
         sendMessage("streamlit:componentReady", { apiVersion: 1 });
         sendMessage("streamlit:setFrameHeight", { height: 0 });
       })();

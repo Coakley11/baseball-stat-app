@@ -174,6 +174,9 @@ def resolve_live_draft_on_clock_slot(
 
 
 def _timer_seconds(room: dict[str, Any]) -> int:
+    override = room.get("_solo_diag_timer_seconds")
+    if override is not None:
+        return int(override)
     return int(room.get("config", {}).get("timer_seconds", 60))
 
 
