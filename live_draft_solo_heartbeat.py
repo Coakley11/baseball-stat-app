@@ -223,6 +223,8 @@ def process_solo_component_wake(
     session: dict[str, Any],
     room: dict[str, Any],
     component_value: str,
+    *,
+    delivery_via: str = "",
 ) -> bool:
     """Consume Streamlit component expire token — sole Cloud wake delivery."""
     token = _coerce_wake_token(component_value)
@@ -245,6 +247,14 @@ def process_solo_component_wake(
             )
             return False
         if token == str(session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or ""):
+            note_solo_expire_chain(
+                session,
+                "expire_rejected",
+                source="component",
+                reason="duplicate_token",
+                token=token,
+                delivery_via=delivery_via or "",
+            )
             return False
         live = _resolve_tick_room(session) or room
         live_draft_id = str(live.get("draft_room_id") or live.get("draft_id") or "").strip()
@@ -272,6 +282,14 @@ def process_solo_component_wake(
             "component_value_received",
             source="component",
             token=token,
+            delivery_via=delivery_via or "unknown",
+        )
+        note_solo_expire_chain(
+            session,
+            "token_processed",
+            source="component",
+            token=token,
+            delivery_via=delivery_via or "unknown",
         )
     except ImportError:
         session[SOLO_COMPONENT_WAKE_SEEN_KEY] = token
@@ -309,6 +327,26 @@ def render_solo_countdown_wake_component(
         except ImportError:
             pass
         raw = st.session_state.get(key)
+        try:
+            from live_draft_solo_component_diagnostics import solo_component_diag_enabled
+            from live_draft_solo_expire_chain import note_solo_expire_chain
+
+            if solo_component_diag_enabled(st, session):
+                note_solo_expire_chain(
+                    session,
+                    "on_change_callback_entry",
+                    source="component",
+                    widget_key=key,
+                )
+                note_solo_expire_chain(
+                    session,
+                    "session_state_raw_received",
+                    source="component",
+                    widget_key=key,
+                    raw_type=type(raw).__name__ if raw is not None else "NoneType",
+                )
+        except ImportError:
+            pass
         token = _coerce_wake_token(raw)
         if token:
             try:
@@ -319,7 +357,7 @@ def render_solo_countdown_wake_component(
                     note_delivery_stage(session, "process_solo_component_wake_entered", token=token)
             except ImportError:
                 pass
-            process_solo_component_wake(st, session, room, token)
+            process_solo_component_wake(st, session, room, token, delivery_via="on_change")
 
     mounted = render_solo_countdown_wake(
         st,
@@ -331,7 +369,21 @@ def render_solo_countdown_wake_component(
     if mounted:
         token = _coerce_wake_token(mounted)
         if token:
-            process_solo_component_wake(st, session, room, token)
+            try:
+                from live_draft_solo_component_diagnostics import solo_component_diag_enabled
+                from live_draft_solo_expire_chain import note_solo_expire_chain
+
+                if solo_component_diag_enabled(st, session):
+                    note_solo_expire_chain(
+                        session,
+                        "component_return_value_received",
+                        source="component",
+                        token=token,
+                        widget_key=key,
+                    )
+            except ImportError:
+                pass
+            process_solo_component_wake(st, session, room, token, delivery_via="return_value")
     return mounted is not None
 
 

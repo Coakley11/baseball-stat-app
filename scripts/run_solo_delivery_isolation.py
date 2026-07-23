@@ -232,6 +232,7 @@ def main() -> int:
     from cloud_streamlit_wake import goto_and_wake, scrape_deploy_sha_from_page
     from playwright.sync_api import sync_playwright
     from run_production_solo_soak import click_btn, dom_counts, scrape_deploy_build, set_number
+    from poll_and_run_solo_10s_gate import FIX_ANCHOR_SHA, sha_includes_fix
 
     report: dict[str, Any] = {
         "started_at": time.time(),
@@ -253,8 +254,8 @@ def main() -> int:
         )
         goto_and_wake(page, setup_url, timeout_s=240)
         report["deploy_sha"] = scrape_deploy_sha_from_page(page) or scrape_deploy_build(page)
-        report["expected_deploy_sha"] = "c676334"
-        if str(report.get("deploy_sha") or "").lower()[:7] != "c676334":
+        report["expected_deploy_sha"] = FIX_ANCHOR_SHA
+        if not sha_includes_fix(str(report.get("deploy_sha") or "")):
             report["decision"] = (
                 f"Deploy not ready — live build {report.get('deploy_sha')} != expected c676334."
             )
