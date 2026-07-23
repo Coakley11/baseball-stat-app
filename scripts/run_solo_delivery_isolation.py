@@ -94,17 +94,15 @@ def scrape_delivery_snapshot(page) -> dict[str, Any]:
             }
           }
           scan(document, 'top');
-          if (window.__soloDeliveryWsFrames) out.wsHints = window.__soloDeliveryWsFrames.slice(-40);
           if (window.__soloDeliveryPostMessages) out.postMessages = window.__soloDeliveryPostMessages.slice(-40);
           return out;
         }"""
     )
 
 
-def install_ws_and_postmessage_hooks(page) -> None:
+def install_ws_and_postmessage_hooks(page, ws_frames: list[dict[str, Any]]) -> None:
     page.evaluate(
         """() => {
-          window.__soloDeliveryWsFrames = window.__soloDeliveryWsFrames || [];
           window.__soloDeliveryPostMessages = window.__soloDeliveryPostMessages || [];
           if (!window.__soloDeliveryHooksInstalled) {
             window.addEventListener('message', (ev) => {
@@ -124,22 +122,18 @@ def install_ws_and_postmessage_hooks(page) -> None:
     )
 
     def _on_ws(ws):
-        def _on_frame(payload):
+        def _maybe_record(payload: Any) -> None:
             text = payload if isinstance(payload, str) else str(payload)
-            if "solo_countdown_wake" in text or "setComponentValue" in text or "component" in text.lower():
-                page.evaluate(
-                    """(frame) => {
-                      window.__soloDeliveryWsFrames = window.__soloDeliveryWsFrames || [];
-                      window.__soloDeliveryWsFrames.push({
-                        ts: Date.now(),
-                        snippet: String(frame).slice(0, 500),
-                      });
-                    }""",
-                    text[:2000],
-                )
+            lowered = text.lower()
+            if (
+                "solo_countdown_wake" in text
+                or "setcomponentvalue" in lowered
+                or "component" in lowered
+            ):
+                ws_frames.append({"ts": time.time(), "snippet": text[:500]})
 
-        ws.on("framesent", _on_frame)
-        ws.on("framereceived", _on_frame)
+        ws.on("framesent", _maybe_record)
+        ws.on("framereceived", _maybe_record)
 
     page.on("websocket", _on_ws)
 
@@ -250,7 +244,8 @@ def main() -> int:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         page = browser.new_page(viewport={"width": 1440, "height": 1400})
-        install_ws_and_postmessage_hooks(page)
+        ws_frames: list[dict[str, Any]] = []
+        install_ws_and_postmessage_hooks(page, ws_frames)
 
         setup_url = (
             f"{BASE}/?active_page=Live%20Draft%20Room"
@@ -258,6 +253,14 @@ def main() -> int:
         )
         goto_and_wake(page, setup_url, timeout_s=240)
         report["deploy_sha"] = scrape_deploy_sha_from_page(page) or scrape_deploy_build(page)
+        report["expected_deploy_sha"] = "c676334"
+        if str(report.get("deploy_sha") or "").lower()[:7] != "c676334":
+            report["decision"] = (
+                f"Deploy not ready — live build {report.get('deploy_sha')} != expected c676334."
+            )
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            return 3
         if "End/Delete Draft" in page.inner_text("body"):
             click_btn(page, "End/Delete Draft", wait_ms=5000)
         set_number(page, "Number of Teams", "2")
@@ -302,10 +305,8 @@ def main() -> int:
             case_report["on_change_dom"] = delivery.get("on_change")
             case_report["widget_key"] = delivery.get("key")
             case_report["delivery_json"] = delivery.get("json")
-            ws_frames = []
-            for sample in case_report["samples"]:
-                ws_frames.extend(sample.get("wsHints") or [])
-            case_report["websocket_frames_near_zero"] = ws_frames[-20:]
+            case_report["websocket_frames_near_zero"] = list(ws_frames[-20:])
+            ws_frames.clear()
             case_report["postmessage_events"] = []
             for sample in case_report["samples"]:
                 case_report["postmessage_events"].extend(sample.get("postMessages") or [])
