@@ -7,7 +7,7 @@ gatherUsageStats = false
 # Streamlit Cloud entrypoint MUST be streamlit_app.py (lowercase).
 # Do not use Streamlit_app.py — removed from dev branch; uppercase breaks Linux deploys.
 # App settings: repo Coakley11/baseball-stat-app · branch dev · not pinned to an old commit.
-# deploy_epoch: 2026-07-23T18:05Z — Solo wake on_change session_state port (8fade52).
+# deploy_epoch: 2026-07-23T20:00Z — Solo component chain diagnostics (3c2eb41).
 #
 # Python runtime (required for stable native wheels):
 #   Manage app → Settings → Python version → 3.12
