@@ -264,10 +264,35 @@ def main() -> int:
         report["state_final"] = scrape_state(page)
         browser.close()
 
-    last = report["samples"][-1] if report["samples"] else {}
-    client = client_hit(last)
-    mount = mount_hit(last)
-    chain = chain_hit(last)
+    all_client_chains: list[str] = []
+    all_server_chains: list[str] = []
+    best_client: dict[str, Any] = {}
+    best_chain: dict[str, Any] = {}
+    best_mount: dict[str, Any] = {}
+    first_zero_at: float | None = None
+
+    for sample in report["samples"]:
+        client = client_hit(sample)
+        chain = chain_hit(sample)
+        mount = mount_hit(sample)
+        if mount.get("diag_timer"):
+            best_mount = mount
+        ch = str(client.get("chain") or "")
+        if ch and ch not in all_client_chains:
+            all_client_chains.append(ch)
+        if client and len(ch) >= len(str(best_client.get("chain") or "")):
+            best_client = client
+        sch = str(chain.get("chain") or "")
+        if sch and sch not in all_server_chains:
+            all_server_chains.append(sch)
+        if chain and len(sch) >= len(str(best_chain.get("chain") or "")):
+            best_chain = chain
+        if "browser_deadline_crossed" in ch and first_zero_at is None:
+            first_zero_at = float(sample.get("elapsed_s") or 0)
+
+    client = best_client
+    mount = best_mount
+    chain = best_chain
     client_chain = str(client.get("chain") or "")
     server_chain = str(chain.get("chain") or "")
     client_stages = set(stages_from_chain(client_chain))
@@ -333,17 +358,26 @@ def main() -> int:
     )
 
     ten_second_confirmed = (
-        initial_remaining_ms is not None
-        and 8000 <= initial_remaining_ms <= 12000
-    ) or str(mount.get("diag_timer") or "") == "10"
+        str(mount.get("diag_timer") or "") == "10"
+        or any(
+            str(mount_hit(s).get("diag_timer") or "") == "10"
+            for s in report["samples"]
+        )
+    )
     report["ten_second_deadline_confirmed"] = ten_second_confirmed
+    report["first_browser_deadline_crossed_at_s"] = first_zero_at
+    report["server_diag_timer"] = mount.get("diag_timer")
+    report["server_diag_remaining"] = mount.get("diag_remaining")
+    report["server_diag_deadline"] = mount.get("diag_deadline")
 
     if not ten_second_confirmed:
         report["decision"] = "invalid_test_setup_timer_not_10s"
     elif report["browser_deadline_crossed"] and report["component_value_sent"] and report["exactly_one_pick"]:
         report["decision"] = "PASS_controlled_10s_expiration_one_pick"
     elif report["browser_deadline_crossed"] and report["component_value_sent"] and not report["python_on_change"]:
-        report["decision"] = "FAIL_client_ok_python_callback_missing"
+        report["decision"] = "FAIL_client_zero_crossed_python_callback_missing"
+    elif report["browser_deadline_crossed"] and report["component_value_sent"] and report["python_on_change"] and not report["exactly_one_pick"]:
+        report["decision"] = "FAIL_python_received_but_pick_not_committed"
     elif ten_second_confirmed and not report["browser_deadline_crossed"] and report["remount_count_final"] > 1:
         report["decision"] = "FAIL_remounts_observed_deadline_passed_without_zero_crossing"
     elif ten_second_confirmed and not report["browser_deadline_crossed"]:
@@ -368,6 +402,8 @@ def main() -> int:
                     "python_on_change",
                     "exactly_one_pick",
                     "remount_count_final",
+                    "first_browser_deadline_crossed_at_s",
+                    "server_diag_timer",
                     "decision",
                     "missing_client_stages",
                     "missing_python_stages",
