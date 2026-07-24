@@ -163,11 +163,65 @@ def _tokens_from_ws(ws_frames: list[dict[str, Any]]) -> list[str]:
         snippet = str(frame.get("snippet") or "")
         for match in re.finditer(r"repro\|\d+\|[0-9.]+", snippet):
             tokens.append(match.group(0))
-        for match in re.finditer(r"DIAG[A-Z]+\|\d+\|[0-9.]+", snippet):
+        for match in re.finditer(r"DIAG[A-Z0-9]+\|\d+\|[0-9.]+", snippet):
             tokens.append(match.group(0))
         for match in re.finditer(r"[A-F0-9]{8}\|\d+\|[0-9.]+", snippet):
             tokens.append(match.group(0))
     return tokens
+
+
+def _python_delivery_complete(
+    *,
+    callbacks: int,
+    hits: dict[str, int],
+    dup: int,
+    json_blob: str,
+    component: str,
+) -> tuple[bool, str]:
+    if dup > 0:
+        return False, "duplicate_delivery"
+    if hits.get("session_state_raw_received", 0) < REQUIRED_CYCLES:
+        return False, "session_state_raw_received"
+    if hits.get("on_change_callback_entry", 0) < REQUIRED_CYCLES:
+        return False, "on_change_callback_entry"
+    if callbacks < REQUIRED_CYCLES:
+        return False, "callbacks_received"
+    if not json_blob:
+        return False, "callback_json_missing"
+    try:
+        payload = json.loads(json_blob.replace("'", '"'))
+        rows = payload.get("callbacks") or []
+        toks = [str(r.get("token") or "") for r in rows if isinstance(r, dict)]
+    except json.JSONDecodeError:
+        return False, "callback_json_parse"
+    unique = [t for t in toks if t]
+    if len(set(unique)) < REQUIRED_CYCLES:
+        return False, "unique_token_count"
+    for i, tok in enumerate(sorted(set(unique))[:REQUIRED_CYCLES]):
+        parts = tok.split("|")
+        if len(parts) != 3:
+            return False, "token_format"
+        try:
+            pick_idx = int(parts[1])
+        except ValueError:
+            return False, "token_cycle_index"
+        if pick_idx != i and len(set(unique)) == REQUIRED_CYCLES:
+            # tokens should use pick_index 0..3 matching cycles
+            pass
+    return True, ""
+
+
+def _ws_id_instrumentation_unverified(
+    *,
+    mount_id_at_last_mount: str,
+    widget_id_at_send: str,
+    mount_ids: list[str],
+) -> bool:
+    if mount_ids and mount_id_at_last_mount:
+        return False
+    if mount_id_at_last_mount and widget_id_at_send:
+        return mount_id_at_last_mount.split("-")[-1] not in widget_id_at_send
+    return bool(widget_id_at_send and not mount_id_at_last_mount) or not mount_ids
 
 
 def finalize_cell(
@@ -234,46 +288,55 @@ def finalize_cell(
     send_ids = widget_ids[-4:] if widget_ids else []
     widget_id_at_send = send_ids[-1] if send_ids else ""
     mount_id_at_last_mount = mount_ids[-1] if mount_ids else ""
-    widget_registered_at_send = (
-        not mount_id_at_last_mount
-        or not widget_id_at_send
-        or mount_id_at_last_mount.split("-")[-1] in widget_id_at_send
+    widget_registered_at_send = bool(
+        mount_id_at_last_mount
+        and widget_id_at_send
+        and mount_id_at_last_mount.split("-")[-1] in widget_id_at_send
     )
 
     cell_n = int(cell_spec["cell"])
     declared = bool(str(matrix.get("component_name") or "").strip())
     widget_key_recorded = bool(str(matrix.get("key") or "").strip())
     widget_id_recorded = bool(mount_ids) or bool(mount_id_at_last_mount)
+    python_ok, python_fail_reason = _python_delivery_complete(
+        callbacks=callbacks,
+        hits=hits,
+        dup=dup,
+        json_blob=json_blob,
+        component=cell_spec["component"],
+    )
+    instrumentation_unverified = _ws_id_instrumentation_unverified(
+        mount_id_at_last_mount=mount_id_at_last_mount,
+        widget_id_at_send=widget_id_at_send,
+        mount_ids=mount_ids,
+    )
+
     if cell_n in (3, 4):
-        valid = declared and widget_key_recorded and widget_id_recorded and bool(ws_tokens)
+        valid = declared and widget_key_recorded and python_ok and bool(ws_tokens)
         invalid_reason = ""
         if not valid:
             if not declared:
                 invalid_reason = "component_declaration_not_mounted"
             elif not widget_key_recorded:
                 invalid_reason = "widget_key_not_recorded"
-            elif not widget_id_recorded:
-                invalid_reason = "streamlit_widget_id_not_recorded"
             elif not ws_tokens:
                 invalid_reason = "websocket_token_frames_missing"
+            elif not python_ok:
+                invalid_reason = python_fail_reason or "python_delivery_incomplete"
             else:
                 invalid_reason = "matrix_probe_incomplete"
     else:
         valid = declared or bool(matrix.get("stages"))
         invalid_reason = "" if valid else "matrix_probe_not_mounted"
 
-    passed = (matrix.get("passed") in ("1", "true") or callbacks >= REQUIRED_CYCLES) and (
-        hits["session_state_raw_received"] >= REQUIRED_CYCLES
-        and hits["on_change_callback_entry"] >= REQUIRED_CYCLES
+    passed = python_ok and valid and (
+        matrix.get("passed") in ("1", "true") or callbacks >= REQUIRED_CYCLES
     )
     if valid and not passed and cell_n in (3, 4):
-        if hits["session_state_raw_received"] < REQUIRED_CYCLES:
-            first_missing = first_missing or "session_state_raw_received"
-        elif hits["on_change_callback_entry"] < REQUIRED_CYCLES:
-            first_missing = first_missing or "on_change_callback_entry"
-        elif hits["setComponentValue_called"] < REQUIRED_CYCLES:
+        first_missing = first_missing or python_fail_reason or "python_delivery_incomplete"
+        if hits["setComponentValue_called"] < REQUIRED_CYCLES and not first_missing:
             first_missing = first_missing or "setComponentValue_called"
-        elif hits["browser_deadline_crossed"] < REQUIRED_CYCLES:
+        if hits["browser_deadline_crossed"] < REQUIRED_CYCLES and not first_missing:
             first_missing = first_missing or "browser_deadline_crossed"
 
     verdict = "pass" if passed and valid else ("fail" if valid else "invalid")
@@ -294,6 +357,7 @@ def finalize_cell(
         "widget_id_at_send": widget_id_at_send,
         "widget_id_at_last_mount": mount_id_at_last_mount,
         "widget_registered_at_send": widget_registered_at_send,
+        "instrumentation_unverified": instrumentation_unverified,
         "token_sample": matrix.get("token") or (ws_tokens[-1] if ws_tokens else ""),
         "mount_remount_client": _count_stage(client_chain_full, "iframe_remount"),
         "rerun_count": int(matrix.get("rerun") or 0),

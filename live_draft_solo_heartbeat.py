@@ -293,6 +293,24 @@ def process_solo_component_wake(
         )
     except ImportError:
         session[SOLO_COMPONENT_WAKE_SEEN_KEY] = token
+    try:
+        from live_draft_solo_placement_ladder import placement_blocks_pick_processing
+
+        if placement_blocks_pick_processing(session):
+            try:
+                from live_draft_solo_delivery_diag import note_delivery_stage
+
+                note_delivery_stage(
+                    session,
+                    "pick_processing_blocked",
+                    token=token,
+                    reason="placement_ladder",
+                )
+            except ImportError:
+                pass
+            return True
+    except ImportError:
+        pass
     _handle_solo_wake_delivery(st, session, room, via="component")
     return True
 
@@ -313,6 +331,13 @@ def render_solo_countdown_wake_component(
         return False
     if not is_solo_live_draft(session, room):
         return False
+    try:
+        from live_draft_solo_placement_ladder import try_placement_wake_component_context
+
+        if try_placement_wake_component_context(st, session, room):
+            return True
+    except ImportError:
+        pass
     if str(room.get("status") or "") != "in_progress":
         return False
     draft_id = str(room.get("draft_room_id") or room.get("draft_id") or "solo").strip()
@@ -642,6 +667,8 @@ def _after_expire_success(
 
 def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "heartbeat") -> Any | None:
     """Authoritative Solo expire step — single owner entry (wake or fragment)."""
+    if session.get("_solo_placement_ladder_suppress_heartbeat_tick"):
+        return None
     tick_room = _resolve_tick_room(session)
     if not isinstance(tick_room, dict):
         _log_tick(session, None, phase=f"{source}_no_room")
@@ -789,6 +816,13 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
 
 def render_solo_live_draft_heartbeat(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
     """Mount the sole Solo 1 Hz fragment — local-only expiration owner."""
+    try:
+        from live_draft_solo_placement_ladder import try_placement_in_heartbeat_fragment
+
+        if try_placement_in_heartbeat_fragment(st, session, room):
+            return
+    except ImportError:
+        pass
     del room  # always read authoritative room from session on each tick
     try:
         from live_draft_solo_expire_chain import solo_expire_owner

@@ -22077,6 +22077,19 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
     try:
+        from live_draft_solo_placement_ladder import try_placement_early_entry
+
+        _matrix_ldr_room = st.session_state.get("live_draft_room")
+        _pl_handled, _pl_stop = try_placement_early_entry(
+            st,
+            st.session_state,
+            _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
+        )
+        if _pl_handled and _pl_stop:
+            st.stop()
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_delivery_diag import try_delivery_diag_solo_route_matrix
 
         _matrix_ldr_room = st.session_state.get("live_draft_room")
@@ -25058,13 +25071,29 @@ elif active_page == "Live Draft Room":
                 if is_solo_live_draft(st.session_state, room):
                     _solo_diag_mounted = False
                     try:
-                        from live_draft_solo_delivery_diag import try_delivery_diag_mount_cd
-
-                        _solo_diag_mounted = bool(
-                            try_delivery_diag_mount_cd(st, st.session_state, room)
+                        from live_draft_solo_placement_ladder import (
+                            try_placement_production_slot,
+                            try_placement_production_wake,
+                            try_placement_timer_pre_owner,
                         )
+
+                        if try_placement_production_wake(st, st.session_state, room):
+                            _solo_diag_mounted = True
+                        elif try_placement_production_slot(st, st.session_state, room):
+                            _solo_diag_mounted = True
+                        elif try_placement_timer_pre_owner(st, st.session_state, room):
+                            _solo_diag_mounted = True
                     except ImportError:
                         pass
+                    if not _solo_diag_mounted:
+                        try:
+                            from live_draft_solo_delivery_diag import try_delivery_diag_mount_cd
+
+                            _solo_diag_mounted = bool(
+                                try_delivery_diag_mount_cd(st, st.session_state, room)
+                            )
+                        except ImportError:
+                            pass
                     if not _solo_diag_mounted:
                         render_solo_expire_owner(st, st.session_state, room)
             except ImportError:

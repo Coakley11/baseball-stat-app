@@ -32,12 +32,12 @@ def init_matrix_session(session: dict[str, Any]) -> None:
     session.setdefault(_session_key("mount_count"), 0)
 
 
-def synthetic_room(*, cycle: int, route: bool) -> dict[str, Any]:
+def synthetic_room(*, cycle: int, route: bool, draft_id: str | None = None) -> dict[str, Any]:
     deadline = time.time() + float(COUNTDOWN_SECONDS)
-    draft_id = "DIAGROUTE" if route else "DIAGSHELL"
+    did = (draft_id or "").strip() or ("DIAGROUTE" if route else "DIAGSHELL")
     return {
-        "draft_room_id": draft_id,
-        "draft_id": draft_id,
+        "draft_room_id": did,
+        "draft_id": did,
         "current_pick_index": cycle,
         "status": "in_progress",
         "timer_deadline": deadline,
@@ -46,7 +46,9 @@ def synthetic_room(*, cycle: int, route: bool) -> dict[str, Any]:
     }
 
 
-def widget_key(*, cycle: int, route: bool) -> str:
+def widget_key(*, cycle: int, route: bool, placement: str = "") -> str:
+    if placement:
+        return f"solo_countdown_wake_diag_{placement.lower()}_{cycle}"
     prefix = "solo_countdown_wake_diag_route" if route else "solo_countdown_wake_diag_shell"
     return f"{prefix}_{cycle}"
 
@@ -76,6 +78,9 @@ def render_one_cycle(
     *,
     route: bool,
     record_stage: RecordStageFn | None = None,
+    draft_id: str | None = None,
+    placement: str = "",
+    countdown_seconds: int | None = None,
 ) -> CycleRenderResult:
     from solo_countdown_component import mount_solo_countdown_wake_direct
 
@@ -95,8 +100,13 @@ def render_one_cycle(
             mount_count=int(session.get(_session_key("mount_count")) or 0),
         )
 
-    room = synthetic_room(cycle=cycle, route=route)
-    key = widget_key(cycle=cycle, route=route)
+    secs = int(countdown_seconds if countdown_seconds is not None else COUNTDOWN_SECONDS)
+    room = synthetic_room(cycle=cycle, route=route, draft_id=draft_id)
+    if countdown_seconds is not None and countdown_seconds != COUNTDOWN_SECONDS:
+        room["timer_deadline"] = time.time() + float(secs)
+        room["_solo_diag_timer_seconds"] = secs
+        room["config"] = {"timer_seconds": secs}
+    key = widget_key(cycle=cycle, route=route, placement=placement)
     session[_session_key("mount_count")] = int(session.get(_session_key("mount_count")) or 0) + 1
     mount_before = cycles_done
 
