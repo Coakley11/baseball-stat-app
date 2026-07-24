@@ -422,7 +422,16 @@ def try_delivery_diag_case_a(st: Any, session: dict[str, Any]) -> bool:
     return try_delivery_diag_case_a_app(st, session)
 
 
-def _solo_route_room_ok(session: dict[str, Any], room: dict[str, Any]) -> bool:
+def _solo_route_matrix_early_ok(st: Any, session: dict[str, Any]) -> bool:
+    """Matrix cells 3–4 mount on Live Draft Room entry (setup or in-progress), then st.stop()."""
+    if not delivery_diag_active(st, session):
+        return False
+    return delivery_matrix_cell(st) in (3, 4)
+
+
+def _solo_route_room_ok(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
+    if _solo_route_matrix_early_ok(st, session):
+        return True
     if str(room.get("status") or "") != "in_progress":
         return False
     try:
@@ -488,7 +497,7 @@ def try_delivery_diag_solo_route_minimal(st: Any, session: dict[str, Any], room:
     """Matrix cell 3: Solo route early mount + minimal_wake_repro, four cycles."""
     if not delivery_diag_active(st, session) or delivery_matrix_cell(st) != 3:
         return False
-    if not _solo_route_room_ok(session, room):
+    if not _solo_route_room_ok(st, session, room):
         return False
     from minimal_component_wake_repro_core import COMPONENT_NAME, REQUIRED_CYCLES, render_one_cycle
 
@@ -530,7 +539,7 @@ def try_delivery_diag_solo_route_solo_wake(st: Any, session: dict[str, Any], roo
     """Matrix cell 4: Solo route early mount + solo_countdown_wake, four cycles."""
     if not delivery_diag_active(st, session) or delivery_matrix_cell(st) != 4:
         return False
-    if not _solo_route_room_ok(session, room):
+    if not _solo_route_room_ok(st, session, room):
         return False
     from solo_countdown_wake_matrix_core import COMPONENT_NAME, REQUIRED_CYCLES, render_one_cycle
 

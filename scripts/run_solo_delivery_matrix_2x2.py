@@ -42,10 +42,9 @@ MATRIX_CELLS = (
         "cell": 3,
         "label": "solo_route_minimal_wake_repro",
         "component": "minimal_wake_repro",
-        "needs_draft_start": True,
+        "needs_draft_start": False,
         "url": (
             f"{BASE.rstrip('/')}/?active_page=Live%20Draft%20Room"
-            "&solo_component_diag=1&solo_diag_timer=10"
             "&solo_delivery_diag=1&solo_delivery_matrix=3"
         ),
     },
@@ -53,10 +52,9 @@ MATRIX_CELLS = (
         "cell": 4,
         "label": "solo_route_solo_countdown_wake",
         "component": "solo_countdown_wake",
-        "needs_draft_start": True,
+        "needs_draft_start": False,
         "url": (
             f"{BASE.rstrip('/')}/?active_page=Live%20Draft%20Room"
-            "&solo_component_diag=1&solo_diag_timer=10"
             "&solo_delivery_diag=1&solo_delivery_matrix=4"
         ),
     },
@@ -182,7 +180,8 @@ def finalize_cell(
     matrix = probe.get("matrix") or {}
     repro = probe.get("repro_client") or {}
     solo = probe.get("solo_client") or {}
-    python_chain = str(matrix.get("stages") or probe.get("delivery", {}).get("stages") or "")
+    delivery = probe.get("delivery") or {}
+    python_chain = str(matrix.get("stages") or delivery.get("stages") or "")
     client_chain = str(repro.get("chain") or solo.get("chain") or "")
     client_chain_full = client_chain
     for alt in ("setComponentValue_called", "iframe_setComponentValue_called"):
@@ -241,10 +240,42 @@ def finalize_cell(
         or mount_id_at_last_mount.split("-")[-1] in widget_id_at_send
     )
 
-    valid = bool(matrix.get("component_name")) or bool(matrix.get("stages"))
+    cell_n = int(cell_spec["cell"])
+    declared = bool(str(matrix.get("component_name") or "").strip())
+    widget_key_recorded = bool(str(matrix.get("key") or "").strip())
+    widget_id_recorded = bool(mount_ids) or bool(mount_id_at_last_mount)
+    if cell_n in (3, 4):
+        valid = declared and widget_key_recorded and widget_id_recorded and bool(ws_tokens)
+        invalid_reason = ""
+        if not valid:
+            if not declared:
+                invalid_reason = "component_declaration_not_mounted"
+            elif not widget_key_recorded:
+                invalid_reason = "widget_key_not_recorded"
+            elif not widget_id_recorded:
+                invalid_reason = "streamlit_widget_id_not_recorded"
+            elif not ws_tokens:
+                invalid_reason = "websocket_token_frames_missing"
+            else:
+                invalid_reason = "matrix_probe_incomplete"
+    else:
+        valid = declared or bool(matrix.get("stages"))
+        invalid_reason = "" if valid else "matrix_probe_not_mounted"
+
     passed = (matrix.get("passed") in ("1", "true") or callbacks >= REQUIRED_CYCLES) and (
         hits["session_state_raw_received"] >= REQUIRED_CYCLES
+        and hits["on_change_callback_entry"] >= REQUIRED_CYCLES
     )
+    if valid and not passed and cell_n in (3, 4):
+        if hits["session_state_raw_received"] < REQUIRED_CYCLES:
+            first_missing = first_missing or "session_state_raw_received"
+        elif hits["on_change_callback_entry"] < REQUIRED_CYCLES:
+            first_missing = first_missing or "on_change_callback_entry"
+        elif hits["setComponentValue_called"] < REQUIRED_CYCLES:
+            first_missing = first_missing or "setComponentValue_called"
+        elif hits["browser_deadline_crossed"] < REQUIRED_CYCLES:
+            first_missing = first_missing or "browser_deadline_crossed"
+
     verdict = "pass" if passed and valid else ("fail" if valid else "invalid")
 
     return {
@@ -269,7 +300,8 @@ def finalize_cell(
         "hits": hits,
         "chain_hits": chain_hits,
         "duplicate_token_count": dup,
-        "first_missing_stage": first_missing if verdict == "fail" else "",
+        "first_missing_stage": first_missing if verdict in ("fail", "invalid") else "",
+        "invalid_reason": invalid_reason if verdict == "invalid" else "",
         "ws_token_samples": ws_tokens[-6:],
         "draft_start": report.get("draft_start"),
     }
@@ -339,6 +371,12 @@ def decision_from_matrix(cells: dict[str, Any]) -> tuple[str, str]:
             "App-shell minimal passes but app-shell solo_countdown_wake fails — "
             "inspect solo_countdown_wake component declaration and frontend bundle.",
         )
+    if c3 == "invalid" or c4 == "invalid":
+        return (
+            "inconclusive",
+            "Solo-route matrix cells were invalid (harness or deploy) — re-run after "
+            "early-route matrix mount is live; do not infer route lifecycle yet.",
+        )
     if c1 == "pass" and c2 == "pass" and c3 != "pass" and c4 != "pass":
         return (
             "solo_route_lifecycle",
@@ -361,9 +399,12 @@ def decision_from_matrix(cells: dict[str, Any]) -> tuple[str, str]:
 
 
 def main() -> int:
+    only = {x.strip() for x in os.environ.get("SOLO_MATRIX_ONLY", "").split(",") if x.strip()}
     deploy_sha = ""
     results: dict[str, Any] = {"started_at": time.time(), "cells": {}}
     for spec in MATRIX_CELLS:
+        if only and str(spec["cell"]) not in only:
+            continue
         print(f"MATRIX CELL {spec['cell']}", flush=True)
         row = run_cell(spec)
         results["cells"][str(spec["cell"])] = row

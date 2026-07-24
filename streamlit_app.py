@@ -22077,6 +22077,18 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
     try:
+        from live_draft_solo_delivery_diag import try_delivery_diag_solo_route_matrix
+
+        _matrix_ldr_room = st.session_state.get("live_draft_room")
+        if try_delivery_diag_solo_route_matrix(
+            st,
+            st.session_state,
+            _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
+        ):
+            st.stop()
+    except ImportError:
+        pass
+    try:
         from app_page_generation import note_page_renderer
 
         note_page_renderer(st.session_state, "render_live_draft_page", selected_page=active_page)
