@@ -259,6 +259,25 @@ def _mount_direct_component(
     return mounted is not None
 
 
+def try_delivery_diag_case_a_app(st: Any, session: dict[str, Any]) -> bool:
+    """Case A: minimal direct component at top of app shell; truncate remainder."""
+    if not delivery_diag_active(st, session) or delivery_case(st) != "A":
+        return False
+    room = _solo_room_ready(session)
+    if room is None:
+        return False
+    _mount_direct_component(
+        st,
+        session,
+        room,
+        case="A",
+        registration="live_draft_solo_delivery_diag.case_a_app_top",
+        location="streamlit_app_top",
+    )
+    st.caption("Solo delivery diag Case A — app-top minimal mount, shell truncated.")
+    return True
+
+
 def try_delivery_diag_case_a(st: Any, session: dict[str, Any]) -> bool:
     if not delivery_diag_active(st, session) or delivery_case(st) != "A":
         return False

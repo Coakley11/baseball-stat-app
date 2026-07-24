@@ -575,6 +575,15 @@ try:
 except Exception:
     pass
 
+try:
+    from live_draft_solo_delivery_diag import enable_delivery_diag_from_query, try_delivery_diag_case_a_app
+
+    enable_delivery_diag_from_query(st, st.session_state)
+    if try_delivery_diag_case_a_app(st, st.session_state):
+        st.stop()
+except ImportError:
+    pass
+
 # Always reset sidebar chrome guards each script run (not only __main__).
 # Sticky guards after sign-in previously hid Command Center / Saved session / Dev Mode.
 try:
@@ -22062,11 +22071,9 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
     try:
-        from live_draft_solo_delivery_diag import enable_delivery_diag_from_query, try_delivery_diag_case_a
+        from live_draft_solo_delivery_diag import enable_delivery_diag_from_query
 
         enable_delivery_diag_from_query(st, st.session_state)
-        if try_delivery_diag_case_a(st, st.session_state):
-            st.stop()
     except ImportError:
         pass
     try:
