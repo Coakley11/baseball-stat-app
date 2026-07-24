@@ -1,2 +1,2 @@
-6108c9c  # auto-generated; Streamlit Cloud reads this at runtime — clean verification build (tracing ca10b70+)
+6b38df4  # auto-generated; Streamlit Cloud reads this at runtime — isolation wiring 6108c9c+
 branch: dev

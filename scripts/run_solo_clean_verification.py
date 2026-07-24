@@ -164,14 +164,13 @@ def preflight_fresh_solo_draft(page, *, expected_sha: str) -> dict[str, Any]:
     page.wait_for_timeout(1500)
     click_btn(page, "Start New Live Draft", wait_ms=2500)
     active = False
+    mount: dict[str, Any] = {}
     t0 = time.time()
     while time.time() - t0 < 120:
         if int(dom_counts(page).get("Pause Draft") or 0) >= 1:
             active = True
-            break
-        page.wait_for_timeout(1000)
-    mount = page.evaluate(
-        """() => {
+        mount = page.evaluate(
+            """() => {
           function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
           for (const root of roots()) {
             const m = root.querySelector('#solo-component-mount-diag');
@@ -184,9 +183,19 @@ def preflight_fresh_solo_draft(page, *, expected_sha: str) -> dict[str, Any]:
           }
           return {};
         }"""
-    )
+        )
+        if active and str(mount.get("diag_timer") or "") == "10":
+            break
+        page.wait_for_timeout(1000)
+    live_sha = scrape_live_sha(page) or live_sha
     body = page.inner_text("body", timeout=20000)
-    timer_ok = "Time remaining: 10s" in body or "Time remaining: 10" in body
+    rem_s = str((mount or {}).get("diag_remaining") or "")
+    rem_ok = rem_s.isdigit() and 0 < int(rem_s) <= 10
+    timer_ok = (
+        "Time remaining: 10s" in body
+        or "Time remaining: 10" in body
+        or (str((mount or {}).get("diag_timer") or "") == "10" and rem_ok)
+    )
     return {
         "deploy_sha": live_sha,
         "deploy_sha_matches": sha_includes_tracing_build(live_sha),
@@ -196,6 +205,7 @@ def preflight_fresh_solo_draft(page, *, expected_sha: str) -> dict[str, Any]:
         "mount_probe": mount,
         "ten_second_ui": timer_ok,
         "ten_second_diag_timer": str((mount or {}).get("diag_timer") or "") == "10",
+        "ten_second_diag_remaining": rem_s,
         "component_mount_hint": str((mount or {}).get("mounted") or "") == "1"
         or bool((mount or {}).get("key")),
         "preflight_ok": active
