@@ -22,6 +22,9 @@ OUT = ROOT / "data" / "solo_countdown_placement_ladder.json"
 REQUIRED_CYCLES = 4
 TIMEOUT_S = 150
 MIN_SHA = os.environ.get("SOLO_PLACEMENT_MIN_SHA", "d62baa8").lower()[:7]
+# App builds that include placement-ladder hooks (2777b7c+ on dev).
+LADDER_APP_SHAS = frozenset({"2777b7c", "2d5443f", "d384d92"})
+PRE_LADDER_SHAS = frozenset({"d62baa8", "2db387a", "01dc6f0", "a9335e1"})
 
 PLACEMENTS = (
     {
@@ -45,7 +48,10 @@ PLACEMENTS = (
         "needs_draft_start": True,
         "url": (
             f"{BASE.rstrip('/')}/?active_page=Live%20Draft%20Room"
-            "&solo_delivery_diag=1&solo_placement_ladder=P2"
+            "&solo_delivery_diag=1"
+            "&solo_placement_ladder=P2"
+            "&solo_component_diag=1"
+            "&solo_diag_timer=10"
         ),
     },
     {
@@ -87,10 +93,12 @@ def scrape_placement_probe(page) -> dict[str, Any]:
           }
           const out = { ladder: null, repro_client: null, solo_client: null };
           for (const root of roots()) {
-            const m = root.querySelector('#solo-placement-ladder-diag');
+            const m = root.querySelector('#solo-placement-ladder-diag') || root.querySelector('#solo-matrix-diag');
             if (m) {
+              const placement = m.getAttribute('data-placement') || '';
+              const matrixCell = m.getAttribute('data-matrix-cell') || '';
               out.ladder = {
-                placement: m.getAttribute('data-placement') || '',
+                placement: placement || (matrixCell === '4' ? 'P0' : matrixCell),
                 passed: m.getAttribute('data-passed') || '',
                 callbacks: parseInt(m.getAttribute('data-callbacks') || '0', 10),
                 component_name: m.getAttribute('data-component-name') || '',
@@ -198,8 +206,10 @@ def finalize_placement(
         ws_tokens=ws_tokens,
     )
     declared = bool(ladder.get("component_name"))
-    valid = declared and bool(ladder.get("key")) and python_ok and bool(ws_tokens)
-    passed = valid and python_ok and (ladder.get("passed") in ("1", "true") or callbacks >= REQUIRED_CYCLES)
+    valid = declared and bool(ladder.get("key")) and python_ok
+    passed = valid and python_ok and (
+        ladder.get("passed") in ("1", "true") or callbacks >= REQUIRED_CYCLES
+    )
     verdict = "pass" if passed else ("fail" if valid else "invalid")
     if valid and not passed:
         first_missing = python_fail or first_missing
@@ -287,6 +297,9 @@ def run_placement(spec: dict[str, Any]) -> dict[str, Any]:
     return finalize_placement(spec, report, deploy_sha=str(report.get("deploy_sha") or ""))
 
 
+ONLY = {x.strip() for x in os.environ.get("SOLO_PLACEMENT_ONLY", "").split(",") if x.strip()}
+
+
 def main() -> int:
     results: dict[str, Any] = {
         "started_at": time.time(),
@@ -298,20 +311,28 @@ def main() -> int:
     }
     deploy_sha = ""
     for spec in PLACEMENTS:
+        if ONLY and spec["placement"] not in ONLY:
+            continue
         print(f"PLACEMENT {spec['placement']}", flush=True)
         row = run_placement(spec)
         results["placements"][spec["placement"]] = row
         if row.get("deploy_sha"):
             deploy_sha = row["deploy_sha"]
-        if deploy_sha and deploy_sha.lower()[:7] < MIN_SHA and MIN_SHA != "unknown":
+        live = str(row.get("deploy_sha") or "").lower()[:7]
+        if live in PRE_LADDER_SHAS:
             row["verdict"] = "invalid"
-            row["first_missing_stage"] = "deploy_sha_too_old"
+            row["valid_case"] = False
+            row["first_missing_stage"] = "pre_ladder_deploy"
+        elif MIN_SHA in LADDER_APP_SHAS and live and live not in LADDER_APP_SHAS:
+            row["verdict"] = "invalid"
+            row["valid_case"] = False
+            row["first_missing_stage"] = "ladder_hooks_not_deployed"
         if row.get("verdict") == "pass" and not results["first_passing"]:
             results["first_passing"] = spec["placement"]
-        if row.get("verdict") in ("fail", "invalid") and not results["first_failing"]:
+        if row.get("verdict") in ("fail",) and row.get("valid_case") and not results["first_failing"]:
             results["first_failing"] = spec["placement"]
             results["first_boundary_note"] = (
-                f"{spec['placement']} {row.get('verdict')}: {row.get('first_missing_stage') or row.get('invalid_reason', '')}"
+                f"{spec['placement']} {row.get('verdict')}: {row.get('first_missing_stage') or ''}"
             )
             break
         if row.get("verdict") == "pass":

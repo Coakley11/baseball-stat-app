@@ -671,6 +671,12 @@ def enable_delivery_diag_from_query(st: Any, session: dict[str, Any]) -> None:
     if _qp_flag(st, "solo_delivery_diag"):
         session["_solo_delivery_diag_enabled"] = True
     try:
+        from live_draft_solo_placement_ladder import enable_placement_ladder_from_query
+
+        enable_placement_ladder_from_query(st, session)
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_component_diagnostics import bootstrap_solo_component_diag
 
         bootstrap_solo_component_diag(st, session)

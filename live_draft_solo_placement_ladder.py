@@ -18,6 +18,7 @@ from live_draft_solo_delivery_diag import (
 
 PLACEMENTS = ("P0", "P1", "P2", "P3", "P4", "P5")
 SESSION_PLACEMENT_KEY = "_solo_placement_ladder_active"
+REQUESTED_PLACEMENT_KEY = "_solo_placement_ladder_requested"
 
 
 def _qp_get(st: Any, name: str) -> str:
@@ -43,8 +44,40 @@ def placement_ladder_active(st: Any, session: dict[str, Any]) -> bool:
     return p in PLACEMENTS
 
 
+def latch_requested_placement(st: Any, session: dict[str, Any]) -> str:
+    """Diagnostic-only: persist requested placement before query params may be stripped."""
+    if not delivery_diag_active(st, session):
+        return ""
+    p = placement_from_query(st)
+    if p in PLACEMENTS:
+        session[REQUESTED_PLACEMENT_KEY] = p
+        session[SESSION_PLACEMENT_KEY] = p
+    return str(session.get(REQUESTED_PLACEMENT_KEY) or "")
+
+
+def render_latch_probe(st: Any, session: dict[str, Any]) -> None:
+    requested = str(session.get(REQUESTED_PLACEMENT_KEY) or "")
+    if not requested:
+        return
+    qp = placement_from_query(st)
+    st.markdown(
+        f'<div id="solo-placement-latch-diag" '
+        f'data-requested="{requested}" '
+        f'data-query-placement="{qp.replace(chr(34), chr(39))}" '
+        f'data-active="{str(session.get(SESSION_PLACEMENT_KEY) or "").replace(chr(34), chr(39))}"></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def enable_placement_ladder_from_query(st: Any, session: dict[str, Any]) -> None:
+    latch_requested_placement(st, session)
+    render_latch_probe(st, session)
+
+
 def current_placement(st: Any, session: dict[str, Any]) -> str:
-    p = placement_from_query(st) or str(session.get(SESSION_PLACEMENT_KEY) or "").upper()
+    p = placement_from_query(st)
+    if p not in PLACEMENTS:
+        p = str(session.get(REQUESTED_PLACEMENT_KEY) or session.get(SESSION_PLACEMENT_KEY) or "").upper()
     if p in PLACEMENTS:
         session[SESSION_PLACEMENT_KEY] = p
         return p
@@ -215,13 +248,15 @@ def try_placement_timer_pre_owner(
         return False
     if str(room.get("status") or "") != "in_progress":
         return False
-    _, stop = run_one_placement_cycle(
+    result, _stop = run_one_placement_cycle(
         st,
         session,
         placement="P2",
         location="before_solo_expire_owner",
     )
-    if stop:
+    if not result.passed_all:
+        st.stop()
+    else:
         st.stop()
     return True
 

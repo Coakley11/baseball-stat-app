@@ -40,6 +40,17 @@ def solo_component_diag_enabled(st: Any | None, session: dict[str, Any]) -> bool
 
 def bootstrap_solo_component_diag(st: Any | None, session: dict[str, Any]) -> None:
     """Read ?solo_component_diag=1 and ?solo_diag_timer=10 from URL once per session."""
+    try:
+        from live_draft_solo_placement_ladder import current_placement
+
+        if st is not None and current_placement(st, session) in ("P2", "P3", "P4", "P5"):
+            session[SOLO_DIAG_ENABLED_KEY] = True
+            timer_raw = _qp_get(st, "solo_diag_timer") if st is not None else ""
+            if timer_raw.isdigit():
+                session[SOLO_DIAG_TIMER_SESSION_KEY] = max(5, min(60, int(timer_raw)))
+            return
+    except ImportError:
+        pass
     if st is not None and _qp_flag(st, "solo_component_diag"):
         session[SOLO_DIAG_ENABLED_KEY] = True
     timer_raw = _qp_get(st, "solo_diag_timer") if st is not None else ""
@@ -187,6 +198,13 @@ def record_solo_component_mount_attempt(
 
 def render_solo_component_mount_probe(st: Any, session: dict[str, Any], room: dict[str, Any] | None) -> None:
     """Hidden DOM probe for Playwright — always rendered when Solo room is active."""
+    try:
+        from live_draft_solo_placement_ladder import current_placement
+
+        if current_placement(st, session) == "P2":
+            return
+    except ImportError:
+        pass
     bootstrap_solo_component_diag(st, session)
     if not isinstance(room, dict):
         return
