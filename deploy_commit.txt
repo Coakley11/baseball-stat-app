@@ -1,2 +1,2 @@
-ca10b70  # auto-generated; Streamlit Cloud reads this at runtime — tracing + min fix 4d73e84
+6108c9c  # auto-generated; Streamlit Cloud reads this at runtime — clean verification build (tracing ca10b70+)
 branch: dev
