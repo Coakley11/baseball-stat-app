@@ -1,2 +1,2 @@
-d62baa8  # auto-generated; Streamlit Cloud reads this at runtime
+2777b7c  # auto-generated; Streamlit Cloud reads this at runtime
 branch: dev
