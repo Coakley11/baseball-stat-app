@@ -615,6 +615,13 @@ def try_delivery_diag_case_b(st: Any, session: dict[str, Any], room: dict[str, A
 def try_delivery_diag_mount_cd(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
     if not delivery_diag_active(st, session):
         return False
+    try:
+        from live_draft_solo_placement_ladder import placement_ladder_active
+
+        if placement_ladder_active(st, session):
+            return False
+    except ImportError:
+        pass
     case = delivery_case(st)
     if case not in ("C", "D"):
         return False

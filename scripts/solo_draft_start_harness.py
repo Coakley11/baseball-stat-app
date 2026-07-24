@@ -456,6 +456,12 @@ def observe_until_success_or_timeout(
             placement=placement,
             state=state,
         ):
+            record_query_checkpoint(
+                checkpoints,
+                "query_first_rerun_after_start",
+                setup_url=setup_url,
+                page_url=page.url,
+            )
             checkpoint(checkpoints, "start_success_all_criteria", flags=flags, seen=seen_steps)
             return {
                 "start_success": True,

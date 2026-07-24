@@ -40,7 +40,10 @@ def placement_from_query(st: Any | None) -> str:
 def placement_ladder_active(st: Any, session: dict[str, Any]) -> bool:
     if not delivery_diag_active(st, session):
         return False
-    p = placement_from_query(st) or str(session.get(SESSION_PLACEMENT_KEY) or "").upper()
+    p = (
+        placement_from_query(st)
+        or str(session.get(REQUESTED_PLACEMENT_KEY) or session.get(SESSION_PLACEMENT_KEY) or "").upper()
+    )
     return p in PLACEMENTS
 
 
@@ -70,8 +73,12 @@ def render_latch_probe(st: Any, session: dict[str, Any]) -> None:
 
 
 def enable_placement_ladder_from_query(st: Any, session: dict[str, Any]) -> None:
-    latch_requested_placement(st, session)
-    render_latch_probe(st, session)
+    if delivery_diag_active(st, session):
+        latch_requested_placement(st, session)
+    elif str(session.get(REQUESTED_PLACEMENT_KEY) or "") in PLACEMENTS:
+        session[SESSION_PLACEMENT_KEY] = session[REQUESTED_PLACEMENT_KEY]
+    if str(session.get(REQUESTED_PLACEMENT_KEY) or "") in PLACEMENTS:
+        render_latch_probe(st, session)
 
 
 def current_placement(st: Any, session: dict[str, Any]) -> str:
@@ -157,6 +164,7 @@ def render_placement_probe(
     token = str(getattr(result, "token", "") or "")
     st.markdown(
         f'<div id="solo-placement-ladder-diag" '
+        f'data-p2-harness="v2" '
         f'data-placement="{placement}" '
         f'data-passed="{1 if passed else 0}" '
         f'data-callbacks="{len(callbacks)}" '
@@ -207,6 +215,9 @@ def run_one_placement_cycle(
     render_placement_probe(st, session, placement=placement, result=result, passed=passed)
     if result.should_rerun:
         st.rerun()
+    # In-draft ladder steps must not fall through to production timer UI between cycles.
+    if placement in ("P2", "P3", "P4", "P5") and not result.passed_all and not result.should_rerun:
+        st.stop()
     if placement == "P0":
         return result, True
     return result, bool(result.passed_all)
@@ -248,6 +259,7 @@ def try_placement_timer_pre_owner(
         return False
     if str(room.get("status") or "") != "in_progress":
         return False
+    render_latch_probe(st, session)
     result, _stop = run_one_placement_cycle(
         st,
         session,
