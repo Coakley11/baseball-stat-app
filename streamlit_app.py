@@ -576,10 +576,10 @@ except Exception:
     pass
 
 try:
-    from live_draft_solo_delivery_diag import enable_delivery_diag_from_query, try_delivery_diag_case_a_app
+    from live_draft_solo_delivery_diag import enable_delivery_diag_from_query, try_delivery_diag_app_shell_matrix
 
     enable_delivery_diag_from_query(st, st.session_state)
-    if try_delivery_diag_case_a_app(st, st.session_state):
+    if try_delivery_diag_app_shell_matrix(st, st.session_state):
         st.stop()
 except ImportError:
     pass
@@ -24758,9 +24758,9 @@ elif active_page == "Live Draft Room":
             _pending_manual_pick = False
             PENDING_MANUAL_PICK_KEY = "_pending_manual_draft_pick"
         try:
-            from live_draft_solo_delivery_diag import try_delivery_diag_case_b
+            from live_draft_solo_delivery_diag import try_delivery_diag_solo_route_matrix
 
-            if try_delivery_diag_case_b(st, st.session_state, room):
+            if try_delivery_diag_solo_route_matrix(st, st.session_state, room):
                 st.stop()
         except ImportError:
             pass

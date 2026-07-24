@@ -41,6 +41,21 @@ def delivery_case(st: Any | None) -> str:
     return raw if raw in ("A", "B", "C", "D") else "D"
 
 
+def delivery_matrix_cell(st: Any | None) -> int:
+    """2×2 matrix: 1 app+minimal, 2 app+solo_wake, 3 route+minimal, 4 route+solo_wake."""
+    raw = (_qp_get(st, "solo_delivery_matrix") if st is not None else "").strip()
+    if raw.isdigit():
+        cell = int(raw)
+        if 1 <= cell <= 4:
+            return cell
+    letter = delivery_case(st) if st is not None else ""
+    if letter == "A":
+        return 1
+    if letter == "B":
+        return 4
+    return 0
+
+
 def _solo_room_ready(session: dict[str, Any]) -> dict[str, Any] | None:
     room = session.get("live_draft_room")
     if not isinstance(room, dict):
@@ -259,6 +274,59 @@ def _mount_direct_component(
     return mounted is not None
 
 
+def render_matrix_probe(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    matrix_cell: int,
+    component_name: str,
+    result: Any,
+    passed: bool,
+    case_label: str,
+) -> None:
+    import json
+
+    from minimal_component_wake_repro_core import REQUIRED_CYCLES
+
+    log = list(session.get(SOLO_DELIVERY_LOG_KEY) or [])
+    meta = dict(session.get(SOLO_DELIVERY_META_KEY) or {})
+    stages = [str(r.get("stage") or "") for r in log if isinstance(r, dict)]
+    chain = "|".join(stages[-80:])
+    callbacks = getattr(result, "callbacks", None) or []
+    payload = json.dumps(
+        {
+            "matrix_cell": matrix_cell,
+            "log": log[-40:],
+            "meta": meta,
+            "diag": getattr(result, "diag", {}),
+            "callbacks": callbacks,
+            "cycles_done": getattr(result, "cycles_done", 0),
+            "required_cycles": REQUIRED_CYCLES,
+            "passed": passed,
+            "mount_count": getattr(result, "mount_count", meta.get("mount_count")),
+        },
+        default=str,
+    )[:8000]
+    wkey = str(getattr(result, "widget_key", "") or "")
+    token = str(getattr(result, "token", "") or "")
+    st.markdown(
+        f'<div id="solo-matrix-diag" '
+        f'data-matrix-cell="{matrix_cell}" '
+        f'data-case="{case_label}" '
+        f'data-passed="{1 if passed else 0}" '
+        f'data-callbacks="{len(callbacks)}" '
+        f'data-cycles-done="{getattr(result, "cycles_done", 0)}" '
+        f'data-component-name="{component_name}" '
+        f'data-key="{wkey.replace(chr(34), chr(39))}" '
+        f'data-token="{token.replace(chr(34), chr(39))}" '
+        f'data-stages="{chain.replace(chr(34), chr(39))}" '
+        f'data-rerun="{int(meta.get("rerun_count") or session.get(SOLO_DELIVERY_RERUN_KEY) or 0)}" '
+        f'data-json="{payload.replace(chr(34), chr(39))}"></div>',
+        unsafe_allow_html=True,
+    )
+    render_delivery_probe(st, session, case=case_label, key=wkey)
+
+
 def render_case_a_app_shell_probe(
     st: Any,
     session: dict[str, Any],
@@ -304,8 +372,8 @@ def render_case_a_app_shell_probe(
 
 
 def try_delivery_diag_case_a_app(st: Any, session: dict[str, Any]) -> bool:
-    """Case A: app-shell minimal repro mount — no Live Draft room or draft start."""
-    if not delivery_diag_active(st, session) or delivery_case(st) != "A":
+    """Matrix cell 1: app-shell minimal_wake_repro (Case A control)."""
+    if not delivery_diag_active(st, session) or delivery_matrix_cell(st) != 1:
         return False
 
     from minimal_component_wake_repro_core import (
@@ -317,7 +385,8 @@ def try_delivery_diag_case_a_app(st: Any, session: dict[str, Any]) -> bool:
     session[SOLO_DELIVERY_META_KEY] = {
         **dict(session.get(SOLO_DELIVERY_META_KEY) or {}),
         "case": "A",
-        "component_name": COMPONENT_NAME,
+        "matrix_cell": 1,
+        "component_name": "minimal_wake_repro",
         "mount_location": "streamlit_app_top",
         "registration": "minimal_component_wake_repro_core.render_one_cycle",
         "rerun_count": bump_delivery_rerun(session),
@@ -353,7 +422,164 @@ def try_delivery_diag_case_a(st: Any, session: dict[str, Any]) -> bool:
     return try_delivery_diag_case_a_app(st, session)
 
 
+def _solo_route_room_ok(session: dict[str, Any], room: dict[str, Any]) -> bool:
+    if str(room.get("status") or "") != "in_progress":
+        return False
+    try:
+        from live_draft_solo_timer import is_solo_live_draft
+
+        return bool(is_solo_live_draft(session, room))
+    except ImportError:
+        return True
+
+
+def try_delivery_diag_app_shell_solo_wake(st: Any, session: dict[str, Any]) -> bool:
+    """Matrix cell 2: app shell + solo_countdown_wake, four 5s cycles."""
+    if not delivery_diag_active(st, session) or delivery_matrix_cell(st) != 2:
+        return False
+    from solo_countdown_wake_matrix_core import COMPONENT_NAME, REQUIRED_CYCLES, render_one_cycle
+
+    session[SOLO_DELIVERY_META_KEY] = {
+        **dict(session.get(SOLO_DELIVERY_META_KEY) or {}),
+        "case": "M2",
+        "matrix_cell": 2,
+        "component_name": COMPONENT_NAME,
+        "mount_location": "streamlit_app_top",
+        "registration": "solo_countdown_wake_matrix_core.render_one_cycle",
+        "rerun_count": bump_delivery_rerun(session),
+    }
+
+    def _record(stage: str, fields: dict[str, Any]) -> None:
+        note_delivery_stage(session, stage, **fields)
+
+    render_parent_postmessage_listener(st)
+    result = render_one_cycle(st, session, route=False, record_stage=_record)
+    passed = result.passed_all
+    if passed:
+        st.success(f"Matrix cell 2 — PASS ({REQUIRED_CYCLES}/{REQUIRED_CYCLES})")
+    else:
+        st.caption(f"Matrix cell 2 — app shell solo_countdown_wake ({result.cycles_done}/{REQUIRED_CYCLES})")
+    render_matrix_probe(
+        st,
+        session,
+        matrix_cell=2,
+        component_name=COMPONENT_NAME,
+        result=result,
+        passed=passed,
+        case_label="M2",
+    )
+    if result.should_rerun:
+        st.rerun()
+    return True
+
+
+def try_delivery_diag_app_shell_matrix(st: Any, session: dict[str, Any]) -> bool:
+    cell = delivery_matrix_cell(st)
+    if not delivery_diag_active(st, session):
+        return False
+    if cell == 1:
+        return try_delivery_diag_case_a_app(st, session)
+    if cell == 2:
+        return try_delivery_diag_app_shell_solo_wake(st, session)
+    return False
+
+
+def try_delivery_diag_solo_route_minimal(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
+    """Matrix cell 3: Solo route early mount + minimal_wake_repro, four cycles."""
+    if not delivery_diag_active(st, session) or delivery_matrix_cell(st) != 3:
+        return False
+    if not _solo_route_room_ok(session, room):
+        return False
+    from minimal_component_wake_repro_core import COMPONENT_NAME, REQUIRED_CYCLES, render_one_cycle
+
+    session[SOLO_DELIVERY_META_KEY] = {
+        **dict(session.get(SOLO_DELIVERY_META_KEY) or {}),
+        "case": "M3",
+        "matrix_cell": 3,
+        "component_name": COMPONENT_NAME,
+        "mount_location": "solo_route_before_heavy_ui",
+        "registration": "minimal_component_wake_repro_core.render_one_cycle",
+        "rerun_count": bump_delivery_rerun(session),
+    }
+
+    def _record(stage: str, fields: dict[str, Any]) -> None:
+        note_delivery_stage(session, stage, **fields)
+
+    render_parent_postmessage_listener(st)
+    result = render_one_cycle(st, session, record_stage=_record)
+    passed = result.passed_all
+    if passed:
+        st.success(f"Matrix cell 3 — PASS ({REQUIRED_CYCLES}/{REQUIRED_CYCLES})")
+    else:
+        st.caption(f"Matrix cell 3 — Solo route minimal ({result.cycles_done}/{REQUIRED_CYCLES})")
+    render_matrix_probe(
+        st,
+        session,
+        matrix_cell=3,
+        component_name=COMPONENT_NAME,
+        result=result,
+        passed=passed,
+        case_label="M3",
+    )
+    if result.should_rerun:
+        st.rerun()
+    return True
+
+
+def try_delivery_diag_solo_route_solo_wake(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
+    """Matrix cell 4: Solo route early mount + solo_countdown_wake, four cycles."""
+    if not delivery_diag_active(st, session) or delivery_matrix_cell(st) != 4:
+        return False
+    if not _solo_route_room_ok(session, room):
+        return False
+    from solo_countdown_wake_matrix_core import COMPONENT_NAME, REQUIRED_CYCLES, render_one_cycle
+
+    session[SOLO_DELIVERY_META_KEY] = {
+        **dict(session.get(SOLO_DELIVERY_META_KEY) or {}),
+        "case": "M4",
+        "matrix_cell": 4,
+        "component_name": COMPONENT_NAME,
+        "mount_location": "solo_route_before_heavy_ui",
+        "registration": "solo_countdown_wake_matrix_core.render_one_cycle",
+        "rerun_count": bump_delivery_rerun(session),
+    }
+
+    def _record(stage: str, fields: dict[str, Any]) -> None:
+        note_delivery_stage(session, stage, **fields)
+
+    render_parent_postmessage_listener(st)
+    result = render_one_cycle(st, session, route=True, record_stage=_record)
+    passed = result.passed_all
+    if passed:
+        st.success(f"Matrix cell 4 — PASS ({REQUIRED_CYCLES}/{REQUIRED_CYCLES})")
+    else:
+        st.caption(f"Matrix cell 4 — Solo route solo_countdown_wake ({result.cycles_done}/{REQUIRED_CYCLES})")
+    render_matrix_probe(
+        st,
+        session,
+        matrix_cell=4,
+        component_name=COMPONENT_NAME,
+        result=result,
+        passed=passed,
+        case_label="M4",
+    )
+    if result.should_rerun:
+        st.rerun()
+    return True
+
+
+def try_delivery_diag_solo_route_matrix(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
+    cell = delivery_matrix_cell(st)
+    if cell == 3:
+        return try_delivery_diag_solo_route_minimal(st, session, room)
+    if cell == 4:
+        return try_delivery_diag_solo_route_solo_wake(st, session, room)
+    return False
+
+
 def try_delivery_diag_case_b(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
+    if delivery_matrix_cell(st) == 4:
+        return try_delivery_diag_solo_route_solo_wake(st, session, room)
     if not delivery_diag_active(st, session) or delivery_case(st) != "B":
         return False
     if str(room.get("status") or "") != "in_progress":
