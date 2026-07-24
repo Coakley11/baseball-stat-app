@@ -259,41 +259,98 @@ def _mount_direct_component(
     return mounted is not None
 
 
+def render_case_a_app_shell_probe(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    result: Any,
+    passed: bool,
+) -> None:
+    import json
+
+    from minimal_component_wake_repro_core import COMPONENT_NAME, REQUIRED_CYCLES
+
+    log = list(session.get(SOLO_DELIVERY_LOG_KEY) or [])
+    meta = dict(session.get(SOLO_DELIVERY_META_KEY) or {})
+    stages = [str(r.get("stage") or "") for r in log if isinstance(r, dict)]
+    chain = "|".join(stages[-60:])
+    payload = json.dumps(
+        {
+            "log": log[-40:],
+            "meta": meta,
+            "diag": result.diag,
+            "callbacks": result.callbacks,
+            "cycles_done": result.cycles_done,
+            "required_cycles": REQUIRED_CYCLES,
+            "passed": passed,
+        },
+        default=str,
+    )[:8000]
+    st.markdown(
+        f'<div id="solo-case-a-diag" '
+        f'data-case="A" '
+        f'data-passed="{1 if passed else 0}" '
+        f'data-callbacks="{len(result.callbacks)}" '
+        f'data-cycles-done="{result.cycles_done}" '
+        f'data-component-name="{COMPONENT_NAME}" '
+        f'data-key="{result.widget_key.replace(chr(34), chr(39))}" '
+        f'data-token="{result.token.replace(chr(34), chr(39))}" '
+        f'data-stages="{chain.replace(chr(34), chr(39))}" '
+        f'data-rerun="{int(meta.get("rerun_count") or session.get(SOLO_DELIVERY_RERUN_KEY) or 0)}" '
+        f'data-json="{payload.replace(chr(34), chr(39))}"></div>',
+        unsafe_allow_html=True,
+    )
+    render_delivery_probe(st, session, case="A", key=result.widget_key)
+
+
 def try_delivery_diag_case_a_app(st: Any, session: dict[str, Any]) -> bool:
-    """Case A: minimal direct component at top of app shell; truncate remainder."""
+    """Case A: app-shell minimal repro mount — no Live Draft room or draft start."""
     if not delivery_diag_active(st, session) or delivery_case(st) != "A":
         return False
-    room = _solo_room_ready(session)
-    if room is None:
-        return False
-    _mount_direct_component(
-        st,
-        session,
-        room,
-        case="A",
-        registration="live_draft_solo_delivery_diag.case_a_app_top",
-        location="streamlit_app_top",
+
+    from minimal_component_wake_repro_core import (
+        COMPONENT_NAME,
+        REQUIRED_CYCLES,
+        render_one_cycle,
     )
-    st.caption("Solo delivery diag Case A — app-top minimal mount, shell truncated.")
+
+    session[SOLO_DELIVERY_META_KEY] = {
+        **dict(session.get(SOLO_DELIVERY_META_KEY) or {}),
+        "case": "A",
+        "component_name": COMPONENT_NAME,
+        "mount_location": "streamlit_app_top",
+        "registration": "minimal_component_wake_repro_core.render_one_cycle",
+        "rerun_count": bump_delivery_rerun(session),
+    }
+
+    def _record(stage: str, fields: dict[str, Any]) -> None:
+        note_delivery_stage(session, stage, **fields)
+
+    render_parent_postmessage_listener(st)
+    result = render_one_cycle(st, session, record_stage=_record)
+
+    if result.passed_all:
+        st.success(
+            f"Solo delivery diag Case A — PASS ({REQUIRED_CYCLES}/{REQUIRED_CYCLES} tokens delivered)"
+        )
+        if result.callbacks:
+            st.dataframe(result.callbacks, use_container_width=True)
+        render_case_a_app_shell_probe(st, session, result=result, passed=True)
+        return True
+
+    st.caption(
+        f"Solo delivery diag Case A — app shell minimal repro "
+        f"({result.cycles_done}/{REQUIRED_CYCLES} deliveries, key `{result.widget_key}`)"
+    )
+    render_case_a_app_shell_probe(st, session, result=result, passed=False)
+    if result.should_rerun:
+        st.rerun()
     return True
 
 
 def try_delivery_diag_case_a(st: Any, session: dict[str, Any]) -> bool:
-    if not delivery_diag_active(st, session) or delivery_case(st) != "A":
-        return False
-    room = _solo_room_ready(session)
-    if room is None:
-        return False
-    _mount_direct_component(
-        st,
-        session,
-        room,
-        case="A",
-        registration="live_draft_solo_delivery_diag.case_a_top",
-        location="live_draft_page_top",
-    )
-    st.caption("Solo delivery diag Case A — top-level mount, page truncated.")
-    return True
+    """Legacy entry — Case A is app-shell only (no Solo room)."""
+    return try_delivery_diag_case_a_app(st, session)
 
 
 def try_delivery_diag_case_b(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
