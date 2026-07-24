@@ -69,6 +69,13 @@ def scrape_live_sha(page) -> str:
     return _s(page)
 
 
+def ensure_live_draft_room_for_deploy_probe(page) -> None:
+    """Deploy marker renders on Live Draft Room body; cold URL loads often stay on restored page."""
+    from solo_draft_start_harness import ensure_live_draft_setup_visible
+
+    ensure_live_draft_setup_visible(page)
+
+
 def poll_until_isolation_build(*, max_wait_s: int = 7200, interval_s: int = 30) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
     from playwright.sync_api import sync_playwright
@@ -87,6 +94,7 @@ def poll_until_isolation_build(*, max_wait_s: int = 7200, interval_s: int = 30) 
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         while time.time() < deadline:
             goto_and_wake(page, url, timeout_s=120)
+            ensure_live_draft_room_for_deploy_probe(page)
             sha = scrape_live_sha(page)
             ok = sha_includes_isolation_build(sha)
             row = {"ts": time.time(), "sha": sha, "includes_isolation_build": ok}
@@ -123,48 +131,9 @@ def _count(chain: str, stage: str) -> int:
 
 
 def start_fresh_solo_draft(page) -> dict[str, Any]:
-    from cloud_streamlit_wake import goto_and_wake
-    from run_production_solo_soak import click_btn, dom_counts, set_number
-    from run_solo_clean_verification import clear_stale_solo_draft
+    from solo_draft_start_harness import DEFAULT_SETUP_URL, start_fresh_solo_draft_automation
 
-    setup_url = (
-        f"{BASE}/?active_page=Live%20Draft%20Room"
-        "&solo_component_diag=1&solo_diag_timer=10"
-    )
-    goto_and_wake(page, setup_url, timeout_s=240)
-    clear_stale_solo_draft(page)
-    set_number(page, "Number of Teams", "2")
-    set_number(page, "Picks per Team", "8")
-    page.wait_for_timeout(2000)
-    click_btn(page, "Start New Live Draft", wait_ms=3000)
-    meta: dict[str, Any] = {"draft_active": False, "room_id": "", "diag_timer_ok": False}
-    t0 = time.time()
-    while time.time() - t0 < 120:
-        body = page.inner_text("body", timeout=15000)
-        if "Room ID" in body:
-            import re
-
-            m = re.search(r"Room ID\s+([A-F0-9]+)", body, re.I)
-            if m:
-                meta["room_id"] = m.group(1)
-        counts = dom_counts(page)
-        if int(counts.get("Pause Draft") or 0) >= 1 and meta.get("room_id"):
-            meta["draft_active"] = True
-            mount = page.evaluate(
-                """() => {
-                  function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
-                  for (const root of roots()) {
-                    const m = root.querySelector('#solo-component-mount-diag');
-                    if (m) return m.getAttribute('data-diag-timer')||'';
-                  }
-                  return '';
-                }"""
-            )
-            meta["diag_timer_ok"] = str(mount) == "10"
-            if meta["diag_timer_ok"]:
-                break
-        page.wait_for_timeout(1000)
-    return meta
+    return start_fresh_solo_draft_automation(page, setup_url=DEFAULT_SETUP_URL)
 
 
 def run_one_case(case: str) -> dict[str, Any]:
