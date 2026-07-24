@@ -195,6 +195,7 @@ def finalize_placement(
         dup=dup,
         json_blob=json_blob,
         component="solo_countdown_wake",
+        ws_tokens=ws_tokens,
     )
     declared = bool(ladder.get("component_name"))
     valid = declared and bool(ladder.get("key")) and python_ok and bool(ws_tokens)

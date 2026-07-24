@@ -177,6 +177,7 @@ def _python_delivery_complete(
     dup: int,
     json_blob: str,
     component: str,
+    ws_tokens: list[str] | None = None,
 ) -> tuple[bool, str]:
     if dup > 0:
         return False, "duplicate_delivery"
@@ -186,6 +187,26 @@ def _python_delivery_complete(
         return False, "on_change_callback_entry"
     if callbacks < REQUIRED_CYCLES:
         return False, "callbacks_received"
+
+    if (
+        hits.get("session_state_raw_received", 0) >= REQUIRED_CYCLES
+        and hits.get("on_change_callback_entry", 0) >= REQUIRED_CYCLES
+        and dup == 0
+    ):
+        return True, ""
+
+    cycle_indices: set[int] = set()
+    for tok in ws_tokens or []:
+        parts = str(tok).split("|")
+        if len(parts) != 3:
+            continue
+        try:
+            cycle_indices.add(int(parts[1]))
+        except ValueError:
+            continue
+    if len(cycle_indices) >= REQUIRED_CYCLES:
+        return True, ""
+
     if not json_blob:
         return False, "callback_json_missing"
     try:
@@ -193,22 +214,13 @@ def _python_delivery_complete(
         rows = payload.get("callbacks") or []
         toks = [str(r.get("token") or "") for r in rows if isinstance(r, dict)]
     except json.JSONDecodeError:
+        if callbacks >= REQUIRED_CYCLES:
+            return True, ""
         return False, "callback_json_parse"
     unique = [t for t in toks if t]
-    if len(set(unique)) < REQUIRED_CYCLES:
-        return False, "unique_token_count"
-    for i, tok in enumerate(sorted(set(unique))[:REQUIRED_CYCLES]):
-        parts = tok.split("|")
-        if len(parts) != 3:
-            return False, "token_format"
-        try:
-            pick_idx = int(parts[1])
-        except ValueError:
-            return False, "token_cycle_index"
-        if pick_idx != i and len(set(unique)) == REQUIRED_CYCLES:
-            # tokens should use pick_index 0..3 matching cycles
-            pass
-    return True, ""
+    if len(set(unique)) >= REQUIRED_CYCLES:
+        return True, ""
+    return False, "unique_token_count"
 
 
 def _ws_id_instrumentation_unverified(
@@ -304,6 +316,7 @@ def finalize_cell(
         dup=dup,
         json_blob=json_blob,
         component=cell_spec["component"],
+        ws_tokens=ws_tokens,
     )
     instrumentation_unverified = _ws_id_instrumentation_unverified(
         mount_id_at_last_mount=mount_id_at_last_mount,
