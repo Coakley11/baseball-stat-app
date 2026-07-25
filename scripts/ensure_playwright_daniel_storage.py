@@ -1,4 +1,10 @@
-"""One-time: save Playwright storage state for Daniel Real Account (env creds, not stored in repo)."""
+"""One-time: save Playwright storage state for Daniel Real Account.
+
+Prefer manual sign-in (no password in env):
+  python scripts/ensure_playwright_daniel_storage_manual.py
+
+Optional env-based login (SOLO_AUTH_EMAIL / SOLO_AUTH_PASSWORD) — never commit or log credentials.
+"""
 
 from __future__ import annotations
 
@@ -13,15 +19,19 @@ BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
 
 
 def main() -> int:
+    if "--manual" in sys.argv:
+        from ensure_playwright_daniel_storage_manual import main as manual_main
+
+        return manual_main()
     out = Path(os.environ.get("SOLO_AUTH_STORAGE_STATE", str(DEFAULT_OUT)))
     if out.is_file():
-        print(json.dumps({"ok": True, "already_exists": str(out)}))
+        print(json.dumps({"ok": True, "already_exists": True, "storage_created": True}))
         return 0
     email = os.environ.get("SOLO_AUTH_EMAIL", "").strip()
     password = os.environ.get("SOLO_AUTH_PASSWORD", "").strip()
     if not email or not password:
         print(
-            "Set SOLO_AUTH_EMAIL and SOLO_AUTH_PASSWORD in the environment, then re-run.",
+            "No storage file yet. Run: python scripts/ensure_playwright_daniel_storage_manual.py",
             file=sys.stderr,
         )
         return 2
@@ -46,7 +56,7 @@ def main() -> int:
             "() => /Signed in as/i.test(document.body ? document.body.innerText : '')"
         )
         if not signed_in:
-            print("Login did not reach Signed in state.", file=sys.stderr)
+            print(json.dumps({"authenticated": False, "storage_created": False}), file=sys.stderr)
             context.close()
             browser.close()
             return 3
@@ -54,7 +64,7 @@ def main() -> int:
         context.storage_state(path=str(out))
         context.close()
         browser.close()
-    print(f"Wrote {out}")
+    print(json.dumps({"authenticated": True, "storage_created": True}))
     return 0
 
 

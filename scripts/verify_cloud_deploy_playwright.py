@@ -41,6 +41,8 @@ ACCEPTABLE_DEPLOY_SHAS = frozenset(
         "d74c4b7",
         "8fade52",
         "aa51121",
+        "1771812",
+        "750fb9a",
     }
 )
 

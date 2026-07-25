@@ -730,6 +730,13 @@ def enable_delivery_diag_from_query(st: Any, session: dict[str, Any]) -> None:
     except ImportError:
         pass
     try:
+        from live_draft_paired_transition_diag import enable_paired_transition_diag
+
+        if session.get("_solo_delivery_diag_enabled") or session.get("_solo_bridge_transition_enabled"):
+            enable_paired_transition_diag(session)
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_component_diagnostics import bootstrap_solo_component_diag
 
         bootstrap_solo_component_diag(st, session)

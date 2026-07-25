@@ -528,6 +528,23 @@ ML_DERIVED_FEATURE_STATS = ["PA_est", "BB_rate", "K_rate", "SB_rate", "XBH", "XB
 
 st.set_page_config(page_title="⚾ Daniel Cohen Baseball Explorer ⚾", layout="wide")
 
+try:
+    from live_draft_solo_delivery_diag import enable_delivery_diag_from_query
+
+    enable_delivery_diag_from_query(st, st.session_state)
+    if st.session_state.get("_solo_delivery_diag_enabled") or st.session_state.get(
+        "_solo_bridge_transition_enabled"
+    ):
+        try:
+            from live_draft_paired_transition_diag import enable_paired_transition_diag, record_paired_checkpoint
+
+            enable_paired_transition_diag(st.session_state)
+            record_paired_checkpoint(st.session_state, "ultra_early_post_page_config", st=st)
+        except ImportError:
+            pass
+except ImportError:
+    pass
+
 import portfolio_polish as pp
 import portfolio_demo as pdemo
 
@@ -618,6 +635,12 @@ try:
             ):
                 enable_key_ownership_diag(st.session_state)
                 record_script_beginning_ownership(st.session_state, st=st)
+                try:
+                    from live_draft_paired_transition_diag import record_paired_checkpoint
+
+                    record_paired_checkpoint(st.session_state, "script_beginning_ownership", st=st)
+                except ImportError:
+                    pass
         except ImportError:
             pass
     except ImportError:
@@ -26777,6 +26800,21 @@ elif active_page == "Live Draft Room":
 
             if diag_enabled(st.session_state) and isinstance(st.session_state.get("live_draft_room"), dict):
                 record_active_room_run_end(st.session_state, st=st, source="live_draft_room_page_end")
+                try:
+                    from live_draft_paired_transition_diag import note_run_end_hint, record_paired_checkpoint
+
+                    note_run_end_hint(
+                        st.session_state,
+                        reason="live_draft_room_page_end",
+                        detail="before_finish_run",
+                    )
+                    record_paired_checkpoint(
+                        st.session_state,
+                        "active_room_script_run_end",
+                        st=st,
+                    )
+                except ImportError:
+                    pass
         except ImportError:
             pass
         finish_run(st.session_state, source="live_draft_room")

@@ -734,6 +734,12 @@ def render_bridge_transition_probe(
         ownership_b64 = key_ownership_b64_for_session(session)
     except ImportError:
         ownership_b64 = ""
+    try:
+        from live_draft_paired_transition_diag import paired_transition_b64_for_session
+
+        paired_b64 = paired_transition_b64_for_session(session)
+    except ImportError:
+        paired_b64 = ""
     st.markdown(
         f'<div id="solo-bridge-transition-diag" '
         f'data-present="1" '
@@ -762,6 +768,7 @@ def render_bridge_transition_probe(
         f'data-room-mutation-audit-b64="{audit_b64}" '
         f'data-callback-boundary-b64="{boundary_b64}" '
         f'data-key-ownership-b64="{ownership_b64}" '
+        f'data-paired-transition-b64="{paired_b64}" '
         f'data-streamlit-session-id="{str(session.get(STREAMLIT_SESSION_ID_KEY) or "").replace(chr(34), chr(39))}" '
         f'data-script-run-counter="{int(session.get(SCRIPT_RUN_COUNTER_KEY) or 0)}" '
         f'data-valid-events="{json.dumps(valid_events, default=str)[:4000].replace(chr(34), chr(39))}" '
@@ -788,6 +795,12 @@ def render_bridge_transition_probe(
         from live_draft_key_ownership_diag import render_key_ownership_probe
 
         render_key_ownership_probe(st, session)
+    except ImportError:
+        pass
+    try:
+        from live_draft_paired_transition_diag import render_paired_transition_probe
+
+        render_paired_transition_probe(st, session)
     except ImportError:
         pass
 
@@ -891,8 +904,20 @@ def try_bridge_transition_ldr_entry(st: Any, session: dict[str, Any], room: Any)
     try:
         from live_draft_key_ownership_diag import diag_enabled, record_active_room_run_end
 
-        if diag_enabled(session) and isinstance(session.get("live_draft_room"), dict):
-            record_active_room_run_end(session, st=st, source="bridge_ldr_entry_end")
+    if diag_enabled(session) and isinstance(session.get("live_draft_room"), dict):
+        record_active_room_run_end(session, st=st, source="bridge_ldr_entry_end")
+        try:
+            from live_draft_paired_transition_diag import note_run_end_hint, record_paired_checkpoint
+
+            note_run_end_hint(session, reason="bridge_ldr_entry_end", detail="before_st_stop_or_fallthrough")
+            record_paired_checkpoint(
+                session,
+                "bridge_ldr_entry_end",
+                st=st,
+                extra={"bridge_st_stop_expected": True},
+            )
+        except ImportError:
+            pass
     except ImportError:
         pass
     return True
