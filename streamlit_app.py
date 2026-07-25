@@ -581,6 +581,21 @@ try:
     enable_delivery_diag_from_query(st, st.session_state)
     if try_delivery_diag_app_shell_matrix(st, st.session_state):
         st.stop()
+    try:
+        from live_draft_room_mutation_audit import (
+            bump_script_run_marker,
+            enable_room_mutation_audit,
+            room_mutation_checkpoint,
+        )
+
+        if st.session_state.get("_solo_delivery_diag_enabled") or st.session_state.get(
+            "_solo_bridge_transition_enabled"
+        ):
+            enable_room_mutation_audit(st.session_state)
+            bump_script_run_marker(st.session_state)
+            room_mutation_checkpoint(st.session_state, "streamlit_app_script_begin", st=st)
+    except ImportError:
+        pass
 except ImportError:
     pass
 
@@ -22071,6 +22086,12 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
     try:
+        from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+        room_mutation_checkpoint(st.session_state, "live_draft_room_entry", st=st)
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_delivery_diag import enable_delivery_diag_from_query
 
         enable_delivery_diag_from_query(st, st.session_state)
@@ -22090,12 +22111,24 @@ elif active_page == "Live Draft Room":
     try:
         from live_draft_solo_persistent_wake import try_solo_persistent_wake_ldr_entry
 
+        try:
+            from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+            room_mutation_checkpoint(st.session_state, "before_early_persistent_wake", st=st)
+        except ImportError:
+            pass
         _matrix_ldr_room = st.session_state.get("live_draft_room")
         try_solo_persistent_wake_ldr_entry(
             st,
             st.session_state,
             _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
         )
+        try:
+            from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+            room_mutation_checkpoint(st.session_state, "after_early_persistent_wake_mount", st=st)
+        except ImportError:
+            pass
     except ImportError:
         pass
     try:
@@ -22367,6 +22400,12 @@ elif active_page == "Live Draft Room":
             skipped=bool(_skip_live_prep),
             last_rerun_source=_ldr_last_rerun,
         ):
+            try:
+                from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+                room_mutation_checkpoint(st.session_state, "before_room_restoration_reconciliation", st=st)
+            except ImportError:
+                pass
             if not _skip_live_prep:
                 try:
                     from live_draft_perf import PHASE_SETUP_PREPARE_LIVE_STATE, live_draft_perf_action
@@ -22377,6 +22416,12 @@ elif active_page == "Live Draft Room":
                         prepare_live_draft_state(st.session_state)
                 except ImportError:
                     prepare_live_draft_state(st.session_state)
+            try:
+                from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+                room_mutation_checkpoint(st.session_state, "after_room_restoration_reconciliation", st=st)
+            except ImportError:
+                pass
         try:
             from live_draft_render_trace import ldr_post_rerun_checkpoint
 
@@ -22541,7 +22586,14 @@ elif active_page == "Live Draft Room":
 
                 discard_live_draft_and_start_over(st.session_state, st=st)
             except Exception:
-                st.session_state.pop("live_draft_room", None)
+                try:
+                    from live_draft_room_mutation_audit import audited_pop_live_draft_room
+
+                    audited_pop_live_draft_room(
+                        st.session_state, reason="ldr_early_lifecycle_deleting_fallback", st=st
+                    )
+                except ImportError:
+                    st.session_state.pop("live_draft_room", None)
                 st.session_state.pop("live_draft_state", None)
                 st.session_state.pop("active_shared_draft_room_code", None)
             st.session_state["_live_draft_deleting"] = "done"
@@ -23705,6 +23757,12 @@ elif active_page == "Live Draft Room":
     # the old board in the same pass.
     _live_draft_lifecycle_room = room if isinstance(room, dict) else None
     try:
+        from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+        room_mutation_checkpoint(st.session_state, "before_setup_lobby_branch", st=st)
+    except ImportError:
+        pass
+    try:
         from live_draft_completion import (
             LIFECYCLE_ACTIVE_DRAFT,
             LIFECYCLE_DELETING,
@@ -23739,7 +23797,14 @@ elif active_page == "Live Draft Room":
 
                 discard_live_draft_and_start_over(st.session_state, st=st)
             except Exception:
-                st.session_state.pop("live_draft_room", None)
+                try:
+                    from live_draft_room_mutation_audit import audited_pop_live_draft_room
+
+                    audited_pop_live_draft_room(
+                        st.session_state, reason="ldr_early_lifecycle_deleting_fallback", st=st
+                    )
+                except ImportError:
+                    st.session_state.pop("live_draft_room", None)
                 st.session_state.pop("live_draft_state", None)
                 st.session_state.pop("active_shared_draft_room_code", None)
             st.session_state["_live_draft_deleting"] = "done"
@@ -24329,6 +24394,12 @@ elif active_page == "Live Draft Room":
         _live_draft_lifecycle_room, dict
     ):
         try:
+            from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+            room_mutation_checkpoint(st.session_state, "before_active_draft_rendering", st=st)
+        except ImportError:
+            pass
+        try:
             from live_draft_creation_trace import mark_active_draft_page_entered
 
             mark_active_draft_page_entered(
@@ -24513,7 +24584,14 @@ elif active_page == "Live Draft Room":
                 "complete",
                 "completed",
             ):
-                st.session_state.pop("live_draft_room", None)
+                try:
+                    from live_draft_room_mutation_audit import audited_pop_live_draft_room
+
+                    audited_pop_live_draft_room(
+                        st.session_state, reason="shared_snap_draft_complete_ended", st=st
+                    )
+                except ImportError:
+                    st.session_state.pop("live_draft_room", None)
                 st.info("This shared draft has ended.")
                 st.rerun()
         except ImportError:
@@ -24527,7 +24605,14 @@ elif active_page == "Live Draft Room":
             if is_live_draft_ended_tombstoned(
                 st.session_state, room_code=_code, draft_room_id=_did
             ):
-                st.session_state.pop("live_draft_room", None)
+                try:
+                    from live_draft_room_mutation_audit import audited_pop_live_draft_room
+
+                    audited_pop_live_draft_room(
+                        st.session_state, reason="tombstoned_room_reject", st=st
+                    )
+                except ImportError:
+                    st.session_state.pop("live_draft_room", None)
                 st.session_state.pop("live_draft_state", None)
                 st.info("That Live Draft session has ended. Configure a new draft below.")
                 st.rerun()

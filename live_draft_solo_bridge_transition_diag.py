@@ -434,6 +434,12 @@ def _chain_persist_key(session: dict[str, Any], ctrl: str, room: dict[str, Any] 
 def _transition_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key: str) -> None:
     from live_draft_solo_heartbeat import _coerce_wake_token
 
+    try:
+        from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+        room_mutation_checkpoint(session, "callback_entry", st=st, extra={"widget_key": key})
+    except ImportError:
+        pass
     ctrl = str(session.get(CONTROL_KEY) or "?")
     phase = str(session.get(PHASE_KEY) or "setup")
     token = _coerce_wake_token(raw)
@@ -464,6 +470,17 @@ def _transition_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             token=token,
         )
         return
+    try:
+        from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+        room_mutation_checkpoint(
+            session,
+            "before_token_validation",
+            st=st,
+            extra={"token": token, "expected": expected},
+        )
+    except ImportError:
+        pass
     if token != expected:
         note_delivery_stage(
             session,
@@ -542,6 +559,22 @@ def render_bridge_transition_probe(
     prov_b64 = _b64_json(provenance[-40:])
     ledger_b64 = _b64_json(room_ledger[-48:])
     mut_b64 = _b64_json(mutation_log[-24:])
+    try:
+        from live_draft_room_mutation_audit import _b64_json as _audit_b64
+        from live_draft_room_mutation_audit import (
+            checkpoint_ledger,
+            first_present_to_absent,
+            mutation_ledger,
+        )
+
+        audit_payload = {
+            "mutations": mutation_ledger(session)[-80:],
+            "checkpoints": checkpoint_ledger(session)[-40:],
+            "first_present_to_absent": first_present_to_absent(session),
+        }
+        audit_b64 = _audit_b64(audit_payload)
+    except ImportError:
+        audit_b64 = ""
     st.markdown(
         f'<div id="solo-bridge-transition-diag" '
         f'data-present="1" '
@@ -567,6 +600,7 @@ def render_bridge_transition_probe(
         f'data-provenance-b64="{prov_b64}" '
         f'data-room-ledger-b64="{ledger_b64}" '
         f'data-room-mutation-log-b64="{mut_b64}" '
+        f'data-room-mutation-audit-b64="{audit_b64}" '
         f'data-streamlit-session-id="{str(session.get(STREAMLIT_SESSION_ID_KEY) or "").replace(chr(34), chr(39))}" '
         f'data-script-run-counter="{int(session.get(SCRIPT_RUN_COUNTER_KEY) or 0)}" '
         f'data-valid-events="{json.dumps(valid_events, default=str)[:4000].replace(chr(34), chr(39))}" '
@@ -577,6 +611,12 @@ def render_bridge_transition_probe(
         f'></div>',
         unsafe_allow_html=True,
     )
+    try:
+        from live_draft_room_mutation_audit import render_room_mutation_audit_probe
+
+        render_room_mutation_audit_probe(st, session)
+    except ImportError:
+        pass
 
 
 def try_bridge_transition_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> bool:
@@ -591,6 +631,12 @@ def try_bridge_transition_ldr_entry(st: Any, session: dict[str, Any], room: Any)
     room_dict = _resolve_room(session, room)
     _observe_room_state(session, room_dict, ctrl=ctrl)
     _log_room_status(session, room_dict, phase=f"entry_{ctrl}")
+    try:
+        from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+        room_mutation_checkpoint(session, "bridge_transition_ldr_entry", st=st)
+    except ImportError:
+        pass
 
     session[SOLO_DELIVERY_META_KEY] = {
         **dict(session.get(SOLO_DELIVERY_META_KEY) or {}),
@@ -615,6 +661,13 @@ def try_bridge_transition_ldr_entry(st: Any, session: dict[str, Any], room: Any)
 
     persist_key = _chain_persist_key(session, ctrl, room_dict)
 
+    try:
+        from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+        room_mutation_checkpoint(session, "before_bridge_transition_wake_mount", st=st)
+    except ImportError:
+        pass
+
     from solo_countdown_wake_micro_core import render_micro_isolation_once
 
     render_micro_isolation_once(
@@ -635,6 +688,13 @@ def try_bridge_transition_ldr_entry(st: Any, session: dict[str, Any], room: Any)
         suppress_immediate_session_on_change=True,
         chain_persist_key=persist_key,
     )
+
+    try:
+        from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+        room_mutation_checkpoint(session, "after_bridge_transition_wake_mount", st=st)
+    except ImportError:
+        pass
 
     render_bridge_transition_probe(
         st,

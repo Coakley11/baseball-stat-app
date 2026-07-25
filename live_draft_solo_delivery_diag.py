@@ -709,6 +709,13 @@ def enable_delivery_diag_from_query(st: Any, session: dict[str, Any]) -> None:
     except ImportError:
         pass
     try:
+        from live_draft_room_mutation_audit import enable_room_mutation_audit
+
+        if session.get("_solo_delivery_diag_enabled") or session.get("_solo_bridge_transition_enabled"):
+            enable_room_mutation_audit(session)
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_component_diagnostics import bootstrap_solo_component_diag
 
         bootstrap_solo_component_diag(st, session)

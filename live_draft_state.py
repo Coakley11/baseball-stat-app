@@ -193,9 +193,20 @@ def clear_foreign_live_draft_state(session: dict[str, Any], *, reason: str) -> N
     # Never wipe an active Shared Multiplayer join (cross-workspace guest).
     if _session_is_shared_room_participant(session):
         session["_live_draft_restore_blocked_reason"] = f"skipped_clear_mp:{reason}"
+        try:
+            from live_draft_room_mutation_audit import record_skipped_restore
+
+            record_skipped_restore(session, reason=f"clear_foreign_skipped_mp:{reason}")
+        except ImportError:
+            pass
         return
+    try:
+        from live_draft_room_mutation_audit import audited_pop_live_draft_room
+
+        audited_pop_live_draft_room(session, reason=f"clear_foreign:{reason}")
+    except ImportError:
+        session.pop(LIVE_DRAFT_ROOM_KEY, None)
     session.pop(LIVE_DRAFT_STATE_KEY, None)
-    session.pop(LIVE_DRAFT_ROOM_KEY, None)
     session["_live_draft_restore_blocked_reason"] = reason
     pf = session.get("page_filter_state")
     if isinstance(pf, dict):
@@ -1077,6 +1088,12 @@ def write_canonical_live_draft_state(
     local_edit: bool = False,
 ) -> dict[str, Any]:
     """Write JSON-safe canonical live_draft_state; mirror runtime room when provided."""
+    try:
+        from live_draft_room_mutation_audit import audit_before_write_canonical
+
+        audit_before_write_canonical(session, room, reason=reason or "write_canonical")
+    except ImportError:
+        pass
     if room is None:
         session.pop(LIVE_DRAFT_STATE_KEY, None)
         session[LIVE_DRAFT_ROOM_KEY] = None
@@ -1240,7 +1257,12 @@ def _room_blocked_from_auto_restore(
 
 def _clear_blocked_completed_runtime(session: dict[str, Any], *, reason: str) -> None:
     session["_live_draft_restore_blocked_reason"] = reason
-    session.pop(LIVE_DRAFT_ROOM_KEY, None)
+    try:
+        from live_draft_room_mutation_audit import audited_pop_live_draft_room
+
+        audited_pop_live_draft_room(session, reason=f"clear_blocked_runtime:{reason}")
+    except ImportError:
+        session.pop(LIVE_DRAFT_ROOM_KEY, None)
     session.pop(LIVE_DRAFT_STATE_KEY, None)
     pf = session.get("page_filter_state")
     if isinstance(pf, dict):
@@ -1250,6 +1272,12 @@ def _clear_blocked_completed_runtime(session: dict[str, Any], *, reason: str) ->
 
 
 def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+        room_mutation_checkpoint(session, "before_prepare_live_draft_state_body")
+    except ImportError:
+        pass
     if session.get("_live_draft_manual_pick_in_flight"):
         room = session.get(LIVE_DRAFT_ROOM_KEY)
         if is_runtime_room(room):
@@ -1393,6 +1421,12 @@ def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | 
                     write_canonical_live_draft_state(session, restored, reason="page_filter_hydrate", local_edit=False)
                     return _finish_prepare(session, restored)
     final = room if isinstance(room, dict) else None
+    try:
+        from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+        room_mutation_checkpoint(session, "after_prepare_live_draft_state_body")
+    except ImportError:
+        pass
     return _finish_prepare(session, final)
 
 

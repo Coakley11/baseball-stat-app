@@ -227,6 +227,17 @@ def process_solo_component_wake(
     delivery_via: str = "",
 ) -> bool:
     """Consume Streamlit component expire token — sole Cloud wake delivery."""
+    try:
+        from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+        room_mutation_checkpoint(
+            session,
+            "process_solo_component_wake_entry",
+            st=st,
+            extra={"delivery_via": delivery_via},
+        )
+    except ImportError:
+        pass
     token = _coerce_wake_token(component_value)
     if not token:
         return False
