@@ -728,6 +728,12 @@ def render_bridge_transition_probe(
         boundary_b64 = callback_boundary_b64_for_session(session)
     except ImportError:
         boundary_b64 = ""
+    try:
+        from live_draft_key_ownership_diag import key_ownership_b64_for_session
+
+        ownership_b64 = key_ownership_b64_for_session(session)
+    except ImportError:
+        ownership_b64 = ""
     st.markdown(
         f'<div id="solo-bridge-transition-diag" '
         f'data-present="1" '
@@ -755,6 +761,7 @@ def render_bridge_transition_probe(
         f'data-room-mutation-log-b64="{mut_b64}" '
         f'data-room-mutation-audit-b64="{audit_b64}" '
         f'data-callback-boundary-b64="{boundary_b64}" '
+        f'data-key-ownership-b64="{ownership_b64}" '
         f'data-streamlit-session-id="{str(session.get(STREAMLIT_SESSION_ID_KEY) or "").replace(chr(34), chr(39))}" '
         f'data-script-run-counter="{int(session.get(SCRIPT_RUN_COUNTER_KEY) or 0)}" '
         f'data-valid-events="{json.dumps(valid_events, default=str)[:4000].replace(chr(34), chr(39))}" '
@@ -775,6 +782,12 @@ def render_bridge_transition_probe(
         from live_draft_callback_boundary_diag import render_callback_boundary_probe
 
         render_callback_boundary_probe(st, session)
+    except ImportError:
+        pass
+    try:
+        from live_draft_key_ownership_diag import render_key_ownership_probe
+
+        render_key_ownership_probe(st, session)
     except ImportError:
         pass
 

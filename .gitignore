@@ -8,6 +8,7 @@ venv/
 **/__pycache__/
 *.pyo
 data/app_state.json
+data/playwright_daniel_auth.storage.json
 data/*activity_fallback.json
 data/*_activity_fallback.json
 *.db

@@ -551,6 +551,13 @@ def _comparison_players_from_workspace_blob(state: dict[str, Any]) -> list[str] 
 def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     """Apply one authoritative workspace blob atomically (page + all page_filter_state)."""
     ss = st.session_state
+    try:
+        from live_draft_key_ownership_diag import diag_enabled, record_key_ownership
+
+        if diag_enabled(ss):
+            record_key_ownership(ss, "before_apply_baseball_disk_state", st=st)
+    except ImportError:
+        pass
     identity_snapshot: dict[str, Any] = {}
     try:
         from suite_identity_guard import snapshot_protected_browser_identity
@@ -1406,6 +1413,13 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             pass
 
     ss["_suite_cloud_workspace_applied"] = True
+    try:
+        from live_draft_key_ownership_diag import diag_enabled, record_key_ownership
+
+        if diag_enabled(ss):
+            record_key_ownership(ss, "after_apply_baseball_disk_state", st=st)
+    except ImportError:
+        pass
 
 
 def apply_baseball_session_defaults(st: Any) -> None:
@@ -1461,6 +1475,13 @@ def warm_startup_fingerprint(session: dict[str, Any]) -> str:
 def prepare_baseball_workspace(st: Any) -> bool:
     """Single authoritative cloud/disk workspace sync before sidebar widgets."""
     ss = st.session_state
+    try:
+        from live_draft_key_ownership_diag import diag_enabled, record_key_ownership
+
+        if diag_enabled(ss):
+            record_key_ownership(ss, "before_prepare_baseball_workspace", st=st)
+    except ImportError:
+        pass
     # Final ownership clamp BEFORE any workspace-scoped cloud/disk load.
     try:
         from suite_auth import hard_clamp_owned_workspace_before_scoped_load
@@ -1676,6 +1697,13 @@ def prepare_baseball_workspace(st: Any) -> bool:
         ss.pop("_suite_workspace_force_sync", None)
         ss.pop("_suite_auth_just_logged_in", None)
         ss.pop("_suite_auth_just_signed_in", None)
+    try:
+        from live_draft_key_ownership_diag import diag_enabled, record_key_ownership
+
+        if diag_enabled(ss):
+            record_key_ownership(ss, "after_prepare_baseball_workspace", st=st, extra={"warm_skip": warm_skip})
+    except ImportError:
+        pass
     return result
 
 
