@@ -131,7 +131,7 @@ def run_placement(
         draft = execute_solo_draft_start_workflow(page, url, navigate=False)
         draft_ok = bool(draft.get("start_success"))
         room_id = str(draft.get("room_id") or "")
-    obs_ready = bool(probe.get("key")) if placement == "P1" else False
+    obs_ready = False
     if placement != "P1":
         obs_deadline = time.time() + 60
         while time.time() < obs_deadline:
@@ -197,6 +197,8 @@ def run_placement(
     elif placement != "P1" and not draft_ok:
         row["invalid_reason"] = "draft_start_failed"
     row["verdict"] = classify_row(row)
+    if placement == "P1" and row["component_key"]:
+        row["observation_ready"] = True
     row["ws_frame_count"] = len(new_frames)
     return row
 
