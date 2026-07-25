@@ -151,6 +151,13 @@ def render_early_bridge_probe(
 
 def try_early_bridge_ldr_entry(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
     """Mount at LDR early entry; never st.stop — active draft may render underneath."""
+    try:
+        from live_draft_solo_bridge_transition_diag import bridge_transition_active
+
+        if bridge_transition_active(st, session):
+            return False
+    except ImportError:
+        pass
     if not early_bridge_active(st, session):
         return False
     if not delivery_diag_active(st, session):

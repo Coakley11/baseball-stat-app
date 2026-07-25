@@ -221,11 +221,27 @@ def main() -> int:
         initial_pick = state_before.get("pick")
         prev_client: dict[str, Any] = {}
         remount_log: list[dict[str, Any]] = []
+        was_active_room = bool(active)
+        returned_to_setup = False
+
+        def _in_setup_lobby(text: str) -> bool:
+            return (
+                "Start New Live Draft" in text
+                and "Pause Draft" not in text
+                and ("Draft Setup" in text or "Draft Mode" in text)
+            )
 
         while time.time() - poll_t0 < 36:
             snap = scrape_snapshot(page)
             snap["elapsed_s"] = round(time.time() - poll_t0, 1)
             snap["state"] = scrape_state(page)
+            body_text = str(snap.get("text") or "")
+            if int(dom_counts(page).get("Pause Draft") or 0) >= 1 or "Solo live draft started" in body_text:
+                was_active_room = True
+            if was_active_room and _in_setup_lobby(body_text):
+                returned_to_setup = True
+            snap["setup_lobby"] = _in_setup_lobby(body_text)
+            snap["was_active_room"] = was_active_room
             report["samples"].append(snap)
             client = client_hit(snap)
             if client:
@@ -369,8 +385,16 @@ def main() -> int:
     report["server_diag_timer"] = mount.get("diag_timer")
     report["server_diag_remaining"] = mount.get("diag_remaining")
     report["server_diag_deadline"] = mount.get("diag_deadline")
+    report["was_active_room"] = any(s.get("was_active_room") for s in report["samples"])
+    report["returned_to_setup_during_observation"] = any(
+        s.get("setup_lobby") and s.get("was_active_room") for s in report["samples"]
+    )
 
-    if not ten_second_confirmed:
+    if not report.get("draft_active"):
+        report["decision"] = "INVALID_draft_never_reached_active_room"
+    elif report.get("returned_to_setup_during_observation"):
+        report["decision"] = "INVALID_returned_to_setup_lobby_during_observation"
+    elif not ten_second_confirmed:
         report["decision"] = "invalid_test_setup_timer_not_10s"
     elif report["browser_deadline_crossed"] and report["component_value_sent"] and report["exactly_one_pick"]:
         report["decision"] = "PASS_controlled_10s_expiration_one_pick"
@@ -413,7 +437,8 @@ def main() -> int:
         )
     )
     print("saved", OUT)
-    return 0 if report["decision"].startswith("PASS") else 1
+    invalid = report["decision"].startswith("INVALID") or report["decision"].startswith("invalid_")
+    return 0 if report["decision"].startswith("PASS") else (2 if invalid else 1)
 
 
 if __name__ == "__main__":

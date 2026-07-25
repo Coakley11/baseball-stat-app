@@ -33,6 +33,13 @@ def solo_persistent_wake_active(session: dict[str, Any]) -> bool:
 
 def _diag_blocks_persistent_wake(st: Any, session: dict[str, Any]) -> bool:
     try:
+        from live_draft_solo_bridge_transition_diag import bridge_transition_active
+
+        if bridge_transition_active(st, session):
+            return True
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_early_bridge_diag import early_bridge_active
 
         if early_bridge_active(st, session):
@@ -239,6 +246,15 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
 
 def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
     """After widget values bind, deliver expire token from session_state (on_change equivalent)."""
+    if session.get("_solo_persistent_wake_flush_disabled"):
+        return
+    try:
+        from live_draft_solo_bridge_transition_diag import bridge_transition_active
+
+        if bridge_transition_active(st, session):
+            return
+    except ImportError:
+        pass
     if not solo_persistent_wake_active(session):
         return
     key = solo_persistent_wake_widget_key(session)
