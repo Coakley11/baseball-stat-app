@@ -23,7 +23,7 @@ SCRAPE_JS = """() => {
   let trans = null;
   let client = null;
   let chain = null;
-  const iframes = [];
+  const alerts = [];
   const text = roots().map(x=>x.body?x.body.innerText:'').join('\\n');
   for (const root of roots()) {
     const t = root.querySelector('#solo-bridge-transition-diag');
@@ -34,6 +34,7 @@ SCRAPE_JS = """() => {
       actionable: t.getAttribute('data-actionable')||'',
       token: t.getAttribute('data-token')||'',
       deadline: t.getAttribute('data-deadline')||'',
+      expected_expire_token: t.getAttribute('data-expected-expire-token')||'',
       token_before: t.getAttribute('data-token-before')||'',
       deadline_before: t.getAttribute('data-deadline-before')||'',
       token_after: t.getAttribute('data-token-after')||'',
@@ -42,13 +43,10 @@ SCRAPE_JS = """() => {
       args_after: t.getAttribute('data-args-after')||'',
       room_status: t.getAttribute('data-room-status')||'',
       room_id: t.getAttribute('data-room-id')||'',
-      on_change_count: t.getAttribute('data-on-change-count')||'',
+      matching_on_change_count: t.getAttribute('data-matching-on-change-count')||'',
+      matching_raw_count: t.getAttribute('data-matching-raw-count')||'',
       stages: t.getAttribute('data-stages')||'',
-      widget_id_before: t.getAttribute('data-widget-id-before')||'',
-      widget_id_after: t.getAttribute('data-widget-id-after')||'',
-      client_remounts: t.getAttribute('data-client-remounts')||'',
-      same_key: t.getAttribute('data-same-key')||'',
-      token_unchanged: t.getAttribute('data-token-unchanged')||'',
+      post_activation: t.getAttribute('data-post-activation')||'',
       room_status_log: t.getAttribute('data-room-status-log')||'',
     };
     const c = root.querySelector('#solo-expire-client');
@@ -61,20 +59,19 @@ SCRAPE_JS = """() => {
       remaining_ms: c.getAttribute('data-remaining-ms')||'',
     };
     const ch = root.querySelector('#solo-expire-chain');
-    if (ch) chain = {
-      last: ch.getAttribute('data-last')||'',
-      chain: ch.getAttribute('data-chain')||'',
-      owner: ch.getAttribute('data-owner')||'',
-    };
-    for (const f of root.querySelectorAll('iframe')) {
-      try {
-        iframes.push({ src: (f.src||'').slice(0,500), path: f.getAttribute('data-testid')||'' });
-      } catch(e){}
+    if (ch) chain = { last: ch.getAttribute('data-last')||'', chain: ch.getAttribute('data-chain')||'', owner: ch.getAttribute('data-owner')||'' };
+    for (const el of root.querySelectorAll('[data-testid=\"stAlert\"], .stException')) {
+      const a = String(el.innerText||'').replace(/\\s+/g,' ').trim();
+      if (a) alerts.push(a.slice(0,400));
     }
   }
-  const setup_lobby = /Start New Live Draft/i.test(text) && !/Pause Draft/i.test(text) && /Draft Setup/i.test(text);
-  const active_room = /Pause Draft/i.test(text) || /Solo live draft started/i.test(text);
-  return { trans, client, chain, iframes, text_len: text.length, setup_lobby: setup_lobby && !active_room, active_room, room_id: (text.match(/Room ID\\s+([A-F0-9]+)/i)||[])[1]||'' };
+  const has_pause = /Pause Draft/i.test(text);
+  const setup_lobby = /Start New Live Draft/i.test(text) && /Draft Setup|Draft Mode/i.test(text);
+  const active_room = has_pause || /Solo live draft started/i.test(text);
+  const lobby_only = setup_lobby && !has_pause && !/Solo live draft started/i.test(text);
+  const room_id = (text.match(/Room ID\\s+([A-F0-9]+)/i)||[])[1]||'';
+  const end_delete = (text.match(/End\\/Delete Draft/gi)||[]).length;
+  return { trans, client, chain, text_snippet: text.slice(0,1200), alerts: [...new Set(alerts)].slice(0,6), lobby_only, active_room, has_pause, room_id, end_delete_visible: end_delete };
 }"""
 
 
@@ -99,10 +96,6 @@ def _widget_ids_from_ws(ws_frames: list[dict[str, Any]], key_sub: str) -> tuple[
                 if not mount_id:
                     mount_id = wid
                 send_id = wid
-        if key_sub in snippet and "solo_countdown_wake" in snippet:
-            for match in re.finditer(r"\$\$ID-([a-f0-9-]+)-([^\\\"'\s]+)", snippet):
-                wid = f"$$ID-{match.group(1)}-{match.group(2)}"
-                send_id = wid
     if mount_id and not send_id:
         send_id = mount_id
     return mount_id, send_id
@@ -112,163 +105,214 @@ def _stages(chain: str) -> set[str]:
     return {p for p in str(chain or "").split("|") if p}
 
 
+def _count_matching_stages(stages: str, expected: str) -> dict[str, int]:
+    if not expected:
+        return {"matching_on_change": 0, "matching_raw": 0}
+    oc = stages.count("on_change_callback_entry_matching_token")
+    raw = stages.count("session_state_raw_received_matching_token")
+    return {"matching_on_change": oc, "matching_raw": raw}
+
+
 def _classify_control(
-    control: str,
     *,
     draft_ok: bool,
     returned_to_setup: bool,
-    probe: dict[str, Any],
+    setup_return_detail: dict[str, Any],
+    room_latch_ok: bool,
+    post_activation_seen: bool,
+    expected_token: str,
     client: dict[str, Any],
-    delivery_stages: str,
+    matching: dict[str, int],
 ) -> tuple[str, str]:
     if not draft_ok:
         return "INVALID", "draft_start_failed"
     if returned_to_setup:
         return "INVALID", "returned_to_setup_lobby_during_observation"
-    client_chain = str(client.get("chain") or "")
-    cs = _stages(client_chain)
-    ds = _stages(delivery_stages)
-    oc = delivery_stages.count("on_change_callback_entry")
-    raw = delivery_stages.count("session_state_raw_received")
-    if "browser_deadline_crossed" not in cs and "component_value_sent" not in cs:
-        if not probe.get("token"):
-            return "INVALID", "probe_never_mounted"
-        return "FAIL", "no_browser_zero_crossing"
-    if "component_value_sent" in cs and raw >= 1 and oc >= 1:
+    if not room_latch_ok:
+        return "INVALID", "latched_room_id_not_stable_in_progress"
+    if not post_activation_seen:
+        return "INVALID", "post_activation_timer_never_armed"
+    if not expected_token:
+        return "INVALID", "expected_expire_token_missing"
+    cs = _stages(str(client.get("chain") or ""))
+    if "browser_deadline_crossed" not in cs or "component_value_sent" not in cs:
+        return "FAIL", "no_browser_zero_crossing_after_activation"
+    if matching.get("matching_on_change", 0) >= 1 and matching.get("matching_raw", 0) >= 1:
         return "PASS", ""
-    if "component_value_sent" in cs and (raw == 0 and oc == 0):
-        return "FAIL", "client_sent_no_python_on_change"
-    return "INCONCLUSIVE", "partial_chain"
+    if "component_value_sent" in cs:
+        return "FAIL", "client_sent_no_matching_token_on_change"
+    return "FAIL", "no_browser_zero_crossing_after_activation"
 
 
-def _interpret(a_verdict: str, b_verdict: str) -> dict[str, str]:
-    if a_verdict == "INVALID":
+def _setup_return_reason(snapshots: list[dict[str, Any]]) -> str:
+    if not snapshots:
+        return ""
+    last = snapshots[-1]
+    alerts = last.get("alerts") or []
+    if alerts:
+        return str(alerts[0])[:500]
+    if last.get("end_delete_visible"):
+        return "setup_lobby_visible_with_end_delete_control"
+    return "two_consecutive_lobby_only_samples_after_in_progress"
+    if a_verdict == "INVALID" or b_verdict == "INVALID":
+        if a_verdict == "INVALID":
+            return {
+                "conclusion": "invalid_harness_or_control_a",
+                "detail": "Control A invalid — fix harness or re-establish baseline before production changes.",
+            }
         return {
-            "conclusion": "reestablish_bridge_control",
-            "detail": "Control A invalid — original bridge baseline not reproducible in this harness.",
+            "conclusion": "invalid_harness_control_b",
+            "detail": "Control B invalid — room or post-activation observation failed.",
         }
-    if a_verdict == "PASS" and b_verdict == "FAIL":
+    if a_verdict == "PASS" and b_verdict in ("FAIL", "VALID_FAIL"):
         return {
-            "conclusion": "inert_to_active_transition_defect",
-            "detail": "Stable key insufficient; inert→active argument change or component replacement breaks delivery.",
+            "conclusion": "actionable_transition_defect",
+            "detail": "Only difference is actionable false→true; same key and post-activation token.",
         }
     if a_verdict == "PASS" and b_verdict == "PASS":
         return {
             "conclusion": "production_renderer_delta",
-            "detail": "Transition is not the sole defect — compare production renderer/surrounding code outside this paired mount.",
+            "detail": "Paired mount delivers for both; production differs outside this diagnostic.",
         }
-    if a_verdict == "FAIL" and b_verdict == "FAIL":
+    if a_verdict in ("FAIL", "VALID_FAIL"):
         return {
-            "conclusion": "shared_delivery_failure",
-            "detail": "Both controls fail delivery — inspect shared early LDR path or Cloud harness.",
+            "conclusion": "reestablish_bridge_control",
+            "detail": "Control A did not pass — re-establish bridge baseline before production changes.",
         }
-    return {
-        "conclusion": "inconclusive",
-        "detail": f"Control A={a_verdict}, Control B={b_verdict} — refine harness or extend observation.",
-    }
+    return {"conclusion": "inconclusive", "detail": f"A={a_verdict}, B={b_verdict}"}
 
 
-def run_one_control(
-    page,
-    control: str,
-    ws_frames: list[dict[str, Any]],
-) -> dict[str, Any]:
+def run_one_control(page, control: str, ws_frames: list[dict[str, Any]]) -> dict[str, Any]:
+    from cloud_streamlit_wake import goto_and_wake
+    from run_solo_clean_verification import clear_stale_solo_draft
     from solo_draft_start_harness import execute_solo_draft_start_workflow
 
     url = setup_url(control)
     ws_baseline = len(ws_frames)
 
-    draft = execute_solo_draft_start_workflow(page, url, navigate=True)
-    draft_ok = bool(draft.get("start_success"))
+    goto_and_wake(page, url, timeout_s=240)
+    clear_stale_solo_draft(page)
 
-    pre = page.evaluate(SCRAPE_JS)
-    widget_before = ""
-    new_ws_pre = ws_frames[ws_baseline:]
-    widget_before, _ = _widget_ids_from_ws(new_ws_pre, "solo_persistent")
+    draft = execute_solo_draft_start_workflow(page, url, navigate=False)
+    draft_ok = bool(draft.get("start_success"))
+    latched_room_id = str(draft.get("room_id") or "").strip().upper()
+
+    widget_before, _ = _widget_ids_from_ws(ws_frames[ws_baseline:], "solo_persistent")
 
     t0 = time.time()
     samples: list[dict[str, Any]] = []
-    was_active = False
+    was_in_progress = False
+    consecutive_lobby = 0
     returned_to_setup = False
+    setup_return_snapshots: list[dict[str, Any]] = []
+    post_activation_seen = False
+    room_id_mismatches: list[dict[str, Any]] = []
 
-    def _in_setup_lobby(text: str) -> bool:
-        active = "Pause Draft" in text or "Solo live draft started" in text
-        return (
-            not active
-            and "Start New Live Draft" in text
-            and ("Draft Setup" in text or "Draft Mode" in text)
-        )
-
-    consecutive_setup = 0
     while time.time() - t0 < OBSERVATION_S:
         snap = page.evaluate(SCRAPE_JS)
         snap["elapsed_s"] = round(time.time() - t0, 1)
-        samples.append(snap)
-        if snap.get("active_room"):
-            was_active = True
-            consecutive_setup = 0
-        elif was_active and snap.get("setup_lobby"):
-            consecutive_setup += 1
+        probe = dict(snap.get("trans") or {})
+        if probe.get("post_activation") in ("1", "true") or probe.get("expected_expire_token"):
+            post_activation_seen = True
+        page_room = str(snap.get("room_id") or probe.get("room_id") or "").strip().upper()
+        if snap.get("has_pause") or snap.get("active_room"):
+            was_in_progress = True
+        if latched_room_id and page_room and page_room != latched_room_id:
+            room_id_mismatches.append(
+                {"elapsed_s": snap["elapsed_s"], "latched": latched_room_id, "seen": page_room}
+            )
+        if was_in_progress and snap.get("lobby_only"):
+            consecutive_lobby += 1
+            setup_return_snapshots.append(
+                {
+                    "elapsed_s": snap["elapsed_s"],
+                    "alerts": snap.get("alerts") or [],
+                    "page_room_id": page_room,
+                    "latched_room_id": latched_room_id,
+                    "end_delete_visible": snap.get("end_delete_visible"),
+                    "text_snippet": str(snap.get("text_snippet") or "")[:500],
+                }
+            )
         else:
-            consecutive_setup = 0
-        if consecutive_setup >= 2:
+            consecutive_lobby = 0
+        if consecutive_lobby >= 2:
             returned_to_setup = True
+        samples.append(snap)
         page.wait_for_timeout(2000)
 
     final = page.evaluate(SCRAPE_JS)
     client = dict(final.get("client") or {})
     probe = dict(final.get("trans") or {})
-    chain = dict(final.get("chain") or {})
-    new_ws = ws_frames[ws_baseline:]
-    widget_mount, widget_send = _widget_ids_from_ws(new_ws, "solo_persistent")
-
     delivery_stages = str(probe.get("stages") or "")
-    verdict, reason = _classify_control(
-        control,
-        draft_ok=draft_ok,
-        returned_to_setup=returned_to_setup,
-        probe=probe,
-        client=client,
-        delivery_stages=delivery_stages,
+    expected_token = str(probe.get("expected_expire_token") or probe.get("token_after") or "")
+    matching = _count_matching_stages(delivery_stages, expected_token)
+    matching["matching_on_change"] = max(
+        matching["matching_on_change"], int(probe.get("matching_on_change_count") or 0)
+    )
+    matching["matching_raw"] = max(matching["matching_raw"], int(probe.get("matching_raw_count") or 0))
+
+    new_ws = ws_frames[ws_baseline:]
+    widget_after, widget_send = _widget_ids_from_ws(new_ws, "solo_persistent")
+
+    room_latch_ok = bool(
+        draft_ok
+        and latched_room_id
+        and was_in_progress
+        and not returned_to_setup
+        and not room_id_mismatches
     )
 
-    pre_trans = dict(pre.get("trans") or {})
-    token_before = probe.get("token_before") or pre_trans.get("token") or ""
-    token_after = probe.get("token_after") or probe.get("token") or ""
-    wid_before = widget_before or probe.get("widget_id_before") or ""
-    wid_after = widget_mount or probe.get("widget_id_after") or ""
+    verdict, reason = _classify_control(
+        draft_ok=draft_ok,
+        returned_to_setup=returned_to_setup,
+        setup_return_detail=setup_return_snapshots[-1] if setup_return_snapshots else {},
+        room_latch_ok=room_latch_ok,
+        post_activation_seen=post_activation_seen,
+        expected_token=expected_token,
+        client=client,
+        matching=matching,
+    )
+
+    client_token = str(client.get("token") or "")
+    session_state_matches = client_token == expected_token and "component_value_sent" in _stages(
+        client.get("chain") or ""
+    )
 
     return {
         "control": control,
         "url": url,
         "draft_start": draft,
+        "latched_room_id": latched_room_id,
         "verdict": verdict,
         "invalid_reason": reason if verdict == "INVALID" else "",
         "fail_reason": reason if verdict == "FAIL" else "",
         "returned_to_setup_during_observation": returned_to_setup,
-        "was_active_room": was_active,
+        "setup_return_reason": _setup_return_reason(setup_return_snapshots),
+        "setup_return_evidence": setup_return_snapshots[-3:] if setup_return_snapshots else [],
+        "room_id_mismatches": room_id_mismatches,
+        "was_in_progress": was_in_progress,
+        "post_activation_seen": post_activation_seen,
         "component_key": probe.get("key") or "solo_countdown_wake_solo_persistent",
-        "token_before_start": token_before,
-        "deadline_before_start": probe.get("deadline_before") or pre_trans.get("deadline") or "",
-        "token_after_activation": token_after,
-        "deadline_after_activation": probe.get("deadline_after") or probe.get("deadline") or "",
+        "expected_expire_token": expected_token,
         "args_before_activation": probe.get("args_before") or "",
         "args_after_activation": probe.get("args_after") or "",
-        "token_unchanged_control_a": probe.get("token_unchanged") in ("1", "true"),
-        "widget_id_before_activation": wid_before,
-        "widget_id_after_activation": wid_after,
-        "widget_id_at_send": widget_send,
-        "widget_id_changed_inert_to_active": bool(wid_before and wid_after and wid_before != wid_after),
+        "token_before_start": probe.get("token_before") or "",
+        "token_after_activation": probe.get("token_after") or probe.get("token") or "",
+        "widget_id_before_activation": widget_before,
+        "widget_id_after_activation": widget_after,
+        "widget_id_at_expiration_frame": widget_send,
+        "widget_id_changed_inert_to_active": bool(
+            widget_before and widget_after and widget_before != widget_after
+        ),
         "client_remount_count": int(client.get("remounts") or 0),
         "client_chain_final": client.get("chain") or "",
         "browser_deadline_crossed": "browser_deadline_crossed" in _stages(client.get("chain") or ""),
         "component_value_sent": "component_value_sent" in _stages(client.get("chain") or ""),
-        "session_state_raw_count": delivery_stages.count("session_state_raw_received"),
-        "on_change_count": int(probe.get("on_change_count") or 0) or delivery_stages.count("on_change_callback_entry"),
-        "server_chain_final": chain.get("chain") or "",
-        "room_status_final": probe.get("room_status") or "",
+        "client_token_at_cross": client_token,
+        "session_state_raw_matches_expected_token": session_state_matches,
+        "matching_on_change_count": matching["matching_on_change"],
+        "matching_raw_count": matching["matching_raw"],
         "room_status_log": probe.get("room_status_log") or "",
-        "iframe_snapshots": final.get("iframes") or [],
         "samples_count": len(samples),
         "ws_frame_count": len(new_ws),
     }
@@ -277,46 +321,48 @@ def run_one_control(
 def main() -> int:
     from playwright.sync_api import sync_playwright
     from run_solo_clean_verification import scrape_live_sha
+    from run_solo_delivery_isolation import install_ws_and_postmessage_hooks
 
     ws_frames: list[dict[str, Any]] = []
     report: dict[str, Any] = {
         "started_at": time.time(),
         "observation_seconds": OBSERVATION_S,
+        "design": "placeholder_deadline_at_setup_same_10s_token_after_in_progress",
         "production_flush_disabled": True,
         "controls": {},
     }
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
-        from run_solo_delivery_isolation import install_ws_and_postmessage_hooks
-
         report["deploy_sha"] = ""
         for control in ("A", "B"):
-            page = browser.new_page(viewport={"width": 1440, "height": 1400})
+            context = browser.new_context(viewport={"width": 1440, "height": 1400})
+            page = context.new_page()
             install_ws_and_postmessage_hooks(page, ws_frames)
             result = run_one_control(page, control, ws_frames)
             if not report["deploy_sha"]:
                 report["deploy_sha"] = scrape_live_sha(page)
             report["controls"][control] = result
-            page.close()
+            context.close()
         browser.close()
 
     a_v = str(report["controls"].get("A", {}).get("verdict") or "")
     b_v = str(report["controls"].get("B", {}).get("verdict") or "")
     report["interpretation"] = _interpret(a_v, b_v)
-    diff: dict[str, Any] = {}
     ca = report["controls"].get("A") or {}
     cb = report["controls"].get("B") or {}
+    diff: dict[str, Any] = {}
     for field in (
-        "token_before_start",
-        "token_after_activation",
+        "expected_expire_token",
+        "args_before_activation",
+        "args_after_activation",
         "widget_id_before_activation",
         "widget_id_after_activation",
         "widget_id_changed_inert_to_active",
-        "client_remount_count",
         "browser_deadline_crossed",
         "component_value_sent",
-        "on_change_count",
+        "matching_on_change_count",
+        "post_activation_seen",
     ):
         if ca.get(field) != cb.get(field):
             diff[field] = {"A": ca.get(field), "B": cb.get(field)}
@@ -324,7 +370,18 @@ def main() -> int:
     report["finished_at"] = time.time()
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
-    print(json.dumps({"artifact": str(OUT), "interpretation": report["interpretation"], "A": a_v, "B": b_v, "diff": diff}, indent=2))
+    print(
+        json.dumps(
+            {
+                "artifact": str(OUT),
+                "interpretation": report["interpretation"],
+                "A": a_v,
+                "B": b_v,
+                "diff": diff,
+            },
+            indent=2,
+        )
+    )
     return 0 if a_v != "INVALID" and b_v != "INVALID" else 2
 
 
