@@ -134,7 +134,12 @@ def first_user_divergence(
             p_ok = _step_present(p2a, "toast_detected") or _step_present(p2a, "room_id_detected")
             g_ok = _step_present(proven, "toast_detected") or _step_present(proven, "room_id_detected")
             if g_ok and not p_ok:
-                return {"first_divergence": step, "kind": "p2a_missing_success_signal", "proven": g_ok}
+                return {
+                    "first_divergence": "8_toast_or_room_id",
+                    "kind": "p2a_missing_success_signal",
+                    "proven": g_ok,
+                    "p2a_note": "P2A may surface room via micro probe after deferred hook; see post_create alerts",
+                }
             continue
         if g_row and not p_row:
             return {"first_divergence": step, "kind": "missing_on_p2a", "proven": g_row}

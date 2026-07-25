@@ -509,10 +509,19 @@ def observe_until_success_or_timeout(
         if not seen_steps["toast_detected"] and _success_toast_detected(msgs):
             seen_steps["toast_detected"] = True
             checkpoint(checkpoints, "toast_detected", alerts=msgs.get("alerts"))
-        if not seen_steps["room_id_detected"] and state.get("room_id"):
-            seen_steps["room_id_detected"] = True
-            seen_steps["room_id"] = str(state.get("room_id") or "")
-            checkpoint(checkpoints, "room_id_detected", room_id=state.get("room_id"))
+        if not seen_steps["room_id_detected"]:
+            rid = str(state.get("room_id") or "") or str(
+                (state.get("micro_probe") or {}).get("room_id") or ""
+            )
+            if rid:
+                seen_steps["room_id_detected"] = True
+                seen_steps["room_id"] = rid
+                checkpoint(
+                    checkpoints,
+                    "room_id_detected",
+                    room_id=rid,
+                    source="dom_or_micro_probe",
+                )
         if not seen_steps["pause_draft_detected"] and int(counts.get("Pause Draft") or 0) >= 1:
             seen_steps["pause_draft_detected"] = True
             checkpoint(checkpoints, "pause_draft_detected", counts=counts)
