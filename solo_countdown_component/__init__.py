@@ -71,14 +71,31 @@ def mount_solo_countdown_wake_direct(
     *,
     key: str,
     on_change: Any | None = None,
+    expire_token: str | None = None,
 ) -> Any:
     """Minimal-repro mount: declare_component only, no deadline guards."""
-    expire_token = build_solo_expire_token(room)
+    token = str(expire_token or "").strip() or build_solo_expire_token(room)
     return _COMPONENT(
-        expire_token=expire_token,
+        expire_token=token,
         key=key,
         default=None,
         on_change=on_change,
+    )
+
+
+def mount_solo_countdown_wake_with_token(
+    room: dict[str, Any],
+    *,
+    key: str,
+    expire_token: str,
+    on_change: Any | None = None,
+) -> Any:
+    """Early persistent wake — explicit token (idle or live pick deadline)."""
+    return mount_solo_countdown_wake_direct(
+        room,
+        key=key,
+        on_change=on_change,
+        expire_token=expire_token,
     )
 
 

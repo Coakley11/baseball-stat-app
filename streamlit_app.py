@@ -22077,6 +22077,17 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
     try:
+        from live_draft_solo_persistent_wake import try_solo_persistent_wake_ldr_entry
+
+        _matrix_ldr_room = st.session_state.get("live_draft_room")
+        try_solo_persistent_wake_ldr_entry(
+            st,
+            st.session_state,
+            _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
+        )
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_placement_ladder import try_placement_early_entry
 
         _matrix_ldr_room = st.session_state.get("live_draft_room")

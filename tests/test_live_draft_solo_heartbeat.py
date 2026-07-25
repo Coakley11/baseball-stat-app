@@ -31,10 +31,12 @@ class TestSoloHeartbeatModule(unittest.TestCase):
         self.assertIn("expire_current_pick_and_advance", src)
 
     def test_component_on_change_reads_session_state(self) -> None:
-        src = (ROOT / "live_draft_solo_heartbeat.py").read_text(encoding="utf-8")
-        start = src.index("def _on_component_change")
-        block = src[start : start + 260]
-        self.assertIn("st.session_state.get(key)", block)
+        for rel in ("live_draft_solo_heartbeat.py", "live_draft_solo_persistent_wake.py"):
+            src = (ROOT / rel).read_text(encoding="utf-8")
+            self.assertIn("st.session_state.get(key)", src)
+        hb = (ROOT / "live_draft_solo_heartbeat.py").read_text(encoding="utf-8")
+        start = hb.index("def _on_component_change")
+        block = hb[start : start + 320]
         self.assertNotIn("build_solo_expire_token(room)", block)
 
     def test_component_wake_uses_on_change_only(self) -> None:
