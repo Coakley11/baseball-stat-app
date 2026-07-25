@@ -25213,6 +25213,12 @@ elif active_page == "Live Draft Room":
                             )
                         except ImportError:
                             pass
+                    try:
+                        from live_draft_solo_persistent_wake import flush_persistent_wake_delivery
+
+                        flush_persistent_wake_delivery(st, st.session_state)
+                    except ImportError:
+                        pass
                     if not _solo_diag_mounted:
                         render_solo_expire_owner(st, st.session_state, room)
             except ImportError:

@@ -237,6 +237,22 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
     session.pop(SOLO_PERSISTENT_WAKE_PICK_LATCH_KEY, None)
 
 
+def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
+    """After widget values bind, deliver expire token from session_state (on_change equivalent)."""
+    if not solo_persistent_wake_active(session):
+        return
+    key = solo_persistent_wake_widget_key(session)
+    raw = st.session_state.get(key)
+    if raw is None:
+        return
+    from live_draft_solo_heartbeat import _coerce_wake_token
+
+    token = _coerce_wake_token(raw)
+    if not token or token == SOLO_INERT_EXPIRE_TOKEN:
+        return
+    _production_deliver_callback(st, session, raw, key)
+
+
 def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> bool:
     """Mount/update the Solo wake at LDR page entry. Never st.stop(). Returns True when handled."""
     if not _should_mount_persistent_wake(st, session):
