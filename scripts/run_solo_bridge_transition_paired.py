@@ -67,8 +67,8 @@ SCRAPE_JS = """() => {
   }
   const has_pause = /Pause Draft/i.test(text);
   const setup_lobby = /Start New Live Draft/i.test(text) && /Draft Setup|Draft Mode/i.test(text);
-  const active_room = has_pause || /Solo live draft started/i.test(text);
-  const lobby_only = setup_lobby && !has_pause && !/Solo live draft started/i.test(text);
+  const active_room = has_pause || /Solo live draft started/i.test(text) || /End\\/Delete Draft/i.test(text);
+  const lobby_only = setup_lobby && !active_room;
   const room_id = (text.match(/Room ID\\s+([A-F0-9]+)/i)||[])[1]||'';
   const end_delete = (text.match(/End\\/Delete Draft/gi)||[]).length;
   return { trans, client, chain, text_snippet: text.slice(0,1200), alerts: [...new Set(alerts)].slice(0,6), lobby_only, active_room, has_pause, room_id, end_delete_visible: end_delete };
@@ -154,6 +154,9 @@ def _setup_return_reason(snapshots: list[dict[str, Any]]) -> str:
     if last.get("end_delete_visible"):
         return "setup_lobby_visible_with_end_delete_control"
     return "two_consecutive_lobby_only_samples_after_in_progress"
+
+
+def _interpret(a_verdict: str, b_verdict: str) -> dict[str, str]:
     if a_verdict == "INVALID" or b_verdict == "INVALID":
         if a_verdict == "INVALID":
             return {
@@ -180,6 +183,12 @@ def _setup_return_reason(snapshots: list[dict[str, Any]]) -> str:
             "detail": "Control A did not pass — re-establish bridge baseline before production changes.",
         }
     return {"conclusion": "inconclusive", "detail": f"A={a_verdict}, B={b_verdict}"}
+
+
+def _delivery_verdict_label(base: str) -> str:
+    if base == "FAIL":
+        return "VALID_FAIL"
+    return base
 
 
 def run_one_control(page, control: str, ws_frames: list[dict[str, Any]]) -> dict[str, Any]:
@@ -217,11 +226,8 @@ def run_one_control(page, control: str, ws_frames: list[dict[str, Any]]) -> dict
         page_room = str(snap.get("room_id") or probe.get("room_id") or "").strip().upper()
         if snap.get("has_pause") or snap.get("active_room"):
             was_in_progress = True
-        if latched_room_id and page_room and page_room != latched_room_id:
-            room_id_mismatches.append(
-                {"elapsed_s": snap["elapsed_s"], "latched": latched_room_id, "seen": page_room}
-            )
-        if was_in_progress and snap.get("lobby_only"):
+            consecutive_lobby = 0
+        elif was_in_progress:
             consecutive_lobby += 1
             setup_return_snapshots.append(
                 {
@@ -235,6 +241,10 @@ def run_one_control(page, control: str, ws_frames: list[dict[str, Any]]) -> dict
             )
         else:
             consecutive_lobby = 0
+        if latched_room_id and page_room and page_room != latched_room_id:
+            room_id_mismatches.append(
+                {"elapsed_s": snap["elapsed_s"], "latched": latched_room_id, "seen": page_room}
+            )
         if consecutive_lobby >= 2:
             returned_to_setup = True
         samples.append(snap)
@@ -272,6 +282,7 @@ def run_one_control(page, control: str, ws_frames: list[dict[str, Any]]) -> dict
         client=client,
         matching=matching,
     )
+    verdict = _delivery_verdict_label(verdict)
 
     client_token = str(client.get("token") or "")
     session_state_matches = client_token == expected_token and "component_value_sent" in _stages(
@@ -283,9 +294,10 @@ def run_one_control(page, control: str, ws_frames: list[dict[str, Any]]) -> dict
         "url": url,
         "draft_start": draft,
         "latched_room_id": latched_room_id,
+        "room_id_stable": room_latch_ok and not room_id_mismatches,
         "verdict": verdict,
         "invalid_reason": reason if verdict == "INVALID" else "",
-        "fail_reason": reason if verdict == "FAIL" else "",
+        "fail_reason": reason if verdict in ("FAIL", "VALID_FAIL") else "",
         "returned_to_setup_during_observation": returned_to_setup,
         "setup_return_reason": _setup_return_reason(setup_return_snapshots),
         "setup_return_evidence": setup_return_snapshots[-3:] if setup_return_snapshots else [],
@@ -312,6 +324,7 @@ def run_one_control(page, control: str, ws_frames: list[dict[str, Any]]) -> dict
         "session_state_raw_matches_expected_token": session_state_matches,
         "matching_on_change_count": matching["matching_on_change"],
         "matching_raw_count": matching["matching_raw"],
+        "duplicate_matching_callbacks": matching["matching_on_change"] > 1 or matching["matching_raw"] > 1,
         "room_status_log": probe.get("room_status_log") or "",
         "samples_count": len(samples),
         "ws_frame_count": len(new_ws),

@@ -218,7 +218,7 @@ def _snapshot_args(
     }
     if not session.get(ARGS_BEFORE_KEY):
         session[ARGS_BEFORE_KEY] = payload
-    if session.get(ACTIVATED_KEY):
+    if session.get(ACTIVATED_KEY) and phase == "active":
         session[PHASE_KEY] = "active"
         if not session.get(ARGS_AFTER_KEY) or str((session.get(ARGS_AFTER_KEY) or {}).get("expire_token") or "") != str(
             expire_token or ""
