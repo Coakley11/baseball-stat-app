@@ -91,6 +91,7 @@ def render_micro_isolation_once(
     deliver_callback: Callable[[Any, dict[str, Any], Any, str], None] | None = None,
     production_expire_token: str | None = None,
     production_actionable: bool = True,
+    production_delivery_only: bool = False,
 ) -> MicroCycleResult:
     """Mount exactly once; retain probe after expiration without starting cycle 1."""
     from solo_countdown_component import build_solo_expire_token, mount_solo_countdown_wake_direct
@@ -158,38 +159,67 @@ def render_micro_isolation_once(
             if deliver_callback is not None:
                 deliver_callback(st, session, raw, key)
 
-        if first_mount:
-            _rec(
-                "component_declaration_loaded",
-                {
-                    "component_name": "solo_countdown_wake",
-                    "widget_key": key,
-                    "expire_token": token,
-                    "mount_location": location,
-                    "placement": placement,
-                    "actionable": production_actionable,
-                },
+        if production_delivery_only and session.get(sk["mounted"]):
+            raw = st.session_state.get(key)
+            if raw is not None:
+                _prod_on_change()
+                return MicroCycleResult(
+                    widget_key=key,
+                    token=token,
+                    delivered=False,
+                    raw_received=True,
+                    on_change_fired=True,
+                    stages=stages,
+                    should_stop=False,
+                )
+
+        if first_mount or prior_sig != sig:
+            if first_mount:
+                _rec(
+                    "component_declaration_loaded",
+                    {
+                        "component_name": "solo_countdown_wake",
+                        "widget_key": key,
+                        "expire_token": token,
+                        "mount_location": location,
+                        "placement": placement,
+                        "actionable": production_actionable,
+                    },
+                )
+            elif prior_sig != sig:
+                _rec(
+                    "component_props_updated",
+                    {
+                        "widget_key": key,
+                        "expire_token": token,
+                        "actionable": production_actionable,
+                        "prior_sig": prior_sig[:120],
+                    },
+                )
+            mount_solo_countdown_wake_with_token(
+                production_room,
+                key=key,
+                expire_token=token,
+                actionable=production_actionable,
+                on_change=_prod_on_change,
             )
-        elif prior_sig != sig:
-            _rec(
-                "component_props_updated",
-                {
-                    "widget_key": key,
-                    "expire_token": token,
-                    "actionable": production_actionable,
-                    "prior_sig": prior_sig[:120],
-                },
+            session[sk["mounted"]] = True
+            session[mounted_token_key] = token
+            session[mount_sig_key] = sig
+        else:
+            raw = st.session_state.get(key)
+            if raw is not None:
+                _prod_on_change()
+            return MicroCycleResult(
+                widget_key=key,
+                token=token,
+                delivered=False,
+                raw_received=raw is not None,
+                on_change_fired=False,
+                stages=stages,
+                should_stop=False,
             )
-        mount_solo_countdown_wake_with_token(
-            production_room,
-            key=key,
-            expire_token=token,
-            actionable=production_actionable,
-            on_change=_prod_on_change,
-        )
-        session[sk["mounted"]] = True
-        session[mounted_token_key] = token
-        session[mount_sig_key] = sig
+
         raw = st.session_state.get(key)
         if raw is not None:
             _prod_on_change()

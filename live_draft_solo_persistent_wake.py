@@ -255,6 +255,9 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
     from live_draft_solo_heartbeat import _coerce_wake_token
 
     pending_token = _coerce_wake_token(st.session_state.get(key))
+    delivery_only = bool(
+        pending_token and pending_token != SOLO_INERT_EXPIRE_TOKEN and session.get(SOLO_PERSISTENT_WAKE_LATCH_KEY)
+    )
     if pending_token and pending_token != SOLO_INERT_EXPIRE_TOKEN:
         props_room = room_dict if isinstance(room_dict, dict) else {}
         actionable = True
@@ -283,6 +286,7 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         production_room=props_room,
         production_expire_token=expire_token,
         production_actionable=actionable,
+        production_delivery_only=delivery_only,
         deliver_callback=_production_deliver_callback,
     )
     render_persistent_wake_lifecycle_probe(
