@@ -697,6 +697,12 @@ def enable_delivery_diag_from_query(st: Any, session: dict[str, Any]) -> None:
     except ImportError:
         pass
     try:
+        from live_draft_solo_early_bridge_diag import enable_early_bridge_from_query
+
+        enable_early_bridge_from_query(st, session)
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_component_diagnostics import bootstrap_solo_component_diag
 
         bootstrap_solo_component_diag(st, session)

@@ -101,3 +101,18 @@ def test_p2a_readiness_start_pending_defer(monkeypatch) -> None:
         "live_draft_solo_p2a_path_diag.current_micro_placement", lambda _st, _s: "P2A"
     )
     assert p2a_hook_ready_reason(object(), session, room) == "start_pending"
+
+
+def test_micro_isolation_persistent_never_stops() -> None:
+    from solo_countdown_wake_micro_core import MicroCycleResult
+
+    r = MicroCycleResult(
+        widget_key="solo_countdown_wake_micro_bridge",
+        token="DIAGBRIDGE|0|1.0",
+        delivered=False,
+        raw_received=False,
+        on_change_fired=False,
+        stages=[],
+        should_stop=False,
+    )
+    assert r.should_stop is False

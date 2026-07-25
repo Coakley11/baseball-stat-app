@@ -58,6 +58,23 @@ class MicroCycleResult:
     should_stop: bool = False
 
 
+def _session_keys(prefix: str) -> dict[str, str]:
+    p = prefix or SESSION_PREFIX
+    return {
+        "complete": f"{p}complete",
+        "mounted": f"{p}mounted",
+        "mount_run": f"{p}mount_run",
+        "expire_run": f"{p}expire_run",
+        "rerun_log": f"{p}rerun_log",
+        "widget_id_mount": f"{p}widget_id_mount",
+        "widget_id_send": f"{p}widget_id_send",
+        "token": f"{p}token",
+        "on_change": f"{p}on_change",
+        "raw_received": f"{p}raw_received",
+        "delivered": f"{p}delivered",
+    }
+
+
 def render_micro_isolation_once(
     st: Any,
     session: dict[str, Any],
@@ -67,11 +84,33 @@ def render_micro_isolation_once(
     record_stage: RecordStageFn | None = None,
     draft_id: str | None = None,
     route: bool = True,
+    persistent: bool = False,
+    session_prefix: str | None = None,
 ) -> MicroCycleResult:
     """Mount exactly once; retain probe after expiration without starting cycle 1."""
     from solo_countdown_component import build_solo_expire_token, mount_solo_countdown_wake_direct
 
-    note_micro_rerun(session, source=location, entered=True)
+    sk = _session_keys(session_prefix or SESSION_PREFIX)
+    if not session_prefix:
+        note_micro_rerun(session, source=location, entered=True)
+    else:
+        log_key = sk["rerun_log"]
+        log = list(session.get(log_key) or [])
+        try:
+            from app_page_generation import current_script_run_id
+
+            run_id = str(current_script_run_id(session) or "")
+        except ImportError:
+            run_id = str(session.get("_live_draft_script_run_id") or "")
+        log.append(
+            {
+                "ts": time.time(),
+                "source": location,
+                "script_run": run_id,
+                "diag_branch_entered": True,
+            }
+        )
+        session[log_key] = log[-80:]
     key = micro_widget_key(placement)
     stages: list[str] = []
 
@@ -80,14 +119,14 @@ def render_micro_isolation_once(
         if record_stage:
             record_stage(stage, fields or {})
 
-    if session.get(COMPLETE_KEY):
+    if session.get(sk["complete"]):
         _rec("micro_complete_frozen", {"widget_key": key})
         return MicroCycleResult(
             widget_key=key,
-            token=str(session.get(f"{SESSION_PREFIX}token") or ""),
-            delivered=bool(session.get(f"{SESSION_PREFIX}delivered")),
-            raw_received=bool(session.get(f"{SESSION_PREFIX}raw_received")),
-            on_change_fired=bool(session.get(f"{SESSION_PREFIX}on_change")),
+            token=str(session.get(sk["token"]) or ""),
+            delivered=bool(session.get(sk["delivered"])),
+            raw_received=bool(session.get(sk["raw_received"])),
+            on_change_fired=bool(session.get(sk["on_change"])),
             stages=stages,
             should_stop=False,
         )
@@ -98,10 +137,10 @@ def render_micro_isolation_once(
         mount_run = str(current_script_run_id(session) or "")
     except ImportError:
         mount_run = str(session.get("_live_draft_script_run_id") or "")
-    session[MOUNT_RUN_KEY] = session.get(MOUNT_RUN_KEY) or mount_run
+    session[sk["mount_run"]] = session.get(sk["mount_run"]) or mount_run
 
-    token = str(session.get(f"{SESSION_PREFIX}token") or "") or micro_token(placement)
-    session[f"{SESSION_PREFIX}token"] = token
+    token = str(session.get(sk["token"]) or "") or micro_token(placement)
+    session[sk["token"]] = token
     deadline = time.time() + float(MICRO_SECONDS)
     did = (draft_id or "").strip() or f"DIAG{placement.upper()}"
     room = {
@@ -118,15 +157,15 @@ def render_micro_isolation_once(
         try:
             from app_page_generation import current_script_run_id
 
-            session[EXPIRE_RUN_KEY] = str(current_script_run_id(session) or "")
+            session[sk["expire_run"]] = str(current_script_run_id(session) or "")
         except ImportError:
-            session[EXPIRE_RUN_KEY] = str(session.get("_live_draft_script_run_id") or "")
+            session[sk["expire_run"]] = str(session.get("_live_draft_script_run_id") or "")
         raw = st.session_state.get(key)
         _rec(
             "on_change_callback_entry",
             {"widget_key": key, "raw_session_state": repr(raw)[:800]},
         )
-        session[f"{SESSION_PREFIX}on_change"] = True
+        session[sk["on_change"]] = True
         _rec(
             "session_state_raw_received",
             {
@@ -134,14 +173,14 @@ def render_micro_isolation_once(
                 "raw_type": type(raw).__name__ if raw is not None else "NoneType",
             },
         )
-        session[f"{SESSION_PREFIX}raw_received"] = raw is not None
+        session[sk["raw_received"]] = raw is not None
         tok = coerce_token(raw, token)
         if tok:
-            session[f"{SESSION_PREFIX}delivered"] = True
-            session[COMPLETE_KEY] = True
+            session[sk["delivered"]] = True
+            session[sk["complete"]] = True
             _rec("on_change_delivery_complete", {"token": tok})
 
-    if not session.get(MOUNTED_KEY):
+    if not session.get(sk["mounted"]):
         _rec(
             "component_declaration_loaded",
             {
@@ -153,19 +192,19 @@ def render_micro_isolation_once(
             },
         )
         mount_solo_countdown_wake_direct(room, key=key, on_change=_on_change)
-        session[MOUNTED_KEY] = True
+        session[sk["mounted"]] = True
     else:
         raw = st.session_state.get(key)
-        if raw is not None and not session.get(COMPLETE_KEY):
+        if raw is not None and not session.get(sk["complete"]):
             _on_change()
 
-    if session.get(COMPLETE_KEY):
+    if session.get(sk["complete"]):
         return MicroCycleResult(
             widget_key=key,
             token=token,
             delivered=True,
-            raw_received=bool(session.get(f"{SESSION_PREFIX}raw_received")),
-            on_change_fired=bool(session.get(f"{SESSION_PREFIX}on_change")),
+            raw_received=bool(session.get(sk["raw_received"])),
+            on_change_fired=bool(session.get(sk["on_change"])),
             stages=stages,
             should_stop=False,
         )
@@ -177,5 +216,5 @@ def render_micro_isolation_once(
         raw_received=False,
         on_change_fired=False,
         stages=stages,
-        should_stop=True,
+        should_stop=False if persistent else True,
     )

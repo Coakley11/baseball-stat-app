@@ -233,6 +233,14 @@ def try_placement_early_entry(
 ) -> tuple[bool, bool]:
     """P0/P1 at Live Draft Room page entry. Returns (handled, should_st_stop)."""
     try:
+        from live_draft_solo_early_bridge_diag import early_bridge_active, try_early_bridge_ldr_entry
+
+        if early_bridge_active(st, session):
+            if try_early_bridge_ldr_entry(st, session, room):
+                return True, False
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_placement_micro import micro_isolation_active, try_micro_p1_ldr_entry, current_micro_placement
 
         if micro_isolation_active(st, session):
