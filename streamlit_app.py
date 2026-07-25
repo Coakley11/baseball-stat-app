@@ -22086,6 +22086,17 @@ elif active_page == "Live Draft Room":
             _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
         )
         if _pl_handled and _pl_stop:
+            try:
+                from live_draft_solo_p2a_path_diag import render_p2a_branch_breadcrumb
+
+                render_p2a_branch_breadcrumb(
+                    st,
+                    st.session_state,
+                    marker="before_stop",
+                    detail="placement_early_entry_st_stop",
+                )
+            except ImportError:
+                pass
             st.stop()
     except ImportError:
         pass
@@ -22098,6 +22109,17 @@ elif active_page == "Live Draft Room":
             st.session_state,
             _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
         ):
+            try:
+                from live_draft_solo_p2a_path_diag import render_p2a_branch_breadcrumb
+
+                render_p2a_branch_breadcrumb(
+                    st,
+                    st.session_state,
+                    marker="before_stop",
+                    detail="delivery_diag_solo_route_matrix_st_stop",
+                )
+            except ImportError:
+                pass
             st.stop()
     except ImportError:
         pass
@@ -22363,11 +22385,52 @@ elif active_page == "Live Draft Room":
     except Exception:
         pass
     _early_room = st.session_state.get("live_draft_room")
+    try:
+        from live_draft_solo_p2a_path_diag import render_p2a_branch_breadcrumb, render_p2a_callsite_breadcrumb
+
+        render_p2a_callsite_breadcrumb(
+            st,
+            st.session_state,
+            _early_room,
+            active_page=str(active_page or ""),
+        )
+        if not isinstance(_early_room, dict):
+            render_p2a_branch_breadcrumb(
+                st,
+                st.session_state,
+                marker="callsite_bypass",
+                detail="early_room_not_dict_skipped_p2a_invoke",
+            )
+    except ImportError:
+        pass
     if isinstance(_early_room, dict):
+        try:
+            from live_draft_solo_p2a_path_diag import render_p2a_branch_breadcrumb
+
+            render_p2a_branch_breadcrumb(
+                st,
+                st.session_state,
+                marker="before_invoke",
+                detail="try_micro_p2a_before_early_reconcile",
+            )
+        except ImportError:
+            pass
         try:
             from live_draft_solo_placement_micro import try_micro_p2a_before_early_reconcile
 
-            if try_micro_p2a_before_early_reconcile(st, st.session_state, _early_room):
+            _p2a_handled = try_micro_p2a_before_early_reconcile(st, st.session_state, _early_room)
+            try:
+                from live_draft_solo_p2a_path_diag import render_p2a_branch_breadcrumb
+
+                render_p2a_branch_breadcrumb(
+                    st,
+                    st.session_state,
+                    marker="after_invoke",
+                    detail=f"try_micro_p2a_returned_{bool(_p2a_handled)}",
+                )
+            except ImportError:
+                pass
+            if _p2a_handled:
                 st.stop()
         except ImportError:
             pass
@@ -23589,6 +23652,17 @@ elif active_page == "Live Draft Room":
                         ),
                     )
                 except Exception:
+                    pass
+                try:
+                    from live_draft_solo_p2a_path_diag import render_p2a_branch_breadcrumb
+
+                    render_p2a_branch_breadcrumb(
+                        st,
+                        st.session_state,
+                        marker="before_rerun",
+                        detail="start_handler_ok_st_rerun_before_p2a_callsite_on_next_run",
+                    )
+                except ImportError:
                     pass
                 st.rerun()
                 st.stop()

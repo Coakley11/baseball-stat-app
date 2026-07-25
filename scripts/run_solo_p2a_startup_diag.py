@@ -160,6 +160,121 @@ def first_user_divergence(
     return {"first_divergence": None, "kind": "aligned_through_user_checkpoints"}
 
 
+def scrape_p2a_path_diagnostics(page) -> dict[str, Any]:
+    return page.evaluate(
+        """() => {
+          function roots(){const o=[document]; for(const f of document.querySelectorAll('iframe')){try{o.push(f.contentDocument)}catch(e){}} return o.filter(Boolean)}
+          const out = {callsite: null, fn_entry: null, declines: [], branches: []};
+          for (const x of roots()) {
+            const c = x && x.querySelector('#solo-p2a-callsite-diag');
+            if (c && !out.callsite) {
+              out.callsite = {
+                present: c.getAttribute('data-present')||'',
+                requested: c.getAttribute('data-requested')||'',
+                latched: c.getAttribute('data-latched')||'',
+                query: c.getAttribute('data-query')||'',
+                active_page: c.getAttribute('data-active-page')||'',
+                active_page_entered: c.getAttribute('data-active-page-entered')||'',
+                room_present: c.getAttribute('data-room-present')||'',
+                room_id: c.getAttribute('data-room-id')||'',
+                room_status: c.getAttribute('data-room-status')||'',
+                solo_in_progress: c.getAttribute('data-solo-in-progress')||'',
+                start_pending: c.getAttribute('data-start-pending')||'',
+                start_in_flight: c.getAttribute('data-start-in-flight')||'',
+                post_create_open: c.getAttribute('data-post-create-open')||'',
+                lifecycle: c.getAttribute('data-lifecycle')||'',
+                setup_branch: c.getAttribute('data-setup-branch')||'',
+                active_branch: c.getAttribute('data-active-branch')||'',
+                snap: c.getAttribute('data-snap')||'',
+              };
+            }
+            const f = x && x.querySelector('#solo-p2a-fn-entry-diag');
+            if (f && !out.fn_entry) {
+              out.fn_entry = {
+                present: f.getAttribute('data-present')||'',
+                decline: f.getAttribute('data-decline')||'',
+                snap: f.getAttribute('data-snap')||'',
+              };
+            }
+            for (const d of (x&&x.querySelectorAll('#solo-p2a-decline-diag')||[])) {
+              out.declines.push({
+                reason: d.getAttribute('data-reason')||'',
+                fields: d.getAttribute('data-fields')||'',
+                ts: d.getAttribute('data-ts')||'',
+              });
+            }
+            for (const b of (x&&x.querySelectorAll('.solo-p2a-path-branch')||[])) {
+              out.branches.push({
+                marker: b.getAttribute('data-marker')||'',
+                detail: b.getAttribute('data-detail')||'',
+                ts: b.getAttribute('data-ts')||'',
+              });
+            }
+          }
+          out.declines.sort((a,b)=>parseFloat(a.ts||0)-parseFloat(b.ts||0));
+          out.branches.sort((a,b)=>parseFloat(a.ts||0)-parseFloat(b.ts||0));
+          return out;
+        }"""
+    )
+
+
+def poll_p2a_path_diagnostics(page, *, max_wait_s: int = 90) -> dict[str, Any]:
+    deadline = time.time() + max_wait_s
+    last: dict[str, Any] = {}
+    samples: list[dict[str, Any]] = []
+    while time.time() < deadline:
+        snap = scrape_p2a_path_diagnostics(page)
+        last = snap
+        samples.append({"ts": time.time(), **snap})
+        if snap.get("fn_entry") and (snap.get("fn_entry") or {}).get("decline") == "":
+            if not snap.get("declines"):
+                break
+        if snap.get("callsite") and snap.get("fn_entry"):
+            break
+        page.wait_for_timeout(1000)
+    return {"last": last, "samples": samples[-30:]}
+
+
+def interpret_p2a_path(path: dict[str, Any]) -> dict[str, Any]:
+    last = path.get("last") or {}
+    callsite = last.get("callsite")
+    fn_entry = last.get("fn_entry")
+    declines = list(last.get("declines") or [])
+    branches = list(last.get("branches") or [])
+    first_branch_prevent = ""
+    for b in branches:
+        if b.get("marker") == "before_stop" or "bypass" in str(b.get("detail") or ""):
+            first_branch_prevent = str(b.get("detail") or b.get("marker"))
+            break
+    decline_reason = declines[-1].get("reason") if declines else ""
+    if fn_entry and not (fn_entry.get("decline") or ""):
+        decline_reason = decline_reason or (declines[-1].get("reason") if declines else "")
+    elif fn_entry and fn_entry.get("decline"):
+        decline_reason = str(fn_entry.get("decline"))
+    proposed = ""
+    if not callsite:
+        proposed = "Script path never reached pre_try_micro_p2a_call_site; inspect earlier st.stop/rerun branches."
+    elif not fn_entry:
+        proposed = "Call-site reached but try_micro_p2a not invoked (early_room_not_dict or ImportError)."
+    elif decline_reason == "active_page_not_entered":
+        proposed = "Relax or satisfy active_page_entered before P2A hook (diagnostic readiness only)."
+    elif decline_reason == "creation_pending":
+        proposed = "Wait until start_pending/post_create_open clear before P2A hook."
+    elif decline_reason == "status_not_in_progress":
+        proposed = "Ensure live_draft_room status in_progress and is_solo_live_draft at call site."
+    elif decline_reason == "placement_not_p2a":
+        proposed = "Fix session/query placement latch for P2A."
+    return {
+        "callsite_present": bool(callsite),
+        "fn_entry_present": bool(fn_entry),
+        "decline_reason": decline_reason,
+        "first_branch_bypass": first_branch_prevent,
+        "branches_tail": branches[-8:],
+        "declines_tail": declines[-8:],
+        "proposed_diagnostic_correction": proposed,
+    }
+
+
 def wait_p2a_micro_observation(page, *, max_wait_s: int = 75) -> dict[str, Any]:
     from run_solo_placement_micro_matrix import scrape_micro_probe
 
@@ -248,6 +363,10 @@ def main() -> int:
         report["user_checkpoints"] = build_user_checkpoint_report(cps)
         report["divergence_vs_p2_gate"] = first_user_divergence(cps, proven_cps)
 
+        path_poll = poll_p2a_path_diagnostics(page, max_wait_s=90)
+        report["p2a_path_diagnostics"] = path_poll
+        report["p2a_path_interpretation"] = interpret_p2a_path(path_poll)
+
         observation = wait_p2a_micro_observation(page)
         report["micro_observation"] = observation
 
@@ -310,6 +429,7 @@ def main() -> int:
             "raw_token": probe.get("token") or "",
             "observation_ready": bool(observation.get("observation_ready")),
             "first_startup_divergence": report["divergence_vs_p2_gate"],
+            "p2a_path": report["p2a_path_interpretation"],
             "artifact_path": str(OUT),
         }
         browser.close()

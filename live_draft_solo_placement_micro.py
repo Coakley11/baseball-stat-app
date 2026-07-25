@@ -270,13 +270,19 @@ def _micro_p2a_hook_ready(session: dict[str, Any]) -> bool:
 
 
 def try_micro_p2a_before_early_reconcile(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
-    if current_micro_placement(st, session) != "P2A":
+    from live_draft_solo_p2a_path_diag import (
+        p2a_hook_ready_reason,
+        render_p2a_decline,
+        render_p2a_fn_entry,
+    )
+
+    room_dict = room if isinstance(room, dict) else {}
+    render_p2a_fn_entry(st, session, room_dict, decline="")
+    reason = p2a_hook_ready_reason(st, session, room_dict)
+    if reason:
+        render_p2a_decline(st, session, reason)
         return False
-    if not _micro_p2a_hook_ready(session):
-        return False
-    if not _solo_in_progress_room(session, room):
-        return False
-    return _run_micro(st, session, placement="P2A", location="micro_p2a_before_early_reconcile", room=room)
+    return _run_micro(st, session, placement="P2A", location="micro_p2a_before_early_reconcile", room=room_dict)
 
 
 def try_micro_p2b_after_early_reconcile(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
