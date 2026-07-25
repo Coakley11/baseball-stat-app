@@ -208,10 +208,9 @@ def render_micro_isolation_once(
         session[sk["mounted"]] = True
         session[mounted_token_key] = token
         session[mount_sig_key] = sig
-        if not suppress_immediate_session_on_change:
-            raw = st.session_state.get(key)
-            if raw is not None:
-                _prod_on_change()
+        raw = st.session_state.get(key)
+        if not suppress_immediate_session_on_change and raw is not None:
+            _prod_on_change()
 
         return MicroCycleResult(
             widget_key=key,
