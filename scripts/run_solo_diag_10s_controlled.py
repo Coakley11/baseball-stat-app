@@ -225,9 +225,10 @@ def main() -> int:
         returned_to_setup = False
 
         def _in_setup_lobby(text: str) -> bool:
+            active = "Pause Draft" in text or "Solo live draft started" in text
             return (
-                "Start New Live Draft" in text
-                and "Pause Draft" not in text
+                not active
+                and "Start New Live Draft" in text
                 and ("Draft Setup" in text or "Draft Mode" in text)
             )
 

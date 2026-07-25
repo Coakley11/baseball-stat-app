@@ -106,11 +106,11 @@ def _log_room_status(session: dict[str, Any], room: dict[str, Any] | None, *, ph
     session[ROOM_STATUS_LOG_KEY] = log[-120:]
 
 
-def _diag_timer_seconds(st: Any, session: dict[str, Any]) -> float:
+def _diag_timer_seconds(_st: Any, session: dict[str, Any]) -> float:
     try:
         from live_draft_solo_component_diagnostics import solo_diag_timer_seconds
 
-        sec = solo_diag_timer_seconds(st, session)
+        sec = solo_diag_timer_seconds(session)
         if sec and sec > 0:
             return float(sec)
     except ImportError:

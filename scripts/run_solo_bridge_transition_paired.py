@@ -74,7 +74,7 @@ SCRAPE_JS = """() => {
   }
   const setup_lobby = /Start New Live Draft/i.test(text) && !/Pause Draft/i.test(text) && /Draft Setup/i.test(text);
   const active_room = /Pause Draft/i.test(text) || /Solo live draft started/i.test(text);
-  return { trans, client, chain, iframes, text_len: text.length, setup_lobby, active_room, room_id: (text.match(/Room ID\\s+([A-F0-9]+)/i)||[])[1]||'' };
+  return { trans, client, chain, iframes, text_len: text.length, setup_lobby: setup_lobby && !active_room, active_room, room_id: (text.match(/Room ID\\s+([A-F0-9]+)/i)||[])[1]||'' };
 }"""
 
 
@@ -190,6 +190,15 @@ def run_one_control(
     samples: list[dict[str, Any]] = []
     was_active = False
     returned_to_setup = False
+
+    def _in_setup_lobby(text: str) -> bool:
+        active = "Pause Draft" in text or "Solo live draft started" in text
+        return (
+            not active
+            and "Start New Live Draft" in text
+            and ("Draft Setup" in text or "Draft Mode" in text)
+        )
+
     while time.time() - t0 < OBSERVATION_S:
         snap = page.evaluate(SCRAPE_JS)
         snap["elapsed_s"] = round(time.time() - t0, 1)
@@ -217,7 +226,8 @@ def run_one_control(
         delivery_stages=delivery_stages,
     )
 
-    token_before = probe.get("token_before") or pre.get("trans", {}).get("token") or ""
+    pre_trans = dict(pre.get("trans") or {})
+    token_before = probe.get("token_before") or pre_trans.get("token") or ""
     token_after = probe.get("token_after") or probe.get("token") or ""
     wid_before = widget_before or probe.get("widget_id_before") or ""
     wid_after = widget_mount or probe.get("widget_id_after") or ""
@@ -233,7 +243,7 @@ def run_one_control(
         "was_active_room": was_active,
         "component_key": probe.get("key") or "solo_countdown_wake_solo_persistent",
         "token_before_start": token_before,
-        "deadline_before_start": probe.get("deadline_before") or pre.get("trans", {}).get("deadline") or "",
+        "deadline_before_start": probe.get("deadline_before") or pre_trans.get("deadline") or "",
         "token_after_activation": token_after,
         "deadline_after_activation": probe.get("deadline_after") or probe.get("deadline") or "",
         "args_before_activation": probe.get("args_before") or "",
