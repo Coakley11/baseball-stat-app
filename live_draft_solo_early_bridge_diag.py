@@ -69,13 +69,18 @@ def _room_active(session: dict[str, Any], room: dict[str, Any]) -> bool:
 
 
 def _record_stage_factory(session: dict[str, Any]) -> Any:
+    reserved = frozenset({"placement", "early_bridge", "stage", "session"})
+
     def _record(stage: str, fields: dict[str, Any] | None = None) -> None:
+        payload = dict(fields or {})
+        for key in reserved:
+            payload.pop(key, None)
         note_delivery_stage(
             session,
             stage,
             placement=BRIDGE_PLACEMENT,
             early_bridge=True,
-            **dict(fields or {}),
+            **payload,
         )
 
     return _record

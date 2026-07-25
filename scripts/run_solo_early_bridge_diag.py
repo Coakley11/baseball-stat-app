@@ -177,15 +177,13 @@ def main() -> int:
         install_ws_and_postmessage_hooks(page, ws_frames)
         ws_baseline = len(ws_frames)
 
-        page.goto(BRIDGE_SETUP_URL, wait_until="domcontentloaded", timeout=120000)
-        page.wait_for_timeout(8000)
-        pre = page.evaluate(BRIDGE_SCRAPE_JS)
-        timeline.append({"ts": time.time(), "phase": "pre_start_nav", **pre})
-        report["deploy_sha"] = scrape_live_sha(page)
-
-        draft = execute_solo_draft_start_workflow(page, BRIDGE_SETUP_URL, navigate=False)
+        draft = execute_solo_draft_start_workflow(page, BRIDGE_SETUP_URL, navigate=True)
         report["draft_start"] = draft
+        report["deploy_sha"] = scrape_live_sha(page)
         draft_ok = bool(draft.get("start_success"))
+
+        pre = page.evaluate(BRIDGE_SCRAPE_JS)
+        timeline.append({"ts": time.time(), "phase": "after_draft_start", **pre})
 
         poll_deadline = time.time() + 90
         last_probe: dict[str, Any] = {}
