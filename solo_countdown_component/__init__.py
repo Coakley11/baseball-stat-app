@@ -73,6 +73,7 @@ def mount_solo_countdown_wake_direct(
     on_change: Any | None = None,
     expire_token: str | None = None,
     actionable: bool = True,
+    chain_persist_key: str = "",
 ) -> Any:
     """Minimal-repro mount: declare_component only, no deadline guards."""
     token = str(expire_token if expire_token is not None else "").strip()
@@ -81,6 +82,7 @@ def mount_solo_countdown_wake_direct(
     return _COMPONENT(
         expire_token=token,
         actionable=bool(actionable),
+        chain_persist_key=str(chain_persist_key or ""),
         key=key,
         default=None,
         on_change=on_change,
@@ -94,6 +96,7 @@ def mount_solo_countdown_wake_with_token(
     expire_token: str,
     on_change: Any | None = None,
     actionable: bool = True,
+    chain_persist_key: str = "",
 ) -> Any:
     """Early persistent wake — explicit token (inert or live pick deadline)."""
     return mount_solo_countdown_wake_direct(
@@ -102,6 +105,7 @@ def mount_solo_countdown_wake_with_token(
         on_change=on_change,
         expire_token=expire_token,
         actionable=actionable,
+        chain_persist_key=chain_persist_key,
     )
 
 

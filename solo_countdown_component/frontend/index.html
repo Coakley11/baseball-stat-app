@@ -8,11 +8,14 @@
       id="solo-expire-client"
       data-last=""
       data-chain=""
+      data-chain-persisted=""
       data-remounts="0"
       data-deadline=""
       data-token=""
       data-remaining-ms=""
       data-browser-time=""
+      data-browser-zero-ts=""
+      data-component-sent-ts=""
       data-checkpoint=""
       style="display: none"
     ></div>
@@ -23,6 +26,45 @@
             Object.assign({ isStreamlitMessage: true, type: type }, data || {}),
             "*"
           );
+        }
+
+        let chainPersistKey = "";
+
+        function readPersistLog() {
+          if (!chainPersistKey) return [];
+          try {
+            const raw = localStorage.getItem(chainPersistKey);
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch (e) {
+            return [];
+          }
+        }
+
+        function writePersistLog(log) {
+          if (!chainPersistKey) return;
+          try {
+            localStorage.setItem(chainPersistKey, JSON.stringify(log.slice(-400)));
+          } catch (e) {}
+        }
+
+        function appendPersist(stage, extra) {
+          if (!chainPersistKey) return;
+          const log = readPersistLog();
+          log.push({ ts: Date.now(), stage: stage, extra: extra || "" });
+          writePersistLog(log);
+          try {
+            const node = document.getElementById("solo-expire-client");
+            if (node) {
+              node.setAttribute(
+                "data-chain-persisted",
+                log.map(function (e) {
+                  return e.stage;
+                }).join("|")
+              );
+            }
+          } catch (e2) {}
         }
 
         function noteClient(stage, extra) {
@@ -38,6 +80,7 @@
             if (extra) {
               node.setAttribute("data-checkpoint", String(extra).slice(0, 2000));
             }
+            appendPersist(stage, extra);
           } catch (e) {}
         }
 
@@ -78,6 +121,15 @@
               Math.ceil(deadline * 1000 - Date.now())
             );
             node.setAttribute("data-remaining-ms", String(remMs));
+            if (chainPersistKey) {
+              const log = readPersistLog();
+              node.setAttribute(
+                "data-chain-persisted",
+                log.map(function (e) {
+                  return e.stage;
+                }).join("|")
+              );
+            }
           } catch (e) {}
         }
 
@@ -89,6 +141,12 @@
           noteClient("setComponentValue_called");
           sendMessage("streamlit:setComponentValue", { value: expireToken });
           noteClient("component_value_sent");
+          try {
+            const node = document.getElementById("solo-expire-client");
+            if (node) {
+              node.setAttribute("data-component-sent-ts", String(Date.now()));
+            }
+          } catch (e) {}
         }
 
         function startCheckpoint(expireToken, deadline) {
@@ -115,9 +173,15 @@
               : 0;
           remountCount += 1;
           const args = (event && event.detail && event.detail.args) || {};
+          chainPersistKey = String(args.chain_persist_key || "").trim();
           const expireToken = String(args.expire_token || "");
           const actionable =
-            !(args.actionable === false || args.actionable === 0 || args.actionable === "0" || args.actionable === "false");
+            !(
+              args.actionable === false ||
+              args.actionable === 0 ||
+              args.actionable === "0" ||
+              args.actionable === "false"
+            );
           const parts = expireToken.split("|");
           const deadline = Number(parts[2] || 0);
           activeToken = expireToken;
@@ -146,7 +210,6 @@
             return;
           }
 
-          const nowSec = Date.now() / 1000;
           const initialRemMs = Math.max(0, Math.ceil(deadline * 1000 - Date.now()));
           if (remountCount > 1) {
             noteClient(
@@ -180,6 +243,12 @@
             updateDiagFields(expireToken, deadline);
             if (rem <= 0) {
               noteClient("browser_deadline_crossed");
+              try {
+                const node = document.getElementById("solo-expire-client");
+                if (node) {
+                  node.setAttribute("data-browser-zero-ts", String(Date.now()));
+                }
+              } catch (e) {}
               window.setTimeout(function () {
                 sendExpireToken(expireToken);
               }, 0);

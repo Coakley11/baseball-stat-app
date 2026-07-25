@@ -92,6 +92,8 @@ def render_micro_isolation_once(
     production_expire_token: str | None = None,
     production_actionable: bool = True,
     production_delivery_only: bool = False,
+    suppress_immediate_session_on_change: bool = False,
+    chain_persist_key: str = "",
 ) -> MicroCycleResult:
     """Mount exactly once; retain probe after expiration without starting cycle 1."""
     from solo_countdown_component import build_solo_expire_token, mount_solo_countdown_wake_direct
@@ -201,13 +203,15 @@ def render_micro_isolation_once(
             expire_token=token,
             actionable=production_actionable,
             on_change=_prod_on_change,
+            chain_persist_key=chain_persist_key,
         )
         session[sk["mounted"]] = True
         session[mounted_token_key] = token
         session[mount_sig_key] = sig
-        raw = st.session_state.get(key)
-        if raw is not None:
-            _prod_on_change()
+        if not suppress_immediate_session_on_change:
+            raw = st.session_state.get(key)
+            if raw is not None:
+                _prod_on_change()
 
         return MicroCycleResult(
             widget_key=key,

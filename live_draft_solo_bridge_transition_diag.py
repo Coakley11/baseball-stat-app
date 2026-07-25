@@ -1,4 +1,4 @@
-"""Paired bridge-transition diagnostic — Control A (always actionable) vs B (inert→active)."""
+"""Bridge-transition diagnostic — A0 (frozen bridge), A1 (token switch), B (actionable+token)."""
 
 from __future__ import annotations
 
@@ -21,19 +21,27 @@ TRANSITION_LOCATION = "ldr_page_entry_early_bridge_transition"
 TRANSITION_SESSION_PREFIX = "_solo_bridge_transition_"
 SESSION_ENABLED = "_solo_bridge_transition_enabled"
 CONTROL_KEY = "_solo_bridge_transition_control"
+VALID_CONTROLS = frozenset({"A0", "A1", "B"})
+
 PLACEHOLDER_DRAFT_ID = "TRANSPLACE"
 PLACEHOLDER_DEADLINE = 9999999999.999
+A0_DRAFT_ID = "BRIDGEA0"
+A0_DEFAULT_SECONDS = 90.0
+
 EXPECTED_EXPIRE_TOKEN_KEY = "_solo_bridge_transition_expected_expire_token"
 ACTIVATED_KEY = "_solo_bridge_transition_post_activation"
 LATCHED_PROPS_KEY = "_solo_bridge_transition_latched_active_props"
+A0_FROZEN_TOKEN_KEY = "_solo_bridge_transition_a0_frozen_token"
+A0_FROZEN_DEADLINE_KEY = "_solo_bridge_transition_a0_frozen_deadline"
+POPPED_FOR_ACTIVE_KEY = "_solo_bridge_transition_popped_for_active"
 ARGS_BEFORE_KEY = "_solo_bridge_transition_args_before"
 ARGS_AFTER_KEY = "_solo_bridge_transition_args_after"
-WIDGET_ID_BEFORE_KEY = "_solo_bridge_transition_widget_id_before"
-WIDGET_ID_AFTER_KEY = "_solo_bridge_transition_widget_id_after"
-MATCHING_ON_CHANGE_KEY = "_solo_bridge_transition_matching_on_change_count"
-MATCHING_RAW_KEY = "_solo_bridge_transition_matching_raw_count"
 PHASE_KEY = "_solo_bridge_transition_phase"
 ROOM_STATUS_LOG_KEY = "_solo_bridge_transition_room_status_log"
+PROVENANCE_KEY = "_solo_bridge_transition_provenance"
+VALID_EXPIRATION_EVENTS_KEY = "_solo_bridge_transition_valid_expiration_events"
+CLIENT_CROSS_TS_KEY = "_solo_bridge_transition_client_cross_ts"
+CLIENT_SENT_TS_KEY = "_solo_bridge_transition_client_sent_ts"
 
 
 def _qp_get(st: Any, name: str) -> str:
@@ -45,13 +53,23 @@ def _qp_get(st: Any, name: str) -> str:
         return ""
 
 
+def normalize_control(raw: str) -> str:
+    c = str(raw or "").strip().upper()
+    if c == "A":
+        return "A1"
+    if c in VALID_CONTROLS:
+        return c
+    return ""
+
+
 def bridge_transition_control(st: Any | None, session: dict[str, Any]) -> str:
     raw = str(session.get(CONTROL_KEY) or "").strip().upper()
-    if raw in ("A", "B"):
-        return raw
+    norm = normalize_control(raw)
+    if norm:
+        return norm
     if st is not None:
-        q = _qp_get(st, "solo_bridge_transition").strip().upper()
-        if q in ("A", "B"):
+        q = normalize_control(_qp_get(st, "solo_bridge_transition"))
+        if q:
             session[CONTROL_KEY] = q
             return q
     return ""
@@ -60,12 +78,12 @@ def bridge_transition_control(st: Any | None, session: dict[str, Any]) -> str:
 def bridge_transition_active(st: Any | None, session: dict[str, Any]) -> bool:
     if session.get(SESSION_ENABLED):
         return True
-    return bridge_transition_control(st, session) in ("A", "B")
+    return bridge_transition_control(st, session) in VALID_CONTROLS
 
 
 def enable_bridge_transition_from_query(st: Any, session: dict[str, Any]) -> None:
     ctrl = bridge_transition_control(st, session)
-    if ctrl in ("A", "B"):
+    if ctrl in VALID_CONTROLS:
         session[SESSION_ENABLED] = True
         session["_solo_delivery_diag_enabled"] = True
         session["_solo_placement_ladder_block_picks"] = True
@@ -96,6 +114,12 @@ def _room_status(room: dict[str, Any] | None) -> str:
     return str(room.get("status") or "unknown")
 
 
+def _room_id(room: dict[str, Any] | None) -> str:
+    if not room:
+        return ""
+    return str(room.get("draft_room_id") or room.get("draft_id") or "").strip().upper()
+
+
 def _log_room_status(session: dict[str, Any], room: dict[str, Any] | None, *, phase: str) -> None:
     log = list(session.get(ROOM_STATUS_LOG_KEY) or [])
     log.append(
@@ -103,7 +127,7 @@ def _log_room_status(session: dict[str, Any], room: dict[str, Any] | None, *, ph
             "ts": time.time(),
             "phase": phase,
             "status": _room_status(room),
-            "room_id": str((room or {}).get("draft_room_id") or (room or {}).get("draft_id") or ""),
+            "room_id": _room_id(room),
             "pick": int((room or {}).get("current_pick_index") or 0) if room else 0,
             "script_run": _script_run_id(session),
         }
@@ -123,6 +147,19 @@ def _diag_timer_seconds(_st: Any, session: dict[str, Any]) -> float:
     return 10.0
 
 
+def _a0_seconds(st: Any | None, session: dict[str, Any]) -> float:
+    if st is not None:
+        raw = _qp_get(st, "solo_bridge_a0_seconds").strip()
+        if raw:
+            try:
+                sec = float(raw)
+                if 60.0 <= sec <= 180.0:
+                    return sec
+            except ValueError:
+                pass
+    return A0_DEFAULT_SECONDS
+
+
 def _placeholder_token() -> str:
     return f"{PLACEHOLDER_DRAFT_ID}|0|{PLACEHOLDER_DEADLINE:.3f}"
 
@@ -136,6 +173,36 @@ def _placeholder_props() -> dict[str, Any]:
         "timer_deadline": PLACEHOLDER_DEADLINE,
         "config": {"draft_setup_mode": "solo"},
     }
+
+
+def _a0_frozen_mount(st: Any | None, session: dict[str, Any], room: dict[str, Any] | None) -> tuple[bool, str, dict[str, Any], str]:
+    token = str(session.get(A0_FROZEN_TOKEN_KEY) or "").strip()
+    deadline = session.get(A0_FROZEN_DEADLINE_KEY)
+    if not token or deadline is None:
+        sec = _a0_seconds(st, session)
+        deadline = time.time() + sec
+        token = f"{A0_DRAFT_ID}|0|{float(deadline):.3f}"
+        session[A0_FROZEN_TOKEN_KEY] = token
+        session[A0_FROZEN_DEADLINE_KEY] = float(deadline)
+    phase = "setup"
+    status = "setup"
+    draft_id = A0_DRAFT_ID
+    if room and str(room.get("status") or "") == "in_progress":
+        phase = "active"
+        status = "in_progress"
+        draft_id = _room_id(room) or A0_DRAFT_ID
+    props = {
+        "draft_room_id": draft_id,
+        "draft_id": draft_id,
+        "current_pick_index": 0,
+        "status": status,
+        "timer_deadline": float(session[A0_FROZEN_DEADLINE_KEY]),
+        "config": {"draft_setup_mode": "solo", "timer_seconds": int(_a0_seconds(st, session))},
+    }
+    session[EXPECTED_EXPIRE_TOKEN_KEY] = token
+    if phase == "active":
+        session[ACTIVATED_KEY] = True
+    return True, token, props, phase
 
 
 def _room_ready_for_live_timer(session: dict[str, Any], room: dict[str, Any] | None) -> bool:
@@ -180,19 +247,53 @@ def resolve_transition_mount(
     session: dict[str, Any],
     room: dict[str, Any] | None,
     ctrl: str,
+    st: Any | None = None,
 ) -> tuple[bool, str, dict[str, Any], str]:
-    """Setup: shared placeholder deadline; post-activation: same 10s token for A and B."""
+    if ctrl == "A0":
+        return _a0_frozen_mount(st, session, room)
+
     if _room_ready_for_live_timer(session, room):
         assert room is not None
         token = _live_expire_token(session, room)
         latched_props = session.get(LATCHED_PROPS_KEY)
         props = dict(latched_props) if isinstance(latched_props, dict) else {**room, "status": "in_progress"}
-        actionable = True
-        return actionable, token, props, "active"
+        return True, token, props, "active"
 
-    if ctrl == "A":
+    if ctrl == "A1":
         return True, _placeholder_token(), _placeholder_props(), "setup"
     return False, SOLO_INERT_EXPIRE_TOKEN, _placeholder_props(), "setup"
+
+
+def _append_provenance(
+    session: dict[str, Any],
+    *,
+    control: str,
+    phase: str,
+    expected_token: str,
+    actual_raw: Any,
+    widget_key: str,
+    source: str,
+    browser_zero_cross_ts: str = "",
+    component_value_sent_ts: str = "",
+) -> None:
+    from live_draft_solo_heartbeat import _coerce_wake_token
+
+    actual = _coerce_wake_token(actual_raw)
+    log = list(session.get(PROVENANCE_KEY) or [])
+    log.append(
+        {
+            "ts": time.time(),
+            "control": control,
+            "phase": phase,
+            "expected_token": expected_token,
+            "actual_raw": actual,
+            "widget_key": widget_key,
+            "source": source,
+            "browser_zero_cross_ts": browser_zero_cross_ts,
+            "component_value_sent_ts": component_value_sent_ts,
+        }
+    )
+    session[PROVENANCE_KEY] = log[-200:]
 
 
 def _snapshot_args(
@@ -226,12 +327,59 @@ def _snapshot_args(
             session[ARGS_AFTER_KEY] = payload
 
 
+def _clear_widget_before_active_arm(st: Any, session: dict[str, Any], phase_label: str, ctrl: str) -> None:
+    if ctrl == "A0":
+        return
+    if phase_label != "active":
+        return
+    if session.get(POPPED_FOR_ACTIVE_KEY):
+        return
+    st.session_state.pop(TRANSITION_WIDGET_KEY, None)
+    session[POPPED_FOR_ACTIVE_KEY] = True
+    _append_provenance(
+        session,
+        control=ctrl,
+        phase="active",
+        expected_token=str(session.get(EXPECTED_EXPIRE_TOKEN_KEY) or ""),
+        actual_raw=None,
+        widget_key=TRANSITION_WIDGET_KEY,
+        source="session_state_pop_before_active_arm",
+    )
+    note_delivery_stage(
+        session,
+        "bridge_transition_widget_session_cleared",
+        bridge_transition=ctrl,
+        widget_key=TRANSITION_WIDGET_KEY,
+    )
+
+
+def _chain_persist_key(session: dict[str, Any], ctrl: str, room: dict[str, Any] | None) -> str:
+    rid = _room_id(room) or "setup"
+    return f"solo_bridge_{ctrl}_{rid}"
+
+
 def _transition_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key: str) -> None:
     from live_draft_solo_heartbeat import _coerce_wake_token
 
+    ctrl = str(session.get(CONTROL_KEY) or "?")
+    phase = str(session.get(PHASE_KEY) or "setup")
     token = _coerce_wake_token(raw)
     expected = str(session.get(EXPECTED_EXPIRE_TOKEN_KEY) or "").strip()
-    placement = f"TRANS_{session.get(CONTROL_KEY) or '?'}"
+    placement = f"TRANS_{ctrl}"
+    cross_ts = str(session.get(CLIENT_CROSS_TS_KEY) or "")
+    sent_ts = str(session.get(CLIENT_SENT_TS_KEY) or "")
+
+    _append_provenance(
+        session,
+        control=ctrl,
+        phase=phase,
+        expected_token=expected,
+        actual_raw=raw,
+        widget_key=key,
+        source="on_change_callback",
+        browser_zero_cross_ts=cross_ts,
+        component_value_sent_ts=sent_ts,
+    )
 
     if not expected:
         note_delivery_stage(
@@ -272,8 +420,28 @@ def _transition_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
         raw_type=type(raw).__name__ if raw is not None else "NoneType",
         token=token,
     )
-    session[MATCHING_ON_CHANGE_KEY] = int(session.get(MATCHING_ON_CHANGE_KEY) or 0) + 1
-    session[MATCHING_RAW_KEY] = int(session.get(MATCHING_RAW_KEY) or 0) + 1
+
+    client_ok = bool(cross_ts and sent_ts)
+    if client_ok and token == expected and str(raw).strip() == expected:
+        events = list(session.get(VALID_EXPIRATION_EVENTS_KEY) or [])
+        events.append(
+            {
+                "ts": time.time(),
+                "control": ctrl,
+                "expected_token": expected,
+                "actual_raw": token,
+                "browser_zero_cross_ts": cross_ts,
+                "component_value_sent_ts": sent_ts,
+            }
+        )
+        session[VALID_EXPIRATION_EVENTS_KEY] = events[-20:]
+        note_delivery_stage(
+            session,
+            "valid_expiration_delivery",
+            placement=placement,
+            bridge_transition=True,
+            token=token,
+        )
 
 
 def render_bridge_transition_probe(
@@ -284,7 +452,6 @@ def render_bridge_transition_probe(
     actionable: bool,
     expire_token: str,
     props: dict[str, Any],
-    client_remounts: str = "",
 ) -> None:
     log = list(session.get(SOLO_DELIVERY_LOG_KEY) or [])
     stages = [str(r.get("stage") or "") for r in log if isinstance(r, dict)]
@@ -294,6 +461,8 @@ def render_bridge_transition_probe(
     room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else {}
     status_log = list(session.get(ROOM_STATUS_LOG_KEY) or [])
     expected = str(session.get(EXPECTED_EXPIRE_TOKEN_KEY) or "")
+    provenance = list(session.get(PROVENANCE_KEY) or [])
+    valid_events = list(session.get(VALID_EXPIRATION_EVENTS_KEY) or [])
     st.markdown(
         f'<div id="solo-bridge-transition-diag" '
         f'data-present="1" '
@@ -310,25 +479,25 @@ def render_bridge_transition_probe(
         f'data-deadline-after="{str(args_after.get("timer_deadline") or "").replace(chr(34), chr(39))}" '
         f'data-args-before="{json.dumps(args_before, default=str)[:4000].replace(chr(34), chr(39))}" '
         f'data-args-after="{json.dumps(args_after, default=str)[:4000].replace(chr(34), chr(39))}" '
+        f'data-python-room-status="{_room_status(room).replace(chr(34), chr(39))}" '
+        f'data-python-room-id="{_room_id(room).replace(chr(34), chr(39))}" '
         f'data-room-status="{_room_status(room).replace(chr(34), chr(39))}" '
-        f'data-room-id="{str(room.get("draft_room_id") or room.get("draft_id") or "").replace(chr(34), chr(39))}" '
-        f'data-matching-on-change-count="{int(session.get(MATCHING_ON_CHANGE_KEY) or 0)}" '
-        f'data-matching-raw-count="{int(session.get(MATCHING_RAW_KEY) or 0)}" '
+        f'data-room-id="{_room_id(room).replace(chr(34), chr(39))}" '
+        f'data-valid-expiration-count="{len(valid_events)}" '
+        f'data-provenance="{json.dumps(provenance[-40:], default=str)[:12000].replace(chr(34), chr(39))}" '
+        f'data-valid-events="{json.dumps(valid_events, default=str)[:4000].replace(chr(34), chr(39))}" '
         f'data-stages="{chain.replace(chr(34), chr(39))}" '
-        f'data-widget-id-before="{str(session.get(WIDGET_ID_BEFORE_KEY) or "").replace(chr(34), chr(39))}" '
-        f'data-widget-id-after="{str(session.get(WIDGET_ID_AFTER_KEY) or "").replace(chr(34), chr(39))}" '
-        f'data-client-remounts="{str(client_remounts or "").replace(chr(34), chr(39))}" '
         f'data-room-status-log="{json.dumps(status_log[-24:], default=str)[:6000].replace(chr(34), chr(39))}" '
         f'data-post-activation="{1 if session.get(ACTIVATED_KEY) else 0}" '
+        f'data-widget-popped="{1 if session.get(POPPED_FOR_ACTIVE_KEY) else 0}" '
         f'></div>',
         unsafe_allow_html=True,
     )
 
 
 def try_bridge_transition_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> bool:
-    """Early LDR mount for paired transition test; never st.stop()."""
     ctrl = bridge_transition_control(st, session)
-    if ctrl not in ("A", "B"):
+    if ctrl not in VALID_CONTROLS:
         return False
     if not delivery_diag_active(st, session):
         return False
@@ -346,8 +515,9 @@ def try_bridge_transition_ldr_entry(st: Any, session: dict[str, Any], room: Any)
     }
     render_parent_postmessage_listener(st)
 
-    actionable, expire_token, props_room, phase_label = resolve_transition_mount(session, room_dict, ctrl)
+    actionable, expire_token, props_room, phase_label = resolve_transition_mount(session, room_dict, ctrl, st)
     session[PHASE_KEY] = phase_label
+    _clear_widget_before_active_arm(st, session, phase_label, ctrl)
 
     _snapshot_args(
         session,
@@ -357,6 +527,8 @@ def try_bridge_transition_ldr_entry(st: Any, session: dict[str, Any], room: Any)
         props=props_room,
         widget_key=TRANSITION_WIDGET_KEY,
     )
+
+    persist_key = _chain_persist_key(session, ctrl, room_dict)
 
     from solo_countdown_wake_micro_core import render_micro_isolation_once
 
@@ -375,6 +547,8 @@ def try_bridge_transition_ldr_entry(st: Any, session: dict[str, Any], room: Any)
         production_actionable=actionable,
         production_delivery_only=False,
         deliver_callback=_transition_deliver_callback,
+        suppress_immediate_session_on_change=True,
+        chain_persist_key=persist_key,
     )
 
     render_bridge_transition_probe(
@@ -394,5 +568,6 @@ def try_bridge_transition_ldr_entry(st: Any, session: dict[str, Any], room: Any)
         expire_token=expire_token,
         expected_expire_token=str(session.get(EXPECTED_EXPIRE_TOKEN_KEY) or ""),
         post_activation=bool(session.get(ACTIVATED_KEY)),
+        chain_persist_key=persist_key,
     )
     return True
