@@ -271,6 +271,7 @@ def _micro_p2a_hook_ready(session: dict[str, Any]) -> bool:
 
 def try_micro_p2a_before_early_reconcile(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
     from live_draft_solo_p2a_path_diag import (
+        p2a_allowance_note,
         p2a_hook_ready_reason,
         render_p2a_decline,
         render_p2a_fn_entry,
@@ -278,6 +279,9 @@ def try_micro_p2a_before_early_reconcile(st: Any, session: dict[str, Any], room:
 
     room_dict = room if isinstance(room, dict) else {}
     render_p2a_fn_entry(st, session, room_dict, decline="")
+    allowance = p2a_allowance_note(session, room_dict)
+    if allowance:
+        render_p2a_decline(st, session, allowance)
     reason = p2a_hook_ready_reason(st, session, room_dict)
     if reason:
         render_p2a_decline(st, session, reason)

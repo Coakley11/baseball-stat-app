@@ -227,7 +227,15 @@ def poll_p2a_path_diagnostics(page, *, max_wait_s: int = 90) -> dict[str, Any]:
         last = snap
         samples.append({"ts": time.time(), **snap})
         if snap.get("fn_entry") and (snap.get("fn_entry") or {}).get("decline") == "":
-            if not snap.get("declines"):
+            block = {
+                "start_pending",
+                "start_in_flight",
+                "post_create_open_room_not_ready",
+                "placement_not_p2a",
+                "room_missing",
+                "status_not_in_progress",
+            }
+            if not any(str(d.get("reason") or "") in block for d in (snap.get("declines") or [])):
                 break
         if snap.get("callsite") and snap.get("fn_entry"):
             break
@@ -246,9 +254,28 @@ def interpret_p2a_path(path: dict[str, Any]) -> dict[str, Any]:
         if b.get("marker") == "before_stop" or "bypass" in str(b.get("detail") or ""):
             first_branch_prevent = str(b.get("detail") or b.get("marker"))
             break
-    decline_reason = declines[-1].get("reason") if declines else ""
-    if fn_entry and not (fn_entry.get("decline") or ""):
-        decline_reason = decline_reason or (declines[-1].get("reason") if declines else "")
+    decline_reason = ""
+    blocking = {
+        "start_pending",
+        "start_in_flight",
+        "post_create_open_room_not_ready",
+        "placement_not_p2a",
+        "room_missing",
+        "status_not_in_progress",
+        "lifecycle_not_active_draft",
+        "room_not_ready",
+        "creation_pending",
+        "active_page_not_entered",
+    }
+    for d in reversed(declines):
+        r = str(d.get("reason") or "")
+        if r in blocking:
+            decline_reason = r
+            break
+    if not decline_reason and declines:
+        decline_reason = str(declines[-1].get("reason") or "")
+    if fn_entry and not (fn_entry.get("decline") or "") and not decline_reason:
+        pass
     elif fn_entry and fn_entry.get("decline"):
         decline_reason = str(fn_entry.get("decline"))
     proposed = ""
@@ -256,18 +283,31 @@ def interpret_p2a_path(path: dict[str, Any]) -> dict[str, Any]:
         proposed = "Script path never reached pre_try_micro_p2a_call_site; inspect earlier st.stop/rerun branches."
     elif not fn_entry:
         proposed = "Call-site reached but try_micro_p2a not invoked (early_room_not_dict or ImportError)."
+    elif decline_reason == "start_pending":
+        proposed = "Wait until _start_live_draft_pending clears before P2A hook."
+    elif decline_reason == "start_in_flight":
+        proposed = "Wait until _live_draft_start_in_flight clears before P2A hook."
+    elif decline_reason == "post_create_open_room_not_ready":
+        proposed = "Post-create still open and room not active/in_progress; defer P2A."
+    elif decline_reason == "post_create_open_but_active_room_allowed":
+        proposed = "Post-create open but active room predicates met; P2A should mount."
     elif decline_reason == "active_page_not_entered":
         proposed = "Relax or satisfy active_page_entered before P2A hook (diagnostic readiness only)."
     elif decline_reason == "creation_pending":
-        proposed = "Wait until start_pending/post_create_open clear before P2A hook."
+        proposed = "Legacy decline; use start_pending / post_create_open_room_not_ready."
     elif decline_reason == "status_not_in_progress":
         proposed = "Ensure live_draft_room status in_progress and is_solo_live_draft at call site."
     elif decline_reason == "placement_not_p2a":
         proposed = "Fix session/query placement latch for P2A."
+    elif not decline_reason and fn_entry:
+        proposed = "P2A hook passed readiness guards; expect #solo-micro-isolation-diag mount."
     return {
         "callsite_present": bool(callsite),
         "fn_entry_present": bool(fn_entry),
         "decline_reason": decline_reason,
+        "post_create_open_allowed": any(
+            str(d.get("reason") or "") == "post_create_open_but_active_room_allowed" for d in declines
+        ),
         "first_branch_bypass": first_branch_prevent,
         "branches_tail": branches[-8:],
         "declines_tail": declines[-8:],
@@ -417,10 +457,20 @@ def main() -> int:
         )
         latch = _step_present(cps, "placement_latch_after_sidebar")
         latch_val = ((latch or {}).get("latch") or {}).get("requested") or ""
+        path_last = (path_poll.get("last") or {})
+        callsite = path_last.get("callsite") or {}
+        snap_json = callsite.get("snap") or ""
+        mount_predicates: dict[str, Any] = {}
+        try:
+            if snap_json:
+                parsed = json.loads(snap_json)
+                mount_predicates = dict(parsed.get("mount_predicates") or {})
+        except json.JSONDecodeError:
+            mount_predicates = {}
         report["summary"] = {
             "verdict": verdict,
             "invalid_reason": invalid_reason,
-            "room_id": draft.get("room_id") or probe.get("room_id") or "",
+            "room_id": draft.get("room_id") or probe.get("room_id") or callsite.get("room_id") or "",
             "room_in_progress": bool(draft.get("start_success")),
             "latch": latch_val,
             "hook_reached": "try_micro_p2a_before_early_reconcile"
@@ -428,6 +478,14 @@ def main() -> int:
             "component_key": probe.get("key") or "",
             "raw_token": probe.get("token") or "",
             "observation_ready": bool(observation.get("observation_ready")),
+            "readiness_predicates": mount_predicates,
+            "post_create_open_allowed": bool(
+                report["p2a_path_interpretation"].get("post_create_open_allowed")
+            ),
+            "deploy_sha": report.get("deploy_sha") or "",
+            "outbound_ws_frame_count": len(report["ws_frames"]),
+            "session_state_raw_received": report["session_state_raw_received"],
+            "on_change_callback_count": report["on_change_callback_count"],
             "first_startup_divergence": report["divergence_vs_p2_gate"],
             "p2a_path": report["p2a_path_interpretation"],
             "artifact_path": str(OUT),

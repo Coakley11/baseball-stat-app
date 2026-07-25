@@ -65,3 +65,39 @@ def test_micro_start_success_criteria() -> None:
         },
     }
     assert _micro_start_success("P2A", flags, seen, state)
+
+
+def test_p2a_readiness_post_create_active_room_allowed(monkeypatch) -> None:
+    from live_draft_creation_trace import POST_CREATE_OPEN_KEY
+    from live_draft_solo_p2a_path_diag import (
+        p2a_allowance_note,
+        p2a_defer_until_draft_surface,
+        p2a_hook_ready_reason,
+    )
+
+    session = {POST_CREATE_OPEN_KEY: True}
+    room = {"status": "in_progress", "draft_room_id": "330F831E"}
+    monkeypatch.setattr(
+        "live_draft_solo_p2a_path_diag._resolve_lifecycle", lambda _s, _r: "active_draft"
+    )
+    monkeypatch.setattr(
+        "live_draft_solo_p2a_path_diag._solo_in_progress_room", lambda _s, _r: True
+    )
+    monkeypatch.setattr(
+        "live_draft_solo_p2a_path_diag.current_micro_placement", lambda _st, _s: "P2A"
+    )
+
+    assert p2a_defer_until_draft_surface(session, room) is False
+    assert p2a_allowance_note(session, room) == "post_create_open_but_active_room_allowed"
+    assert p2a_hook_ready_reason(object(), session, room) == ""
+
+
+def test_p2a_readiness_start_pending_defer(monkeypatch) -> None:
+    from live_draft_solo_p2a_path_diag import p2a_hook_ready_reason
+
+    session = {"_start_live_draft_pending": True}
+    room = {"status": "in_progress"}
+    monkeypatch.setattr(
+        "live_draft_solo_p2a_path_diag.current_micro_placement", lambda _st, _s: "P2A"
+    )
+    assert p2a_hook_ready_reason(object(), session, room) == "start_pending"
