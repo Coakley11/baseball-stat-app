@@ -116,6 +116,8 @@
           remountCount += 1;
           const args = (event && event.detail && event.detail.args) || {};
           const expireToken = String(args.expire_token || "");
+          const actionable =
+            !(args.actionable === false || args.actionable === 0 || args.actionable === "0" || args.actionable === "false");
           const parts = expireToken.split("|");
           const deadline = Number(parts[2] || 0);
           activeToken = expireToken;
@@ -124,6 +126,12 @@
           noteClient("token_received", expireToken);
           noteClient("deadline_received", String(deadline));
           updateDiagFields(expireToken, deadline);
+
+          if (!actionable) {
+            noteClient("render_inert", "actionable_false");
+            sendMessage("streamlit:setFrameHeight", { height: 0 });
+            return;
+          }
 
           if (!expireToken || !Number.isFinite(deadline) || deadline <= 0) {
             noteClient(

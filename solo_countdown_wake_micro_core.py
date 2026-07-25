@@ -89,6 +89,8 @@ def render_micro_isolation_once(
     widget_key: str | None = None,
     production_room: dict[str, Any] | None = None,
     deliver_callback: Callable[[Any, dict[str, Any], Any, str], None] | None = None,
+    production_expire_token: str | None = None,
+    production_actionable: bool = True,
 ) -> MicroCycleResult:
     """Mount exactly once; retain probe after expiration without starting cycle 1."""
     from solo_countdown_component import build_solo_expire_token, mount_solo_countdown_wake_direct
@@ -125,10 +127,17 @@ def render_micro_isolation_once(
     if production_room is not None:
         from solo_countdown_component import build_solo_expire_token, mount_solo_countdown_wake_with_token
 
-        token = build_solo_expire_token(production_room)
+        token = (
+            production_expire_token
+            if production_expire_token is not None
+            else build_solo_expire_token(production_room)
+        )
         session[sk["token"]] = token
         mounted_token_key = f"{sk['mounted']}_token"
-        prior = str(session.get(mounted_token_key) or "")
+        mount_sig_key = f"{sk['mounted']}_sig"
+        prior_sig = str(session.get(mount_sig_key) or "")
+        sig = f"{token}|actionable={1 if production_actionable else 0}"
+        first_mount = not session.get(sk["mounted"])
 
         def _prod_on_change() -> None:
             try:
@@ -149,7 +158,7 @@ def render_micro_isolation_once(
             if deliver_callback is not None:
                 deliver_callback(st, session, raw, key)
 
-        if not session.get(sk["mounted"]) or prior != token:
+        if first_mount:
             _rec(
                 "component_declaration_loaded",
                 {
@@ -158,20 +167,32 @@ def render_micro_isolation_once(
                     "expire_token": token,
                     "mount_location": location,
                     "placement": placement,
+                    "actionable": production_actionable,
                 },
             )
-            mount_solo_countdown_wake_with_token(
-                production_room,
-                key=key,
-                expire_token=token,
-                on_change=_prod_on_change,
+        elif prior_sig != sig:
+            _rec(
+                "component_props_updated",
+                {
+                    "widget_key": key,
+                    "expire_token": token,
+                    "actionable": production_actionable,
+                    "prior_sig": prior_sig[:120],
+                },
             )
-            session[sk["mounted"]] = True
-            session[mounted_token_key] = token
-        else:
-            raw = st.session_state.get(key)
-            if raw is not None:
-                _prod_on_change()
+        mount_solo_countdown_wake_with_token(
+            production_room,
+            key=key,
+            expire_token=token,
+            actionable=production_actionable,
+            on_change=_prod_on_change,
+        )
+        session[sk["mounted"]] = True
+        session[mounted_token_key] = token
+        session[mount_sig_key] = sig
+        raw = st.session_state.get(key)
+        if raw is not None:
+            _prod_on_change()
 
         return MicroCycleResult(
             widget_key=key,

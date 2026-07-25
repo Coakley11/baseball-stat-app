@@ -87,8 +87,6 @@ def test_duplicate_token_cannot_draft_twice() -> None:
 
 
 def test_pause_idle_token_not_actionable() -> None:
-    from live_draft_solo_persistent_wake import SOLO_IDLE_DEADLINE
-
     room = {
         "draft_room_id": "R1",
         "current_pick_index": 0,
@@ -98,8 +96,8 @@ def test_pause_idle_token_not_actionable() -> None:
     }
     session = {"live_draft_setup_mode": "solo"}
     tok, props = expire_token_for_persistent_wake(session, room)
-    assert float(tok.split("|")[2]) >= SOLO_IDLE_DEADLINE - 1
-    assert float(props.get("timer_deadline") or 0) >= SOLO_IDLE_DEADLINE - 1
+    assert tok == ""
+    assert props.get("status") == "paused"
 
 
 def test_solo_persistent_wake_active_requires_latch_and_wake_owner() -> None:
