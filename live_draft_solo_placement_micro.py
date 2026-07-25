@@ -242,26 +242,37 @@ def try_micro_p1_ldr_entry(st: Any, session: dict[str, Any], room: dict[str, Any
 
 
 def _micro_defer_until_draft_surface(session: dict[str, Any]) -> bool:
-    """Diagnostic: do not st.stop() during solo start wiring / post-create open."""
+    """Diagnostic: do not st.stop() while solo start is still arming or post-create open."""
     if session.get("_start_live_draft_pending") or session.get("_live_draft_start_in_flight"):
         return True
     try:
-        from live_draft_creation_trace import CREATION_RECEIPT_KEY, POST_CREATE_OPEN_KEY
+        from live_draft_creation_trace import POST_CREATE_OPEN_KEY
 
         if session.get(POST_CREATE_OPEN_KEY):
-            return True
-        receipt = dict(session.get(CREATION_RECEIPT_KEY) or {})
-        if receipt.get("creation_success") and not receipt.get("active_page_entered"):
             return True
     except ImportError:
         pass
     return False
 
 
+def _micro_p2a_hook_ready(session: dict[str, Any]) -> bool:
+    if _micro_defer_until_draft_surface(session):
+        return False
+    try:
+        from live_draft_creation_trace import CREATION_RECEIPT_KEY
+
+        receipt = dict(session.get(CREATION_RECEIPT_KEY) or {})
+        if receipt.get("creation_success") and not receipt.get("active_page_entered"):
+            return False
+    except ImportError:
+        pass
+    return True
+
+
 def try_micro_p2a_before_early_reconcile(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
     if current_micro_placement(st, session) != "P2A":
         return False
-    if _micro_defer_until_draft_surface(session):
+    if not _micro_p2a_hook_ready(session):
         return False
     if not _solo_in_progress_room(session, room):
         return False

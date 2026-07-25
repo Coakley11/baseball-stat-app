@@ -313,6 +313,28 @@ def _micro_start_success(
     return all(effective.values())
 
 
+def _p2a_draft_start_success(
+    flags: dict[str, bool],
+    seen: dict[str, Any],
+    state: dict[str, Any],
+) -> bool:
+    latch = state.get("latch_probe") or {}
+    latch_ok = str(latch.get("requested") or "").upper() == "P2A"
+    effective = {
+        "setup_page_disappeared": bool(flags.get("setup_page_disappeared"))
+        or bool(seen.get("pause_draft_detected"))
+        or bool(seen.get("setup_disappeared")),
+        "success_toast_or_room_id": bool(flags.get("success_toast_or_room_id"))
+        or bool(seen.get("toast_detected"))
+        or bool(seen.get("room_id_detected")),
+        "room_in_progress": bool(flags.get("room_in_progress"))
+        or bool(seen.get("pause_draft_detected"))
+        or (bool(seen.get("room_id_detected")) and bool(seen.get("setup_disappeared"))),
+        "latched_p2a": latch_ok,
+    }
+    return all(effective.values())
+
+
 def start_success_criteria_met(
     flags: dict[str, bool],
     seen_steps: dict[str, bool] | None = None,
@@ -323,6 +345,8 @@ def start_success_criteria_met(
     seen = seen_steps or {}
     st = state or {}
     if placement in MICRO_PLACEMENTS and placement != "P1":
+        if placement == "P2A":
+            return _p2a_draft_start_success(flags, seen, st)
         return _micro_start_success(placement, flags, seen, st)
     ladder = st.get("ladder_probe") or {}
     latch = st.get("latch_probe") or {}
