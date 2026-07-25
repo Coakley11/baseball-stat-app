@@ -904,20 +904,20 @@ def try_bridge_transition_ldr_entry(st: Any, session: dict[str, Any], room: Any)
     try:
         from live_draft_key_ownership_diag import diag_enabled, record_active_room_run_end
 
-    if diag_enabled(session) and isinstance(session.get("live_draft_room"), dict):
-        record_active_room_run_end(session, st=st, source="bridge_ldr_entry_end")
-        try:
-            from live_draft_paired_transition_diag import note_run_end_hint, record_paired_checkpoint
+        if diag_enabled(session) and isinstance(session.get("live_draft_room"), dict):
+            record_active_room_run_end(session, st=st, source="bridge_ldr_entry_end")
+            try:
+                from live_draft_paired_transition_diag import note_run_end_hint, record_paired_checkpoint
 
-            note_run_end_hint(session, reason="bridge_ldr_entry_end", detail="before_st_stop_or_fallthrough")
-            record_paired_checkpoint(
-                session,
-                "bridge_ldr_entry_end",
-                st=st,
-                extra={"bridge_st_stop_expected": True},
-            )
-        except ImportError:
-            pass
+                note_run_end_hint(session, reason="bridge_ldr_entry_end", detail="before_st_stop_or_fallthrough")
+                record_paired_checkpoint(
+                    session,
+                    "bridge_ldr_entry_end",
+                    st=st,
+                    extra={"bridge_st_stop_expected": True},
+                )
+            except ImportError:
+                pass
     except ImportError:
         pass
     return True
