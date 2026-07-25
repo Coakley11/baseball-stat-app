@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 SOLO_PERSISTENT_WAKE_LATCH_KEY = "_solo_persistent_wake_early_latch"
 SOLO_PERSISTENT_WAKE_WIDGET_KEY = "solo_countdown_wake_solo_persistent"
 SOLO_PERSISTENT_WAKE_TOKEN_KEY = "_solo_persistent_wake_last_token"
-SOLO_PERSISTENT_WAKE_MOUNTED_KEY = "_solo_persistent_wake_component_mounted"
-SOLO_PERSISTENT_WAKE_MOUNTED_TOKEN_KEY = "_solo_persistent_wake_mounted_token"
+SOLO_PERSISTENT_WAKE_SESSION_PREFIX = "_solo_persistent_wake_"
 SOLO_IDLE_DRAFT_ID = "idle"
 SOLO_IDLE_DEADLINE = 9999999999.999
 
@@ -165,87 +163,67 @@ def _actionable_solo_timer(session: dict[str, Any], room: dict[str, Any] | None)
     return float(deadline) < SOLO_IDLE_DEADLINE - 86400
 
 
+def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key: str) -> None:
+    from live_draft_solo_heartbeat import _coerce_wake_token, process_solo_component_wake
+
+    try:
+        from live_draft_solo_expire_chain import note_solo_expire_chain
+
+        note_solo_expire_chain(
+            session,
+            "on_change_callback_entry",
+            source="persistent_wake",
+            widget_key=key,
+        )
+        note_solo_expire_chain(
+            session,
+            "session_state_raw_received",
+            source="persistent_wake",
+            widget_key=key,
+            raw_type=type(raw).__name__ if raw is not None else "NoneType",
+        )
+    except ImportError:
+        pass
+    token = _coerce_wake_token(raw)
+    if not token or token.startswith(f"{SOLO_IDLE_DRAFT_ID}|"):
+        return
+    live = _resolve_room(session, None)
+    if not isinstance(live, dict):
+        return
+    process_solo_component_wake(st, session, live, token, delivery_via="on_change")
+
+
 def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> bool:
     """Mount/update the Solo wake at LDR page entry. Never st.stop(). Returns True when handled."""
     if not _should_mount_persistent_wake(st, session):
         return False
 
-    from live_draft_solo_heartbeat import _coerce_wake_token, process_solo_component_wake
-    from solo_countdown_component import mount_solo_countdown_wake_with_token
+    from solo_countdown_wake_micro_core import render_micro_isolation_once
 
     room_dict = _resolve_room(session, room)
-    key = solo_persistent_wake_widget_key(session)
     session[SOLO_PERSISTENT_WAKE_LATCH_KEY] = True
 
     if not _actionable_solo_timer(session, room_dict):
         session[SOLO_PERSISTENT_WAKE_TOKEN_KEY] = build_solo_idle_expire_token()
         return True
 
-    live_did = ""
-    if room_dict:
-        live_did = str(room_dict.get("draft_room_id") or room_dict.get("draft_id") or "")
-    prev_did = str(session.get("_solo_persistent_wake_bound_draft_id") or "")
-    if live_did and prev_did and live_did != prev_did:
-        session.pop(SOLO_PERSISTENT_WAKE_MOUNTED_KEY, None)
-        session.pop(SOLO_PERSISTENT_WAKE_MOUNTED_TOKEN_KEY, None)
-    if live_did:
-        session["_solo_persistent_wake_bound_draft_id"] = live_did
-
     expire_token, props_room = expire_token_for_persistent_wake(session, room_dict)
     session[SOLO_PERSISTENT_WAKE_TOKEN_KEY] = expire_token
+    did = str(props_room.get("draft_room_id") or props_room.get("draft_id") or "")
 
-    def _on_component_change() -> None:
-        raw = st.session_state.get(key)
-        try:
-            from live_draft_solo_expire_chain import note_solo_expire_chain
-
-            note_solo_expire_chain(
-                session,
-                "on_change_callback_entry",
-                source="persistent_wake",
-                widget_key=key,
-            )
-            note_solo_expire_chain(
-                session,
-                "session_state_raw_received",
-                source="persistent_wake",
-                widget_key=key,
-                raw_type=type(raw).__name__ if raw is not None else "NoneType",
-            )
-        except ImportError:
-            pass
-        try:
-            from live_draft_solo_delivery_diag import note_production_on_change_if_diag
-
-            live = _resolve_room(session, room) or props_room
-            note_production_on_change_if_diag(st, session, live if isinstance(live, dict) else props_room, key)
-        except ImportError:
-            pass
-        token = _coerce_wake_token(raw)
-        if not token or token == build_solo_idle_expire_token():
-            return
-        if token.startswith(f"{SOLO_IDLE_DRAFT_ID}|"):
-            return
-        live = _resolve_room(session, room) or props_room
-        if not isinstance(live, dict):
-            return
-        process_solo_component_wake(st, session, live, token, delivery_via="on_change")
-
-    last_mounted = str(session.get(SOLO_PERSISTENT_WAKE_MOUNTED_TOKEN_KEY) or "")
-    need_declare = not session.get(SOLO_PERSISTENT_WAKE_MOUNTED_KEY) or expire_token != last_mounted
-    if need_declare:
-        mount_solo_countdown_wake_with_token(
-            props_room,
-            key=key,
-            expire_token=expire_token,
-            on_change=_on_component_change,
-        )
-        session[SOLO_PERSISTENT_WAKE_MOUNTED_KEY] = True
-        session[SOLO_PERSISTENT_WAKE_MOUNTED_TOKEN_KEY] = expire_token
-    else:
-        raw = st.session_state.get(key)
-        if raw is not None:
-            _on_component_change()
+    render_micro_isolation_once(
+        st,
+        session,
+        placement="PROD",
+        location="ldr_page_entry_early_persistent",
+        draft_id=did,
+        route=True,
+        persistent=True,
+        session_prefix=SOLO_PERSISTENT_WAKE_SESSION_PREFIX,
+        widget_key=solo_persistent_wake_widget_key(session),
+        production_room=props_room,
+        deliver_callback=_production_deliver_callback,
+    )
     try:
         from live_draft_solo_component_diagnostics import (
             record_solo_component_mount_attempt,
@@ -256,7 +234,7 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
             record_solo_component_mount_attempt(
                 session,
                 props_room,
-                key=key,
+                key=solo_persistent_wake_widget_key(session),
                 mounted=True,
                 reason="persistent_early",
                 expire_token=expire_token,
@@ -270,7 +248,7 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
             session,
             "persistent_wake_mounted",
             source="persistent_wake",
-            widget_key=key,
+            widget_key=solo_persistent_wake_widget_key(session),
             expire_token=expire_token,
             room_status=str((room_dict or {}).get("status") or ""),
         )

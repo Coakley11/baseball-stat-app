@@ -86,6 +86,9 @@ def render_micro_isolation_once(
     route: bool = True,
     persistent: bool = False,
     session_prefix: str | None = None,
+    widget_key: str | None = None,
+    production_room: dict[str, Any] | None = None,
+    deliver_callback: Callable[[Any, dict[str, Any], Any, str], None] | None = None,
 ) -> MicroCycleResult:
     """Mount exactly once; retain probe after expiration without starting cycle 1."""
     from solo_countdown_component import build_solo_expire_token, mount_solo_countdown_wake_direct
@@ -111,13 +114,74 @@ def render_micro_isolation_once(
             }
         )
         session[log_key] = log[-80:]
-    key = micro_widget_key(placement)
+    key = widget_key or micro_widget_key(placement)
     stages: list[str] = []
 
     def _rec(stage: str, fields: dict[str, Any] | None = None) -> None:
         stages.append(stage)
         if record_stage:
             record_stage(stage, fields or {})
+
+    if production_room is not None:
+        from solo_countdown_component import build_solo_expire_token, mount_solo_countdown_wake_with_token
+
+        token = build_solo_expire_token(production_room)
+        session[sk["token"]] = token
+        mounted_token_key = f"{sk['mounted']}_token"
+        prior = str(session.get(mounted_token_key) or "")
+
+        def _prod_on_change() -> None:
+            try:
+                from app_page_generation import current_script_run_id
+
+                session[sk["expire_run"]] = str(current_script_run_id(session) or "")
+            except ImportError:
+                session[sk["expire_run"]] = str(session.get("_live_draft_script_run_id") or "")
+            raw = st.session_state.get(key)
+            _rec(
+                "on_change_callback_entry",
+                {"widget_key": key, "raw_session_state": repr(raw)[:800]},
+            )
+            _rec(
+                "session_state_raw_received",
+                {"key": key, "raw_type": type(raw).__name__ if raw is not None else "NoneType"},
+            )
+            if deliver_callback is not None:
+                deliver_callback(st, session, raw, key)
+
+        if not session.get(sk["mounted"]) or prior != token:
+            _rec(
+                "component_declaration_loaded",
+                {
+                    "component_name": "solo_countdown_wake",
+                    "widget_key": key,
+                    "expire_token": token,
+                    "mount_location": location,
+                    "placement": placement,
+                },
+            )
+            mount_solo_countdown_wake_with_token(
+                production_room,
+                key=key,
+                expire_token=token,
+                on_change=_prod_on_change,
+            )
+            session[sk["mounted"]] = True
+            session[mounted_token_key] = token
+        else:
+            raw = st.session_state.get(key)
+            if raw is not None:
+                _prod_on_change()
+
+        return MicroCycleResult(
+            widget_key=key,
+            token=token,
+            delivered=False,
+            raw_received=False,
+            on_change_fired=False,
+            stages=stages,
+            should_stop=False,
+        )
 
     if session.get(sk["complete"]):
         _rec("micro_complete_frozen", {"widget_key": key})
