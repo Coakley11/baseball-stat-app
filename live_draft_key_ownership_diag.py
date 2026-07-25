@@ -114,19 +114,33 @@ def _widget_probe(session: dict[str, Any], user_key: str) -> dict[str, Any]:
         try:
             widgets = ss.get_widget_states() or []
             matches: list[dict[str, Any]] = []
+            exact_suffix = f"-{user_key}"
             for w in widgets:
                 wid = str(getattr(w, "id", "") or "")
-                if wid == user_key or wid.endswith(f"-{user_key}") or user_key in wid:
+                exact = wid == user_key or wid.endswith(exact_suffix)
+                if exact:
                     out["widget_registered_for_key"] = True
                     out["widget_ids_for_key"].append(wid)
                     matches.append(
                         {
                             "id": wid,
+                            "exact_user_key_match": True,
                             "value_type": type(getattr(w, "value", None)).__name__,
                             "value_repr": repr(getattr(w, "value", None))[:200],
                         }
                     )
+                elif user_key in wid:
+                    matches.append(
+                        {
+                            "id": wid,
+                            "exact_user_key_match": False,
+                            "substring_only": True,
+                        }
+                    )
             out["widget_states_matching_key"] = matches[:12]
+            out["widget_exact_match_for_user_key"] = bool(
+                any(m.get("exact_user_key_match") for m in matches if isinstance(m, dict))
+            )
         except Exception as exc:
             out["widget_states_error"] = f"{type(exc).__name__}:{exc}"
         try:
@@ -253,7 +267,7 @@ def analyze_run_boundary_loss(session_id: str) -> dict[str, Any] | None:
 
 def first_widget_registration_for_key(session_id: str) -> dict[str, Any] | None:
     for row in get_ownership_ledger(session_id):
-        if row.get("widget_registered_for_key"):
+        if row.get("widget_exact_match_for_user_key"):
             return row
     return None
 

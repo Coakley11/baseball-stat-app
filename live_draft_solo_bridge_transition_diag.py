@@ -888,4 +888,11 @@ def try_bridge_transition_ldr_entry(st: Any, session: dict[str, Any], room: Any)
         post_activation=bool(session.get(ACTIVATED_KEY)),
         chain_persist_key=persist_key,
     )
+    try:
+        from live_draft_key_ownership_diag import diag_enabled, record_active_room_run_end
+
+        if diag_enabled(session) and isinstance(session.get("live_draft_room"), dict):
+            record_active_room_run_end(session, st=st, source="bridge_ldr_entry_end")
+    except ImportError:
+        pass
     return True

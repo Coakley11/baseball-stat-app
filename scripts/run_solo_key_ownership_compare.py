@@ -42,6 +42,9 @@ def _summarize_ownership(a0: dict[str, Any]) -> dict[str, Any]:
     repo = ko.get("repo_widget_audit") if isinstance(ko, dict) else {}
     return {
         "widget_key_collision_detected": bool(widget_hit),
+        "widget_exact_match_for_live_draft_room": bool(
+            widget_hit and widget_hit.get("widget_exact_match_for_user_key")
+        ),
         "first_widget_registration": widget_hit,
         "run_boundary_loss": boundary,
         "repo_widget_audit": repo,
