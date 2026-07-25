@@ -215,33 +215,145 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
     from live_draft_solo_heartbeat import _coerce_wake_token, process_solo_component_wake
 
     try:
-        from live_draft_solo_expire_chain import note_solo_expire_chain
-
-        note_solo_expire_chain(
-            session,
-            "on_change_callback_entry",
-            source="persistent_wake",
-            widget_key=key,
-        )
-        note_solo_expire_chain(
-            session,
-            "session_state_raw_received",
-            source="persistent_wake",
-            widget_key=key,
-            raw_type=type(raw).__name__ if raw is not None else "NoneType",
+        from live_draft_callback_boundary_diag import (
+            boundary_diag_enabled,
+            record_callback_boundary,
+            trace_helper,
         )
     except ImportError:
+        boundary_diag_enabled = lambda s: False  # type: ignore[assignment,misc]
+        record_callback_boundary = lambda *a, **k: None  # type: ignore[assignment,misc]
+        trace_helper = None  # type: ignore[assignment,misc]
+
+    if boundary_diag_enabled(session):
+        record_callback_boundary(
+            session,
+            "persistent_wake_deliver_callback_entry",
+            st=st,
+            token=str(raw or "")[:400],
+            phase="callback_entry",
+            function="_production_deliver_callback",
+            extra={"widget_key": key},
+        )
+
+    try:
+        from live_draft_solo_expire_chain import note_solo_expire_chain
+
+        if boundary_diag_enabled(session) and trace_helper is not None:
+            trace_helper(
+                session,
+                "note_solo_expire_chain_entry",
+                note_solo_expire_chain,
+                session,
+                "on_change_callback_entry",
+                source="persistent_wake",
+                widget_key=key,
+                st=st,
+                callback_token=str(raw or "")[:400],
+            )
+            trace_helper(
+                session,
+                "note_solo_expire_chain_raw",
+                note_solo_expire_chain,
+                session,
+                "session_state_raw_received",
+                source="persistent_wake",
+                widget_key=key,
+                raw_type=type(raw).__name__ if raw is not None else "NoneType",
+                st=st,
+                callback_token=str(raw or "")[:400],
+            )
+        else:
+            note_solo_expire_chain(
+                session,
+                "on_change_callback_entry",
+                source="persistent_wake",
+                widget_key=key,
+            )
+            note_solo_expire_chain(
+                session,
+                "session_state_raw_received",
+                source="persistent_wake",
+                widget_key=key,
+                raw_type=type(raw).__name__ if raw is not None else "NoneType",
+            )
+    except ImportError:
         pass
-    token = _coerce_wake_token(raw)
+    if boundary_diag_enabled(session) and trace_helper is not None:
+        token = trace_helper(
+            session,
+            "_coerce_wake_token",
+            _coerce_wake_token,
+            raw,
+            st=st,
+            callback_token=str(raw or "")[:400],
+        )
+    else:
+        token = _coerce_wake_token(raw)
     if not session.get(SOLO_PERSISTENT_WAKE_ACTIONABLE_KEY):
+        if boundary_diag_enabled(session):
+            record_callback_boundary(
+                session,
+                "persistent_wake_deliver_callback_return",
+                st=st,
+                token=str(token or "")[:400],
+                phase="callback_return",
+                extra={"reason": "not_actionable"},
+            )
         return
     if not token or token == SOLO_INERT_EXPIRE_TOKEN:
+        if boundary_diag_enabled(session):
+            record_callback_boundary(
+                session,
+                "persistent_wake_deliver_callback_return",
+                st=st,
+                token=str(token or "")[:400],
+                phase="callback_return",
+                extra={"reason": "inert_token"},
+            )
         return
     live = _resolve_room(session, None)
     if not isinstance(live, dict):
+        if boundary_diag_enabled(session):
+            record_callback_boundary(
+                session,
+                "persistent_wake_deliver_callback_return",
+                st=st,
+                token=str(token or "")[:400],
+                phase="callback_return",
+                extra={"reason": "no_live_room"},
+            )
         return
-    process_solo_component_wake(st, session, live, token, delivery_via="on_change")
+    if boundary_diag_enabled(session) and trace_helper is not None:
+        from functools import partial
+
+        trace_helper(
+            session,
+            "process_solo_component_wake",
+            partial(
+                process_solo_component_wake,
+                st,
+                session,
+                live,
+                token,
+                delivery_via="on_change",
+            ),
+            st=st,
+            callback_token=str(token or "")[:400],
+        )
+    else:
+        process_solo_component_wake(st, session, live, token, delivery_via="on_change")
     session.pop(SOLO_PERSISTENT_WAKE_PICK_LATCH_KEY, None)
+    if boundary_diag_enabled(session):
+        record_callback_boundary(
+            session,
+            "persistent_wake_deliver_callback_return",
+            st=st,
+            token=str(token or "")[:400],
+            phase="callback_return",
+            function="_production_deliver_callback",
+            extra={"reason": "ok"},
+        )
 
 
 def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:

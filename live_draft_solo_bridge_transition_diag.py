@@ -435,81 +435,203 @@ def _transition_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
     from live_draft_solo_heartbeat import _coerce_wake_token
 
     try:
-        from live_draft_room_mutation_audit import room_mutation_checkpoint
-
-        room_mutation_checkpoint(session, "callback_entry", st=st, extra={"widget_key": key})
+        from live_draft_callback_boundary_diag import (
+            boundary_diag_enabled,
+            record_callback_boundary,
+            trace_helper,
+        )
     except ImportError:
-        pass
+        boundary_diag_enabled = lambda s: False  # type: ignore[assignment,misc]
+        record_callback_boundary = lambda *a, **k: None  # type: ignore[assignment,misc]
+        trace_helper = None  # type: ignore[assignment,misc]
+
+    if boundary_diag_enabled(session):
+        record_callback_boundary(
+            session,
+            "bridge_deliver_callback_entry",
+            st=st,
+            token=str(raw or "")[:400],
+            phase="callback_entry",
+            function="_transition_deliver_callback",
+            extra={"widget_key": key},
+        )
+
     ctrl = str(session.get(CONTROL_KEY) or "?")
     phase = str(session.get(PHASE_KEY) or "setup")
-    token = _coerce_wake_token(raw)
+    if boundary_diag_enabled(session) and trace_helper is not None:
+        token = trace_helper(
+            session,
+            "_coerce_wake_token",
+            _coerce_wake_token,
+            raw,
+            st=st,
+            callback_token=str(raw or "")[:400],
+        )
+    else:
+        token = _coerce_wake_token(raw)
     expected = str(session.get(EXPECTED_EXPIRE_TOKEN_KEY) or "").strip()
     placement = f"TRANS_{ctrl}"
     cross_ts = str(session.get(CLIENT_CROSS_TS_KEY) or "")
     sent_ts = str(session.get(CLIENT_SENT_TS_KEY) or "")
 
-    _append_provenance(
-        session,
-        control=ctrl,
-        phase=phase,
-        expected_token=expected,
-        actual_raw=raw,
-        widget_key=key,
-        source="on_change_callback",
-        browser_zero_cross_ts=cross_ts,
-        component_value_sent_ts=sent_ts,
-    )
+    if boundary_diag_enabled(session) and trace_helper is not None:
+        trace_helper(
+            session,
+            "_append_provenance",
+            _append_provenance,
+            session,
+            control=ctrl,
+            phase=phase,
+            expected_token=expected,
+            actual_raw=raw,
+            widget_key=key,
+            source="on_change_callback",
+            browser_zero_cross_ts=cross_ts,
+            component_value_sent_ts=sent_ts,
+            st=st,
+            callback_token=str(token or "")[:400],
+        )
+    else:
+        _append_provenance(
+            session,
+            control=ctrl,
+            phase=phase,
+            expected_token=expected,
+            actual_raw=raw,
+            widget_key=key,
+            source="on_change_callback",
+            browser_zero_cross_ts=cross_ts,
+            component_value_sent_ts=sent_ts,
+        )
 
     if not expected:
-        note_delivery_stage(
-            session,
-            "on_change_ignored_pre_activation",
-            placement=placement,
-            bridge_transition=True,
-            widget_key=key,
-            token=token,
-        )
+        if boundary_diag_enabled(session) and trace_helper is not None:
+            trace_helper(
+                session,
+                "note_delivery_stage_pre_activation",
+                note_delivery_stage,
+                session,
+                "on_change_ignored_pre_activation",
+                placement=placement,
+                bridge_transition=True,
+                widget_key=key,
+                token=token,
+                st=st,
+                callback_token=str(token or "")[:400],
+            )
+        else:
+            note_delivery_stage(
+                session,
+                "on_change_ignored_pre_activation",
+                placement=placement,
+                bridge_transition=True,
+                widget_key=key,
+                token=token,
+            )
+        if boundary_diag_enabled(session):
+            record_callback_boundary(
+                session,
+                "bridge_deliver_callback_return",
+                st=st,
+                token=str(token or "")[:400],
+                phase="callback_return",
+                function="_transition_deliver_callback",
+                extra={"reason": "no_expected_token"},
+            )
         return
-    try:
-        from live_draft_room_mutation_audit import room_mutation_checkpoint
-
-        room_mutation_checkpoint(
+    if boundary_diag_enabled(session):
+        record_callback_boundary(
             session,
             "before_token_validation",
             st=st,
-            extra={"token": token, "expected": expected},
+            token=str(token or "")[:400],
+            phase="before_helper",
+            helper="token_validation",
         )
-    except ImportError:
-        pass
     if token != expected:
-        note_delivery_stage(
+        if boundary_diag_enabled(session) and trace_helper is not None:
+            trace_helper(
+                session,
+                "note_delivery_stage_wrong_token",
+                note_delivery_stage,
+                session,
+                "on_change_ignored_wrong_token",
+                placement=placement,
+                bridge_transition=True,
+                widget_key=key,
+                token=token,
+                expected_token=expected,
+                st=st,
+                callback_token=str(token or "")[:400],
+            )
+        else:
+            note_delivery_stage(
+                session,
+                "on_change_ignored_wrong_token",
+                placement=placement,
+                bridge_transition=True,
+                widget_key=key,
+                token=token,
+                expected_token=expected,
+            )
+        if boundary_diag_enabled(session):
+            record_callback_boundary(
+                session,
+                "bridge_deliver_callback_return",
+                st=st,
+                token=str(token or "")[:400],
+                phase="callback_return",
+                function="_transition_deliver_callback",
+                extra={"reason": "wrong_token"},
+            )
+        return
+
+    if boundary_diag_enabled(session) and trace_helper is not None:
+        trace_helper(
             session,
-            "on_change_ignored_wrong_token",
+            "note_delivery_stage_matching_token",
+            note_delivery_stage,
+            session,
+            "on_change_callback_entry_matching_token",
             placement=placement,
             bridge_transition=True,
             widget_key=key,
             token=token,
-            expected_token=expected,
+            st=st,
+            callback_token=str(token or "")[:400],
         )
-        return
-
-    note_delivery_stage(
-        session,
-        "on_change_callback_entry_matching_token",
-        placement=placement,
-        bridge_transition=True,
-        widget_key=key,
-        token=token,
-    )
-    note_delivery_stage(
-        session,
-        "session_state_raw_received_matching_token",
-        placement=placement,
-        bridge_transition=True,
-        widget_key=key,
-        raw_type=type(raw).__name__ if raw is not None else "NoneType",
-        token=token,
-    )
+        trace_helper(
+            session,
+            "note_delivery_stage_raw_received",
+            note_delivery_stage,
+            session,
+            "session_state_raw_received_matching_token",
+            placement=placement,
+            bridge_transition=True,
+            widget_key=key,
+            raw_type=type(raw).__name__ if raw is not None else "NoneType",
+            token=token,
+            st=st,
+            callback_token=str(token or "")[:400],
+        )
+    else:
+        note_delivery_stage(
+            session,
+            "on_change_callback_entry_matching_token",
+            placement=placement,
+            bridge_transition=True,
+            widget_key=key,
+            token=token,
+        )
+        note_delivery_stage(
+            session,
+            "session_state_raw_received_matching_token",
+            placement=placement,
+            bridge_transition=True,
+            widget_key=key,
+            raw_type=type(raw).__name__ if raw is not None else "NoneType",
+            token=token,
+        )
 
     client_ok = bool(cross_ts and sent_ts)
     if client_ok and token == expected and str(raw).strip() == expected:
@@ -525,12 +647,37 @@ def _transition_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             }
         )
         session[VALID_EXPIRATION_EVENTS_KEY] = events[-20:]
-        note_delivery_stage(
+        if boundary_diag_enabled(session) and trace_helper is not None:
+            trace_helper(
+                session,
+                "note_delivery_stage_valid_expiration",
+                note_delivery_stage,
+                session,
+                "valid_expiration_delivery",
+                placement=placement,
+                bridge_transition=True,
+                token=token,
+                st=st,
+                callback_token=str(token or "")[:400],
+            )
+        else:
+            note_delivery_stage(
+                session,
+                "valid_expiration_delivery",
+                placement=placement,
+                bridge_transition=True,
+                token=token,
+            )
+
+    if boundary_diag_enabled(session):
+        record_callback_boundary(
             session,
-            "valid_expiration_delivery",
-            placement=placement,
-            bridge_transition=True,
-            token=token,
+            "bridge_deliver_callback_return",
+            st=st,
+            token=str(token or "")[:400],
+            phase="callback_return",
+            function="_transition_deliver_callback",
+            extra={"reason": "ok"},
         )
 
 
@@ -575,6 +722,12 @@ def render_bridge_transition_probe(
         audit_b64 = _audit_b64(audit_payload)
     except ImportError:
         audit_b64 = ""
+    try:
+        from live_draft_callback_boundary_diag import callback_boundary_b64_for_session
+
+        boundary_b64 = callback_boundary_b64_for_session(session)
+    except ImportError:
+        boundary_b64 = ""
     st.markdown(
         f'<div id="solo-bridge-transition-diag" '
         f'data-present="1" '
@@ -601,6 +754,7 @@ def render_bridge_transition_probe(
         f'data-room-ledger-b64="{ledger_b64}" '
         f'data-room-mutation-log-b64="{mut_b64}" '
         f'data-room-mutation-audit-b64="{audit_b64}" '
+        f'data-callback-boundary-b64="{boundary_b64}" '
         f'data-streamlit-session-id="{str(session.get(STREAMLIT_SESSION_ID_KEY) or "").replace(chr(34), chr(39))}" '
         f'data-script-run-counter="{int(session.get(SCRIPT_RUN_COUNTER_KEY) or 0)}" '
         f'data-valid-events="{json.dumps(valid_events, default=str)[:4000].replace(chr(34), chr(39))}" '
@@ -615,6 +769,12 @@ def render_bridge_transition_probe(
         from live_draft_room_mutation_audit import render_room_mutation_audit_probe
 
         render_room_mutation_audit_probe(st, session)
+    except ImportError:
+        pass
+    try:
+        from live_draft_callback_boundary_diag import render_callback_boundary_probe
+
+        render_callback_boundary_probe(st, session)
     except ImportError:
         pass
 

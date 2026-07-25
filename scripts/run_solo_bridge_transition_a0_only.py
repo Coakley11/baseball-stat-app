@@ -44,6 +44,7 @@ SCRAPE_JS = """() => {
       script_run_counter: t.getAttribute('data-script-run-counter')||'',
       room_mutation_log_b64: t.getAttribute('data-room-mutation-log-b64')||'',
       room_mutation_audit_b64: t.getAttribute('data-room-mutation-audit-b64')||'',
+      callback_boundary_b64: t.getAttribute('data-callback-boundary-b64')||'',
       room_status_log: t.getAttribute('data-room-status-log')||'',
       stages: t.getAttribute('data-stages')||'',
     };
@@ -506,6 +507,27 @@ def run_a0(page, ws_frames: list[dict[str, Any]]) -> dict[str, Any]:
         first_mutation_detail = dict(mutation_log[0]) if isinstance(mutation_log[0], dict) else {}
         first_mutation = str(first_mutation_detail.get("path") or first_mutation_detail.get("kind") or "")
 
+    callback_boundary = _decode_b64_json(str(probe.get("callback_boundary_b64") or ""))
+    cb_rows = callback_boundary.get("rows") if isinstance(callback_boundary, dict) else []
+    cb_first_loss = (
+        callback_boundary.get("first_room_disappearance")
+        if isinstance(callback_boundary, dict)
+        else None
+    )
+    cb_entry_row = next(
+        (r for r in cb_rows if isinstance(r, dict) and "on_change_entry" in str(r.get("point") or "")),
+        None,
+    )
+    cb_script_begin_after_callback = None
+    if isinstance(cb_rows, list):
+        for i, row in enumerate(cb_rows):
+            if not isinstance(row, dict):
+                continue
+            if row.get("point") == "streamlit_app_script_beginning" and i > 0:
+                prev = cb_rows[i - 1]
+                if isinstance(prev, dict) and "callback" in str(prev.get("point") or ""):
+                    cb_script_begin_after_callback = {"prior": prev, "script_begin": row}
+
     return {
         "control": "A0",
         "deploy_sha": deploy_sha,
@@ -540,6 +562,11 @@ def run_a0(page, ws_frames: list[dict[str, Any]]) -> dict[str, Any]:
         "first_room_mutation_path": first_mutation,
         "first_room_mutation_detail": first_mutation_detail,
         "first_python_room_loss_sample": first_loss,
+        "callback_boundary": callback_boundary if isinstance(callback_boundary, dict) else callback_boundary,
+        "callback_boundary_first_disappearance": cb_first_loss,
+        "callback_boundary_expiration_entry": cb_entry_row,
+        "callback_boundary_script_begin_after_callback": cb_script_begin_after_callback,
+        "callback_boundary_row_count": len(cb_rows) if isinstance(cb_rows, list) else 0,
         "observation_samples": samples,
         "ws_frame_count": len(ws_frames) - ws_baseline,
         "persist_key": final.get("persist_key"),

@@ -594,6 +594,19 @@ try:
             enable_room_mutation_audit(st.session_state)
             bump_script_run_marker(st.session_state)
             room_mutation_checkpoint(st.session_state, "streamlit_app_script_begin", st=st)
+        try:
+            from live_draft_callback_boundary_diag import (
+                enable_callback_boundary_diag,
+                record_script_beginning,
+            )
+
+            if st.session_state.get("_solo_delivery_diag_enabled") or st.session_state.get(
+                "_solo_bridge_transition_enabled"
+            ):
+                enable_callback_boundary_diag(st.session_state)
+                record_script_beginning(st.session_state, st=st)
+        except ImportError:
+            pass
     except ImportError:
         pass
 except ImportError:

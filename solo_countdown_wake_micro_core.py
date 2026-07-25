@@ -144,6 +144,26 @@ def render_micro_isolation_once(
 
         def _prod_on_change() -> None:
             try:
+                from live_draft_callback_boundary_diag import (
+                    boundary_diag_enabled,
+                    record_callback_boundary,
+                    trace_helper,
+                )
+
+                if boundary_diag_enabled(session):
+                    raw_pre = st.session_state.get(key)
+                    record_callback_boundary(
+                        session,
+                        "expiration_on_change_entry",
+                        st=st,
+                        token=str(raw_pre or "")[:400],
+                        phase="callback_entry",
+                        function="_prod_on_change",
+                        extra={"widget_key": key},
+                    )
+            except ImportError:
+                pass
+            try:
                 from app_page_generation import current_script_run_id
 
                 session[sk["expire_run"]] = str(current_script_run_id(session) or "")
@@ -159,7 +179,46 @@ def render_micro_isolation_once(
                 {"key": key, "raw_type": type(raw).__name__ if raw is not None else "NoneType"},
             )
             if deliver_callback is not None:
-                deliver_callback(st, session, raw, key)
+                try:
+                    from live_draft_callback_boundary_diag import (
+                        boundary_diag_enabled,
+                        record_callback_boundary,
+                        trace_helper,
+                    )
+
+                    if boundary_diag_enabled(session):
+
+                        def _run_deliver() -> None:
+                            deliver_callback(st, session, raw, key)
+
+                        trace_helper(
+                            session,
+                            "deliver_callback",
+                            _run_deliver,
+                            st=st,
+                            callback_token=str(raw or "")[:400],
+                        )
+                    else:
+                        deliver_callback(st, session, raw, key)
+                except ImportError:
+                    deliver_callback(st, session, raw, key)
+            try:
+                from live_draft_callback_boundary_diag import (
+                    boundary_diag_enabled,
+                    record_callback_boundary,
+                )
+
+                if boundary_diag_enabled(session):
+                    record_callback_boundary(
+                        session,
+                        "expiration_on_change_return",
+                        st=st,
+                        token=str(raw or "")[:400],
+                        phase="callback_return",
+                        function="_prod_on_change",
+                    )
+            except ImportError:
+                pass
 
         if production_delivery_only and session.get(sk["mounted"]):
             raw = st.session_state.get(key)
