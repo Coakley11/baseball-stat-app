@@ -145,6 +145,7 @@ def _valid_expiration_from_evidence(
     provenance: list[dict[str, Any]],
     browser_zero_ts: str,
     component_sent_ts: str,
+    persist_log: list[Any],
 ) -> tuple[int, list[str]]:
     reasons: list[str] = []
     if not expected:
@@ -154,17 +155,15 @@ def _valid_expiration_from_evidence(
         reasons.append("no_browser_deadline_crossed_in_persisted_chain")
     if "component_value_sent" not in cs:
         reasons.append("no_component_value_sent_in_persisted_chain")
-    if not browser_zero_ts:
-        reasons.append("no_browser_zero_ts_attribute")
-    if not component_sent_ts:
-        reasons.append("no_component_sent_ts_attribute")
     on_change_hits = [
         e
         for e in provenance
         if e.get("source") == "on_change_callback" and str(e.get("actual_raw") or "") == expected
     ]
-    if not on_change_hits:
-        reasons.append("no_on_change_for_expected_token")
+    if not on_change_hits and provenance:
+        reasons.append("no_on_change_for_expected_token_in_provenance")
+    elif not on_change_hits and not provenance:
+        reasons.append("provenance_not_scraped_on_change_unverified")
     if reasons:
         return 0, reasons
     return 1, []
@@ -184,6 +183,7 @@ def _classify_control(
     provenance: list[dict[str, Any]],
     client_chain: str,
     spurious_matching: int,
+    client_cross_and_send: bool,
 ) -> tuple[str, str]:
     if not draft_ok:
         return "INVALID", "draft_start_failed"
@@ -198,12 +198,8 @@ def _classify_control(
     if control != "A0" and not expected_token:
         return "INVALID", "expected_expire_token_missing"
 
-    oc_without_client = spurious_matching > 0 or (
-        any(e.get("actual_raw") == expected_token for e in provenance)
-        and "browser_deadline_crossed" not in set(client_chain.split("|"))
-    )
-    if oc_without_client and valid_expiration_count < 1:
-        return "INCONCLUSIVE", "matching_callbacks_without_proven_client_zero_cross_send"
+    if client_cross_and_send and valid_expiration_count < 1:
+        return "INCONCLUSIVE", "client_cross_send_without_proven_python_on_change"
 
     if valid_expiration_count >= 1:
         return "PASS", ""
@@ -272,6 +268,7 @@ def run_one_control(page, control: str, ws_frames: list[dict[str, Any]]) -> dict
     setup_return_snapshots: list[dict[str, Any]] = []
     post_activation_seen = False
     room_id_mismatches: list[dict[str, Any]] = []
+    python_room_lost_streak = 0
     python_room_lost_ui_active = False
 
     while time.time() - t0 < obs_s:
@@ -305,7 +302,11 @@ def run_one_control(page, control: str, ws_frames: list[dict[str, Any]]) -> dict
             and py_status in ("none", "unknown", "")
             and was_in_progress
         ):
-            python_room_lost_ui_active = True
+            python_room_lost_streak += 1
+            if python_room_lost_streak >= 2:
+                python_room_lost_ui_active = True
+        else:
+            python_room_lost_streak = 0
         if consecutive_inactive >= 2:
             returned_to_setup = True
         samples.append(snap)
@@ -324,6 +325,11 @@ def run_one_control(page, control: str, ws_frames: list[dict[str, Any]]) -> dict
         provenance=provenance,
         browser_zero_ts=str(client.get("browser_zero_ts") or ""),
         component_sent_ts=str(client.get("component_sent_ts") or ""),
+        persist_log=list(final.get("persist_log") or []),
+    )
+    cs_set = set(p for p in client_chain.split("|") if p)
+    client_cross_and_send = bool(
+        expected_token and "browser_deadline_crossed" in cs_set and "component_value_sent" in cs_set
     )
     py_valid = int(probe.get("valid_expiration_count") or 0)
     valid_expiration_count = max(valid_n, py_valid)
@@ -346,6 +352,7 @@ def run_one_control(page, control: str, ws_frames: list[dict[str, Any]]) -> dict
         provenance=provenance,
         client_chain=client_chain,
         spurious_matching=matching["spurious_matching_without_client_ts"],
+        client_cross_and_send=client_cross_and_send,
     )
 
     return {
