@@ -142,6 +142,29 @@ def _should_mount_persistent_wake(st: Any, session: dict[str, Any]) -> bool:
     return True
 
 
+def _actionable_solo_timer(session: dict[str, Any], room: dict[str, Any] | None) -> bool:
+    if not room:
+        return False
+    try:
+        from live_draft_solo_timer import is_solo_live_draft
+
+        if not is_solo_live_draft(session, room):
+            return False
+    except ImportError:
+        return False
+    if str(room.get("status") or "") != "in_progress":
+        return False
+    try:
+        from live_draft_timer_logic import live_draft_timer_deadline
+
+        deadline = live_draft_timer_deadline(room)
+    except ImportError:
+        deadline = room.get("timer_deadline")
+    if deadline is None:
+        return False
+    return float(deadline) < SOLO_IDLE_DEADLINE - 86400
+
+
 def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> bool:
     """Mount/update the Solo wake at LDR page entry. Never st.stop(). Returns True when handled."""
     if not _should_mount_persistent_wake(st, session):
@@ -153,6 +176,10 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
     room_dict = _resolve_room(session, room)
     key = solo_persistent_wake_widget_key(session)
     session[SOLO_PERSISTENT_WAKE_LATCH_KEY] = True
+
+    if not _actionable_solo_timer(session, room_dict):
+        session[SOLO_PERSISTENT_WAKE_TOKEN_KEY] = build_solo_idle_expire_token()
+        return True
 
     live_did = ""
     if room_dict:
