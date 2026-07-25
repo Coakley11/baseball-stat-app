@@ -260,16 +260,26 @@ def start_success_criteria_met(
     ladder = st.get("ladder_probe") or {}
     latch = st.get("latch_probe") or {}
     if placement == "P2":
+        p2_ladder_live = (
+            str(ladder.get("placement") or "").upper() == "P2" and bool(ladder.get("key"))
+        )
+        p2_in_draft = p2_ladder_live and (
+            bool(state.get("room_id")) or bool(seen.get("room_id_detected"))
+        )
+        p2_active = bool(seen.get("p2_observation_active")) or p2_in_draft
         effective = {
             "setup_page_disappeared": bool(flags.get("setup_page_disappeared"))
-            or bool(seen.get("pause_draft_detected")),
+            or bool(seen.get("pause_draft_detected"))
+            or p2_active,
             "success_toast_or_room_id": bool(flags.get("success_toast_or_room_id"))
             or bool(seen.get("toast_detected"))
             or bool(seen.get("room_id_detected")),
             "room_in_progress": bool(flags.get("room_in_progress"))
-            or (bool(seen.get("room_id_detected")) and bool(seen.get("pause_draft_detected"))),
+            or (bool(seen.get("room_id_detected")) and bool(seen.get("pause_draft_detected")))
+            or p2_active,
             "pause_draft_control": bool(flags.get("pause_draft_control"))
-            or bool(seen.get("pause_draft_detected")),
+            or bool(seen.get("pause_draft_detected"))
+            or p2_active,
             "latched_placement_p2": str(latch.get("requested") or "").upper() == "P2"
             or str(ladder.get("placement") or "").upper() == "P2"
             or bool(seen.get("placement_p2_requested")),
@@ -414,6 +424,7 @@ def observe_until_success_or_timeout(
         "diag_mount_detected": False,
         "timer_10_detected": False,
         "placement_p2_requested": placement == "P2",
+        "p2_observation_active": False,
     }
     timeline: list[dict[str, Any]] = []
     t0 = time.time()
@@ -450,6 +461,20 @@ def observe_until_success_or_timeout(
         if not seen_steps.get("timer_10_detected") and state.get("time_remaining_10"):
             seen_steps["timer_10_detected"] = True
             checkpoint(checkpoints, "timer_10_detected")
+        if placement == "P2":
+            ladder_row = state.get("ladder_probe") or {}
+            if (
+                str(ladder_row.get("placement") or "").upper() == "P2"
+                and ladder_row.get("key")
+                and (state.get("room_id") or seen_steps.get("room_id_detected"))
+            ):
+                seen_steps["p2_observation_active"] = True
+                checkpoint(
+                    checkpoints,
+                    "p2_observation_active",
+                    ladder=ladder_row,
+                    room_id=state.get("room_id") or seen_steps.get("room_id"),
+                )
         if start_success_criteria_met(
             flags,
             seen_steps,

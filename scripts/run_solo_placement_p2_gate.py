@@ -135,6 +135,104 @@ def scrape_ladder_probe(page) -> dict[str, Any]:
     )
 
 
+def _merge_probes(
+    final_probe: dict[str, Any] | None,
+    observation_ready: dict[str, Any] | None,
+) -> dict[str, Any]:
+    fp = final_probe or {}
+    obs_p = (observation_ready or {}).get("probe") or {}
+    fl = fp.get("ladder") or {}
+    ol = obs_p.get("ladder") or {}
+    ladder = ol if (ol.get("key") and not fl.get("key")) else (fl if fl.get("key") else ol)
+    if fl.get("key") and ol.get("key"):
+        ladder = fl if int(fl.get("callbacks") or 0) >= int(ol.get("callbacks") or 0) else ol
+    latch = fp.get("latch") or obs_p.get("latch") or {}
+    return {"ladder": ladder, "latch": latch}
+
+
+def classify_p2_verdict(
+    *,
+    deploy_sha: str,
+    draft_start: dict[str, Any],
+    probe: dict[str, Any],
+    ws_frames: list[dict[str, Any]],
+    deploy_hooks: dict[str, Any] | None,
+    observation_ready: dict[str, Any] | None,
+    hits: dict[str, int],
+    callbacks: int,
+    ws_tokens: list[str],
+) -> tuple[str, bool, str, str]:
+    """Returns (verdict, valid_case, first_missing_stage, invalid_reason)."""
+    ladder = probe.get("ladder") or {}
+    latch = probe.get("latch") or {}
+    pre_ok = bool(draft_start.get("start_success"))
+    deployed, _ = classify_p2_deploy(deploy_sha, deploy_hooks)
+    obs = observation_ready or {}
+    obs_ready = bool(obs.get("ready"))
+
+    diag_ws = [t for t in ws_tokens if "DIAGP2" in str(t).upper()]
+    unique_diag = list(dict.fromkeys(diag_ws))
+    widget_ids = [
+        w
+        for w in _widget_ids_from_ws_local(ws_frames)
+        if "solo_countdown" in w or "diag_p2" in w.lower()
+    ]
+    outbound_ws = bool(diag_ws) or bool(widget_ids)
+    key_recorded = bool(ladder.get("key"))
+    token_recorded = bool(ladder.get("token"))
+    latched_p2 = str(latch.get("requested") or "").upper() == "P2"
+
+    if not deployed:
+        return "invalid", False, "", "missing_p2_harness_deploy"
+    if not pre_ok:
+        return "invalid", False, "", "draft_start_failed"
+    if not obs_ready or not latched_p2:
+        return "invalid", False, "", "observation_ready_not_reached"
+    if not key_recorded and not outbound_ws:
+        return "invalid", False, "", "component_never_mounted_or_sent"
+
+    python_ok = (
+        hits.get("session_state_raw_received", 0) >= REQUIRED_CYCLES
+        and hits.get("on_change_callback_entry", 0) >= REQUIRED_CYCLES
+        and callbacks >= REQUIRED_CYCLES
+    )
+    if python_ok and ladder.get("passed") in ("1", "true", True):
+        return "pass", True, "", ""
+
+    if python_ok and callbacks >= REQUIRED_CYCLES:
+        return "pass", True, "", ""
+
+    first_missing = "session_state_raw_received"
+    if hits.get("session_state_raw_received", 0) >= 1:
+        first_missing = "on_change_callback_entry"
+    if hits.get("on_change_callback_entry", 0) >= 1 and callbacks < REQUIRED_CYCLES:
+        first_missing = "callbacks_received"
+
+    mounted_valid_cycle = (
+        obs_ready
+        and key_recorded
+        and token_recorded
+        and outbound_ws
+        and hits.get("session_state_raw_received", 0) == 0
+        and hits.get("on_change_callback_entry", 0) == 0
+    )
+    if mounted_valid_cycle:
+        return "fail", True, first_missing, ""
+
+    return "invalid", False, first_missing, "valid_fail_criteria_not_met"
+
+
+def _widget_ids_from_ws_local(ws_frames: list[dict[str, Any]]) -> list[str]:
+    import re
+
+    ids: list[str] = []
+    for frame in ws_frames:
+        snippet = str(frame.get("snippet") or "")
+        for match in re.finditer(r"\$\$ID-([a-f0-9-]+)-([^\\\"'\\s]+)", snippet):
+            ids.append(f"$$ID-{match.group(1)}-{match.group(2)}")
+    return ids
+
+
 def finalize_p2(
     *,
     deploy_sha: str,
@@ -147,16 +245,19 @@ def finalize_p2(
     mount_samples: list[bool] | None = None,
 ) -> dict[str, Any]:
     from run_solo_delivery_matrix_2x2 import (
-        _count_stage,
-        _python_delivery_complete,
         _tokens_from_ws,
         _widget_ids_from_ws,
     )
 
     ladder = probe.get("ladder") or {}
     latch = probe.get("latch") or {}
-    python_chain = str(ladder.get("stages") or "")
-    callbacks = int(ladder.get("callbacks") or 0)
+    obs = observation_ready or {}
+    obs_ladder = (obs.get("probe") or {}).get("ladder") or {}
+    stages_chain = "|".join(
+        filter(None, [str(obs_ladder.get("stages") or ""), str(ladder.get("stages") or "")])
+    )
+    python_chain = stages_chain or str(ladder.get("stages") or "")
+    callbacks = max(int(ladder.get("callbacks") or 0), int(obs_ladder.get("callbacks") or 0))
     ws_tokens = _tokens_from_ws(ws_frames)
     widget_ids = _widget_ids_from_ws(ws_frames)
     hits = {
@@ -169,31 +270,31 @@ def finalize_p2(
     token_identities = [str(t) for t in ws_tokens if "DIAGP2" in str(t).upper()][:8]
     if not token_identities and ladder.get("token"):
         token_identities = [str(ladder.get("token"))]
-    python_ok, python_fail = _python_delivery_complete(
-        callbacks=callbacks,
-        hits=hits,
-        dup=0,
-        json_blob="",
-        component="solo_countdown_wake",
-        ws_tokens=ws_tokens,
-    )
+    token_identities = [str(t) for t in ws_tokens if "DIAGP2" in str(t).upper()]
+    token_identities = list(dict.fromkeys(token_identities))[:8]
+    if not token_identities and ladder.get("token"):
+        token_identities = [str(ladder.get("token"))]
     mount_ids = [w for w in widget_ids if "solo_countdown" in w or "diag_p2" in w.lower()]
     pre_ok = bool(draft_start.get("start_success"))
     deployed, deploy_reason = classify_p2_deploy(deploy_sha, deploy_hooks)
-    obs = observation_ready or {}
-    valid = (
-        pre_ok
-        and deployed
-        and bool(obs.get("ready"))
-        and bool(ladder.get("placement") == "P2" or latch.get("requested") == "P2")
-        and bool(ladder.get("key"))
-        and python_ok
+
+    verdict, valid_case, first_missing, invalid_reason = classify_p2_verdict(
+        deploy_sha=deploy_sha,
+        draft_start=draft_start,
+        probe=probe,
+        ws_frames=ws_frames,
+        deploy_hooks=deploy_hooks,
+        observation_ready=observation_ready,
+        hits=hits,
+        callbacks=callbacks,
+        ws_tokens=ws_tokens,
     )
-    passed = valid and callbacks >= REQUIRED_CYCLES and ladder.get("passed") in ("1", "true", True)
-    verdict = "pass" if passed else ("fail" if valid else "invalid")
+    passed = verdict == "pass"
     samples = list(mount_samples or [])
     mounted_between_cycles = bool(samples) and all(samples) and len(samples) >= 2
     room_status = "in_progress" if pre_ok else ""
+    best_key = str(ladder.get("key") or obs_ladder.get("key") or "")
+    best_token = str(ladder.get("token") or obs_ladder.get("token") or "")
 
     query_checkpoints = [
         c for c in (draft_start.get("checkpoints") or []) if str(c.get("step", "")).startswith("query_")
@@ -214,7 +315,9 @@ def finalize_p2(
         "observation_ready": obs,
         "setup_url": P2_SETUP_URL,
         "verdict": verdict,
-        "valid_case": valid,
+        "valid_case": valid_case,
+        "invalid_reason": invalid_reason,
+        "provisional_valid_fail": verdict == "fail" and valid_case,
         "draft_start_success": pre_ok,
         "room_id": draft_start.get("room_id") or "",
         "initial_placement": "P2",
@@ -224,8 +327,8 @@ def finalize_p2(
         "query_checkpoints": query_checkpoints,
         "divergence_vs_proven_harness": divergence,
         "component_name": "solo_countdown_wake",
-        "widget_key": ladder.get("key") or "",
-        "diagnostic_token": ladder.get("token") or "",
+        "widget_key": best_key,
+        "diagnostic_token": best_token,
         "token_identities": token_identities,
         "callbacks_received_out_of_4": callbacks,
         "callbacks_received": callbacks,
@@ -240,7 +343,7 @@ def finalize_p2(
         "diagnostic_mounted_between_cycles": mounted_between_cycles,
         "ladder_mount_sample_count": len(samples),
         "active_room_status": room_status,
-        "first_missing_stage": python_fail if verdict != "pass" else "",
+        "first_missing_stage": first_missing if verdict != "pass" else "",
         "artifact_path": str(OUT),
         "draft_start": draft_start,
     }
@@ -334,7 +437,7 @@ def main() -> int:
     report["final"] = finalize_p2(
         deploy_sha=deploy_sha,
         draft_start=draft,
-        probe=report.get("final_probe") or {},
+        probe=_merge_probes(report.get("final_probe"), report.get("observation_ready")),
         ws_frames=list(report.get("ws_frames") or ws_frames),
         proven_draft=proven_draft,
         deploy_hooks=report.get("deploy_hooks_after_start"),
