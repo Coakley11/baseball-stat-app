@@ -96,6 +96,24 @@ def test_actionable_hold_keeps_active_through_transient_inert() -> None:
     assert held[1] == t0
 
 
+def test_pending_session_token_skips_inert_remount() -> None:
+    from live_draft_solo_persistent_wake import (
+        SOLO_PERSISTENT_WAKE_WIDGET_KEY,
+        try_solo_persistent_wake_ldr_entry,
+    )
+
+    session: dict = {}
+    st = mock.MagicMock()
+    st.session_state = {SOLO_PERSISTENT_WAKE_WIDGET_KEY: "R1|0|100.000"}
+    with mock.patch(
+        "live_draft_solo_persistent_wake._should_mount_persistent_wake", return_value=True
+    ):
+        with mock.patch("solo_countdown_wake_micro_core.render_micro_isolation_once") as mount:
+            assert try_solo_persistent_wake_ldr_entry(st, session, {}) is True
+            assert mount.call_args.kwargs.get("production_actionable") is True
+            assert mount.call_args.kwargs.get("production_expire_token") == "R1|0|100.000"
+
+
 def test_try_persistent_wake_invokes_mount_on_setup() -> None:
     from live_draft_solo_persistent_wake import try_solo_persistent_wake_ldr_entry
 

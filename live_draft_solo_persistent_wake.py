@@ -251,10 +251,20 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
     room_dict = _resolve_room(session, room)
     session[SOLO_PERSISTENT_WAKE_LATCH_KEY] = True
 
-    actionable, expire_token, props_room, phase = resolve_persistent_wake_mount(session, room_dict)
-    actionable, expire_token, props_room, phase = _apply_actionable_hold(
-        session, room_dict, actionable, expire_token, props_room, phase
-    )
+    key = solo_persistent_wake_widget_key(session)
+    from live_draft_solo_heartbeat import _coerce_wake_token
+
+    pending_token = _coerce_wake_token(st.session_state.get(key))
+    if pending_token and pending_token != SOLO_INERT_EXPIRE_TOKEN:
+        props_room = room_dict if isinstance(room_dict, dict) else {}
+        actionable = True
+        expire_token = pending_token
+        phase = "active"
+    else:
+        actionable, expire_token, props_room, phase = resolve_persistent_wake_mount(session, room_dict)
+        actionable, expire_token, props_room, phase = _apply_actionable_hold(
+            session, room_dict, actionable, expire_token, props_room, phase
+        )
     session[SOLO_PERSISTENT_WAKE_ACTIONABLE_KEY] = actionable
     session[SOLO_PERSISTENT_WAKE_TOKEN_KEY] = expire_token
     key = solo_persistent_wake_widget_key(session)
