@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import time
+import traceback
 from typing import Any
 
 from live_draft_solo_delivery_diag import (
@@ -42,6 +44,11 @@ PROVENANCE_KEY = "_solo_bridge_transition_provenance"
 VALID_EXPIRATION_EVENTS_KEY = "_solo_bridge_transition_valid_expiration_events"
 CLIENT_CROSS_TS_KEY = "_solo_bridge_transition_client_cross_ts"
 CLIENT_SENT_TS_KEY = "_solo_bridge_transition_client_sent_ts"
+ROOM_LEDGER_KEY = "_solo_bridge_transition_room_ledger"
+ROOM_MUTATION_LOG_KEY = "_solo_bridge_transition_room_mutation_log"
+BRIDGE_LAST_ROOM_SNAPSHOT_KEY = "_solo_bridge_transition_last_room_snapshot"
+SCRIPT_RUN_COUNTER_KEY = "_solo_bridge_transition_script_run_counter"
+STREAMLIT_SESSION_ID_KEY = "_solo_bridge_transition_streamlit_session_id"
 
 
 def _qp_get(st: Any, name: str) -> str:
@@ -88,6 +95,72 @@ def enable_bridge_transition_from_query(st: Any, session: dict[str, Any]) -> Non
         session["_solo_delivery_diag_enabled"] = True
         session["_solo_placement_ladder_block_picks"] = True
         session["_solo_persistent_wake_flush_disabled"] = True
+
+
+def _b64_json(payload: Any) -> str:
+    return base64.b64encode(json.dumps(payload, default=str).encode("utf-8")).decode("ascii")
+
+
+def _streamlit_session_id() -> str:
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        ctx = get_script_run_ctx()
+        return str(getattr(ctx, "session_id", "") or "")
+    except Exception:
+        return ""
+
+
+def _observe_room_state(session: dict[str, Any], room: dict[str, Any] | None, *, ctrl: str) -> None:
+    session[SCRIPT_RUN_COUNTER_KEY] = int(session.get(SCRIPT_RUN_COUNTER_KEY) or 0) + 1
+    session[STREAMLIT_SESSION_ID_KEY] = _streamlit_session_id()
+    snap = {
+        "ts": time.time(),
+        "script_run": _script_run_id(session),
+        "streamlit_session_id": session.get(STREAMLIT_SESSION_ID_KEY),
+        "control": ctrl,
+        "room_id": _room_id(room),
+        "status": _room_status(room),
+        "present": isinstance(room, dict) and bool(room),
+    }
+    ledger = list(session.get(ROOM_LEDGER_KEY) or [])
+    ledger.append(snap)
+    session[ROOM_LEDGER_KEY] = ledger[-200:]
+
+    prev = session.get(BRIDGE_LAST_ROOM_SNAPSHOT_KEY)
+    if isinstance(prev, dict):
+        mutations = list(session.get(ROOM_MUTATION_LOG_KEY) or [])
+        prev_id = str(prev.get("room_id") or "")
+        prev_present = bool(prev.get("present"))
+        cur_present = snap["present"]
+        cur_id = str(snap.get("room_id") or "")
+        stack_tail = [line.strip() for line in traceback.format_stack(limit=10)[:-1]][-6:]
+        if prev_present and not cur_present:
+            mutations.append(
+                {
+                    "ts": time.time(),
+                    "kind": "live_draft_room_removed",
+                    "path": "bridge_entry_observed_absent",
+                    "prev_room_id": prev_id,
+                    "prev_status": prev.get("status"),
+                    "script_run": snap["script_run"],
+                    "stack_tail": stack_tail,
+                }
+            )
+        elif prev_present and cur_present and prev_id and cur_id and prev_id != cur_id:
+            mutations.append(
+                {
+                    "ts": time.time(),
+                    "kind": "live_draft_room_replaced",
+                    "path": "bridge_entry_observed_id_change",
+                    "prev_room_id": prev_id,
+                    "new_room_id": cur_id,
+                    "script_run": snap["script_run"],
+                    "stack_tail": stack_tail,
+                }
+            )
+        session[ROOM_MUTATION_LOG_KEY] = mutations[-80:]
+    session[BRIDGE_LAST_ROOM_SNAPSHOT_KEY] = snap
 
 
 def _script_run_id(session: dict[str, Any]) -> str:
@@ -463,6 +536,12 @@ def render_bridge_transition_probe(
     expected = str(session.get(EXPECTED_EXPIRE_TOKEN_KEY) or "")
     provenance = list(session.get(PROVENANCE_KEY) or [])
     valid_events = list(session.get(VALID_EXPIRATION_EVENTS_KEY) or [])
+    room_ledger = list(session.get(ROOM_LEDGER_KEY) or [])
+    mutation_log = list(session.get(ROOM_MUTATION_LOG_KEY) or [])
+    py_present = isinstance(room, dict) and bool(room)
+    prov_b64 = _b64_json(provenance[-40:])
+    ledger_b64 = _b64_json(room_ledger[-48:])
+    mut_b64 = _b64_json(mutation_log[-24:])
     st.markdown(
         f'<div id="solo-bridge-transition-diag" '
         f'data-present="1" '
@@ -479,12 +558,17 @@ def render_bridge_transition_probe(
         f'data-deadline-after="{str(args_after.get("timer_deadline") or "").replace(chr(34), chr(39))}" '
         f'data-args-before="{json.dumps(args_before, default=str)[:4000].replace(chr(34), chr(39))}" '
         f'data-args-after="{json.dumps(args_after, default=str)[:4000].replace(chr(34), chr(39))}" '
+        f'data-python-room-present="{1 if py_present else 0}" '
         f'data-python-room-status="{_room_status(room).replace(chr(34), chr(39))}" '
         f'data-python-room-id="{_room_id(room).replace(chr(34), chr(39))}" '
         f'data-room-status="{_room_status(room).replace(chr(34), chr(39))}" '
         f'data-room-id="{_room_id(room).replace(chr(34), chr(39))}" '
         f'data-valid-expiration-count="{len(valid_events)}" '
-        f'data-provenance="{json.dumps(provenance[-40:], default=str)[:12000].replace(chr(34), chr(39))}" '
+        f'data-provenance-b64="{prov_b64}" '
+        f'data-room-ledger-b64="{ledger_b64}" '
+        f'data-room-mutation-log-b64="{mut_b64}" '
+        f'data-streamlit-session-id="{str(session.get(STREAMLIT_SESSION_ID_KEY) or "").replace(chr(34), chr(39))}" '
+        f'data-script-run-counter="{int(session.get(SCRIPT_RUN_COUNTER_KEY) or 0)}" '
         f'data-valid-events="{json.dumps(valid_events, default=str)[:4000].replace(chr(34), chr(39))}" '
         f'data-stages="{chain.replace(chr(34), chr(39))}" '
         f'data-room-status-log="{json.dumps(status_log[-24:], default=str)[:6000].replace(chr(34), chr(39))}" '
@@ -505,6 +589,7 @@ def try_bridge_transition_ldr_entry(st: Any, session: dict[str, Any], room: Any)
     session[SESSION_ENABLED] = True
     session["_solo_persistent_wake_flush_disabled"] = True
     room_dict = _resolve_room(session, room)
+    _observe_room_state(session, room_dict, ctrl=ctrl)
     _log_room_status(session, room_dict, phase=f"entry_{ctrl}")
 
     session[SOLO_DELIVERY_META_KEY] = {

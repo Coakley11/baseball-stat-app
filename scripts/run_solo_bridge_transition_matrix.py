@@ -380,6 +380,7 @@ def run_one_control(page, control: str, ws_frames: list[dict[str, Any]]) -> dict
         "browser_zero_ts": client.get("browser_zero_ts") or "",
         "component_sent_ts": client.get("component_sent_ts") or "",
         "valid_expiration_count": valid_expiration_count,
+        "client_cross_and_send_proven": client_cross_and_send,
         "valid_expiration_reasons": valid_reasons,
         "token_provenance": provenance,
         "matching_on_change_unverified": matching["matching_on_change"],
