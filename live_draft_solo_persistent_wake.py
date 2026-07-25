@@ -11,6 +11,7 @@ SOLO_PERSISTENT_WAKE_SESSION_PREFIX = "_solo_persistent_wake_"
 SOLO_INERT_EXPIRE_TOKEN = ""
 SOLO_PERSISTENT_WAKE_ACTIONABLE_KEY = "_solo_persistent_wake_actionable"
 SOLO_PERSISTENT_WAKE_DECLARED_ON_SETUP_KEY = "_solo_persistent_wake_declared_on_setup"
+SOLO_PERSISTENT_WAKE_PICK_LATCH_KEY = "_solo_persistent_wake_pick_latch"
 
 
 def solo_persistent_wake_widget_key(_session: dict[str, Any] | None = None) -> str:
@@ -63,10 +64,12 @@ def _diag_blocks_persistent_wake(st: Any, session: dict[str, Any]) -> bool:
 
 
 def _resolve_room(session: dict[str, Any], room: Any) -> dict[str, Any] | None:
+    live = session.get("live_draft_room")
+    if isinstance(live, dict) and live:
+        return live
     if isinstance(room, dict) and room:
         return room
-    live = session.get("live_draft_room")
-    return live if isinstance(live, dict) else None
+    return None
 
 
 def build_solo_idle_expire_token(*, draft_id: str = "idle") -> str:
@@ -112,10 +115,44 @@ def resolve_persistent_wake_mount(
         raw = room.get("timer_deadline")
         deadline = float(raw) if raw is not None else None
     if deadline is None:
+        try:
+            from live_draft_solo_timer import is_solo_live_draft
+
+            if is_solo_live_draft(session, room):
+                token = build_solo_expire_token(room)
+                return True, token, room, "active"
+        except ImportError:
+            pass
         return False, SOLO_INERT_EXPIRE_TOKEN, room, "setup"
 
     token = build_solo_expire_token(room)
     return True, token, room, "active"
+
+
+def _apply_actionable_hold(
+    session: dict[str, Any],
+    room: dict[str, Any] | None,
+    actionable: bool,
+    expire_token: str,
+    props_room: dict[str, Any],
+    phase: str,
+) -> tuple[bool, str, dict[str, Any], str]:
+    """Keep the same active mount through transient reruns while a pick timer is expiring."""
+    if actionable:
+        session[SOLO_PERSISTENT_WAKE_PICK_LATCH_KEY] = int(props_room.get("current_pick_index") or 0)
+        return actionable, expire_token, props_room, phase
+    if not session.get(SOLO_PERSISTENT_WAKE_ACTIONABLE_KEY):
+        return actionable, expire_token, props_room, phase
+    if not isinstance(room, dict) or str(room.get("status") or "") != "in_progress":
+        return actionable, expire_token, props_room, phase
+    latched = session.get(SOLO_PERSISTENT_WAKE_PICK_LATCH_KEY)
+    pick = int(room.get("current_pick_index") or 0)
+    if latched is None or int(latched) != pick:
+        return actionable, expire_token, props_room, phase
+    held_token = str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or "").strip()
+    if not held_token or held_token == SOLO_INERT_EXPIRE_TOKEN:
+        return actionable, expire_token, props_room, phase
+    return True, held_token, room, "active"
 
 
 def expire_token_for_persistent_wake(
@@ -197,6 +234,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
     if not isinstance(live, dict):
         return
     process_solo_component_wake(st, session, live, token, delivery_via="on_change")
+    session.pop(SOLO_PERSISTENT_WAKE_PICK_LATCH_KEY, None)
 
 
 def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> bool:
@@ -204,12 +242,19 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
     if not _should_mount_persistent_wake(st, session):
         return False
 
+    from live_draft_solo_delivery_diag import render_parent_postmessage_listener
+
+    render_parent_postmessage_listener(st)
+
     from solo_countdown_wake_micro_core import render_micro_isolation_once
 
     room_dict = _resolve_room(session, room)
     session[SOLO_PERSISTENT_WAKE_LATCH_KEY] = True
 
     actionable, expire_token, props_room, phase = resolve_persistent_wake_mount(session, room_dict)
+    actionable, expire_token, props_room, phase = _apply_actionable_hold(
+        session, room_dict, actionable, expire_token, props_room, phase
+    )
     session[SOLO_PERSISTENT_WAKE_ACTIONABLE_KEY] = actionable
     session[SOLO_PERSISTENT_WAKE_TOKEN_KEY] = expire_token
     key = solo_persistent_wake_widget_key(session)

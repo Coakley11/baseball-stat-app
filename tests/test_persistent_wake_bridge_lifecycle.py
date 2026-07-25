@@ -67,6 +67,35 @@ def test_same_key_before_and_after_activation() -> None:
     assert token and "|" in token
 
 
+def test_actionable_hold_keeps_active_through_transient_inert() -> None:
+    from live_draft_solo_persistent_wake import (
+        SOLO_INERT_EXPIRE_TOKEN,
+        SOLO_PERSISTENT_WAKE_ACTIONABLE_KEY,
+        SOLO_PERSISTENT_WAKE_TOKEN_KEY,
+        _apply_actionable_hold,
+        resolve_persistent_wake_mount,
+    )
+
+    session = {
+        "live_draft_setup_mode": "solo",
+        SOLO_PERSISTENT_WAKE_ACTIONABLE_KEY: True,
+        SOLO_PERSISTENT_WAKE_TOKEN_KEY: "R1|0|100.000",
+    }
+    room = {
+        "draft_room_id": "R1",
+        "current_pick_index": 0,
+        "status": "in_progress",
+        "config": {"draft_setup_mode": "solo"},
+    }
+    a0, t0, props0, _ = resolve_persistent_wake_mount(session, room)
+    assert a0 is True
+    session[SOLO_PERSISTENT_WAKE_TOKEN_KEY] = t0
+    _apply_actionable_hold(session, room, True, t0, props0, "active")
+    held = _apply_actionable_hold(session, room, False, SOLO_INERT_EXPIRE_TOKEN, room, "setup")
+    assert held[0] is True
+    assert held[1] == t0
+
+
 def test_try_persistent_wake_invokes_mount_on_setup() -> None:
     from live_draft_solo_persistent_wake import try_solo_persistent_wake_ldr_entry
 
