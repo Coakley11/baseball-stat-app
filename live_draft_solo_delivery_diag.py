@@ -616,6 +616,13 @@ def try_delivery_diag_mount_cd(st: Any, session: dict[str, Any], room: dict[str,
     if not delivery_diag_active(st, session):
         return False
     try:
+        from live_draft_solo_placement_micro import micro_blocks_placement_ladder
+
+        if micro_blocks_placement_ladder(session):
+            return False
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_placement_ladder import placement_ladder_active
 
         if placement_ladder_active(st, session):
@@ -681,6 +688,12 @@ def enable_delivery_diag_from_query(st: Any, session: dict[str, Any]) -> None:
         from live_draft_solo_placement_ladder import enable_placement_ladder_from_query
 
         enable_placement_ladder_from_query(st, session)
+    except ImportError:
+        pass
+    try:
+        from live_draft_solo_placement_micro import enable_micro_isolation_from_query
+
+        enable_micro_isolation_from_query(st, session)
     except ImportError:
         pass
     try:

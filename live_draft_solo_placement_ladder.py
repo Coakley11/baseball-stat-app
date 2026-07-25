@@ -218,6 +218,9 @@ def run_one_placement_cycle(
     # In-draft ladder steps must not fall through to production timer UI between cycles.
     if placement in ("P2", "P3", "P4", "P5") and not result.passed_all and not result.should_rerun:
         st.stop()
+    # Keep P2 ladder active across reruns until four cycles complete (diagnostic re-entry).
+    if placement == "P2" and not result.passed_all:
+        session["_solo_p2_ladder_awaiting_cycles"] = True
     if placement == "P0":
         return result, True
     return result, bool(result.passed_all)
@@ -229,6 +232,15 @@ def try_placement_early_entry(
     room: dict[str, Any],
 ) -> tuple[bool, bool]:
     """P0/P1 at Live Draft Room page entry. Returns (handled, should_st_stop)."""
+    try:
+        from live_draft_solo_placement_micro import micro_isolation_active, try_micro_p1_ldr_entry
+
+        if micro_isolation_active(st, session):
+            if try_micro_p1_ldr_entry(st, session, room):
+                return True, True
+            return False, False
+    except ImportError:
+        pass
     placement = current_placement(st, session)
     if placement not in ("P0", "P1"):
         return False, False
@@ -248,6 +260,13 @@ def try_placement_timer_pre_owner(
     room: dict[str, Any],
 ) -> bool:
     """P2: immediately before production solo expire owner."""
+    try:
+        from live_draft_solo_placement_micro import micro_blocks_placement_ladder
+
+        if micro_blocks_placement_ladder(session):
+            return False
+    except ImportError:
+        pass
     if current_placement(st, session) != "P2":
         return False
     try:

@@ -22365,9 +22365,23 @@ elif active_page == "Live Draft Room":
     _early_room = st.session_state.get("live_draft_room")
     if isinstance(_early_room, dict):
         try:
+            from live_draft_solo_placement_micro import try_micro_p2a_before_early_reconcile
+
+            if try_micro_p2a_before_early_reconcile(st, st.session_state, _early_room):
+                st.stop()
+        except ImportError:
+            pass
+        try:
             from live_draft_safe_mode import reconcile_live_draft_room
 
             reconcile_live_draft_room(st.session_state, _early_room)
+        except ImportError:
+            pass
+        try:
+            from live_draft_solo_placement_micro import try_micro_p2b_after_early_reconcile
+
+            if try_micro_p2b_after_early_reconcile(st, st.session_state, _early_room):
+                st.stop()
         except ImportError:
             pass
     _shared_panel_wants_rerun = False
@@ -25071,20 +25085,40 @@ elif active_page == "Live Draft Room":
                 if is_solo_live_draft(st.session_state, room):
                     _solo_diag_mounted = False
                     try:
-                        from live_draft_solo_placement_ladder import (
-                            try_placement_production_slot,
-                            try_placement_production_wake,
-                            try_placement_timer_pre_owner,
+                        from live_draft_solo_placement_micro import (
+                            micro_blocks_placement_ladder,
+                            try_micro_p2c_before_owner_selection,
+                            try_micro_p2d_pre_owner_current,
                         )
 
-                        if try_placement_production_wake(st, st.session_state, room):
+                        if try_micro_p2c_before_owner_selection(st, st.session_state, room):
                             _solo_diag_mounted = True
-                        elif try_placement_production_slot(st, st.session_state, room):
-                            _solo_diag_mounted = True
-                        elif try_placement_timer_pre_owner(st, st.session_state, room):
+                        elif try_micro_p2d_pre_owner_current(st, st.session_state, room):
                             _solo_diag_mounted = True
                     except ImportError:
                         pass
+                    try:
+                        from live_draft_solo_placement_micro import micro_blocks_placement_ladder as _micro_blocks
+
+                        _micro_on = _micro_blocks(st.session_state)
+                    except ImportError:
+                        _micro_on = False
+                    if not _solo_diag_mounted and not _micro_on:
+                        try:
+                            from live_draft_solo_placement_ladder import (
+                                try_placement_production_slot,
+                                try_placement_production_wake,
+                                try_placement_timer_pre_owner,
+                            )
+
+                            if try_placement_production_wake(st, st.session_state, room):
+                                _solo_diag_mounted = True
+                            elif try_placement_production_slot(st, st.session_state, room):
+                                _solo_diag_mounted = True
+                            elif try_placement_timer_pre_owner(st, st.session_state, room):
+                                _solo_diag_mounted = True
+                        except ImportError:
+                            pass
                     if not _solo_diag_mounted:
                         try:
                             from live_draft_solo_delivery_diag import try_delivery_diag_mount_cd
