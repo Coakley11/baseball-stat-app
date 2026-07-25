@@ -74,10 +74,10 @@ def render_micro_isolation_once(
     key = micro_widget_key(placement)
     stages: list[str] = []
 
-    def _rec(stage: str, **fields: Any) -> None:
+    def _rec(stage: str, fields: dict[str, Any] | None = None) -> None:
         stages.append(stage)
         if record_stage:
-            record_stage(stage, **fields)
+            record_stage(stage, fields or {})
 
     if session.get(COMPLETE_KEY):
         _rec("micro_complete_frozen", {"widget_key": key})
