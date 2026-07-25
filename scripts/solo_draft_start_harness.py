@@ -80,6 +80,7 @@ STATE_PROBE_JS = """() => {
   let mount = null;
   let ladder = null;
   let latch = null;
+  let micro = null;
   for (const root of roots()) {
     const m = root.querySelector('#solo-component-mount-diag');
     if (m) {
@@ -108,6 +109,20 @@ STATE_PROBE_JS = """() => {
         active: lat.getAttribute('data-active') || '',
       };
     }
+    const mic = root.querySelector('#solo-micro-isolation-diag');
+    if (mic) {
+      micro = {
+        placement: mic.getAttribute('data-placement') || '',
+        source: mic.getAttribute('data-source') || '',
+        key: mic.getAttribute('data-key') || '',
+        token: mic.getAttribute('data-token') || '',
+        complete: mic.getAttribute('data-complete') || '',
+        on_change: mic.getAttribute('data-on-change') || '',
+        raw_received: mic.getAttribute('data-raw-received') || '',
+        stages: mic.getAttribute('data-stages') || '',
+        room_id: mic.getAttribute('data-room-id') || '',
+      };
+    }
   }
   const text = roots().map((x) => (x.body ? x.body.innerText : '')).join('\\n');
   const roomMatch = text.match(/Room ID\\s+([A-F0-9]+)/i);
@@ -115,6 +130,7 @@ STATE_PROBE_JS = """() => {
     mount_probe: mount,
     ladder_probe: ladder,
     latch_probe: latch,
+    micro_probe: micro,
     has_pause: /Pause Draft/i.test(text),
     has_start_setup: /Start New Live Draft/i.test(text),
     has_pick: /Pick\\s+\\d+/i.test(text),
@@ -207,6 +223,9 @@ def evaluate_start_success(state: dict[str, Any], counts: dict[str, int], msgs: 
 
 def _placement_from_setup_url(setup_url: str) -> str:
     qs = urllib.parse.parse_qs(urllib.parse.urlparse(setup_url).query)
+    micro = str((qs.get("solo_placement_micro") or [""])[0]).strip().upper()
+    if micro in ("P1", "P2A", "P2B", "P2C", "P2D"):
+        return micro
     return str((qs.get("solo_placement_ladder") or [""])[0]).strip().upper()
 
 
@@ -217,6 +236,8 @@ def query_params_snapshot(page_url: str) -> dict[str, Any]:
         "page_url": page_url,
         "solo_delivery_diag": "solo_delivery_diag=1" in low,
         "solo_placement_ladder": str((parsed.get("solo_placement_ladder") or [""])[0]).upper(),
+        "solo_micro_isolation": "solo_micro_isolation=1" in low,
+        "solo_placement_micro": str((parsed.get("solo_placement_micro") or [""])[0]).upper(),
         "solo_component_diag": "solo_component_diag=1" in low,
         "solo_diag_timer_10": "solo_diag_timer=10" in low,
     }
@@ -248,6 +269,50 @@ def record_query_checkpoint(
     return snap
 
 
+MICRO_PLACEMENTS = frozenset({"P1", "P2A", "P2B", "P2C", "P2D"})
+P2A_HOOK = "try_micro_p2a_before_early_reconcile"
+
+
+def _micro_start_success(
+    placement: str,
+    flags: dict[str, bool],
+    seen: dict[str, Any],
+    state: dict[str, Any],
+) -> bool:
+    micro = state.get("micro_probe") or {}
+    latch = state.get("latch_probe") or {}
+    micro_live = (
+        str(micro.get("placement") or "").upper() == placement
+        and bool(micro.get("key"))
+        and bool(micro.get("token"))
+    )
+    hook_ok = P2A_HOOK in str(micro.get("source") or "") if placement == "P2A" else bool(micro.get("source"))
+    room_ok = (
+        bool(state.get("room_id"))
+        or bool(seen.get("room_id_detected"))
+        or bool(str(micro.get("room_id") or "").strip())
+    )
+    latch_ok = str(latch.get("requested") or "").upper() == placement
+    draft_surface = (not bool(state.get("has_start_setup"))) and (
+        bool(state.get("time_remaining_10")) or bool(seen.get("timer_10_detected"))
+    )
+    obs_active = bool(seen.get("micro_observation_active")) or (micro_live and (room_ok or draft_surface))
+    effective = {
+        "setup_page_disappeared": bool(flags.get("setup_page_disappeared"))
+        or bool(seen.get("pause_draft_detected"))
+        or obs_active,
+        "success_toast_or_room_id": bool(flags.get("success_toast_or_room_id"))
+        or bool(seen.get("toast_detected"))
+        or bool(seen.get("room_id_detected")),
+        "room_in_progress": bool(flags.get("room_in_progress"))
+        or (room_ok and (latch_ok or micro_live))
+        or obs_active,
+        "latched_placement": latch_ok or micro_live,
+        "micro_observation_ready": micro_live and (hook_ok if placement == "P2A" else True),
+    }
+    return all(effective.values())
+
+
 def start_success_criteria_met(
     flags: dict[str, bool],
     seen_steps: dict[str, bool] | None = None,
@@ -257,6 +322,8 @@ def start_success_criteria_met(
 ) -> bool:
     seen = seen_steps or {}
     st = state or {}
+    if placement in MICRO_PLACEMENTS and placement != "P1":
+        return _micro_start_success(placement, flags, seen, st)
     ladder = st.get("ladder_probe") or {}
     latch = st.get("latch_probe") or {}
     if placement == "P2":
@@ -424,6 +491,7 @@ def observe_until_success_or_timeout(
         "diag_mount_detected": False,
         "timer_10_detected": False,
         "placement_p2_requested": placement == "P2",
+        "micro_observation_active": False,
         "p2_observation_active": False,
     }
     timeline: list[dict[str, Any]] = []
@@ -461,6 +529,25 @@ def observe_until_success_or_timeout(
         if not seen_steps.get("timer_10_detected") and state.get("time_remaining_10"):
             seen_steps["timer_10_detected"] = True
             checkpoint(checkpoints, "timer_10_detected")
+        if not seen_steps.get("setup_disappeared") and not state.get("has_start_setup"):
+            seen_steps["setup_disappeared"] = True
+            checkpoint(checkpoints, "setup_page_disappeared_after_start", room_id=state.get("room_id"))
+        if placement in MICRO_PLACEMENTS and placement != "P1":
+            micro_row = state.get("micro_probe") or {}
+            if (
+                str(micro_row.get("placement") or "").upper() == placement
+                and micro_row.get("key")
+                and micro_row.get("token")
+                and (state.get("room_id") or seen_steps.get("room_id_detected"))
+            ):
+                seen_steps["micro_observation_active"] = True
+                checkpoint(
+                    checkpoints,
+                    "micro_observation_active",
+                    micro=micro_row,
+                    room_id=state.get("room_id") or seen_steps.get("room_id"),
+                    placement=placement,
+                )
         if placement == "P2":
             ladder_row = state.get("ladder_probe") or {}
             if (
@@ -586,6 +673,13 @@ def execute_solo_draft_start_workflow(
     sidebar_label = click_sidebar_for_ldr(page, settle_ms=8000)
     checkpoint(checkpoints, "sidebar_clicked", label=sidebar_label)
     record_query_checkpoint(checkpoints, "query_after_sidebar", setup_url=setup_url, page_url=page.url)
+    latch_after_sidebar = (page.evaluate(STATE_PROBE_JS) or {}).get("latch_probe") or {}
+    checkpoint(
+        checkpoints,
+        "placement_latch_after_sidebar",
+        latch=latch_after_sidebar,
+        placement=_placement_from_setup_url(setup_url),
+    )
 
     setup_visible = "Start New Live Draft" in all_frames_text(page)
     qsnap = record_query_checkpoint(checkpoints, "query_setup_visible", setup_url=setup_url, page_url=page.url)
@@ -629,9 +723,13 @@ def execute_solo_draft_start_workflow(
     record_query_checkpoint(checkpoints, "query_after_start_click", setup_url=setup_url, page_url=page.url)
     iso_case = _isolation_case_from_url(setup_url)
     placement = _placement_from_setup_url(setup_url)
+    observe_s = POST_CLICK_OBSERVE_S
+    if placement in MICRO_PLACEMENTS and placement != "P1":
+        observe_s = max(POST_CLICK_OBSERVE_S, 90)
     observe = observe_until_success_or_timeout(
         page,
         checkpoints,
+        max_wait_s=observe_s,
         isolation_case=iso_case,
         placement=placement,
         setup_url=setup_url,

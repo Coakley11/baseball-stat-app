@@ -232,7 +232,7 @@ def _run_micro(
         result=result,
         log=log,
     )
-    if result.delivered or session.get(COMPLETE_KEY):
+    if result.delivered or session.get(COMPLETE_KEY) or result.should_stop:
         st.stop()
     return True
 

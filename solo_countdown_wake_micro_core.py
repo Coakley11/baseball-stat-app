@@ -55,6 +55,7 @@ class MicroCycleResult:
     raw_received: bool
     on_change_fired: bool
     stages: list[str]
+    should_stop: bool = False
 
 
 def render_micro_isolation_once(
@@ -88,6 +89,7 @@ def render_micro_isolation_once(
             raw_received=bool(session.get(f"{SESSION_PREFIX}raw_received")),
             on_change_fired=bool(session.get(f"{SESSION_PREFIX}on_change")),
             stages=stages,
+            should_stop=False,
         )
 
     try:
@@ -165,9 +167,9 @@ def render_micro_isolation_once(
             raw_received=bool(session.get(f"{SESSION_PREFIX}raw_received")),
             on_change_fired=bool(session.get(f"{SESSION_PREFIX}on_change")),
             stages=stages,
+            should_stop=False,
         )
 
-    st.stop()
     return MicroCycleResult(
         widget_key=key,
         token=token,
@@ -175,4 +177,5 @@ def render_micro_isolation_once(
         raw_received=False,
         on_change_fired=False,
         stages=stages,
+        should_stop=True,
     )
