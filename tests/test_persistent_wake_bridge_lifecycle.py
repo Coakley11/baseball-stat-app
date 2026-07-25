@@ -119,6 +119,7 @@ def test_try_persistent_wake_invokes_mount_on_setup() -> None:
 
     session: dict = {}
     st = mock.MagicMock()
+    st.session_state = {}
     with mock.patch(
         "live_draft_solo_persistent_wake._should_mount_persistent_wake", return_value=True
     ):
