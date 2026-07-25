@@ -103,9 +103,21 @@ def _solo_in_progress_room(session: dict[str, Any], room: dict[str, Any]) -> boo
         return True
 
 
+_RECORD_RESERVED_FIELD_KEYS = frozenset({"placement", "micro_isolation", "stage", "session"})
+
+
 def _record_stage_factory(session: dict[str, Any], placement: str) -> Any:
-    def _record(stage: str, fields: dict[str, Any]) -> None:
-        note_delivery_stage(session, stage, placement=placement, micro_isolation=True, **fields)
+    def _record(stage: str, fields: dict[str, Any] | None = None) -> None:
+        payload = dict(fields or {})
+        for key in _RECORD_RESERVED_FIELD_KEYS:
+            payload.pop(key, None)
+        note_delivery_stage(
+            session,
+            stage,
+            placement=placement,
+            micro_isolation=True,
+            **payload,
+        )
 
     return _record
 
