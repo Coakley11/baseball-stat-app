@@ -19,6 +19,14 @@ def solo_persistent_wake_widget_key(_session: dict[str, Any] | None = None) -> s
     return SOLO_PERSISTENT_WAKE_WIDGET_KEY
 
 
+def solo_persistent_chain_persist_key(session: dict[str, Any], room: dict[str, Any] | None) -> str:
+    live = room if isinstance(room, dict) else session.get("live_draft_room")
+    rid = str((live or {}).get("draft_room_id") or (live or {}).get("draft_id") or "setup").strip()
+    return f"solo_prod_expire_chain_{rid}"
+
+
+SOLO_SKIP_LATE_FLUSH_TOKEN_KEY = "_solo_skip_late_flush_token"
+SOLO_PENDING_CALLBACK_SOURCE_KEY = "_solo_pending_callback_source"
 def solo_persistent_wake_active(session: dict[str, Any]) -> bool:
     """True when early-route production wake owns expiration (Cloud wake owner)."""
     if not session.get(SOLO_PERSISTENT_WAKE_LATCH_KEY):
@@ -214,6 +222,52 @@ def render_persistent_wake_lifecycle_probe(
 def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key: str) -> None:
     from live_draft_solo_heartbeat import _coerce_wake_token, process_solo_component_wake
 
+    delivery_via = str(session.pop(SOLO_PENDING_CALLBACK_SOURCE_KEY, "") or "native_component_on_change")
+    token = _coerce_wake_token(raw)
+    live = _resolve_room(session, None)
+
+    try:
+        from live_draft_stage1_expire_audit import (
+            clear_persistent_wake_widget_value,
+            map_legacy_reject_reason,
+            mark_wake_token_rejected,
+            record_callback_invocation,
+            try_claim_token_delivery,
+        )
+
+        claimed, reject_code = try_claim_token_delivery(session, token, delivery_via)
+        record_callback_invocation(
+            st,
+            session,
+            callback_source=delivery_via,
+            raw_value=raw,
+            room=live if isinstance(live, dict) else None,
+            reject_code=reject_code,
+            token_already_consumed=not claimed and reject_code in ("already_consumed", "callback_source_not_allowed"),
+            delivery_claimed=claimed,
+        )
+        if not claimed:
+            try:
+                from live_draft_solo_expire_chain import note_solo_expire_chain
+
+                note_solo_expire_chain(
+                    session,
+                    "expire_rejected",
+                    source="persistent_wake",
+                    reason=reject_code,
+                    token=token[:400],
+                    delivery_via=delivery_via,
+                )
+            except ImportError:
+                pass
+            if reject_code not in ("empty_raw",):
+                mark_wake_token_rejected(session, token, reject_code)
+                clear_persistent_wake_widget_value(st, session, token)
+            return
+    except ImportError:
+        claimed = True
+        reject_code = ""
+
     try:
         from live_draft_callback_boundary_diag import (
             boundary_diag_enabled,
@@ -233,7 +287,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             token=str(raw or "")[:400],
             phase="callback_entry",
             function="_production_deliver_callback",
-            extra={"widget_key": key},
+            extra={"widget_key": key, "delivery_via": delivery_via},
         )
 
     try:
@@ -248,6 +302,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                 "on_change_callback_entry",
                 source="persistent_wake",
                 widget_key=key,
+                delivery_via=delivery_via,
                 st=st,
                 callback_token=str(raw or "")[:400],
             )
@@ -260,6 +315,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                 source="persistent_wake",
                 widget_key=key,
                 raw_type=type(raw).__name__ if raw is not None else "NoneType",
+                delivery_via=delivery_via,
                 st=st,
                 callback_token=str(raw or "")[:400],
             )
@@ -269,6 +325,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                 "on_change_callback_entry",
                 source="persistent_wake",
                 widget_key=key,
+                delivery_via=delivery_via,
             )
             note_solo_expire_chain(
                 session,
@@ -276,6 +333,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                 source="persistent_wake",
                 widget_key=key,
                 raw_type=type(raw).__name__ if raw is not None else "NoneType",
+                delivery_via=delivery_via,
             )
     except ImportError:
         pass
@@ -336,13 +394,14 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                 session,
                 live,
                 token,
-                delivery_via="on_change",
+                delivery_via=delivery_via,
             ),
             st=st,
             callback_token=str(token or "")[:400],
         )
     else:
-        process_solo_component_wake(st, session, live, token, delivery_via="on_change")
+        process_solo_component_wake(st, session, live, token, delivery_via=delivery_via)
+    session[SOLO_SKIP_LATE_FLUSH_TOKEN_KEY] = token
     session.pop(SOLO_PERSISTENT_WAKE_PICK_LATCH_KEY, None)
     if boundary_diag_enabled(session):
         record_callback_boundary(
@@ -373,11 +432,24 @@ def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
     raw = st.session_state.get(key)
     if raw is None:
         return
-    from live_draft_solo_heartbeat import _coerce_wake_token
+    from live_draft_solo_heartbeat import SOLO_COMPONENT_WAKE_SEEN_KEY, _coerce_wake_token
 
     token = _coerce_wake_token(raw)
     if not token or token == SOLO_INERT_EXPIRE_TOKEN:
         return
+    if token == str(session.get(SOLO_SKIP_LATE_FLUSH_TOKEN_KEY) or ""):
+        return
+    if token == str(session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or ""):
+        return
+    try:
+        from live_draft_stage1_expire_audit import try_claim_token_delivery
+
+        owners = session.get("_solo_token_delivery_owner") or {}
+        if isinstance(owners, dict) and token in owners:
+            return
+    except ImportError:
+        pass
+    session[SOLO_PENDING_CALLBACK_SOURCE_KEY] = "late_page_flush"
     _production_deliver_callback(st, session, raw, key)
 
 
@@ -400,10 +472,20 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
 
     pending_raw = st.session_state.get(key)
     pending_token = _coerce_wake_token(pending_raw)
+    try:
+        from live_draft_solo_heartbeat import SOLO_COMPONENT_WAKE_SEEN_KEY
+    except ImportError:
+        SOLO_COMPONENT_WAKE_SEEN_KEY = "_solo_component_wake_seen_token"  # type: ignore[misc,assignment]
+    rejected = session.get("_solo_wake_rejected_tokens") or {}
+    pending_consumed = pending_token and (
+        pending_token == str(session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or "")
+        or (isinstance(rejected, dict) and pending_token in rejected)
+    )
     delivery_only = bool(
         pending_token
         and pending_token != SOLO_INERT_EXPIRE_TOKEN
         and pending_raw is not None
+        and not pending_consumed
         and session.get(SOLO_PERSISTENT_WAKE_LATCH_KEY)
     )
     if pending_token and pending_token != SOLO_INERT_EXPIRE_TOKEN:
@@ -421,6 +503,8 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
     key = solo_persistent_wake_widget_key(session)
     did = str(props_room.get("draft_room_id") or props_room.get("draft_id") or "")
 
+    persist_key = solo_persistent_chain_persist_key(session, room_dict)
+
     render_micro_isolation_once(
         st,
         session,
@@ -436,6 +520,8 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         production_actionable=actionable,
         production_delivery_only=delivery_only,
         deliver_callback=_production_deliver_callback,
+        suppress_immediate_session_on_change=True,
+        chain_persist_key=persist_key,
     )
     render_persistent_wake_lifecycle_probe(
         st,

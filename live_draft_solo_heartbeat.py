@@ -170,6 +170,7 @@ def _handle_solo_wake_delivery(
     clicked: bool = False,
     pending_rerun: bool = False,
     pending_wake: bool = False,
+    expire_token: str = "",
 ) -> None:
     try:
         from live_draft_solo_expire_chain import note_solo_expire_chain
@@ -185,7 +186,7 @@ def _handle_solo_wake_delivery(
         )
     except ImportError:
         pass
-    result = run_solo_expire_tick(st, session, source="wake")
+    result = run_solo_expire_tick(st, session, source="wake", expire_token=expire_token)
     need_rerun = bool(pending_rerun or pending_wake or clicked)
     if result is not None and result.ok and (result.advanced or result.complete):
         need_rerun = True
@@ -240,7 +241,61 @@ def process_solo_component_wake(
         pass
     token = _coerce_wake_token(component_value)
     if not token:
+        try:
+            from live_draft_stage1_expire_audit import record_callback_invocation
+
+            record_callback_invocation(
+                st,
+                session,
+                callback_source=delivery_via,
+                raw_value=component_value,
+                room=room,
+                reject_code="empty_raw",
+                delivery_claimed=False,
+            )
+        except ImportError:
+            pass
         return False
+
+    def _reject(reason: str, *, audit_code: str | None = None) -> bool:
+        code = audit_code or reason
+        try:
+            from live_draft_stage1_expire_audit import (
+                clear_persistent_wake_widget_value,
+                map_legacy_reject_reason,
+                mark_wake_token_rejected,
+                record_callback_invocation,
+            )
+
+            mark_wake_token_rejected(session, token, code)
+            clear_persistent_wake_widget_value(st, session, token)
+            record_callback_invocation(
+                st,
+                session,
+                callback_source=delivery_via,
+                raw_value=component_value,
+                room=_resolve_tick_room(session) or room,
+                reject_code=map_legacy_reject_reason(code),
+                delivery_claimed=False,
+                token_already_consumed=code in ("already_consumed", "duplicate_token"),
+            )
+        except ImportError:
+            pass
+        try:
+            from live_draft_solo_expire_chain import note_solo_expire_chain
+
+            note_solo_expire_chain(
+                session,
+                "expire_rejected",
+                source="component",
+                reason=code,
+                token=token,
+                delivery_via=delivery_via or "",
+            )
+        except ImportError:
+            pass
+        return False
+
     try:
         from live_draft_solo_expire_chain import note_solo_expire_chain, solo_expire_owner
         from live_draft_solo_countdown_component import parse_solo_expire_token
@@ -249,44 +304,27 @@ def process_solo_component_wake(
             return False
         parsed = parse_solo_expire_token(token)
         if not parsed:
-            note_solo_expire_chain(
-                session,
-                "expire_rejected",
-                source="component",
-                reason="bad_token",
-                token=token,
-            )
-            return False
+            return _reject("bad_token", audit_code="malformed_token")
         if token == str(session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or ""):
-            note_solo_expire_chain(
-                session,
-                "expire_rejected",
-                source="component",
-                reason="duplicate_token",
-                token=token,
-                delivery_via=delivery_via or "",
-            )
-            return False
+            return _reject("duplicate_token", audit_code="already_consumed")
         live = _resolve_tick_room(session) or room
+        if str(live.get("status") or "") != "in_progress":
+            return _reject("room_not_in_progress")
         live_draft_id = str(live.get("draft_room_id") or live.get("draft_id") or "").strip()
         if parsed["draft_id"] and live_draft_id and parsed["draft_id"] != live_draft_id:
-            note_solo_expire_chain(
-                session,
-                "expire_rejected",
-                source="component",
-                reason="draft_mismatch",
-                token=token,
-            )
-            return False
+            return _reject("draft_mismatch", audit_code="wrong_room")
         if int(live.get("current_pick_index") or 0) != int(parsed["pick_index"]):
-            note_solo_expire_chain(
-                session,
-                "expire_rejected",
-                source="component",
-                reason="pick_mismatch",
-                token=token,
-            )
-            return False
+            return _reject("pick_mismatch", audit_code="wrong_pick")
+        try:
+            from live_draft_timer_logic import live_draft_timer_deadline
+
+            live_deadline = live_draft_timer_deadline(live)
+            tok_deadline = float(parsed.get("deadline") or 0.0)
+            if live_deadline is not None and tok_deadline > 0:
+                if abs(float(live_deadline) - tok_deadline) > 0.75:
+                    return _reject("stale_deadline")
+        except ImportError:
+            pass
         session[SOLO_COMPONENT_WAKE_SEEN_KEY] = token
         note_solo_expire_chain(
             session,
@@ -322,7 +360,13 @@ def process_solo_component_wake(
             return True
     except ImportError:
         pass
-    _handle_solo_wake_delivery(st, session, room, via="component")
+    _handle_solo_wake_delivery(st, session, room, via="component", expire_token=token)
+    try:
+        from live_draft_stage1_expire_audit import clear_persistent_wake_widget_value
+
+        clear_persistent_wake_widget_value(st, session, token)
+    except ImportError:
+        pass
     return True
 
 
@@ -683,7 +727,7 @@ def _after_expire_success(
     return True
 
 
-def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "heartbeat") -> Any | None:
+def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "heartbeat", expire_token: str = "") -> Any | None:
     """Authoritative Solo expire step — single owner entry (wake or fragment)."""
     if session.get("_solo_placement_ladder_suppress_heartbeat_tick"):
         return None
@@ -799,6 +843,32 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
                 reason=getattr(result, "reason", ""),
                 pick_index=int(tick_room.get("current_pick_index") or 0),
                 new_deadline=tick_room.get("timer_deadline"),
+            )
+        except ImportError:
+            pass
+        try:
+            from live_draft_stage1_expire_audit import record_pick_commit_audit
+
+            snap = getattr(result, "snapshot_before", None)
+            pick_before = int(getattr(snap, "pick_index", 0) or 0) + 1 if snap else int(tick_room.get("current_pick_index") or 0)
+            pick_after = int(tick_room.get("current_pick_index") or 0) + 1
+            board = tick_room.get("draft_board") or []
+            last_pick = board[-1] if isinstance(board, list) and board else {}
+            player = ""
+            if isinstance(last_pick, dict):
+                player = str(last_pick.get("Player") or last_pick.get("player") or "")
+            seq = session.get("_solo_last_callback_seq")
+            record_pick_commit_audit(
+                st,
+                session,
+                room=tick_room,
+                team=str(getattr(result, "team_on_clock", "") or getattr(snap, "team", "") or ""),
+                player=player,
+                selection_source=str(getattr(result, "reason", "") or "unknown"),
+                pick_before=pick_before,
+                pick_after=pick_after,
+                triggering_token=str(expire_token or session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or ""),
+                triggering_callback_seq=int(seq) if seq is not None else None,
             )
         except ImportError:
             pass

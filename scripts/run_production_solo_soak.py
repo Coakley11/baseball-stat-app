@@ -120,20 +120,58 @@ def scrape_client_chain(page) -> dict[str, Any]:
         raw = page.evaluate(
             """() => {
               function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
-              let best = { last: '', chain: '' };
+              let best = { last: '', chain: '', chain_persisted: '', token: '', browser_zero_ts: '', component_sent_ts: '', persist_key: '', persist_log_b64: '' };
               for (const root of roots()) {
                 const el = root.querySelector('#solo-expire-client');
                 if (!el) continue;
-                const last = el.getAttribute('data-last') || '';
-                const chain = el.getAttribute('data-chain') || '';
-                if (chain.length > (best.chain || '').length) {
-                  best = { last, chain };
-                }
+                const row = {
+                  last: el.getAttribute('data-last') || '',
+                  chain: el.getAttribute('data-chain') || '',
+                  chain_persisted: el.getAttribute('data-chain-persisted') || '',
+                  token: el.getAttribute('data-token') || '',
+                  remaining_ms: el.getAttribute('data-remaining-ms') || '',
+                  browser_zero_ts: el.getAttribute('data-browser-zero-ts') || '',
+                  component_sent_ts: el.getAttribute('data-component-sent-ts') || '',
+                  persist_key: el.getAttribute('data-chain-persist-key') || '',
+                  persist_log_b64: el.getAttribute('data-persist-log-b64') || '',
+                };
+                const score = (row.chain_persisted || row.chain || '').length;
+                const bestScore = (best.chain_persisted || best.chain || '').length;
+                if (score >= bestScore) best = row;
+              }
+              if (best.persist_key) {
+                try {
+                  const log = JSON.parse(localStorage.getItem(best.persist_key) || '[]');
+                  if (Array.isArray(log)) best.local_storage_stages = log.map(e => e.stage).join('|');
+                } catch (e) {}
               }
               return best;
             }"""
         )
         return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def scrape_stage1_audit(page) -> dict[str, Any]:
+    try:
+        import base64
+
+        b64 = page.evaluate(
+            """() => {
+              function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+              for (const root of roots()) {
+                const el = root.querySelector('#solo-stage1-expire-audit');
+                if (el) return el.getAttribute('data-b64') || '';
+              }
+              return '';
+            }"""
+        )
+        if not b64:
+            return {}
+        pad = b64 + "==="[: (4 - len(b64) % 4) % 4]
+        payload = json.loads(base64.b64decode(pad).decode("utf-8"))
+        return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
 

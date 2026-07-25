@@ -129,6 +129,13 @@
                   return e.stage;
                 }).join("|")
               );
+              node.setAttribute("data-chain-persist-key", chainPersistKey);
+              try {
+                node.setAttribute(
+                  "data-persist-log-b64",
+                  btoa(unescape(encodeURIComponent(JSON.stringify(log.slice(-120)))))
+                );
+              } catch (e3) {}
             }
           } catch (e) {}
         }

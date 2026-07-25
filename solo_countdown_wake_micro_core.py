@@ -189,6 +189,8 @@ def render_micro_isolation_once(
                     if boundary_diag_enabled(session):
 
                         def _run_deliver() -> None:
+                            if "_solo_pending_callback_source" not in session:
+                                session["_solo_pending_callback_source"] = "native_component_on_change"
                             deliver_callback(st, session, raw, key)
 
                         trace_helper(
@@ -199,8 +201,12 @@ def render_micro_isolation_once(
                             callback_token=str(raw or "")[:400],
                         )
                     else:
+                        if "_solo_pending_callback_source" not in session:
+                            session["_solo_pending_callback_source"] = "native_component_on_change"
                         deliver_callback(st, session, raw, key)
                 except ImportError:
+                    if "_solo_pending_callback_source" not in session:
+                        session["_solo_pending_callback_source"] = "native_component_on_change"
                     deliver_callback(st, session, raw, key)
             try:
                 from live_draft_callback_boundary_diag import (
@@ -223,6 +229,7 @@ def render_micro_isolation_once(
         if production_delivery_only and session.get(sk["mounted"]):
             raw = st.session_state.get(key)
             if raw is not None:
+                session["_solo_pending_callback_source"] = "post_mount_session_state_poll"
                 _prod_on_change()
                 return MicroCycleResult(
                     widget_key=key,

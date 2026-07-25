@@ -9,6 +9,8 @@ venv/
 *.pyo
 data/app_state.json
 data/playwright_daniel_auth.storage.json
+data/playwright_daniel_auth.session.json
+data/playwright_daniel_chromium_profile/
 data/*activity_fallback.json
 data/*_activity_fallback.json
 *.db

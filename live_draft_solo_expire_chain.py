@@ -138,6 +138,12 @@ def render_solo_expire_chain_probe(st: Any, session: dict[str, Any], room: dict[
     comp_diag = session.get("_solo_component_diag") or {}
     comp_return = str(comp_diag.get("returned_token") or "")
     comp_raw = str(comp_diag.get("raw_type") or "")
+    try:
+        from live_draft_stage1_expire_audit import render_stage1_expire_audit_probe
+
+        render_stage1_expire_audit_probe(st, session)
+    except ImportError:
+        pass
     st.markdown(
         f'<div id="solo-expire-chain" '
         f'data-owner="{summary.get("owner") or ""}" '
