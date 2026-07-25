@@ -204,12 +204,13 @@ def stage_three(page) -> dict[str, Any]:
     notes.append("sidebar_ldr_reclick")
     page.wait_for_timeout(5000)
     snap = _scrape(page)
+    mount = snap.get("mount") or {}
     row = {
         "notes": notes,
         "room_id_after_nav": snap.get("room_id") or "",
-        "mount_key": (snap.get("mount") or {}).get("key") or "",
+        "mount_key": mount.get("key") or "",
         "has_pause_after": snap.get("has_pause"),
-        "verdict": "pass" if ok and snap.get("mount", {}).get("key") == PERSISTENT_KEY else "fail",
+        "verdict": "pass" if ok and mount.get("key") == PERSISTENT_KEY else "fail",
     }
     return row
 
