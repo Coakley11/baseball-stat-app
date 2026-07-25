@@ -199,13 +199,19 @@ def run_one_control(
             and ("Draft Setup" in text or "Draft Mode" in text)
         )
 
+    consecutive_setup = 0
     while time.time() - t0 < OBSERVATION_S:
         snap = page.evaluate(SCRAPE_JS)
         snap["elapsed_s"] = round(time.time() - t0, 1)
         samples.append(snap)
         if snap.get("active_room"):
             was_active = True
-        if was_active and snap.get("setup_lobby"):
+            consecutive_setup = 0
+        elif was_active and snap.get("setup_lobby"):
+            consecutive_setup += 1
+        else:
+            consecutive_setup = 0
+        if consecutive_setup >= 2:
             returned_to_setup = True
         page.wait_for_timeout(2000)
 
