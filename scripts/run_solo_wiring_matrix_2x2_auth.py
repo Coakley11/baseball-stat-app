@@ -16,7 +16,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
-REQUIRED_SHA = "5f6c485"
+REQUIRED_SHA = "2e0373a"
 OUT = ROOT / "data" / "solo_wiring_matrix_synthetic_2x2.json"
 CELLS = ("A1", "B1", "A2", "B2")
 
