@@ -1,4 +1,4 @@
-3777de5  # auto-generated; Streamlit Cloud reads this at runtime (P6 parity diagnostics 2026-07-26)
+fb281b9  # auto-generated; Streamlit Cloud reads this at runtime (P6 probe grading 2026-07-26)
 
 
 
