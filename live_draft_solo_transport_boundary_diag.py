@@ -240,10 +240,6 @@ def transport_summary(session: dict[str, Any]) -> dict[str, Any]:
     log = list(session.get(TRANSPORT_LOG_KEY) or [])
     meta = dict(session.get(TRANSPORT_META_KEY) or {})
     stages = [str(r.get("stage") or "") for r in log if isinstance(r, dict)]
-    prod_on_change = any(s == "python_run_entry" and r.get("phase") == "production_on_change" for r in log if isinstance(r, dict))
-    for r in log:
-        if isinstance(r, dict) and r.get("stage") == "production_on_change":
-            prod_on_change = True
     return {
         "script_run_counter": int(session.get(TRANSPORT_SCRIPT_RUN_KEY) or 0),
         "meta": meta,
