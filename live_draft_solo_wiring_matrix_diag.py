@@ -1,4 +1,4 @@
-"""Stage 1 component wiring 2×2 matrix (diag-only, fresh keys, no pick delivery)."""
+"""Synthetic component wiring 2×2 matrix — early LDR hook, no real draft, st.stop page."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from typing import Any
 MATRIX_LOG_KEY = "_solo_wiring_matrix_log"
 MATRIX_META_KEY = "_solo_wiring_matrix_meta"
 MATRIX_PROBE_ID = "solo-wiring-matrix-diag"
+MATRIX_STOP_PAGE_KEY = "_solo_wiring_matrix_stop_page"
+SYNTHETIC_SECONDS = 10
 VALID_CELLS = frozenset({"A1", "B1", "A2", "B2"})
 
 
@@ -25,6 +27,17 @@ def _qp_get(st: Any | None, name: str) -> str:
         return ""
 
 
+def _qp_flag(st: Any | None, name: str) -> bool:
+    if st is None:
+        return False
+    try:
+        from live_draft_cloud_diagnostics import _qp_flag as flag
+
+        return flag(st, name)
+    except ImportError:
+        return False
+
+
 def wiring_matrix_cell(st: Any | None, session: dict[str, Any]) -> str:
     cached = str(session.get("_solo_wiring_matrix_cell") or "").strip().upper()
     if cached in VALID_CELLS:
@@ -36,8 +49,32 @@ def wiring_matrix_cell(st: Any | None, session: dict[str, Any]) -> str:
     return ""
 
 
+def wiring_matrix_synthetic(session: dict[str, Any]) -> bool:
+    if session.get("_solo_wiring_matrix_synthetic"):
+        return True
+    return False
+
+
+def wiring_matrix_synthetic_from_query(st: Any | None, session: dict[str, Any]) -> bool:
+    if session.get("_solo_wiring_matrix_synthetic_latched"):
+        return bool(session.get("_solo_wiring_matrix_synthetic"))
+    latched = False
+    if wiring_matrix_cell(st, session):
+        if _qp_flag(st, "solo_wiring_synthetic"):
+            latched = True
+        elif _qp_get(st, "solo_wiring_matrix").strip():
+            latched = True
+    session["_solo_wiring_matrix_synthetic_latched"] = True
+    session["_solo_wiring_matrix_synthetic"] = latched
+    return latched
+
+
 def wiring_matrix_active(st: Any | None, session: dict[str, Any]) -> bool:
     return wiring_matrix_cell(st, session) in VALID_CELLS
+
+
+def wiring_matrix_should_stop_page(session: dict[str, Any]) -> bool:
+    return bool(session.get(MATRIX_STOP_PAGE_KEY))
 
 
 def resolve_matrix_widget_key(st: Any | None, session: dict[str, Any], cell: str) -> str:
@@ -53,21 +90,28 @@ def resolve_matrix_widget_key(st: Any | None, session: dict[str, Any], cell: str
     return key
 
 
+def build_synthetic_matrix_token(cell: str) -> tuple[str, float]:
+    """Token WIRING_A1|0|<deadline> with deadline 10s after mount (actionable)."""
+    deadline = time.time() + float(SYNTHETIC_SECONDS)
+    token = f"WIRING_{cell.upper()}|0|{deadline:.3f}"
+    return token, deadline
+
+
+def _synthetic_stub_room() -> dict[str, Any]:
+    return {
+        "draft_room_id": "SYNTH",
+        "draft_id": "SYNTH",
+        "status": "synthetic",
+        "current_pick_index": 0,
+        "config": {"timer_seconds": SYNTHETIC_SECONDS},
+    }
+
+
 def _append_log(session: dict[str, Any], stage: str, **fields: Any) -> None:
     row = {"ts": time.time(), "stage": stage, **fields}
     log = list(session.get(MATRIX_LOG_KEY) or [])
     log.append(row)
     session[MATRIX_LOG_KEY] = log[-200:]
-
-
-def _matrix_token(room: dict[str, Any]) -> str:
-    try:
-        from solo_countdown_component import build_solo_expire_token
-
-        return build_solo_expire_token(room)
-    except ImportError:
-        did = str(room.get("draft_room_id") or room.get("draft_id") or "solo")
-        return f"{did}|0|{time.time():.3f}"
 
 
 def _simple_matrix_deliver(st: Any, session: dict[str, Any], raw: Any, key: str, *, cell: str) -> None:
@@ -79,6 +123,7 @@ def _simple_matrix_deliver(st: Any, session: dict[str, Any], raw: Any, key: str,
         widget_key=key,
         raw_type=type(raw).__name__ if raw is not None else "NoneType",
         raw_repr=str(raw)[:400],
+        session_state_raw=repr(st.session_state.get(key))[:400],
     )
 
 
@@ -97,7 +142,9 @@ def _mount_a1_minimal_direct(st: Any, session: dict[str, Any], *, key: str, toke
     )
 
 
-def _mount_b1_production_direct(st: Any, session: dict[str, Any], room: dict[str, Any], *, key: str, token: str, cell: str) -> Any:
+def _mount_b1_production_direct(
+    st: Any, session: dict[str, Any], room: dict[str, Any], *, key: str, token: str, cell: str
+) -> Any:
     from solo_countdown_component import mount_solo_countdown_wake_direct
 
     def _on_change() -> None:
@@ -116,11 +163,9 @@ def _mount_b1_production_direct(st: Any, session: dict[str, Any], room: dict[str
 def _mount_a2_minimal_micro_wrapper(
     st: Any, session: dict[str, Any], room: dict[str, Any], *, key: str, token: str, cell: str
 ) -> Any:
-    """Minimal frontend with production micro-isolation-style callback wrapper (no pick deliver)."""
     from minimal_component_wake_repro_core import coerce_token, mount_single_for_transport
 
     prefix = f"_solo_wiring_micro_{cell}_"
-    session[f"{prefix}mounted"] = session.get(f"{prefix}mounted")
 
     def _on_change() -> None:
         raw = st.session_state.get(key)
@@ -131,10 +176,8 @@ def _mount_a2_minimal_micro_wrapper(
             widget_key=key,
             raw_session_state=repr(raw)[:800],
         )
-        tok = coerce_token(raw, token)
+        _ = coerce_token(raw, token)
         _simple_matrix_deliver(st, session, raw, key, cell=cell)
-        if tok:
-            _append_log(session, "micro_wrapper_delivery_complete", token=tok[:400])
 
     if not session.get(f"{prefix}mounted"):
         _append_log(
@@ -142,7 +185,7 @@ def _mount_a2_minimal_micro_wrapper(
             "component_declaration_loaded",
             cell=cell,
             frontend="minimal_wake_repro",
-            python_declaration="minimal_micro_wrapper",
+            python_declaration="micro_isolation_callback_wrapper",
             widget_key=key,
             expire_token=token[:400],
         )
@@ -170,7 +213,7 @@ def _mount_b2_production_micro(
         session,
         placement=cell,
         location="wiring_matrix_b2_micro",
-        draft_id=str(room.get("draft_room_id") or room.get("draft_id") or ""),
+        draft_id="SYNTH",
         route=True,
         persistent=False,
         session_prefix=f"_solo_wiring_micro_{cell}_",
@@ -189,9 +232,12 @@ def try_wiring_matrix_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
     cell = wiring_matrix_cell(st, session)
     if not cell:
         return False
-    room_dict = room if isinstance(room, dict) else session.get("live_draft_room")
-    if not isinstance(room_dict, dict) or str(room_dict.get("status") or "") != "in_progress":
+
+    wiring_matrix_synthetic_from_query(st, session)
+    if not wiring_matrix_synthetic(session):
         return False
+
+    room_dict = _synthetic_stub_room()
 
     try:
         from live_draft_solo_transport_boundary_diag import (
@@ -210,13 +256,19 @@ def try_wiring_matrix_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
 
     bootstrap_transport_diagnostics(st, session)
     session["_solo_persistent_wake_flush_disabled"] = True
+    session[MATRIX_STOP_PAGE_KEY] = True
 
     key = resolve_matrix_widget_key(st, session, cell)
-    token = _matrix_token(room_dict)
+    token, deadline = build_synthetic_matrix_token(cell)
+    session["_solo_wiring_matrix_expected_token"] = token
+
     session[MATRIX_META_KEY] = {
+        "mode": "synthetic",
         "cell": cell,
         "widget_key": key,
         "expire_token": token,
+        "deadline_unix": deadline,
+        "actionable": True,
         "default": None,
         "frontend": {
             "A1": "minimal_wake_repro",
@@ -231,6 +283,15 @@ def try_wiring_matrix_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
             "B2": "solo_countdown_wake_micro_core.render_micro_isolation_once",
         }.get(cell, ""),
     }
+
+    _append_log(
+        session,
+        "synthetic_matrix_mount",
+        cell=cell,
+        widget_key=key,
+        expire_token=token,
+        deadline_unix=deadline,
+    )
 
     if transport_logging_active(st, session):
         render_transport_parent_listener(st)
@@ -261,14 +322,7 @@ def try_wiring_matrix_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
     meta["callback_count"] = int(session.get(f"{key}_matrix_callback_count") or 0)
     session[MATRIX_META_KEY] = meta
 
-    _append_log(
-        session,
-        "matrix_mount_complete",
-        cell=cell,
-        widget_key=key,
-        expire_token=token[:400],
-        component_return=meta["component_return"],
-    )
+    _append_log(session, "matrix_mount_complete", cell=cell, widget_key=key, expire_token=token[:400])
 
     record_transport_python_run(
         st,
@@ -291,10 +345,13 @@ def render_wiring_matrix_probe(st: Any, session: dict[str, Any]) -> None:
     b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     cell = str(meta.get("cell") or "")
     key = str(meta.get("widget_key") or "")
+    token = str(meta.get("expire_token") or "")
     st.markdown(
         f'<div id="{MATRIX_PROBE_ID}" '
+        f'data-synthetic="1" '
         f'data-cell="{cell}" '
         f'data-key="{key.replace(chr(34), chr(39))}" '
+        f'data-expected-token="{token.replace(chr(34), chr(39))[:200]}" '
         f'data-callbacks="{int(meta.get("callback_count") or 0)}" '
         f'data-b64="{b64}"></div>',
         unsafe_allow_html=True,

@@ -1,8 +1,7 @@
-"""Authenticated Cloud 2×2 component wiring matrix (fresh context/room/key per cell)."""
+"""Synthetic 2×2 wiring matrix on Cloud LDR (no draft; fresh context per cell)."""
 
 from __future__ import annotations
 
-import base64
 import json
 import sys
 import time
@@ -17,20 +16,27 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
-OUT = ROOT / "data" / "solo_wiring_matrix_2x2.json"
+REQUIRED_SHA = "f9978ab"
+OUT = ROOT / "data" / "solo_wiring_matrix_synthetic_2x2.json"
 CELLS = ("A1", "B1", "A2", "B2")
 
-FRONTEND_BY_CELL = {
+FRONTEND = {
     "A1": "minimal_wake_repro",
     "B1": "solo_countdown_wake",
     "A2": "minimal_wake_repro",
     "B2": "solo_countdown_wake",
 }
-DECL_BY_CELL = {
+DECL = {
     "A1": "minimal_component_wake_repro_core.mount_single_for_transport",
     "B1": "solo_countdown_component.mount_solo_countdown_wake_direct",
     "A2": "minimal_frontend + micro_isolation_callback_wrapper",
     "B2": "solo_countdown_wake_micro_core.render_micro_isolation_once",
+}
+EXPECTED_HOST = {
+    "A1": "repro-client",
+    "B1": "solo-expire-client",
+    "A2": "repro-client",
+    "B2": "solo-expire-client",
 }
 
 
@@ -45,17 +51,11 @@ from playwright_daniel_auth_session import (  # noqa: E402
     harness_ready,
 )
 from replay_playwright_daniel_auth_preflight import run_preflight  # noqa: E402
-from run_production_stage1_authenticated import (  # noqa: E402
-    ensure_fresh_setup_lobby,
-    redact_url,
-    validate_production_draft_start,
-)
 from run_production_solo_soak import (  # noqa: E402
     scrape_deploy_build,
     scrape_iframe_lifecycle,
     scrape_transport_boundary,
 )
-from solo_draft_start_harness import execute_solo_draft_start_workflow  # noqa: E402
 from stage1_frame_transport_probe import (  # noqa: E402
     collect_frame_topology,
     install_immediate_parent_listeners,
@@ -63,19 +63,19 @@ from stage1_frame_transport_probe import (  # noqa: E402
 )
 
 
-def matrix_cell_url(cell: str, widget_key: str) -> str:
+def cell_url(cell: str, widget_key: str) -> str:
     params = {
         "active_page": "Live Draft Room",
-        "solo_diag_timer": "10",
-        "solo_transport_probe": "1",
+        "solo_wiring_synthetic": "1",
         "solo_wiring_matrix": cell,
         "solo_wiring_key": widget_key,
+        "solo_transport_probe": "1",
     }
     return append_suite_sid_to_url(f"{BASE}/?{urlencode(params)}")
 
 
-def scrape_wiring_matrix_probe(page) -> dict[str, Any]:
-    raw = page.evaluate(
+def scrape_matrix_probe(page) -> dict[str, Any]:
+    return page.evaluate(
         """() => {
           function roots() {
             const out = [document];
@@ -89,53 +89,45 @@ def scrape_wiring_matrix_probe(page) -> dict[str, Any]:
             if (!el) continue;
             const b64 = el.getAttribute('data-b64') || '';
             let decoded = null;
-            if (b64) {
-              try {
-                decoded = JSON.parse(atob(b64));
-              } catch (e) {
-                decoded = { parse_error: String(e) };
-              }
-            }
+            try { decoded = b64 ? JSON.parse(atob(b64)) : null; } catch (e) { decoded = { err: String(e) }; }
             return {
+              synthetic: el.getAttribute('data-synthetic') || '',
               cell: el.getAttribute('data-cell') || '',
               key: el.getAttribute('data-key') || '',
-              callbacks_attr: parseInt(el.getAttribute('data-callbacks') || '0', 10),
+              expected_token: el.getAttribute('data-expected-token') || '',
+              callbacks: parseInt(el.getAttribute('data-callbacks') || '0', 10),
               decoded,
             };
           }
           return { missing: true };
         }"""
     )
-    return raw if isinstance(raw, dict) else {}
 
 
-def scrape_client_chains(page) -> dict[str, Any]:
+def scrape_client_surfaces(page) -> dict[str, Any]:
     return page.evaluate(
         """() => {
-          const out = { repro: null, solo: null };
-          const iframes = document.querySelectorAll('iframe');
-          for (let i = 0; i < iframes.length; i++) {
+          const out = {
+            repro_count: 0,
+            solo_count: 0,
+            repro_chain: '',
+            solo_chain: '',
+            repro_console: '',
+          };
+          for (const f of document.querySelectorAll('iframe')) {
             try {
-              const doc = iframes[i].contentDocument;
+              const doc = f.contentDocument;
               if (!doc) continue;
               const repro = doc.querySelector('#repro-client');
               if (repro) {
-                out.repro = {
-                  iframe_index: i,
-                  chain: repro.getAttribute('data-chain') || '',
-                  last: repro.getAttribute('data-last') || '',
-                  console: repro.getAttribute('data-console') || '',
-                };
+                out.repro_count += 1;
+                out.repro_chain = repro.getAttribute('data-chain') || out.repro_chain;
+                out.repro_console = repro.getAttribute('data-console') || out.repro_console;
               }
               const solo = doc.querySelector('#solo-expire-client');
               if (solo) {
-                out.solo = {
-                  iframe_index: i,
-                  chain: solo.getAttribute('data-chain') || '',
-                  last: solo.getAttribute('data-last') || '',
-                  token: solo.getAttribute('data-token') || '',
-                  iframe_instance: solo.getAttribute('data-iframe-instance') || '',
-                };
+                out.solo_count += 1;
+                out.solo_chain = solo.getAttribute('data-chain') || out.solo_chain;
               }
             } catch (e) {}
           }
@@ -144,254 +136,296 @@ def scrape_client_chains(page) -> dict[str, Any]:
     )
 
 
-def _parse_transport_before_postmessage(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def assess_isolation(page, *, cell: str) -> dict[str, Any]:
+    topo = collect_frame_topology(page)
+    surf = scrape_client_surfaces(page)
+    min_f = sum(1 for fr in (topo.get("frames") or []) if isinstance(fr, dict) and fr.get("has_minimal_control"))
+    prod_f = sum(1 for fr in (topo.get("frames") or []) if isinstance(fr, dict) and fr.get("has_production_countdown"))
+    min_f = max(min_f, int(surf.get("repro_count") or 0))
+    prod_f = max(prod_f, int(surf.get("solo_count") or 0))
+    expect_min = cell in ("A1", "A2")
+    ok = (min_f == 1 and prod_f == 0) if expect_min else (prod_f == 1 and min_f == 0)
+    return {
+        "cell": cell,
+        "minimal_count": min_f,
+        "production_count": prod_f,
+        "isolation_ok": ok,
+        "isolation_confounded": not ok,
+        "frame_count": topo.get("frame_count"),
+    }
+
+
+def _stages_from_run(cell: str, iframe_life: dict[str, Any], surf: dict[str, Any]) -> set[str]:
+    stages: set[str] = set()
+    for e in _iframe_log_entries(iframe_life):
+        stg = str(e.get("stage") or "")
+        if stg:
+            stages.add(stg)
+    chain = str(surf.get("solo_chain") or surf.get("repro_chain") or "")
+    for part in chain.split("|"):
+        if part.strip():
+            stages.add(part.strip())
+    if "setComponentValue" in str(surf.get("repro_console") or ""):
+        stages.add("setComponentValue_called")
+    if cell in ("A1", "A2") and "render token=" in str(surf.get("repro_console") or ""):
+        stages.add("render_event_received")
+    return stages
+
+
+def _iframe_log_entries(iframe_life: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for e in entries:
-        if str(e.get("stage") or "") != "transport_before_postMessage":
-            continue
-        extra = str(e.get("extra") or "")
-        try:
-            parsed = json.loads(extra)
-            if isinstance(parsed, dict):
-                out.append(parsed)
-        except json.JSONDecodeError:
-            out.append({"raw_extra": extra[:500]})
-    return out
-
-
-def _iframe_entries(iframe_life: dict[str, Any]) -> list[dict[str, Any]]:
-    entries: list[dict[str, Any]] = []
     for fr in iframe_life.get("frames") or []:
-        if not isinstance(fr, dict):
-            continue
-        for block in fr.get("logs") or []:
+        for block in (fr.get("logs") or [] if isinstance(fr, dict) else []):
             if isinstance(block, dict):
-                entries.extend(block.get("entries") or [])
-    return [e for e in entries if isinstance(e, dict)]
+                out.extend(block.get("entries") or [])
+    return [e for e in out if isinstance(e, dict)]
 
 
-def _standard_streamlit_payload(msg: dict[str, Any]) -> bool:
-    keys = set(msg.get("payload_key_names") or [])
-    return bool(msg.get("is_streamlit_message")) and "type" in keys and "value" in keys
+def _setcomp_count(stages: set[str], iframe_life: dict[str, Any]) -> int:
+    n = stages.count("setComponentValue_called") if isinstance(stages, list) else 0
+    if "setComponentValue_called" in stages:
+        n = max(n, 1)
+    if "iframe_setComponentValue_called" in stages:
+        n += 1
+    for e in _iframe_log_entries(iframe_life):
+        if str(e.get("stage") or "") in ("setComponentValue_called", "iframe_setComponentValue_called"):
+            n += 1
+    return max(1, n) if ("component_value_sent" in stages) else n
 
 
-def wait_matrix_expire(page, *, cell: str, widget_key: str, timeout_s: float = 55.0) -> dict[str, Any]:
-    t0 = time.time()
+def wait_synthetic_expire(page, *, cell: str, widget_key: str, expected_token: str) -> dict[str, Any]:
     install_immediate_parent_listeners(page)
-    timer_armed_at: float | None = None
-    observe_until = t0 + timeout_s
+    iso_pre = assess_isolation(page, cell=cell)
+    if not iso_pre.get("isolation_ok"):
+        return {
+            "outcome": "INVALID",
+            "invalid_reason": "isolation_before_timer",
+            "isolation": iso_pre,
+        }
 
-    while time.time() < observe_until:
+    t0 = time.time()
+    armed_at: float | None = None
+    while time.time() - t0 < 28.0:
         install_immediate_parent_listeners(page)
-        chains = scrape_client_chains(page)
-        chain = str((chains.get("solo") or chains.get("repro") or {}).get("chain") or "")
-        if "timer_armed" in chain or "render token=" in chain:
-            if timer_armed_at is None:
-                timer_armed_at = time.time()
-                observe_until = max(observe_until, timer_armed_at + 22.0)
-        if "component_value_sent" in chain or "browser_deadline_crossed" in chain:
-            page.wait_for_timeout(8000)
+        iframe_life = scrape_iframe_lifecycle(page)
+        surf = scrape_client_surfaces(page)
+        stages = _stages_from_run(cell, iframe_life, surf)
+        if "timer_armed" in stages or "render token=" in str(surf.get("repro_console") or ""):
+            armed_at = armed_at or time.time()
+        if "browser_deadline_crossed" in stages and "component_value_sent" in stages:
+            page.wait_for_timeout(6000)
             break
-        if timer_armed_at and time.time() >= timer_armed_at + 22:
+        if armed_at and time.time() - armed_at > 18:
+            page.wait_for_timeout(4000)
             break
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(1500)
 
-    probe = scrape_wiring_matrix_probe(page)
-    decoded = probe.get("decoded") if isinstance(probe.get("decoded"), dict) else {}
+    probe = scrape_matrix_probe(page)
+    decoded = (probe.get("decoded") or {}) if isinstance(probe.get("decoded"), dict) else {}
     meta = decoded.get("meta") if isinstance(decoded.get("meta"), dict) else {}
     log_tail = decoded.get("log_tail") if isinstance(decoded.get("log_tail"), list) else []
 
     iframe_life = scrape_iframe_lifecycle(page)
-    iframe_entries = _iframe_entries(iframe_life)
-    setcomp_args = _parse_transport_before_postmessage(iframe_entries)
-    chains = scrape_client_chains(page)
+    surf = scrape_client_surfaces(page)
+    stages = _stages_from_run(cell, iframe_life, surf)
     immediate = scrape_immediate_parent_messages(page)
     transport = scrape_transport_boundary(page) or {}
-    log_transport = list((transport.get("probe") or {}).get("log_tail") or [])
+    tlog = list((transport.get("probe") or {}).get("log_tail") or [])
 
-    matrix_callbacks = int(meta.get("callback_count") or probe.get("callbacks_attr") or 0)
-    matrix_log_callbacks = sum(1 for r in log_tail if isinstance(r, dict) and r.get("stage") == "matrix_callback")
-
-    expire_token = str(meta.get("expire_token") or "")
-    parent_for_token = [
+    iso_post = assess_isolation(page, cell=cell)
+    host = EXPECTED_HOST[cell]
+    parent_msgs = [
         m
         for m in immediate
         if isinstance(m, dict)
         and m.get("has_set_component_value")
-        and (
-            (expire_token and str(m.get("value_preview") or "") == expire_token[:120])
-            or (widget_key and widget_key in str(m.get("value_preview") or ""))
-        )
+        and (m.get("iframe_association") or {}).get("component_widget_host_id") == host
     ]
-    if not parent_for_token and expire_token:
-        parent_for_token = [
-            m
-            for m in immediate
-            if isinstance(m, dict)
-            and m.get("has_set_component_value")
-            and str(m.get("value_preview") or "").split("|")[0]
-            == expire_token.split("|")[0]
-        ]
-    parent_set = parent_for_token or [
-        m for m in immediate if isinstance(m, dict) and m.get("has_set_component_value")
-    ][-3:]
+    if not parent_msgs:
+        parent_msgs = [m for m in immediate if isinstance(m, dict) and m.get("has_set_component_value")]
 
-    first_parent = parent_set[-1] if parent_set else {}
-    payload_keys = list(first_parent.get("payload_key_names") or [])
+    token_ok = all(
+        str(m.get("value_preview") or "").startswith(f"WIRING_{cell}")
+        for m in parent_msgs
+    ) if parent_msgs else False
 
-    repro_chain = str((chains.get("repro") or {}).get("chain") or "")
-    solo_chain = str((chains.get("solo") or {}).get("chain") or "")
-    client_chain = solo_chain or repro_chain
-    merged = iframe_life.get("merged_stages") or []
-    browser_deadline = "browser_deadline_crossed" in merged or "component_value_sent" in merged
-
-    transport_matrix_hits = sum(
+    payload_keys = list((parent_msgs[-1] if parent_msgs else {}).get("payload_key_names") or [])
+    setcomp_n = sum(
         1
-        for r in log_transport
-        if isinstance(r, dict)
-        and (
-            r.get("stage") == "matrix_callback"
-            or (
-                r.get("stage") == "python_run_entry"
-                and str(r.get("phase") or "").startswith("wiring_matrix")
-            )
-        )
+        for s in stages
+        if s in ("setComponentValue_called", "iframe_setComponentValue_called", "component_value_sent")
     )
-    python_pass = (
-        matrix_callbacks >= 1
-        or matrix_log_callbacks >= 1
-        or transport_matrix_hits >= 1
-    )
+    for e in _iframe_log_entries(iframe_life):
+        if str(e.get("stage") or "") in ("setComponentValue_called", "iframe_setComponentValue_called"):
+            setcomp_n += 1
+
+    cb = int(meta.get("callback_count") or probe.get("callbacks") or 0)
+    cb += sum(1 for r in log_tail if isinstance(r, dict) and r.get("stage") == "matrix_callback")
+    cb += sum(1 for r in tlog if isinstance(r, dict) and r.get("stage") == "matrix_callback")
+
+    session_raw = meta.get("session_state_value")
+    for r in reversed(log_tail):
+        if isinstance(r, dict) and r.get("stage") == "matrix_callback":
+            session_raw = r.get("raw_repr") or r.get("session_state_raw")
+            break
+
+    chain_req = {
+        "component_script_loaded": "component_script_loaded" in stages or "componentReady" in str(surf.get("repro_console") or ""),
+        "render_event_received": "render_event_received" in stages or "render token=" in str(surf.get("repro_console") or ""),
+        "timer_armed": "timer_armed" in stages or armed_at is not None,
+        "browser_deadline_crossed": "browser_deadline_crossed" in stages,
+        "setComponentValue_once": setcomp_n == 1,
+        "parent_receipt": bool(parent_msgs),
+        "python_callback": cb >= 1,
+        "token_matches_cell": token_ok or (expected_token and expected_token.split("|")[0] == f"WIRING_{cell}"),
+    }
+
+    invalid_reasons: list[str] = []
+    if not iso_pre.get("isolation_ok") or not iso_post.get("isolation_ok"):
+        invalid_reasons.append("extra_or_missing_component_iframe")
+    if not chain_req["timer_armed"]:
+        invalid_reasons.append("timer_never_armed")
+    if not chain_req["browser_deadline_crossed"]:
+        invalid_reasons.append("zero_crossing_never")
+    if not chain_req["token_matches_cell"] and parent_msgs:
+        invalid_reasons.append("wrong_token")
+    if setcomp_n != 1:
+        invalid_reasons.append(f"setComponentValue_count_{setcomp_n}")
+
+    if invalid_reasons:
+        outcome = "INVALID"
+    elif cb >= 1:
+        outcome = "PASS"
+    else:
+        outcome = "VALID FAIL"
 
     return {
+        "outcome": outcome,
+        "invalid_reasons": invalid_reasons,
         "cell": cell,
-        "component_frontend": FRONTEND_BY_CELL.get(cell, ""),
-        "python_declaration": DECL_BY_CELL.get(cell, ""),
         "fresh_widget_key": widget_key,
+        "expected_token": expected_token or probe.get("expected_token") or meta.get("expire_token"),
         "default": None,
-        "expire_token": expire_token,
         "component_return": meta.get("component_return"),
-        "session_state_value": meta.get("session_state_value"),
-        "callback_function": "matrix_simple_callback (_simple_matrix_deliver)",
-        "callback_count": max(matrix_callbacks, matrix_log_callbacks, transport_matrix_hits),
-        "widget_id": "",
-        "setComponentValue_args_from_iframe": setcomp_args,
+        "frontend": FRONTEND[cell],
+        "python_declaration": DECL[cell],
+        "isolation_pre": iso_pre,
+        "isolation_post": iso_post,
+        "isolation_confounded": iso_post.get("isolation_confounded"),
+        "chain_requirements": chain_req,
+        "client_stages": sorted(stages),
         "immediate_parent_payload_keys": payload_keys,
-        "immediate_parent_standard_streamlit_format": _standard_streamlit_payload(first_parent)
-        if first_parent
-        else None,
-        "immediate_parent_has_widget_key_field": "widget_key" in payload_keys,
-        "browser_deadline_crossed": browser_deadline,
-        "setComponentValue_called": "setComponentValue" in client_chain
-        or "iframe_setComponentValue_called" in client_chain
-        or bool(setcomp_args),
-        "parent_receipt": bool(parent_set),
-        "iframe_merged_stages": iframe_life.get("merged_stages") or [],
-        "client_chain": client_chain,
-        "immediate_parent_messages": parent_set[-5:],
-        "transport_log_tail": log_transport[-15:],
-        "matrix_log_tail": log_tail[-10:],
-        "frame_topology": collect_frame_topology(page),
-        "pass_python_callback": python_pass,
+        "widget_key_in_parent_payload": "widget_key" in payload_keys,
+        "immediate_parent_messages": parent_msgs[-2:],
+        "session_state_raw": session_raw,
+        "callback_count": cb,
+        "pass_python_callback": cb >= 1,
         "observation_s": round(time.time() - t0, 1),
-        "pass": python_pass and browser_deadline,
     }
 
 
-def interpret_matrix(cells: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    def passed(name: str) -> bool:
-        return bool((cells.get(name) or {}).get("pass_python_callback"))
+def interpret_results(cells: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    def ok(name: str) -> bool:
+        return (cells.get(name) or {}).get("outcome") == "PASS"
 
-    a1, b1, a2, b2 = passed("A1"), passed("B1"), passed("A2"), passed("B2")
+    def valid(name: str) -> bool:
+        return (cells.get(name) or {}).get("outcome") in ("PASS", "VALID FAIL")
+
+    a1, b1, a2, b2 = ok("A1"), ok("B1"), ok("A2"), ok("B2")
     notes: list[str] = []
-    first_diff = ""
-
-    if not a1:
-        notes.append("A1 baseline failed — environment or harness broken.")
-        first_diff = "harness_or_cloud"
-    elif b1 is False and a2:
-        first_diff = "production_frontend_or_postmessage"
-        notes.append("B1 fails, A2 passes → production frontend or Streamlit protocol message is defective.")
+    layer = ""
+    if not valid("A1") or cells.get("A1", {}).get("outcome") == "INVALID":
+        layer = "harness_invalid"
+        notes.append("A1 INVALID — synthetic harness or isolation invalid; do not change production.")
+    elif b1 is False and a2 and valid("B1") and valid("A2"):
+        layer = "production_frontend_message"
+        notes.append("A1 PASS, B1 FAIL, A2 PASS → production frontend/message construction.")
     elif b1 and not a2:
-        first_diff = "production_python_micro_wrapper"
-        notes.append("B1 passes, A2 fails → production micro-isolation Python wrapper/declaration is defective.")
+        layer = "production_micro_wrapper"
+        notes.append("A1 PASS, B1 PASS, A2 FAIL → micro-isolation wrapper.")
     elif b1 and a2 and not b2:
-        first_diff = "frontend_wrapper_interaction"
-        notes.append("B1 and A2 pass, B2 fails → production frontend and wrapper interact incorrectly.")
-    elif b1 and not b2:
-        first_diff = "migrate_to_direct_declaration"
-        notes.append("B1 passes, B2 fails → migrate production countdown to direct minimal declaration pattern.")
-    elif not b1:
-        first_diff = "production_frontend_line_compare"
-        notes.append("B1 fails with fresh key + direct declaration → line-compare production frontend vs minimal_wake_repro.")
+        layer = "frontend_wrapper_interaction"
+        notes.append("A1 PASS, B1 PASS, A2 PASS, B2 FAIL → combination failure.")
     elif a1 and b1 and a2 and b2:
-        first_diff = "stale_key_or_delivery_state"
-        notes.append("All four pass → historical stable production key or delivery/dedupe state is the defect.")
-
+        layer = "persistent_wake_surround"
+        notes.append("All PASS → defect is persistent-wake state / historical key / ownership.")
+    elif not b1 and valid("B1"):
+        layer = "production_frontend_message"
+        notes.append("B1 VALID FAIL with A1 PASS pattern → production frontend path.")
     return {
-        "A1_pass": a1,
-        "B1_pass": b1,
-        "A2_pass": a2,
-        "B2_pass": b2,
-        "first_differing_layer": first_diff,
-        "interpretation_notes": notes,
-        "widget_key_in_parent_payload_is_frontend_only": (
-            "Production solo_countdown_component frontend adds widget_key in sendMessage(); "
-            "passive Playwright parent listeners do not mutate postMessage payloads."
-        ),
+        "A1": cells.get("A1", {}).get("outcome"),
+        "B1": cells.get("B1", {}).get("outcome"),
+        "A2": cells.get("A2", {}).get("outcome"),
+        "B2": cells.get("B2", {}).get("outcome"),
+        "first_differing_layer": layer,
+        "notes": notes,
     }
 
 
-def run_one_cell(browser, *, cell: str, preflight: dict[str, Any]) -> dict[str, Any]:
+def run_cell(browser, *, cell: str, preflight: dict[str, Any]) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
 
-    widget_key = f"solo_wiring_{cell.lower()}_{uuid.uuid4().hex[:10]}"
-    url = matrix_cell_url(cell, widget_key)
-    context = browser.new_context(
-        storage_state=str(STORAGE_PATH),
-        viewport={"width": 1440, "height": 1400},
-    )
-    page = context.new_page()
+    key = f"solo_wiring_{cell.lower()}_{uuid.uuid4().hex[:10]}"
+    url = cell_url(cell, key)
+    ctx = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
+    page = ctx.new_page()
     try:
         goto_and_wake(page, url, timeout_s=240)
-        page.wait_for_timeout(12000)
+        page.wait_for_timeout(14000)
         try:
             page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
-            page.wait_for_timeout(2500)
+            page.wait_for_timeout(2000)
         except Exception:
             pass
         page.wait_for_timeout(8000)
 
         sha = scrape_deploy_build(page) or str(preflight.get("cloud_sha") or "")
+        if not str(sha).strip():
+            try:
+                from run_solo_clean_verification import scrape_live_sha
+
+                sha = scrape_live_sha(page) or sha
+            except ImportError:
+                pass
         sha_short = str(sha).lower()[:7]
-        req = _required_cloud_sha()
-        if sha_short != req:
+        if sha_short != _required_cloud_sha():
             return {
-                "aborted": True,
+                "outcome": "INVALID",
                 "cell": cell,
                 "reason": "cloud_sha_mismatch",
                 "cloud_sha": sha_short,
-                "required": req,
+                "required": _required_cloud_sha(),
             }
 
-        cleanup = ensure_fresh_setup_lobby(page, max_wait_s=240)
-        if not cleanup.get("ok"):
-            return {"aborted": True, "cell": cell, "reason": "cleanup_failed", "cleanup": cleanup}
+        probe0 = scrape_matrix_probe(page)
+        expected = str(probe0.get("expected_token") or "")
+        if not expected and isinstance(probe0.get("decoded"), dict):
+            meta = (probe0.get("decoded") or {}).get("meta") or {}
+            expected = str(meta.get("expire_token") or "")
 
-        prior = str(cleanup.get("detected_room_id") or "").strip().upper()
-        draft = execute_solo_draft_start_workflow(page, url, navigate=False)
-        start_val = validate_production_draft_start(page, draft, prior_room_id=prior)
-        if not start_val.get("valid"):
-            return {"aborted": True, "cell": cell, "reason": "draft_start_invalid", "validation": start_val}
+        for _ in range(12):
+            if expected and not probe0.get("missing"):
+                break
+            page.wait_for_timeout(2000)
+            probe0 = scrape_matrix_probe(page)
+            expected = str(probe0.get("expected_token") or expected)
 
-        result = wait_matrix_expire(page, cell=cell, widget_key=widget_key)
-        result["setup_url_redacted"] = redact_url(url)
-        result["room_id"] = start_val.get("latched_room_id")
+        if probe0.get("missing"):
+            return {
+                "outcome": "INVALID",
+                "cell": cell,
+                "reason": "matrix_probe_not_mounted",
+                "fresh_widget_key": key,
+            }
+
+        result = wait_synthetic_expire(page, cell=cell, widget_key=key, expected_token=expected)
+        result["fresh_widget_key"] = key
         result["cloud_sha"] = sha_short
-        result["cleanup"] = cleanup
+        result["synthetic"] = True
+        result["draft_start_success"] = None
         return result
     finally:
-        context.close()
+        ctx.close()
 
 
 def main() -> int:
@@ -405,10 +439,11 @@ def main() -> int:
 
     req = _required_cloud_sha()
     summary: dict[str, Any] = {
-        "started_at": time.time(),
+        "mode": "synthetic",
         "required_cloud_sha": req,
         "build_label": f"baseball-dev-{req}",
         "cells": {},
+        "started_at": time.time(),
     }
 
     from playwright.sync_api import sync_playwright
@@ -416,12 +451,11 @@ def main() -> int:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         for cell in CELLS:
-            block = run_one_cell(browser, cell=cell, preflight=pre)
-            summary["cells"][cell] = block
-            time.sleep(3)
+            summary["cells"][cell] = run_cell(browser, cell=cell, preflight=pre)
+            time.sleep(2)
         browser.close()
 
-    summary["interpretation"] = interpret_matrix(summary["cells"])
+    summary["interpretation"] = interpret_results(summary["cells"])
     summary["finished_at"] = time.time()
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")

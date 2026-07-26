@@ -22166,7 +22166,13 @@ elif active_page == "Live Draft Room":
             st.session_state,
             _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
         ):
-            pass
+            try:
+                from live_draft_solo_wiring_matrix_diag import wiring_matrix_should_stop_page
+
+                if wiring_matrix_should_stop_page(st.session_state):
+                    st.stop()
+            except ImportError:
+                pass
         else:
             from live_draft_solo_persistent_wake import try_solo_persistent_wake_ldr_entry
 
