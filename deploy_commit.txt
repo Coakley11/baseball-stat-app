@@ -1,7 +1,6 @@
-e015ae9  # auto-generated; Streamlit Cloud reads this at runtime (P6 persistent ledger 2026-07-26)
+74c844d  # auto-generated; Streamlit Cloud reads this at runtime (P6 dual-session observer 2026-07-26)
 
 
 
 branch: dev
-
 
