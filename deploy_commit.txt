@@ -1,4 +1,4 @@
-24de159  # auto-generated; Streamlit Cloud reads this at runtime (P6 exclusive entry 2026-07-26)
+e015ae9  # auto-generated; Streamlit Cloud reads this at runtime (P6 persistent ledger 2026-07-26)
 
 
 
