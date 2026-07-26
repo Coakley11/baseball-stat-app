@@ -41,6 +41,13 @@ def solo_persistent_wake_active(session: dict[str, Any]) -> bool:
 
 def _diag_blocks_persistent_wake(st: Any, session: dict[str, Any]) -> bool:
     try:
+        from live_draft_solo_wiring_matrix_diag import wiring_matrix_active
+
+        if wiring_matrix_active(st, session):
+            return True
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_bridge_transition_diag import bridge_transition_active
 
         if bridge_transition_active(st, session):

@@ -56,6 +56,13 @@ def transport_probe_enabled(st: Any | None, session: dict[str, Any]) -> bool:
 
 def transport_logging_active(st: Any | None, session: dict[str, Any]) -> bool:
     """Python transport probe + script-run logging (does not imply minimal control mount)."""
+    try:
+        from live_draft_solo_wiring_matrix_diag import wiring_matrix_active
+
+        if wiring_matrix_active(st, session):
+            return True
+    except ImportError:
+        pass
     if transport_probe_enabled(st, session):
         return True
     try:
