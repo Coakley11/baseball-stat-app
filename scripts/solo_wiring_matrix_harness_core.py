@@ -499,6 +499,226 @@ def attach_dual_verdicts(scored: dict[str, Any], peak: dict[str, Any], *, cell: 
     return scored
 
 
+P6_HARNESS_INIT_SCRIPT = """
+(() => {
+  const PARENT = "__solo_p6_parent_capture_v2";
+  if (!window[PARENT]) {
+    window[PARENT] = { installed: true, rows: [], fingerprints: new Set() };
+    window.addEventListener("message", function (ev) {
+      const d = ev && ev.data;
+      if (!d || d.type !== "streamlit:setComponentValue") return;
+      const val = typeof d.value === "string" ? d.value : JSON.stringify(d.value);
+      let srcId = "opaque";
+      try {
+        srcId = ev.source && ev.source.location ? String(ev.source.location.href || "opaque") : "opaque";
+      } catch (e) {
+        srcId = "opaque";
+      }
+      const fp = [d.type, val, String(ev.timeStamp || 0), srcId].join("|");
+      const bag = window[PARENT];
+      if (bag.fingerprints.has(fp)) return;
+      bag.fingerprints.add(fp);
+      const keys = [];
+      try { keys.push(...Object.keys(d)); } catch (e) {}
+      bag.rows.push({
+        ts: Date.now(),
+        event_ts: ev.timeStamp,
+        value_preview: val.slice(0, 200),
+        fingerprint: fp,
+        payload_keys: keys,
+        origin: String((ev && ev.origin) || ""),
+        source_href: srcId.slice(0, 240),
+      });
+      if (bag.rows.length > 120) bag.rows = bag.rows.slice(-100);
+      const peak = window.__solo_p6_browser_peak_v2;
+      if (peak) {
+        peak.unique.transport_postmessage_invoked.add(fp);
+        peak.unique.setComponentValue_invoked.add("scv:" + fp);
+        peak._syncCounts();
+      }
+    }, true);
+  }
+  const PEAK = "__solo_p6_browser_peak_v2";
+  if (!window[PEAK]) {
+    const bag = {
+      unique: {
+        iframe_instance: new Set(),
+        timer_armed: new Set(),
+        browser_deadline_crossed: new Set(),
+        setComponentValue_invoked: new Set(),
+        transport_postmessage_invoked: new Set(),
+        iframe_remount: new Set(),
+      },
+      stage_counts: {},
+      production_iframes_peak: 0,
+      minimal_iframes_peak: 0,
+      _syncCounts: function () {
+        const u = this.unique;
+        this.stage_counts = {
+          timer_armed: u.timer_armed.size,
+          browser_deadline_crossed: u.browser_deadline_crossed.size,
+          setComponentValue_invoked: u.setComponentValue_invoked.size,
+          transport_postmessage_invoked: u.transport_postmessage_invoked.size,
+          iframe_remount: u.iframe_remount.size,
+          component_script_loaded: u.component_script_loaded ? u.component_script_loaded.size : 0,
+        };
+      },
+    };
+    bag.unique.component_script_loaded = new Set();
+    window[PEAK] = bag;
+    function noteChainStage(el, stage) {
+      const iid = el.__solo_p6_iframe_id || (el.__solo_p6_iframe_id = "if-" + Math.random().toString(36).slice(2, 11));
+      bag.unique.iframe_instance.add(iid);
+      const chain = el.getAttribute("data-chain") || "";
+      const ord = chain.split("|").filter(function (s) { return s.trim() === stage; }).length;
+      const eid = iid + ":" + stage + ":" + ord;
+      if (stage === "timer_armed") bag.unique.timer_armed.add(eid);
+      else if (stage === "browser_deadline_crossed") bag.unique.browser_deadline_crossed.add(eid);
+      else if (stage === "iframe_remount") bag.unique.iframe_remount.add(eid);
+      else if (stage === "component_script_loaded") bag.unique.component_script_loaded.add(eid);
+      bag._syncCounts();
+    }
+    function scanFrames() {
+      let prod = 0;
+      let min = 0;
+      for (const f of document.querySelectorAll("iframe")) {
+        try {
+          const doc = f.contentDocument;
+          if (!doc) continue;
+          if (doc.querySelector("#solo-expire-client")) {
+            prod += 1;
+            const el = doc.querySelector("#solo-expire-client");
+            const iid = el.__solo_p6_iframe_id || (el.__solo_p6_iframe_id = "if-" + Math.random().toString(36).slice(2, 11));
+            bag.unique.iframe_instance.add(iid);
+            const chain = el.getAttribute("data-chain") || "";
+            const prev = el.__solo_p6_last_chain || "";
+            if (chain !== prev) {
+              const suffix = chain.startsWith(prev) ? chain.slice(prev.length) : chain;
+              for (const part of suffix.split("|")) {
+                const s = part.trim();
+                if (!s) continue;
+                if (s === "timer_armed" || s === "browser_deadline_crossed" || s === "iframe_remount" || s === "component_script_loaded") {
+                  noteChainStage(el, s);
+                }
+              }
+              el.__solo_p6_last_chain = chain;
+            }
+          }
+          if (doc.querySelector("#repro-client")) min += 1;
+        } catch (e) {}
+      }
+      bag.production_iframes_peak = Math.max(bag.production_iframes_peak, prod);
+      bag.minimal_iframes_peak = Math.max(bag.minimal_iframes_peak, min);
+      bag._syncCounts();
+    }
+    setInterval(scanFrames, 120);
+    scanFrames();
+  }
+})();
+"""
+
+
+def install_p6_harness_init(context: Any) -> None:
+    context.add_init_script(P6_HARNESS_INIT_SCRIPT)
+
+
+def collect_p6_parent_messages(page: Any) -> list[dict[str, Any]]:
+    try:
+        raw = page.evaluate(
+            """() => {
+              const out = [];
+              function walk(win, depth) {
+                if (!win || depth > 16) return;
+                try {
+                  const bag = win.__solo_p6_parent_capture_v2;
+                  if (bag && Array.isArray(bag.rows)) out.push(...bag.rows);
+                } catch (e) {}
+                try {
+                  for (let i = 0; i < win.frames.length; i++) walk(win.frames[i], depth + 1);
+                } catch (e2) {}
+              }
+              walk(window.top, 0);
+              return out.slice(-120);
+            }"""
+        )
+        return raw if isinstance(raw, list) else []
+    except Exception:
+        return []
+
+
+def collect_p6_browser_peak(page: Any) -> dict[str, Any]:
+    try:
+        raw = page.evaluate(
+            """() => {
+              const out = { stage_counts: {}, production_iframes_peak: 0, minimal_iframes_peak: 0 };
+              function walk(win, depth) {
+                if (!win || depth > 16) return;
+                try {
+                  const bag = win.__solo_p6_browser_peak_v2;
+                  if (bag && bag.stage_counts) {
+                    for (const [k, v] of Object.entries(bag.stage_counts)) {
+                      out.stage_counts[k] = Math.max(out.stage_counts[k] || 0, Number(v) || 0);
+                    }
+                    if (bag.unique) {
+                      out.unique_iframe_instances = Math.max(out.unique_iframe_instances || 0, bag.unique.iframe_instance ? bag.unique.iframe_instance.size : 0);
+                    }
+                    out.production_iframes_peak = Math.max(out.production_iframes_peak, bag.production_iframes_peak || 0);
+                    out.minimal_iframes_peak = Math.max(out.minimal_iframes_peak, bag.minimal_iframes_peak || 0);
+                  }
+                } catch (e) {}
+                try {
+                  for (let i = 0; i < win.frames.length; i++) walk(win.frames[i], depth + 1);
+                } catch (e2) {}
+              }
+              walk(window.top, 0);
+              return out;
+            }"""
+        )
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def merge_browser_peak_into_repro(repro: dict[str, Any], peak: dict[str, Any]) -> dict[str, Any]:
+    out = dict(repro)
+    sc = dict(out.get("stage_counts") or {})
+    peak_sc = dict(peak.get("stage_counts") or {})
+    for k, v in peak_sc.items():
+        sc[k] = int(v or 0)
+    out["stage_counts"] = sc
+    out["production_iframes"] = max(int(out.get("production_iframes") or 0), int(peak.get("production_iframes_peak") or 0))
+    out["minimal_iframes"] = max(int(out.get("minimal_iframes") or 0), int(peak.get("minimal_iframes_peak") or 0))
+    if peak.get("unique_iframe_instances") is not None:
+        out["unique_iframe_instances"] = int(peak.get("unique_iframe_instances") or 0)
+    return out
+
+
+def dedupe_parent_rows_by_fingerprint(rows: list[dict[str, Any]], *, expected_token: str = "") -> list[dict[str, Any]]:
+    token_prefix = expected_token.split("|")[0] if expected_token else ""
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for r in rows:
+        if token_prefix:
+            preview = str(r.get("value_preview") or "")
+            if token_prefix and not preview.startswith(token_prefix):
+                continue
+        fp = str(r.get("fingerprint") or "")
+        if not fp:
+            fp = "|".join(
+                [
+                    str(r.get("value_preview") or ""),
+                    str(r.get("event_ts") or r.get("ts") or ""),
+                    str(r.get("source_href") or r.get("origin") or ""),
+                ]
+            )
+        if fp in seen:
+            continue
+        seen.add(fp)
+        unique.append(r)
+    unique.sort(key=lambda r: int(r.get("ts") or 0))
+    return unique
+
+
 def build_cell_record(
     *,
     cell: str,

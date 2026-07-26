@@ -529,6 +529,13 @@ ML_DERIVED_FEATURE_STATS = ["PA_est", "BB_rate", "K_rate", "SB_rate", "XBH", "XB
 st.set_page_config(page_title="⚾ Daniel Cohen Baseball Explorer ⚾", layout="wide")
 
 try:
+    from live_draft_solo_p6_diag_observer import try_serve_p6_diag_observer
+
+    try_serve_p6_diag_observer(st)
+except ImportError:
+    pass
+
+try:
     from live_draft_solo_delivery_diag import enable_delivery_diag_from_query
 
     enable_delivery_diag_from_query(st, st.session_state)
@@ -549,12 +556,10 @@ try:
     from live_draft_solo_parity_p6_persistent_diag import (
         enable_p6_persistent_diag_from_query,
         on_ultra_early_script_run,
-        render_p6_persistent_probe,
     )
 
     enable_p6_persistent_diag_from_query(st, st.session_state)
     on_ultra_early_script_run(st, st.session_state)
-    render_p6_persistent_probe(st, st.session_state)
 except ImportError:
     pass
 

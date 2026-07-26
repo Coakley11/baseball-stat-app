@@ -235,6 +235,13 @@ def render_persistent_wake_lifecycle_probe(
 
 def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key: str) -> None:
     try:
+        from live_draft_solo_parity_p6_persistent_diag import p6_persistent_diag_active, resolve_p6_run_id
+
+        if p6_persistent_diag_active(st, session):
+            resolve_p6_run_id(st, session)
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_parity_p6_persistent_diag import (
             p6_persistent_diag_active,
             record_p6_callback_entry,
@@ -246,6 +253,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                 raw=raw,
                 widget_key=key,
                 expected_token=str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or ""),
+                st=st,
             )
     except ImportError:
         pass
@@ -307,7 +315,9 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                 append_p6_ledger_row(
                     session,
                     "ownership_claim_attempted",
+                    st=st,
                     expected_token=str(token or "")[:400],
+                    actual_token=str(token or "")[:400],
                     delivery_via=delivery_via,
                     widget_key=key,
                 )
@@ -342,9 +352,10 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                     reject_code=reject_code if not skip_claim else "",
                     token=token,
                     delivery_via=delivery_via,
+                    st=st,
                 )
                 if claimed:
-                    note_p6_delivery_completed(session, token=token)
+                    note_p6_delivery_completed(session, token=token, st=st)
         except ImportError:
             pass
         try:
@@ -535,13 +546,23 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
         if parity_p6_pick_processing_disabled(session):
             session[SOLO_SKIP_LATE_FLUSH_TOKEN_KEY] = token
             try:
-                from live_draft_solo_parity_p6_persistent_diag import record_p6_callback_return
+                from live_draft_solo_parity_p6_persistent_diag import (
+                    record_p6_callback_return,
+                    record_p6_diagnostic_pick_skipped,
+                )
 
+                record_p6_diagnostic_pick_skipped(
+                    session,
+                    reason="parity_p6_pick_processing_disabled",
+                    token=str(token or ""),
+                    st=st,
+                )
                 record_p6_callback_return(
                     session,
                     reason="parity_p6_pick_processing_disabled",
                     pick_processing_skipped=True,
                     raw=raw,
+                    st=st,
                 )
             except ImportError:
                 pass
@@ -647,6 +668,23 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
     """Mount/update the Solo wake at LDR page entry. Never st.stop(). Returns True when handled."""
     if not _should_mount_persistent_wake(st, session):
         return False
+
+    try:
+        from live_draft_solo_parity_p6_persistent_diag import (
+            p6_persistent_diag_active,
+            record_p6_token_latched,
+            resolve_p6_run_id,
+        )
+
+        if p6_persistent_diag_active(st, session):
+            resolve_p6_run_id(st, session)
+            if not session.get("_solo_p6_token_latched_recorded"):
+                token = str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or "")
+                if token.startswith("PARITY|"):
+                    record_p6_token_latched(session, token=token, st=st)
+                    session["_solo_p6_token_latched_recorded"] = True
+    except ImportError:
+        pass
 
     try:
         from live_draft_solo_transport_boundary_diag import (
