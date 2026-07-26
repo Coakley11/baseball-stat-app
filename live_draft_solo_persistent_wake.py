@@ -479,20 +479,30 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
 
     try:
         from live_draft_solo_transport_boundary_diag import (
+            bootstrap_transport_diagnostics,
             mount_transport_minimal_control,
+            paired_transport_minimal_control_enabled,
             record_production_component_declaration,
             record_transport_python_run,
             render_transport_boundary_probe,
             render_transport_parent_listener,
             transport_boundary_active,
+            transport_isolated_mode,
+            mount_transport_isolated_minimal_only,
         )
     except ImportError:
+        bootstrap_transport_diagnostics = lambda *a, **k: None  # type: ignore[assignment,misc]
         transport_boundary_active = lambda _s, _sess: False  # type: ignore[assignment,misc]
         render_transport_parent_listener = lambda _st: None  # type: ignore[assignment,misc]
         record_transport_python_run = lambda *a, **k: None  # type: ignore[assignment,misc]
         record_production_component_declaration = lambda *a, **k: None  # type: ignore[assignment,misc]
         mount_transport_minimal_control = lambda *a, **k: None  # type: ignore[assignment,misc]
         render_transport_boundary_probe = lambda *a, **k: None  # type: ignore[assignment,misc]
+        transport_isolated_mode = lambda _s, _sess: ""  # type: ignore[assignment,misc]
+        mount_transport_isolated_minimal_only = lambda *a, **k: None  # type: ignore[assignment,misc]
+        paired_transport_minimal_control_enabled = lambda *a, **k: False  # type: ignore[assignment,misc]
+
+    bootstrap_transport_diagnostics(st, session)
 
     from live_draft_solo_delivery_diag import render_parent_postmessage_listener
 
@@ -500,14 +510,11 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
     if transport_boundary_active(st, session):
         render_transport_parent_listener(st)
 
-    isolated = ""
-    try:
-        from live_draft_solo_transport_boundary_diag import mount_transport_isolated_minimal_only, transport_isolated_mode
-
-        isolated = transport_isolated_mode(st, session)
-    except ImportError:
-        mount_transport_isolated_minimal_only = lambda *a, **k: None  # type: ignore[assignment,misc]
-        transport_isolated_mode = lambda _s, _sess: ""  # type: ignore[assignment,misc]
+    isolated = transport_isolated_mode(st, session)
+    if isolated == "production":
+        session.pop("_solo_persistent_wake_flush_disabled", None)
+    elif isolated == "minimal":
+        session["_solo_persistent_wake_flush_disabled"] = True
 
     from solo_countdown_wake_micro_core import render_micro_isolation_once
 
@@ -598,6 +605,60 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         )
         return True
 
+    if isolated == "production":
+        _ = render_micro_isolation_once(
+            st,
+            session,
+            placement="PROD",
+            location="ldr_page_entry_early_persistent",
+            draft_id=did,
+            route=True,
+            persistent=True,
+            session_prefix=SOLO_PERSISTENT_WAKE_SESSION_PREFIX,
+            widget_key=key,
+            production_room=props_room,
+            production_expire_token=expire_token,
+            production_actionable=actionable,
+            production_delivery_only=delivery_only,
+            deliver_callback=_production_deliver_callback,
+            suppress_immediate_session_on_change=True,
+            chain_persist_key=persist_key,
+        )
+        if transport_boundary_active(st, session):
+            from live_draft_solo_transport_boundary_diag import PRODUCTION_CALLBACK_FLAG
+
+            session[PRODUCTION_CALLBACK_FLAG] = True
+        comp_return = st.session_state.get(key) if key in st.session_state else None
+        record_production_component_declaration(
+            st,
+            session,
+            widget_key=key,
+            expire_token=expire_token,
+            actionable=actionable,
+            component_return=comp_return,
+            default_value=None,
+            mount_location="ldr_page_entry_isolated_production",
+        )
+        record_transport_python_run(
+            st,
+            session,
+            production_key=key,
+            expected_token=expire_token,
+            phase="post_mount",
+            on_change_registered=True,
+            expected_minimal_token="",
+        )
+        render_transport_boundary_probe(st, session)
+        render_persistent_wake_lifecycle_probe(
+            st,
+            session,
+            widget_key=key,
+            actionable=actionable,
+            phase=phase,
+            expire_token=expire_token,
+        )
+        return True
+
     _ = render_micro_isolation_once(
         st,
         session,
@@ -632,7 +693,7 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         mount_location="ldr_page_entry_early_persistent",
     )
     if actionable and expire_token and expire_token != SOLO_INERT_EXPIRE_TOKEN:
-        if isolated != "production":
+        if paired_transport_minimal_control_enabled(st, session, isolated=isolated):
             mount_transport_minimal_control(
                 st,
                 session,

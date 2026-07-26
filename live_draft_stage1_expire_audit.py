@@ -39,6 +39,13 @@ CALLBACK_SOURCES = frozenset(
 
 def stage1_expire_audit_active(st: Any | None, session: dict[str, Any]) -> bool:
     try:
+        from live_draft_solo_transport_boundary_diag import transport_logging_active
+
+        if transport_logging_active(st, session):
+            return True
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_component_diagnostics import solo_component_diag_enabled
 
         return solo_component_diag_enabled(st, session)

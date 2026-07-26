@@ -15,10 +15,16 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
-REQUIRED_CLOUD_SHA = "2765062"
+REQUIRED_CLOUD_SHA = ""  # filled from deploy_commit.txt at runtime
 OUT_SUMMARY = ROOT / "data" / "stage1_transport_isolated_summary.json"
 OUT_A = ROOT / "data" / "stage1_transport_isolated_test_a.json"
 OUT_B = ROOT / "data" / "stage1_transport_isolated_test_b.json"
+
+
+def _required_cloud_sha() -> str:
+    line = (ROOT / "deploy_commit.txt").read_text(encoding="utf-8").splitlines()[0]
+    return line.split("#", 1)[0].strip().lower()[:7]
+
 
 from playwright_daniel_auth_session import (  # noqa: E402
     STORAGE_PATH,
@@ -47,20 +53,16 @@ from stage1_frame_transport_probe import (  # noqa: E402
 
 
 def isolated_test_url(mode: str) -> str:
-    """Separate-room URLs — production-only omits transport diag pair on build 2765062."""
+    """Isolated component + transport probe without paired minimal control."""
+    params: dict[str, str] = {
+        "active_page": "Live Draft Room",
+        "solo_diag_timer": "10",
+        "solo_transport_probe": "1",
+    }
     if mode == "minimal":
-        params = {
-            "active_page": "Live Draft Room",
-            "solo_diag_timer": "10",
-            "solo_component_diag": "1",
-            "solo_transport_isolated": "minimal",
-        }
+        params["solo_transport_isolated"] = "minimal"
     elif mode == "production":
-        # Omit solo_component_diag on Cloud 2765062 so transport minimal control is not mounted.
-        params = {
-            "active_page": "Live Draft Room",
-            "solo_diag_timer": "10",
-        }
+        params["solo_transport_isolated"] = "production"
     else:
         raise ValueError(mode)
     q = urlencode(params)
@@ -209,6 +211,14 @@ def wait_single_component_expire(page, *, mode: str, timeout_s: float = 55.0) ->
 
     python_reached = bool(minimal_on_change if mode == "minimal" else (accepted or prod_on_change))
 
+    iframe_entries: list[dict[str, Any]] = []
+    for fr in iframe_final.get("frames") or []:
+        if not isinstance(fr, dict):
+            continue
+        for block in fr.get("logs") or []:
+            if isinstance(block, dict):
+                iframe_entries.extend(block.get("entries") or [])
+
     classification = classify_isolated_result(
         mode=mode,
         iframe_sent="component_value_sent" in set(iframe_final.get("merged_stages") or []),
@@ -218,16 +228,31 @@ def wait_single_component_expire(page, *, mode: str, timeout_s: float = 55.0) ->
         callback_count=len(accepted),
         minimal_on_change=minimal_on_change,
         confounded=(prod_frames > 0 and min_frames > 0),
+        transport_log=log_tail,
+        immediate_messages=immediate,
+        iframe_entries=iframe_entries,
     )
 
     token_preview = ""
     if expected_msgs:
         token_preview = str(expected_msgs[0].get("value_preview") or "")
 
+    pick_commits = list(audit_final.get("pick_commits") or [])
+    post_send_snapshot = next(
+        (r for r in reversed(log_tail) if isinstance(r, dict) and r.get("stage") == "python_post_send_snapshot"),
+        {},
+    )
+    component_iframes: list[dict[str, Any]] = []
+    for f in topo.get("frames") or []:
+        if f.get("has_production_countdown"):
+            component_iframes.append({"role": "production", "url": f.get("sanitized_url")})
+        if f.get("has_minimal_control"):
+            component_iframes.append({"role": "minimal", "url": f.get("sanitized_url")})
+
     return {
         "mode": mode,
         "observation_duration_s": round(time.time() - t0, 1),
-        "cloud_sha_required": REQUIRED_CLOUD_SHA,
+        "cloud_sha_required": _required_cloud_sha(),
         "streamlit_session_id": _streamlit_session_from_probe(page),
         "script_run_before_timer_arm": script_run_before_arm,
         "script_run_immediately_before_send": script_run_before_send,
@@ -253,6 +278,22 @@ def wait_single_component_expire(page, *, mode: str, timeout_s: float = 55.0) ->
         "callback_accepted_count": len(accepted),
         "classification": classification,
         "first_missing_stage": classification.get("first_missing_stage") or "",
+        "artifact_path": str(OUT_A if mode == "minimal" else OUT_B),
+        "component_iframe_identities": component_iframes,
+        "component_iframe_count": len(component_iframes),
+        "earliest_post_send_session_state": {
+            "production_key": post_send_snapshot.get("production_key") or post_send_snapshot.get("widget_key"),
+            "production_raw": post_send_snapshot.get("production_raw_value") or post_send_snapshot.get("raw_value"),
+            "minimal_key": post_send_snapshot.get("minimal_key"),
+            "minimal_raw": post_send_snapshot.get("minimal_raw_value"),
+        },
+        "component_return_value": post_send_snapshot.get("production_component_return")
+        or post_send_snapshot.get("minimal_component_return"),
+        "on_change_callback_count": int(post_send_snapshot.get("minimal_callback_count") or 0)
+        + int(post_send_snapshot.get("production_callback_count") or 0),
+        "pick_commits": pick_commits if mode == "production" else [],
+        "audit_callbacks_accepted": accepted,
+        "audit_callbacks_rejected": [c for c in callbacks if c.get("reject_code")],
         "samples_tail": samples[-6:],
         "client_send_ts_ms": send_ts_ms,
     }
@@ -268,6 +309,9 @@ def classify_isolated_result(
     callback_count: int,
     minimal_on_change: bool,
     confounded: bool,
+    transport_log: list[dict[str, Any]],
+    immediate_messages: list[dict[str, Any]],
+    iframe_entries: list[dict[str, Any]],
 ) -> dict[str, Any]:
     if confounded:
         return {
@@ -275,6 +319,21 @@ def classify_isolated_result(
             "first_missing_stage": "",
             "note": "Both component iframes present; not an isolated run.",
         }
+    try:
+        from live_draft_solo_transport_boundary_diag import classify_transport_stage
+
+        stage = classify_transport_stage(
+            iframe_entries=iframe_entries,
+            parent_entries=[],
+            transport_log=transport_log,
+            callback_count=callback_count if mode == "production" else (1 if minimal_on_change else 0),
+            iframe_has_component_sent=iframe_sent,
+            immediate_parent_messages=immediate_messages,
+        )
+        if stage:
+            return {"label": stage, "first_missing_stage": stage, "note": f"Transport stage {stage}."}
+    except ImportError:
+        pass
     if not iframe_sent:
         return {"label": "A", "first_missing_stage": "A", "note": "No child postMessage path completed."}
     if not immediate_parent_has:
@@ -316,12 +375,13 @@ def run_one_test(page, *, mode: str, preflight: dict[str, Any]) -> dict[str, Any
 
     sha = scrape_deploy_build(page) or str(preflight.get("cloud_sha") or "")
     sha_short = str(sha).lower()[:7]
-    if sha_short != REQUIRED_CLOUD_SHA:
+    req = _required_cloud_sha()
+    if sha_short != req:
         return {
             "aborted": True,
             "reason": "cloud_sha_mismatch",
             "cloud_sha": sha_short,
-            "required": REQUIRED_CLOUD_SHA,
+            "required": req,
             "mode": mode,
         }
 
@@ -354,14 +414,11 @@ def main() -> int:
 
     from playwright.sync_api import sync_playwright
 
+    req = _required_cloud_sha()
     summary: dict[str, Any] = {
         "started_at": time.time(),
-        "required_cloud_sha": REQUIRED_CLOUD_SHA,
-        "build_label": "baseball-dev-2765062",
-        "note": (
-            "Test A/B require ?solo_transport_isolated= on Cloud; build 2765062 includes isolation "
-            "only after that commit is deployed. deploy_commit.txt unchanged — verify live SHA."
-        ),
+        "required_cloud_sha": req,
+        "build_label": f"baseball-dev-{req}",
     }
 
     with sync_playwright() as p:

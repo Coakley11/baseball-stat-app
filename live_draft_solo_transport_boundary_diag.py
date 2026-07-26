@@ -18,9 +18,79 @@ MINIMAL_CALLBACK_FLAG = "_solo_transport_minimal_callback_registered"
 PRODUCTION_CALLBACK_FLAG = "_solo_transport_production_callback_registered"
 PARENT_LS_KEY = "solo_transport_parent_log"
 IFRAME_TRANSPORT_LS_KEY = "solo_transport_iframe_log"
+SOLO_TRANSPORT_PROBE_SESSION_KEY = "_solo_transport_probe_enabled"
 
 
 TRANSPORT_ISOLATED_SESSION_KEY = "_solo_transport_isolated_mode"
+
+
+def _qp_flag(st: Any | None, name: str) -> bool:
+    if st is None:
+        return False
+    try:
+        from live_draft_cloud_diagnostics import _qp_flag as flag
+
+        return flag(st, name)
+    except ImportError:
+        return False
+
+
+def bootstrap_transport_diagnostics(st: Any | None, session: dict[str, Any]) -> None:
+    """Read ?solo_transport_probe=1 once per session (independent of solo_component_diag)."""
+    try:
+        from live_draft_solo_component_diagnostics import bootstrap_solo_component_diag
+
+        bootstrap_solo_component_diag(st, session)
+    except ImportError:
+        pass
+    if session.get(SOLO_TRANSPORT_PROBE_SESSION_KEY):
+        return
+    if st is not None and _qp_flag(st, "solo_transport_probe"):
+        session[SOLO_TRANSPORT_PROBE_SESSION_KEY] = True
+
+
+def transport_probe_enabled(st: Any | None, session: dict[str, Any]) -> bool:
+    bootstrap_transport_diagnostics(st, session)
+    return bool(session.get(SOLO_TRANSPORT_PROBE_SESSION_KEY))
+
+
+def transport_logging_active(st: Any | None, session: dict[str, Any]) -> bool:
+    """Python transport probe + script-run logging (does not imply minimal control mount)."""
+    if transport_probe_enabled(st, session):
+        return True
+    try:
+        from live_draft_solo_component_diagnostics import solo_component_diag_enabled
+
+        return solo_component_diag_enabled(st, session)
+    except ImportError:
+        return bool(session.get("_solo_component_diag_enabled"))
+
+
+def transport_boundary_active(st: Any | None, session: dict[str, Any]) -> bool:
+    """Alias — logging/probe paths use this name historically."""
+    return transport_logging_active(st, session)
+
+
+def paired_transport_minimal_control_enabled(
+    st: Any | None, session: dict[str, Any], *, isolated: str
+) -> bool:
+    """Paired production+minimal transport control (legacy Stage 1A boundary pair)."""
+    if isolated in ("minimal", "production"):
+        return False
+    if transport_probe_enabled(st, session):
+        try:
+            from live_draft_solo_component_diagnostics import solo_component_diag_enabled
+
+            if not solo_component_diag_enabled(st, session):
+                return False
+        except ImportError:
+            return False
+    try:
+        from live_draft_solo_component_diagnostics import solo_component_diag_enabled
+
+        return solo_component_diag_enabled(st, session)
+    except ImportError:
+        return bool(session.get("_solo_component_diag_enabled"))
 
 
 def _qp_get(st: Any | None, name: str) -> str:
@@ -35,12 +105,11 @@ def _qp_get(st: Any | None, name: str) -> str:
 
 
 def transport_isolated_mode(st: Any | None, session: dict[str, Any]) -> str:
-    """Query ?solo_transport_isolated=minimal|production (requires solo_component_diag=1)."""
+    """Query ?solo_transport_isolated=minimal|production (works with solo_transport_probe=1 alone)."""
+    bootstrap_transport_diagnostics(st, session)
     cached = str(session.get(TRANSPORT_ISOLATED_SESSION_KEY) or "").strip().lower()
     if cached in ("minimal", "production"):
         return cached
-    if not transport_boundary_active(st, session):
-        return ""
     raw = _qp_get(st, "solo_transport_isolated").strip().lower()
     if raw in ("minimal", "production"):
         session[TRANSPORT_ISOLATED_SESSION_KEY] = raw
@@ -86,15 +155,6 @@ def mount_transport_isolated_minimal_only(
             component_name="minimal_wake_repro",
             isolated_mode="minimal",
         )
-
-
-def transport_boundary_active(st: Any | None, session: dict[str, Any]) -> bool:
-    try:
-        from live_draft_solo_component_diagnostics import solo_component_diag_enabled
-
-        return solo_component_diag_enabled(st, session)
-    except ImportError:
-        return bool(session.get("_solo_component_diag_enabled"))
 
 
 def bump_transport_script_run(session: dict[str, Any]) -> int:
