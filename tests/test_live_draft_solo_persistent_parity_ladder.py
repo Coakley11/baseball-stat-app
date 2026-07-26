@@ -38,3 +38,18 @@ def test_build_parity_token_format() -> None:
     assert abs(deadline - float(token.split("|")[-1])) < 0.01
     assert deadline > 0
     assert SYNTHETIC_SECONDS == 10
+
+
+def test_p6_token_is_production_format() -> None:
+    from live_draft_solo_persistent_parity_ladder import (
+        PARITY_CONTROL_KEY,
+        ensure_p6_latched_production_token,
+    )
+
+    session: dict = {PARITY_CONTROL_KEY: "P6"}
+    token, room = ensure_p6_latched_production_token(session)
+    assert token.startswith("PARITY|")
+    assert "WIRING_" not in token
+    assert str(room.get("draft_room_id")) == "PARITY"
+    token2, _ = ensure_p6_latched_production_token(session)
+    assert token2 == token

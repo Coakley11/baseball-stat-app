@@ -235,6 +235,19 @@ def render_persistent_wake_lifecycle_probe(
 
 def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key: str) -> None:
     try:
+        from live_draft_solo_persistent_parity_ladder import parity_p6_active, record_p6_production_callback_event
+
+        if parity_p6_active(session):
+            record_p6_production_callback_event(
+                session,
+                "callback_entry",
+                raw=raw,
+                widget_key=key,
+                expected_token=str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or ""),
+            )
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_transport_boundary_diag import record_transport_python_run, transport_boundary_active
 
         if transport_boundary_active(st, session):
@@ -283,6 +296,22 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             token_already_consumed=not claimed and reject_code in ("already_consumed", "callback_source_not_allowed"),
             delivery_claimed=claimed,
         )
+        try:
+            from live_draft_solo_persistent_parity_ladder import parity_p6_active, record_p6_production_callback_event
+
+            if parity_p6_active(session):
+                record_p6_production_callback_event(
+                    session,
+                    "ownership_claim",
+                    raw=raw,
+                    widget_key=key,
+                    delivery_via=delivery_via,
+                    expected_token=token,
+                    claimed=claimed,
+                    reject_code=reject_code if not skip_claim else "",
+                )
+        except ImportError:
+            pass
         if not claimed:
             try:
                 from live_draft_solo_expire_chain import note_solo_expire_chain
@@ -300,6 +329,22 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             if reject_code not in ("empty_raw",):
                 mark_wake_token_rejected(session, token, reject_code)
                 clear_persistent_wake_widget_value(st, session, token)
+            try:
+                from live_draft_solo_persistent_parity_ladder import parity_p6_active, record_p6_production_callback_event
+
+                if parity_p6_active(session):
+                    record_p6_production_callback_event(
+                        session,
+                        "callback_return",
+                        raw=raw,
+                        widget_key=key,
+                        expected_token=token,
+                        claimed=False,
+                        reject_code=reject_code,
+                        return_reason="claim_rejected",
+                    )
+            except ImportError:
+                pass
             return
     except ImportError:
         claimed = True
@@ -419,6 +464,35 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                 extra={"reason": "no_live_room"},
             )
         return
+    try:
+        from live_draft_solo_persistent_parity_ladder import parity_p6_pick_processing_disabled, record_p6_production_callback_event
+
+        if parity_p6_pick_processing_disabled(session):
+            session[SOLO_SKIP_LATE_FLUSH_TOKEN_KEY] = token
+            record_p6_production_callback_event(
+                session,
+                "callback_return",
+                raw=raw,
+                widget_key=key,
+                delivery_via=delivery_via,
+                expected_token=token,
+                claimed=True,
+                pick_processing_disabled=True,
+                return_reason="parity_p6_pick_processing_disabled",
+            )
+            if boundary_diag_enabled(session):
+                record_callback_boundary(
+                    session,
+                    "persistent_wake_deliver_callback_return",
+                    st=st,
+                    token=str(token or "")[:400],
+                    phase="callback_return",
+                    function="_production_deliver_callback",
+                    extra={"reason": "parity_p6_pick_disabled"},
+                )
+            return
+    except ImportError:
+        pass
     if boundary_diag_enabled(session) and trace_helper is not None:
         from functools import partial
 

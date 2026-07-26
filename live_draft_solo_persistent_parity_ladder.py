@@ -25,6 +25,9 @@ PARITY_MOUNTED_KEY = "_solo_parity_ladder_mounted"
 PARITY_SKIP_CLAIM_KEY = "_solo_parity_skip_delivery_claim"
 PARITY_TRANSPORT_ONLY_KEY = "_solo_parity_transport_only_deliver"
 PARITY_HANDLED_WAKE_KEY = "_solo_parity_handled_persistent_wake"
+PARITY_P6_DISABLE_PICK_KEY = "_solo_parity_p6_disable_pick_processing"
+PARITY_P6_CALLBACK_SEQ_KEY = "_solo_parity_p6_production_callback_seq"
+PARITY_P6_TOKEN_LATCHED_KEY = "_solo_parity_p6_token_latched"
 SYNTHETIC_SECONDS = 10
 VALID = frozenset({"P0", "P1", "P2", "P3", "P4", "P5", "P6"})
 
@@ -83,6 +86,119 @@ def _synthetic_room(*, deadline: float) -> dict[str, Any]:
         "current_pick_index": 0,
         "timer_deadline": deadline,
         "config": {"draft_setup_mode": "solo", "timer_seconds": SYNTHETIC_SECONDS},
+    }
+
+
+def parity_p6_active(session: dict[str, Any]) -> bool:
+    return str(session.get(PARITY_CONTROL_KEY) or "").strip().upper() == "P6"
+
+
+def parity_p6_pick_processing_disabled(session: dict[str, Any]) -> bool:
+    return parity_p6_active(session) and bool(session.get(PARITY_P6_DISABLE_PICK_KEY))
+
+
+def ensure_p6_latched_production_token(session: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """One PARITY production token before any mount — no WIRING_P6 intermediate."""
+    if session.get(PARITY_P6_TOKEN_LATCHED_KEY):
+        synth = session.get("live_draft_room")
+        token = str(session.get("_solo_parity_expected_token") or session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or "")
+        if isinstance(synth, dict) and token:
+            return token, synth
+    deadline = time.time() + float(SYNTHETIC_SECONDS)
+    synth = _synthetic_room(deadline=deadline)
+    session["live_draft_room"] = synth
+    session["live_draft_setup_mode"] = "solo"
+    session.pop("active_shared_draft_room_code", None)
+    from solo_countdown_component import build_solo_expire_token
+
+    token = build_solo_expire_token(synth)
+    session[PARITY_P6_TOKEN_LATCHED_KEY] = True
+    session["_solo_parity_expected_token"] = token
+    session[SOLO_PERSISTENT_WAKE_TOKEN_KEY] = token
+    session["_solo_parity_p6_deadline"] = deadline
+    return token, synth
+
+
+def record_p6_production_callback_event(
+    session: dict[str, Any],
+    stage: str,
+    *,
+    raw: Any = None,
+    widget_key: str = "",
+    delivery_via: str = "",
+    expected_token: str = "",
+    claimed: bool | None = None,
+    reject_code: str = "",
+    pick_processing_disabled: bool | None = None,
+    return_reason: str = "",
+) -> None:
+    if not parity_p6_active(session):
+        return
+    live = session.get("live_draft_room")
+    room_id = ""
+    room_status = ""
+    pick = None
+    deadline = None
+    if isinstance(live, dict):
+        room_id = str(live.get("draft_room_id") or live.get("draft_id") or "")
+        room_status = str(live.get("status") or "")
+        pick = live.get("current_pick_index")
+        deadline = live.get("timer_deadline")
+        try:
+            from live_draft_timer_logic import live_draft_timer_deadline
+
+            deadline = live_draft_timer_deadline(live) or deadline
+        except ImportError:
+            pass
+    owners = session.get("_solo_token_delivery_owner")
+    owner_for_expected = ""
+    if isinstance(owners, dict) and expected_token:
+        owner_for_expected = str(owners.get(expected_token) or "")
+    row = {
+        "ts": time.time(),
+        "stage": stage,
+        "widget_key": widget_key,
+        "actual_raw": repr(raw)[:400] if raw is not None else "",
+        "expected_token": expected_token or str(session.get("_solo_parity_expected_token") or "")[:400],
+        "room_id": room_id,
+        "room_status": room_status,
+        "pick_index": pick,
+        "timer_deadline": deadline,
+        "delivery_via": delivery_via,
+        "ownership_claim_attempted": claimed is not None,
+        "ownership_claim_result": claimed,
+        "reject_code": reject_code or "",
+        "pick_processing_disabled": pick_processing_disabled,
+        "callback_return_reason": return_reason,
+        "delivery_owner_for_token": owner_for_expected,
+    }
+    seq = list(session.get(PARITY_P6_CALLBACK_SEQ_KEY) or [])
+    seq.append(row)
+    session[PARITY_P6_CALLBACK_SEQ_KEY] = seq[-40:]
+    _append_log(session, f"p6_production_{stage}", **{k: v for k, v in row.items() if k not in ("ts", "stage")})
+
+
+def p6_production_evidence(session: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from live_draft_solo_transport_boundary_diag import PRODUCTION_CALLBACK_FLAG
+
+        prod_count = int(session.get(f"{PRODUCTION_CALLBACK_FLAG}_count") or 0)
+        prod_registered = bool(session.get(PRODUCTION_CALLBACK_FLAG))
+    except ImportError:
+        prod_count = 0
+        prod_registered = False
+    try:
+        from live_draft_stage1_expire_audit import stage1_audit_summary
+
+        stage1 = stage1_audit_summary(session)
+    except ImportError:
+        stage1 = {}
+    return {
+        "production_callback_flag_count": prod_count,
+        "production_callback_registered": prod_registered,
+        "stage1_audit": stage1,
+        "p6_callback_sequence": list(session.get(PARITY_P6_CALLBACK_SEQ_KEY) or []),
+        "pick_processing_disabled": parity_p6_pick_processing_disabled(session),
     }
 
 
@@ -200,18 +316,10 @@ def _mount_b2_style(
 def _run_p6_persistent_wake(st: Any, session: dict[str, Any], room: Any, *, key: str) -> str:
     from live_draft_solo_persistent_wake import try_solo_persistent_wake_ldr_entry
 
-    deadline = time.time() + float(SYNTHETIC_SECONDS)
-    synth = _synthetic_room(deadline=deadline)
-    session["live_draft_room"] = synth
-    session["live_draft_setup_mode"] = "solo"
-    session.pop("active_shared_draft_room_code", None)
-    from solo_countdown_component import build_solo_expire_token
-
-    token = build_solo_expire_token(synth)
-    session[SOLO_PERSISTENT_WAKE_TOKEN_KEY] = token
-    session["_solo_parity_expected_token"] = token
+    token, synth = ensure_p6_latched_production_token(session)
     session[SOLO_PERSISTENT_WAKE_LATCH_KEY] = True
     session["_solo_expire_owner"] = "wake"
+    session[PARITY_P6_DISABLE_PICK_KEY] = True
     session.pop("_solo_persistent_wake_flush_disabled", None)
     session[PARITY_HANDLED_WAKE_KEY] = True
     _snapshot_session(st, session, key, "before_mount")
@@ -265,12 +373,16 @@ def try_parity_ladder_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
     session.pop(PARITY_SKIP_CLAIM_KEY, None)
     session.pop(PARITY_TRANSPORT_ONLY_KEY, None)
 
-    latched = str(session.get("_solo_parity_expected_token") or "").strip()
-    if latched:
-        token = latched
+    if control == "P6":
+        session[PARITY_P6_DISABLE_PICK_KEY] = True
+        token, _synth = ensure_p6_latched_production_token(session)
     else:
-        token, _deadline = build_parity_token(control)
-        session["_solo_parity_expected_token"] = token
+        latched = str(session.get("_solo_parity_expected_token") or "").strip()
+        if latched:
+            token = latched
+        else:
+            token, _deadline = build_parity_token(control)
+            session["_solo_parity_expected_token"] = token
 
     key = _resolve_widget_key(control, st, session)
     ls_key = str(session.get("_solo_parity_ls_key") or f"solo_parity_ls_{control.lower()}_{uuid.uuid4().hex[:10]}")
@@ -317,10 +429,17 @@ def try_parity_ladder_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
             "callback_count": int(session.get(f"{key}_parity_callback_seq") or 0),
             "callback_log": list(session.get(PARITY_CALLBACKS_KEY) or []),
             "production_state": _production_state_snapshot(session, live if isinstance(live, dict) else None),
+            "production_evidence": p6_production_evidence(session),
             "page_stopped": parity_should_stop_page(session),
         }
         session[PARITY_META_KEY] = meta
         render_parity_probe(st, session)
+        try:
+            from live_draft_stage1_expire_audit import render_stage1_expire_audit_probe
+
+            render_stage1_expire_audit_probe(st, session)
+        except ImportError:
+            pass
         try:
             from live_draft_solo_transport_boundary_diag import render_transport_boundary_probe, transport_logging_active
 

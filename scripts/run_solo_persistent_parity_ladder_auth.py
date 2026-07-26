@@ -287,6 +287,22 @@ def session_room_from_log(log_tail: list[Any]) -> dict[str, Any]:
     return {}
 
 
+def scrape_stage1_audit(page) -> dict[str, Any]:
+    raw = page.evaluate(
+        """() => {
+          function roots(){const o=[document]; for (const f of document.querySelectorAll('iframe')){try{o.push(f.contentDocument)}catch(e){}} return o.filter(Boolean);}
+          for (const r of roots()) {
+            const el = r.querySelector('#solo-stage1-expire-audit');
+            if (!el) continue;
+            const b64 = el.getAttribute('data-b64')||'';
+            try { return b64 ? JSON.parse(atob(b64)) : {}; } catch(e) { return {err:String(e)}; }
+          }
+          return {};
+        }"""
+    )
+    return raw if isinstance(raw, dict) else {}
+
+
 def run_control(browser, control: str, *, deploy: dict[str, Any]) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
 
@@ -331,13 +347,24 @@ def run_control(browser, control: str, *, deploy: dict[str, Any]) -> dict[str, A
             expected = str(meta.get("expire_token") or "")
         deadline = float(expected.split("|")[-1]) if expected.count("|") >= 2 else time.time() + 10
         scored = observe_control(page, control=control, expected_token=expected, deadline=deadline)
-        return build_control_record(
+        rec = build_control_record(
             control,
             scored=scored,
             widget_key=widget_key,
             ls_key=ls_key,
             deploy=deploy,
         )
+        if control == "P6":
+            probe_final = scrape_parity_probe(page)
+            decoded = probe_final.get("decoded") if isinstance(probe_final.get("decoded"), dict) else {}
+            meta = decoded.get("meta") if isinstance(decoded.get("meta"), dict) else {}
+            if meta:
+                rec["meta"] = meta
+                ev = meta.get("production_evidence") if isinstance(meta.get("production_evidence"), dict) else {}
+                if ev:
+                    rec["production_evidence"] = ev
+            rec["stage1_audit_scrape"] = scrape_stage1_audit(page)
+        return rec
     finally:
         ctx.close()
 
