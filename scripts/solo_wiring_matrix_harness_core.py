@@ -300,25 +300,36 @@ def build_distinct_counts(
         for r in parent_rows
         if token_prefix and str(r.get("value_preview") or "").startswith(token_prefix)
     ]
+    seen_parent: set[tuple[Any, Any]] = set()
+    unique_parent: list[dict[str, Any]] = []
+    for r in matching_parent:
+        dedupe_key = (r.get("ts"), r.get("value_preview"))
+        if dedupe_key in seen_parent:
+            continue
+        seen_parent.add(dedupe_key)
+        unique_parent.append(r)
     raw = session_raw.strip("'\"")
     callbacks = [c for c in callback_log if isinstance(c, dict)]
     pre_send_cb = False
     pre_send_session = False
     send_n = count_stage(sc, "transport_postmessage_invoked")
     setcomp_n = count_stage(sc, "setComponentValue_invoked")
+    first_parent_ms = min((int(r.get("ts") or 0) for r in unique_parent), default=0)
+    first_parent_sec = first_parent_ms / 1000.0 if first_parent_ms else None
     if raw == expected_token and send_n == 0 and setcomp_n == 0:
         observed = int(repro.get("minimal_iframes") or 0) + int(repro.get("production_iframes") or 0)
         if observed >= 1:
             pre_send_session = True
     for c in callbacks:
-        if browser_send_ts and float(c.get("ts") or 0) < float(browser_send_ts) - 0.05:
+        cb_sec = float(c.get("ts") or 0)
+        if first_parent_sec is not None and cb_sec < first_parent_sec - 0.02:
             pre_send_cb = True
     return {
         "timer_armed": count_stage(sc, "timer_armed"),
         "browser_deadline_crossed": count_stage(sc, "browser_deadline_crossed"),
         "setComponentValue_invocation": count_stage(sc, "setComponentValue_invoked"),
         "logical_send_postmessage": count_stage(sc, "transport_postmessage_invoked"),
-        "parent_message": len(matching_parent),
+        "parent_message": len(unique_parent),
         "python_raw_receipt": 1 if raw == expected_token else 0,
         "on_change_callback": len(callbacks),
         "session_raw_matches": raw == expected_token,
@@ -327,7 +338,7 @@ def build_distinct_counts(
         "minimal_iframes": int(repro.get("minimal_iframes") or 0),
         "production_iframes": int(repro.get("production_iframes") or 0),
         "stage_counts": sc,
-        "parent_rows_captured": matching_parent,
+        "parent_rows_captured": unique_parent,
         "callback_log": callbacks,
-        "browser_send_ts": browser_send_ts,
+        "browser_send_ts": browser_send_ts or first_parent_sec,
     }
