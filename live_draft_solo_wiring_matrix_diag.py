@@ -399,11 +399,13 @@ def try_wiring_matrix_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
     )
 
     already_mounted = bool(session.get(MATRIX_MOUNTED_KEY))
-    if not already_mounted:
+    delivered = key in st.session_state and coerce_token_matches(st.session_state.get(key), token)
+
+    if not already_mounted and not delivered:
         _clear_widget_session_value(st, session, key)
 
     comp_return: Any = None
-    if not already_mounted:
+    if not delivered:
         if cell == "A1":
             comp_return = _mount_a1_minimal_direct(st, session, key=key, token=token, cell=cell)
         elif cell == "B1":

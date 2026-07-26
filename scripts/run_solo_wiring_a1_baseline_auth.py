@@ -35,6 +35,7 @@ from solo_wiring_matrix_harness_core import (  # noqa: E402
     build_distinct_counts,
     collect_parent_messages,
     install_parent_capture,
+    merge_peak_distinct,
     score_a1,
     scrape_repro_events,
 )
@@ -81,6 +82,7 @@ def observe_a1(page, *, expected_token: str, deadline: float) -> dict[str, Any]:
     browser_send_ts: float | None = None
     samples: list[dict[str, Any]] = []
     parent_all: list[dict[str, Any]] = []
+    peak: dict[str, Any] = {}
 
     while time.time() - t0 < 32.0:
         install_parent_capture(page, expected_token=expected_token)
@@ -109,16 +111,18 @@ def observe_a1(page, *, expected_token: str, deadline: float) -> dict[str, Any]:
             callback_log=callbacks,
             browser_send_ts=browser_send_ts,
         )
+        distinct["browser_send_ts"] = browser_send_ts or distinct.get("browser_send_ts")
+        peak = merge_peak_distinct(peak, distinct)
         samples.append({"elapsed_s": round(time.time() - t0, 1), "distinct": distinct})
 
-        scored = score_a1(distinct, expected_token=expected_token)
+        scored = score_a1(peak, expected_token=expected_token)
         if scored.get("outcome") == "PASS":
-            scored["distinct"] = distinct
+            scored["distinct"] = peak
             scored["samples"] = samples
             scored["observation_s"] = round(time.time() - t0, 1)
             return scored
 
-        if time.time() >= deadline + 8 and int(sc.get("browser_deadline_crossed") or 0) >= 1:
+        if time.time() >= deadline + 8 and int(peak.get("browser_deadline_crossed") or 0) >= 1:
             break
         page.wait_for_timeout(800)
 
@@ -136,8 +140,16 @@ def observe_a1(page, *, expected_token: str, deadline: float) -> dict[str, Any]:
         callback_log=callbacks,
         browser_send_ts=browser_send_ts,
     )
-    scored = score_a1(distinct, expected_token=expected_token)
-    scored["distinct"] = distinct
+    peak = merge_peak_distinct(peak, distinct)
+    scored = score_a1(peak, expected_token=expected_token)
+    if (
+        int(peak.get("on_change_callback") or 0) >= 1
+        and int(peak.get("logical_send_postmessage") or 0) == 0
+        and int(peak.get("parent_message") or 0) == 0
+    ):
+        scored["outcome"] = "INVALID"
+        scored.setdefault("invalid_reasons", []).append("python_callback_without_browser_evidence")
+    scored["distinct"] = peak
     scored["samples"] = samples[-15:]
     scored["observation_s"] = round(time.time() - t0, 1)
     return scored
@@ -165,10 +177,18 @@ def main() -> int:
         ctx = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
         page = ctx.new_page()
         goto_and_wake(page, url, timeout_s=240)
-        page.wait_for_timeout(12000)
+        install_parent_capture(page)
+        t_nav = time.time()
+        probe: dict[str, Any] = {"missing": True}
+        while time.time() - t_nav < 90.0:
+            install_parent_capture(page)
+            probe = scrape_probe(page)
+            if not probe.get("missing"):
+                break
+            page.wait_for_timeout(500)
         try:
-            page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
-            page.wait_for_timeout(2000)
+            page.get_by_text("Real Accounts", exact=False).first.click(timeout=2000)
+            page.wait_for_timeout(1000)
         except Exception:
             pass
 
@@ -196,11 +216,12 @@ def main() -> int:
             print(json.dumps(out, indent=2))
             return 1
 
-        for _ in range(15):
-            probe = scrape_probe(page)
-            if not probe.get("missing"):
-                break
-            page.wait_for_timeout(2000)
+        if probe.get("missing"):
+            for _ in range(8):
+                page.wait_for_timeout(2000)
+                probe = scrape_probe(page)
+                if not probe.get("missing"):
+                    break
 
         expected = str(probe.get("expected") or "")
         deadline = float(expected.split("|")[2]) if expected.count("|") >= 2 else time.time() + 12

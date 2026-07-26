@@ -204,7 +204,41 @@ def count_stage(stage_counts: dict[str, Any], name: str) -> int:
     return int(stage_counts.get(name) or 0)
 
 
-def score_logical_send_minimal(stage_counts: dict[str, Any], *, expected_token: str, parent_rows: list) -> int:
+def merge_peak_distinct(peak: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    """Keep max event counts across polls (iframe may disappear after Streamlit rerun)."""
+    if not peak:
+        return dict(current)
+    out = dict(peak)
+    for key in (
+        "timer_armed",
+        "browser_deadline_crossed",
+        "setComponentValue_invocation",
+        "logical_send_postmessage",
+        "parent_message",
+        "python_raw_receipt",
+        "on_change_callback",
+        "minimal_iframes",
+        "production_iframes",
+    ):
+        out[key] = max(int(out.get(key) or 0), int(current.get(key) or 0))
+    out["session_raw_matches"] = bool(out.get("session_raw_matches")) or bool(current.get("session_raw_matches"))
+    out["pre_send_callback"] = bool(out.get("pre_send_callback")) or bool(current.get("pre_send_callback"))
+    out["pre_send_session_token"] = bool(out.get("pre_send_session_token")) or bool(
+        current.get("pre_send_session_token")
+    )
+    if len(current.get("callback_log") or []) >= len(out.get("callback_log") or []):
+        out["callback_log"] = current.get("callback_log")
+    if len(current.get("parent_rows_captured") or []) >= len(out.get("parent_rows_captured") or []):
+        out["parent_rows_captured"] = current.get("parent_rows_captured")
+    sc_peak = dict(out.get("stage_counts") or {})
+    sc_cur = dict(current.get("stage_counts") or {})
+    for k, v in sc_cur.items():
+        sc_peak[k] = max(int(sc_peak.get(k) or 0), int(v or 0))
+    out["stage_counts"] = sc_peak
+    if current.get("browser_send_ts") and not out.get("browser_send_ts"):
+        out["browser_send_ts"] = current.get("browser_send_ts")
+    return out
+
     """One logical send = transport_postmessage_invoked with matching token (not lifecycle duplicates)."""
     n = count_stage(stage_counts, "transport_postmessage_invoked")
     if n == 0:
