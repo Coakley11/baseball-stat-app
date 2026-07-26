@@ -11,6 +11,7 @@ from live_draft_solo_parity_p6_persistent_diag import (
     build_writer_probe_payload,
     get_p6_ledger_for_run,
     python_receipt_from_payload,
+    synthetic_room_id_for_run,
 )
 
 
@@ -52,6 +53,11 @@ class P6WriterSessionLedgerTests(unittest.TestCase):
         }
         payload = build_writer_probe_payload(st, session)
         self.assertEqual(payload.get("diagnostic_run_id"), "rid-1")
+        self.assertEqual(payload.get("synthetic_room_id"), synthetic_room_id_for_run("rid-1"))
+
+    def test_synthetic_room_id_short_run(self) -> None:
+        rid = "d72e8776-b929-4379-b268-7a79cb549b8e"
+        self.assertEqual(synthetic_room_id_for_run(rid), "PARITY_d72e8776")
 
 
 if __name__ == "__main__":

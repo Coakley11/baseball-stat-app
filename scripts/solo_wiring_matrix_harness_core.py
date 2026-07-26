@@ -501,6 +501,29 @@ def attach_dual_verdicts(scored: dict[str, Any], peak: dict[str, Any], *, cell: 
 
 P6_HARNESS_INIT_SCRIPT = """
 (() => {
+  const qs = new URLSearchParams(window.location.search || "");
+  const HARNESS = window.__solo_p6_harness_ctx = window.__solo_p6_harness_ctx || {
+    solo_p6_run_id: qs.get("solo_p6_run_id") || "",
+    expected_token: "",
+    synthetic_room_id: "",
+  };
+  function syncFromProbe() {
+    try {
+      const el = document.querySelector("#solo-p6-writer-probe");
+      if (!el) return;
+      const exp = el.getAttribute("data-expected-token") || "";
+      const rid = el.getAttribute("data-run-id") || "";
+      if (exp) HARNESS.expected_token = exp;
+      if (rid) HARNESS.solo_p6_run_id = rid;
+    } catch (e) {}
+  }
+  setInterval(syncFromProbe, 150);
+  syncFromProbe();
+  function tokenMatches(val) {
+    const exp = HARNESS.expected_token || "";
+    if (!exp) return true;
+    return String(val || "") === exp;
+  }
   const PARENT = "__solo_p6_parent_capture_v2";
   if (!window[PARENT]) {
     window[PARENT] = { installed: true, rows: [], fingerprints: new Set() };
@@ -508,13 +531,14 @@ P6_HARNESS_INIT_SCRIPT = """
       const d = ev && ev.data;
       if (!d || d.type !== "streamlit:setComponentValue") return;
       const val = typeof d.value === "string" ? d.value : JSON.stringify(d.value);
+      if (!tokenMatches(val)) return;
       let srcId = "opaque";
       try {
         srcId = ev.source && ev.source.location ? String(ev.source.location.href || "opaque") : "opaque";
       } catch (e) {
         srcId = "opaque";
       }
-      const fp = [d.type, val, String(ev.timeStamp || 0), srcId].join("|");
+      const fp = [HARNESS.solo_p6_run_id, d.type, val, String(ev.timeStamp || 0), srcId].join("|");
       const bag = window[PARENT];
       if (bag.fingerprints.has(fp)) return;
       bag.fingerprints.add(fp);
@@ -528,6 +552,8 @@ P6_HARNESS_INIT_SCRIPT = """
         payload_keys: keys,
         origin: String((ev && ev.origin) || ""),
         source_href: srcId.slice(0, 240),
+        solo_p6_run_id: HARNESS.solo_p6_run_id,
+        expected_token: HARNESS.expected_token,
       });
       if (bag.rows.length > 120) bag.rows = bag.rows.slice(-100);
       const peak = window.__solo_p6_browser_peak_v2;
@@ -579,6 +605,8 @@ P6_HARNESS_INIT_SCRIPT = """
       bag._syncCounts();
     }
     function scanFrames() {
+      syncFromProbe();
+      const exp = HARNESS.expected_token || "";
       let prod = 0;
       let min = 0;
       for (const f of document.querySelectorAll("iframe")) {
@@ -586,8 +614,10 @@ P6_HARNESS_INIT_SCRIPT = """
           const doc = f.contentDocument;
           if (!doc) continue;
           if (doc.querySelector("#solo-expire-client")) {
-            prod += 1;
             const el = doc.querySelector("#solo-expire-client");
+            const elTok = (el.getAttribute("data-token") || el.getAttribute("data-expire-token") || "").trim();
+            if (exp && elTok && elTok !== exp) continue;
+            prod += 1;
             const iid = el.__solo_p6_iframe_id || (el.__solo_p6_iframe_id = "if-" + Math.random().toString(36).slice(2, 11));
             bag.unique.iframe_instance.add(iid);
             const chain = el.getAttribute("data-chain") || "";

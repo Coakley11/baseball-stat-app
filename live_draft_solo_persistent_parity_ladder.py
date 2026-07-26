@@ -99,13 +99,32 @@ def parity_p6_pick_processing_disabled(session: dict[str, Any]) -> bool:
 
 def ensure_p6_latched_production_token(session: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """One PARITY production token before any mount — no WIRING_P6 intermediate."""
+    run_id = str(session.get("_solo_p6_run_id") or "").strip()
     if session.get(PARITY_P6_TOKEN_LATCHED_KEY):
         synth = session.get("live_draft_room")
         token = str(session.get("_solo_parity_expected_token") or session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or "")
         if isinstance(synth, dict) and token:
-            return token, synth
+            if not session.get("_solo_p6_run_scoped_room") or not run_id:
+                return token, synth
+            want = ""
+            try:
+                from live_draft_solo_parity_p6_persistent_diag import synthetic_room_id_for_run
+
+                want = synthetic_room_id_for_run(run_id)
+            except ImportError:
+                want = f"PARITY_{run_id.replace('-', '')[:8]}"
+            if str(synth.get("draft_room_id") or "") == want:
+                return token, synth
     deadline = time.time() + float(SYNTHETIC_SECONDS)
-    synth = _synthetic_room(deadline=deadline)
+    if session.get("_solo_p6_run_scoped_room") and run_id:
+        try:
+            from live_draft_solo_parity_p6_persistent_diag import synthetic_room_for_run
+
+            synth = synthetic_room_for_run(run_id, deadline=deadline)
+        except ImportError:
+            synth = _synthetic_room(deadline=deadline)
+    else:
+        synth = _synthetic_room(deadline=deadline)
     session["live_draft_room"] = synth
     session["live_draft_setup_mode"] = "solo"
     session.pop("active_shared_draft_room_code", None)
@@ -387,6 +406,13 @@ def _record_production_callback(session: dict[str, Any], *, raw: Any, key: str, 
 
 
 def try_parity_ladder_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> bool:
+    try:
+        from live_draft_solo_p6_early_shell import p6_early_shell_blocks_deep_parity
+
+        if p6_early_shell_blocks_deep_parity(session):
+            return False
+    except ImportError:
+        pass
     control = parity_control(st, session)
     if control not in VALID:
         return False

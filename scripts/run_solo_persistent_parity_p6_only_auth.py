@@ -97,13 +97,16 @@ def _ordered_ledger(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     order = [
         "script_begin",
         "initial_widget_state",
-        "production_token_latched",
         "widget_state_before_clear",
         "widget_state_after_clear",
+        "production_token_latched",
+        "component_declaration_attempted",
         "component_declared",
         "callback_entry",
+        "on_change_callback_entry",
         "raw_widget_value",
         "ownership_attempted",
+        "ownership_claim_attempted",
         "ownership_claim_accepted",
         "ownership_claim_rejected",
         "callback_return",
@@ -149,8 +152,72 @@ def compute_pre_send_from_ledger(payload: dict[str, Any], *, browser_send_ts: fl
     return False
 
 
-def _has_stage(rows: list[dict[str, Any]], stage: str) -> bool:
-    return any(isinstance(r, dict) and r.get("stage") == stage for r in rows)
+def _collect_streamlit_session_ids(payload: dict[str, Any], rows: list[dict[str, Any]]) -> set[str]:
+    ids: set[str] = set()
+    sid = str(payload.get("streamlit_session_id") or "").strip()
+    if sid:
+        ids.add(sid)
+    for r in rows:
+        if isinstance(r, dict):
+            s = str(r.get("streamlit_session_id") or "").strip()
+            if s:
+                ids.add(s)
+    return ids
+
+
+def _session_replaced_invalid(
+    *,
+    payload: dict[str, Any],
+    rows: list[dict[str, Any]],
+    run_id: str,
+    had_mount_rows: bool,
+) -> bool:
+    ids = _collect_streamlit_session_ids(payload, rows)
+    if len(ids) <= 1:
+        return False
+    if not had_mount_rows:
+        return False
+    cb = _has_stage(rows, "on_change_callback_entry") or _has_stage(rows, "callback_entry")
+    if cb:
+        return False
+    return True
+
+
+def _pre_expiration_mount_stages_ok(rows: list[dict[str, Any]]) -> bool:
+    required = (
+        "script_begin",
+        "initial_widget_state",
+        "widget_state_before_clear",
+        "widget_state_after_clear",
+        "production_token_latched",
+        "component_declaration_attempted",
+        "component_declared",
+    )
+    return all(_has_stage(rows, s) for s in required)
+
+
+def _post_expiration_rows_present(rows: list[dict[str, Any]]) -> dict[str, bool]:
+    return {
+        "on_change_callback_entry": _has_stage(rows, "on_change_callback_entry", "callback_entry"),
+        "raw_widget_value": _has_stage(rows, "raw_widget_value"),
+        "ownership_claim_attempted": _has_stage(rows, "ownership_claim_attempted", "ownership_attempted"),
+        "ownership_outcome": _has_stage(
+            rows, "ownership_claim_accepted", "ownership_claim_rejected"
+        ),
+        "rejection_code": any(
+            isinstance(r, dict) and r.get("rejection_code") or r.get("reject_code")
+            for r in rows
+            if isinstance(r, dict) and r.get("stage") in ("ownership_claim_rejected", "ownership_claim_accepted")
+        ),
+        "callback_return": _has_stage(rows, "callback_return"),
+        "pick_processing_skipped": _has_stage(rows, "pick_processing_skipped"),
+        "post_delivery_script_run": _has_stage(rows, "post_delivery_script_run"),
+    }
+
+
+def _has_stage(rows: list[dict[str, Any]], *stages: str) -> bool:
+    allowed = set(stages)
+    return any(isinstance(r, dict) and r.get("stage") in allowed for r in rows)
 
 
 def score_p6_from_evidence(
@@ -160,8 +227,56 @@ def score_p6_from_evidence(
     expected_token: str,
     writer_present: bool,
     browser_send_ts: float | None,
+    run_id: str = "",
+    session_ids: set[str] | None = None,
+    mount_invalid_timer: bool = False,
 ) -> dict[str, Any]:
     rows = payload.get("ledger_rows") if isinstance(payload.get("ledger_rows"), list) else []
+    had_mount = _has_stage(rows, "component_declaration_attempted") or _has_stage(rows, "component_declared")
+    if mount_invalid_timer and not _has_stage(rows, "component_declared"):
+        return {
+            "overall": "INVALID_P6_MOUNT_PATH_SKIPPED",
+            "transport_verdict": "INVALID_P6_MOUNT_PATH_SKIPPED",
+            "lifecycle_verdict": "INVALID",
+            "lifecycle_detail": {"reason": "timer_armed_before_component_declared"},
+            "python_receipt": False,
+            "production_callback_entries": 0,
+            "ownership_attempt_rows": 0,
+            "ownership_claim_rows": 0,
+            "processing_verdict": "UNKNOWN",
+            "reject_code": "",
+            "pick_processing_disabled": bool(payload.get("pick_processing_disabled")),
+            "pre_send_session_token": False,
+            "stale_state_finding": {},
+            "mount_path_note": "timer_armed before component_declared",
+            "pre_expiration_mount_complete": _pre_expiration_mount_stages_ok(rows),
+            "post_expiration_rows": _post_expiration_rows_present(rows),
+            "streamlit_session_ids": sorted(session_ids or []),
+            "streamlit_session_changed": len(session_ids or set()) > 1,
+        }
+    if _session_replaced_invalid(payload=payload, rows=rows, run_id=run_id, had_mount_rows=had_mount):
+        return {
+            "overall": "INVALID_P6_SESSION_REPLACED",
+            "transport_verdict": "INVALID_P6_SESSION_REPLACED",
+            "lifecycle_verdict": "INVALID",
+            "lifecycle_detail": {"reason": "streamlit_session_id_changed_mount_lost"},
+            "python_receipt": False,
+            "production_callback_entries": _count_stage_rows(rows, "callback_entry", "on_change_callback_entry"),
+            "ownership_attempt_rows": _count_stage_rows(rows, "ownership_attempted", "ownership_claim_attempted"),
+            "ownership_claim_rows": _count_stage_rows(
+                rows, "ownership_claim_accepted", "ownership_claim_rejected"
+            ),
+            "processing_verdict": "UNKNOWN",
+            "reject_code": "",
+            "pick_processing_disabled": bool(payload.get("pick_processing_disabled")),
+            "pre_send_session_token": False,
+            "stale_state_finding": payload.get("stale_state") if isinstance(payload.get("stale_state"), dict) else {},
+            "mount_path_note": "Do not grade as callback failure — session replaced",
+            "pre_expiration_mount_complete": _pre_expiration_mount_stages_ok(rows),
+            "post_expiration_rows": _post_expiration_rows_present(rows),
+            "streamlit_session_ids": sorted(session_ids or []),
+            "streamlit_session_changed": True,
+        }
     if not _has_stage(rows, "component_declared"):
         return {
             "overall": "INVALID_P6_MOUNT_PATH_SKIPPED",
@@ -180,6 +295,10 @@ def score_p6_from_evidence(
             "pre_send_session_token": compute_pre_send_from_ledger(payload, browser_send_ts=browser_send_ts),
             "stale_state_finding": payload.get("stale_state") if isinstance(payload.get("stale_state"), dict) else {},
             "mount_path_note": "component_declared missing before transport/callback grading",
+            "pre_expiration_mount_complete": _pre_expiration_mount_stages_ok(rows),
+            "post_expiration_rows": _post_expiration_rows_present(rows),
+            "streamlit_session_ids": sorted(session_ids or []),
+            "streamlit_session_changed": len(session_ids or set()) > 1,
         }
     cb_entries = _count_stage_rows(rows, "callback_entry", "on_change_callback_entry")
     owner_attempts = _count_stage_rows(rows, "ownership_attempted", "ownership_claim_attempted")
@@ -251,7 +370,38 @@ def score_p6_from_evidence(
         "pick_processing_disabled": pick_disabled,
         "pre_send_session_token": pre_send,
         "stale_state_finding": stale,
+        "pre_expiration_mount_complete": _pre_expiration_mount_stages_ok(rows),
+        "post_expiration_rows": _post_expiration_rows_present(rows),
+        "streamlit_session_ids": sorted(session_ids or []),
+        "streamlit_session_changed": len(session_ids or set()) > 1,
     }
+
+
+def interpret_p6_scored(scored: dict[str, Any], *, peak: dict[str, Any]) -> str:
+    overall = str(scored.get("overall") or "")
+    if overall == "INVALID_P6_SESSION_REPLACED":
+        return (
+            "Streamlit session changed between declaration and expiration; "
+            "same-session ledger lost — not a callback registration failure."
+        )
+    if overall == "INVALID_P6_MOUNT_PATH_SKIPPED":
+        return "P6 diagnostic routing still invalid; do not conclude production transport from this run."
+    if overall == "PASS":
+        return (
+            "Full persistent-wake transport proven (mount ledger, single browser send, callback, ownership). "
+            "Stop diagnostic work; proceed to one real authenticated Stage 1A with pick processing enabled."
+        )
+    mount_ok = bool(scored.get("pre_expiration_mount_complete"))
+    cb = int(scored.get("production_callback_entries") or 0)
+    parent = int(peak.get("parent_message") or 0)
+    if mount_ok and parent >= 1 and cb < 1 and not scored.get("streamlit_session_changed"):
+        return (
+            "Exact mount ledger and parent token receipt, but no callback in same Streamlit session — "
+            "callback registration on the exact persistent declaration is the remaining boundary."
+        )
+    if mount_ok and cb >= 1:
+        return "Mount and callback observed; transport/processing did not meet full PASS criteria — review post-expiration rows."
+    return "Review ordered ledger, browser peak, and session continuity fields."
 
 
 def run_p6_writer_session(browser, *, deploy: dict[str, Any], run_id: str) -> dict[str, Any]:
@@ -271,22 +421,26 @@ def run_p6_writer_session(browser, *, deploy: dict[str, Any], run_id: str) -> di
         last_payload: dict[str, Any] = {}
         writer_samples: list[dict[str, Any]] = []
         browser_send_ts: float | None = None
+        session_ids_seen: set[str] = set()
+        mount_invalid_timer = False
         deadline = time.time() + 46.0
 
         while time.time() - t0 < 42.0:
             probe = scrape_p6_writer_probe(page)
             payload = probe.get("payload") if isinstance(probe.get("payload"), dict) else {}
-            if payload:
+            probe_run = str(probe.get("run_id") or payload.get("solo_p6_run_id") or "")
+            if probe_run and probe_run != run_id:
+                payload = {}
+            elif payload:
                 last_payload = payload
             browser_peak = collect_p6_browser_peak(page)
             repro = merge_browser_peak_into_repro(scrape_repro_events(page), browser_peak)
             parent_all = collect_p6_parent_messages(page)
-            parent_rows = dedupe_parent_rows_by_fingerprint(parent_all, expected_token=expected)
             exp = str(probe.get("expected") or payload.get("expected_token") or expected or "")
             if exp.startswith("PARITY|"):
                 expected = exp
             elif not expected:
-                for pr in parent_rows:
+                for pr in parent_all:
                     prev = str(pr.get("value_preview") or "")
                     if prev.startswith("PARITY|"):
                         expected = prev
@@ -296,8 +450,25 @@ def run_p6_writer_session(browser, *, deploy: dict[str, Any], run_id: str) -> di
                     deadline = float(expected.split("|")[-1])
                 except ValueError:
                     pass
-            parent_rows = dedupe_parent_rows_by_fingerprint(parent_all, expected_token=expected)
+            parent_rows = [
+                pr
+                for pr in parent_all
+                if not expected or str(pr.get("value_preview") or "") == expected
+            ]
+            parent_rows = dedupe_parent_rows_by_fingerprint(parent_rows, expected_token=expected)
             sc = repro.get("stage_counts") if isinstance(repro.get("stage_counts"), dict) else {}
+            rows = payload.get("ledger_rows") if isinstance(payload.get("ledger_rows"), list) else []
+            sid = str(payload.get("streamlit_session_id") or "").strip()
+            if sid:
+                session_ids_seen.add(sid)
+            for r in rows:
+                if isinstance(r, dict):
+                    rs = str(r.get("streamlit_session_id") or "").strip()
+                    if rs:
+                        session_ids_seen.add(rs)
+            if int(sc.get("timer_armed") or 0) >= 1 and not _has_stage(rows, "component_declared"):
+                mount_invalid_timer = True
+                break
             if browser_send_ts is None and int(sc.get("transport_postmessage_invoked") or 0) >= 1:
                 browser_send_ts = time.time()
 
@@ -347,23 +518,31 @@ def run_p6_writer_session(browser, *, deploy: dict[str, Any], run_id: str) -> di
             expected_token=expected,
             writer_present=bool(writer_final.get("present")),
             browser_send_ts=browser_send_ts,
+            run_id=run_id,
+            session_ids=session_ids_seen,
+            mount_invalid_timer=mount_invalid_timer,
         )
         rows = last_payload.get("ledger_rows") if isinstance(last_payload.get("ledger_rows"), list) else []
         return {
             "deploy": deploy,
             "run_id": run_id,
             "writer_url": writer_url,
-            "mode": "same_writer_session_stale_key_test",
+            "mode": "p6_early_exclusive_shell_writer_session",
             "peak": peak,
             "expected_token": expected,
+            "synthetic_room_id": f"PARITY_{run_id.replace('-', '')[:8]}",
             "first_capture": first_capture,
             "last_payload": last_payload,
             "ordered_ledger": _ordered_ledger(rows),
             "writer_samples": writer_samples[-40:],
             "parent_rows_deduped": dedupe_parent_rows_by_fingerprint(
-                collect_p6_parent_messages(page), expected_token=expected
+                [pr for pr in collect_p6_parent_messages(page) if not expected or str(pr.get("value_preview") or "") == expected],
+                expected_token=expected,
             ),
             "scored": scored,
+            "interpretation": interpret_p6_scored(scored, peak=peak),
+            "mount_invalid_timer": mount_invalid_timer,
+            "streamlit_session_ids": sorted(session_ids_seen),
             "observation_s": round(time.time() - t0, 1),
         }
     finally:

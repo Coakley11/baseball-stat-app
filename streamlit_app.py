@@ -14377,6 +14377,14 @@ try:
 except Exception:
     pass
 try:
+    from live_draft_solo_p6_early_shell import try_p6_early_exclusive_shell
+
+    try_p6_early_exclusive_shell(st, st.session_state)
+except ImportError:
+    pass
+except Exception:
+    pass
+try:
     from nav_page_trace import note_nav_snapshot
 
     note_nav_snapshot(

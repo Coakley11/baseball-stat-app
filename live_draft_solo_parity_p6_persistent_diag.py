@@ -125,6 +125,21 @@ def reset_p6_diagnostic_lifecycle_for_run_id(session: dict[str, Any], new_run_id
     session.pop("_solo_p6_delivery_seen", None)
     session.pop(PARITY_HANDLED_WAKE_KEY, None)
     session.pop(P6_SCRIPT_RUN_KEY, None)
+    session.pop("_solo_p6_run_scoped_room", None)
+    try:
+        from live_draft_solo_p6_early_shell import (
+            P6_EARLY_SHELL_ACTIVE_KEY,
+            P6_EARLY_SHELL_COMPLETED_RUN_KEY,
+            P6_EARLY_SHELL_STOP_KEY,
+            P6_RUN_SCOPED_ROOM_KEY,
+        )
+
+        session.pop(P6_EARLY_SHELL_ACTIVE_KEY, None)
+        session.pop(P6_EARLY_SHELL_COMPLETED_RUN_KEY, None)
+        session.pop(P6_EARLY_SHELL_STOP_KEY, None)
+        session.pop(P6_RUN_SCOPED_ROOM_KEY, None)
+    except ImportError:
+        pass
     try:
         from live_draft_solo_transport_boundary_diag import PRODUCTION_CALLBACK_FLAG
 
@@ -179,6 +194,30 @@ def enable_p6_persistent_diag_from_query(st: Any, session: dict[str, Any]) -> No
             bootstrap_transport_diagnostics(st, session)
         except ImportError:
             pass
+
+
+def synthetic_room_id_for_run(run_id: str) -> str:
+    short = str(run_id or "").replace("-", "")[:8]
+    return f"PARITY_{short}" if short else "PARITY"
+
+
+def synthetic_room_for_run(run_id: str, *, deadline: float) -> dict[str, Any]:
+    rid = synthetic_room_id_for_run(run_id)
+    return {
+        "draft_room_id": rid,
+        "draft_id": rid,
+        "status": "in_progress",
+        "current_pick_index": 0,
+        "timer_deadline": deadline,
+        "config": {"draft_setup_mode": "solo", "timer_seconds": 10},
+    }
+
+
+def _common_row_fields(session: dict[str, Any], run_id: str) -> dict[str, Any]:
+    return {
+        "solo_p6_run_id": run_id,
+        "synthetic_room_id": synthetic_room_id_for_run(run_id),
+    }
 
 
 def _expected_token(session: dict[str, Any]) -> str:
@@ -238,10 +277,13 @@ def append_p6_ledger_row(
         "script_run": run_n,
         "expected_token": exp,
         "actual_token": act,
+        "event_sequence": 0,
+        **_common_row_fields(session, run_id),
         **fields,
     }
     ledger = _ledger_for_run(session, run_id)
     row["seq"] = len(ledger) + 1
+    row["event_sequence"] = row["seq"]
     ledger.append(row)
     if len(ledger) > _MAX_ROWS:
         session[P6_SESSION_LEDGERS_KEY][run_id] = ledger[-_MAX_ROWS:]
@@ -421,15 +463,15 @@ def record_p6_callback_entry(
     st: Any | None = None,
 ) -> None:
     actual = str(raw).strip("'\"")[:400] if raw is not None else ""
-    append_p6_ledger_row(
-        session,
-        "callback_entry",
+    fields = dict(
         st=st,
         raw_widget_value=repr(raw)[:400],
         widget_key=widget_key,
         expected_token=(expected_token or _expected_token(session))[:400],
         actual_token=actual,
     )
+    append_p6_ledger_row(session, "callback_entry", **fields)
+    append_p6_ledger_row(session, "on_change_callback_entry", **fields)
 
 
 def record_p6_raw_widget_value(session: dict[str, Any], *, raw: Any, st: Any | None = None) -> None:
@@ -453,14 +495,14 @@ def record_p6_ownership_claim(
     st: Any | None = None,
 ) -> None:
     if attempted:
-        append_p6_ledger_row(
-            session,
-            "ownership_attempted",
+        attempt_fields = dict(
             st=st,
             expected_token=str(token or _expected_token(session))[:400],
             actual_token=str(token or "")[:400],
             delivery_via=delivery_via,
         )
+        append_p6_ledger_row(session, "ownership_attempted", **attempt_fields)
+        append_p6_ledger_row(session, "ownership_claim_attempted", **attempt_fields)
     stage = "ownership_claim_accepted" if accepted else "ownership_claim_rejected"
     append_p6_ledger_row(
         session,
@@ -527,8 +569,11 @@ def build_writer_probe_payload(st: Any, session: dict[str, Any]) -> dict[str, An
     prod_count = sum(1 for r in rows if isinstance(r, dict) and r.get("stage") in cb_stages)
     return {
         "diagnostic_run_id": run_id,
+        "solo_p6_run_id": run_id,
         "streamlit_session_id": _streamlit_session_id(),
+        "synthetic_room_id": synthetic_room_id_for_run(run_id) if run_id else "",
         "expected_token": expected,
+        "script_run_number": int(session.get(P6_SCRIPT_RUN_KEY) or 0),
         "current_widget_raw": widget_raw,
         "raw_session_state_value": widget_raw,
         "ledger_rows": rows,
