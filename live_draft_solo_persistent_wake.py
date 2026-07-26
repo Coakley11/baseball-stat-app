@@ -234,6 +234,9 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                 phase="production_on_change",
                 on_change_registered=True,
             )
+            from live_draft_solo_transport_boundary_diag import PRODUCTION_CALLBACK_FLAG
+
+            session[f"{PRODUCTION_CALLBACK_FLAG}_count"] = int(session.get(f"{PRODUCTION_CALLBACK_FLAG}_count") or 0) + 1
     except ImportError:
         pass
     from live_draft_solo_heartbeat import _coerce_wake_token, process_solo_component_wake
@@ -539,6 +542,14 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
     did = str(props_room.get("draft_room_id") or props_room.get("draft_id") or "")
 
     persist_key = solo_persistent_chain_persist_key(session, room_dict)
+    minimal_token_expected = ""
+    if actionable and expire_token and expire_token != SOLO_INERT_EXPIRE_TOKEN:
+        try:
+            from live_draft_solo_transport_boundary_diag import build_minimal_control_token
+
+            minimal_token_expected = build_minimal_control_token(expire_token)
+        except ImportError:
+            minimal_token_expected = ""
 
     record_transport_python_run(
         st,
@@ -547,6 +558,7 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         expected_token=expire_token,
         phase="pre_mount",
         on_change_registered=True,
+        expected_minimal_token=minimal_token_expected,
     )
 
     _ = render_micro_isolation_once(
@@ -567,6 +579,10 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         suppress_immediate_session_on_change=True,
         chain_persist_key=persist_key,
     )
+    if transport_boundary_active(st, session):
+        from live_draft_solo_transport_boundary_diag import PRODUCTION_CALLBACK_FLAG
+
+        session[PRODUCTION_CALLBACK_FLAG] = True
     comp_return = st.session_state.get(key) if key in st.session_state else None
     record_production_component_declaration(
         st,
@@ -593,6 +609,7 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         expected_token=expire_token,
         phase="post_mount",
         on_change_registered=True,
+        expected_minimal_token=minimal_token_expected,
     )
     render_transport_boundary_probe(st, session)
     render_persistent_wake_lifecycle_probe(

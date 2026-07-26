@@ -23,6 +23,9 @@ OUT_1B = ROOT / "data" / "production_stage1b_queue_auth.json"
 OUT_1B_FB = ROOT / "data" / "production_stage1b_queue_fallback_auth.json"
 OUT_IFRAME = ROOT / "data" / "production_stage1a_iframe_lifecycle.json"
 OUT_TRANSPORT = ROOT / "data" / "production_stage1a_transport_boundary.json"
+OUT_FRAME_TOPOLOGY = ROOT / "data" / "production_stage1a_frame_topology.json"
+OUT_CLEANUP = ROOT / "data" / "production_stage1a_preflight_cleanup.json"
+REQUIRED_CLOUD_SHA = "26241c2"
 
 from playwright_daniel_auth_session import (  # noqa: E402
     STORAGE_PATH,
@@ -39,23 +42,10 @@ from run_solo_diag_10s_controlled import (  # noqa: E402
 )
 
 
-def ensure_fresh_setup_lobby(page, *, max_wait_s: int = 120) -> dict[str, Any]:
-    from run_production_solo_soak import all_frames_text, click_btn, dom_counts
-    from solo_draft_start_harness import wait_for_setup_lobby_after_clear
+def ensure_fresh_setup_lobby(page, *, max_wait_s: int = 180) -> dict[str, Any]:
+    from stage1_preflight_cleanup import run_stage1_preflight_cleanup
 
-    for attempt in range(4):
-        text = all_frames_text(page)
-        counts = dom_counts(page)
-        if "Start New Live Draft" in text and int(counts.get("Pause Draft") or 0) == 0:
-            return {"ok": True, "attempts": attempt}
-        if int(counts.get("Pause Draft") or 0) >= 1 or "End/Delete Draft" in text:
-            click_btn(page, "End/Delete Draft", wait_ms=8000)
-            for confirm in ("Delete Draft", "End Draft", "Delete", "Confirm", "Yes"):
-                click_btn(page, confirm, wait_ms=4000)
-            page.wait_for_timeout(4000)
-        if wait_for_setup_lobby_after_clear(page, max_wait_s=min(45, max_wait_s)):
-            return {"ok": True, "attempts": attempt + 1}
-    return {"ok": False, "attempts": 4, "reason": "setup_lobby_not_reached_after_end_delete"}
+    return run_stage1_preflight_cleanup(page, max_wait_s=max_wait_s)
 
 
 def production_url() -> str:
@@ -140,7 +130,9 @@ def scrape_timer_fields(page) -> dict[str, Any]:
     return state
 
 
-def validate_production_draft_start(page, draft: dict[str, Any]) -> dict[str, Any]:
+def validate_production_draft_start(
+    page, draft: dict[str, Any], *, prior_room_id: str = ""
+) -> dict[str, Any]:
     from run_production_solo_soak import all_frames_text, dom_counts
 
     if not draft.get("start_success"):
@@ -169,6 +161,13 @@ def validate_production_draft_start(page, draft: dict[str, Any]) -> dict[str, An
             "latched_room_id": latched,
             "visible_room_id": visible,
         }
+    if prior_room_id and latched == prior_room_id.strip().upper():
+        return {
+            "valid": False,
+            "reason": "reused_prior_room_id",
+            "latched_room_id": latched,
+            "prior_room_id": prior_room_id.strip().upper(),
+        }
     return {
         "valid": True,
         "latched_room_id": latched,
@@ -186,6 +185,12 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
         scrape_iframe_lifecycle,
         scrape_stage1_audit,
         scrape_transport_boundary,
+    )
+    from stage1_frame_transport_probe import (
+        analyze_double_production_sends,
+        collect_frame_topology,
+        install_immediate_parent_listeners,
+        scrape_immediate_parent_messages,
     )
 
     t0 = time.time()
@@ -209,8 +214,11 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
     best_transport: dict[str, Any] = {}
     timer_armed_at: float | None = None
     observe_until = t0 + timeout_s
+    frame_topology_initial = collect_frame_topology(page)
+    install_immediate_parent_listeners(page)
 
     while time.time() < observe_until:
+        install_immediate_parent_listeners(page)
         snap = scrape_snapshot(page)
         snap["elapsed_s"] = round(time.time() - t0, 1)
         snap["state"] = scrape_timer_fields(page)
@@ -273,6 +281,8 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
     client_final = scrape_client_chain(page) or best_client
     audit_final = scrape_stage1_audit(page) or best_audit
     transport_final = scrape_transport_boundary(page) or best_transport
+    frame_topology_final = collect_frame_topology(page)
+    immediate_parent_messages = scrape_immediate_parent_messages(page)
     state_after = scrape_timer_fields(page)
     pick_after = state_after.get("pick")
     deadline_after = (state_after.get("mount_diag") or {}).get("diag_deadline") or state_after.get("timer")
@@ -336,9 +346,21 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
             callback_count=len(accepted),
             iframe_has_component_sent="component_value_sent" in client_stages,
             send_ts_ms=send_ts_ms,
+            immediate_parent_messages=immediate_parent_messages,
         )
     except ImportError:
         transport_class = ""
+
+    double_production = analyze_double_production_sends(iframe_entries)
+
+    transport_final = dict(transport_final or {})
+    transport_final["frame_topology"] = frame_topology_final
+    transport_final["frame_topology_at_start"] = frame_topology_initial
+    transport_final["immediate_parent_messages"] = immediate_parent_messages
+    transport_final["legacy_parent_log_note"] = (
+        "legacy solo_transport_parent_log may be on wrong frame; use immediate_parent_messages for stage B"
+    )
+    transport_final["double_production_send_analysis"] = double_production
 
     return {
         "samples_count": len(samples),
@@ -382,6 +404,9 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
         "transport_boundary": transport_final,
         "first_missing_transport_stage": transport_class,
         "client_send_ts_ms": send_ts_ms,
+        "frame_topology": frame_topology_final,
+        "immediate_parent_messages": immediate_parent_messages,
+        "double_production_send_analysis": double_production,
     }
 
 
@@ -572,7 +597,8 @@ def main() -> int:
 
     summary: dict[str, Any] = {
         "started_at": time.time(),
-        "cloud_sha": pre.get("cloud_sha") or "",
+        "cloud_sha": str(pre.get("cloud_sha") or ""),
+        "required_cloud_sha": REQUIRED_CLOUD_SHA,
         "authenticated_restored": True,
         "auth_preflight": {
             "signed_in_display": pre.get("signed_in_display"),
@@ -589,15 +615,63 @@ def main() -> int:
         )
         page = context.new_page()
 
-        sha = scrape_deploy_build(page)
+        goto_and_wake(page, url, timeout_s=240)
+        page.wait_for_timeout(15000)
+        try:
+            page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
+            page.wait_for_timeout(3000)
+        except Exception:
+            pass
+        page.wait_for_timeout(20000)
+        from run_solo_clean_verification import scrape_live_sha
+
+        sha = scrape_live_sha(page) or scrape_deploy_build(page)
+        if not sha:
+            try:
+                from cloud_streamlit_wake import scrape_deploy_sha_from_page
+
+                sha = scrape_deploy_sha_from_page(page) or ""
+            except Exception:
+                sha = ""
         if sha:
             summary["cloud_sha"] = sha
+        elif pre.get("cloud_sha"):
+            summary["cloud_sha"] = pre.get("cloud_sha")
+        live_sha = str(summary.get("cloud_sha") or "").lower()[:7]
+        if live_sha != REQUIRED_CLOUD_SHA:
+            page.wait_for_timeout(10000)
+            sha2 = scrape_deploy_build(page)
+            if not sha2:
+                try:
+                    from cloud_streamlit_wake import scrape_deploy_sha_from_page
 
-        goto_and_wake(page, url, timeout_s=240)
-        page.wait_for_timeout(8000)
-        lobby = ensure_fresh_setup_lobby(page)
-        summary["setup_lobby"] = lobby
-        if not lobby.get("ok"):
+                    sha2 = scrape_deploy_sha_from_page(page) or ""
+                except Exception:
+                    sha2 = ""
+            if sha2:
+                summary["cloud_sha"] = sha2
+                live_sha = str(sha2).lower()[:7]
+        if live_sha != REQUIRED_CLOUD_SHA:
+            summary["aborted"] = True
+            summary["abort_reason"] = (
+                "cloud_sha_unverified" if not live_sha else "cloud_sha_mismatch"
+            )
+            summary["required_cloud_sha"] = REQUIRED_CLOUD_SHA
+            context.close()
+            browser.close()
+            summary["finished_at"] = time.time()
+            OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+            print(json.dumps(summary, indent=2, default=str))
+            return 1
+
+        cleanup = ensure_fresh_setup_lobby(page)
+        summary["cleanup"] = cleanup
+        summary["setup_lobby"] = {"ok": cleanup.get("ok"), "reason": cleanup.get("reason")}
+        summary["old_room_id"] = cleanup.get("detected_room_id") or ""
+        summary["old_room_status"] = cleanup.get("initial_status") or ""
+        OUT_CLEANUP.parent.mkdir(parents=True, exist_ok=True)
+        OUT_CLEANUP.write_text(json.dumps(cleanup, indent=2, default=str), encoding="utf-8")
+        if not cleanup.get("ok"):
             summary["draft_start_success"] = False
             summary["draft_start_validation"] = {
                 "valid": False,
@@ -610,13 +684,15 @@ def main() -> int:
             browser.close()
             summary["finished_at"] = time.time()
             OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
-            print(json.dumps({"aborted": True, "setup_lobby": lobby}, indent=2))
+            print(json.dumps({"aborted": True, "cleanup": cleanup}, indent=2))
             return 1
 
+        prior_room = str(cleanup.get("detected_room_id") or "").strip().upper()
         draft = execute_solo_draft_start_workflow(page, url, navigate=False)
         summary["draft_start_success"] = bool(draft.get("start_success"))
         summary["draft_start_room_id"] = draft.get("room_id")
-        start_val = validate_production_draft_start(page, draft)
+        summary["fresh_room_id"] = draft.get("room_id")
+        start_val = validate_production_draft_start(page, draft, prior_room_id=prior_room)
         summary["draft_start_validation"] = start_val
 
         if not start_val.get("valid"):
@@ -666,10 +742,18 @@ def main() -> int:
                 {
                     "transport_boundary": exp.get("transport_boundary") or {},
                     "first_missing_transport_stage": exp.get("first_missing_transport_stage") or "",
+                    "frame_topology": exp.get("frame_topology") or {},
+                    "immediate_parent_messages": exp.get("immediate_parent_messages") or [],
+                    "double_production_send_analysis": exp.get("double_production_send_analysis") or {},
                 },
                 indent=2,
                 default=str,
             ),
+            encoding="utf-8",
+        )
+        OUT_FRAME_TOPOLOGY.parent.mkdir(parents=True, exist_ok=True)
+        OUT_FRAME_TOPOLOGY.write_text(
+            json.dumps(exp.get("frame_topology") or {}, indent=2, default=str),
             encoding="utf-8",
         )
 

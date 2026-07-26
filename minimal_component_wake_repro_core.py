@@ -122,6 +122,22 @@ class CycleRenderResult:
     callbacks: list[dict[str, Any]]
 
 
+def mount_single_for_transport(
+    st: Any,
+    *,
+    widget_key: str,
+    expire_token: str,
+    on_change: Callable[[], None] | None = None,
+) -> Any:
+    """One-shot minimal_wake_repro mount (same declaration as passing repro harness)."""
+    return _COMPONENT(
+        expire_token=expire_token,
+        key=widget_key,
+        default=None,
+        on_change=on_change,
+    )
+
+
 def render_one_cycle(
     st: Any,
     session: dict[str, Any],
