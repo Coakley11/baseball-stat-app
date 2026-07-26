@@ -38,6 +38,10 @@
     <script>
       (function () {
         function sendMessage(type, data) {
+          if (type === "streamlit:setComponentValue") {
+            noteClient("transport_postmessage_invoked");
+            noteClient("setComponentValue_invoked");
+          }
           window.parent.postMessage(
             Object.assign({ isStreamlitMessage: true, type: type }, data || {}),
             "*"
@@ -70,6 +74,7 @@
         let activeToken = "";
         let tickTimer = null;
         let sentTokens = {};
+        let timerArmed = false;
 
         function clearTick() {
           if (tickTimer) {
@@ -94,6 +99,7 @@
           const parts = expireToken.split("|");
           const deadline = Number(parts[2] || 0);
           activeToken = expireToken;
+          noteClient("render_event_received");
           logClient("render token=" + expireToken);
           if (!expireToken || !Number.isFinite(deadline) || deadline <= 0) {
             sendMessage("streamlit:setFrameHeight", { height: 72 });
@@ -104,6 +110,10 @@
 
           function tick() {
             if (activeToken !== expireToken) return;
+            if (!timerArmed) {
+              timerArmed = true;
+              noteClient("timer_armed");
+            }
             const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
             if (countdownEl) countdownEl.textContent = String(rem);
             if (rem <= 0) {
@@ -125,6 +135,7 @@
         });
 
         sendMessage("streamlit:componentReady", { apiVersion: 1 });
+        noteClient("component_script_loaded");
         sendMessage("streamlit:setFrameHeight", { height: 72 });
         logClient("componentReady iframe=" + String(window.location.href || ""));
       })();

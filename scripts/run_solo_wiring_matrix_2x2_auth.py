@@ -16,7 +16,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
-REQUIRED_SHA = "2e0373a"
+REQUIRED_SHA = "f0c0aab"
 OUT = ROOT / "data" / "solo_wiring_matrix_synthetic_2x2.json"
 CELLS = ("A1", "B1", "A2", "B2")
 
@@ -63,12 +63,13 @@ from stage1_frame_transport_probe import (  # noqa: E402
 )
 
 
-def cell_url(cell: str, widget_key: str) -> str:
+def cell_url(cell: str, widget_key: str, ls_key: str) -> str:
     params = {
         "active_page": "Live Draft Room",
         "solo_wiring_synthetic": "1",
         "solo_wiring_matrix": cell,
         "solo_wiring_key": widget_key,
+        "solo_wiring_ls_key": ls_key,
         "solo_transport_probe": "1",
     }
     return append_suite_sid_to_url(f"{BASE}/?{urlencode(params)}")
@@ -382,7 +383,8 @@ def run_cell(browser, *, cell: str, preflight: dict[str, Any]) -> dict[str, Any]
     from cloud_streamlit_wake import goto_and_wake
 
     key = f"solo_wiring_{cell.lower()}_{uuid.uuid4().hex[:10]}"
-    url = cell_url(cell, key)
+    ls_key = f"solo_wiring_ls_{cell.lower()}_{uuid.uuid4().hex[:10]}"
+    url = cell_url(cell, key, ls_key)
     ctx = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
     page = ctx.new_page()
     try:

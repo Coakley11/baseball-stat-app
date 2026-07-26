@@ -11,7 +11,10 @@ from typing import Any
 MATRIX_LOG_KEY = "_solo_wiring_matrix_log"
 MATRIX_META_KEY = "_solo_wiring_matrix_meta"
 MATRIX_PROBE_ID = "solo-wiring-matrix-diag"
+MATRIX_CALLBACKS_KEY = "_solo_wiring_matrix_callbacks"
+MATRIX_BROWSER_SEND_TS_KEY = "_solo_wiring_matrix_browser_send_ts"
 MATRIX_STOP_PAGE_KEY = "_solo_wiring_matrix_stop_page"
+MATRIX_MOUNTED_KEY = "_solo_wiring_matrix_component_mounted"
 SYNTHETIC_SECONDS = 10
 VALID_CELLS = frozenset({"A1", "B1", "A2", "B2"})
 
@@ -107,6 +110,15 @@ def _synthetic_stub_room() -> dict[str, Any]:
     }
 
 
+def coerce_token_matches(raw: Any, expected_token: str) -> bool:
+    if not expected_token:
+        return False
+    val = raw
+    if isinstance(val, str):
+        val = val.strip("'\"")
+    return str(val or "").strip() == expected_token.strip()
+
+
 def _append_log(session: dict[str, Any], stage: str, **fields: Any) -> None:
     row = {"ts": time.time(), "stage": stage, **fields}
     log = list(session.get(MATRIX_LOG_KEY) or [])
@@ -114,17 +126,76 @@ def _append_log(session: dict[str, Any], stage: str, **fields: Any) -> None:
     session[MATRIX_LOG_KEY] = log[-200:]
 
 
-def _simple_matrix_deliver(st: Any, session: dict[str, Any], raw: Any, key: str, *, cell: str) -> None:
-    session[f"{key}_matrix_callback_count"] = int(session.get(f"{key}_matrix_callback_count") or 0) + 1
+def resolve_matrix_ls_key(st: Any | None, session: dict[str, Any], cell: str) -> str:
+    existing = str(session.get("_solo_wiring_matrix_ls_key") or "").strip()
+    if existing:
+        return existing
+    qp = _qp_get(st, "solo_wiring_ls_key").strip()
+    if qp:
+        ls = qp[:120]
+    else:
+        ls = f"solo_wiring_ls_{cell.lower()}_{uuid.uuid4().hex[:10]}"
+    session["_solo_wiring_matrix_ls_key"] = ls
+    return ls
+
+
+def _clear_widget_session_value(st: Any, session: dict[str, Any], key: str) -> None:
+    """Ensure Python never seeds the widget value before iframe send."""
+    had = key in st.session_state
+    prior = repr(st.session_state.get(key))[:200] if had else ""
+    try:
+        del st.session_state[key]
+    except Exception:
+        try:
+            st.session_state.pop(key, None)
+        except Exception:
+            pass
     _append_log(
         session,
-        "matrix_callback",
-        cell=cell,
+        "widget_key_cleared_pre_mount",
         widget_key=key,
-        raw_type=type(raw).__name__ if raw is not None else "NoneType",
-        raw_repr=str(raw)[:400],
-        session_state_raw=repr(st.session_state.get(key))[:400],
+        had_prior=had,
+        prior_raw=prior,
     )
+
+
+def _matrix_on_change(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    key: str,
+    cell: str,
+    expected_token: str,
+    source: str,
+) -> None:
+    seq = int(session.get(f"{key}_matrix_callback_seq") or 0) + 1
+    session[f"{key}_matrix_callback_seq"] = seq
+    raw = st.session_state.get(key)
+    now = time.time()
+    had_prior_send = session.get(MATRIX_BROWSER_SEND_TS_KEY) is not None
+    browser_ts = session.get(MATRIX_BROWSER_SEND_TS_KEY)
+    if browser_ts is None and coerce_token_matches(raw, expected_token):
+        session[MATRIX_BROWSER_SEND_TS_KEY] = now
+        browser_ts = now
+    row = {
+        "ts": now,
+        "seq": seq,
+        "expected_token": expected_token,
+        "actual_raw": repr(raw)[:400],
+        "source": source,
+        "browser_send_ts": browser_ts,
+        "browser_send_had_occurred": had_prior_send,
+    }
+    callbacks = list(session.get(MATRIX_CALLBACKS_KEY) or [])
+    callbacks.append(row)
+    session[MATRIX_CALLBACKS_KEY] = callbacks[-50:]
+    session[f"{key}_matrix_callback_count"] = seq
+    _append_log(session, "matrix_callback", cell=cell, widget_key=key, **row)
+
+
+def _simple_matrix_deliver(st: Any, session: dict[str, Any], raw: Any, key: str, *, cell: str) -> None:
+    expected = str(session.get("_solo_wiring_matrix_expected_token") or "")
+    _matrix_on_change(st, session, key=key, cell=cell, expected_token=expected, source="streamlit_on_change")
 
 
 def _mount_a1_minimal_direct(st: Any, session: dict[str, Any], *, key: str, token: str, cell: str) -> Any:
@@ -143,7 +214,14 @@ def _mount_a1_minimal_direct(st: Any, session: dict[str, Any], *, key: str, toke
 
 
 def _mount_b1_production_direct(
-    st: Any, session: dict[str, Any], room: dict[str, Any], *, key: str, token: str, cell: str
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    key: str,
+    token: str,
+    cell: str,
+    chain_persist_key: str = "",
 ) -> Any:
     from solo_countdown_component import mount_solo_countdown_wake_direct
 
@@ -157,6 +235,7 @@ def _mount_b1_production_direct(
         expire_token=token,
         on_change=_on_change,
         actionable=True,
+        chain_persist_key=chain_persist_key,
     )
 
 
@@ -197,7 +276,14 @@ def _mount_a2_minimal_micro_wrapper(
 
 
 def _mount_b2_production_micro(
-    st: Any, session: dict[str, Any], room: dict[str, Any], *, key: str, token: str, cell: str
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    key: str,
+    token: str,
+    cell: str,
+    chain_persist_key: str = "",
 ) -> None:
     from solo_countdown_wake_micro_core import render_micro_isolation_once
 
@@ -220,7 +306,7 @@ def _mount_b2_production_micro(
         production_delivery_only=False,
         deliver_callback=_deliver,
         suppress_immediate_session_on_change=True,
-        chain_persist_key="",
+        chain_persist_key=chain_persist_key,
     )
 
 
@@ -267,10 +353,12 @@ def try_wiring_matrix_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
         token, deadline = build_synthetic_matrix_token(cell)
         session["_solo_wiring_matrix_expected_token"] = token
 
+    ls_key = resolve_matrix_ls_key(st, session, cell)
     session[MATRIX_META_KEY] = {
         "mode": "synthetic",
         "cell": cell,
         "widget_key": key,
+        "local_storage_key": ls_key,
         "expire_token": token,
         "deadline_unix": deadline,
         "actionable": True,
@@ -310,21 +398,34 @@ def try_wiring_matrix_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
         on_change_registered=True,
     )
 
+    already_mounted = bool(session.get(MATRIX_MOUNTED_KEY))
+    if not already_mounted:
+        _clear_widget_session_value(st, session, key)
+
     comp_return: Any = None
-    if cell == "A1":
-        comp_return = _mount_a1_minimal_direct(st, session, key=key, token=token, cell=cell)
-    elif cell == "B1":
-        comp_return = _mount_b1_production_direct(st, session, room_dict, key=key, token=token, cell=cell)
-    elif cell == "A2":
-        comp_return = _mount_a2_minimal_micro_wrapper(st, session, room_dict, key=key, token=token, cell=cell)
-    elif cell == "B2":
-        _mount_b2_production_micro(st, session, room_dict, key=key, token=token, cell=cell)
+    if not already_mounted:
+        if cell == "A1":
+            comp_return = _mount_a1_minimal_direct(st, session, key=key, token=token, cell=cell)
+        elif cell == "B1":
+            comp_return = _mount_b1_production_direct(
+                st, session, room_dict, key=key, token=token, cell=cell, chain_persist_key=ls_key
+            )
+        elif cell == "A2":
+            comp_return = _mount_a2_minimal_micro_wrapper(st, session, room_dict, key=key, token=token, cell=cell)
+        elif cell == "B2":
+            _mount_b2_production_micro(
+                st, session, room_dict, key=key, token=token, cell=cell, chain_persist_key=ls_key
+            )
+            comp_return = st.session_state.get(key) if key in st.session_state else None
+        session[MATRIX_MOUNTED_KEY] = True
+    else:
         comp_return = st.session_state.get(key) if key in st.session_state else None
 
     meta = dict(session.get(MATRIX_META_KEY) or {})
     meta["component_return"] = repr(comp_return)[:400]
     meta["session_state_value"] = repr(st.session_state.get(key))[:400] if key in st.session_state else ""
     meta["callback_count"] = int(session.get(f"{key}_matrix_callback_count") or 0)
+    meta["callback_log"] = list(session.get(MATRIX_CALLBACKS_KEY) or [])
     session[MATRIX_META_KEY] = meta
 
     _append_log(session, "matrix_mount_complete", cell=cell, widget_key=key, expire_token=token[:400])
