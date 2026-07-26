@@ -372,6 +372,7 @@ def run_one_test(page, *, mode: str, preflight: dict[str, Any]) -> dict[str, Any
         page.wait_for_timeout(2500)
     except Exception:
         pass
+    page.wait_for_timeout(10000)
 
     sha = scrape_deploy_build(page) or str(preflight.get("cloud_sha") or "")
     sha_short = str(sha).lower()[:7]
@@ -385,7 +386,7 @@ def run_one_test(page, *, mode: str, preflight: dict[str, Any]) -> dict[str, Any
             "mode": mode,
         }
 
-    cleanup = ensure_fresh_setup_lobby(page)
+    cleanup = ensure_fresh_setup_lobby(page, max_wait_s=240)
     if not cleanup.get("ok"):
         return {"aborted": True, "reason": "cleanup_failed", "cleanup": cleanup, "mode": mode}
 
@@ -429,15 +430,15 @@ def main() -> int:
         )
         page = context.new_page()
 
+        test_b = run_one_test(page, mode="production", preflight=pre)
+        summary["test_b_production_only"] = test_b
+        OUT_B.write_text(json.dumps(test_b, indent=2, default=str), encoding="utf-8")
+
+        page.wait_for_timeout(8000)
         test_a = run_one_test(page, mode="minimal", preflight=pre)
         summary["test_a_minimal_only"] = test_a
         OUT_A.parent.mkdir(parents=True, exist_ok=True)
         OUT_A.write_text(json.dumps(test_a, indent=2, default=str), encoding="utf-8")
-
-        page.wait_for_timeout(5000)
-        test_b = run_one_test(page, mode="production", preflight=pre)
-        summary["test_b_production_only"] = test_b
-        OUT_B.write_text(json.dumps(test_b, indent=2, default=str), encoding="utf-8")
 
         context.close()
         browser.close()

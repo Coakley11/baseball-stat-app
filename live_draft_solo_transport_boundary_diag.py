@@ -258,6 +258,10 @@ def record_transport_post_send_snapshot(
     if meta.get("post_send_snapshot_recorded"):
         return
     send_ts = float(meta.get("client_send_ts") or session.get(TRANSPORT_SEND_TS_KEY) or 0)
+    prod_exists = production_key in st.session_state
+    min_exists = MINIMAL_WIDGET_KEY in st.session_state
+    prod_raw = st.session_state.get(production_key) if prod_exists else None
+    min_raw = st.session_state.get(MINIMAL_WIDGET_KEY) if min_exists else None
     prod_raw_s = str(prod_raw or "").strip()
     exp_prod = str(expected_production_token or "").strip()
     after_send = bool(send_ts and time.time() >= send_ts) or bool(exp_prod and prod_raw_s == exp_prod)
@@ -268,10 +272,6 @@ def record_transport_post_send_snapshot(
     if not after_send:
         return
     run_n = bump_transport_script_run(session)
-    prod_exists = production_key in st.session_state
-    min_exists = MINIMAL_WIDGET_KEY in st.session_state
-    prod_raw = st.session_state.get(production_key) if prod_exists else None
-    min_raw = st.session_state.get(MINIMAL_WIDGET_KEY) if min_exists else None
     _append_log(
         session,
         "python_post_send_snapshot",
