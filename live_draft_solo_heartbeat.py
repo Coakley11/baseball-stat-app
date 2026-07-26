@@ -631,6 +631,14 @@ def solo_cloud_page_poll_active(session: dict[str, Any], room: dict[str, Any] | 
 def render_solo_expire_owner(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
     """Mount exactly one Solo server expiration owner."""
     try:
+        from live_draft_solo_wiring_matrix_diag import try_wiring_matrix_ldr_entry, wiring_matrix_active
+
+        if wiring_matrix_active(st, session):
+            try_wiring_matrix_ldr_entry(st, session, room)
+            return
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_persistent_wake import solo_persistent_wake_active
 
         if solo_persistent_wake_active(session):

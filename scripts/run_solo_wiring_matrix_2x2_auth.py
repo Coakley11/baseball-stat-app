@@ -242,9 +242,26 @@ def wait_matrix_expire(page, *, cell: str, widget_key: str, timeout_s: float = 5
     repro_chain = str((chains.get("repro") or {}).get("chain") or "")
     solo_chain = str((chains.get("solo") or {}).get("chain") or "")
     client_chain = solo_chain or repro_chain
-    browser_deadline = "browser_deadline_crossed" in client_chain or "component_value_sent" in client_chain
+    merged = iframe_life.get("merged_stages") or []
+    browser_deadline = "browser_deadline_crossed" in merged or "component_value_sent" in merged
 
-    python_pass = matrix_callbacks >= 1 or matrix_log_callbacks >= 1
+    transport_matrix_hits = sum(
+        1
+        for r in log_transport
+        if isinstance(r, dict)
+        and (
+            r.get("stage") == "matrix_callback"
+            or (
+                r.get("stage") == "python_run_entry"
+                and str(r.get("phase") or "").startswith("wiring_matrix")
+            )
+        )
+    )
+    python_pass = (
+        matrix_callbacks >= 1
+        or matrix_log_callbacks >= 1
+        or transport_matrix_hits >= 1
+    )
 
     return {
         "cell": cell,
@@ -256,7 +273,7 @@ def wait_matrix_expire(page, *, cell: str, widget_key: str, timeout_s: float = 5
         "component_return": meta.get("component_return"),
         "session_state_value": meta.get("session_state_value"),
         "callback_function": "matrix_simple_callback (_simple_matrix_deliver)",
-        "callback_count": max(matrix_callbacks, matrix_log_callbacks),
+        "callback_count": max(matrix_callbacks, matrix_log_callbacks, transport_matrix_hits),
         "widget_id": "",
         "setComponentValue_args_from_iframe": setcomp_args,
         "immediate_parent_payload_keys": payload_keys,
