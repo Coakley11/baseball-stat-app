@@ -363,9 +363,12 @@ def try_parity_ladder_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
         from live_draft_solo_delivery_diag import delivery_diag_active
 
         if not delivery_diag_active(st, session):
-            return False
+            if not _qp_get(st, PARITY_QP).strip():
+                return False
+            session["_solo_delivery_diag_enabled"] = True
     except ImportError:
-        pass
+        if not _qp_get(st, PARITY_QP).strip():
+            return False
 
     session[PARITY_CONTROL_KEY] = control
     session["_solo_persistent_wake_flush_disabled"] = control not in ("P6",)

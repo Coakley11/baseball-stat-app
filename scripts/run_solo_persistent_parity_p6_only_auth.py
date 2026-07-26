@@ -93,6 +93,8 @@ def score_p6_verdicts(
     prod_cb = production_callback_count(meta=meta, stage1=stage1, transport_meta=transport_meta)
     if prod_cb >= 1:
         peak["on_change_callback"] = max(int(peak.get("on_change_callback") or 0), prod_cb)
+    if prod_cb >= 1:
+        peak["on_change_callback"] = max(int(peak.get("on_change_callback") or 0), prod_cb)
     transport = dual_verdicts(peak, cell="B2", expected_token=expected)
     callbacks = stage1.get("callbacks") if isinstance(stage1.get("callbacks"), list) else []
     last = callbacks[-1] if callbacks else {}

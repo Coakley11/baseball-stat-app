@@ -303,6 +303,22 @@ def scrape_stage1_audit(page) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def scrape_transport_boundary_meta(page) -> dict[str, Any]:
+    raw = page.evaluate(
+        """() => {
+          function roots(){const o=[document]; for (const f of document.querySelectorAll('iframe')){try{o.push(f.contentDocument)}catch(e){}} return o.filter(Boolean);}
+          for (const r of roots()) {
+            const el = r.querySelector('#solo-transport-boundary-diag');
+            if (!el) continue;
+            const b64 = el.getAttribute('data-b64')||'';
+            try { return b64 ? JSON.parse(atob(b64)) : {}; } catch(e) { return {err:String(e)}; }
+          }
+          return {};
+        }"""
+    )
+    return raw if isinstance(raw, dict) else {}
+
+
 def run_control(browser, control: str, *, deploy: dict[str, Any]) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
 
