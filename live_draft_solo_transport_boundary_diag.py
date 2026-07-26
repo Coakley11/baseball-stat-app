@@ -20,6 +20,74 @@ PARENT_LS_KEY = "solo_transport_parent_log"
 IFRAME_TRANSPORT_LS_KEY = "solo_transport_iframe_log"
 
 
+TRANSPORT_ISOLATED_SESSION_KEY = "_solo_transport_isolated_mode"
+
+
+def _qp_get(st: Any | None, name: str) -> str:
+    if st is None:
+        return ""
+    try:
+        from live_draft_cloud_diagnostics import _qp_get as get_qp
+
+        return get_qp(st, name)
+    except ImportError:
+        return ""
+
+
+def transport_isolated_mode(st: Any | None, session: dict[str, Any]) -> str:
+    """Query ?solo_transport_isolated=minimal|production (requires solo_component_diag=1)."""
+    cached = str(session.get(TRANSPORT_ISOLATED_SESSION_KEY) or "").strip().lower()
+    if cached in ("minimal", "production"):
+        return cached
+    if not transport_boundary_active(st, session):
+        return ""
+    raw = _qp_get(st, "solo_transport_isolated").strip().lower()
+    if raw in ("minimal", "production"):
+        session[TRANSPORT_ISOLATED_SESSION_KEY] = raw
+        return raw
+    return ""
+
+
+def mount_transport_isolated_minimal_only(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    expire_token: str,
+) -> None:
+    """Single minimal_wake_repro mount — no production countdown, no pick processing."""
+    if not transport_boundary_active(st, session):
+        return
+    from minimal_component_wake_repro_core import mount_single_for_transport
+
+    minimal_token = build_minimal_control_token(expire_token)
+    session[f"{TRANSPORT_META_KEY}_minimal_token"] = minimal_token
+    session["_solo_persistent_wake_flush_disabled"] = True
+    session["_solo_transport_isolated_minimal_no_pick"] = True
+
+    def _minimal_on_change() -> None:
+        session[f"{MINIMAL_CALLBACK_FLAG}_count"] = int(session.get(f"{MINIMAL_CALLBACK_FLAG}_count") or 0) + 1
+        raw = st.session_state.get(MINIMAL_WIDGET_KEY)
+        record_minimal_control_delivery(session, raw=raw, token=minimal_token)
+
+    if not session.get(f"{MINIMAL_WIDGET_KEY}_mounted"):
+        mount_single_for_transport(
+            st,
+            widget_key=MINIMAL_WIDGET_KEY,
+            expire_token=minimal_token,
+            on_change=_minimal_on_change,
+        )
+        session[f"{MINIMAL_WIDGET_KEY}_mounted"] = True
+        session[MINIMAL_CALLBACK_FLAG] = True
+        _append_log(
+            session,
+            "minimal_isolated_mounted",
+            widget_key=MINIMAL_WIDGET_KEY,
+            expire_token=minimal_token[:400],
+            component_name="minimal_wake_repro",
+            isolated_mode="minimal",
+        )
+
+
 def transport_boundary_active(st: Any | None, session: dict[str, Any]) -> bool:
     try:
         from live_draft_solo_component_diagnostics import solo_component_diag_enabled

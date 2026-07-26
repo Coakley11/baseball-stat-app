@@ -79,8 +79,51 @@ _INSTALL_IMMEDIATE_PARENT_JS = """
     if (!d || typeof d !== "object") return [];
     try { return Object.keys(d).slice(0, 30); } catch (e) { return []; }
   }
+  function iframeAssociation(source) {
+    const iframes = document.querySelectorAll("iframe");
+    for (let i = 0; i < iframes.length; i++) {
+      const el = iframes[i];
+      try {
+        if (el.contentWindow !== source) continue;
+        let instanceId = "";
+        let widgetHostId = "";
+        let componentMounted = false;
+        try {
+          const doc = el.contentDocument;
+          const solo = doc && doc.getElementById("solo-expire-client");
+          const repro = doc && doc.getElementById("repro-client");
+          componentMounted = !!(solo || repro);
+          if (solo) {
+            instanceId = String(solo.getAttribute("data-iframe-instance") || "");
+            widgetHostId = "solo-expire-client";
+          } else if (repro) {
+            widgetHostId = "repro-client";
+          }
+        } catch (e) {}
+        return {
+          source_matches_content_window: true,
+          iframe_is_connected: !!el.isConnected,
+          iframe_instance_id: instanceId,
+          component_widget_host_id: widgetHostId,
+          component_mounted_in_iframe: componentMounted,
+          child_iframe_dom_index: i,
+          child_src: sanitizeUrl(el.src || ""),
+        };
+      } catch (e) {}
+    }
+    return {
+      source_matches_content_window: false,
+      iframe_is_connected: false,
+      iframe_instance_id: "",
+      component_widget_host_id: "",
+      component_mounted_in_iframe: false,
+      child_iframe_dom_index: -1,
+      child_src: "",
+    };
+  }
   function onMsg(ev) {
     const d = ev && ev.data;
+    const assoc = iframeAssociation(ev.source);
     const hint = childHint(ev.source);
     const val = d && d.value;
     const valStr = typeof val === "string" ? val : "";
@@ -98,8 +141,9 @@ _INSTALL_IMMEDIATE_PARENT_JS = """
       payload_key_names: payloadKeyNames(d),
       value_equals_expected_token: false,
       value_preview: valStr.slice(0, 120),
-      child_iframe_dom_index: hint.child_iframe_dom_index,
-      child_src: hint.child_src,
+      iframe_association: assoc,
+      child_iframe_dom_index: hint.child_iframe_dom_index >= 0 ? hint.child_iframe_dom_index : assoc.child_iframe_dom_index,
+      child_src: hint.child_src || assoc.child_src,
     };
     const expected = String(childMeta.expected_token || "");
     if (expected && valStr === expected) row.value_equals_expected_token = true;

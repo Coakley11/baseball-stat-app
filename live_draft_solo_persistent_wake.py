@@ -500,6 +500,15 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
     if transport_boundary_active(st, session):
         render_transport_parent_listener(st)
 
+    isolated = ""
+    try:
+        from live_draft_solo_transport_boundary_diag import mount_transport_isolated_minimal_only, transport_isolated_mode
+
+        isolated = transport_isolated_mode(st, session)
+    except ImportError:
+        mount_transport_isolated_minimal_only = lambda *a, **k: None  # type: ignore[assignment,misc]
+        transport_isolated_mode = lambda _s, _sess: ""  # type: ignore[assignment,misc]
+
     from solo_countdown_wake_micro_core import render_micro_isolation_once
 
     room_dict = _resolve_room(session, room)
@@ -557,9 +566,37 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         production_key=key,
         expected_token=expire_token,
         phase="pre_mount",
-        on_change_registered=True,
+        on_change_registered=isolated != "minimal",
         expected_minimal_token=minimal_token_expected,
     )
+
+    if isolated == "minimal":
+        from live_draft_solo_transport_boundary_diag import (
+            MINIMAL_WIDGET_KEY,
+            build_minimal_control_token,
+        )
+
+        min_tok = minimal_token_expected or build_minimal_control_token(expire_token)
+        mount_transport_isolated_minimal_only(st, session, expire_token=expire_token)
+        record_transport_python_run(
+            st,
+            session,
+            production_key=MINIMAL_WIDGET_KEY,
+            expected_token=min_tok,
+            phase="post_mount_minimal_isolated",
+            on_change_registered=True,
+            expected_minimal_token=min_tok,
+        )
+        render_transport_boundary_probe(st, session)
+        render_persistent_wake_lifecycle_probe(
+            st,
+            session,
+            widget_key=MINIMAL_WIDGET_KEY,
+            actionable=True,
+            phase="minimal_isolated",
+            expire_token=minimal_token_expected or expire_token,
+        )
+        return True
 
     _ = render_micro_isolation_once(
         st,
@@ -595,13 +632,14 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         mount_location="ldr_page_entry_early_persistent",
     )
     if actionable and expire_token and expire_token != SOLO_INERT_EXPIRE_TOKEN:
-        mount_transport_minimal_control(
-            st,
-            session,
-            props_room if isinstance(props_room, dict) else {},
-            production_expire_token=expire_token,
-            chain_persist_key=persist_key,
-        )
+        if isolated != "production":
+            mount_transport_minimal_control(
+                st,
+                session,
+                props_room if isinstance(props_room, dict) else {},
+                production_expire_token=expire_token,
+                chain_persist_key=persist_key,
+            )
     record_transport_python_run(
         st,
         session,
