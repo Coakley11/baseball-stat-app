@@ -1,4 +1,4 @@
-74c844d  # auto-generated; Streamlit Cloud reads this at runtime (P6 dual-session observer 2026-07-26)
+c72068c  # auto-generated; Streamlit Cloud reads this at runtime (P6 writer-session stale-key test 2026-07-26)
 
 
 
