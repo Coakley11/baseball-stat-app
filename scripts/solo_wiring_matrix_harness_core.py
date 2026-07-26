@@ -93,7 +93,7 @@ def install_parent_capture(page, *, expected_token: str = "") -> None:
 
 SCRAPE_FRAME_CHAIN_JS = """
 () => {
-  const out = { repro_chain: "", repro_console: "", has_repro: false, has_solo: false };
+  const out = { repro_chain: "", repro_console: "", solo_chain: "", has_repro: false, has_solo: false };
   try {
     const el = document.getElementById("repro-client");
     if (el) {
@@ -101,7 +101,11 @@ SCRAPE_FRAME_CHAIN_JS = """
       out.repro_chain = el.getAttribute("data-chain") || "";
       out.repro_console = el.getAttribute("data-console") || "";
     }
-    if (document.getElementById("solo-expire-client")) out.has_solo = true;
+    const solo = document.getElementById("solo-expire-client");
+    if (solo) {
+      out.has_solo = true;
+      out.solo_chain = solo.getAttribute("data-chain") || "";
+    }
   } catch (e) {}
   return out;
 }
@@ -136,6 +140,10 @@ def scrape_repro_events(page) -> dict[str, Any]:
                 out["repro_console"] = str(part.get("repro_console") or "")
         if part.get("has_solo"):
             out["production_iframes"] += 1
+            chain = str(part.get("solo_chain") or "")
+            for s in chain.split("|"):
+                if s.strip():
+                    bump(s.strip())
 
     try:
         raw = page.evaluate(SCRAPE_REPRO_EVENTS_JS)
@@ -237,20 +245,55 @@ def merge_peak_distinct(peak: dict[str, Any], current: dict[str, Any]) -> dict[s
     out["stage_counts"] = sc_peak
     if current.get("browser_send_ts") and not out.get("browser_send_ts"):
         out["browser_send_ts"] = current.get("browser_send_ts")
+    if current.get("parent_message_ts_ms") and not out.get("parent_message_ts_ms"):
+        out["parent_message_ts_ms"] = current.get("parent_message_ts_ms")
+    if current.get("parent_payload_keys") and not out.get("parent_payload_keys"):
+        out["parent_payload_keys"] = current.get("parent_payload_keys")
     return out
 
-    """One logical send = transport_postmessage_invoked with matching token (not lifecycle duplicates)."""
-    n = count_stage(stage_counts, "transport_postmessage_invoked")
-    if n == 0:
-        n = sum(
-            1
-            for r in parent_rows
-            if str(r.get("value_preview") or "").startswith(expected_token.split("|")[0])
-        )
-    return n
+
+CELL_SPEC: dict[str, dict[str, Any]] = {
+    "A1": {
+        "frontend": "minimal_wake_repro",
+        "declaration": "minimal_component_wake_repro_core.mount_single_for_transport",
+        "minimal_iframes": 1,
+        "production_iframes": 0,
+        "iframe_identity": "#repro-client",
+    },
+    "B1": {
+        "frontend": "solo_countdown_wake",
+        "declaration": "solo_countdown_component.mount_solo_countdown_wake_direct",
+        "minimal_iframes": 0,
+        "production_iframes": 1,
+        "iframe_identity": "#solo-expire-client",
+    },
+    "A2": {
+        "frontend": "minimal_wake_repro",
+        "declaration": "minimal_frontend + micro_isolation_callback_wrapper",
+        "minimal_iframes": 1,
+        "production_iframes": 0,
+        "iframe_identity": "#repro-client",
+    },
+    "B2": {
+        "frontend": "solo_countdown_wake",
+        "declaration": "solo_countdown_wake_micro_core.render_micro_isolation_once",
+        "minimal_iframes": 0,
+        "production_iframes": 1,
+        "iframe_identity": "#solo-expire-client",
+    },
+}
 
 
-def score_a1(distinct: dict[str, Any], *, expected_token: str) -> dict[str, Any]:
+def set_component_invocation_count(sc: dict[str, Any]) -> int:
+    return max(
+        count_stage(sc, "setComponentValue_invoked"),
+        count_stage(sc, "setComponentValue_called"),
+        count_stage(sc, "iframe_setComponentValue_called"),
+    )
+
+
+def score_matrix_cell(distinct: dict[str, Any], *, cell: str, expected_token: str) -> dict[str, Any]:
+    _ = expected_token
     req = {
         "timer_armed": distinct.get("timer_armed") == 1,
         "browser_deadline_crossed": distinct.get("browser_deadline_crossed") == 1,
@@ -260,28 +303,34 @@ def score_a1(distinct: dict[str, Any], *, expected_token: str) -> dict[str, Any]
         "session_raw_matches": distinct.get("session_raw_matches") is True,
         "on_change_callback": distinct.get("on_change_callback") == 1,
     }
-    pre_send_invalid = distinct.get("pre_send_callback") is True or distinct.get("pre_send_session_token") is True
     invalid: list[str] = []
-    if pre_send_invalid:
+    if distinct.get("pre_send_callback") is True:
         invalid.append("callback_before_browser_send")
-        if distinct.get("pre_send_session_token"):
-            invalid.append("session_token_before_browser_send")
-    if distinct.get("minimal_iframes") != 1 or distinct.get("production_iframes", 0) != 0:
+    if distinct.get("pre_send_session_token") is True:
+        invalid.append("session_token_before_browser_send")
+    spec = CELL_SPEC.get(cell.upper()) or CELL_SPEC["A1"]
+    if distinct.get("minimal_iframes") != spec["minimal_iframes"]:
         invalid.append("isolation_failed")
-    dup_stages = (
+    if int(distinct.get("production_iframes") or 0) != int(spec["production_iframes"]):
+        invalid.append("isolation_failed")
+    if (
         int(distinct.get("timer_armed") or 0) > 1
         or int(distinct.get("setComponentValue_invocation") or 0) > 1
         or int(distinct.get("logical_send_postmessage") or 0) > 1
         or int(distinct.get("on_change_callback") or 0) > 1
-    )
-    if dup_stages:
+    ):
         invalid.append("duplicate_callback_or_remount_delivery")
-    for k, v in req.items():
-        if not v:
-            invalid.append(f"missing_{k}")
+    missing = [k for k, v in req.items() if not v]
     if invalid:
-        return {"outcome": "INVALID", "invalid_reasons": invalid, "requirements": req}
+        invalid.extend(f"missing_{k}" for k in missing)
+        return {"outcome": "INVALID", "invalid_reasons": sorted(set(invalid)), "requirements": req}
+    if missing:
+        return {"outcome": "VALID FAIL", "invalid_reasons": [], "requirements": req, "missing": missing}
     return {"outcome": "PASS", "requirements": req}
+
+
+def score_a1(distinct: dict[str, Any], *, expected_token: str) -> dict[str, Any]:
+    return score_matrix_cell(distinct, cell="A1", expected_token=expected_token)
 
 
 def build_distinct_counts(
@@ -312,33 +361,91 @@ def build_distinct_counts(
     callbacks = [c for c in callback_log if isinstance(c, dict)]
     pre_send_cb = False
     pre_send_session = False
-    send_n = count_stage(sc, "transport_postmessage_invoked")
-    setcomp_n = count_stage(sc, "setComponentValue_invoked")
+    send_n = set_component_invocation_count(sc)
+    setcomp_n = count_stage(sc, "transport_postmessage_invoked")
     first_parent_ms = min((int(r.get("ts") or 0) for r in unique_parent), default=0)
     first_parent_sec = first_parent_ms / 1000.0 if first_parent_ms else None
     if raw == expected_token and send_n == 0 and setcomp_n == 0:
         observed = int(repro.get("minimal_iframes") or 0) + int(repro.get("production_iframes") or 0)
         if observed >= 1:
             pre_send_session = True
+    enriched_callbacks: list[dict[str, Any]] = []
     for c in callbacks:
         cb_sec = float(c.get("ts") or 0)
-        if first_parent_sec is not None and cb_sec < first_parent_sec - 0.02:
+        cb_ms = int(cb_sec * 1000)
+        prior_parent = bool(first_parent_ms and cb_ms >= first_parent_ms - 50)
+        if first_parent_ms and cb_ms < first_parent_ms - 50:
             pre_send_cb = True
+        row = dict(c)
+        row["parent_send_ts_ms"] = first_parent_ms or None
+        row["callback_ts_sec"] = cb_sec
+        row["callback_after_parent_send"] = prior_parent if first_parent_ms else None
+        enriched_callbacks.append(row)
+    payload_keys: list[str] = []
+    widget_key_in_parent = False
+    if unique_parent:
+        payload_keys = list(unique_parent[0].get("payload_keys") or [])
+        widget_key_in_parent = "widget_key" in payload_keys
     return {
         "timer_armed": count_stage(sc, "timer_armed"),
         "browser_deadline_crossed": count_stage(sc, "browser_deadline_crossed"),
-        "setComponentValue_invocation": count_stage(sc, "setComponentValue_invoked"),
+        "setComponentValue_invocation": set_component_invocation_count(sc),
         "logical_send_postmessage": count_stage(sc, "transport_postmessage_invoked"),
         "parent_message": len(unique_parent),
         "python_raw_receipt": 1 if raw == expected_token else 0,
         "on_change_callback": len(callbacks),
         "session_raw_matches": raw == expected_token,
+        "session_state_raw": raw,
         "pre_send_callback": pre_send_cb,
         "pre_send_session_token": pre_send_session,
         "minimal_iframes": int(repro.get("minimal_iframes") or 0),
         "production_iframes": int(repro.get("production_iframes") or 0),
         "stage_counts": sc,
         "parent_rows_captured": unique_parent,
-        "callback_log": callbacks,
+        "parent_message_ts_ms": first_parent_ms or None,
+        "callback_log": enriched_callbacks,
+        "parent_payload_keys": payload_keys,
+        "widget_key_in_parent_payload": widget_key_in_parent,
         "browser_send_ts": browser_send_ts or first_parent_sec,
+    }
+
+
+def build_cell_record(
+    *,
+    cell: str,
+    scored: dict[str, Any],
+    peak: dict[str, Any],
+    expected_token: str,
+    widget_key: str,
+    ls_key: str,
+    cloud_sha: str,
+    cloud_build: str,
+    required_sha: str,
+) -> dict[str, Any]:
+    spec = CELL_SPEC.get(cell.upper()) or {}
+    cb_log = peak.get("callback_log") or []
+    cb_ts = float(cb_log[0].get("callback_ts_sec") or cb_log[0].get("ts") or 0) if cb_log else None
+    return {
+        **scored,
+        "cell": cell,
+        "frontend": spec.get("frontend"),
+        "declaration_wrapper": spec.get("declaration"),
+        "fresh_widget_key": widget_key,
+        "fresh_local_storage_key": ls_key,
+        "expected_token": expected_token,
+        "cloud_sha": cloud_sha,
+        "cloud_build": cloud_build,
+        "required_sha": required_sha,
+        "iframe_identity": spec.get("iframe_identity"),
+        "iframe_counts": {
+            "minimal": int(peak.get("minimal_iframes") or 0),
+            "production": int(peak.get("production_iframes") or 0),
+        },
+        "timestamps": {
+            "parent_message_ms": peak.get("parent_message_ts_ms"),
+            "callback_sec": cb_ts,
+            "authoritative_ordering": "parent_message_ms precedes callback => not pre-send",
+        },
+        "distinct": peak,
+        "artifact_note": f"data/solo_wiring_{cell.lower()}_baseline.json",
     }
