@@ -1,4 +1,4 @@
-c72068c  # auto-generated; Streamlit Cloud reads this at runtime (P6 writer-session stale-key test 2026-07-26)
+9d624a0  # auto-generated; Streamlit Cloud reads this at runtime (P6 run-ID lifecycle reset 2026-07-26)
 
 
 
