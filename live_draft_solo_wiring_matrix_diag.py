@@ -179,25 +179,21 @@ def _mount_a2_minimal_micro_wrapper(
         _ = coerce_token(raw, token)
         _simple_matrix_deliver(st, session, raw, key, cell=cell)
 
-    if not session.get(f"{prefix}mounted"):
-        _append_log(
-            session,
-            "component_declaration_loaded",
-            cell=cell,
-            frontend="minimal_wake_repro",
-            python_declaration="micro_isolation_callback_wrapper",
-            widget_key=key,
-            expire_token=token[:400],
-        )
-        ret = mount_single_for_transport(
-            st,
-            widget_key=key,
-            expire_token=token,
-            on_change=_on_change,
-        )
-        session[f"{prefix}mounted"] = True
-        return ret
-    return st.session_state.get(key) if key in st.session_state else None
+    _append_log(
+        session,
+        "component_declaration_loaded",
+        cell=cell,
+        frontend="minimal_wake_repro",
+        python_declaration="micro_isolation_callback_wrapper",
+        widget_key=key,
+        expire_token=token[:400],
+    )
+    return mount_single_for_transport(
+        st,
+        widget_key=key,
+        expire_token=token,
+        on_change=_on_change,
+    )
 
 
 def _mount_b2_production_micro(
@@ -270,18 +266,6 @@ def try_wiring_matrix_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
     else:
         token, deadline = build_synthetic_matrix_token(cell)
         session["_solo_wiring_matrix_expected_token"] = token
-
-    if session.get("_solo_wiring_synthetic_mount_done"):
-        meta = dict(session.get(MATRIX_META_KEY) or {})
-        meta["callback_count"] = int(session.get(f"{key}_matrix_callback_count") or 0)
-        meta["session_state_value"] = repr(st.session_state.get(key))[:400] if key in st.session_state else ""
-        session[MATRIX_META_KEY] = meta
-        render_wiring_matrix_probe(st, session)
-        if transport_logging_active(st, session):
-            render_transport_boundary_probe(st, session)
-        return True
-
-    session["_solo_wiring_synthetic_mount_done"] = True
 
     session[MATRIX_META_KEY] = {
         "mode": "synthetic",

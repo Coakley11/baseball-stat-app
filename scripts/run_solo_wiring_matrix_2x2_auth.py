@@ -195,7 +195,13 @@ def _setcomp_count(stages: set[str], iframe_life: dict[str, Any]) -> int:
 
 def wait_synthetic_expire(page, *, cell: str, widget_key: str, expected_token: str) -> dict[str, Any]:
     install_immediate_parent_listeners(page)
-    iso_pre = assess_isolation(page, cell=cell)
+    iso_pre: dict[str, Any] = {"isolation_ok": False}
+    t_iso = time.time()
+    while time.time() - t_iso < 25.0:
+        iso_pre = assess_isolation(page, cell=cell)
+        if iso_pre.get("isolation_ok"):
+            break
+        page.wait_for_timeout(2000)
     if not iso_pre.get("isolation_ok"):
         return {
             "outcome": "INVALID",
