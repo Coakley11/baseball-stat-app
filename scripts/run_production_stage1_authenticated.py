@@ -241,6 +241,12 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
         transport = scrape_transport_boundary(page)
         if transport:
             best_transport = transport
+        try:
+            topo_snap = collect_frame_topology(page)
+            if (topo_snap.get("frame_count") or 0) >= 5:
+                snap["frame_topology"] = topo_snap
+        except Exception:
+            pass
         if audit:
             best_audit = audit
         merged_client = scrape_client_chain(page) or client
@@ -283,6 +289,13 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
     transport_final = scrape_transport_boundary(page) or best_transport
     frame_topology_final = collect_frame_topology(page)
     immediate_parent_messages = scrape_immediate_parent_messages(page)
+    # Prefer topology captured while component iframes are still attached (Playwright detaches on teardown).
+    if (frame_topology_final.get("frame_count") or 0) < 5:
+        for snap in reversed(samples):
+            topo = (snap.get("frame_topology") or {}) if isinstance(snap, dict) else {}
+            if (topo.get("frame_count") or 0) >= 5:
+                frame_topology_final = topo
+                break
     state_after = scrape_timer_fields(page)
     pick_after = state_after.get("pick")
     deadline_after = (state_after.get("mount_diag") or {}).get("diag_deadline") or state_after.get("timer")

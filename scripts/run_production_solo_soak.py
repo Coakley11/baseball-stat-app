@@ -240,21 +240,26 @@ def scrape_transport_boundary(page) -> dict[str, Any]:
 
         raw = page.evaluate(
             """() => {
+              function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
               const out = { parent_log: [], probe: {}, parent_chain: "" };
               try {
                 const pl = JSON.parse(localStorage.getItem("solo_transport_parent_log") || "[]");
                 if (Array.isArray(pl)) out.parent_log = pl;
               } catch (e) {}
-              try {
-                const el = document.querySelector("#solo-transport-boundary-diag");
-                if (el) {
-                  out.script_run = el.getAttribute("data-script-run") || "";
-                  const b64 = el.getAttribute("data-b64") || "";
-                  if (b64) out.probe_b64 = b64;
-                }
-              } catch (e) {}
-              const pel = document.querySelector("#solo-transport-boundary-diag-parent");
-              if (pel) out.parent_chain = pel.getAttribute("data-chain") || "";
+              for (const root of roots()) {
+                try {
+                  const el = root.querySelector("#solo-transport-boundary-diag");
+                  if (el) {
+                    out.script_run = el.getAttribute("data-script-run") || "";
+                    const b64 = el.getAttribute("data-b64") || "";
+                    if (b64) out.probe_b64 = b64;
+                  }
+                } catch (e) {}
+                try {
+                  const pel = root.querySelector("#solo-transport-boundary-diag-parent");
+                  if (pel) out.parent_chain = pel.getAttribute("data-chain") || out.parent_chain || "";
+                } catch (e2) {}
+              }
               return out;
             }"""
         )
