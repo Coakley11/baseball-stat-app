@@ -1,10 +1,8 @@
-f9978ab  # auto-generated; Streamlit Cloud reads this at runtimef9978ab dev
-  # auto-generated; Streamlit Cloud reads this at runtime
+f9978ab  # auto-generated; Streamlit Cloud reads this at runtime
 
 
 
 branch: dev
-
 
 
 
