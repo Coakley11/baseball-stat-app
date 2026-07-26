@@ -1,8 +1,7 @@
-66f85f6  # auto-generated; Streamlit Cloud reads this at runtime (rebuild 2026-07-26)
+3418efd  # auto-generated; Streamlit Cloud reads this at runtime (parity ladder 2026-07-26)
 
 
 
 branch: dev
-
 
 
