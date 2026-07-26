@@ -858,6 +858,8 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
                     expire_token=expire_token,
                     component_return=comp_return,
                     mount_location="ldr_page_entry_isolated_production",
+                    st=st,
+                    component_default=None,
                 )
         except ImportError:
             pass
@@ -927,6 +929,8 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
                 expire_token=expire_token,
                 component_return=comp_return,
                 mount_location="ldr_page_entry_early_persistent",
+                st=st,
+                component_default=None,
             )
     except ImportError:
         pass

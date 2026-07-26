@@ -149,6 +149,10 @@ def compute_pre_send_from_ledger(payload: dict[str, Any], *, browser_send_ts: fl
     return False
 
 
+def _has_stage(rows: list[dict[str, Any]], stage: str) -> bool:
+    return any(isinstance(r, dict) and r.get("stage") == stage for r in rows)
+
+
 def score_p6_from_evidence(
     *,
     peak: dict[str, Any],
@@ -158,6 +162,25 @@ def score_p6_from_evidence(
     browser_send_ts: float | None,
 ) -> dict[str, Any]:
     rows = payload.get("ledger_rows") if isinstance(payload.get("ledger_rows"), list) else []
+    if not _has_stage(rows, "component_declared"):
+        return {
+            "overall": "INVALID_P6_MOUNT_PATH_SKIPPED",
+            "transport_verdict": "INVALID_P6_MOUNT_PATH_SKIPPED",
+            "lifecycle_verdict": peak.get("lifecycle_verdict") if isinstance(peak.get("lifecycle_verdict"), str) else "UNKNOWN",
+            "lifecycle_detail": peak.get("lifecycle_detail") or {},
+            "python_receipt": False,
+            "production_callback_entries": _count_stage_rows(rows, "callback_entry", "on_change_callback_entry"),
+            "ownership_attempt_rows": _count_stage_rows(rows, "ownership_attempted", "ownership_claim_attempted"),
+            "ownership_claim_rows": _count_stage_rows(
+                rows, "ownership_claim_accepted", "ownership_claim_rejected"
+            ),
+            "processing_verdict": "UNKNOWN",
+            "reject_code": "",
+            "pick_processing_disabled": bool(payload.get("pick_processing_disabled")),
+            "pre_send_session_token": compute_pre_send_from_ledger(payload, browser_send_ts=browser_send_ts),
+            "stale_state_finding": payload.get("stale_state") if isinstance(payload.get("stale_state"), dict) else {},
+            "mount_path_note": "component_declared missing before transport/callback grading",
+        }
     cb_entries = _count_stage_rows(rows, "callback_entry", "on_change_callback_entry")
     owner_attempts = _count_stage_rows(rows, "ownership_attempted", "ownership_claim_attempted")
     owner_claims = _count_stage_rows(rows, "ownership_claim_accepted", "ownership_claim_rejected")
@@ -182,6 +205,12 @@ def score_p6_from_evidence(
         and cb_entries == 1
         and owner_attempts >= 1
         and owner_claims >= 1
+        and _has_stage(rows, "initial_widget_state")
+        and _has_stage(rows, "widget_state_after_clear")
+        and bool(payload.get("clear_once_applied"))
+        and int(peak2.get("setComponentValue_invocation") or 0) == 1
+        and int(peak2.get("logical_send_postmessage") or 0) == 1
+        and int(peak2.get("parent_message") or 0) == 1
         and transport.get("transport_verdict") != "INVALID"
     )
     reject = _first_reject_code(rows)

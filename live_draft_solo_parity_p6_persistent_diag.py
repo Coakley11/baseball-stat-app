@@ -18,6 +18,10 @@ P6_WRITER_PROBE_ID = "solo-p6-writer-probe"
 P6_SESSION_LEDGERS_KEY = "_solo_p6_writer_ledgers"
 P6_CLEAR_ONCE_GUARD_KEY = "_solo_p6_permanent_key_clear_run_id"
 P6_SCRIPT_RUN_KEY = "_solo_p6_writer_script_run"
+P6_ACTIVE_RUN_ID_SESSION_KEY = "_solo_p6_active_diagnostic_run_id"
+P6_MOUNTED_RUN_ID_KEY = "_solo_p6_mounted_run_id"
+P6_DIAG_LATCHED_KEY = "_solo_p6_diag_latched"
+P6_DIAG_DELIVERY_SEEN_KEY = "_solo_p6_delivery_seen"
 _MAX_ROWS = 400
 
 
@@ -76,27 +80,105 @@ def parity_p6_pick_processing_disabled(session: dict[str, Any]) -> bool:
 
 
 def p6_persistent_diag_active(st: Any | None, session: dict[str, Any]) -> bool:
-    if session.get("_solo_parity_p6_persistent_diag"):
+    if session.get(P6_DIAG_LATCHED_KEY) or session.get("_solo_parity_p6_persistent_diag"):
+        return True
+    if str(session.get("_solo_parity_ladder_control") or "").strip().upper() == "P6":
         return True
     if st is not None and _qp_get(st, PARITY_QP).strip().upper() == "P6":
         return True
     return parity_p6_active(session)
 
 
-def enable_p6_persistent_diag_from_query(st: Any, session: dict[str, Any]) -> None:
-    rid = _qp_get(st, P6_RUN_ID_QP).strip()
-    if rid:
-        session["_solo_p6_run_id"] = rid
-    if _qp_get(st, PARITY_QP).strip().upper() == "P6":
-        session["_solo_parity_p6_persistent_diag"] = True
-        session["_solo_delivery_diag_enabled"] = True
-        if _qp_flag(st, "solo_transport_probe"):
-            try:
-                from live_draft_solo_transport_boundary_diag import bootstrap_transport_diagnostics
+def reset_p6_diagnostic_lifecycle_for_run_id(session: dict[str, Any], new_run_id: str) -> bool:
+    """Clear P6 diagnostic lifecycle only when solo_p6_run_id changes."""
+    new_run_id = str(new_run_id or "").strip()
+    if not new_run_id:
+        return False
+    prior = str(session.get(P6_ACTIVE_RUN_ID_SESSION_KEY) or "").strip()
+    if prior == new_run_id:
+        return False
+    try:
+        from live_draft_solo_persistent_parity_ladder import (
+            PARITY_HANDLED_WAKE_KEY,
+            PARITY_MOUNTED_KEY,
+            PARITY_P6_CALLBACK_SEQ_KEY,
+            PARITY_P6_DISABLE_PICK_KEY,
+            PARITY_P6_TOKEN_LATCHED_KEY,
+        )
+    except ImportError:
+        PARITY_MOUNTED_KEY = "_solo_parity_ladder_mounted"
+        PARITY_P6_TOKEN_LATCHED_KEY = "_solo_parity_p6_token_latched"
+        PARITY_P6_DISABLE_PICK_KEY = "_solo_parity_p6_disable_pick_processing"
+        PARITY_P6_CALLBACK_SEQ_KEY = "_solo_parity_p6_production_callback_seq"
+        PARITY_HANDLED_WAKE_KEY = "_solo_parity_handled_persistent_wake"
 
-                bootstrap_transport_diagnostics(st, session)
-            except ImportError:
-                pass
+    session.pop(PARITY_MOUNTED_KEY, None)
+    session.pop(P6_MOUNTED_RUN_ID_KEY, None)
+    session.pop(P6_CLEAR_ONCE_GUARD_KEY, None)
+    session.pop(PARITY_P6_TOKEN_LATCHED_KEY, None)
+    session.pop("_solo_parity_expected_token", None)
+    session.pop(SOLO_PERSISTENT_WAKE_TOKEN_KEY, None)
+    session.pop("_solo_parity_p6_deadline", None)
+    session.pop(PARITY_P6_CALLBACK_SEQ_KEY, None)
+    session.pop(PARITY_P6_DISABLE_PICK_KEY, None)
+    session.pop(P6_DIAG_DELIVERY_SEEN_KEY, None)
+    session.pop("_solo_p6_delivery_seen", None)
+    session.pop(PARITY_HANDLED_WAKE_KEY, None)
+    session.pop(P6_SCRIPT_RUN_KEY, None)
+    try:
+        from live_draft_solo_transport_boundary_diag import PRODUCTION_CALLBACK_FLAG
+
+        session.pop(PRODUCTION_CALLBACK_FLAG, None)
+        session.pop(f"{PRODUCTION_CALLBACK_FLAG}_count", None)
+    except ImportError:
+        pass
+    store = session.get(P6_SESSION_LEDGERS_KEY)
+    if isinstance(store, dict):
+        store.pop(new_run_id, None)
+    session[P6_ACTIVE_RUN_ID_SESSION_KEY] = new_run_id
+    session["_solo_p6_run_id"] = new_run_id
+    return True
+
+
+def latch_p6_diag_mode(st: Any, session: dict[str, Any]) -> None:
+    session[P6_DIAG_LATCHED_KEY] = True
+    session["_solo_parity_p6_persistent_diag"] = True
+    session["_solo_parity_ladder_control"] = "P6"
+    session["_solo_delivery_diag_enabled"] = True
+    try:
+        from live_draft_solo_persistent_parity_ladder import PARITY_CONTROL_KEY
+
+        session[PARITY_CONTROL_KEY] = "P6"
+    except ImportError:
+        pass
+    page = _qp_get(st, "active_page").strip()
+    if page:
+        session["active_page"] = page
+
+
+def enable_p6_persistent_diag_from_query(st: Any, session: dict[str, Any]) -> None:
+    qp_control = _qp_get(st, PARITY_QP).strip().upper()
+    rid_qp = _qp_get(st, P6_RUN_ID_QP).strip()
+    if qp_control == "P6":
+        latch_p6_diag_mode(st, session)
+    elif session.get(P6_DIAG_LATCHED_KEY):
+        latch_p6_diag_mode(st, session)
+    rid = rid_qp or str(session.get("_solo_p6_run_id") or "").strip()
+    if rid_qp:
+        reset_p6_diagnostic_lifecycle_for_run_id(session, rid_qp)
+        session["_solo_p6_run_id"] = rid_qp
+        rid = rid_qp
+    if rid and session.get(P6_DIAG_LATCHED_KEY):
+        resolve_p6_run_id(st, session)
+    if not p6_persistent_diag_active(st, session):
+        return
+    if _qp_flag(st, "solo_transport_probe"):
+        try:
+            from live_draft_solo_transport_boundary_diag import bootstrap_transport_diagnostics
+
+            bootstrap_transport_diagnostics(st, session)
+        except ImportError:
+            pass
 
 
 def _expected_token(session: dict[str, Any]) -> str:
@@ -170,7 +252,7 @@ def bump_p6_script_run(st: Any | None, session: dict[str, Any]) -> int:
     resolve_p6_run_id(st, session)
     n = int(session.get(P6_SCRIPT_RUN_KEY) or 0) + 1
     session[P6_SCRIPT_RUN_KEY] = n
-    if session.get("_solo_p6_delivery_seen"):
+    if session.get(P6_DIAG_DELIVERY_SEEN_KEY) or session.get("_solo_p6_delivery_seen"):
         append_p6_ledger_row(
             session,
             "post_delivery_script_run",
@@ -182,6 +264,7 @@ def bump_p6_script_run(st: Any | None, session: dict[str, Any]) -> int:
 
 
 def note_p6_delivery_completed(session: dict[str, Any], *, token: str = "", st: Any | None = None) -> None:
+    session[P6_DIAG_DELIVERY_SEEN_KEY] = True
     session["_solo_p6_delivery_seen"] = True
     append_p6_ledger_row(
         session,
@@ -255,6 +338,8 @@ def record_p6_token_latched(session: dict[str, Any], *, token: str, st: Any | No
 def on_ultra_early_script_run(st: Any, session: dict[str, Any]) -> None:
     if not p6_persistent_diag_active(st, session):
         return
+    if not resolve_p6_run_id(st, session):
+        return
     run_n = bump_p6_script_run(st, session)
     widget_key = SOLO_PERSISTENT_WAKE_WIDGET_KEY
     raw = _widget_raw(st, widget_key)
@@ -267,8 +352,39 @@ def on_ultra_early_script_run(st: Any, session: dict[str, Any]) -> None:
         widget_key=widget_key,
         raw_widget_value=raw,
         script_run=run_n,
-        active_page=str(session.get("active_page") or ""),
+        active_page=str(session.get("active_page") or _qp_get(st, "active_page") or ""),
     )
+    render_p6_writer_probe(st, session)
+
+
+def _room_declaration_fields(session: dict[str, Any], *, expire_token: str) -> dict[str, Any]:
+    live = session.get("live_draft_room")
+    room_id = ""
+    pick_index: Any = None
+    deadline: Any = None
+    if isinstance(live, dict):
+        room_id = str(live.get("draft_room_id") or live.get("draft_id") or "")
+        pick_index = live.get("current_pick_index")
+        deadline = live.get("timer_deadline")
+        try:
+            from live_draft_timer_logic import live_draft_timer_deadline
+
+            deadline = live_draft_timer_deadline(live) or deadline
+        except ImportError:
+            pass
+    if not deadline and expire_token.count("|") >= 2:
+        try:
+            deadline = float(expire_token.split("|")[-1])
+        except ValueError:
+            pass
+    run_id = str(session.get("_solo_p6_run_id") or "")
+    return {
+        "room_id": room_id,
+        "pick_index": pick_index,
+        "deadline": deadline,
+        "diagnostic_run_id": run_id,
+        "on_change_callback": "_production_deliver_callback",
+    }
 
 
 def record_p6_component_declaration(
@@ -279,7 +395,9 @@ def record_p6_component_declaration(
     component_return: Any = None,
     mount_location: str = "",
     st: Any | None = None,
+    component_default: Any = None,
 ) -> None:
+    extra = _room_declaration_fields(session, expire_token=str(expire_token or ""))
     append_p6_ledger_row(
         session,
         "component_declared",
@@ -289,7 +407,8 @@ def record_p6_component_declaration(
         actual_token=str(expire_token or "")[:400],
         component_return=repr(component_return)[:400],
         mount_location=mount_location,
-        component_value_default="None",
+        component_value_default=repr(component_default if component_default is not None else None),
+        **extra,
     )
 
 

@@ -342,6 +342,15 @@ def _run_p6_persistent_wake(st: Any, session: dict[str, Any], room: Any, *, key:
     _snapshot_session(st, session, key, "before_mount")
     try_solo_persistent_wake_ldr_entry(st, session, synth)
     _snapshot_session(st, session, key, "after_mount")
+    session[PARITY_MOUNTED_KEY] = True
+    try:
+        from live_draft_solo_parity_p6_persistent_diag import P6_MOUNTED_RUN_ID_KEY, resolve_p6_run_id
+
+        rid = resolve_p6_run_id(st, session)
+        if rid:
+            session[P6_MOUNTED_RUN_ID_KEY] = rid
+    except ImportError:
+        pass
     try:
         from live_draft_solo_parity_p6_persistent_diag import render_p6_writer_probe
 
@@ -435,13 +444,22 @@ def try_parity_ladder_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
         pass
 
     delivered = key in st.session_state and str(st.session_state.get(key) or "").strip("'\"") == token
-    already = bool(session.get(PARITY_MOUNTED_KEY))
+    try:
+        from live_draft_solo_parity_p6_persistent_diag import P6_MOUNTED_RUN_ID_KEY, resolve_p6_run_id
+
+        p6_run = resolve_p6_run_id(st, session)
+        already = bool(p6_run) and session.get(P6_MOUNTED_RUN_ID_KEY) == p6_run
+    except ImportError:
+        p6_run = ""
+        already = bool(session.get(PARITY_MOUNTED_KEY))
 
     if control == "P6":
         key = SOLO_PERSISTENT_WAKE_WIDGET_KEY
         if not already:
             token = _run_p6_persistent_wake(st, session, room, key=key)
             session[PARITY_MOUNTED_KEY] = True
+            if p6_run:
+                session[P6_MOUNTED_RUN_ID_KEY] = p6_run
         else:
             token = str(session.get("_solo_parity_expected_token") or "")
         live = session.get("live_draft_room")
@@ -465,9 +483,9 @@ def try_parity_ladder_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
         except ImportError:
             pass
         try:
-            from live_draft_solo_parity_p6_persistent_diag import render_p6_persistent_probe
+            from live_draft_solo_parity_p6_persistent_diag import render_p6_writer_probe
 
-            render_p6_persistent_probe(st, session)
+            render_p6_writer_probe(st, session)
         except ImportError:
             pass
         try:
