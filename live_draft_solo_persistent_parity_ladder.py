@@ -316,7 +316,24 @@ def _mount_b2_style(
 def _run_p6_persistent_wake(st: Any, session: dict[str, Any], room: Any, *, key: str) -> str:
     from live_draft_solo_persistent_wake import try_solo_persistent_wake_ldr_entry
 
+    try:
+        from live_draft_solo_parity_p6_persistent_diag import (
+            apply_p6_clear_once_hygiene,
+            record_p6_token_latched,
+            render_p6_writer_probe,
+        )
+
+        apply_p6_clear_once_hygiene(st, session, widget_key=key)
+    except ImportError:
+        pass
+
     token, synth = ensure_p6_latched_production_token(session)
+    try:
+        from live_draft_solo_parity_p6_persistent_diag import record_p6_token_latched, render_p6_writer_probe
+
+        record_p6_token_latched(session, token=token, st=st)
+    except ImportError:
+        pass
     session[SOLO_PERSISTENT_WAKE_LATCH_KEY] = True
     session["_solo_expire_owner"] = "wake"
     session[PARITY_P6_DISABLE_PICK_KEY] = True
@@ -325,6 +342,12 @@ def _run_p6_persistent_wake(st: Any, session: dict[str, Any], room: Any, *, key:
     _snapshot_session(st, session, key, "before_mount")
     try_solo_persistent_wake_ldr_entry(st, session, synth)
     _snapshot_session(st, session, key, "after_mount")
+    try:
+        from live_draft_solo_parity_p6_persistent_diag import render_p6_writer_probe
+
+        render_p6_writer_probe(st, session)
+    except ImportError:
+        pass
     return token
 
 
@@ -378,7 +401,7 @@ def try_parity_ladder_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
 
     if control == "P6":
         session[PARITY_P6_DISABLE_PICK_KEY] = True
-        token, _synth = ensure_p6_latched_production_token(session)
+        token = str(session.get("_solo_parity_expected_token") or "")
     else:
         latched = str(session.get("_solo_parity_expected_token") or "").strip()
         if latched:
@@ -417,8 +440,6 @@ def try_parity_ladder_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
     if control == "P6":
         key = SOLO_PERSISTENT_WAKE_WIDGET_KEY
         if not already:
-            if key in st.session_state:
-                _clear_widget(st, session, key)
             token = _run_p6_persistent_wake(st, session, room, key=key)
             session[PARITY_MOUNTED_KEY] = True
         else:

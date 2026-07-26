@@ -1,4 +1,4 @@
-"""Rerun production-parity control P6 only — dual-page observer + deduped parent capture."""
+"""P6 same-writer-session stale-key test — poll #solo-p6-writer-probe on authenticated LDR page."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 OUT = ROOT / "data" / "solo_persistent_parity_p6_rerun.json"
-PRIOR_RUN_CLASSIFICATION = "INCONCLUSIVE_DIAGNOSTIC_OBSERVER_FAILURE"
 
 from run_solo_persistent_parity_ladder_auth import (  # noqa: E402
     BASE,
@@ -56,17 +55,12 @@ def p6_writer_url(*, run_id: str, ls_key: str) -> str:
     return append_suite_sid_to_url(f"{BASE}/?{urlencode(q)}")
 
 
-def p6_observer_url(*, run_id: str) -> str:
-    q = {"solo_p6_diag_observer": "1", "solo_p6_run_id": run_id}
-    return f"{BASE}/?{urlencode(q)}"
-
-
-def scrape_p6_observer_payload(page) -> dict[str, Any]:
+def scrape_p6_writer_probe(page) -> dict[str, Any]:
     raw = page.evaluate(
         """() => {
           function roots(){const o=[document]; for (const f of document.querySelectorAll('iframe')){try{o.push(f.contentDocument)}catch(e){}} return o.filter(Boolean);}
           for (const r of roots()) {
-            const el = r.querySelector('#solo-p6-diag-observer');
+            const el = r.querySelector('#solo-p6-writer-probe');
             if (!el) continue;
             const b64 = el.getAttribute('data-b64')||'';
             let payload = null;
@@ -85,15 +79,40 @@ def scrape_p6_observer_payload(page) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {"present": False}
 
 
-def _count_stage_rows(rows: list[dict[str, Any]], stage: str) -> int:
-    return sum(1 for r in rows if isinstance(r, dict) and r.get("stage") == stage)
+def _count_stage_rows(rows: list[dict[str, Any]], *stages: str) -> int:
+    allowed = set(stages)
+    return sum(1 for r in rows if isinstance(r, dict) and r.get("stage") in allowed)
 
 
 def _first_reject_code(rows: list[dict[str, Any]]) -> str:
     for r in reversed(rows):
-        if isinstance(r, dict) and r.get("stage") == "ownership_claim_rejected":
-            return str(r.get("reject_code") or "")
+        if not isinstance(r, dict):
+            continue
+        if r.get("stage") == "ownership_claim_rejected":
+            return str(r.get("rejection_code") or r.get("reject_code") or "")
     return ""
+
+
+def _ordered_ledger(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    order = [
+        "script_begin",
+        "initial_widget_state",
+        "production_token_latched",
+        "widget_state_before_clear",
+        "widget_state_after_clear",
+        "component_declared",
+        "callback_entry",
+        "raw_widget_value",
+        "ownership_attempted",
+        "ownership_claim_accepted",
+        "ownership_claim_rejected",
+        "callback_return",
+        "pick_processing_skipped",
+        "post_delivery_script_run",
+    ]
+    rank = {s: i for i, s in enumerate(order)}
+    filtered = [r for r in rows if isinstance(r, dict) and r.get("stage") in rank]
+    return sorted(filtered, key=lambda r: (rank.get(str(r.get("stage")), 99), float(r.get("ts") or 0)))
 
 
 def python_receipt_from_ledger(payload: dict[str, Any]) -> bool:
@@ -102,10 +121,32 @@ def python_receipt_from_ledger(payload: dict[str, Any]) -> bool:
     return python_receipt_from_payload(payload)
 
 
-def snapshot_meets_capture_criteria(payload: dict[str, Any]) -> bool:
-    from live_draft_solo_parity_p6_persistent_diag import first_nonempty_p6_snapshot_criteria
-
-    return first_nonempty_p6_snapshot_criteria(payload)
+def compute_pre_send_from_ledger(payload: dict[str, Any], *, browser_send_ts: float | None) -> bool:
+    stale = payload.get("stale_state") if isinstance(payload.get("stale_state"), dict) else {}
+    if stale.get("initial_equals_expected"):
+        return True
+    rows = payload.get("ledger_rows") if isinstance(payload.get("ledger_rows"), list) else []
+    expected = str(payload.get("expected_token") or "")
+    if not expected:
+        return False
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        stage = str(r.get("stage") or "")
+        if stage in ("production_token_latched", "component_declared"):
+            ts = float(r.get("ts") or 0)
+            if browser_send_ts and ts < browser_send_ts - 0.05:
+                act = str(r.get("actual_token") or "")
+                if act == expected or expected in act:
+                    return True
+        if stage == "widget_state_before_clear":
+            act = str(r.get("actual_token") or "").strip("'\"")
+            if act == expected:
+                return True
+    widget_raw = str(payload.get("current_widget_raw") or "").strip("'\"")
+    if browser_send_ts and widget_raw == expected:
+        return True
+    return False
 
 
 def score_p6_from_evidence(
@@ -113,30 +154,27 @@ def score_p6_from_evidence(
     peak: dict[str, Any],
     payload: dict[str, Any],
     expected_token: str,
-    observer_present: bool,
+    writer_present: bool,
+    browser_send_ts: float | None,
 ) -> dict[str, Any]:
     rows = payload.get("ledger_rows") if isinstance(payload.get("ledger_rows"), list) else []
-    cb_entries = _count_stage_rows(rows, "on_change_callback_entry")
-    owner_attempts = _count_stage_rows(rows, "ownership_claim_attempted")
-    owner_claims = sum(
-        1
-        for r in rows
-        if isinstance(r, dict)
-        and str(r.get("stage") or "") in ("ownership_claim_accepted", "ownership_claim_rejected")
-    )
+    cb_entries = _count_stage_rows(rows, "callback_entry", "on_change_callback_entry")
+    owner_attempts = _count_stage_rows(rows, "ownership_attempted", "ownership_claim_attempted")
+    owner_claims = _count_stage_rows(rows, "ownership_claim_accepted", "ownership_claim_rejected")
     python_receipt = python_receipt_from_ledger(payload)
+    pre_send = compute_pre_send_from_ledger(payload, browser_send_ts=browser_send_ts)
     peak2 = dict(peak)
+    peak2["pre_send_session_token"] = pre_send
     if python_receipt:
         peak2["python_raw_receipt"] = 1
-        raw = str(payload.get("raw_session_state_value") or "").strip("'\"")
-        peak2["session_raw_matches"] = bool(expected_token and expected_token in raw)
     if cb_entries >= 1:
         peak2["on_change_callback"] = cb_entries
     transport = dual_verdicts(peak2, cell="B2", expected_token=expected_token)
     browser_ok = (
-        int(peak2.get("logical_send_postmessage") or 0) >= 1
-        and int(peak2.get("parent_message") or 0) >= 1
-        and not peak2.get("pre_send_session_token")
+        int(peak2.get("logical_send_postmessage") or 0) == 1
+        and int(peak2.get("setComponentValue_invocation") or 0) == 1
+        and int(peak2.get("parent_message") or 0) == 1
+        and not pre_send
     )
     transport_pass = (
         browser_ok
@@ -144,9 +182,6 @@ def score_p6_from_evidence(
         and cb_entries == 1
         and owner_attempts >= 1
         and owner_claims >= 1
-        and int(peak2.get("setComponentValue_invocation") or 0) == 1
-        and int(peak2.get("logical_send_postmessage") or 0) == 1
-        and int(peak2.get("parent_message") or 0) == 1
         and transport.get("transport_verdict") != "INVALID"
     )
     reject = _first_reject_code(rows)
@@ -160,18 +195,19 @@ def score_p6_from_evidence(
         processing_verdict = "ACCEPTED"
     else:
         processing_verdict = "UNKNOWN"
-    if not observer_present:
-        overall = "INCONCLUSIVE_DIAGNOSTIC_OBSERVER_FAILURE"
-    elif not payload.get("expected_token") and not expected_token:
+    if not writer_present:
         overall = "INCONCLUSIVE_DIAGNOSTIC_PROBE_MISSING"
-    elif not python_receipt and browser_ok:
+    elif not payload.get("ledger_rows") and browser_ok:
         overall = "INCONCLUSIVE_DIAGNOSTIC_PROBE_MISSING"
     elif transport_pass:
         overall = "PASS"
+    elif pre_send:
+        overall = "VALID_FAIL"
     elif transport.get("transport_verdict") == "INVALID":
         overall = "INVALID"
     else:
         overall = "VALID_FAIL"
+    stale = payload.get("stale_state") if isinstance(payload.get("stale_state"), dict) else {}
     return {
         "overall": overall,
         "transport_verdict": "PASS" if transport_pass else transport.get("transport_verdict"),
@@ -184,45 +220,38 @@ def score_p6_from_evidence(
         "processing_verdict": processing_verdict,
         "reject_code": reject,
         "pick_processing_disabled": pick_disabled,
+        "pre_send_session_token": pre_send,
+        "stale_state_finding": stale,
     }
 
 
-def run_p6_dual_page(browser, *, deploy: dict[str, Any], run_id: str) -> dict[str, Any]:
+def run_p6_writer_session(browser, *, deploy: dict[str, Any], run_id: str) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
 
     ls_key = f"solo_parity_ls_p6_{int(time.time())}"
     writer_url = p6_writer_url(run_id=run_id, ls_key=ls_key)
-    observer_url = p6_observer_url(run_id=run_id)
-
-    ctx_writer = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
-    ctx_observer = browser.new_context(viewport={"width": 900, "height": 700})
-    install_p6_harness_init(ctx_writer)
-    install_p6_harness_init(ctx_observer)
-
-    page_writer = ctx_writer.new_page()
-    page_observer = ctx_observer.new_page()
+    ctx = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
+    install_p6_harness_init(ctx)
+    page = ctx.new_page()
     try:
-        goto_and_wake(page_observer, observer_url, timeout_s=120)
-        page_observer.wait_for_timeout(1500)
-        goto_and_wake(page_writer, writer_url, timeout_s=240)
-
+        goto_and_wake(page, writer_url, timeout_s=240)
         t0 = time.time()
         peak: dict[str, Any] = {}
         expected = ""
         first_capture: dict[str, Any] | None = None
         last_payload: dict[str, Any] = {}
-        observer_samples: list[dict[str, Any]] = []
+        writer_samples: list[dict[str, Any]] = []
         browser_send_ts: float | None = None
         deadline = time.time() + 46.0
 
-        while time.time() - t0 < 40.0:
-            probe = scrape_p6_observer_payload(page_observer)
+        while time.time() - t0 < 42.0:
+            probe = scrape_p6_writer_probe(page)
             payload = probe.get("payload") if isinstance(probe.get("payload"), dict) else {}
             if payload:
                 last_payload = payload
-            browser_peak = collect_p6_browser_peak(page_writer)
-            repro = merge_browser_peak_into_repro(scrape_repro_events(page_writer), browser_peak)
-            parent_all = collect_p6_parent_messages(page_writer)
+            browser_peak = collect_p6_browser_peak(page)
+            repro = merge_browser_peak_into_repro(scrape_repro_events(page), browser_peak)
+            parent_all = collect_p6_parent_messages(page)
             parent_rows = dedupe_parent_rows_by_fingerprint(parent_all, expected_token=expected)
             exp = str(probe.get("expected") or payload.get("expected_token") or expected or "")
             if exp.startswith("PARITY|"):
@@ -243,66 +272,73 @@ def run_p6_dual_page(browser, *, deploy: dict[str, Any], run_id: str) -> dict[st
             if browser_send_ts is None and int(sc.get("transport_postmessage_invoked") or 0) >= 1:
                 browser_send_ts = time.time()
 
-            observer_samples.append(
+            writer_samples.append(
                 {
                     "elapsed_s": round(time.time() - t0, 1),
-                    "observer_present": probe.get("present"),
+                    "writer_present": probe.get("present"),
                     "row_count": probe.get("row_count"),
                     "ledger_rows": len(payload.get("ledger_rows") or []) if payload else 0,
                 }
             )
-            if first_capture is None and snapshot_meets_capture_criteria(payload):
+            cb_stages = {"callback_entry", "on_change_callback_entry"}
+            if first_capture is None and any(
+                isinstance(r, dict) and r.get("stage") in cb_stages for r in (payload.get("ledger_rows") or [])
+            ):
                 first_capture = {"probe": probe, "payload": payload, "elapsed_s": round(time.time() - t0, 1)}
 
-            raw_widget = str(payload.get("raw_session_state_value") or "").strip("'\"")
+            widget_raw = str(payload.get("current_widget_raw") or payload.get("raw_session_state_value") or "").strip(
+                "'\""
+            )
             distinct = build_distinct_counts(
                 repro=repro,
                 parent_rows=parent_rows,
                 expected_token=expected,
-                session_raw=raw_widget,
+                session_raw=widget_raw,
                 callback_log=[
                     r
                     for r in (payload.get("ledger_rows") or [])
-                    if isinstance(r, dict) and r.get("stage") == "on_change_callback_entry"
+                    if isinstance(r, dict) and r.get("stage") in cb_stages
                 ],
                 browser_send_ts=browser_send_ts,
+            )
+            distinct["pre_send_session_token"] = compute_pre_send_from_ledger(
+                payload, browser_send_ts=browser_send_ts
             )
             peak = merge_peak_distinct(peak, distinct)
             if time.time() >= deadline + 8 and int(peak.get("browser_deadline_crossed") or 0) >= 1:
                 break
-            page_observer.wait_for_timeout(350)
-            page_writer.wait_for_timeout(50)
+            page.wait_for_timeout(400)
 
-        observer_final = scrape_p6_observer_payload(page_observer)
-        if isinstance(observer_final.get("payload"), dict):
-            last_payload = observer_final["payload"]
+        writer_final = scrape_p6_writer_probe(page)
+        if isinstance(writer_final.get("payload"), dict):
+            last_payload = writer_final["payload"]
         scored = score_p6_from_evidence(
             peak=peak,
             payload=last_payload,
             expected_token=expected,
-            observer_present=bool(observer_final.get("present")),
+            writer_present=bool(writer_final.get("present")),
+            browser_send_ts=browser_send_ts,
         )
-        parent_deduped = dedupe_parent_rows_by_fingerprint(
-            collect_p6_parent_messages(page_writer), expected_token=expected
-        )
+        rows = last_payload.get("ledger_rows") if isinstance(last_payload.get("ledger_rows"), list) else []
         return {
             "deploy": deploy,
             "run_id": run_id,
             "writer_url": writer_url,
-            "observer_url": observer_url,
+            "mode": "same_writer_session_stale_key_test",
             "peak": peak,
             "expected_token": expected,
             "first_capture": first_capture,
             "last_payload": last_payload,
-            "observer_samples": observer_samples[-40:],
-            "parent_rows_deduped": parent_deduped,
-            "parent_rows_raw_count": len(collect_p6_parent_messages(page_writer)),
+            "ordered_ledger": _ordered_ledger(rows),
+            "writer_samples": writer_samples[-40:],
+            "parent_rows_deduped": dedupe_parent_rows_by_fingerprint(
+                collect_p6_parent_messages(page), expected_token=expected
+            ),
             "scored": scored,
             "observation_s": round(time.time() - t0, 1),
         }
     finally:
-        ctx_writer.close()
-        ctx_observer.close()
+        ctx.close()
 
 
 def main() -> int:
@@ -321,8 +357,7 @@ def main() -> int:
         "control": "P6",
         "required_sha": required,
         "run_id": run_id,
-        "prior_run_classification": PRIOR_RUN_CLASSIFICATION,
-        "classification_note": "Do not infer Python receipt from parent postMessage alone.",
+        "classification_note": "Same writer session; do not infer Python receipt from parent postMessage alone.",
     }
 
     with sync_playwright() as p:
@@ -339,12 +374,13 @@ def main() -> int:
             browser.close()
             return 1
 
-        run = run_p6_dual_page(browser, deploy=deploy, run_id=run_id)
+        run = run_p6_writer_session(browser, deploy=deploy, run_id=run_id)
         report.update(run)
         report["cloud_sha"] = deploy.get("cloud_sha")
         report["outcome"] = run.get("scored", {}).get("overall")
         report["transport_verdict"] = run.get("scored", {}).get("transport_verdict")
         report["processing_verdict"] = run.get("scored", {}).get("processing_verdict")
+        report["stale_state_finding"] = run.get("scored", {}).get("stale_state_finding")
         browser.close()
 
     OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")

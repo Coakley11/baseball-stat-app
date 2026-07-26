@@ -255,6 +255,12 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                 expected_token=str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or ""),
                 st=st,
             )
+            try:
+                from live_draft_solo_parity_p6_persistent_diag import record_p6_raw_widget_value
+
+                record_p6_raw_widget_value(session, raw=raw, st=st)
+            except ImportError:
+                pass
     except ImportError:
         pass
     try:
@@ -314,7 +320,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             if p6_persistent_diag_active(st, session):
                 append_p6_ledger_row(
                     session,
-                    "ownership_claim_attempted",
+                    "ownership_attempted",
                     st=st,
                     expected_token=str(token or "")[:400],
                     actual_token=str(token or "")[:400],
@@ -670,19 +676,10 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         return False
 
     try:
-        from live_draft_solo_parity_p6_persistent_diag import (
-            p6_persistent_diag_active,
-            record_p6_token_latched,
-            resolve_p6_run_id,
-        )
+        from live_draft_solo_parity_p6_persistent_diag import p6_persistent_diag_active, resolve_p6_run_id
 
         if p6_persistent_diag_active(st, session):
             resolve_p6_run_id(st, session)
-            if not session.get("_solo_p6_token_latched_recorded"):
-                token = str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or "")
-                if token.startswith("PARITY|"):
-                    record_p6_token_latched(session, token=token, st=st)
-                    session["_solo_p6_token_latched_recorded"] = True
     except ImportError:
         pass
 

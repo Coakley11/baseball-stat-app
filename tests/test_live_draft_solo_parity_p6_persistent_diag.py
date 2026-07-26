@@ -1,19 +1,22 @@
-"""Unit tests for P6 persistent process-wide ledger."""
+"""Unit tests for P6 writer-session ledger."""
 
 from __future__ import annotations
 
 import unittest
+from unittest.mock import MagicMock
 
 from live_draft_solo_parity_p6_persistent_diag import (
+    P6_SESSION_LEDGERS_KEY,
     append_p6_ledger_row,
+    build_writer_probe_payload,
     get_p6_ledger_for_run,
     python_receipt_from_payload,
 )
 
 
-class P6PersistentLedgerTests(unittest.TestCase):
-    def test_p6_ledger_append_by_run_id_and_python_receipt(self) -> None:
-        run_id = "test-run-uuid-p6"
+class P6WriterSessionLedgerTests(unittest.TestCase):
+    def test_session_state_ledger_by_run_id(self) -> None:
+        run_id = "test-run-writer-session"
         session: dict = {
             "_solo_parity_p6_persistent_diag": True,
             "_solo_parity_ladder_control": "P6",
@@ -22,25 +25,33 @@ class P6PersistentLedgerTests(unittest.TestCase):
         append_p6_ledger_row(
             session,
             "script_begin",
-            expected_token="PARITY|0|1.0",
-            actual_token="PARITY|0|1.0",
+            expected_token="",
+            actual_token="",
         )
         append_p6_ledger_row(
             session,
-            "on_change_callback_entry",
-            raw_widget_value="'PARITY|0|1.0'",
+            "callback_entry",
             actual_token="PARITY|0|1.0",
+            raw_widget_value="'PARITY|0|1.0'",
         )
-        rows = get_p6_ledger_for_run(run_id)
-        self.assertGreaterEqual(len(rows), 2)
-        self.assertEqual(rows[0].get("diagnostic_run_id"), run_id)
+        rows = get_p6_ledger_for_run(session, run_id)
+        self.assertEqual(len(rows), 2)
+        self.assertIsInstance(session.get(P6_SESSION_LEDGERS_KEY), dict)
         payload = {
             "expected_token": "PARITY|0|1.0",
-            "raw_session_state_value": "'PARITY|0|1.0'",
             "callback_rows": rows,
-            "delivery_owner_tokens": {},
         }
         self.assertTrue(python_receipt_from_payload(payload))
+
+    def test_build_writer_probe_payload(self) -> None:
+        st = MagicMock()
+        st.session_state = {}
+        session = {
+            "_solo_parity_p6_persistent_diag": True,
+            "_solo_p6_run_id": "rid-1",
+        }
+        payload = build_writer_probe_payload(st, session)
+        self.assertEqual(payload.get("diagnostic_run_id"), "rid-1")
 
 
 if __name__ == "__main__":
