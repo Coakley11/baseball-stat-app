@@ -545,6 +545,19 @@ try:
 except ImportError:
     pass
 
+try:
+    from live_draft_solo_parity_p6_persistent_diag import (
+        enable_p6_persistent_diag_from_query,
+        on_ultra_early_script_run,
+        render_p6_persistent_probe,
+    )
+
+    enable_p6_persistent_diag_from_query(st, st.session_state)
+    on_ultra_early_script_run(st, st.session_state)
+    render_p6_persistent_probe(st, st.session_state)
+except ImportError:
+    pass
+
 import portfolio_polish as pp
 import portfolio_demo as pdemo
 

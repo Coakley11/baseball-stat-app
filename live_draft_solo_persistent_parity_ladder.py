@@ -444,6 +444,12 @@ def try_parity_ladder_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
         except ImportError:
             pass
         try:
+            from live_draft_solo_parity_p6_persistent_diag import render_p6_persistent_probe
+
+            render_p6_persistent_probe(st, session)
+        except ImportError:
+            pass
+        try:
             from live_draft_solo_transport_boundary_diag import render_transport_boundary_probe, transport_logging_active
 
             if transport_logging_active(st, session):

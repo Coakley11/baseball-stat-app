@@ -235,6 +235,21 @@ def render_persistent_wake_lifecycle_probe(
 
 def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key: str) -> None:
     try:
+        from live_draft_solo_parity_p6_persistent_diag import (
+            p6_persistent_diag_active,
+            record_p6_callback_entry,
+        )
+
+        if p6_persistent_diag_active(st, session):
+            record_p6_callback_entry(
+                session,
+                raw=raw,
+                widget_key=key,
+                expected_token=str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or ""),
+            )
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_persistent_parity_ladder import parity_p6_active, record_p6_production_callback_event
 
         if parity_p6_active(session):
@@ -282,6 +297,22 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
         )
 
         skip_claim = bool(session.get("_solo_parity_skip_delivery_claim"))
+        try:
+            from live_draft_solo_parity_p6_persistent_diag import (
+                append_p6_ledger_row,
+                p6_persistent_diag_active,
+            )
+
+            if p6_persistent_diag_active(st, session):
+                append_p6_ledger_row(
+                    session,
+                    "ownership_claim_attempted",
+                    expected_token=str(token or "")[:400],
+                    delivery_via=delivery_via,
+                    widget_key=key,
+                )
+        except ImportError:
+            pass
         if skip_claim:
             claimed, reject_code = True, ""
         else:
@@ -296,6 +327,26 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             token_already_consumed=not claimed and reject_code in ("already_consumed", "callback_source_not_allowed"),
             delivery_claimed=claimed,
         )
+        try:
+            from live_draft_solo_parity_p6_persistent_diag import (
+                note_p6_delivery_completed,
+                p6_persistent_diag_active,
+                record_p6_ownership_claim,
+            )
+
+            if p6_persistent_diag_active(st, session):
+                record_p6_ownership_claim(
+                    session,
+                    attempted=True,
+                    accepted=claimed if skip_claim or claimed else False,
+                    reject_code=reject_code if not skip_claim else "",
+                    token=token,
+                    delivery_via=delivery_via,
+                )
+                if claimed:
+                    note_p6_delivery_completed(session, token=token)
+        except ImportError:
+            pass
         try:
             from live_draft_solo_persistent_parity_ladder import parity_p6_active, record_p6_production_callback_event
 
@@ -329,6 +380,20 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             if reject_code not in ("empty_raw",):
                 mark_wake_token_rejected(session, token, reject_code)
                 clear_persistent_wake_widget_value(st, session, token)
+            try:
+                from live_draft_solo_parity_p6_persistent_diag import (
+                    p6_persistent_diag_active,
+                    record_p6_callback_return,
+                )
+
+                if p6_persistent_diag_active(st, session):
+                    record_p6_callback_return(
+                        session,
+                        reason="claim_rejected",
+                        raw=raw,
+                    )
+            except ImportError:
+                pass
             try:
                 from live_draft_solo_persistent_parity_ladder import parity_p6_active, record_p6_production_callback_event
 
@@ -469,17 +534,31 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
 
         if parity_p6_pick_processing_disabled(session):
             session[SOLO_SKIP_LATE_FLUSH_TOKEN_KEY] = token
-            record_p6_production_callback_event(
-                session,
-                "callback_return",
-                raw=raw,
-                widget_key=key,
-                delivery_via=delivery_via,
-                expected_token=token,
-                claimed=True,
-                pick_processing_disabled=True,
-                return_reason="parity_p6_pick_processing_disabled",
-            )
+            try:
+                from live_draft_solo_parity_p6_persistent_diag import record_p6_callback_return
+
+                record_p6_callback_return(
+                    session,
+                    reason="parity_p6_pick_processing_disabled",
+                    pick_processing_skipped=True,
+                    raw=raw,
+                )
+            except ImportError:
+                pass
+            try:
+                from live_draft_solo_persistent_parity_ladder import record_p6_production_callback_event
+
+                record_p6_production_callback_event(
+                    session,
+                    "callback_return",
+                    raw=raw,
+                    widget_key=key,
+                    expected_token=token,
+                    pick_processing_disabled=True,
+                    return_reason="parity_p6_pick_processing_disabled",
+                )
+            except ImportError:
+                pass
             if boundary_diag_enabled(session):
                 record_callback_boundary(
                     session,
@@ -731,6 +810,22 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
             default_value=None,
             mount_location="ldr_page_entry_isolated_production",
         )
+        try:
+            from live_draft_solo_parity_p6_persistent_diag import (
+                p6_persistent_diag_active,
+                record_p6_component_declaration,
+            )
+
+            if p6_persistent_diag_active(st, session):
+                record_p6_component_declaration(
+                    session,
+                    widget_key=key,
+                    expire_token=expire_token,
+                    component_return=comp_return,
+                    mount_location="ldr_page_entry_isolated_production",
+                )
+        except ImportError:
+            pass
         record_transport_python_run(
             st,
             session,
@@ -784,6 +879,22 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         default_value=None,
         mount_location="ldr_page_entry_early_persistent",
     )
+    try:
+        from live_draft_solo_parity_p6_persistent_diag import (
+            p6_persistent_diag_active,
+            record_p6_component_declaration,
+        )
+
+        if p6_persistent_diag_active(st, session):
+            record_p6_component_declaration(
+                session,
+                widget_key=key,
+                expire_token=expire_token,
+                component_return=comp_return,
+                mount_location="ldr_page_entry_early_persistent",
+            )
+    except ImportError:
+        pass
     if actionable and expire_token and expire_token != SOLO_INERT_EXPIRE_TOKEN:
         if paired_transport_minimal_control_enabled(st, session, isolated=isolated):
             mount_transport_minimal_control(
