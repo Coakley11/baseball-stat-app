@@ -211,8 +211,8 @@ class TimerExpirationAdvanceTests(unittest.TestCase):
         self.assertEqual(picks["n"], 1)
 
 
-class QueueAutopickTests(unittest.TestCase):
-    def test_queued_player_selected_first(self) -> None:
+class AutopickIgnoresQueueTests(unittest.TestCase):
+    def test_queue_does_not_override_configured_rule(self) -> None:
         from live_draft_autopick import live_draft_auto_pick
 
         room = _room(
@@ -224,16 +224,18 @@ class QueueAutopickTests(unittest.TestCase):
             "draft_queue": ["Juan Soto", "Aaron Judge"],
             "your_team": "Daniel",
         }
-        with patch("live_draft_autopick.score_available_for_rule") as mock_score:
-            mock_score.return_value = (
+        with patch(
+            "live_draft_autopick.score_available_for_rule",
+            return_value=(
                 pd.DataFrame([{"fullName": "Aaron Judge", "playerID": "p1", "Primary Position": "OF"}]),
                 [],
-            )
+            ),
+        ) as mock_score:
             ok, msg = live_draft_auto_pick(room, session=session)
         self.assertTrue(ok, msg)
-        self.assertIn("Juan Soto", msg)
-        self.assertEqual(room["draft_board"][-1]["fullName"], "Juan Soto")
-        mock_score.assert_not_called()
+        mock_score.assert_called()
+        self.assertEqual(room["draft_board"][-1]["fullName"], "Aaron Judge")
+        self.assertNotIn("Juan Soto", str(msg))
 
     def test_fallback_recommendation_when_queue_empty(self) -> None:
         from live_draft_autopick import live_draft_auto_pick

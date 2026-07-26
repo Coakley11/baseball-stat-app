@@ -17,10 +17,19 @@
       data-browser-zero-ts=""
       data-component-sent-ts=""
       data-checkpoint=""
+      data-iframe-instance=""
+      data-timer-id=""
       style="display: none"
     ></div>
     <script>
       (function () {
+        const IFRAME_INSTANCE_ID =
+          "solo_" +
+          String(Date.now()) +
+          "_" +
+          Math.random().toString(36).slice(2, 10);
+        const FALLBACK_PERSIST_KEY = "solo_iframe_lifecycle_global";
+
         function sendMessage(type, data) {
           window.parent.postMessage(
             Object.assign({ isStreamlitMessage: true, type: type }, data || {}),
@@ -29,11 +38,21 @@
         }
 
         let chainPersistKey = "";
+        let activeToken = "";
+        let tickTimer = null;
+        let checkpointTimer = null;
+        let sentTokens = {};
+        let remountCount = 0;
+        let activeDeadline = 0;
+
+        function persistStorageKey() {
+          return chainPersistKey || FALLBACK_PERSIST_KEY;
+        }
 
         function readPersistLog() {
-          if (!chainPersistKey) return [];
+          const key = persistStorageKey();
           try {
-            const raw = localStorage.getItem(chainPersistKey);
+            const raw = localStorage.getItem(key);
             if (!raw) return [];
             const parsed = JSON.parse(raw);
             return Array.isArray(parsed) ? parsed : [];
@@ -43,16 +62,20 @@
         }
 
         function writePersistLog(log) {
-          if (!chainPersistKey) return;
+          const key = persistStorageKey();
           try {
-            localStorage.setItem(chainPersistKey, JSON.stringify(log.slice(-400)));
+            localStorage.setItem(key, JSON.stringify(log.slice(-400)));
           } catch (e) {}
         }
 
         function appendPersist(stage, extra) {
-          if (!chainPersistKey) return;
           const log = readPersistLog();
-          log.push({ ts: Date.now(), stage: stage, extra: extra || "" });
+          log.push({
+            ts: Date.now(),
+            stage: stage,
+            extra: extra || "",
+            iframe: IFRAME_INSTANCE_ID,
+          });
           writePersistLog(log);
           try {
             const node = document.getElementById("solo-expire-client");
@@ -63,6 +86,14 @@
                   return e.stage;
                 }).join("|")
               );
+              node.setAttribute("data-chain-persist-key", persistStorageKey());
+              node.setAttribute("data-iframe-instance", IFRAME_INSTANCE_ID);
+              try {
+                node.setAttribute(
+                  "data-persist-log-b64",
+                  btoa(unescape(encodeURIComponent(JSON.stringify(log.slice(-120)))))
+                );
+              } catch (e3) {}
             }
           } catch (e2) {}
         }
@@ -84,15 +115,17 @@
           } catch (e) {}
         }
 
-        let activeToken = "";
-        let tickTimer = null;
-        let checkpointTimer = null;
-        let sentTokens = {};
-        let remountCount = 0;
-        let activeDeadline = 0;
-
-        function clearTick() {
+        function clearTick(reason) {
           if (tickTimer) {
+            noteClient(
+              "tick_cancelled",
+              "reason=" +
+                (reason || "unknown") +
+                " timer_id=" +
+                tickTimer +
+                " remounts=" +
+                remountCount
+            );
             clearTimeout(tickTimer);
             tickTimer = null;
           }
@@ -109,34 +142,19 @@
           try {
             const node = document.getElementById("solo-expire-client");
             if (!node) return;
+            const nowMs = Date.now();
+            const nowSec = Math.floor(nowMs / 1000);
             node.setAttribute("data-remounts", String(remountCount));
             node.setAttribute("data-token", expireToken || "");
             node.setAttribute("data-deadline", String(deadline || ""));
-            node.setAttribute(
-              "data-browser-time",
-              String(Math.floor(Date.now() / 1000))
-            );
-            const remMs = Math.max(
-              0,
-              Math.ceil(deadline * 1000 - Date.now())
-            );
+            node.setAttribute("data-browser-time", String(nowSec));
+            const remMs = Math.max(0, Math.ceil(deadline * 1000 - nowMs));
             node.setAttribute("data-remaining-ms", String(remMs));
-            if (chainPersistKey) {
-              const log = readPersistLog();
-              node.setAttribute(
-                "data-chain-persisted",
-                log.map(function (e) {
-                  return e.stage;
-                }).join("|")
-              );
-              node.setAttribute("data-chain-persist-key", chainPersistKey);
-              try {
-                node.setAttribute(
-                  "data-persist-log-b64",
-                  btoa(unescape(encodeURIComponent(JSON.stringify(log.slice(-120)))))
-                );
-              } catch (e3) {}
+            node.setAttribute("data-iframe-instance", IFRAME_INSTANCE_ID);
+            if (tickTimer) {
+              node.setAttribute("data-timer-id", String(tickTimer));
             }
+            appendPersist("diag_remaining_snapshot", "rem_ms=" + remMs + " rem_s=" + Math.ceil(remMs / 1000));
           } catch (e) {}
         }
 
@@ -144,9 +162,16 @@
           if (!expireToken || activeToken !== expireToken) return;
           if (sentTokens[expireToken]) return;
           sentTokens[expireToken] = true;
+          noteClient("before_setComponentValue", expireToken);
           noteClient("iframe_setComponentValue_called");
           noteClient("setComponentValue_called");
-          sendMessage("streamlit:setComponentValue", { value: expireToken });
+          try {
+            sendMessage("streamlit:setComponentValue", { value: expireToken });
+            noteClient("after_setComponentValue", "ok");
+          } catch (e) {
+            noteClient("js_exception", "setComponentValue:" + String(e));
+            throw e;
+          }
           noteClient("component_value_sent");
           try {
             const node = document.getElementById("solo-expire-client");
@@ -164,13 +189,13 @@
             updateDiagFields(expireToken, deadline);
             noteClient(
               "lifecycle_checkpoint",
-              "rem=" + rem + " remounts=" + remountCount
+              "rem_s=" + rem + " remounts=" + remountCount
             );
           }, 5000);
         }
 
         function onRender(event) {
-          clearTick();
+          clearTick("streamlit_render");
           clearCheckpoint();
           const prevDeadline = activeDeadline;
           const prevToken = activeToken;
@@ -191,11 +216,44 @@
             );
           const parts = expireToken.split("|");
           const deadline = Number(parts[2] || 0);
+          const pickPart = parts.length > 1 ? parts[1] : "";
+          const draftPart = parts.length > 0 ? parts[0] : "";
+          const nowMs = Date.now();
+          const remMs = Number.isFinite(deadline)
+            ? Math.max(0, Math.ceil(deadline * 1000 - nowMs))
+            : NaN;
+
           activeToken = expireToken;
           activeDeadline = deadline;
+
+          noteClient("component_script_loaded", IFRAME_INSTANCE_ID);
           noteClient("render_event_received");
+          noteClient(
+            "render_props_complete",
+            JSON.stringify({
+              actionable: actionable,
+              enabled: actionable,
+              draft_id: draftPart,
+              pick_index: pickPart,
+              expire_token: expireToken,
+              deadline_sec: deadline,
+              deadline_ms: Number.isFinite(deadline) ? deadline * 1000 : null,
+              browser_time_sec: Math.floor(nowMs / 1000),
+              browser_time_ms: nowMs,
+              remaining_ms: remMs,
+              remaining_sec: Number.isFinite(remMs) ? Math.ceil(remMs / 1000) : null,
+              chain_persist_key: chainPersistKey || FALLBACK_PERSIST_KEY,
+              iframe_instance: IFRAME_INSTANCE_ID,
+              remount: remountCount,
+              token_changed: prevToken !== expireToken ? 1 : 0,
+              deadline_changed: prevDeadline !== deadline ? 1 : 0,
+            }).slice(0, 1900)
+          );
           noteClient("token_received", expireToken);
-          noteClient("deadline_received", String(deadline));
+          noteClient(
+            "deadline_received",
+            "sec=" + deadline + " ms=" + deadline * 1000
+          );
           updateDiagFields(expireToken, deadline);
 
           if (!actionable) {
@@ -210,7 +268,7 @@
               !expireToken
                 ? "missing_token"
                 : !Number.isFinite(deadline)
-                ? "invalid_deadline"
+                ? "invalid_deadline_NaN"
                 : "deadline_le_zero"
             );
             sendMessage("streamlit:setFrameHeight", { height: 0 });
@@ -231,7 +289,7 @@
                 (prevDeadline !== deadline ? 1 : 0) +
                 " token_changed=" +
                 (prevToken !== expireToken ? 1 : 0) +
-                " abs_deadline=" +
+                " abs_deadline_sec=" +
                 deadline
             );
             if (initialRemMs <= 0) {
@@ -239,10 +297,8 @@
               noteClient("expire_token_resend_allowed", expireToken);
             }
           }
-          noteClient("countdown_started", "initial_rem_ms=" + initialRemMs);
-          if (initialRemMs <= 0) {
-            noteClient("deadline_already_expired", "deadline=" + deadline);
-          }
+
+          let armedThisRender = false;
 
           function tick() {
             if (activeToken !== expireToken) return;
@@ -262,6 +318,29 @@
               return;
             }
             tickTimer = window.setTimeout(tick, 250);
+            if (!armedThisRender) {
+              armedThisRender = true;
+              noteClient(
+                "timer_armed",
+                "timer_id=" +
+                  tickTimer +
+                  " initial_rem_ms=" +
+                  initialRemMs +
+                  " initial_rem_s=" +
+                  Math.ceil(initialRemMs / 1000)
+              );
+            }
+          }
+
+          noteClient(
+            "countdown_started",
+            "initial_rem_ms=" +
+              initialRemMs +
+              " initial_rem_s=" +
+              Math.ceil(initialRemMs / 1000)
+          );
+          if (initialRemMs <= 0) {
+            noteClient("deadline_already_expired", "deadline_sec=" + deadline);
           }
           tick();
           startCheckpoint(expireToken, deadline);
@@ -273,7 +352,20 @@
           onRender({ detail: { args: event.data.args || {} } });
         });
 
-        noteClient("iframe_script_loaded", String(window.location.href || ""));
+        window.addEventListener("error", function (ev) {
+          noteClient(
+            "js_exception",
+            String(ev.message || ev.error || "error").slice(0, 500)
+          );
+        });
+        window.addEventListener("unhandledrejection", function (ev) {
+          noteClient(
+            "js_exception",
+            "unhandledrejection:" + String(ev.reason || "").slice(0, 500)
+          );
+        });
+
+        noteClient("component_script_loaded", IFRAME_INSTANCE_ID);
         sendMessage("streamlit:componentReady", { apiVersion: 1 });
         sendMessage("streamlit:setFrameHeight", { height: 0 });
       })();

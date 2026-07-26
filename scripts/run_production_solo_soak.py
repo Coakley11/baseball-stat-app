@@ -134,21 +134,101 @@ def scrape_client_chain(page) -> dict[str, Any]:
                   component_sent_ts: el.getAttribute('data-component-sent-ts') || '',
                   persist_key: el.getAttribute('data-chain-persist-key') || '',
                   persist_log_b64: el.getAttribute('data-persist-log-b64') || '',
+                  iframe_instance: el.getAttribute('data-iframe-instance') || '',
+                  timer_id: el.getAttribute('data-timer-id') || '',
                 };
                 const score = (row.chain_persisted || row.chain || '').length;
                 const bestScore = (best.chain_persisted || best.chain || '').length;
                 if (score >= bestScore) best = row;
               }
-              if (best.persist_key) {
-                try {
-                  const log = JSON.parse(localStorage.getItem(best.persist_key) || '[]');
-                  if (Array.isArray(log)) best.local_storage_stages = log.map(e => e.stage).join('|');
-                } catch (e) {}
-              }
               return best;
             }"""
         )
         return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def scrape_iframe_lifecycle(page) -> dict[str, Any]:
+    try:
+        import base64
+
+        raw = page.evaluate(
+            """() => {
+              const out = { iframe_count: 0, frames: [] };
+              const iframes = document.querySelectorAll('iframe');
+              out.iframe_count = iframes.length;
+              for (let i = 0; i < iframes.length; i++) {
+                const f = iframes[i];
+                const row = { index: i, src: String(f.src || '').slice(0, 200), logs: [] };
+                try {
+                  const w = f.contentWindow;
+                  const doc = f.contentDocument;
+                  if (!w || !doc) { row.error = 'no_content_window'; out.frames.push(row); continue; }
+                  const el = doc.querySelector('#solo-expire-client');
+                  if (el) {
+                    row.client = {
+                      last: el.getAttribute('data-last') || '',
+                      iframe_instance: el.getAttribute('data-iframe-instance') || '',
+                      persist_key: el.getAttribute('data-chain-persist-key') || '',
+                      chain_persisted: el.getAttribute('data-chain-persisted') || '',
+                    };
+                  }
+                  const keys = [];
+                  for (let k = 0; k < w.localStorage.length; k++) {
+                    keys.push(w.localStorage.key(k));
+                  }
+                  row.local_storage_keys = keys.filter(k => k && (k.indexOf('solo_') >= 0));
+                  for (const key of row.local_storage_keys) {
+                    try {
+                      const parsed = JSON.parse(w.localStorage.getItem(key) || '[]');
+                      if (Array.isArray(parsed)) row.logs.push({ key: key, entries: parsed });
+                    } catch (e) {}
+                  }
+                  if (!row.logs.length && keys.indexOf('solo_iframe_lifecycle_global') >= 0) {
+                    try {
+                      const parsed = JSON.parse(w.localStorage.getItem('solo_iframe_lifecycle_global') || '[]');
+                      if (Array.isArray(parsed)) row.logs.push({ key: 'solo_iframe_lifecycle_global', entries: parsed });
+                    } catch (e2) {}
+                  }
+                } catch (e) {
+                  row.error = String(e);
+                }
+                out.frames.push(row);
+              }
+              return out;
+            }"""
+        )
+        if not isinstance(raw, dict):
+            return {}
+        all_entries = []
+        for fr in raw.get("frames") or []:
+            if not isinstance(fr, dict):
+                continue
+            for block in fr.get("logs") or []:
+                if isinstance(block, dict):
+                    all_entries.extend(block.get("entries") or [])
+        stages = []
+        for e in all_entries:
+            if isinstance(e, dict) and e.get("stage"):
+                stages.append(str(e.get("stage")))
+        raw["merged_stages"] = stages
+        raw["first_missing_expected"] = ""
+        expected = [
+            "component_script_loaded",
+            "render_event_received",
+            "render_props_complete",
+            "timer_armed",
+            "browser_deadline_crossed",
+            "before_setComponentValue",
+            "component_value_sent",
+        ]
+        seen = set(stages)
+        for ex in expected:
+            if ex not in seen:
+                raw["first_missing_expected"] = ex
+                break
+        return raw
     except Exception:
         return {}
 

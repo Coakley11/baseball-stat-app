@@ -51,11 +51,13 @@ def live_draft_auto_pick(
     persist: bool = True,
     finalize: bool = True,
 ) -> tuple[bool, str]:
-    """Select and apply auto-pick — queue-first when enabled, else #1 recommendation.
+    """Select and apply auto-pick using the Draft Setup Auto-Pick Rule on the legal pool.
 
     Mutations always go through ``live_draft_make_pick``. When ``finalize`` is True,
     shared post-pick side effects (queue prune, cache patch, canonical snapshot,
     immediate-paint gate) run via ``finalize_live_draft_pick_transition``.
+
+    The draft queue is never consulted for automatic selection (manual aid only).
     """
     try:
         from live_draft_timer_logic import resolve_live_draft_on_clock_slot
@@ -122,25 +124,6 @@ def live_draft_auto_pick(
 
     board_before = _board_size(room)
     idx_before = int(room.get("current_pick_index") or 0)
-
-    # Prefer the manager's draft queue when queue auto-pick is enabled (default on).
-    queue_enabled = cfg.get("queue_auto_pick", cfg.get("auto_pick_from_queue", True))
-    if queue_enabled is None:
-        queue_enabled = True
-    if bool(queue_enabled) and session is not None:
-        queue_ok, queue_msg = _try_queue_auto_pick(
-            room,
-            session,
-            available,
-            team,
-            board_before=board_before,
-            idx_before=idx_before,
-            persist=persist,
-            finalize=finalize,
-        )
-        if queue_ok:
-            session.pop("_live_draft_in_flight_auto_pick_key", None)
-            return True, queue_msg
 
     rec_scored = pd.DataFrame()
     gaps: list[str] = []
