@@ -319,10 +319,15 @@ def run_control(browser, control: str, *, deploy: dict[str, Any]) -> dict[str, A
         install_parent_capture(page)
         t_nav = time.time()
         probe: dict[str, Any] = {"missing": True}
-        while time.time() - t_nav < 90.0:
+        while time.time() - t_nav < 120.0:
             install_parent_capture(page)
             probe = scrape_parity_probe(page)
-            if not probe.get("missing"):
+            exp = str(probe.get("expected") or "")
+            if control == "P6" and not exp.startswith("PARITY|"):
+                decoded = probe.get("decoded") if isinstance(probe.get("decoded"), dict) else {}
+                meta = decoded.get("meta") if isinstance(decoded.get("meta"), dict) else {}
+                exp = str(meta.get("expire_token") or exp)
+            if not probe.get("missing") and (control != "P6" or exp.startswith("PARITY|")):
                 break
             page.wait_for_timeout(500)
         try:
@@ -364,6 +369,7 @@ def run_control(browser, control: str, *, deploy: dict[str, Any]) -> dict[str, A
                 if ev:
                     rec["production_evidence"] = ev
             rec["stage1_audit_scrape"] = scrape_stage1_audit(page)
+            rec["transport_boundary_scrape"] = scrape_transport_boundary_meta(page)
         return rec
     finally:
         ctx.close()

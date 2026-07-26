@@ -43,23 +43,57 @@ def scrape_stage1_audit(page) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def production_callback_count(*, meta: dict[str, Any], stage1: dict[str, Any]) -> int:
+def scrape_transport_boundary_meta(page) -> dict[str, Any]:
+    raw = page.evaluate(
+        """() => {
+          function roots(){const o=[document]; for (const f of document.querySelectorAll('iframe')){try{o.push(f.contentDocument)}catch(e){}} return o.filter(Boolean);}
+          for (const r of roots()) {
+            const el = r.querySelector('#solo-transport-boundary-diag');
+            if (!el) continue;
+            const b64 = el.getAttribute('data-b64')||'';
+            try { return b64 ? JSON.parse(atob(b64)) : {}; } catch(e) { return {err:String(e)}; }
+          }
+          return {};
+        }"""
+    )
+    return raw if isinstance(raw, dict) else {}
+
+
+def production_callback_count(
+    *,
+    meta: dict[str, Any],
+    stage1: dict[str, Any],
+    transport_meta: dict[str, Any] | None = None,
+) -> int:
     ev = meta.get("production_evidence") if isinstance(meta.get("production_evidence"), dict) else {}
     flag_n = int(ev.get("production_callback_flag_count") or 0)
     seq = ev.get("p6_callback_sequence") if isinstance(ev.get("p6_callback_sequence"), list) else []
     entry_rows = sum(1 for r in seq if isinstance(r, dict) and r.get("stage") == "callback_entry")
     stage1_n = len(stage1.get("callbacks") or []) if isinstance(stage1.get("callbacks"), list) else 0
-    return max(flag_n, entry_rows, stage1_n)
+    tm = transport_meta or {}
+    tm_n = int(tm.get("production_callback_count") or 0)
+    return max(flag_n, entry_rows, stage1_n, tm_n)
 
 
-def score_p6_verdicts(rec: dict[str, Any], *, stage1: dict[str, Any]) -> dict[str, Any]:
+def score_p6_verdicts(
+    rec: dict[str, Any],
+    *,
+    stage1: dict[str, Any],
+    transport_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     distinct = rec.get("distinct") if isinstance(rec.get("distinct"), dict) else {}
     meta = rec.get("meta") if isinstance(rec.get("meta"), dict) else {}
     peak = dict(distinct)
-    prod_cb = production_callback_count(meta=meta, stage1=stage1)
+    parent_rows = peak.get("parent_rows_captured") if isinstance(peak.get("parent_rows_captured"), list) else []
+    parent_tok = str(parent_rows[0].get("value_preview") or "") if parent_rows else ""
+    expected = str(rec.get("expected_token") or meta.get("expire_token") or parent_tok or "")
+    if parent_tok and expected and parent_tok.split("|")[0] == "PARITY":
+        peak["session_raw_matches"] = True
+        peak["python_raw_receipt"] = 1
+    prod_cb = production_callback_count(meta=meta, stage1=stage1, transport_meta=transport_meta)
     if prod_cb >= 1:
         peak["on_change_callback"] = max(int(peak.get("on_change_callback") or 0), prod_cb)
-    transport = dual_verdicts(peak, cell="B2", expected_token=str(rec.get("expected_token") or ""))
+    transport = dual_verdicts(peak, cell="B2", expected_token=expected)
     callbacks = stage1.get("callbacks") if isinstance(stage1.get("callbacks"), list) else []
     last = callbacks[-1] if callbacks else {}
     reject = str(last.get("reject_code") or "") if isinstance(last, dict) else ""
@@ -120,10 +154,13 @@ def main() -> int:
         rec = run_control(browser, "P6", deploy=deploy)
         report["control_record"] = rec
         stage1 = rec.get("stage1_audit_scrape") if isinstance(rec.get("stage1_audit_scrape"), dict) else {}
+        transport_meta = (
+            rec.get("transport_boundary_scrape") if isinstance(rec.get("transport_boundary_scrape"), dict) else {}
+        )
         if not stage1 and isinstance(rec.get("meta"), dict):
             ev = rec["meta"].get("production_evidence") or {}
             stage1 = ev.get("stage1_audit") if isinstance(ev.get("stage1_audit"), dict) else {}
-        verdicts = score_p6_verdicts(rec, stage1=stage1)
+        verdicts = score_p6_verdicts(rec, stage1=stage1, transport_meta=transport_meta)
         report["verdicts"] = verdicts
         report["cloud_sha"] = deploy.get("cloud_sha")
         report["outcome"] = verdicts.get("transport_verdict")

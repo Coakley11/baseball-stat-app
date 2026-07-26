@@ -534,7 +534,12 @@ def render_parity_probe(st: Any, session: dict[str, Any]) -> None:
     b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     control = str(meta.get("control") or session.get(PARITY_CONTROL_KEY) or "")
     key = str(meta.get("widget_key") or "")
-    token = str(meta.get("expire_token") or "")
+    token = str(
+        meta.get("expire_token")
+        or session.get("_solo_parity_expected_token")
+        or session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY)
+        or ""
+    )
     st.markdown(
         f'<div id="{PARITY_PROBE_ID}" '
         f'data-control="{control}" '
