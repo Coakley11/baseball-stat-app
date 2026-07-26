@@ -22158,42 +22158,56 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
     try:
-        from live_draft_solo_wiring_matrix_diag import try_wiring_matrix_ldr_entry
+        from live_draft_solo_persistent_parity_ladder import (
+            parity_should_stop_page,
+            try_parity_ladder_ldr_entry,
+        )
 
         _matrix_ldr_room = st.session_state.get("live_draft_room")
-        if try_wiring_matrix_ldr_entry(
+        if try_parity_ladder_ldr_entry(
             st,
             st.session_state,
             _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
         ):
-            try:
-                from live_draft_solo_wiring_matrix_diag import wiring_matrix_should_stop_page
+            if parity_should_stop_page(st.session_state):
+                st.stop()
+        elif not st.session_state.get("_solo_parity_handled_persistent_wake"):
+            from live_draft_solo_wiring_matrix_diag import try_wiring_matrix_ldr_entry
 
-                if wiring_matrix_should_stop_page(st.session_state):
-                    st.stop()
-            except ImportError:
-                pass
-        else:
-            from live_draft_solo_persistent_wake import try_solo_persistent_wake_ldr_entry
-
-            try:
-                from live_draft_room_mutation_audit import room_mutation_checkpoint
-
-                room_mutation_checkpoint(st.session_state, "before_early_persistent_wake", st=st)
-            except ImportError:
-                pass
             _matrix_ldr_room = st.session_state.get("live_draft_room")
-            try_solo_persistent_wake_ldr_entry(
+            if try_wiring_matrix_ldr_entry(
                 st,
                 st.session_state,
                 _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
-            )
-            try:
-                from live_draft_room_mutation_audit import room_mutation_checkpoint
+            ):
+                try:
+                    from live_draft_solo_wiring_matrix_diag import wiring_matrix_should_stop_page
 
-                room_mutation_checkpoint(st.session_state, "after_early_persistent_wake_mount", st=st)
-            except ImportError:
-                pass
+                    if wiring_matrix_should_stop_page(st.session_state):
+                        st.stop()
+                except ImportError:
+                    pass
+            else:
+                from live_draft_solo_persistent_wake import try_solo_persistent_wake_ldr_entry
+
+                try:
+                    from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+                    room_mutation_checkpoint(st.session_state, "before_early_persistent_wake", st=st)
+                except ImportError:
+                    pass
+                _matrix_ldr_room = st.session_state.get("live_draft_room")
+                try_solo_persistent_wake_ldr_entry(
+                    st,
+                    st.session_state,
+                    _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
+                )
+                try:
+                    from live_draft_room_mutation_audit import room_mutation_checkpoint
+
+                    room_mutation_checkpoint(st.session_state, "after_early_persistent_wake_mount", st=st)
+                except ImportError:
+                    pass
     except ImportError:
         try:
             from live_draft_solo_persistent_wake import try_solo_persistent_wake_ldr_entry

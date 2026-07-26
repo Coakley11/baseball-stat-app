@@ -76,6 +76,13 @@ def _diag_blocks_persistent_wake(st: Any, session: dict[str, Any]) -> bool:
     except ImportError:
         pass
     try:
+        from live_draft_solo_persistent_parity_ladder import parity_control
+
+        if parity_control(st, session) in ("P0", "P1", "P2", "P3", "P4", "P5"):
+            return True
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_delivery_diag import delivery_diag_active, delivery_matrix_cell
 
         if delivery_diag_active(st, session) and delivery_matrix_cell(st) > 0:
@@ -261,14 +268,18 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             try_claim_token_delivery,
         )
 
-        claimed, reject_code = try_claim_token_delivery(session, token, delivery_via)
+        skip_claim = bool(session.get("_solo_parity_skip_delivery_claim"))
+        if skip_claim:
+            claimed, reject_code = True, ""
+        else:
+            claimed, reject_code = try_claim_token_delivery(session, token, delivery_via)
         record_callback_invocation(
             st,
             session,
             callback_source=delivery_via,
             raw_value=raw,
             room=live if isinstance(live, dict) else None,
-            reject_code=reject_code,
+            reject_code=reject_code if not skip_claim else "",
             token_already_consumed=not claimed and reject_code in ("already_consumed", "callback_source_not_allowed"),
             delivery_claimed=claimed,
         )
