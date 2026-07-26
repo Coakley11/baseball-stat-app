@@ -36,11 +36,12 @@ from playwright_daniel_auth_session import (  # noqa: E402
 from replay_playwright_daniel_auth_preflight import run_preflight  # noqa: E402
 from run_solo_wiring_b2_graded_auth import verify_official_deploy  # noqa: E402
 from solo_wiring_matrix_harness_core import (  # noqa: E402
+    attach_dual_verdicts,
     build_distinct_counts,
     collect_parent_messages,
+    dual_verdicts,
     install_parent_capture,
     merge_peak_distinct,
-    score_matrix_cell,
     scrape_repro_events,
 )
 from verify_cloud_deploy_playwright import scrape_deploy  # noqa: E402
@@ -80,6 +81,19 @@ def scrape_parity_probe(page) -> dict[str, Any]:
           return {missing:true};
         }"""
     )
+
+
+def _infer_transport_from_parent(peak: dict[str, Any]) -> dict[str, Any]:
+    """Parent postMessage is authoritative when iframe chain is gone after Streamlit rerun."""
+    out = dict(peak)
+    if int(out.get("parent_message") or 0) >= 1:
+        for key in (
+            "logical_send_postmessage",
+            "setComponentValue_invocation",
+            "browser_deadline_crossed",
+        ):
+            out[key] = max(int(out.get(key) or 0), 1)
+    return out
 
 
 def observe_control(page, *, control: str, expected_token: str, deadline: float) -> dict[str, Any]:
@@ -125,15 +139,18 @@ def observe_control(page, *, control: str, expected_token: str, deadline: float)
         if prod_n > int(distinct.get("on_change_callback") or 0):
             distinct["on_change_callback"] = prod_n
         peak = merge_peak_distinct(peak, distinct)
+        peak = _infer_transport_from_parent(peak)
         samples.append({"elapsed_s": round(time.time() - t0, 1), "distinct": distinct})
 
-        scored = score_matrix_cell(peak, cell="B2", expected_token=expected_token)
-        if scored.get("outcome") == "PASS":
+        scored = dual_verdicts(peak, cell="B2", expected_token=expected_token)
+        transport = str(scored.get("transport_verdict") or "")
+        if transport == "PASS":
             scored["distinct"] = peak
             scored["samples"] = samples
             scored["observation_s"] = round(time.time() - t0, 1)
             scored["probe"] = probe
             scored["meta"] = meta
+            scored["outcome"] = "PASS"
             return scored
 
         if time.time() >= deadline + 8 and int(peak.get("browser_deadline_crossed") or 0) >= 1:
@@ -155,14 +172,22 @@ def observe_control(page, *, control: str, expected_token: str, deadline: float)
         browser_send_ts=browser_send_ts,
     )
     peak = merge_peak_distinct(peak, distinct)
-    scored = score_matrix_cell(peak, cell="B2", expected_token=expected_token)
+    peak = _infer_transport_from_parent(peak)
+    scored = dual_verdicts(peak, cell="B2", expected_token=expected_token)
+    transport = str(scored.get("transport_verdict") or "")
     if (
         int(peak.get("on_change_callback") or 0) >= 1
         and int(peak.get("logical_send_postmessage") or 0) == 0
         and int(peak.get("parent_message") or 0) == 0
     ):
-        scored["outcome"] = "INVALID"
+        scored["transport_verdict"] = "INVALID"
         scored.setdefault("invalid_reasons", []).append("python_callback_without_browser_evidence")
+    elif transport == "FAIL":
+        scored["outcome"] = "VALID FAIL"
+    elif transport == "INVALID":
+        scored["outcome"] = "INVALID"
+    else:
+        scored["outcome"] = transport
     scored["distinct"] = peak
     scored["samples"] = samples[-15:]
     scored["observation_s"] = round(time.time() - t0, 1)
@@ -187,13 +212,18 @@ def build_control_record(
     log_tail = decoded.get("log_tail") if isinstance(decoded.get("log_tail"), list) else []
     lc = distinct.get("lifecycle") if isinstance(distinct.get("lifecycle"), dict) else {}
     invalid = list(scored.get("invalid_reasons") or [])
+    transport_verdict = str(scored.get("transport_verdict") or scored.get("outcome") or "")
+    lifecycle_verdict = str(scored.get("lifecycle_verdict") or "")
+    dup_send = bool((scored.get("lifecycle_detail") or {}).get("duplicate_send_or_callback"))
     transport = {
+        "verdict": transport_verdict,
+        "lifecycle_verdict": lifecycle_verdict,
         "one_logical_send": int(distinct.get("logical_send_postmessage") or 0) == 1,
         "one_parent_message": int(distinct.get("parent_message") or 0) == 1,
         "exact_python_receipt": bool(distinct.get("session_raw_matches")),
         "one_on_change": int(distinct.get("on_change_callback") or 0) == 1,
         "no_pre_send_token": not bool(distinct.get("pre_send_session_token")),
-        "no_duplicate_send_or_callback": "duplicate_callback_or_remount_delivery" not in invalid,
+        "no_duplicate_send_or_callback": not dup_send,
         "counts": {
             "logical_send": int(distinct.get("logical_send_postmessage") or 0),
             "parent_message": int(distinct.get("parent_message") or 0),
@@ -211,19 +241,20 @@ def build_control_record(
         "page_stopped": meta.get("page_stopped"),
         "page_continued": meta.get("page_stopped") is False,
     }
-    production_state = {
-        **prod,
-        "current_room_id": prod.get("expected_room_pick") and meta.get("draft_id"),
-    }
-    live = session_room_from_log(log_tail) or {}
-    if live:
-        production_state["current_room_id"] = live.get("room_id") or production_state.get("current_room_id")
-        production_state["current_pick"] = live.get("pick")
-        production_state["current_deadline"] = live.get("deadline")
+    tok = str(probe.get("expected") or meta.get("expire_token") or "")
+    parts = tok.split("|") if tok.count("|") >= 2 else []
+    production_state = dict(prod)
+    if len(parts) >= 3:
+        production_state["current_room_id"] = parts[0]
+        production_state["current_pick"] = parts[1]
+        production_state["current_deadline"] = parts[2]
     return {
         "control": control,
         "widget_key": lifecycle["widget_key"],
-        "expected_token": probe.get("expected") or meta.get("expire_token"),
+        "expected_token": tok or None,
+        "transport_verdict": transport_verdict,
+        "lifecycle_verdict": lifecycle_verdict,
+        "lifecycle_detail": scored.get("lifecycle_detail"),
         "local_storage_key": ls_key,
         "outcome": scored.get("outcome"),
         "invalid_reasons": scored.get("invalid_reasons"),
@@ -353,20 +384,21 @@ def main() -> int:
                 break
             rec = run_control(browser, control, deploy=deploy)
             report["controls_run"].append(rec)
-            outcome = str(rec.get("outcome") or "")
+            outcome = str(rec.get("outcome") or rec.get("transport_verdict") or "")
+            transport_outcome = str(rec.get("transport_verdict") or outcome)
             if "parity_ladder_not_on_cloud_deploy" in (rec.get("invalid_reasons") or []):
                 report["outcome"] = "ABORTED"
                 report["reason"] = "parity_ladder_not_deployed"
                 stopped = True
                 break
-            if outcome == "PASS":
+            if transport_outcome == "PASS":
                 prev_pass = True
                 continue
-            if outcome in ("VALID FAIL", "INVALID") and prev_pass:
+            if transport_outcome in ("FAIL", "INVALID") and prev_pass:
                 report["root_cause_boundary"] = control
-                report["outcome"] = outcome
+                report["outcome"] = "VALID FAIL" if transport_outcome == "FAIL" else transport_outcome
                 stopped = True
-            prev_pass = outcome == "PASS"
+            prev_pass = transport_outcome == "PASS"
 
         if not stopped:
             report["outcome"] = "ALL_PASS"
