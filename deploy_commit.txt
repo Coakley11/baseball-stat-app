@@ -1,4 +1,4 @@
-66f85f6  # auto-generated; Streamlit Cloud reads this at runtime
+66f85f6  # auto-generated; Streamlit Cloud reads this at runtime (rebuild 2026-07-26)
 
 
 

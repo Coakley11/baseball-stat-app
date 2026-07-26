@@ -385,16 +385,29 @@ def build_distinct_counts(
     widget_key_in_parent = False
     if unique_parent:
         payload_keys = list(unique_parent[0].get("payload_keys") or [])
-        widget_key_in_parent = "widget_key" in payload_keys
+        widget_key_in_parent = any("widget_key" in (r.get("payload_keys") or []) for r in unique_parent)
+    lifecycle = {
+        "timer_armed_count": count_stage(sc, "timer_armed"),
+        "iframe_remount_count": count_stage(sc, "iframe_remount"),
+        "tick_cancelled_count": count_stage(sc, "tick_cancelled"),
+        "component_script_loaded_count": count_stage(sc, "component_script_loaded"),
+        "countdown_started_count": count_stage(sc, "countdown_started"),
+    }
+    if callbacks and expected_token and raw != expected_token:
+        for c in callbacks:
+            if expected_token in str(c.get("actual_raw") or ""):
+                raw = expected_token
+                break
+    session_matches = raw == expected_token
     return {
         "timer_armed": count_stage(sc, "timer_armed"),
         "browser_deadline_crossed": count_stage(sc, "browser_deadline_crossed"),
         "setComponentValue_invocation": set_component_invocation_count(sc),
         "logical_send_postmessage": count_stage(sc, "transport_postmessage_invoked"),
         "parent_message": len(unique_parent),
-        "python_raw_receipt": 1 if raw == expected_token else 0,
+        "python_raw_receipt": 1 if session_matches else 0,
         "on_change_callback": len(callbacks),
-        "session_raw_matches": raw == expected_token,
+        "session_raw_matches": session_matches,
         "session_state_raw": raw,
         "pre_send_callback": pre_send_cb,
         "pre_send_session_token": pre_send_session,
@@ -407,7 +420,83 @@ def build_distinct_counts(
         "parent_payload_keys": payload_keys,
         "widget_key_in_parent_payload": widget_key_in_parent,
         "browser_send_ts": browser_send_ts or first_parent_sec,
+        "lifecycle": lifecycle,
     }
+
+
+def dual_verdicts(distinct: dict[str, Any], *, cell: str, expected_token: str) -> dict[str, Any]:
+    spec = CELL_SPEC.get(cell.upper()) or CELL_SPEC["A1"]
+    sc = distinct.get("stage_counts") if isinstance(distinct.get("stage_counts"), dict) else {}
+    lc = distinct.get("lifecycle") if isinstance(distinct.get("lifecycle"), dict) else {}
+    pre_send = distinct.get("pre_send_callback") or distinct.get("pre_send_session_token")
+    isolation_ok = (
+        distinct.get("minimal_iframes") == spec["minimal_iframes"]
+        and int(distinct.get("production_iframes") or 0) == int(spec["production_iframes"])
+    )
+    transport_req = {
+        "browser_deadline_crossed": int(distinct.get("browser_deadline_crossed") or 0) == 1,
+        "setComponentValue_invocation": int(distinct.get("setComponentValue_invocation") or 0) == 1,
+        "transport_postmessage_invoked": int(distinct.get("logical_send_postmessage") or 0) == 1,
+        "parent_message": int(distinct.get("parent_message") or 0) == 1,
+        "python_receipt": bool(distinct.get("session_raw_matches")) or int(distinct.get("python_raw_receipt") or 0) == 1,
+        "on_change_callback": int(distinct.get("on_change_callback") or 0) == 1,
+    }
+    dup_send = (
+        int(distinct.get("setComponentValue_invocation") or 0) > 1
+        or int(distinct.get("logical_send_postmessage") or 0) > 1
+        or int(distinct.get("parent_message") or 0) > 1
+        or int(distinct.get("on_change_callback") or 0) > 1
+    )
+    if pre_send or not isolation_ok:
+        transport_outcome = "INVALID"
+    elif all(transport_req.values()) and not dup_send:
+        transport_outcome = "PASS"
+    elif dup_send:
+        transport_outcome = "INVALID"
+    else:
+        transport_outcome = "FAIL"
+    timer_n = int(lc.get("timer_armed_count") or distinct.get("timer_armed") or 0)
+    remount_n = int(lc.get("iframe_remount_count") or count_stage(sc, "iframe_remount"))
+    tick_cancel_n = int(lc.get("tick_cancelled_count") or count_stage(sc, "tick_cancelled"))
+    lifecycle_notes: list[str] = []
+    if timer_n > 1:
+        lifecycle_notes.append(f"timer_armed={timer_n}")
+    if remount_n >= 1:
+        lifecycle_notes.append(f"iframe_remount={remount_n}")
+    if tick_cancel_n >= 1:
+        lifecycle_notes.append(f"tick_cancelled={tick_cancel_n}")
+    if dup_send:
+        lifecycle_outcome = "FAIL"
+    elif lifecycle_notes:
+        lifecycle_outcome = "WARN"
+    elif timer_n == 1 and remount_n == 0:
+        lifecycle_outcome = "PASS"
+    else:
+        lifecycle_outcome = "PASS" if timer_n <= 1 else "WARN"
+    return {
+        "transport_verdict": transport_outcome,
+        "transport_requirements": transport_req,
+        "lifecycle_verdict": lifecycle_outcome,
+        "lifecycle_detail": {
+            "production_iframe_peak_count": int(distinct.get("production_iframes") or 0),
+            "minimal_iframe_peak_count": int(distinct.get("minimal_iframes") or 0),
+            "timer_armed_count": timer_n,
+            "iframe_remount_count": remount_n,
+            "tick_cancelled_count": tick_cancel_n,
+            "component_script_loaded_count": int(lc.get("component_script_loaded_count") or 0),
+            "duplicate_send_or_callback": dup_send,
+            "notes": lifecycle_notes,
+        },
+    }
+
+
+def attach_dual_verdicts(scored: dict[str, Any], peak: dict[str, Any], *, cell: str, expected_token: str) -> dict[str, Any]:
+    dual = dual_verdicts(peak, cell=cell, expected_token=expected_token)
+    scored["transport_verdict"] = dual["transport_verdict"]
+    scored["lifecycle_verdict"] = dual["lifecycle_verdict"]
+    scored["transport_requirements"] = dual["transport_requirements"]
+    scored["lifecycle_detail"] = dual["lifecycle_detail"]
+    return scored
 
 
 def build_cell_record(

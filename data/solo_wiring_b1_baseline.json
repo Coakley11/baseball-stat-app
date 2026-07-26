@@ -1,0 +1,872 @@
+{
+  "outcome": "INVALID",
+  "invalid_reasons": [
+    "duplicate_callback_or_remount_delivery",
+    "missing_timer_armed"
+  ],
+  "requirements": {
+    "timer_armed": false,
+    "browser_deadline_crossed": true,
+    "setComponentValue_invocation": true,
+    "transport_postmessage_invoked": true,
+    "parent_message": true,
+    "session_raw_matches": true,
+    "on_change_callback": true
+  },
+  "distinct": {
+    "timer_armed": 2,
+    "browser_deadline_crossed": 1,
+    "setComponentValue_invocation": 1,
+    "logical_send_postmessage": 1,
+    "parent_message": 1,
+    "python_raw_receipt": 1,
+    "on_change_callback": 1,
+    "session_raw_matches": true,
+    "session_state_raw": "None",
+    "pre_send_callback": false,
+    "pre_send_session_token": false,
+    "minimal_iframes": 0,
+    "production_iframes": 1,
+    "stage_counts": {
+      "component_script_loaded": 3,
+      "render_event_received": 2,
+      "render_props_complete": 2,
+      "token_received": 2,
+      "deadline_received": 2,
+      "countdown_started": 2,
+      "timer_armed": 2,
+      "tick_cancelled": 1,
+      "iframe_remount": 1,
+      "lifecycle_checkpoint": 1,
+      "browser_deadline_crossed": 1,
+      "before_setComponentValue": 1,
+      "iframe_setComponentValue_called": 1,
+      "setComponentValue_called": 1,
+      "transport_before_postMessage": 1,
+      "transport_postmessage_invoked": 1,
+      "after_setComponentValue": 1,
+      "component_value_sent": 1
+    },
+    "parent_rows_captured": [
+      {
+        "ts": 1785066941278,
+        "value_preview": "WIRING_B1|0|1785066941.032",
+        "payload_keys": [
+          "isStreamlitMessage",
+          "type",
+          "value",
+          "widget_key"
+        ],
+        "origin": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
+      }
+    ],
+    "parent_message_ts_ms": 1785066941278,
+    "callback_log": [
+      {
+        "ts": 1785066942.0588698,
+        "seq": 1,
+        "expected_token": "WIRING_B1|0|1785066941.032",
+        "actual_raw": "'WIRING_B1|0|1785066941.032'",
+        "source": "streamlit_on_change",
+        "browser_send_ts": 1785066942.0588698,
+        "browser_send_had_occurred": false,
+        "parent_send_ts_ms": 1785066941278,
+        "callback_ts_sec": 1785066942.0588698,
+        "callback_after_parent_send": true
+      }
+    ],
+    "parent_payload_keys": [
+      "isStreamlitMessage",
+      "type",
+      "value",
+      "widget_key"
+    ],
+    "widget_key_in_parent_payload": false,
+    "browser_send_ts": 1785066941.5811858
+  },
+  "samples": [
+    {
+      "elapsed_s": 1.8,
+      "distinct": {
+        "timer_armed": 2,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 0,
+        "python_raw_receipt": 0,
+        "on_change_callback": 0,
+        "session_raw_matches": false,
+        "session_state_raw": "None",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 1,
+        "stage_counts": {
+          "component_script_loaded": 3,
+          "render_event_received": 2,
+          "render_props_complete": 2,
+          "token_received": 2,
+          "deadline_received": 2,
+          "countdown_started": 2,
+          "timer_armed": 2,
+          "tick_cancelled": 1,
+          "iframe_remount": 1,
+          "lifecycle_checkpoint": 1
+        },
+        "parent_rows_captured": [],
+        "parent_message_ts_ms": null,
+        "callback_log": [],
+        "parent_payload_keys": [],
+        "widget_key_in_parent_payload": false,
+        "browser_send_ts": null
+      }
+    },
+    {
+      "elapsed_s": 2.7,
+      "distinct": {
+        "timer_armed": 2,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 0,
+        "python_raw_receipt": 0,
+        "on_change_callback": 0,
+        "session_raw_matches": false,
+        "session_state_raw": "None",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 1,
+        "stage_counts": {
+          "component_script_loaded": 3,
+          "render_event_received": 2,
+          "render_props_complete": 2,
+          "token_received": 2,
+          "deadline_received": 2,
+          "countdown_started": 2,
+          "timer_armed": 2,
+          "tick_cancelled": 1,
+          "iframe_remount": 1,
+          "lifecycle_checkpoint": 1
+        },
+        "parent_rows_captured": [],
+        "parent_message_ts_ms": null,
+        "callback_log": [],
+        "parent_payload_keys": [],
+        "widget_key_in_parent_payload": false,
+        "browser_send_ts": null
+      }
+    },
+    {
+      "elapsed_s": 3.6,
+      "distinct": {
+        "timer_armed": 2,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 0,
+        "python_raw_receipt": 0,
+        "on_change_callback": 0,
+        "session_raw_matches": false,
+        "session_state_raw": "None",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 1,
+        "stage_counts": {
+          "component_script_loaded": 3,
+          "render_event_received": 2,
+          "render_props_complete": 2,
+          "token_received": 2,
+          "deadline_received": 2,
+          "countdown_started": 2,
+          "timer_armed": 2,
+          "tick_cancelled": 1,
+          "iframe_remount": 1,
+          "lifecycle_checkpoint": 1
+        },
+        "parent_rows_captured": [],
+        "parent_message_ts_ms": null,
+        "callback_log": [],
+        "parent_payload_keys": [],
+        "widget_key_in_parent_payload": false,
+        "browser_send_ts": null
+      }
+    },
+    {
+      "elapsed_s": 4.4,
+      "distinct": {
+        "timer_armed": 2,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 0,
+        "python_raw_receipt": 0,
+        "on_change_callback": 0,
+        "session_raw_matches": false,
+        "session_state_raw": "None",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 1,
+        "stage_counts": {
+          "component_script_loaded": 3,
+          "render_event_received": 2,
+          "render_props_complete": 2,
+          "token_received": 2,
+          "deadline_received": 2,
+          "countdown_started": 2,
+          "timer_armed": 2,
+          "tick_cancelled": 1,
+          "iframe_remount": 1,
+          "lifecycle_checkpoint": 1
+        },
+        "parent_rows_captured": [],
+        "parent_message_ts_ms": null,
+        "callback_log": [],
+        "parent_payload_keys": [],
+        "widget_key_in_parent_payload": false,
+        "browser_send_ts": null
+      }
+    },
+    {
+      "elapsed_s": 5.3,
+      "distinct": {
+        "timer_armed": 2,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 0,
+        "python_raw_receipt": 0,
+        "on_change_callback": 0,
+        "session_raw_matches": false,
+        "session_state_raw": "None",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 1,
+        "stage_counts": {
+          "component_script_loaded": 3,
+          "render_event_received": 2,
+          "render_props_complete": 2,
+          "token_received": 2,
+          "deadline_received": 2,
+          "countdown_started": 2,
+          "timer_armed": 2,
+          "tick_cancelled": 1,
+          "iframe_remount": 1,
+          "lifecycle_checkpoint": 1
+        },
+        "parent_rows_captured": [],
+        "parent_message_ts_ms": null,
+        "callback_log": [],
+        "parent_payload_keys": [],
+        "widget_key_in_parent_payload": false,
+        "browser_send_ts": null
+      }
+    },
+    {
+      "elapsed_s": 6.3,
+      "distinct": {
+        "timer_armed": 2,
+        "browser_deadline_crossed": 1,
+        "setComponentValue_invocation": 1,
+        "logical_send_postmessage": 1,
+        "parent_message": 1,
+        "python_raw_receipt": 0,
+        "on_change_callback": 0,
+        "session_raw_matches": false,
+        "session_state_raw": "None",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 1,
+        "stage_counts": {
+          "component_script_loaded": 3,
+          "render_event_received": 2,
+          "render_props_complete": 2,
+          "token_received": 2,
+          "deadline_received": 2,
+          "countdown_started": 2,
+          "timer_armed": 2,
+          "tick_cancelled": 1,
+          "iframe_remount": 1,
+          "lifecycle_checkpoint": 1,
+          "browser_deadline_crossed": 1,
+          "before_setComponentValue": 1,
+          "iframe_setComponentValue_called": 1,
+          "setComponentValue_called": 1,
+          "transport_before_postMessage": 1,
+          "transport_postmessage_invoked": 1,
+          "after_setComponentValue": 1,
+          "component_value_sent": 1
+        },
+        "parent_rows_captured": [
+          {
+            "ts": 1785066941278,
+            "value_preview": "WIRING_B1|0|1785066941.032",
+            "payload_keys": [
+              "isStreamlitMessage",
+              "type",
+              "value",
+              "widget_key"
+            ],
+            "origin": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
+          }
+        ],
+        "parent_message_ts_ms": 1785066941278,
+        "callback_log": [],
+        "parent_payload_keys": [
+          "isStreamlitMessage",
+          "type",
+          "value",
+          "widget_key"
+        ],
+        "widget_key_in_parent_payload": true,
+        "browser_send_ts": 1785066941.5811858
+      }
+    },
+    {
+      "elapsed_s": 7.2,
+      "distinct": {
+        "timer_armed": 0,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 1,
+        "python_raw_receipt": 1,
+        "on_change_callback": 1,
+        "session_raw_matches": true,
+        "session_state_raw": "WIRING_B1|0|1785066941.032",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 0,
+        "stage_counts": {},
+        "parent_rows_captured": [
+          {
+            "ts": 1785066941278,
+            "value_preview": "WIRING_B1|0|1785066941.032",
+            "payload_keys": [
+              "isStreamlitMessage",
+              "type",
+              "value",
+              "widget_key"
+            ],
+            "origin": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
+          }
+        ],
+        "parent_message_ts_ms": 1785066941278,
+        "callback_log": [
+          {
+            "ts": 1785066942.0588698,
+            "seq": 1,
+            "expected_token": "WIRING_B1|0|1785066941.032",
+            "actual_raw": "'WIRING_B1|0|1785066941.032'",
+            "source": "streamlit_on_change",
+            "browser_send_ts": 1785066942.0588698,
+            "browser_send_had_occurred": false,
+            "parent_send_ts_ms": 1785066941278,
+            "callback_ts_sec": 1785066942.0588698,
+            "callback_after_parent_send": true
+          }
+        ],
+        "parent_payload_keys": [
+          "isStreamlitMessage",
+          "type",
+          "value",
+          "widget_key"
+        ],
+        "widget_key_in_parent_payload": true,
+        "browser_send_ts": 1785066941.5811858
+      }
+    },
+    {
+      "elapsed_s": 8.0,
+      "distinct": {
+        "timer_armed": 0,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 1,
+        "python_raw_receipt": 1,
+        "on_change_callback": 1,
+        "session_raw_matches": true,
+        "session_state_raw": "WIRING_B1|0|1785066941.032",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 0,
+        "stage_counts": {},
+        "parent_rows_captured": [
+          {
+            "ts": 1785066941278,
+            "value_preview": "WIRING_B1|0|1785066941.032",
+            "payload_keys": [
+              "isStreamlitMessage",
+              "type",
+              "value",
+              "widget_key"
+            ],
+            "origin": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
+          }
+        ],
+        "parent_message_ts_ms": 1785066941278,
+        "callback_log": [
+          {
+            "ts": 1785066942.0588698,
+            "seq": 1,
+            "expected_token": "WIRING_B1|0|1785066941.032",
+            "actual_raw": "'WIRING_B1|0|1785066941.032'",
+            "source": "streamlit_on_change",
+            "browser_send_ts": 1785066942.0588698,
+            "browser_send_had_occurred": false,
+            "parent_send_ts_ms": 1785066941278,
+            "callback_ts_sec": 1785066942.0588698,
+            "callback_after_parent_send": true
+          }
+        ],
+        "parent_payload_keys": [
+          "isStreamlitMessage",
+          "type",
+          "value",
+          "widget_key"
+        ],
+        "widget_key_in_parent_payload": true,
+        "browser_send_ts": 1785066941.5811858
+      }
+    },
+    {
+      "elapsed_s": 8.9,
+      "distinct": {
+        "timer_armed": 0,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 1,
+        "python_raw_receipt": 1,
+        "on_change_callback": 1,
+        "session_raw_matches": true,
+        "session_state_raw": "WIRING_B1|0|1785066941.032",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 0,
+        "stage_counts": {},
+        "parent_rows_captured": [
+          {
+            "ts": 1785066941278,
+            "value_preview": "WIRING_B1|0|1785066941.032",
+            "payload_keys": [
+              "isStreamlitMessage",
+              "type",
+              "value",
+              "widget_key"
+            ],
+            "origin": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
+          }
+        ],
+        "parent_message_ts_ms": 1785066941278,
+        "callback_log": [
+          {
+            "ts": 1785066942.0588698,
+            "seq": 1,
+            "expected_token": "WIRING_B1|0|1785066941.032",
+            "actual_raw": "'WIRING_B1|0|1785066941.032'",
+            "source": "streamlit_on_change",
+            "browser_send_ts": 1785066942.0588698,
+            "browser_send_had_occurred": false,
+            "parent_send_ts_ms": 1785066941278,
+            "callback_ts_sec": 1785066942.0588698,
+            "callback_after_parent_send": true
+          }
+        ],
+        "parent_payload_keys": [
+          "isStreamlitMessage",
+          "type",
+          "value",
+          "widget_key"
+        ],
+        "widget_key_in_parent_payload": true,
+        "browser_send_ts": 1785066941.5811858
+      }
+    },
+    {
+      "elapsed_s": 9.7,
+      "distinct": {
+        "timer_armed": 0,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 1,
+        "python_raw_receipt": 1,
+        "on_change_callback": 1,
+        "session_raw_matches": true,
+        "session_state_raw": "WIRING_B1|0|1785066941.032",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 0,
+        "stage_counts": {},
+        "parent_rows_captured": [
+          {
+            "ts": 1785066941278,
+            "value_preview": "WIRING_B1|0|1785066941.032",
+            "payload_keys": [
+              "isStreamlitMessage",
+              "type",
+              "value",
+              "widget_key"
+            ],
+            "origin": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
+          }
+        ],
+        "parent_message_ts_ms": 1785066941278,
+        "callback_log": [
+          {
+            "ts": 1785066942.0588698,
+            "seq": 1,
+            "expected_token": "WIRING_B1|0|1785066941.032",
+            "actual_raw": "'WIRING_B1|0|1785066941.032'",
+            "source": "streamlit_on_change",
+            "browser_send_ts": 1785066942.0588698,
+            "browser_send_had_occurred": false,
+            "parent_send_ts_ms": 1785066941278,
+            "callback_ts_sec": 1785066942.0588698,
+            "callback_after_parent_send": true
+          }
+        ],
+        "parent_payload_keys": [
+          "isStreamlitMessage",
+          "type",
+          "value",
+          "widget_key"
+        ],
+        "widget_key_in_parent_payload": true,
+        "browser_send_ts": 1785066941.5811858
+      }
+    },
+    {
+      "elapsed_s": 10.6,
+      "distinct": {
+        "timer_armed": 0,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 1,
+        "python_raw_receipt": 1,
+        "on_change_callback": 1,
+        "session_raw_matches": true,
+        "session_state_raw": "WIRING_B1|0|1785066941.032",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 0,
+        "stage_counts": {},
+        "parent_rows_captured": [
+          {
+            "ts": 1785066941278,
+            "value_preview": "WIRING_B1|0|1785066941.032",
+            "payload_keys": [
+              "isStreamlitMessage",
+              "type",
+              "value",
+              "widget_key"
+            ],
+            "origin": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
+          }
+        ],
+        "parent_message_ts_ms": 1785066941278,
+        "callback_log": [
+          {
+            "ts": 1785066942.0588698,
+            "seq": 1,
+            "expected_token": "WIRING_B1|0|1785066941.032",
+            "actual_raw": "'WIRING_B1|0|1785066941.032'",
+            "source": "streamlit_on_change",
+            "browser_send_ts": 1785066942.0588698,
+            "browser_send_had_occurred": false,
+            "parent_send_ts_ms": 1785066941278,
+            "callback_ts_sec": 1785066942.0588698,
+            "callback_after_parent_send": true
+          }
+        ],
+        "parent_payload_keys": [
+          "isStreamlitMessage",
+          "type",
+          "value",
+          "widget_key"
+        ],
+        "widget_key_in_parent_payload": true,
+        "browser_send_ts": 1785066941.5811858
+      }
+    },
+    {
+      "elapsed_s": 11.4,
+      "distinct": {
+        "timer_armed": 0,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 1,
+        "python_raw_receipt": 1,
+        "on_change_callback": 1,
+        "session_raw_matches": true,
+        "session_state_raw": "WIRING_B1|0|1785066941.032",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 0,
+        "stage_counts": {},
+        "parent_rows_captured": [
+          {
+            "ts": 1785066941278,
+            "value_preview": "WIRING_B1|0|1785066941.032",
+            "payload_keys": [
+              "isStreamlitMessage",
+              "type",
+              "value",
+              "widget_key"
+            ],
+            "origin": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
+          }
+        ],
+        "parent_message_ts_ms": 1785066941278,
+        "callback_log": [
+          {
+            "ts": 1785066942.0588698,
+            "seq": 1,
+            "expected_token": "WIRING_B1|0|1785066941.032",
+            "actual_raw": "'WIRING_B1|0|1785066941.032'",
+            "source": "streamlit_on_change",
+            "browser_send_ts": 1785066942.0588698,
+            "browser_send_had_occurred": false,
+            "parent_send_ts_ms": 1785066941278,
+            "callback_ts_sec": 1785066942.0588698,
+            "callback_after_parent_send": true
+          }
+        ],
+        "parent_payload_keys": [
+          "isStreamlitMessage",
+          "type",
+          "value",
+          "widget_key"
+        ],
+        "widget_key_in_parent_payload": true,
+        "browser_send_ts": 1785066941.5811858
+      }
+    },
+    {
+      "elapsed_s": 12.3,
+      "distinct": {
+        "timer_armed": 0,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 1,
+        "python_raw_receipt": 1,
+        "on_change_callback": 1,
+        "session_raw_matches": true,
+        "session_state_raw": "WIRING_B1|0|1785066941.032",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 0,
+        "stage_counts": {},
+        "parent_rows_captured": [
+          {
+            "ts": 1785066941278,
+            "value_preview": "WIRING_B1|0|1785066941.032",
+            "payload_keys": [
+              "isStreamlitMessage",
+              "type",
+              "value",
+              "widget_key"
+            ],
+            "origin": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
+          }
+        ],
+        "parent_message_ts_ms": 1785066941278,
+        "callback_log": [
+          {
+            "ts": 1785066942.0588698,
+            "seq": 1,
+            "expected_token": "WIRING_B1|0|1785066941.032",
+            "actual_raw": "'WIRING_B1|0|1785066941.032'",
+            "source": "streamlit_on_change",
+            "browser_send_ts": 1785066942.0588698,
+            "browser_send_had_occurred": false,
+            "parent_send_ts_ms": 1785066941278,
+            "callback_ts_sec": 1785066942.0588698,
+            "callback_after_parent_send": true
+          }
+        ],
+        "parent_payload_keys": [
+          "isStreamlitMessage",
+          "type",
+          "value",
+          "widget_key"
+        ],
+        "widget_key_in_parent_payload": true,
+        "browser_send_ts": 1785066941.5811858
+      }
+    },
+    {
+      "elapsed_s": 13.2,
+      "distinct": {
+        "timer_armed": 0,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 1,
+        "python_raw_receipt": 1,
+        "on_change_callback": 1,
+        "session_raw_matches": true,
+        "session_state_raw": "WIRING_B1|0|1785066941.032",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 0,
+        "stage_counts": {},
+        "parent_rows_captured": [
+          {
+            "ts": 1785066941278,
+            "value_preview": "WIRING_B1|0|1785066941.032",
+            "payload_keys": [
+              "isStreamlitMessage",
+              "type",
+              "value",
+              "widget_key"
+            ],
+            "origin": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
+          }
+        ],
+        "parent_message_ts_ms": 1785066941278,
+        "callback_log": [
+          {
+            "ts": 1785066942.0588698,
+            "seq": 1,
+            "expected_token": "WIRING_B1|0|1785066941.032",
+            "actual_raw": "'WIRING_B1|0|1785066941.032'",
+            "source": "streamlit_on_change",
+            "browser_send_ts": 1785066942.0588698,
+            "browser_send_had_occurred": false,
+            "parent_send_ts_ms": 1785066941278,
+            "callback_ts_sec": 1785066942.0588698,
+            "callback_after_parent_send": true
+          }
+        ],
+        "parent_payload_keys": [
+          "isStreamlitMessage",
+          "type",
+          "value",
+          "widget_key"
+        ],
+        "widget_key_in_parent_payload": true,
+        "browser_send_ts": 1785066941.5811858
+      }
+    },
+    {
+      "elapsed_s": 14.0,
+      "distinct": {
+        "timer_armed": 0,
+        "browser_deadline_crossed": 0,
+        "setComponentValue_invocation": 0,
+        "logical_send_postmessage": 0,
+        "parent_message": 1,
+        "python_raw_receipt": 1,
+        "on_change_callback": 1,
+        "session_raw_matches": true,
+        "session_state_raw": "WIRING_B1|0|1785066941.032",
+        "pre_send_callback": false,
+        "pre_send_session_token": false,
+        "minimal_iframes": 0,
+        "production_iframes": 0,
+        "stage_counts": {},
+        "parent_rows_captured": [
+          {
+            "ts": 1785066941278,
+            "value_preview": "WIRING_B1|0|1785066941.032",
+            "payload_keys": [
+              "isStreamlitMessage",
+              "type",
+              "value",
+              "widget_key"
+            ],
+            "origin": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
+          }
+        ],
+        "parent_message_ts_ms": 1785066941278,
+        "callback_log": [
+          {
+            "ts": 1785066942.0588698,
+            "seq": 1,
+            "expected_token": "WIRING_B1|0|1785066941.032",
+            "actual_raw": "'WIRING_B1|0|1785066941.032'",
+            "source": "streamlit_on_change",
+            "browser_send_ts": 1785066942.0588698,
+            "browser_send_had_occurred": false,
+            "parent_send_ts_ms": 1785066941278,
+            "callback_ts_sec": 1785066942.0588698,
+            "callback_after_parent_send": true
+          }
+        ],
+        "parent_payload_keys": [
+          "isStreamlitMessage",
+          "type",
+          "value",
+          "widget_key"
+        ],
+        "widget_key_in_parent_payload": true,
+        "browser_send_ts": 1785066941.5811858
+      }
+    }
+  ],
+  "observation_s": 14.1,
+  "cell": "B1",
+  "frontend": "solo_countdown_wake",
+  "declaration_wrapper": "solo_countdown_component.mount_solo_countdown_wake_direct",
+  "fresh_widget_key": "solo_wiring_b1_8c26fc552d",
+  "fresh_local_storage_key": "solo_wiring_ls_b1_13c1ea6ea7",
+  "expected_token": "WIRING_B1|0|1785066941.032",
+  "cloud_sha": "44f57ca",
+  "cloud_build": "baseball-dev-44f57ca",
+  "required_sha": "44f57ca",
+  "iframe_identity": "#solo-expire-client",
+  "iframe_counts": {
+    "minimal": 0,
+    "production": 1
+  },
+  "timestamps": {
+    "parent_message_ms": 1785066941278,
+    "callback_sec": 1785066942.0588698,
+    "authoritative_ordering": "parent_message_ms precedes callback => not pre-send"
+  },
+  "artifact_note": "data/solo_wiring_b1_baseline.json",
+  "artifact_path": "C:\\Users\\danie\\Documents\\GitHub\\baseball-stat-app\\data\\solo_wiring_b1_baseline.json",
+  "transport_verdict": "PASS",
+  "lifecycle_verdict": "WARN",
+  "transport_requirements": {
+    "browser_deadline_crossed": true,
+    "setComponentValue_invocation": true,
+    "transport_postmessage_invoked": true,
+    "parent_message": true,
+    "python_receipt": true,
+    "on_change_callback": true
+  },
+  "lifecycle_detail": {
+    "production_iframe_peak_count": 1,
+    "minimal_iframe_peak_count": 0,
+    "timer_armed_count": 2,
+    "iframe_remount_count": 1,
+    "tick_cancelled_count": 1,
+    "component_script_loaded_count": 0,
+    "duplicate_send_or_callback": false,
+    "notes": [
+      "timer_armed=2",
+      "iframe_remount=1",
+      "tick_cancelled=1"
+    ]
+  },
+  "note": "Prior run at cloud 44f57ca; transport PASS despite legacy outcome INVALID."
+}
