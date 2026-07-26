@@ -8,15 +8,47 @@ import time
 import traceback
 from typing import Any
 
-from live_draft_solo_delivery_diag import (
-    SOLO_DELIVERY_LOG_KEY,
-    SOLO_DELIVERY_META_KEY,
-    bump_delivery_rerun,
-    delivery_diag_active,
-    note_delivery_stage,
-    render_parent_postmessage_listener,
-)
 from live_draft_solo_persistent_wake import SOLO_INERT_EXPIRE_TOKEN
+
+# Mirror delivery_diag keys — avoid importing delivery_diag at module load (boot/import cycle).
+SOLO_DELIVERY_LOG_KEY = "_solo_delivery_stage_log"
+SOLO_DELIVERY_META_KEY = "_solo_delivery_meta"
+
+
+def _delivery_diag():
+    from live_draft_solo_delivery_diag import (
+        bump_delivery_rerun,
+        delivery_diag_active,
+        note_delivery_stage,
+        render_parent_postmessage_listener,
+    )
+
+    return (
+        bump_delivery_rerun,
+        delivery_diag_active,
+        note_delivery_stage,
+        render_parent_postmessage_listener,
+    )
+
+
+def bump_delivery_rerun(session: dict[str, Any]) -> int:
+    fn, _, _, _ = _delivery_diag()
+    return int(fn(session))
+
+
+def delivery_diag_active(st: Any | None, session: dict[str, Any]) -> bool:
+    _, fn, _, _ = _delivery_diag()
+    return bool(fn(st, session))
+
+
+def note_delivery_stage(session: dict[str, Any], stage: str, **fields: Any) -> None:
+    _, _, fn, _ = _delivery_diag()
+    fn(session, stage, **fields)
+
+
+def render_parent_postmessage_listener(st: Any) -> None:
+    _, _, _, fn = _delivery_diag()
+    fn(st)
 
 TRANSITION_WIDGET_KEY = "solo_countdown_wake_solo_persistent"
 TRANSITION_LOCATION = "ldr_page_entry_early_bridge_transition"

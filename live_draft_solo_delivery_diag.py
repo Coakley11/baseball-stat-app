@@ -702,12 +702,13 @@ def enable_delivery_diag_from_query(st: Any, session: dict[str, Any]) -> None:
         enable_early_bridge_from_query(st, session)
     except ImportError:
         pass
-    try:
-        from live_draft_solo_bridge_transition_diag import enable_bridge_transition_from_query
+    if _qp_flag(st, "solo_delivery_diag") or bool(_qp_get(st, "solo_bridge_transition").strip()):
+        try:
+            from live_draft_solo_bridge_transition_diag import enable_bridge_transition_from_query
 
-        enable_bridge_transition_from_query(st, session)
-    except ImportError:
-        pass
+            enable_bridge_transition_from_query(st, session)
+        except ImportError:
+            pass
     try:
         from live_draft_room_mutation_audit import enable_room_mutation_audit
 
