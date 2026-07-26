@@ -1,4 +1,4 @@
-3418efd  # auto-generated; Streamlit Cloud reads this at runtime (parity ladder 2026-07-26)
+3777de5  # auto-generated; Streamlit Cloud reads this at runtime (P6 parity diagnostics 2026-07-26)
 
 
 
