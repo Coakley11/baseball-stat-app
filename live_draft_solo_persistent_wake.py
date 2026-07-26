@@ -220,6 +220,22 @@ def render_persistent_wake_lifecycle_probe(
 
 
 def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key: str) -> None:
+    try:
+        from live_draft_solo_transport_boundary_diag import record_transport_python_run, transport_boundary_active
+
+        if transport_boundary_active(st, session):
+            from live_draft_solo_persistent_wake import SOLO_PERSISTENT_WAKE_TOKEN_KEY
+
+            record_transport_python_run(
+                st,
+                session,
+                production_key=key,
+                expected_token=str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or ""),
+                phase="production_on_change",
+                on_change_registered=True,
+            )
+    except ImportError:
+        pass
     from live_draft_solo_heartbeat import _coerce_wake_token, process_solo_component_wake
 
     delivery_via = str(session.pop(SOLO_PENDING_CALLBACK_SOURCE_KEY, "") or "native_component_on_change")
@@ -458,9 +474,28 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
     if not _should_mount_persistent_wake(st, session):
         return False
 
+    try:
+        from live_draft_solo_transport_boundary_diag import (
+            mount_transport_minimal_control,
+            record_production_component_declaration,
+            record_transport_python_run,
+            render_transport_boundary_probe,
+            render_transport_parent_listener,
+            transport_boundary_active,
+        )
+    except ImportError:
+        transport_boundary_active = lambda _s, _sess: False  # type: ignore[assignment,misc]
+        render_transport_parent_listener = lambda _st: None  # type: ignore[assignment,misc]
+        record_transport_python_run = lambda *a, **k: None  # type: ignore[assignment,misc]
+        record_production_component_declaration = lambda *a, **k: None  # type: ignore[assignment,misc]
+        mount_transport_minimal_control = lambda *a, **k: None  # type: ignore[assignment,misc]
+        render_transport_boundary_probe = lambda *a, **k: None  # type: ignore[assignment,misc]
+
     from live_draft_solo_delivery_diag import render_parent_postmessage_listener
 
     render_parent_postmessage_listener(st)
+    if transport_boundary_active(st, session):
+        render_transport_parent_listener(st)
 
     from solo_countdown_wake_micro_core import render_micro_isolation_once
 
@@ -505,7 +540,16 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
 
     persist_key = solo_persistent_chain_persist_key(session, room_dict)
 
-    render_micro_isolation_once(
+    record_transport_python_run(
+        st,
+        session,
+        production_key=key,
+        expected_token=expire_token,
+        phase="pre_mount",
+        on_change_registered=True,
+    )
+
+    _ = render_micro_isolation_once(
         st,
         session,
         placement="PROD",
@@ -523,6 +567,34 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         suppress_immediate_session_on_change=True,
         chain_persist_key=persist_key,
     )
+    comp_return = st.session_state.get(key) if key in st.session_state else None
+    record_production_component_declaration(
+        st,
+        session,
+        widget_key=key,
+        expire_token=expire_token,
+        actionable=actionable,
+        component_return=comp_return,
+        default_value=None,
+        mount_location="ldr_page_entry_early_persistent",
+    )
+    if actionable and expire_token and expire_token != SOLO_INERT_EXPIRE_TOKEN:
+        mount_transport_minimal_control(
+            st,
+            session,
+            props_room if isinstance(props_room, dict) else {},
+            production_expire_token=expire_token,
+            chain_persist_key=persist_key,
+        )
+    record_transport_python_run(
+        st,
+        session,
+        production_key=key,
+        expected_token=expire_token,
+        phase="post_mount",
+        on_change_registered=True,
+    )
+    render_transport_boundary_probe(st, session)
     render_persistent_wake_lifecycle_probe(
         st,
         session,

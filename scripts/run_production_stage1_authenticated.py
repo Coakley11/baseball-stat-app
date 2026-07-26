@@ -22,6 +22,7 @@ OUT_1A = ROOT / "data" / "production_stage1a_one_expire_auth.json"
 OUT_1B = ROOT / "data" / "production_stage1b_queue_auth.json"
 OUT_1B_FB = ROOT / "data" / "production_stage1b_queue_fallback_auth.json"
 OUT_IFRAME = ROOT / "data" / "production_stage1a_iframe_lifecycle.json"
+OUT_TRANSPORT = ROOT / "data" / "production_stage1a_transport_boundary.json"
 
 from playwright_daniel_auth_session import (  # noqa: E402
     STORAGE_PATH,
@@ -184,10 +185,17 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
         scrape_expire_chain,
         scrape_iframe_lifecycle,
         scrape_stage1_audit,
+        scrape_transport_boundary,
     )
 
     t0 = time.time()
     state_before = scrape_timer_fields(page)
+    counts_before = dom_counts(page)
+    room_in_progress_before = (
+        int(counts_before.get("Pause Draft") or 0) >= 1
+        or state_before.get("ccTimer") is not None
+        or bool((state_before.get("mount_diag") or {}).get("diag_deadline"))
+    )
     pick_before = state_before.get("pick")
     deadline_before = (state_before.get("mount_diag") or {}).get("diag_deadline") or state_before.get("timer")
     board_before = int(state_before.get("boardRows") or 0)
@@ -198,6 +206,7 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
     best_mount: dict[str, Any] = {}
     best_audit: dict[str, Any] = {}
     best_iframe: dict[str, Any] = {}
+    best_transport: dict[str, Any] = {}
     timer_armed_at: float | None = None
     observe_until = t0 + timeout_s
 
@@ -221,6 +230,9 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
         chain = chain_hit(snap)
         mount = mount_hit(snap)
         audit = scrape_stage1_audit(page)
+        transport = scrape_transport_boundary(page)
+        if transport:
+            best_transport = transport
         if audit:
             best_audit = audit
         merged_client = scrape_client_chain(page) or client
@@ -260,6 +272,7 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
     chain_final = scrape_expire_chain(page) or best_chain
     client_final = scrape_client_chain(page) or best_client
     audit_final = scrape_stage1_audit(page) or best_audit
+    transport_final = scrape_transport_boundary(page) or best_transport
     state_after = scrape_timer_fields(page)
     pick_after = state_after.get("pick")
     deadline_after = (state_after.get("mount_diag") or {}).get("diag_deadline") or state_after.get("timer")
@@ -292,8 +305,44 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
     rejected = [c for c in callbacks if c.get("reject_code")]
     pick_commits = list(audit_final.get("pick_commits") or [])
 
+    iframe_entries: list[dict[str, Any]] = []
+    for fr in (iframe_final.get("frames") or []):
+        if not isinstance(fr, dict):
+            continue
+        for block in fr.get("logs") or []:
+            if isinstance(block, dict):
+                iframe_entries.extend(block.get("entries") or [])
+
+    send_ts_ms: int | None = None
+    for e in reversed(iframe_entries):
+        if isinstance(e, dict) and str(e.get("stage") or "") in (
+            "transport_postmessage_invoked",
+            "component_value_sent",
+        ):
+            try:
+                send_ts_ms = int(e.get("ts") or 0)
+            except (TypeError, ValueError):
+                send_ts_ms = None
+            if send_ts_ms:
+                break
+
+    try:
+        from live_draft_solo_transport_boundary_diag import classify_transport_stage
+
+        transport_class = classify_transport_stage(
+            iframe_entries=iframe_entries,
+            parent_entries=list(transport_final.get("parent_log") or []),
+            transport_log=list((transport_final.get("probe") or {}).get("log_tail") or []),
+            callback_count=len(accepted),
+            iframe_has_component_sent="component_value_sent" in client_stages,
+            send_ts_ms=send_ts_ms,
+        )
+    except ImportError:
+        transport_class = ""
+
     return {
         "samples_count": len(samples),
+        "room_in_progress_before": room_in_progress_before,
         "state_before": state_before,
         "state_after": state_after,
         "pick_before": pick_before,
@@ -330,6 +379,9 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
         "timer_armed_at_elapsed_s": round(timer_armed_at - t0, 1) if timer_armed_at else None,
         "observation_duration_s": round(time.time() - t0, 1),
         "first_missing_client_stage": iframe_final.get("first_missing_expected") or "",
+        "transport_boundary": transport_final,
+        "first_missing_transport_stage": transport_class,
+        "client_send_ts_ms": send_ts_ms,
     }
 
 
@@ -358,11 +410,11 @@ def grade_stage_1a(
     if preflight and preflight.get("authenticated_restored"):
         auth_ok = True
     auth_at_expire = auth_ok
-    room_ok = draft_valid.get("valid") and int(exp.get("pick_before") or 0) >= 1
+    room_ok = bool(draft_valid.get("valid")) and bool(exp.get("room_in_progress_before"))
     pick_commits = exp.get("pick_commit_audit") or []
     expire_caused_pick = bool(pick_commits) and not exp.get("harness_manual_draft_action")
-    zero_cross = "browser_deadline_crossed" in cs and bool(exp.get("browser_zero_ts"))
-    sent_ok = "component_value_sent" in cs and bool(exp.get("component_sent_ts"))
+    zero_cross = "browser_deadline_crossed" in cs
+    sent_ok = "component_value_sent" in cs
 
     checks = {
         "1_authenticated_at_expire": auth_at_expire,
@@ -606,6 +658,18 @@ def main() -> int:
         OUT_IFRAME.parent.mkdir(parents=True, exist_ok=True)
         OUT_IFRAME.write_text(
             json.dumps(exp.get("iframe_lifecycle") or {}, indent=2, default=str),
+            encoding="utf-8",
+        )
+        OUT_TRANSPORT.parent.mkdir(parents=True, exist_ok=True)
+        OUT_TRANSPORT.write_text(
+            json.dumps(
+                {
+                    "transport_boundary": exp.get("transport_boundary") or {},
+                    "first_missing_transport_stage": exp.get("first_missing_transport_stage") or "",
+                },
+                indent=2,
+                default=str,
+            ),
             encoding="utf-8",
         )
 

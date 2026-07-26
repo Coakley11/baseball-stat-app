@@ -83,6 +83,7 @@ def mount_solo_countdown_wake_direct(
         expire_token=token,
         actionable=bool(actionable),
         chain_persist_key=str(chain_persist_key or ""),
+        widget_key=str(key),
         key=key,
         default=None,
         on_change=on_change,

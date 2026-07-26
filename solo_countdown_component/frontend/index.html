@@ -31,13 +31,41 @@
         const FALLBACK_PERSIST_KEY = "solo_iframe_lifecycle_global";
 
         function sendMessage(type, data) {
-          window.parent.postMessage(
-            Object.assign({ isStreamlitMessage: true, type: type }, data || {}),
-            "*"
-          );
+          var payload = Object.assign({ isStreamlitMessage: true, type: type }, data || {});
+          if (type === "streamlit:setComponentValue") {
+            var transportExtra = JSON.stringify({
+              widget_key: String((data && data.widget_key) || ""),
+              iframe: IFRAME_INSTANCE_ID,
+              token: String((data && data.value) || "").slice(0, 400),
+              target_origin: "*",
+            });
+            noteClient("transport_before_postMessage", transportExtra);
+            var pmOk = false;
+            var pmErr = "";
+            var t0 = Date.now();
+            try {
+              window.parent.postMessage(payload, "*");
+              pmOk = true;
+            } catch (e) {
+              pmErr = String(e);
+              noteClient("js_exception", "postMessage:" + pmErr);
+            }
+            noteClient(
+              "transport_postmessage_invoked",
+              JSON.stringify({
+                ok: pmOk,
+                type: type,
+                ms: Date.now() - t0,
+                err: pmErr.slice(0, 200),
+              })
+            );
+            return;
+          }
+          window.parent.postMessage(payload, "*");
         }
 
         let chainPersistKey = "";
+        let widgetKeyArg = "";
         let activeToken = "";
         let tickTimer = null;
         let checkpointTimer = null;
@@ -166,7 +194,10 @@
           noteClient("iframe_setComponentValue_called");
           noteClient("setComponentValue_called");
           try {
-            sendMessage("streamlit:setComponentValue", { value: expireToken });
+            sendMessage("streamlit:setComponentValue", {
+              value: expireToken,
+              widget_key: widgetKeyArg || chainPersistKey || "",
+            });
             noteClient("after_setComponentValue", "ok");
           } catch (e) {
             noteClient("js_exception", "setComponentValue:" + String(e));
@@ -206,6 +237,7 @@
           remountCount += 1;
           const args = (event && event.detail && event.detail.args) || {};
           chainPersistKey = String(args.chain_persist_key || "").trim();
+          widgetKeyArg = String(args.widget_key || "").trim();
           const expireToken = String(args.expire_token || "");
           const actionable =
             !(

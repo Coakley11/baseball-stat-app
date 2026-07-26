@@ -233,6 +233,48 @@ def scrape_iframe_lifecycle(page) -> dict[str, Any]:
         return {}
 
 
+def scrape_transport_boundary(page) -> dict[str, Any]:
+    """Parent localStorage transport log + Python probe payload."""
+    try:
+        import base64
+
+        raw = page.evaluate(
+            """() => {
+              const out = { parent_log: [], probe: {}, parent_chain: "" };
+              try {
+                const pl = JSON.parse(localStorage.getItem("solo_transport_parent_log") || "[]");
+                if (Array.isArray(pl)) out.parent_log = pl;
+              } catch (e) {}
+              try {
+                const el = document.querySelector("#solo-transport-boundary-diag");
+                if (el) {
+                  out.script_run = el.getAttribute("data-script-run") || "";
+                  const b64 = el.getAttribute("data-b64") || "";
+                  if (b64) out.probe_b64 = b64;
+                }
+              } catch (e) {}
+              const pel = document.querySelector("#solo-transport-boundary-diag-parent");
+              if (pel) out.parent_chain = pel.getAttribute("data-chain") || "";
+              return out;
+            }"""
+        )
+        if not isinstance(raw, dict):
+            return {}
+        b64 = raw.pop("probe_b64", "") or ""
+        if b64:
+            pad = b64 + "==="[: (4 - len(b64) % 4) % 4]
+            raw["probe"] = json.loads(base64.b64decode(pad).decode("utf-8"))
+        parent_stages = [
+            str(e.get("stage") or "")
+            for e in (raw.get("parent_log") or [])
+            if isinstance(e, dict)
+        ]
+        raw["parent_stages"] = parent_stages
+        return raw
+    except Exception:
+        return {}
+
+
 def scrape_stage1_audit(page) -> dict[str, Any]:
     try:
         import base64
