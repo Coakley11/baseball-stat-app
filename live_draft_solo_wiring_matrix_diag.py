@@ -259,8 +259,29 @@ def try_wiring_matrix_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> 
     session[MATRIX_STOP_PAGE_KEY] = True
 
     key = resolve_matrix_widget_key(st, session, cell)
-    token, deadline = build_synthetic_matrix_token(cell)
-    session["_solo_wiring_matrix_expected_token"] = token
+    latched = str(session.get("_solo_wiring_matrix_expected_token") or "").strip()
+    if latched:
+        token = latched
+        try:
+            deadline = float(token.split("|")[2])
+        except (IndexError, ValueError):
+            token, deadline = build_synthetic_matrix_token(cell)
+            session["_solo_wiring_matrix_expected_token"] = token
+    else:
+        token, deadline = build_synthetic_matrix_token(cell)
+        session["_solo_wiring_matrix_expected_token"] = token
+
+    if session.get("_solo_wiring_synthetic_mount_done"):
+        meta = dict(session.get(MATRIX_META_KEY) or {})
+        meta["callback_count"] = int(session.get(f"{key}_matrix_callback_count") or 0)
+        meta["session_state_value"] = repr(st.session_state.get(key))[:400] if key in st.session_state else ""
+        session[MATRIX_META_KEY] = meta
+        render_wiring_matrix_probe(st, session)
+        if transport_logging_active(st, session):
+            render_transport_boundary_probe(st, session)
+        return True
+
+    session["_solo_wiring_synthetic_mount_done"] = True
 
     session[MATRIX_META_KEY] = {
         "mode": "synthetic",

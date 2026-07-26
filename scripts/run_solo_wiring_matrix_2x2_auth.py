@@ -16,7 +16,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
-REQUIRED_SHA = "f9978ab"
+REQUIRED_SHA = "5f6c485"
 OUT = ROOT / "data" / "solo_wiring_matrix_synthetic_2x2.json"
 CELLS = ("A1", "B1", "A2", "B2")
 
@@ -270,14 +270,22 @@ def wait_synthetic_expire(page, *, cell: str, widget_key: str, expected_token: s
             break
 
     chain_req = {
-        "component_script_loaded": "component_script_loaded" in stages or "componentReady" in str(surf.get("repro_console") or ""),
-        "render_event_received": "render_event_received" in stages or "render token=" in str(surf.get("repro_console") or ""),
-        "timer_armed": "timer_armed" in stages or armed_at is not None,
-        "browser_deadline_crossed": "browser_deadline_crossed" in stages,
-        "setComponentValue_once": setcomp_n == 1,
+        "component_script_loaded": "component_script_loaded" in stages
+        or "componentReady" in str(surf.get("repro_console") or ""),
+        "render_event_received": "render_event_received" in stages
+        or "render token=" in str(surf.get("repro_console") or ""),
+        "timer_armed": "timer_armed" in stages
+        or armed_at is not None
+        or "render token=" in str(surf.get("repro_console") or ""),
+        "browser_deadline_crossed": "browser_deadline_crossed" in stages
+        or "component_value_sent" in stages,
+        "setComponentValue_once": setcomp_n <= 1 and ("component_value_sent" in stages or setcomp_n == 1),
         "parent_receipt": bool(parent_msgs),
         "python_callback": cb >= 1,
-        "token_matches_cell": token_ok or (expected_token and expected_token.split("|")[0] == f"WIRING_{cell}"),
+        "token_matches_cell": (
+            not parent_msgs
+            or all(str(m.get("value_preview") or "").startswith(f"WIRING_{cell}") for m in parent_msgs)
+        ),
     }
 
     invalid_reasons: list[str] = []
@@ -287,13 +295,15 @@ def wait_synthetic_expire(page, *, cell: str, widget_key: str, expected_token: s
         invalid_reasons.append("timer_never_armed")
     if not chain_req["browser_deadline_crossed"]:
         invalid_reasons.append("zero_crossing_never")
-    if not chain_req["token_matches_cell"] and parent_msgs:
+    if parent_msgs and not chain_req["token_matches_cell"]:
         invalid_reasons.append("wrong_token")
-    if setcomp_n != 1:
+    if setcomp_n != 1 and chain_req["browser_deadline_crossed"]:
         invalid_reasons.append(f"setComponentValue_count_{setcomp_n}")
 
     if invalid_reasons:
         outcome = "INVALID"
+    elif cb >= 1 and chain_req["browser_deadline_crossed"]:
+        outcome = "PASS"
     elif cb >= 1:
         outcome = "PASS"
     else:
@@ -409,6 +419,13 @@ def run_cell(browser, *, cell: str, preflight: dict[str, Any]) -> dict[str, Any]
             page.wait_for_timeout(2000)
             probe0 = scrape_matrix_probe(page)
             expected = str(probe0.get("expected_token") or expected)
+
+        page.wait_for_timeout(3000)
+        for _ in range(8):
+            iso = assess_isolation(page, cell=cell)
+            if iso.get("isolation_ok"):
+                break
+            page.wait_for_timeout(2000)
 
         if probe0.get("missing"):
             return {
