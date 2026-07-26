@@ -25,7 +25,7 @@ OUT_IFRAME = ROOT / "data" / "production_stage1a_iframe_lifecycle.json"
 OUT_TRANSPORT = ROOT / "data" / "production_stage1a_transport_boundary.json"
 OUT_FRAME_TOPOLOGY = ROOT / "data" / "production_stage1a_frame_topology.json"
 OUT_CLEANUP = ROOT / "data" / "production_stage1a_preflight_cleanup.json"
-REQUIRED_CLOUD_SHA = "26241c2"
+REQUIRED_CLOUD_SHA = "2765062"
 
 from playwright_daniel_auth_session import (  # noqa: E402
     STORAGE_PATH,
