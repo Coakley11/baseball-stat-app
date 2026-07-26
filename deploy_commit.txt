@@ -1,6 +1,5 @@
-9d624a0  # auto-generated; Streamlit Cloud reads this at runtime (P6 run-ID lifecycle reset 2026-07-26)
+2465327  # auto-generated; Streamlit Cloud reads this at runtime (P6 exclusive early shell 2026-07-26)
 
 
 
 branch: dev
-
