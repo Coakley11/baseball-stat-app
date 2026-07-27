@@ -1,3 +1,4 @@
-# auto-generated; Streamlit Cloud reads this at runtime (P6 early shell after body page resolve 2026-07-26)
+8daf95a  # auto-generated; P6 early shell query LDR
 
 branch: dev
+
