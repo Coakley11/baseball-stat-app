@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from live_draft_solo_rv_binding_ladder import (
+    _apply_harness_room_query_context,
     enable_rv_ladder_session,
     execute_rv_step_mount,
     rv_ladder_requested,
