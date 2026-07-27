@@ -46,7 +46,7 @@ from solo_draft_start_harness import execute_solo_draft_start_workflow  # noqa: 
 from stage1_preflight_cleanup import run_stage1_preflight_cleanup  # noqa: E402
 
 
-def rv_url(step: str, run_id: str, *, ldr: bool = False) -> str:
+def rv_url(step: str, run_id: str, *, ldr: bool = False, harness_room_id: str = "") -> str:
     q = {
         "solo_rv_ladder": step,
         "solo_rv_run_id": run_id,
@@ -54,6 +54,8 @@ def rv_url(step: str, run_id: str, *, ldr: bool = False) -> str:
         "solo_component_diag": "1",
         "solo_diag_timer": "10",
     }
+    if harness_room_id:
+        q["solo_rv_harness_room_id"] = harness_room_id.strip().upper()
     if ldr:
         q["active_page"] = "Live Draft Room"
     base = f"{BASE}/?{urlencode(q)}"
@@ -412,7 +414,16 @@ def run_rv_real_step(context, step: str, run_id: str, *, cloud_sha: str, cloud_b
         return {"step": step, "verdict": "INVALID", "reason": "draft_start_invalid", "run_id": run_id, "start": start_val}
     goto_and_wake(page, url, timeout_s=120)
     page.wait_for_timeout(10000)
-    goto_and_wake(page, rv_url(step, run_id, ldr=(step in ("RV1", "RV2", "RV3"))), timeout_s=240)
+    goto_and_wake(
+        page,
+        rv_url(
+            step,
+            run_id,
+            ldr=(step in ("RV1", "RV2", "RV3")),
+            harness_room_id=str(start_val.get("latched_room_id") or ""),
+        ),
+        timeout_s=240,
+    )
     page.wait_for_timeout(8000)
     exp, probe, reg, epoch_ms, meta = wait_rv_control_with_epoch(
         page,

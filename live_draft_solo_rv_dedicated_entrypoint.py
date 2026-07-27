@@ -18,6 +18,7 @@ from live_draft_solo_rv_control_probe import (
 
 def _rv_real_room_bootstrap(st: Any, session: dict[str, Any]) -> None:
     """Diag-only: restore auth/workspace so real Solo room is in session before RV1+ mount."""
+    _apply_harness_room_query_context(st, session)
     try:
         from suite_workspace import bootstrap_suite_workspace
 

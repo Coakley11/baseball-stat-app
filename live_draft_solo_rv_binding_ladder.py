@@ -19,6 +19,7 @@ except ImportError:
 
 RV_LADDER_QP = "solo_rv_ladder"
 RV_RUN_ID_QP = "solo_rv_run_id"
+RV_HARNESS_ROOM_QP = "solo_rv_harness_room_id"
 RV_LADDER_STEPS = frozenset({"RV0", "RV1", "RV2", "RV3"})
 RV_LEDGER_KEY = "_solo_rv_binding_ladder_ledger"
 
@@ -106,6 +107,16 @@ def _real_room_token(session: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return token, live
 
 
+def _apply_harness_room_query_context(st: Any | None, session: dict[str, Any]) -> str:
+    """Diag-only: align session routing with harness room before production prepare."""
+    hid = str(session.get("_solo_rv_harness_room_id") or _qp_get(st, RV_HARNESS_ROOM_QP) or "").strip().upper()
+    if not hid:
+        return ""
+    session["_solo_rv_harness_room_id"] = hid
+    session["active_page"] = "Live Draft Room"
+    return hid
+
+
 def hydrate_real_room_for_rv_ladder(
     st: Any,
     session: dict[str, Any],
@@ -115,6 +126,7 @@ def hydrate_real_room_for_rv_ladder(
     """Diag-only: production room reader + production expire token (pick/deadline)."""
     from live_draft_solo_rv_control_probe import append_control_event, render_native_control_probe
 
+    harness_id = _apply_harness_room_query_context(st, session)
     live: dict[str, Any] | None = None
     try:
         from live_draft_state import prepare_live_draft_state
@@ -139,7 +151,7 @@ def hydrate_real_room_for_rv_ladder(
             st,
             session,
             "rv_real_room_hydration_failed",
-            extra={"reason": reason, "hydration_reason": reason},
+            extra={"reason": reason, "hydration_reason": reason, "harness_room_id": harness_id},
         )
         if probe_placeholder is not None:
             render_native_control_probe(st, session, probe_placeholder)
@@ -164,6 +176,20 @@ def hydrate_real_room_for_rv_ladder(
             render_native_control_probe(st, session, probe_placeholder)
         return {"ok": False, "reason": reason, "room": live}
 
+    if harness_id:
+        got = str(live.get("draft_room_id") or "").strip().upper()
+        if got and got != harness_id:
+            reason = "harness_room_id_mismatch"
+            append_control_event(
+                st,
+                session,
+                "rv_real_room_hydration_failed",
+                room=live,
+                extra={"reason": reason, "hydration_reason": reason, "harness_room_id": harness_id},
+            )
+            if probe_placeholder is not None:
+                render_native_control_probe(st, session, probe_placeholder)
+            return {"ok": False, "reason": reason, "room": live}
     session["live_draft_room"] = live
     session["_solo_parity_expected_token"] = token
     session["_solo_persistent_wake_last_token"] = token
