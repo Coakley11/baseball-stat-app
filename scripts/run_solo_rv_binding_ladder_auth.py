@@ -43,7 +43,17 @@ from run_production_stage1_authenticated import (  # noqa: E402
     validate_production_draft_start,
 )
 from solo_draft_start_harness import execute_solo_draft_start_workflow  # noqa: E402
+from solo_rv_ladder_runner_state import (  # noqa: E402
+    classify_page_shell,
+    ledger_rows_for_run as state_ledger_rows_for_run,
+    ledger_ready,
+    page_state_to_invalid_reason,
+    should_begin_instrumentation_epoch,
+    verify_rv1_control_url,
+)
 from stage1_preflight_cleanup import run_stage1_preflight_cleanup  # noqa: E402
+
+EVIDENCE_DIR = ROOT / "data" / "solo_rv_rv1_failure_evidence"
 
 
 def rv_url(step: str, run_id: str, *, ldr: bool = False, harness_room_id: str = "") -> str:
@@ -56,7 +66,7 @@ def rv_url(step: str, run_id: str, *, ldr: bool = False, harness_room_id: str = 
     }
     if harness_room_id:
         q["solo_rv_harness_room_id"] = harness_room_id.strip().upper()
-    if ldr:
+    if ldr or step == "RV1":
         q["active_page"] = "Live Draft Room"
     base = f"{BASE}/?{urlencode(q)}"
     return append_suite_sid_to_url(base)
@@ -132,6 +142,343 @@ def assert_cloud_implementation_ready(page, required: str) -> tuple[bool, str, s
     if ok_sha and not ok_build:
         return False, sha, build
     return False, sha, build
+
+
+def redact_url(url: str) -> str:
+    try:
+        from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+        parts = urlparse(url)
+        q = parse_qs(parts.query, keep_blank_values=True)
+        if "suite_sid" in q:
+            q["suite_sid"] = ["[redacted]"]
+        return urlunparse((parts.scheme, parts.netloc, parts.path, parts.params, urlencode(q, doseq=True), parts.fragment))
+    except Exception:
+        return "[redacted]"
+
+
+def attach_page_diagnostics(page) -> dict[str, Any]:
+    collectors: dict[str, Any] = {"console": [], "pageerrors": [], "request_failed": []}
+
+    def _on_console(msg: Any) -> None:
+        try:
+            collectors["console"].append({"type": msg.type, "text": str(msg.text)[:2000]})
+        except Exception:
+            pass
+
+    def _on_pageerror(exc: Any) -> None:
+        collectors["pageerrors"].append(str(exc)[:4000])
+
+    def _on_request_failed(req: Any) -> None:
+        try:
+            collectors["request_failed"].append(
+                {"url": str(req.url)[:500], "failure": str(req.failure)[:500] if req.failure else ""}
+            )
+        except Exception:
+            pass
+
+    page.on("console", _on_console)
+    page.on("pageerror", _on_pageerror)
+    page.on("requestfailed", _on_request_failed)
+    return collectors
+
+
+def scrape_visible_page_text(page) -> str:
+    try:
+        return str(
+            page.evaluate(
+                """() => {
+              function allText() {
+                let t = document.body ? document.body.innerText : '';
+                for (const f of document.querySelectorAll('iframe')) {
+                  try {
+                    if (f.contentDocument && f.contentDocument.body) {
+                      t += '\\n' + f.contentDocument.body.innerText;
+                    }
+                  } catch (e) {}
+                }
+                return t;
+              }
+              return allText();
+            }"""
+            )
+            or ""
+        )
+    except Exception:
+        return ""
+
+
+def scrape_page_dom_snapshot(page) -> dict[str, Any]:
+    from live_draft_solo_rv_control_probe import RV_LEDGER_B64_PREFIX
+
+    try:
+        return page.evaluate(
+            f"""() => {{
+              function roots() {{
+                const r = [document];
+                for (const f of document.querySelectorAll('iframe')) {{
+                  try {{ if (f.contentDocument) r.push(f.contentDocument); }} catch (e) {{}}
+                }}
+                return r.filter(Boolean);
+              }}
+              let text = '';
+              for (const root of roots()) {{
+                if (root.body) text += root.body.innerText + '\\n';
+              }}
+              const prefix = {json.dumps(RV_LEDGER_B64_PREFIX)};
+              let hasProbe = false;
+              for (const root of roots()) {{
+                if (root.querySelector('#solo-rv-control-probe')) hasProbe = true;
+              }}
+              return {{
+                has_streamlit_app: !!document.querySelector('[data-testid="stApp"]'),
+                has_st_exception: !!document.querySelector('.stException, [data-testid="stException"]'),
+                has_streamlit_error: /Traceback|Error:/i.test(text),
+                has_login: /sign in|log in|not signed in/i.test(text) && !/signed in as/i.test(text),
+                has_ledger_prefix: text.includes(prefix),
+                has_probe_el: hasProbe,
+                has_live_draft_heading: /Live Draft/i.test(text),
+                app_loading: !!document.querySelector('[data-testid="stStatusWidget"]'),
+              }};
+            }}"""
+        )
+    except Exception:
+        return {}
+
+
+def session_fingerprint(page) -> dict[str, Any]:
+    try:
+        fp = page.evaluate(
+            """() => {
+              const keys = document.cookie.split(';').map(s => s.split('=')[0].trim()).filter(Boolean).sort();
+              return {
+                cookie_key_fingerprint: keys.join('|'),
+                path: location.pathname,
+                has_suite_sid: location.search.includes('suite_sid='),
+              };
+            }"""
+        )
+        fp["url_redacted"] = redact_url(page.url)
+        return fp if isinstance(fp, dict) else {"url_redacted": redact_url(page.url)}
+    except Exception:
+        return {"url_redacted": redact_url(page.url)}
+
+
+def streamlit_session_from_rows(rows: list[dict[str, Any]]) -> str:
+    for row in reversed(rows):
+        sid = str(row.get("streamlit_session_id") or "").strip()
+        if sid:
+            return sid
+    return ""
+
+
+def capture_rv1_failure_evidence(
+    page,
+    *,
+    run_id: str,
+    harness_room_id: str,
+    diagnostics: dict[str, Any],
+    page_state: str,
+    url_check: dict[str, Any],
+) -> dict[str, Any]:
+    EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+    text = scrape_visible_page_text(page)
+    dom = scrape_page_dom_snapshot(page)
+    probe = scrape_control_probe(page)
+    rows = state_ledger_rows_for_run(probe, run_id)
+    evidence: dict[str, Any] = {
+        "run_id": run_id,
+        "harness_room_id": harness_room_id,
+        "page_state": page_state,
+        "invalid_reason": page_state_to_invalid_reason(page_state),
+        "final_url_redacted": redact_url(page.url),
+        "page_title": page.title(),
+        "visible_text_head": text[:12000],
+        "dom": dom,
+        "url_check": url_check,
+        "expected_run_id": run_id,
+        "expected_harness_room_id": harness_room_id,
+        "console_tail": list(diagnostics.get("console") or [])[-40:],
+        "pageerrors": list(diagnostics.get("pageerrors") or [])[-20:],
+        "request_failed_tail": list(diagnostics.get("request_failed") or [])[-30:],
+        "ledger_row_count": len(rows),
+        "ledger_events": [str(r.get("event") or "") for r in rows],
+    }
+    try:
+        err_el = page.locator(".stException, [data-testid='stException']").first
+        if err_el.count():
+            evidence["streamlit_error_text"] = err_el.inner_text(timeout=2000)[:8000]
+    except Exception:
+        evidence["streamlit_error_text"] = ""
+    shot = EVIDENCE_DIR / f"rv1_{run_id}.png"
+    try:
+        page.screenshot(path=str(shot), full_page=True)
+        evidence["screenshot"] = str(shot)
+    except Exception:
+        evidence["screenshot"] = ""
+    out_json = EVIDENCE_DIR / f"rv1_{run_id}.json"
+    out_json.write_text(json.dumps(evidence, indent=2, default=str), encoding="utf-8")
+    evidence["artifact_json"] = str(out_json)
+    return evidence
+
+
+def wait_for_rv1_control_ready(
+    page,
+    run_id: str,
+    *,
+    timeout_s: float = 120.0,
+) -> tuple[str, dict[str, Any], list[dict[str, Any]], str]:
+    """Wait until READY or terminal page state. Returns (page_state, probe, rows, visible_text)."""
+    deadline = time.time() + timeout_s
+    best_probe: dict[str, Any] = {}
+    best_rows: list[dict[str, Any]] = []
+    last_state = "PAGE_NOT_READY"
+    last_text = ""
+    while time.time() < deadline:
+        last_text = scrape_visible_page_text(page)
+        dom = scrape_page_dom_snapshot(page)
+        probe = scrape_control_probe(page)
+        rows = state_ledger_rows_for_run(probe, run_id)
+        if probe and len(probe.get("rows") or []) >= len(best_probe.get("rows") or []):
+            best_probe = probe
+            best_rows = rows
+        last_state = classify_page_shell(page_text=last_text, dom=dom, rows=rows)
+        if last_state == "READY":
+            return "READY", best_probe, best_rows, last_text
+        if last_state in ("APP_ERROR", "AUTH_LOST", "ROUTE_NOT_ENTERED"):
+            return last_state, best_probe, best_rows, last_text
+        page.wait_for_timeout(2000)
+    if not best_rows and not ledger_ready(best_rows, page_text=last_text):
+        if last_state == "READY_PENDING":
+            return "READY_PENDING", best_probe, best_rows, last_text
+        return last_state, best_probe, best_rows, last_text
+    if ledger_ready(best_rows, page_text=last_text):
+        return "READY", best_probe, best_rows, last_text
+    return last_state if last_state != "READY_PENDING" else "READY_PENDING", best_probe, best_rows, last_text
+
+
+def run_rv1_control_observation(
+    page,
+    run_id: str,
+    *,
+    harness_room_id: str,
+    url_check: dict[str, Any],
+    diagnostics: dict[str, Any],
+    session_trace: list[dict[str, Any]],
+) -> dict[str, Any]:
+    page_state, probe, rows, _text = wait_for_rv1_control_ready(page, run_id, timeout_s=120.0)
+    session_trace.append({"phase": "rv1_control_url", **session_fingerprint(page), "streamlit_session_id": streamlit_session_from_rows(rows)})
+    if page_state != "READY":
+        reason = page_state_to_invalid_reason(page_state)
+        if not rows and page_state in ("READY_PENDING", "PAGE_NOT_READY"):
+            reason = "INVALID_RV_CONTROL_PAGE_NOT_OBSERVED"
+        evidence = capture_rv1_failure_evidence(
+            page,
+            run_id=run_id,
+            harness_room_id=harness_room_id,
+            diagnostics=diagnostics,
+            page_state=page_state,
+            url_check=url_check,
+        )
+        return {
+            "verdict": "INVALID",
+            "reason": reason,
+            "page_state": page_state,
+            "control_probe_ledger": rows,
+            "control_failure_evidence": evidence,
+            "session_trace": session_trace,
+            "instrumentation_epoch_ms": None,
+            "expiration_skipped": True,
+        }
+    ok_epoch, verdict, reason = should_begin_instrumentation_epoch(
+        page_state=page_state,
+        rows=rows,
+        harness_room_id=harness_room_id,
+    )
+    if not ok_epoch:
+        evidence = capture_rv1_failure_evidence(
+            page,
+            run_id=run_id,
+            harness_room_id=harness_room_id,
+            diagnostics=diagnostics,
+            page_state="READY",
+            url_check=url_check,
+        )
+        return {
+            "verdict": verdict or "INVALID",
+            "reason": reason,
+            "page_state": "READY",
+            "control_probe_ledger": rows,
+            "control_failure_evidence": evidence,
+            "session_trace": session_trace,
+            "instrumentation_epoch_ms": None,
+            "expiration_skipped": True,
+        }
+    exp, probe, reg, epoch_ms, meta = _rv1_post_declaration_epoch(
+        page, run_id, harness_room_id=harness_room_id, probe=probe, rows=rows
+    )
+    return {
+        "verdict": None,
+        "reason": "",
+        "page_state": "READY_HYDRATED",
+        "expiration": exp,
+        "control_probe": probe,
+        "registry": reg,
+        "instrumentation_epoch_ms": epoch_ms,
+        "declaration_meta": meta,
+        "session_trace": session_trace,
+        "expiration_skipped": False,
+    }
+
+
+def _rv1_post_declaration_epoch(
+    page,
+    run_id: str,
+    *,
+    harness_room_id: str,
+    probe: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], float, dict[str, Any]]:
+    from live_draft_solo_rv_binding_ladder import filter_observations_after_epoch
+
+    expected_token = ""
+    hydrated_room = ""
+    for row in rows:
+        if row.get("event") == "real_room_hydrated":
+            expected_token = str(row.get("expected_token") or "")
+            hydrated_room = str(row.get("room_id") or "")
+            break
+    deadline = time.time() + 120.0
+    while time.time() < deadline:
+        probe = poll_control_probe_best(page, probe)
+        rows = state_ledger_rows_for_run(probe, run_id)
+        if any(r.get("event") == "declaration_returned" for r in rows):
+            break
+        page.wait_for_timeout(2000)
+    epoch_ms = reset_browser_instrumentation_epoch(page, run_id)
+    exp = wait_rv_control_expiration(page, timeout_s=95.0)
+    reg = scrape_registry_localstorage(page)
+    exp, reg = filter_observations_after_epoch(
+        exp,
+        reg,
+        epoch_ms=epoch_ms,
+        expected_token=expected_token,
+        run_id=run_id,
+    )
+    exp["harness_room_id"] = harness_room_id
+    exp["hydrated_room_id"] = hydrated_room
+    exp["instrumentation_epoch_ms"] = epoch_ms
+    exp["expected_token_ledger"] = expected_token
+    poll_until = time.time() + 60.0
+    while time.time() < poll_until:
+        probe = poll_control_probe_best(page, probe)
+        page.wait_for_timeout(2000)
+    probe = poll_control_probe_best(page, probe)
+    return exp, probe, reg, epoch_ms, {
+        "expected_token": expected_token,
+        "hydrated_room_id": hydrated_room,
+        "pre_expiration_rows": rows,
+    }
 
 
 def scrape_control_probe(page) -> dict[str, Any]:
@@ -244,6 +591,23 @@ def wait_rv_control_with_epoch(
     if hydration_failed_in_probe(probe, run_id):
         return (
             {"harness_room_id": harness_room_id, "hydration_failed": True},
+            probe,
+            {"last": [], "logical": [], "run_id": run_id},
+            0.0,
+            {"expected_token": "", "hydrated_room_id": "", "pre_expiration_rows": rows},
+        )
+    if not rows:
+        return (
+            {"harness_room_id": harness_room_id, "skipped_expiration": True},
+            probe,
+            {"last": [], "logical": [], "run_id": run_id},
+            0.0,
+            {"expected_token": "", "hydrated_room_id": "", "pre_expiration_rows": rows},
+        )
+    ok_epoch, _, _ = should_begin_instrumentation_epoch(page_state="READY", rows=rows, harness_room_id=harness_room_id)
+    if not ok_epoch:
+        return (
+            {"harness_room_id": harness_room_id, "skipped_expiration": True},
             probe,
             {"last": [], "logical": [], "run_id": run_id},
             0.0,
@@ -390,10 +754,84 @@ def run_rv0(context, run_id: str, *, cloud_sha: str, cloud_build: str) -> dict[s
     return result
 
 
+def run_rv1_direct(context, run_id: str, *, cloud_sha: str, cloud_build: str) -> dict[str, Any]:
+    """Navigate directly to RV1 URL; room is created inside the diagnostic route."""
+    from cloud_streamlit_wake import goto_and_wake
+
+    page = context.new_page()
+    diagnostics = attach_page_diagnostics(page)
+    session_trace: list[dict[str, Any]] = []
+    control_url = rv_url("RV1", run_id)
+    goto_and_wake(page, control_url, timeout_s=240)
+    page.wait_for_timeout(8000)
+    url_check = verify_rv1_control_url(page.url, run_id=run_id)
+    url_check["requested_url_redacted"] = redact_url(control_url)
+    url_check["final_url_redacted"] = redact_url(page.url)
+    obs = run_rv1_control_observation(
+        page,
+        run_id,
+        harness_room_id="",
+        url_check=url_check,
+        diagnostics=diagnostics,
+        session_trace=session_trace,
+    )
+    if obs.get("verdict") == "INVALID":
+        result = {
+            "step": "RV1",
+            "run_id": run_id,
+            "room_id": "",
+            "created_room_id": "",
+            "verdict": "INVALID",
+            "reason": obs.get("reason"),
+            "page_state": obs.get("page_state"),
+            "url_check": url_check,
+            "session_trace": obs.get("session_trace"),
+            "control_probe_ledger": obs.get("control_probe_ledger") or [],
+            "control_failure_evidence": obs.get("control_failure_evidence"),
+            "instrumentation_epoch_ms": None,
+            "expiration_skipped": True,
+            "validity_ok": False,
+            "validity_reason": obs.get("reason"),
+            "root_cause": "",
+        }
+        result["cloud_sha"] = cloud_sha
+        result["cloud_build"] = cloud_build
+        page.close()
+        return result
+    exp = obs["expiration"]
+    probe = obs["control_probe"]
+    reg = obs["registry"]
+    epoch_ms = obs["instrumentation_epoch_ms"]
+    meta = obs["declaration_meta"]
+    created_room = ""
+    for row in state_ledger_rows_for_run(probe, run_id):
+        if row.get("event") == "production_room_created":
+            created_room = str(row.get("room_id") or (row.get("extra") or {}).get("room_id") or "")
+            break
+    result = evaluate_step(
+        "RV1",
+        run_id=run_id,
+        expiration=exp,
+        control_probe=probe,
+        reg=reg,
+        room_id=created_room,
+        instrumentation_epoch_ms=epoch_ms,
+    )
+    result["declaration_meta"] = meta
+    result["url_check"] = url_check
+    result["session_trace"] = obs.get("session_trace", session_trace)
+    result["cloud_sha"] = cloud_sha
+    result["cloud_build"] = cloud_build
+    page.close()
+    return result
+
+
 def run_rv_real_step(context, step: str, run_id: str, *, cloud_sha: str, cloud_build: str) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
 
     page = context.new_page()
+    diagnostics = attach_page_diagnostics(page)
+    session_trace: list[dict[str, Any]] = []
     url = production_url()
     goto_and_wake(page, url, timeout_s=240)
     page.wait_for_timeout(15000)
@@ -412,36 +850,84 @@ def run_rv_real_step(context, step: str, run_id: str, *, cloud_sha: str, cloud_b
     if not start_val.get("valid"):
         page.close()
         return {"step": step, "verdict": "INVALID", "reason": "draft_start_invalid", "run_id": run_id, "start": start_val}
+    harness_room_id = str(start_val.get("latched_room_id") or "")
+    session_trace.append(
+        {
+            "phase": "room_creation",
+            **session_fingerprint(page),
+            "streamlit_session_id": streamlit_session_from_rows(state_ledger_rows_for_run(scrape_control_probe(page), run_id)),
+        }
+    )
     goto_and_wake(page, url, timeout_s=120)
     page.wait_for_timeout(10000)
-    goto_and_wake(
-        page,
-        rv_url(
-            step,
-            run_id,
-            ldr=(step in ("RV1", "RV2", "RV3")),
-            harness_room_id=str(start_val.get("latched_room_id") or ""),
-        ),
-        timeout_s=240,
-    )
+    session_trace.append({"phase": "ldr_refresh", **session_fingerprint(page)})
+    control_url = rv_url(step, run_id, ldr=True, harness_room_id=harness_room_id)
+    goto_and_wake(page, control_url, timeout_s=240)
     page.wait_for_timeout(8000)
-    exp, probe, reg, epoch_ms, meta = wait_rv_control_with_epoch(
-        page,
-        run_id,
-        harness_room_id=str(start_val.get("latched_room_id") or ""),
-        timeout_decl_s=120.0,
-        timeout_exp_s=95.0,
-    )
+    url_check = verify_rv1_control_url(page.url, run_id=run_id, harness_room_id=harness_room_id) if step == "RV1" else {"ok": True}
+    url_check["requested_url_redacted"] = redact_url(control_url)
+    url_check["final_url_redacted"] = redact_url(page.url)
+
+    if step == "RV1":
+        obs = run_rv1_control_observation(
+            page,
+            run_id,
+            harness_room_id=harness_room_id,
+            url_check=url_check,
+            diagnostics=diagnostics,
+            session_trace=session_trace,
+        )
+        if obs.get("verdict") == "INVALID":
+            result = {
+                "step": step,
+                "run_id": run_id,
+                "room_id": harness_room_id,
+                "created_room_id": harness_room_id,
+                "verdict": "INVALID",
+                "reason": obs.get("reason"),
+                "page_state": obs.get("page_state"),
+                "url_check": url_check,
+                "session_trace": obs.get("session_trace"),
+                "control_probe_ledger": obs.get("control_probe_ledger") or [],
+                "control_failure_evidence": obs.get("control_failure_evidence"),
+                "instrumentation_epoch_ms": None,
+                "expiration_skipped": True,
+                "validity_ok": False,
+                "validity_reason": obs.get("reason"),
+                "root_cause": "",
+            }
+            result["cloud_sha"] = cloud_sha
+            result["cloud_build"] = cloud_build
+            page.close()
+            return result
+        exp = obs["expiration"]
+        probe = obs["control_probe"]
+        reg = obs["registry"]
+        epoch_ms = obs["instrumentation_epoch_ms"]
+        meta = obs["declaration_meta"]
+    else:
+        exp, probe, reg, epoch_ms, meta = wait_rv_control_with_epoch(
+            page,
+            run_id,
+            harness_room_id=harness_room_id,
+            timeout_decl_s=120.0,
+            timeout_exp_s=95.0,
+        )
     result = evaluate_step(
         step,
         run_id=run_id,
         expiration=exp,
         control_probe=probe,
         reg=reg,
-        room_id=str(start_val.get("latched_room_id") or ""),
+        room_id=harness_room_id,
         instrumentation_epoch_ms=epoch_ms,
     )
     result["declaration_meta"] = meta
+    result["url_check"] = url_check
+    if step == "RV1":
+        result["session_trace"] = obs.get("session_trace", session_trace)
+    else:
+        result["session_trace"] = session_trace
     result["cloud_sha"] = cloud_sha
     result["cloud_build"] = cloud_build
     page.close()
@@ -495,7 +981,7 @@ def main() -> int:
             return 1
         ladder_steps = tuple(
             s.strip().upper()
-            for s in os.environ.get("SOLO_RV_LADDER_STEPS", "RV1,RV2,RV3").split(",")
+            for s in os.environ.get("SOLO_RV_LADDER_STEPS", "RV1").split(",")
             if s.strip()
         )
         for step in ladder_steps:
@@ -506,6 +992,8 @@ def main() -> int:
             )
             if step == "RV0":
                 result = run_rv0(context, run_id, cloud_sha=verified_sha, cloud_build=verified_build)
+            elif step == "RV1":
+                result = run_rv1_direct(context, run_id, cloud_sha=verified_sha, cloud_build=verified_build)
             else:
                 result = run_rv_real_step(
                     context, step, run_id, cloud_sha=verified_sha, cloud_build=verified_build
