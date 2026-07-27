@@ -68,9 +68,14 @@ def try_p6_early_exclusive_shell(st: Any, session: dict[str, Any], *, ldr_branch
     session["_solo_delivery_diag_enabled"] = True
 
     if session.get(P6_EARLY_SHELL_COMPLETED_RUN_KEY) == run_id:
-        render_p6_writer_probe(st, session)
-        st.stop()
-        return True
+        from live_draft_solo_parity_p6_persistent_diag import get_p6_ledger_for_run
+
+        prior = get_p6_ledger_for_run(session, run_id)
+        if any(isinstance(r, dict) and r.get("stage") == "component_declared" for r in prior):
+            render_p6_writer_probe(st, session)
+            st.stop()
+            return True
+        session.pop(P6_EARLY_SHELL_COMPLETED_RUN_KEY, None)
 
     key = SOLO_PERSISTENT_WAKE_WIDGET_KEY
     session[P6_RUN_SCOPED_ROOM_KEY] = True
