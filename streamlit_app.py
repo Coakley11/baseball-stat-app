@@ -14715,25 +14715,23 @@ except ImportError:
     active_page = normalize_page_key(st.session_state.get("active_page") or _selected_page)
 try:
     from live_draft_solo_p6_early_shell import try_p6_early_exclusive_shell
-    from live_draft_solo_parity_p6_persistent_diag import _qp_get, p6_persistent_diag_active
+    from live_draft_solo_parity_p6_persistent_diag import (
+        P6_DIAG_LATCHED_KEY,
+        append_p6_ledger_row,
+        p6_persistent_diag_active,
+        resolve_p6_run_id,
+    )
 
-    if p6_persistent_diag_active(st, st.session_state):
-        _p6_qp_page = normalize_page_key(_qp_get(st, "active_page") or "")
-        if _p6_qp_page == "Live Draft Room" or active_page == "Live Draft Room":
-            try:
-                from live_draft_solo_parity_p6_persistent_diag import append_p6_ledger_row, resolve_p6_run_id
-
-                if resolve_p6_run_id(st, st.session_state):
-                    append_p6_ledger_row(
-                        st.session_state,
-                        "early_shell_hook_invoked",
-                        st=st,
-                        body_active_page=str(active_page or ""),
-                        qp_active_page=str(_p6_qp_page or ""),
-                    )
-            except ImportError:
-                pass
-            try_p6_early_exclusive_shell(st, st.session_state)
+    if (st.session_state.get(P6_DIAG_LATCHED_KEY) or p6_persistent_diag_active(st, st.session_state)) and resolve_p6_run_id(
+        st, st.session_state
+    ):
+        append_p6_ledger_row(
+            st.session_state,
+            "early_shell_hook_invoked",
+            st=st,
+            body_active_page=str(active_page or ""),
+        )
+        try_p6_early_exclusive_shell(st, st.session_state)
 except ImportError:
     pass
 except Exception as _p6_early_shell_exc:
