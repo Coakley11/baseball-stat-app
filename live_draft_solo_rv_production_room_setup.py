@@ -9,12 +9,15 @@ Canonical room source (production):
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
+import uuid
 from typing import Any
 
 ROOM_STATE_SOURCE_KEY = "_solo_rv_room_state_source"
 SAME_SESSION_SOURCE = "same_session_production_create"
-PRODUCTION_READY_RUN_KEY = "_solo_rv_production_room_ready_run_id"
+RV1_SETUP_OWNER_KEY = "_solo_rv_rv1_production_setup_owner"
 
 
 def _qp_get(st: Any, key: str) -> str:
@@ -24,6 +27,106 @@ def _qp_get(st: Any, key: str) -> str:
         return _g(st, key)
     except ImportError:
         return ""
+
+
+def room_state_fingerprint(room: dict[str, Any]) -> str:
+    payload = {
+        "draft_room_id": str(room.get("draft_room_id") or ""),
+        "status": str(room.get("status") or ""),
+        "current_pick_index": int(room.get("current_pick_index") or 0),
+        "timer_deadline": room.get("timer_deadline"),
+        "pick_order_len": len(list(room.get("pick_order") or [])),
+    }
+    raw = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _get_setup_owner(session: dict[str, Any]) -> dict[str, Any]:
+    owner = session.get(RV1_SETUP_OWNER_KEY)
+    return dict(owner) if isinstance(owner, dict) else {}
+
+
+def _save_setup_owner(session: dict[str, Any], owner: dict[str, Any]) -> None:
+    session[RV1_SETUP_OWNER_KEY] = dict(owner)
+
+
+def _expected_token_for_room(room: dict[str, Any]) -> str:
+    try:
+        from solo_countdown_component import build_solo_expire_token
+
+        return str(build_solo_expire_token(room) or "").strip()
+    except ImportError:
+        return ""
+
+
+def _room_matches_owner(owner: dict[str, Any], live: dict[str, Any]) -> bool:
+    if str(live.get("status") or "") != "in_progress":
+        return False
+    if live.get("timer_deadline") is None:
+        return False
+    rid = str(live.get("draft_room_id") or "").strip().upper()
+    if rid != str(owner.get("room_id") or "").strip().upper():
+        return False
+    if room_state_fingerprint(live) != str(owner.get("room_fingerprint") or ""):
+        return False
+    if int(live.get("current_pick_index") or 0) != int(owner.get("initial_pick") or 0):
+        return False
+    if live.get("timer_deadline") != owner.get("initial_deadline"):
+        return False
+    return True
+
+
+def _try_rv1_reuse_owned_room(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    run_id: str,
+    step: str,
+    probe_placeholder: Any,
+) -> dict[str, Any] | None:
+    from live_draft_solo_rv_control_probe import append_control_event, render_native_control_probe
+
+    owner = _get_setup_owner(session)
+    if not owner.get("setup_completed") or str(owner.get("owner_run_id") or "") != run_id:
+        return None
+    live = session.get("live_draft_room")
+    if not isinstance(live, dict):
+        return None
+    if not _room_matches_owner(owner, live):
+        return {
+            "ok": False,
+            "invalid": "INVALID_RV_DUPLICATE_ROOM_CREATION_fingerprint_or_state_mismatch",
+            "reason": "owner_room_mismatch",
+        }
+    room_id = str(live.get("draft_room_id") or "").strip().upper()
+    token = str(owner.get("expected_token") or _expected_token_for_room(live))
+    session[ROOM_STATE_SOURCE_KEY] = SAME_SESSION_SOURCE
+    append_control_event(
+        st,
+        session,
+        "production_room_reused",
+        control_name=step,
+        room=live,
+        expected_token=token,
+        extra={
+            "owner_run_id": run_id,
+            "room_id": room_id,
+            "room_fingerprint": owner.get("room_fingerprint"),
+            "creation_event_id": owner.get("creation_event_id"),
+            "draft_start_event_id": owner.get("draft_start_event_id"),
+            "room_object_id": owner.get("room_object_id"),
+            "logical_reuse": True,
+        },
+    )
+    if probe_placeholder is not None:
+        render_native_control_probe(st, session, probe_placeholder)
+    return {
+        "ok": True,
+        "room_id": room_id,
+        "room": live,
+        "room_state_source": SAME_SESSION_SOURCE,
+        "reused": True,
+    }
 
 
 def apply_rv1_setup_query_params(st: Any, session: dict[str, Any]) -> None:
@@ -174,51 +277,21 @@ def ensure_rv1_production_solo_room(
         pass
     step = str(session.get("_solo_rv_ladder_step") or "RV1")
     run_id = str(session.get("_solo_rv_run_id") or _qp_get(st, "solo_rv_run_id") or "").strip()
-    live = session.get("live_draft_room")
-    if (
-        run_id
-        and session.get(PRODUCTION_READY_RUN_KEY) == run_id
-        and isinstance(live, dict)
-        and str(live.get("status") or "") == "in_progress"
-        and live.get("timer_deadline") is not None
-    ):
-        room_id = str(live.get("draft_room_id") or "").strip().upper()
-        session[ROOM_STATE_SOURCE_KEY] = SAME_SESSION_SOURCE
-        append_control_event(
-            st,
-            session,
-            "production_room_creation_attempted",
-            control_name=step,
-            room=live,
-            extra={"reused": True, "room_id": room_id},
-        )
-        append_control_event(
-            st,
-            session,
-            "production_room_created",
-            control_name=step,
-            room=live,
-            extra={"reused": True, "room_id": room_id, "room_state_source": SAME_SESSION_SOURCE},
-        )
-        append_control_event(
-            st,
-            session,
-            "production_draft_started",
-            control_name=step,
-            room=live,
-            extra={"reused": True, "room_id": room_id, "room_state_source": SAME_SESSION_SOURCE},
-        )
-        if probe_placeholder is not None:
-            render_native_control_probe(st, session, probe_placeholder)
-        return {
-            "ok": True,
-            "room_id": room_id,
-            "room": live,
-            "room_state_source": SAME_SESSION_SOURCE,
-            "reused": True,
-        }
 
-    append_control_event(st, session, "production_room_creation_attempted", control_name=step)
+    reused = _try_rv1_reuse_owned_room(
+        st, session, run_id=run_id, step=step, probe_placeholder=probe_placeholder
+    )
+    if reused is not None:
+        return reused
+
+    creation_event_id = f"rv1-create-{uuid.uuid4().hex[:12]}"
+    append_control_event(
+        st,
+        session,
+        "production_room_creation_attempted",
+        control_name=step,
+        extra={"creation_event_id": creation_event_id, "owner_run_id": run_id},
+    )
     if probe_placeholder is not None:
         render_native_control_probe(st, session, probe_placeholder)
 
@@ -368,13 +441,21 @@ def ensure_rv1_production_solo_room(
         return {"ok": False, "invalid": f"INVALID_RV_PRODUCTION_ROOM_CREATION_{reason}", "reason": reason}
 
     room_id = str(new_room.get("draft_room_id") or "").strip().upper()
+    fingerprint = room_state_fingerprint(new_room)
     append_control_event(
         st,
         session,
         "production_room_created",
         control_name=step,
         room=new_room,
-        extra={"room_id": room_id, "room_state_source": SAME_SESSION_SOURCE},
+        extra={
+            "room_id": room_id,
+            "room_state_source": SAME_SESSION_SOURCE,
+            "creation_event_id": creation_event_id,
+            "owner_run_id": run_id,
+            "room_fingerprint": fingerprint,
+            "room_object_id": id(new_room),
+        },
     )
     if probe_placeholder is not None:
         render_native_control_probe(st, session, probe_placeholder)
@@ -394,6 +475,20 @@ def ensure_rv1_production_solo_room(
         request_live_draft_setup_mode(session, SETUP_MODE_SOLO, persist=False, st=None)
     except ImportError:
         pass
+
+    draft_start_event_id = f"rv1-start-{uuid.uuid4().hex[:12]}"
+    append_control_event(
+        st,
+        session,
+        "production_draft_start_attempted",
+        control_name=step,
+        room=new_room,
+        extra={
+            "draft_start_event_id": draft_start_event_id,
+            "creation_event_id": creation_event_id,
+            "owner_run_id": run_id,
+        },
+    )
 
     try:
         live_draft_start(new_room)
@@ -429,7 +524,21 @@ def ensure_rv1_production_solo_room(
     session["room_your_team"] = fields["user_team"]
     session[ROOM_STATE_SOURCE_KEY] = SAME_SESSION_SOURCE
     session["_solo_rv_production_room_id"] = room_id
-    session[PRODUCTION_READY_RUN_KEY] = run_id
+    token = _expected_token_for_room(new_room)
+    owner = {
+        "setup_completed": True,
+        "owner_run_id": run_id,
+        "room_id": room_id,
+        "room_fingerprint": fingerprint,
+        "creation_event_id": creation_event_id,
+        "draft_start_event_id": draft_start_event_id,
+        "room_object_id": id(new_room),
+        "created_ts": time.time(),
+        "initial_pick": int(new_room.get("current_pick_index") or 0),
+        "initial_deadline": new_room.get("timer_deadline"),
+        "expected_token": token,
+    }
+    _save_setup_owner(session, owner)
 
     append_control_event(
         st,
@@ -437,7 +546,25 @@ def ensure_rv1_production_solo_room(
         "production_draft_started",
         control_name=step,
         room=new_room,
-        extra={"room_id": room_id, "room_state_source": SAME_SESSION_SOURCE},
+        expected_token=token,
+        extra={
+            "room_id": room_id,
+            "room_state_source": SAME_SESSION_SOURCE,
+            "creation_event_id": creation_event_id,
+            "draft_start_event_id": draft_start_event_id,
+            "owner_run_id": run_id,
+            "room_fingerprint": fingerprint,
+            "room_object_id": id(new_room),
+        },
+    )
+    append_control_event(
+        st,
+        session,
+        "production_setup_owner_established",
+        control_name=step,
+        room=new_room,
+        expected_token=token,
+        extra=dict(owner),
     )
 
     try:
