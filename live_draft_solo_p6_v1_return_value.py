@@ -80,6 +80,20 @@ def mount_p6_v1_return_value_control(
     session["_solo_p6_v1_control_active"] = control
     session["_solo_p6_v1_widget_key"] = widget_key
 
+    try:
+        from live_draft_solo_parity_p6_persistent_diag import append_p6_ledger_row
+
+        append_p6_ledger_row(
+            session,
+            "r4_mount_begin",
+            st=st,
+            callback_control=control,
+            widget_key=widget_key,
+            expected_token=expected,
+        )
+    except ImportError:
+        pass
+
     delivery_seen = bool(session.get("_solo_p6_browser_delivery_seen"))
     first_after = delivery_seen and not session.get("_solo_p6_v1_return_logged_after_delivery")
 
@@ -103,6 +117,10 @@ def mount_p6_v1_return_value_control(
             chain_persist_key=str(chain_persist_key or session.get("_solo_parity_ls_key") or ""),
         )
 
+    append_p6_component_declared_for_v1(
+        session, st=st, widget_key=widget_key, expire_token=expected, raw=raw, control=control
+    )
+
     ss_raw = repr(st.session_state.get(widget_key))[:400] if widget_key in st.session_state else "missing"
     ident = _declaration_identity(session, widget_key=widget_key, control=control)
     record_v1_return_value_observation(
@@ -121,7 +139,6 @@ def mount_p6_v1_return_value_control(
     if first_after and _coerce_return_token(raw) == expected:
         session["_solo_p6_v1_return_after_delivery"] = True
 
-    append_p6_component_declared_for_v1(session, st=st, widget_key=widget_key, expire_token=expected, raw=raw, control=control)
     return raw
 
 

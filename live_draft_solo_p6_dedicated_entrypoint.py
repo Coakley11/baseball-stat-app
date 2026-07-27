@@ -136,6 +136,12 @@ def try_p6_dedicated_entrypoint(st: Any, session: dict[str, Any], *, force: bool
     from live_draft_solo_p6_declaration_audit import resolve_p6_callback_control
 
     callback_control = resolve_p6_callback_control(st, session)
+    append_p6_ledger_row(
+        session,
+        "callback_control_resolved",
+        st=st,
+        callback_control=callback_control,
+    )
     v1_return_control = callback_control in ("R4", "R5")
 
     if session.get(P6_DEDICATED_COMPLETED_RUN_KEY) == run_id:
@@ -191,15 +197,25 @@ def try_p6_dedicated_entrypoint(st: Any, session: dict[str, Any], *, force: bool
     if v1_return_control:
         from live_draft_solo_p6_v1_return_value import mount_p6_v1_return_value_control
 
-        mount_p6_v1_return_value_control(
-            st,
-            session,
-            synth,
-            run_id=run_id,
-            control=callback_control,
-            expire_token=token,
-            chain_persist_key=str(session.get("_solo_parity_ls_key") or ""),
-        )
+        try:
+            mount_p6_v1_return_value_control(
+                st,
+                session,
+                synth,
+                run_id=run_id,
+                control=callback_control,
+                expire_token=token,
+                chain_persist_key=str(session.get("_solo_parity_ls_key") or ""),
+            )
+        except Exception as exc:
+            append_p6_ledger_row(
+                session,
+                "r4_mount_error",
+                st=st,
+                callback_control=callback_control,
+                error=f"{type(exc).__name__}: {exc}"[:400],
+            )
+            raise
     else:
         from live_draft_solo_persistent_wake import try_solo_persistent_wake_ldr_entry
 
