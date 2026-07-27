@@ -607,6 +607,10 @@ P6_HARNESS_INIT_SCRIPT = """
     function scanFrames() {
       syncFromProbe();
       const exp = HARNESS.expected_token || "";
+      if (!exp) {
+        bag._syncCounts();
+        return;
+      }
       let prod = 0;
       let min = 0;
       for (const f of document.querySelectorAll("iframe")) {

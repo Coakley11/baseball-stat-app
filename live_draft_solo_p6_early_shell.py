@@ -34,6 +34,12 @@ def _active_page_is_live_draft(st: Any, session: dict[str, Any]) -> bool:
     return page == "Live Draft Room"
 
 
+def _qp_get_early(st: Any, name: str) -> str:
+    from live_draft_solo_parity_p6_persistent_diag import _qp_get
+
+    return _qp_get(st, name)
+
+
 def p6_early_shell_blocks_deep_parity(session: dict[str, Any]) -> bool:
     return bool(session.get(P6_EARLY_SHELL_STOP_KEY))
 
@@ -63,7 +69,11 @@ def try_p6_early_exclusive_shell(st: Any, session: dict[str, Any]) -> bool:
     if not run_id:
         return False
     if not _active_page_is_live_draft(st, session):
-        return False
+        page_qp = _normalize_page(_qp_get_early(st, "active_page"))
+        if page_qp == "Live Draft Room":
+            session["active_page"] = page_qp
+        elif not _active_page_is_live_draft(st, session):
+            return False
 
     session[P6_EARLY_SHELL_ACTIVE_KEY] = True
     session[P6_EARLY_SHELL_STOP_KEY] = True

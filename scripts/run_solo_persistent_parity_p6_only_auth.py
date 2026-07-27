@@ -404,11 +404,17 @@ def interpret_p6_scored(scored: dict[str, Any], *, peak: dict[str, Any]) -> str:
     return "Review ordered ledger, browser peak, and session continuity fields."
 
 
+def _parity_expire_token(value: str) -> bool:
+    s = str(value or "").strip()
+    return s.startswith("PARITY|") or (s.startswith("PARITY_") and "|" in s)
+
+
 def run_p6_writer_session(browser, *, deploy: dict[str, Any], run_id: str) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
 
     ls_key = f"solo_parity_ls_p6_{int(time.time())}"
     writer_url = p6_writer_url(run_id=run_id, ls_key=ls_key)
+    syn_prefix = f"PARITY_{run_id.replace('-', '')[:8]}|"
     ctx = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
     install_p6_harness_init(ctx)
     page = ctx.new_page()
@@ -437,12 +443,12 @@ def run_p6_writer_session(browser, *, deploy: dict[str, Any], run_id: str) -> di
             repro = merge_browser_peak_into_repro(scrape_repro_events(page), browser_peak)
             parent_all = collect_p6_parent_messages(page)
             exp = str(probe.get("expected") or payload.get("expected_token") or expected or "")
-            if exp.startswith("PARITY|"):
+            if _parity_expire_token(exp):
                 expected = exp
             elif not expected:
                 for pr in parent_all:
                     prev = str(pr.get("value_preview") or "")
-                    if prev.startswith("PARITY|"):
+                    if prev.startswith(syn_prefix) or _parity_expire_token(prev):
                         expected = prev
                         break
             if expected.count("|") >= 2:
@@ -466,11 +472,15 @@ def run_p6_writer_session(browser, *, deploy: dict[str, Any], run_id: str) -> di
                     rs = str(r.get("streamlit_session_id") or "").strip()
                     if rs:
                         session_ids_seen.add(rs)
-            if int(sc.get("timer_armed") or 0) >= 1 and not _has_stage(rows, "component_declared"):
+            if (
+                expected
+                and bool(probe.get("present"))
+                and _has_stage(rows, "script_begin")
+                and int(sc.get("timer_armed") or 0) >= 1
+                and not _has_stage(rows, "component_declared")
+            ):
                 mount_invalid_timer = True
                 break
-            if browser_send_ts is None and int(sc.get("transport_postmessage_invoked") or 0) >= 1:
-                browser_send_ts = time.time()
 
             writer_samples.append(
                 {
@@ -505,6 +515,8 @@ def run_p6_writer_session(browser, *, deploy: dict[str, Any], run_id: str) -> di
                 payload, browser_send_ts=browser_send_ts
             )
             peak = merge_peak_distinct(peak, distinct)
+            if browser_send_ts is None and int(sc.get("transport_postmessage_invoked") or 0) >= 1:
+                browser_send_ts = time.time()
             if time.time() >= deadline + 8 and int(peak.get("browser_deadline_crossed") or 0) >= 1:
                 break
             page.wait_for_timeout(400)
