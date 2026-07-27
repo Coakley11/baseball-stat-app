@@ -343,10 +343,26 @@ def wait_for_rv1_control_ready(
             best_probe = probe
             best_rows = rows
         last_state = classify_page_shell(page_text=last_text, dom=dom, rows=rows)
+        if last_state == "READY" and not (
+            {str(r.get("event") or "") for r in rows} >= {"real_room_hydrated", "declaration_returned"}
+        ):
+            last_state = "READY_PENDING"
         if last_state == "READY":
             return "READY", best_probe, best_rows, last_text
         if last_state in ("APP_ERROR", "AUTH_LOST", "ROUTE_NOT_ENTERED"):
-            return last_state, best_probe, best_rows, last_text
+            if rows and any(
+                r.get("event") in ("declaration_attempt", "production_draft_started", "real_room_hydrated")
+                for r in rows
+            ):
+                last_state = "READY_PENDING"
+            elif last_state in ("APP_ERROR", "AUTH_LOST"):
+                return last_state, best_probe, best_rows, last_text
+        events = {str(r.get("event") or "") for r in rows}
+        if events >= {"script_begin", "rv_entrypoint_entered"}:
+            if "rv_mount_failed" in events or "production_room_creation_failed" in events:
+                return "READY", best_probe, best_rows, last_text
+            if "declaration_returned" in events and "real_room_hydrated" in events:
+                return "READY", best_probe, best_rows, last_text
         page.wait_for_timeout(2000)
     if not best_rows and not ledger_ready(best_rows, page_text=last_text):
         if last_state == "READY_PENDING":

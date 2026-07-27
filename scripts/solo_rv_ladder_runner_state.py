@@ -71,8 +71,12 @@ def classify_page_shell(
     """Return PAGE_NOT_READY | APP_ERROR | AUTH_LOST | ROUTE_NOT_ENTERED | READY_PENDING | READY."""
     text = str(page_text or "")
     lower = text.lower()
-    if dom.get("has_st_exception") or dom.get("has_streamlit_error"):
+    events = {str(r.get("event") or "") for r in rows}
+    if dom.get("has_st_exception"):
         return "APP_ERROR"
+    if dom.get("has_streamlit_error") and not dom.get("has_ledger_prefix"):
+        if not events.intersection({"production_room_created", "declaration_attempt", "real_room_hydrated"}):
+            return "APP_ERROR"
     if dom.get("has_login") or ("not signed in" in lower and "signed in as" not in lower):
         return "AUTH_LOST"
     loading = bool(dom.get("has_streamlit_app")) and (
