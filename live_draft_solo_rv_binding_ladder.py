@@ -117,13 +117,22 @@ def hydrate_real_room_for_rv_ladder(
 
     live: dict[str, Any] | None = None
     try:
-        from live_draft_navigation import _live_draft_room_for_return
+        from live_draft_state import prepare_live_draft_state
 
-        candidate = _live_draft_room_for_return(session)
-        if isinstance(candidate, dict):
-            live = candidate
-    except ImportError:
+        prepared = prepare_live_draft_state(session)
+        if isinstance(prepared, dict):
+            live = prepared
+    except Exception:
         live = None
+    if not isinstance(live, dict) or not (live.get("draft_room_id") or live.get("pick_order")):
+        try:
+            from live_draft_navigation import _live_draft_room_for_return
+
+            candidate = _live_draft_room_for_return(session)
+            if isinstance(candidate, dict):
+                live = candidate
+        except ImportError:
+            pass
     if not isinstance(live, dict) or not (live.get("draft_room_id") or live.get("pick_order")):
         reason = "room_not_in_session"
         append_control_event(

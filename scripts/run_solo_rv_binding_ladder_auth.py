@@ -196,6 +196,11 @@ def wait_for_rv_control_declaration(
     return best_probe, best_rows
 
 
+def hydration_failed_in_probe(probe: dict[str, Any], run_id: str) -> bool:
+    rows = ledger_rows_for_run(probe, run_id)
+    return any(r.get("event") == "rv_real_room_hydration_failed" for r in rows)
+
+
 def reset_browser_instrumentation_epoch(page, run_id: str) -> float:
     """Clear pre-navigation registry/listeners; start grading epoch (ms since epoch)."""
     from stage1_frame_transport_probe import install_immediate_parent_listeners
@@ -234,6 +239,14 @@ def wait_rv_control_with_epoch(
     from live_draft_solo_rv_binding_ladder import filter_observations_after_epoch
 
     probe, rows = wait_for_rv_control_declaration(page, run_id, timeout_s=timeout_decl_s)
+    if hydration_failed_in_probe(probe, run_id):
+        return (
+            {"harness_room_id": harness_room_id, "hydration_failed": True},
+            probe,
+            {"last": [], "logical": [], "run_id": run_id},
+            0.0,
+            {"expected_token": "", "hydrated_room_id": "", "pre_expiration_rows": rows},
+        )
     expected_token = ""
     hydrated_room = ""
     for row in rows:
@@ -397,6 +410,8 @@ def run_rv_real_step(context, step: str, run_id: str, *, cloud_sha: str, cloud_b
     if not start_val.get("valid"):
         page.close()
         return {"step": step, "verdict": "INVALID", "reason": "draft_start_invalid", "run_id": run_id, "start": start_val}
+    goto_and_wake(page, url, timeout_s=120)
+    page.wait_for_timeout(10000)
     goto_and_wake(page, rv_url(step, run_id, ldr=(step in ("RV2", "RV3"))), timeout_s=240)
     page.wait_for_timeout(8000)
     exp, probe, reg, epoch_ms, meta = wait_rv_control_with_epoch(

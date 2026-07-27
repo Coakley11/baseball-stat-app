@@ -49,6 +49,18 @@ def _rv_real_room_bootstrap(st: Any, session: dict[str, Any]) -> None:
         prepare_baseball_workspace(st)
     except Exception:
         pass
+    try:
+        from live_draft_state import prepare_live_draft_state
+
+        prepare_live_draft_state(session)
+    except Exception:
+        pass
+    try:
+        from live_draft_queue_survival import begin_queue_script_pass
+
+        begin_queue_script_pass(session, st=st)
+    except Exception:
+        pass
 
 
 def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
