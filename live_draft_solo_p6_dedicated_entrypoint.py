@@ -81,7 +81,7 @@ def p6_dedicated_auth_ready(st: Any, session: dict[str, Any]) -> bool:
     return False
 
 
-def try_p6_dedicated_entrypoint(st: Any, session: dict[str, Any]) -> bool:
+def try_p6_dedicated_entrypoint(st: Any, session: dict[str, Any], *, force: bool = False) -> bool:
     """Mount production persistent wake once, probe + st.stop(); bypass normal app routing."""
     from live_draft_solo_parity_p6_persistent_diag import (
         P6_MOUNTED_RUN_ID_KEY,
@@ -94,7 +94,7 @@ def try_p6_dedicated_entrypoint(st: Any, session: dict[str, Any]) -> bool:
         synthetic_room_id_for_run,
     )
 
-    if not p6_dedicated_entrypoint_requested(st, session):
+    if not force and not p6_dedicated_entrypoint_requested(st, session):
         return False
     if not p6_dedicated_auth_ready(st, session):
         from live_draft_solo_parity_p6_persistent_diag import append_p6_ledger_row
@@ -229,7 +229,7 @@ def run_p6_dedicated_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
     except ImportError:
         pass
     mark_p6_dedicated_route_requested(st, session)
-    mounted = try_p6_dedicated_entrypoint(st, session)
+    mounted = try_p6_dedicated_entrypoint(st, session, force=True)
     if not mounted:
         try:
             from live_draft_solo_parity_p6_persistent_diag import render_p6_writer_probe
