@@ -1,3 +1,4 @@
-052ab9b  # RV1 same-session production room + rerun reuse
+9e06ddd8eb008945fa54db961179d346fb91801f  # RV1 setup owner + logical reuse grading
 
 branch: dev
+
