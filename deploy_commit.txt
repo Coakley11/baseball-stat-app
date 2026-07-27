@@ -1,4 +1,4 @@
-ade2569  # P6 workspace order
+c198e2b  # P6 relatch after workspace
 
 branch: dev
 
