@@ -1,4 +1,4 @@
-b06537a  # RV parent listener fix
+2e12da6  # RV stable control probe
 
 branch: dev
 
