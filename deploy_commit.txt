@@ -1,4 +1,4 @@
-69fcd38  # P6 gating after hydrate
+b23e722  # P6 force mount
 
 branch: dev
 
