@@ -14,6 +14,7 @@ from typing import Any
 
 ROOM_STATE_SOURCE_KEY = "_solo_rv_room_state_source"
 SAME_SESSION_SOURCE = "same_session_production_create"
+PRODUCTION_READY_RUN_KEY = "_solo_rv_production_room_ready_run_id"
 
 
 def _qp_get(st: Any, key: str) -> str:
@@ -172,6 +173,51 @@ def ensure_rv1_production_solo_room(
     except ImportError:
         pass
     step = str(session.get("_solo_rv_ladder_step") or "RV1")
+    run_id = str(session.get("_solo_rv_run_id") or _qp_get(st, "solo_rv_run_id") or "").strip()
+    live = session.get("live_draft_room")
+    if (
+        run_id
+        and session.get(PRODUCTION_READY_RUN_KEY) == run_id
+        and isinstance(live, dict)
+        and str(live.get("status") or "") == "in_progress"
+        and live.get("timer_deadline") is not None
+    ):
+        room_id = str(live.get("draft_room_id") or "").strip().upper()
+        session[ROOM_STATE_SOURCE_KEY] = SAME_SESSION_SOURCE
+        append_control_event(
+            st,
+            session,
+            "production_room_creation_attempted",
+            control_name=step,
+            room=live,
+            extra={"reused": True, "room_id": room_id},
+        )
+        append_control_event(
+            st,
+            session,
+            "production_room_created",
+            control_name=step,
+            room=live,
+            extra={"reused": True, "room_id": room_id, "room_state_source": SAME_SESSION_SOURCE},
+        )
+        append_control_event(
+            st,
+            session,
+            "production_draft_started",
+            control_name=step,
+            room=live,
+            extra={"reused": True, "room_id": room_id, "room_state_source": SAME_SESSION_SOURCE},
+        )
+        if probe_placeholder is not None:
+            render_native_control_probe(st, session, probe_placeholder)
+        return {
+            "ok": True,
+            "room_id": room_id,
+            "room": live,
+            "room_state_source": SAME_SESSION_SOURCE,
+            "reused": True,
+        }
+
     append_control_event(st, session, "production_room_creation_attempted", control_name=step)
     if probe_placeholder is not None:
         render_native_control_probe(st, session, probe_placeholder)
@@ -383,6 +429,7 @@ def ensure_rv1_production_solo_room(
     session["room_your_team"] = fields["user_team"]
     session[ROOM_STATE_SOURCE_KEY] = SAME_SESSION_SOURCE
     session["_solo_rv_production_room_id"] = room_id
+    session[PRODUCTION_READY_RUN_KEY] = run_id
 
     append_control_event(
         st,
