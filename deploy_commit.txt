@@ -1,4 +1,3 @@
-a1519cc  # auto-generated; Streamlit Cloud reads this at runtime (P6 exclusive early shell 2026-07-26)a1519cc dev
+# auto-generated; Streamlit Cloud reads this at runtime (P6 early shell after body page resolve 2026-07-26)
 
 branch: dev
-

@@ -68,12 +68,12 @@ def try_p6_early_exclusive_shell(st: Any, session: dict[str, Any]) -> bool:
     run_id = resolve_p6_run_id(st, session)
     if not run_id:
         return False
-    if not _active_page_is_live_draft(st, session):
-        page_qp = _normalize_page(_qp_get_early(st, "active_page"))
-        if page_qp == "Live Draft Room":
-            session["active_page"] = page_qp
-        elif not _active_page_is_live_draft(st, session):
-            return False
+    # Query-driven P6 runs may keep Live Draft Room in session while sidebar body page differs.
+    page_qp = _normalize_page(_qp_get_early(st, "active_page"))
+    if page_qp == "Live Draft Room":
+        session["active_page"] = page_qp
+    elif not _active_page_is_live_draft(st, session):
+        return False
 
     session[P6_EARLY_SHELL_ACTIVE_KEY] = True
     session[P6_EARLY_SHELL_STOP_KEY] = True
