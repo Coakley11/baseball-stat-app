@@ -568,6 +568,14 @@ except ImportError:
     pass
 
 try:
+    from live_draft_solo_rv_dedicated_entrypoint import run_rv_pre_app_shell
+
+    if run_rv_pre_app_shell(st, st.session_state):
+        st.stop()
+except ImportError:
+    pass
+
+try:
     from live_draft_solo_p6_dedicated_entrypoint import run_p6_dedicated_pre_app_shell
 
     if run_p6_dedicated_pre_app_shell(st, st.session_state):
@@ -22252,11 +22260,33 @@ elif active_page == "Live Draft Room":
                     except ImportError:
                         pass
                     _matrix_ldr_room = st.session_state.get("live_draft_room")
+                    try:
+                        from live_draft_solo_rv_dedicated_entrypoint import rv3_on_ldr_entry
+
+                        rv3_on_ldr_entry(
+                            st,
+                            st.session_state,
+                            _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
+                            phase="before",
+                        )
+                    except ImportError:
+                        pass
                     try_solo_persistent_wake_ldr_entry(
                         st,
                         st.session_state,
                         _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
                     )
+                    try:
+                        from live_draft_solo_rv_dedicated_entrypoint import rv3_on_ldr_entry
+
+                        rv3_on_ldr_entry(
+                            st,
+                            st.session_state,
+                            _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
+                            phase="after",
+                        )
+                    except ImportError:
+                        pass
                     try:
                         from live_draft_room_mutation_audit import room_mutation_checkpoint
 
@@ -22274,11 +22304,33 @@ elif active_page == "Live Draft Room":
             except ImportError:
                 pass
             _matrix_ldr_room = st.session_state.get("live_draft_room")
+            try:
+                from live_draft_solo_rv_dedicated_entrypoint import rv3_on_ldr_entry
+
+                rv3_on_ldr_entry(
+                    st,
+                    st.session_state,
+                    _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
+                    phase="before",
+                )
+            except ImportError:
+                pass
             try_solo_persistent_wake_ldr_entry(
                 st,
                 st.session_state,
                 _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
             )
+            try:
+                from live_draft_solo_rv_dedicated_entrypoint import rv3_on_ldr_entry
+
+                rv3_on_ldr_entry(
+                    st,
+                    st.session_state,
+                    _matrix_ldr_room if isinstance(_matrix_ldr_room, dict) else {},
+                    phase="after",
+                )
+            except ImportError:
+                pass
             try:
                 from live_draft_room_mutation_audit import room_mutation_checkpoint
 

@@ -28,14 +28,20 @@
           String(Date.now()) +
           "_" +
           Math.random().toString(36).slice(2, 10);
+        let browserSendSeq = 0;
         const FALLBACK_PERSIST_KEY = "solo_iframe_lifecycle_global";
 
         function sendMessage(type, data) {
           var payload = Object.assign({ isStreamlitMessage: true, type: type }, data || {});
           if (type === "streamlit:setComponentValue") {
+            browserSendSeq += 1;
+            const browserSendEventId =
+              "bse_" + browserSendSeq + "_" + Date.now();
             var transportExtra = JSON.stringify({
               widget_key: String((data && data.widget_key) || ""),
               iframe: IFRAME_INSTANCE_ID,
+              iframe_instance: IFRAME_INSTANCE_ID,
+              browser_send_event_id: browserSendEventId,
               token: String((data && data.value) || "").slice(0, 400),
               target_origin: "*",
             });
@@ -44,7 +50,12 @@
             var pmErr = "";
             var t0 = Date.now();
             try {
-              window.parent.postMessage(payload, "*");
+              var payloadWithMeta = Object.assign({}, payload, {
+                iframe_instance: IFRAME_INSTANCE_ID,
+                browser_send_event_id: browserSendEventId,
+                widget_key: String((data && data.widget_key) || ""),
+              });
+              window.parent.postMessage(payloadWithMeta, "*");
               pmOk = true;
             } catch (e) {
               pmErr = String(e);
@@ -286,6 +297,24 @@
             "deadline_received",
             "sec=" + deadline + " ms=" + deadline * 1000
           );
+          try {
+            window.parent.postMessage(
+              {
+                type: "solo:rvCountdownRegister",
+                instance_id: IFRAME_INSTANCE_ID,
+                widget_key: widgetKeyArg,
+                expected_token: expireToken,
+                run_id: String(args.rv_diag_run_id || ""),
+                draft_id: draftPart,
+                pick_index: pickPart,
+                script_load_ts: Date.now(),
+              },
+              "*"
+            );
+            noteClient("instance_registered", IFRAME_INSTANCE_ID);
+          } catch (eReg) {
+            noteClient("js_exception", "register:" + String(eReg));
+          }
           updateDiagFields(expireToken, deadline);
 
           if (!actionable) {
