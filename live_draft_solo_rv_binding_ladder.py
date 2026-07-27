@@ -82,7 +82,17 @@ def _synthetic_room_for_rv0(session: dict[str, Any], *, seconds: float = 10.0) -
 
 
 def _real_room_token(session: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Legacy reader — prefer hydrate_real_room_for_rv_ladder for RV1+."""
     live = session.get("live_draft_room")
+    if not isinstance(live, dict) or not (live.get("draft_room_id") or live.get("pick_order")):
+        try:
+            from live_draft_navigation import _live_draft_room_for_return
+
+            hydrated = _live_draft_room_for_return(session)
+            if isinstance(hydrated, dict):
+                live = hydrated
+        except ImportError:
+            pass
     if not isinstance(live, dict):
         return "", {}
     try:
@@ -94,6 +104,168 @@ def _real_room_token(session: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     session["_solo_parity_expected_token"] = token
     session["_solo_persistent_wake_last_token"] = token
     return token, live
+
+
+def hydrate_real_room_for_rv_ladder(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    probe_placeholder: Any = None,
+) -> dict[str, Any]:
+    """Diag-only: production room reader + production expire token (pick/deadline)."""
+    from live_draft_solo_rv_control_probe import append_control_event, render_native_control_probe
+
+    live: dict[str, Any] | None = None
+    try:
+        from live_draft_navigation import _live_draft_room_for_return
+
+        candidate = _live_draft_room_for_return(session)
+        if isinstance(candidate, dict):
+            live = candidate
+    except ImportError:
+        live = None
+    if not isinstance(live, dict) or not (live.get("draft_room_id") or live.get("pick_order")):
+        reason = "room_not_in_session"
+        append_control_event(
+            st,
+            session,
+            "rv_real_room_hydration_failed",
+            extra={"reason": reason, "hydration_reason": reason},
+        )
+        if probe_placeholder is not None:
+            render_native_control_probe(st, session, probe_placeholder)
+        return {"ok": False, "reason": reason}
+
+    try:
+        from solo_countdown_component import build_solo_expire_token
+
+        token = str(build_solo_expire_token(live) or "").strip()
+    except Exception:
+        token = ""
+    if not token:
+        reason = "token_build_empty"
+        append_control_event(
+            st,
+            session,
+            "rv_real_room_hydration_failed",
+            room=live,
+            extra={"reason": reason, "hydration_reason": reason},
+        )
+        if probe_placeholder is not None:
+            render_native_control_probe(st, session, probe_placeholder)
+        return {"ok": False, "reason": reason, "room": live}
+
+    session["live_draft_room"] = live
+    session["_solo_parity_expected_token"] = token
+    session["_solo_persistent_wake_last_token"] = token
+    append_control_event(
+        st,
+        session,
+        "real_room_hydrated",
+        room=live,
+        expected_token=token,
+        widget_key=SOLO_PERSISTENT_WAKE_WIDGET_KEY,
+    )
+    if probe_placeholder is not None:
+        render_native_control_probe(st, session, probe_placeholder)
+    return {"ok": True, "token": token, "room": live}
+
+
+def validate_rv_real_room_ledger(
+    ledger: list[dict[str, Any]],
+    *,
+    step: str,
+    harness_room_id: str = "",
+) -> str:
+    """Return INVALID_* reason for RV1–RV3 setup, or empty if ledger preconditions met."""
+    if step == "RV0":
+        return ""
+    events = {str(r.get("event") or "") for r in ledger}
+    if "rv_real_room_hydration_failed" in events:
+        row = next(r for r in ledger if r.get("event") == "rv_real_room_hydration_failed")
+        extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+        reason = str(
+            row.get("hydration_reason") or extra.get("hydration_reason") or extra.get("reason") or "unknown"
+        )
+        return f"INVALID_RV_REAL_ROOM_HYDRATION_{reason}"
+    if "real_room_hydrated" not in events:
+        if "rv_mount_failed" in events:
+            row = next(r for r in ledger if r.get("event") == "rv_mount_failed")
+            extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+            reason = str(extra.get("reason") or row.get("reason") or "mount_failed")
+            if reason in ("real_room_missing", "room_not_in_session", "token_build_empty") or reason.startswith(
+                "INVALID_RV_REAL_ROOM"
+            ):
+                return f"INVALID_RV_REAL_ROOM_HYDRATION_{reason}"
+            return f"INVALID_RV_COMPONENT_NOT_DECLARED_{reason}"
+        return "INVALID_RV_REAL_ROOM_HYDRATION_not_hydrated"
+    if harness_room_id:
+        hydrated_id = ""
+        for row in ledger:
+            if row.get("event") == "real_room_hydrated":
+                hydrated_id = str(row.get("room_id") or "").strip().upper()
+                break
+        want = harness_room_id.strip().upper()
+        if want and hydrated_id and want != hydrated_id:
+            return f"INVALID_RV_REAL_ROOM_HYDRATION_room_id_mismatch"
+    for req in ("script_begin", "rv_entrypoint_entered", "declaration_attempt", "declaration_returned"):
+        if req not in events:
+            if req in ("declaration_attempt", "declaration_returned"):
+                mf = next((r for r in ledger if r.get("event") == "rv_mount_failed"), None)
+                extra = (mf or {}).get("extra") if isinstance((mf or {}).get("extra"), dict) else {}
+                reason = str(extra.get("reason") or (mf or {}).get("reason") or f"missing_{req}")
+                return f"INVALID_RV_COMPONENT_NOT_DECLARED_{reason}"
+            return f"INVALID_RV_REAL_ROOM_HYDRATION_missing_{req}"
+    return ""
+
+
+def filter_observations_after_epoch(
+    expiration: dict[str, Any],
+    registry: dict[str, Any],
+    *,
+    epoch_ms: float,
+    expected_token: str = "",
+    run_id: str = "",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Drop pre-epoch browser timeline/registry noise (diag runner grading)."""
+    exp = dict(expiration or {})
+    reg = dict(registry or {})
+    double = dict(exp.get("double_production_send_analysis") or {})
+    timeline = [t for t in list(double.get("timeline") or []) if float(t.get("ts") or 0) >= epoch_ms]
+    timer_ts = [float(t) for t in list(double.get("timer_armed_timestamps") or []) if float(t) >= epoch_ms]
+    double["timeline"] = timeline
+    double["timer_armed_timestamps"] = timer_ts
+    double["production_timer_armed_count"] = len(timer_ts)
+    exp["double_production_send_analysis"] = double
+    stages: set[str] = set()
+    token_sent = ""
+    for row in timeline:
+        stages.add(str(row.get("stage") or ""))
+        preview = str(row.get("token_preview") or "")
+        if preview and expected_token and (preview in expected_token or expected_token.startswith(preview)):
+            token_sent = expected_token
+    if "component_value_sent" in stages or "transport_before_postMessage" in stages:
+        stages.add("browser_deadline_crossed")
+    exp["client_stages"] = sorted(stages)
+    if token_sent:
+        exp["token_sent"] = token_sent
+    elif expected_token and {"component_value_sent", "transport_before_postMessage"} & stages:
+        exp["token_sent"] = expected_token
+    last = list(reg.get("last") or [])
+    logical = list(reg.get("logical") or [])
+    reg["last"] = [
+        e
+        for e in last
+        if isinstance(e, dict) and float(e.get("ts_ms") or e.get("ts") or 0) >= epoch_ms
+    ]
+    reg["logical"] = [
+        e
+        for e in logical
+        if isinstance(e, dict) and float(e.get("ts_ms") or e.get("ts") or 0) >= epoch_ms
+    ]
+    if run_id:
+        reg["run_id"] = run_id
+    return exp, reg
 
 
 def mount_rv_r4_style(
@@ -150,10 +322,16 @@ def execute_rv_step_mount(
     if step == "RV0":
         token, room = _synthetic_room_for_rv0(session)
     else:
-        token, room = _real_room_token(session)
+        hydrated = hydrate_real_room_for_rv_ladder(st, session, probe_placeholder=probe_placeholder)
+        if not hydrated.get("ok"):
+            reason = str(hydrated.get("reason") or "real_room_missing")
+            _append_ledger(session, "rv_real_room_missing", step=step, reason=reason)
+            return {"ok": False, "reason": reason, "invalid": f"INVALID_RV_REAL_ROOM_HYDRATION_{reason}"}
+        token = str(hydrated.get("token") or "")
+        room = dict(hydrated.get("room") or {})
         if not token or not room:
             _append_ledger(session, "rv_real_room_missing", step=step)
-            return {"ok": False, "reason": "real_room_missing"}
+            return {"ok": False, "reason": "real_room_missing", "invalid": "INVALID_RV_REAL_ROOM_HYDRATION_real_room_missing"}
     session["live_draft_room"] = room
     from live_draft_solo_rv_instance_registry import render_rv_instance_registry_listener
 
@@ -177,12 +355,12 @@ def rv_pre_app_shell_should_stop(session: dict[str, Any]) -> bool:
     return step in ("RV0", "RV1")
 
 
-def rv2_mount_if_needed(st: Any, session: dict[str, Any]) -> bool:
+def rv2_mount_if_needed(st: Any, session: dict[str, Any], *, probe_placeholder: Any = None) -> bool:
     if str(session.get("_solo_rv_ladder_step") or "") != "RV2":
         return False
     if session.get("_solo_rv_rv2_initial_mount_done"):
         return False
-    execute_rv_step_mount(st, session, "RV2")
+    execute_rv_step_mount(st, session, "RV2", probe_placeholder=probe_placeholder)
     session["_solo_rv_rv2_initial_mount_done"] = True
     return True
 
@@ -230,6 +408,14 @@ def grade_rv_control_validity(
     expiration: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Return (verdict, reason) — PASS, FAIL binding, or INVALID control."""
+    ledger_rows = list(ledger) if ledger else []
+    setup_invalid = validate_rv_real_room_ledger(
+        ledger_rows,
+        step=step,
+        harness_room_id=str((expiration or {}).get("harness_room_id") or ""),
+    )
+    if setup_invalid and step in ("RV1", "RV2", "RV3"):
+        return "INVALID", setup_invalid
     inv, inv_reason = validate_rv_control_prerequisites(
         declaration_rows=declaration_rows,
         browser=browser,

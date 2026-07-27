@@ -7,7 +7,6 @@ from typing import Any
 from live_draft_solo_rv_binding_ladder import (
     enable_rv_ladder_session,
     execute_rv_step_mount,
-    rv2_mount_if_needed,
     rv_ladder_requested,
     rv_pre_app_shell_should_stop,
 )
@@ -15,6 +14,41 @@ from live_draft_solo_rv_control_probe import (
     append_control_event,
     render_native_control_probe,
 )
+
+
+def _rv_real_room_bootstrap(st: Any, session: dict[str, Any]) -> None:
+    """Diag-only: restore auth/workspace so real Solo room is in session before RV1+ mount."""
+    try:
+        from suite_workspace import bootstrap_suite_workspace
+
+        bootstrap_suite_workspace(st)
+    except Exception:
+        pass
+    try:
+        from suite_auth import hard_clamp_owned_workspace_before_scoped_load
+
+        hard_clamp_owned_workspace_before_scoped_load(session)
+    except Exception:
+        pass
+    try:
+        from baseball_account_sidebar import prepare_baseball_auth_session
+
+        prepare_baseball_auth_session(st)
+    except Exception:
+        pass
+    try:
+        from suite_auth import is_auth_enabled, process_pending_auth_login
+
+        if is_auth_enabled():
+            process_pending_auth_login(st)
+    except Exception:
+        pass
+    try:
+        from baseball_persistent_state import prepare_baseball_workspace
+
+        prepare_baseball_workspace(st)
+    except Exception:
+        pass
 
 
 def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
@@ -26,9 +60,27 @@ def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
         return False
     if step == "RV3":
         return False
+    if step in ("RV1", "RV2"):
+        _rv_real_room_bootstrap(st, session)
     if step == "RV2":
-        rv2_mount_if_needed(st, session)
-        st.caption(f"RV ladder {step}: initial mount complete; page continues.")
+        probe_placeholder = st.empty()
+        render_native_control_probe(st, session, probe_placeholder)
+        append_control_event(st, session, "script_begin", control_name=step)
+        append_control_event(st, session, "rv_entrypoint_entered", control_name=step)
+        render_native_control_probe(st, session, probe_placeholder)
+        result = execute_rv_step_mount(st, session, step, probe_placeholder=probe_placeholder)
+        if not result.get("ok"):
+            append_control_event(
+                st,
+                session,
+                "rv_mount_failed",
+                control_name=step,
+                extra={"reason": str(result.get("reason") or "")},
+            )
+            render_native_control_probe(st, session, probe_placeholder)
+        else:
+            session["_solo_rv_rv2_initial_mount_done"] = True
+        st.caption(f"RV ladder {step}: mount={'ok' if result.get('ok') else 'fail'} token={str(result.get('token') or '')[:60]}")
         return False
     probe_placeholder = st.empty()
     render_native_control_probe(st, session, probe_placeholder)
@@ -36,6 +88,15 @@ def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
     append_control_event(st, session, "rv_entrypoint_entered", control_name=step)
     render_native_control_probe(st, session, probe_placeholder)
     result = execute_rv_step_mount(st, session, step, probe_placeholder=probe_placeholder)
+    if not result.get("ok"):
+        append_control_event(
+            st,
+            session,
+            "rv_mount_failed",
+            control_name=step,
+            extra={"reason": str(result.get("reason") or "")},
+        )
+        render_native_control_probe(st, session, probe_placeholder)
     st.caption(f"RV ladder {step}: mount={'ok' if result.get('ok') else 'fail'} token={str(result.get('token') or '')[:60]}")
     if rv_pre_app_shell_should_stop(session):
         render_native_control_probe(st, session, probe_placeholder)
