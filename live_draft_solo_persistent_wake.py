@@ -670,6 +670,106 @@ def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
     _production_deliver_callback(st, session, raw, key)
 
 
+def _mount_persistent_wake_micro_controlled(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    location: str,
+    draft_id: str,
+    widget_key: str,
+    props_room: dict[str, Any],
+    expire_token: str,
+    actionable: bool,
+    delivery_only: bool,
+    chain_persist_key: str,
+    isolated_mode: str,
+) -> Any:
+    """Production micro mount with P6-only callback-registration controls (R0–R3)."""
+    from solo_countdown_wake_micro_core import render_micro_isolation_once
+
+    deliver = _production_deliver_callback
+    suppress = True
+    control = "R0"
+    try:
+        from live_draft_solo_parity_p6_persistent_diag import p6_persistent_diag_active
+
+        if p6_persistent_diag_active(st, session):
+            from live_draft_solo_p6_declaration_audit import (
+                build_b2_reference_declaration_snapshot,
+                build_production_declaration_snapshot,
+                mount_r3_b2_helper_at_p6,
+                resolve_p6_callback_control,
+                store_declaration_diff,
+                wrap_p6_sentinel_deliver,
+            )
+
+            control = resolve_p6_callback_control(st, session)
+            if control == "R1":
+                suppress = False
+            if control == "R2":
+                deliver = wrap_p6_sentinel_deliver(_production_deliver_callback)
+            prod_snap = build_production_declaration_snapshot(
+                widget_key=widget_key,
+                expire_token=expire_token,
+                chain_persist_key=chain_persist_key,
+                deliver_callback=deliver,
+                suppress_immediate_session_on_change=suppress,
+                location=location,
+                production_delivery_only=delivery_only,
+                isolated_mode=isolated_mode,
+            )
+            b2_snap = build_b2_reference_declaration_snapshot(
+                widget_key=widget_key,
+                expire_token=expire_token,
+                chain_persist_key=chain_persist_key,
+                deliver_callback=_production_deliver_callback,
+                control="B2",
+            )
+            store_declaration_diff(session, production=prod_snap, b2_reference=b2_snap)
+            try:
+                from live_draft_solo_parity_p6_persistent_diag import append_p6_ledger_row
+
+                append_p6_ledger_row(
+                    session,
+                    "declaration_diff_recorded",
+                    st=st,
+                    callback_control=control,
+                    diff_field_count=len(session.get("_solo_p6_declaration_diff", {}).get("differences") or []),
+                )
+            except ImportError:
+                pass
+            if control == "R3":
+                return mount_r3_b2_helper_at_p6(
+                    st,
+                    session,
+                    widget_key=widget_key,
+                    expire_token=expire_token,
+                    chain_persist_key=chain_persist_key,
+                    deliver_callback=deliver,
+                )
+    except ImportError:
+        pass
+
+    return render_micro_isolation_once(
+        st,
+        session,
+        placement="PROD",
+        location=location,
+        draft_id=draft_id,
+        route=True,
+        persistent=True,
+        session_prefix=SOLO_PERSISTENT_WAKE_SESSION_PREFIX,
+        widget_key=widget_key,
+        production_room=props_room,
+        production_expire_token=expire_token,
+        production_actionable=actionable,
+        production_delivery_only=delivery_only,
+        deliver_callback=deliver,
+        suppress_immediate_session_on_change=suppress,
+        chain_persist_key=chain_persist_key,
+    )
+
+
 def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> bool:
     """Mount/update the Solo wake at LDR page entry. Never st.stop(). Returns True when handled."""
     if not _should_mount_persistent_wake(st, session):
@@ -812,23 +912,18 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         return True
 
     if isolated == "production":
-        _ = render_micro_isolation_once(
+        _ = _mount_persistent_wake_micro_controlled(
             st,
             session,
-            placement="PROD",
             location="ldr_page_entry_early_persistent",
             draft_id=did,
-            route=True,
-            persistent=True,
-            session_prefix=SOLO_PERSISTENT_WAKE_SESSION_PREFIX,
             widget_key=key,
-            production_room=props_room,
-            production_expire_token=expire_token,
-            production_actionable=actionable,
-            production_delivery_only=delivery_only,
-            deliver_callback=_production_deliver_callback,
-            suppress_immediate_session_on_change=True,
+            props_room=props_room,
+            expire_token=expire_token,
+            actionable=actionable,
+            delivery_only=delivery_only,
             chain_persist_key=persist_key,
+            isolated_mode=isolated,
         )
         if transport_boundary_active(st, session):
             from live_draft_solo_transport_boundary_diag import PRODUCTION_CALLBACK_FLAG
@@ -883,23 +978,18 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         )
         return True
 
-    _ = render_micro_isolation_once(
+    _ = _mount_persistent_wake_micro_controlled(
         st,
         session,
-        placement="PROD",
         location="ldr_page_entry_early_persistent",
         draft_id=did,
-        route=True,
-        persistent=True,
-        session_prefix=SOLO_PERSISTENT_WAKE_SESSION_PREFIX,
         widget_key=key,
-        production_room=props_room,
-        production_expire_token=expire_token,
-        production_actionable=actionable,
-        production_delivery_only=delivery_only,
-        deliver_callback=_production_deliver_callback,
-        suppress_immediate_session_on_change=True,
+        props_room=props_room,
+        expire_token=expire_token,
+        actionable=actionable,
+        delivery_only=delivery_only,
         chain_persist_key=persist_key,
+        isolated_mode=isolated or "",
     )
     if transport_boundary_active(st, session):
         from live_draft_solo_transport_boundary_diag import PRODUCTION_CALLBACK_FLAG

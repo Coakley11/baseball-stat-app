@@ -213,6 +213,12 @@ def enable_p6_persistent_diag_from_query(st: Any, session: dict[str, Any]) -> No
         rid = rid_qp
     if rid and session.get(P6_DIAG_LATCHED_KEY):
         resolve_p6_run_id(st, session)
+    try:
+        from live_draft_solo_p6_declaration_audit import resolve_p6_callback_control
+
+        resolve_p6_callback_control(st, session)
+    except ImportError:
+        pass
     if not p6_persistent_diag_active(st, session):
         return
     try:
@@ -639,6 +645,16 @@ def build_writer_probe_payload(st: Any, session: dict[str, Any]) -> dict[str, An
         "stale_state": stale,
         "clear_once_applied": session.get(P6_CLEAR_ONCE_GUARD_KEY) == run_id,
     }
+    try:
+        from live_draft_solo_p6_declaration_audit import P6_DECLARATION_DIFF_KEY, P6_CALLBACK_CONTROL_SESSION_KEY
+
+        diff = session.get(P6_DECLARATION_DIFF_KEY)
+        if isinstance(diff, dict):
+            payload["declaration_diff"] = diff
+        payload["callback_control"] = str(session.get(P6_CALLBACK_CONTROL_SESSION_KEY) or "R0")
+    except ImportError:
+        pass
+    return payload
 
 
 def analyze_stale_state(

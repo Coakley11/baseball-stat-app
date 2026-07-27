@@ -263,6 +263,38 @@ def render_micro_isolation_once(
                     "prior_sig": prior_sig[:120],
                 },
             )
+        session_state_before = repr(st.session_state.get(key))[:400] if key in st.session_state else "missing"
+        component_kwargs = {
+            "room": "(production_room dict)",
+            "key": key,
+            "expire_token": token,
+            "actionable": production_actionable,
+            "on_change": "_prod_on_change",
+            "chain_persist_key": chain_persist_key,
+        }
+        try:
+            from live_draft_solo_p6_declaration_audit import (
+                p6_declaration_audit_active,
+                record_declaration_attempt,
+                record_declaration_returned,
+            )
+
+            if p6_declaration_audit_active(st, session):
+                record_declaration_attempt(
+                    session,
+                    st=st,
+                    widget_key=key,
+                    default=None,
+                    expected_token=token,
+                    on_change_fn=_prod_on_change,
+                    deliver_callback=deliver_callback,
+                    suppress_flag=bool(suppress_immediate_session_on_change),
+                    force_flag=None,
+                    component_kwargs=component_kwargs,
+                    session_state_before=session_state_before,
+                )
+        except ImportError:
+            pass
         mount_solo_countdown_wake_with_token(
             production_room,
             key=key,
@@ -271,6 +303,25 @@ def render_micro_isolation_once(
             on_change=_prod_on_change,
             chain_persist_key=chain_persist_key,
         )
+        comp_return = st.session_state.get(key) if key in st.session_state else None
+        session_state_after = repr(st.session_state.get(key))[:400] if key in st.session_state else "missing"
+        try:
+            from live_draft_solo_p6_declaration_audit import (
+                p6_declaration_audit_active,
+                record_declaration_returned,
+            )
+
+            if p6_declaration_audit_active(st, session):
+                record_declaration_returned(
+                    session,
+                    st=st,
+                    widget_key=key,
+                    expected_token=token,
+                    component_return=comp_return,
+                    session_state_after=session_state_after,
+                )
+        except ImportError:
+            pass
         session[sk["mounted"]] = True
         session[mounted_token_key] = token
         session[mount_sig_key] = sig
