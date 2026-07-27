@@ -302,6 +302,13 @@ def bump_p6_script_run(st: Any | None, session: dict[str, Any]) -> int:
             prior_delivery_seen=True,
             script_run=n,
         )
+    try:
+        from live_draft_solo_p6_early_shell import P6_EARLY_SHELL_STOP_KEY
+
+        if session.get(P6_EARLY_SHELL_STOP_KEY):
+            render_p6_writer_probe(st, session)
+    except ImportError:
+        pass
     return n
 
 

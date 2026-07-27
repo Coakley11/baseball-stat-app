@@ -77,6 +77,7 @@ def try_p6_early_exclusive_shell(st: Any, session: dict[str, Any]) -> bool:
 
     session[P6_EARLY_SHELL_ACTIVE_KEY] = True
     session[P6_EARLY_SHELL_STOP_KEY] = True
+    append_p6_ledger_row(session, "early_p6_shell_entered", st=st)
     session[PARITY_CONTROL_KEY] = "P6"
     session["_solo_parity_ladder_control"] = "P6"
     session[PARITY_P6_DISABLE_PICK_KEY] = True
