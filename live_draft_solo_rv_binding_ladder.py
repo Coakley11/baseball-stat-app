@@ -126,16 +126,33 @@ def hydrate_real_room_for_rv_ladder(
     """Diag-only: production room reader + production expire token (pick/deadline)."""
     from live_draft_solo_rv_control_probe import append_control_event, render_native_control_probe
 
-    harness_id = _apply_harness_room_query_context(st, session)
-    live: dict[str, Any] | None = None
     try:
-        from live_draft_state import prepare_live_draft_state
+        from live_draft_solo_rv_production_room_setup import ROOM_STATE_SOURCE_KEY
+    except ImportError:
+        ROOM_STATE_SOURCE_KEY = "_solo_rv_room_state_source"
 
-        prepared = prepare_live_draft_state(session)
-        if isinstance(prepared, dict):
-            live = prepared
-    except Exception:
-        live = None
+    step = str(session.get("_solo_rv_ladder_step") or "").strip().upper()
+    harness_id = ""
+    if step != "RV1":
+        harness_id = _apply_harness_room_query_context(st, session)
+    room_state_source = str(session.get(ROOM_STATE_SOURCE_KEY) or "")
+    live: dict[str, Any] | None = None
+    session_room = session.get("live_draft_room")
+    if isinstance(session_room, dict) and (session_room.get("draft_room_id") or session_room.get("pick_order")):
+        live = session_room
+        if not room_state_source and step == "RV1":
+            room_state_source = "session_live_draft_room"
+    if live is None:
+        try:
+            from live_draft_state import prepare_live_draft_state
+
+            prepared = prepare_live_draft_state(session)
+            if isinstance(prepared, dict):
+                live = prepared
+                if not room_state_source:
+                    room_state_source = "canonical_prepare_live_draft_state"
+        except Exception:
+            live = None
     if not isinstance(live, dict) or not (live.get("draft_room_id") or live.get("pick_order")):
         try:
             from live_draft_navigation import _live_draft_room_for_return
@@ -200,6 +217,14 @@ def hydrate_real_room_for_rv_ladder(
         room=live,
         expected_token=token,
         widget_key=SOLO_PERSISTENT_WAKE_WIDGET_KEY,
+        extra={"room_state_source": room_state_source or "unknown"},
+    )
+    append_control_event(
+        st,
+        session,
+        "room_state_source",
+        room=live,
+        extra={"room_state_source": room_state_source or "unknown"},
     )
     if probe_placeholder is not None:
         render_native_control_probe(st, session, probe_placeholder)
@@ -216,6 +241,16 @@ def validate_rv_real_room_ledger(
     if step == "RV0":
         return ""
     events = {str(r.get("event") or "") for r in ledger}
+    if "production_room_creation_failed" in events:
+        row = next(r for r in ledger if r.get("event") == "production_room_creation_failed")
+        extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+        reason = str(extra.get("reason") or row.get("reason") or "unknown")
+        return f"INVALID_RV_PRODUCTION_ROOM_CREATION_{reason}"
+    if "production_draft_start_failed" in events:
+        row = next(r for r in ledger if r.get("event") == "production_draft_start_failed")
+        extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+        reason = str(extra.get("reason") or row.get("reason") or "unknown")
+        return f"INVALID_RV_PRODUCTION_DRAFT_START_{reason}"
     if "rv_real_room_hydration_failed" in events:
         row = next(r for r in ledger if r.get("event") == "rv_real_room_hydration_failed")
         extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
@@ -223,6 +258,16 @@ def validate_rv_real_room_ledger(
             row.get("hydration_reason") or extra.get("hydration_reason") or extra.get("reason") or "unknown"
         )
         return f"INVALID_RV_REAL_ROOM_HYDRATION_{reason}"
+    if step == "RV1":
+        for req in (
+            "production_room_creation_attempted",
+            "production_room_created",
+            "production_draft_started",
+        ):
+            if req not in events:
+                return f"INVALID_RV_PRODUCTION_ROOM_CREATION_missing_{req}"
+        if "room_state_source" not in events and "real_room_hydrated" not in events:
+            return "INVALID_RV_REAL_ROOM_HYDRATION_missing_room_state_source"
     if "real_room_hydrated" not in events:
         if "rv_mount_failed" in events:
             row = next(r for r in ledger if r.get("event") == "rv_mount_failed")
@@ -361,7 +406,10 @@ def execute_rv_step_mount(
         if not hydrated.get("ok"):
             reason = str(hydrated.get("reason") or "real_room_missing")
             _append_ledger(session, "rv_real_room_missing", step=step, reason=reason)
-            return {"ok": False, "reason": reason, "invalid": f"INVALID_RV_REAL_ROOM_HYDRATION_{reason}"}
+            invalid = f"INVALID_RV_REAL_ROOM_HYDRATION_{reason}"
+            if step == "RV1" and reason == "room_not_in_session":
+                invalid = "INVALID_RV_REAL_ROOM_HYDRATION_room_not_in_session"
+            return {"ok": False, "reason": reason, "invalid": invalid}
         token = str(hydrated.get("token") or "")
         room = dict(hydrated.get("room") or {})
         if not token or not room:
@@ -486,6 +534,12 @@ def grade_rv_control_validity(
     if step == "RV0":
         if expected and coalesced == expected:
             return "PASS_RETURN_VALUE_DELIVERY", "RV0_r4_control"
+        if expected and not coalesced:
+            return "FAIL", "FAIL_CLASS_A_empty_binding"
+        return "FAIL", "return_mismatch"
+    if step == "RV1":
+        if coalesced == expected and expected:
+            return "PASS_RETURN_VALUE_DELIVERY", "RV1_real_room_r4_control"
         if expected and not coalesced:
             return "FAIL", "FAIL_CLASS_A_empty_binding"
         return "FAIL", "return_mismatch"

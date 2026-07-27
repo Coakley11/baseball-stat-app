@@ -16,9 +16,9 @@ def test_invalid_rv1_hydration_not_hydrated() -> None:
             {"event": "rv_entrypoint_entered"},
         ],
         step="RV1",
-        harness_room_id="ABCD1234",
+        harness_room_id="",
     )
-    assert reason == "INVALID_RV_REAL_ROOM_HYDRATION_not_hydrated"
+    assert reason == "INVALID_RV_PRODUCTION_ROOM_CREATION_missing_production_room_creation_attempted"
 
 
 def test_invalid_rv1_component_not_declared() -> None:
@@ -26,11 +26,15 @@ def test_invalid_rv1_component_not_declared() -> None:
         [
             {"event": "script_begin"},
             {"event": "rv_entrypoint_entered"},
+            {"event": "production_room_creation_attempted"},
+            {"event": "production_room_created", "room_id": "ABCD1234"},
+            {"event": "production_draft_started", "room_id": "ABCD1234"},
             {"event": "real_room_hydrated", "room_id": "ABCD1234", "expected_token": "ABCD1234|0|1.0"},
+            {"event": "room_state_source", "extra": {"room_state_source": "same_session_production_create"}},
             {"event": "rv_mount_failed", "extra": {"reason": "mount_error"}},
         ],
         step="RV1",
-        harness_room_id="ABCD1234",
+        harness_room_id="",
     )
     assert reason == "INVALID_RV_COMPONENT_NOT_DECLARED_mount_error"
 
@@ -111,7 +115,11 @@ def test_invalid_when_logical_send_not_one() -> None:
     ledger = [
         {"event": "script_begin", "room_id": "R1"},
         {"event": "rv_entrypoint_entered"},
+        {"event": "production_room_creation_attempted"},
+        {"event": "production_room_created", "room_id": "R1"},
+        {"event": "production_draft_started", "room_id": "R1"},
         {"event": "real_room_hydrated", "room_id": "R1", "expected_token": "x"},
+        {"event": "room_state_source", "extra": {"room_state_source": "same_session_production_create"}},
         {"event": "declaration_attempt", "expected_token": "x", "widget_key": "k", "script_run_id": "s1"},
         {"event": "declaration_returned", "expected_token": "x", "widget_key": "k", "script_run_id": "s1"},
         {"event": "post_delivery_redeclaration", "expected_token": "x", "widget_key": "k", "script_run_id": "s1"},
@@ -147,7 +155,11 @@ def test_fail_class_a_empty_binding() -> None:
     ledger = [
         {"event": "script_begin"},
         {"event": "rv_entrypoint_entered"},
+        {"event": "production_room_creation_attempted"},
+        {"event": "production_room_created", "room_id": "R1"},
+        {"event": "production_draft_started", "room_id": "R1"},
         {"event": "real_room_hydrated", "room_id": "R1", "expected_token": "R|0|1.0"},
+        {"event": "room_state_source", "extra": {"room_state_source": "same_session_production_create"}},
         {"event": "declaration_attempt", "expected_token": "R|0|1.0", "widget_key": "k", "script_run_id": "s1"},
         {"event": "declaration_returned", "expected_token": "R|0|1.0", "widget_key": "k", "script_run_id": "s1"},
         {"event": "post_delivery_redeclaration", "expected_token": "R|0|1.0", "widget_key": "k", "script_run_id": "s1"},

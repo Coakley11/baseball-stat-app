@@ -17,9 +17,10 @@ from live_draft_solo_rv_control_probe import (
 )
 
 
-def _rv_real_room_bootstrap(st: Any, session: dict[str, Any]) -> None:
-    """Diag-only: restore auth/workspace so real Solo room is in session before RV1+ mount."""
-    _apply_harness_room_query_context(st, session)
+def _rv_real_room_bootstrap(st: Any, session: dict[str, Any], *, step: str = "") -> None:
+    """Diag-only: restore auth/workspace before RV1+ mount (no cross-nav room hydration)."""
+    if step != "RV1":
+        _apply_harness_room_query_context(st, session)
     try:
         from suite_workspace import bootstrap_suite_workspace
 
@@ -75,7 +76,7 @@ def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
     if step == "RV3":
         return False
     if step in ("RV1", "RV2"):
-        _rv_real_room_bootstrap(st, session)
+        _rv_real_room_bootstrap(st, session, step=step)
     if step == "RV2":
         probe_placeholder = st.empty()
         render_native_control_probe(st, session, probe_placeholder)
@@ -101,6 +102,27 @@ def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
     append_control_event(st, session, "script_begin", control_name=step)
     append_control_event(st, session, "rv_entrypoint_entered", control_name=step)
     render_native_control_probe(st, session, probe_placeholder)
+    if step == "RV1":
+        from live_draft_solo_rv_production_room_setup import ensure_rv1_production_solo_room
+
+        setup = ensure_rv1_production_solo_room(st, session, probe_placeholder=probe_placeholder)
+        if not setup.get("ok"):
+            append_control_event(
+                st,
+                session,
+                "rv_mount_failed",
+                control_name=step,
+                extra={
+                    "reason": str(setup.get("reason") or setup.get("invalid") or "production_setup_failed"),
+                    "invalid": str(setup.get("invalid") or ""),
+                },
+            )
+            render_native_control_probe(st, session, probe_placeholder)
+            st.caption(f"RV ladder {step}: production setup failed {setup.get('invalid') or setup.get('reason')}")
+            if rv_pre_app_shell_should_stop(session):
+                render_native_control_probe(st, session, probe_placeholder)
+                return True
+            return False
     result = execute_rv_step_mount(st, session, step, probe_placeholder=probe_placeholder)
     if not result.get("ok"):
         append_control_event(
