@@ -1,4 +1,4 @@
-7d4b49b  # P6 LDR session latch
+5272344  # P6 dedicated entrypoint
 
 branch: dev
 
