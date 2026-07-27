@@ -1,4 +1,4 @@
-cb5752d  # P6 shell completed guard
+7d4b49b  # P6 LDR session latch
 
 branch: dev
 
