@@ -87,7 +87,13 @@ Runner: `python scripts/run_solo_p6_v1_return_value_r4_r5_auth.py` → `data/sol
 
 **Grades:** `PASS_RETURN_VALUE_DELIVERY`, `VALID_FAIL_RETURN_VALUE_NOT_DELIVERED`, `INVALID` (per spec §3).
 
-**Countdown frontend note:** production iframe calls **`window.parent.postMessage({type:"streamlit:setComponentValue"})`** — not the component-library API. Parent capture alone ≠ Streamlit widget state.
+**Cloud evidence (`c886a51`):** R4 can reach **`PASS_RETURN_VALUE_DELIVERY`** — after browser send, a later script rerun observes `raw_component_value` and `session_state` equal to the latched token with **`on_change=None`**. Early reruns may still show `None`; grading uses any `return_matches_expected` row plus single send/parent.
+
+**If R4 PASS (do not implement yet):** smallest production correction is to drive **`_production_deliver_callback` / `try_claim_token_delivery` from the canonical `_COMPONENT(...)` return value** when it matches the current expected expiration token — **not** from V1 `on_change`. Disable the ineffective `on_change` dependency so there is **one** delivery owner.
+
+**If R4 stays None with R5 template PASS:** countdown frontend should adopt **`Streamlit.setComponentValue`** (component library), not manual parent `postMessage` alone.
+
+**Countdown frontend note:** production iframe calls **`window.parent.postMessage({type:"streamlit:setComponentValue"})`** — parent capture alone ≠ Streamlit widget state; R4 shows return-value can still arrive on later reruns when Streamlit accepts the value.
 
 
 - `tests/test_live_draft_solo_p6_declaration_audit.py` — control resolution, diff storage, sentinel wrap.

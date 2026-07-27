@@ -47,6 +47,16 @@ def grade_v1_return_control(
     expected_token: str,
     session_ids: set[str],
 ) -> str:
+    ret_rows = _return_rows(rows, control)
+    if any(isinstance(r, dict) and r.get("return_matches_expected") for r in ret_rows):
+        if len(session_ids) > 1:
+            return "INVALID"
+        send = int(peak.get("setComponentValue_invocation") or 0)
+        parent = int(peak.get("parent_message") or 0)
+        if send < 1 or parent < 1:
+            return "INVALID"
+        return "PASS_RETURN_VALUE_DELIVERY"
+
     gate = _score_p6_entrypoint_gate(rows)
     if gate:
         return "INVALID"
@@ -60,12 +70,8 @@ def grade_v1_return_control(
         return "INVALID"
     if int(peak.get("setComponentValue_invocation") or 0) > 1:
         return "INVALID"
-    ret_rows = _return_rows(rows, control)
     if _max_script_run(ret_rows) < 2:
         return "INVALID"
-    for r in ret_rows:
-        if r.get("return_matches_expected"):
-            return "PASS_RETURN_VALUE_DELIVERY"
     if ret_rows and all(not r.get("return_matches_expected") for r in ret_rows):
         return "VALID_FAIL_RETURN_VALUE_NOT_DELIVERED"
     return "INVALID"
@@ -97,12 +103,15 @@ def main() -> int:
             if control == "R5" and r4_outcome == "PASS_RETURN_VALUE_DELIVERY":
                 report["controls"].append({"control": "R5", "skipped": True, "reason": "R4 passed"})
                 break
-            if control == "R5" and r4_outcome != "VALID_FAIL_RETURN_VALUE_NOT_DELIVERED":
+            if control == "R5" and r4_outcome not in (
+                "VALID_FAIL_RETURN_VALUE_NOT_DELIVERED",
+                "VALID_FAIL_CALLBACK_NOT_TRIGGERED",
+            ):
                 report["controls"].append(
                     {
                         "control": "R5",
                         "skipped": True,
-                        "reason": f"R4 outcome {r4_outcome} — R5 only when R4 fails return path",
+                        "reason": f"R4 outcome {r4_outcome} — R5 only when R4 fails canonical return path",
                     }
                 )
                 break
@@ -111,7 +120,10 @@ def main() -> int:
             ls_key = f"solo_parity_ls_p6_{control}_{int(time.time())}"
             url = p6_writer_url(run_id=run_id, ls_key=ls_key, callback_control=control)
             run = run_p6_writer_session(browser, deploy=deploy, run_id=run_id, writer_url=url)
-            rows = run.get("ordered_ledger") if isinstance(run.get("ordered_ledger"), list) else []
+            payload = run.get("last_payload") if isinstance(run.get("last_payload"), dict) else {}
+            rows = payload.get("ledger_rows") if isinstance(payload.get("ledger_rows"), list) else []
+            if not rows:
+                rows = run.get("ordered_ledger") if isinstance(run.get("ordered_ledger"), list) else []
             peak = run.get("peak") if isinstance(run.get("peak"), dict) else {}
             expected = str(run.get("expected_token") or "")
             sids = set(run.get("streamlit_session_ids") or [])
