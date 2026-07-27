@@ -611,6 +611,41 @@ except Exception:
     pass
 
 try:
+    from suite_auth import is_auth_enabled, process_pending_auth_login
+
+    if is_auth_enabled():
+        process_pending_auth_login(st)
+except Exception:
+    pass
+
+try:
+    from live_draft_solo_p6_dedicated_entrypoint import (
+        p6_dedicated_entrypoint_requested,
+        try_p6_dedicated_entrypoint,
+    )
+
+    if p6_dedicated_entrypoint_requested(st, st.session_state):
+        try:
+            from live_draft_queue_survival import begin_queue_script_pass
+
+            begin_queue_script_pass(st.session_state, st=st)
+        except Exception:
+            pass
+        try:
+            from baseball_persistent_state import prepare_baseball_workspace
+
+            prepare_baseball_workspace(st)
+        except Exception:
+            pass
+        try_p6_dedicated_entrypoint(st, st.session_state)
+except ImportError:
+    pass
+except Exception as _p6_early_dedicated_exc:
+    if st.session_state.get("_solo_p6_diag_latched") or st.session_state.get("_solo_parity_p6_persistent_diag"):
+        st.error(f"P6 dedicated entrypoint error: {_p6_early_dedicated_exc}")
+        st.stop()
+
+try:
     from live_draft_solo_delivery_diag import enable_delivery_diag_from_query, try_delivery_diag_app_shell_matrix
 
     enable_delivery_diag_from_query(st, st.session_state)
@@ -14384,9 +14419,10 @@ try:
 except Exception:
     pass
 try:
-    from live_draft_solo_p6_dedicated_entrypoint import try_p6_dedicated_entrypoint
+    from live_draft_solo_p6_dedicated_entrypoint import P6_DEDICATED_STOP_KEY, try_p6_dedicated_entrypoint
 
-    try_p6_dedicated_entrypoint(st, st.session_state)
+    if not st.session_state.get(P6_DEDICATED_STOP_KEY):
+        try_p6_dedicated_entrypoint(st, st.session_state)
 except ImportError:
     pass
 except Exception as _p6_dedicated_exc:
