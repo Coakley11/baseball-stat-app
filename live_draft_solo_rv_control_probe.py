@@ -15,12 +15,15 @@ MAX_LEDGER_ROWS = 200
 
 
 def _qp_run_id(st: Any, session: dict[str, Any]) -> str:
+    rid = str(session.get("_solo_rv_run_id") or "").strip()
+    if rid:
+        return rid
     try:
         from live_draft_solo_rv_binding_ladder import RV_RUN_ID_QP, _qp_get
 
-        return str(session.get("_solo_rv_run_id") or _qp_get(st, RV_RUN_ID_QP) or "").strip()
+        return str(_qp_get(st, RV_RUN_ID_QP) or "").strip()
     except ImportError:
-        return str(session.get("_solo_rv_run_id") or "").strip()
+        return ""
 
 
 def rv_control_probe_active(st: Any | None, session: dict[str, Any]) -> bool:
@@ -269,6 +272,46 @@ def mount_with_rv_control_declaration(
         session["_solo_rv_browser_delivery_recorded"] = True
     flush_control_probe(st, session, ph)
     return raw
+
+
+def publish_rv_control_ledger_to_parent(st: Any, session: dict[str, Any]) -> None:
+    """Always push current Python ledger to parent DOM/localStorage (runs every script pass)."""
+    if not rv_control_probe_active(st, session):
+        return
+    run_id = _qp_run_id(st, session)
+    rows = _ledger_for_run(session, run_id)
+    payload = json.dumps(
+        {
+            "probe_id": RV_CONTROL_PROBE_ID,
+            "run_id": run_id,
+            "step": str(session.get("_solo_rv_ladder_step") or ""),
+            "rows": rows,
+        },
+        default=str,
+    )[:48000]
+    b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    st.components.v1.html(
+        f"""
+<script>
+(function() {{
+  const B64 = {json.dumps(b64)};
+  const ID = {json.dumps(RV_CONTROL_PROBE_ID)};
+  const root = window.parent && window.parent.document ? window.parent : document;
+  let el = root.getElementById(ID);
+  if (!el) {{
+    el = root.createElement("div");
+    el.id = ID;
+    el.style.display = "none";
+    (root.body || root.documentElement).appendChild(el);
+  }}
+  el.setAttribute("data-b64", B64);
+  try {{ root.localStorage.setItem("__solo_rv_control_probe_v1", B64); }} catch (e) {{}}
+}})();
+</script>
+""",
+        height=0,
+        width=0,
+    )
 
 
 def ledger_rows_for_probe_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:

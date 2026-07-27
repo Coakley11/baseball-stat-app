@@ -15,6 +15,7 @@ from live_draft_solo_rv_control_probe import (
     append_control_event,
     ensure_probe_placeholder,
     flush_control_probe,
+    publish_rv_control_ledger_to_parent,
 )
 
 
@@ -39,6 +40,7 @@ def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
     st.caption(f"RV ladder {step}: mount={'ok' if result.get('ok') else 'fail'} token={str(result.get('token') or '')[:60]}")
     if rv_pre_app_shell_should_stop(session):
         flush_control_probe(st, session, ph)
+        publish_rv_control_ledger_to_parent(st, session)
         return True
     return False
 
