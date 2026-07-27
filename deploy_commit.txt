@@ -1,4 +1,4 @@
-4e441e2  # P6 bypass app shell
+5c70813  # P6 exclusive LDR shell
 
 branch: dev
 
