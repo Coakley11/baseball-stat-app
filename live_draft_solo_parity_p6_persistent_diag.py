@@ -139,6 +139,7 @@ def reset_p6_diagnostic_lifecycle_for_run_id(session: dict[str, Any], new_run_id
         from live_draft_solo_p6_dedicated_entrypoint import (
             P6_DEDICATED_ACTIVE_KEY,
             P6_DEDICATED_COMPLETED_RUN_KEY,
+            P6_DEDICATED_ROUTE_REQUESTED_KEY,
             P6_DEDICATED_STOP_KEY,
             P6_RUN_SCOPED_ROOM_KEY,
         )
