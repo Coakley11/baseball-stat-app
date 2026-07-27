@@ -1,4 +1,4 @@
-8daf95a  # auto-generated; P6 early shell query LDR
+608e421  # P6 shell trace
 
 branch: dev
 
