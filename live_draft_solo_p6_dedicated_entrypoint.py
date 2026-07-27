@@ -149,5 +149,73 @@ def try_p6_dedicated_entrypoint(st: Any, session: dict[str, Any]) -> bool:
     session[P6_MOUNTED_RUN_ID_KEY] = run_id
     session[P6_DEDICATED_COMPLETED_RUN_KEY] = run_id
     render_p6_writer_probe(st, session)
+    st.caption("P6 dedicated persistent-wake diagnostic (production entrypoint).")
+    st.stop()
+    return True
+
+
+def run_p6_dedicated_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
+    """Auth + workspace restore, mount production wake, probe, and stop before normal app routing."""
+    if not p6_dedicated_entrypoint_requested(st, session):
+        return False
+    mark_p6_dedicated_route_requested(st, session)
+    try:
+        from suite_workspace import bootstrap_suite_workspace
+
+        bootstrap_suite_workspace(st)
+    except Exception:
+        pass
+    try:
+        from suite_auth import hard_clamp_owned_workspace_before_scoped_load
+
+        hard_clamp_owned_workspace_before_scoped_load(session)
+    except Exception:
+        pass
+    try:
+        from baseball_account_sidebar import prepare_baseball_auth_session
+
+        prepare_baseball_auth_session(st)
+    except Exception:
+        pass
+    try:
+        from suite_auth import is_auth_enabled, process_pending_auth_login
+
+        if is_auth_enabled():
+            process_pending_auth_login(st)
+    except Exception:
+        pass
+    try:
+        from live_draft_queue_survival import begin_queue_script_pass
+
+        begin_queue_script_pass(session, st=st)
+    except Exception:
+        pass
+    try:
+        from baseball_persistent_state import prepare_baseball_workspace
+
+        prepare_baseball_workspace(st)
+    except Exception:
+        pass
+    try:
+        from live_draft_solo_parity_p6_persistent_diag import (
+            enable_p6_persistent_diag_from_query,
+            on_ultra_early_script_run,
+            render_p6_writer_probe,
+        )
+
+        enable_p6_persistent_diag_from_query(st, session)
+        on_ultra_early_script_run(st, session, after_workspace=True)
+    except ImportError:
+        pass
+    mounted = try_p6_dedicated_entrypoint(st, session)
+    if not mounted:
+        try:
+            from live_draft_solo_parity_p6_persistent_diag import render_p6_writer_probe
+
+            render_p6_writer_probe(st, session)
+        except ImportError:
+            pass
+        st.warning("P6 dedicated entrypoint did not mount; see writer probe ledger.")
+    st.caption("P6 dedicated persistent-wake diagnostic (production entrypoint).")
     st.stop()
     return True

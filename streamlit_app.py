@@ -563,6 +563,18 @@ try:
 except ImportError:
     pass
 
+try:
+    from live_draft_solo_p6_dedicated_entrypoint import run_p6_dedicated_pre_app_shell
+
+    if run_p6_dedicated_pre_app_shell(st, st.session_state):
+        st.stop()
+except ImportError:
+    pass
+except Exception as _p6_pre_shell_exc:
+    if st.session_state.get("_solo_p6_diag_latched") or st.session_state.get("_solo_parity_p6_persistent_diag"):
+        st.error(f"P6 dedicated entrypoint error: {_p6_pre_shell_exc}")
+        st.stop()
+
 import portfolio_polish as pp
 import portfolio_demo as pdemo
 
@@ -609,60 +621,6 @@ try:
     prepare_baseball_auth_session(st)
 except Exception:
     pass
-
-try:
-    from suite_auth import is_auth_enabled, process_pending_auth_login
-
-    if is_auth_enabled():
-        process_pending_auth_login(st)
-except Exception:
-    pass
-
-try:
-    from live_draft_solo_p6_dedicated_entrypoint import (
-        mark_p6_dedicated_route_requested,
-        p6_dedicated_entrypoint_requested,
-        try_p6_dedicated_entrypoint,
-    )
-
-    if p6_dedicated_entrypoint_requested(st, st.session_state):
-        mark_p6_dedicated_route_requested(st, st.session_state)
-        try:
-            from live_draft_queue_survival import begin_queue_script_pass
-
-            begin_queue_script_pass(st.session_state, st=st)
-        except Exception:
-            pass
-        try:
-            from baseball_persistent_state import prepare_baseball_workspace
-
-            prepare_baseball_workspace(st)
-        except Exception:
-            pass
-        try:
-            from live_draft_solo_parity_p6_persistent_diag import (
-                enable_p6_persistent_diag_from_query,
-                on_ultra_early_script_run,
-            )
-
-            enable_p6_persistent_diag_from_query(st, st.session_state)
-            on_ultra_early_script_run(st, st.session_state, after_workspace=True)
-        except ImportError:
-            pass
-        try_p6_dedicated_entrypoint(st, st.session_state)
-        try:
-            from live_draft_solo_parity_p6_persistent_diag import render_p6_writer_probe
-
-            render_p6_writer_probe(st, st.session_state)
-        except ImportError:
-            pass
-        st.stop()
-except ImportError:
-    pass
-except Exception as _p6_early_dedicated_exc:
-    if st.session_state.get("_solo_p6_diag_latched") or st.session_state.get("_solo_parity_p6_persistent_diag"):
-        st.error(f"P6 dedicated entrypoint error: {_p6_early_dedicated_exc}")
-        st.stop()
 
 try:
     from live_draft_solo_delivery_diag import enable_delivery_diag_from_query, try_delivery_diag_app_shell_matrix

@@ -53,6 +53,23 @@ def wake_streamlit_app(page, *, wait_ms: int = 3000) -> bool:
         return False
 
 
+def _p6_writer_probe_present(page) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                """() => {
+                  function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+                  for (const root of roots()) {
+                    if (root && root.querySelector('#solo-p6-writer-probe')) return true;
+                  }
+                  return false;
+                }"""
+            )
+        )
+    except Exception:
+        return False
+
+
 def ensure_app_awake(page, *, timeout_s: int = 240) -> dict[str, Any]:
     """Wake sleeping app and wait until Streamlit content is loading or ready."""
     deadline = time.time() + timeout_s
@@ -71,6 +88,8 @@ def ensure_app_awake(page, *, timeout_s: int = 240) -> dict[str, Any]:
             if is_app_waking(text):
                 page.wait_for_timeout(3000)
                 continue
+            if _p6_writer_probe_present(page):
+                return {"awake": True, "wake_clicks": wake_clicks, "text_len": len(text.strip()), "p6_probe": True}
             if len(text.strip()) > 200 or "live draft" in text.lower() or "start new live draft" in text.lower():
                 return {"awake": True, "wake_clicks": wake_clicks, "text_len": len(text.strip())}
             page.wait_for_timeout(2500)
