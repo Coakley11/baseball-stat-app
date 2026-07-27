@@ -1,4 +1,4 @@
-5272344  # P6 dedicated entrypoint
+ea01d55  # P6 dedicated auth
 
 branch: dev
 
