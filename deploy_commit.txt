@@ -1,4 +1,4 @@
-781ca4b  # P6 reset NameError fix
+69fcd38  # P6 gating after hydrate
 
 branch: dev
 
