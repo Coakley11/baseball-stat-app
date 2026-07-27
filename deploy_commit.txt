@@ -1,4 +1,4 @@
-a11db36  # P6 hook
+4e441e2  # P6 bypass app shell
 
 branch: dev
 
