@@ -1,4 +1,4 @@
-9ce1262  # P6 probe render fix
+bf7cbef  # P6 callback registration audit
 
 branch: dev
 
