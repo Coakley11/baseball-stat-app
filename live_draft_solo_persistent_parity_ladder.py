@@ -407,6 +407,13 @@ def _record_production_callback(session: dict[str, Any], *, raw: Any, key: str, 
 
 def try_parity_ladder_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> bool:
     try:
+        from live_draft_solo_p6_dedicated_entrypoint import p6_dedicated_blocks_deep_parity
+
+        if p6_dedicated_blocks_deep_parity(session):
+            return False
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_p6_early_shell import p6_early_shell_blocks_deep_parity
 
         if p6_early_shell_blocks_deep_parity(session):

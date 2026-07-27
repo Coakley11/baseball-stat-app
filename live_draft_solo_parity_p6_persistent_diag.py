@@ -136,17 +136,29 @@ def reset_p6_diagnostic_lifecycle_for_run_id(session: dict[str, Any], new_run_id
     session.pop("_solo_p6_run_scoped_room", None)
     session.pop(P6_FORCE_LDR_BRANCH_KEY, None)
     try:
+        from live_draft_solo_p6_dedicated_entrypoint import (
+            P6_DEDICATED_ACTIVE_KEY,
+            P6_DEDICATED_COMPLETED_RUN_KEY,
+            P6_DEDICATED_STOP_KEY,
+            P6_RUN_SCOPED_ROOM_KEY,
+        )
+
+        session.pop(P6_DEDICATED_ACTIVE_KEY, None)
+        session.pop(P6_DEDICATED_COMPLETED_RUN_KEY, None)
+        session.pop(P6_DEDICATED_STOP_KEY, None)
+        session.pop(P6_RUN_SCOPED_ROOM_KEY, None)
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_p6_early_shell import (
             P6_EARLY_SHELL_ACTIVE_KEY,
             P6_EARLY_SHELL_COMPLETED_RUN_KEY,
             P6_EARLY_SHELL_STOP_KEY,
-            P6_RUN_SCOPED_ROOM_KEY,
         )
 
         session.pop(P6_EARLY_SHELL_ACTIVE_KEY, None)
         session.pop(P6_EARLY_SHELL_COMPLETED_RUN_KEY, None)
         session.pop(P6_EARLY_SHELL_STOP_KEY, None)
-        session.pop(P6_RUN_SCOPED_ROOM_KEY, None)
     except ImportError:
         pass
     try:
@@ -178,18 +190,11 @@ def latch_p6_diag_mode(st: Any, session: dict[str, Any]) -> None:
     page = _normalize_ldr_page(_qp_get(st, "active_page"))
     if page == "Live Draft Room":
         session["active_page"] = page
-        if resolve_p6_run_id(st, session):
-            session[P6_FORCE_LDR_BRANCH_KEY] = True
 
 
 def apply_p6_ldr_body_page_override(st: Any, session: dict[str, Any]) -> None:
-    """Diagnostic-only: ensure body routing enters Live Draft Room for P6 Cloud harness."""
-    if not session.get(P6_FORCE_LDR_BRANCH_KEY):
-        return
-    if not p6_persistent_diag_active(st, session) or not resolve_p6_run_id(st, session):
-        return
-    session["active_page"] = "Live Draft Room"
-    session["main_sidebar_page"] = "Live Draft Room"
+    """Deprecated — P6 uses dedicated entrypoint; no body-page override."""
+    return
 
 
 def enable_p6_persistent_diag_from_query(st: Any, session: dict[str, Any]) -> None:
@@ -206,8 +211,6 @@ def enable_p6_persistent_diag_from_query(st: Any, session: dict[str, Any]) -> No
         rid = rid_qp
     if rid and session.get(P6_DIAG_LATCHED_KEY):
         resolve_p6_run_id(st, session)
-    if rid_qp and qp_control == "P6" and _normalize_ldr_page(_qp_get(st, "active_page")) == "Live Draft Room":
-        session[P6_FORCE_LDR_BRANCH_KEY] = True
     if not p6_persistent_diag_active(st, session):
         return
     if _qp_flag(st, "solo_transport_probe"):
@@ -325,6 +328,13 @@ def bump_p6_script_run(st: Any | None, session: dict[str, Any]) -> int:
             prior_delivery_seen=True,
             script_run=n,
         )
+    try:
+        from live_draft_solo_p6_dedicated_entrypoint import P6_DEDICATED_STOP_KEY
+
+        if session.get(P6_DEDICATED_STOP_KEY):
+            render_p6_writer_probe(st, session)
+    except ImportError:
+        pass
     try:
         from live_draft_solo_p6_early_shell import P6_EARLY_SHELL_STOP_KEY
 
@@ -675,6 +685,14 @@ def render_p6_writer_probe(st: Any, session: dict[str, Any]) -> None:
         f'data-row-count="{len(payload.get("ledger_rows") or [])}" '
         f'data-b64="{b64}"></div>'
     )
+    try:
+        from live_draft_solo_p6_dedicated_entrypoint import P6_DEDICATED_ACTIVE_KEY
+
+        if session.get(P6_DEDICATED_ACTIVE_KEY):
+            st.sidebar.markdown(html, unsafe_allow_html=True)
+            return
+    except ImportError:
+        pass
     try:
         from live_draft_solo_p6_early_shell import P6_EARLY_SHELL_ACTIVE_KEY
 

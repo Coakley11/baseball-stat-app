@@ -614,16 +614,14 @@ try:
     from live_draft_solo_delivery_diag import enable_delivery_diag_from_query, try_delivery_diag_app_shell_matrix
 
     enable_delivery_diag_from_query(st, st.session_state)
-    _p6_shell_owns_run = False
+    _p6_dedicated_owns = False
     try:
-        from live_draft_solo_parity_p6_persistent_diag import p6_persistent_diag_active, resolve_p6_run_id
+        from live_draft_solo_p6_dedicated_entrypoint import p6_dedicated_entrypoint_requested
 
-        _p6_shell_owns_run = bool(
-            p6_persistent_diag_active(st, st.session_state) and resolve_p6_run_id(st, st.session_state)
-        )
+        _p6_dedicated_owns = p6_dedicated_entrypoint_requested(st, st.session_state)
     except ImportError:
-        _p6_shell_owns_run = False
-    if not _p6_shell_owns_run and try_delivery_diag_app_shell_matrix(st, st.session_state):
+        _p6_dedicated_owns = False
+    if not _p6_dedicated_owns and try_delivery_diag_app_shell_matrix(st, st.session_state):
         st.stop()
     try:
         from live_draft_room_mutation_audit import (
@@ -14386,6 +14384,16 @@ try:
 except Exception:
     pass
 try:
+    from live_draft_solo_p6_dedicated_entrypoint import try_p6_dedicated_entrypoint
+
+    try_p6_dedicated_entrypoint(st, st.session_state)
+except ImportError:
+    pass
+except Exception as _p6_dedicated_exc:
+    if st.session_state.get("_solo_p6_diag_latched") or st.session_state.get("_solo_parity_p6_persistent_diag"):
+        st.error(f"P6 dedicated entrypoint error: {_p6_dedicated_exc}")
+        st.stop()
+try:
     from nav_page_trace import note_nav_snapshot
 
     note_nav_snapshot(
@@ -14693,12 +14701,6 @@ try:
         st=st,
         radio_selected=_selected_page,
     )
-    try:
-        from live_draft_solo_parity_p6_persistent_diag import apply_p6_ldr_body_page_override
-
-        apply_p6_ldr_body_page_override(st, st.session_state)
-    except ImportError:
-        pass
     active_page = resolve_body_page(
         st.session_state,
         radio_selected=_selected_page,
@@ -14719,12 +14721,6 @@ except ImportError:
 try:
     from nav_page_trace import resolve_body_page
 
-    try:
-        from live_draft_solo_parity_p6_persistent_diag import apply_p6_ldr_body_page_override
-
-        apply_p6_ldr_body_page_override(st, st.session_state)
-    except ImportError:
-        pass
     active_page = resolve_body_page(
         st.session_state,
         radio_selected=_selected_page,
@@ -22146,23 +22142,6 @@ elif active_page == DRAFT_LAB_PAGE:
 
 
 elif active_page == "Live Draft Room":
-    try:
-        from live_draft_solo_parity_p6_persistent_diag import append_p6_ledger_row, p6_persistent_diag_active, resolve_p6_run_id
-
-        if p6_persistent_diag_active(st, st.session_state) and resolve_p6_run_id(st, st.session_state):
-            append_p6_ledger_row(st.session_state, "ldr_branch_entered", st=st, body_active_page=active_page)
-    except ImportError:
-        pass
-    try:
-        from live_draft_solo_p6_early_shell import try_p6_early_exclusive_shell
-
-        try_p6_early_exclusive_shell(st, st.session_state, ldr_branch=True)
-    except ImportError:
-        pass
-    except Exception as _p6_early_shell_exc:
-        if st.session_state.get("_solo_p6_diag_latched") or st.session_state.get("_solo_parity_p6_persistent_diag"):
-            st.error(f"P6 early exclusive shell error: {_p6_early_shell_exc}")
-            st.stop()
     try:
         from live_draft_cloud_diagnostics import bootstrap_cloud_accept_mode
 

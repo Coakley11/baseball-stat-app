@@ -96,6 +96,7 @@ def _first_reject_code(rows: list[dict[str, Any]]) -> str:
 def _ordered_ledger(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     order = [
         "script_begin",
+        "diagnostic_entrypoint_entered",
         "initial_widget_state",
         "widget_state_before_clear",
         "widget_state_after_clear",
@@ -186,6 +187,7 @@ def _session_replaced_invalid(
 def _pre_expiration_mount_stages_ok(rows: list[dict[str, Any]]) -> bool:
     required = (
         "script_begin",
+        "diagnostic_entrypoint_entered",
         "initial_widget_state",
         "widget_state_before_clear",
         "widget_state_after_clear",
@@ -194,6 +196,38 @@ def _pre_expiration_mount_stages_ok(rows: list[dict[str, Any]]) -> bool:
         "component_declared",
     )
     return all(_has_stage(rows, s) for s in required)
+
+
+def _score_p6_entrypoint_gate(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not _has_stage(rows, "diagnostic_entrypoint_entered"):
+        return {
+            "overall": "INVALID_P6_ENTRYPOINT_SKIPPED",
+            "transport_verdict": "INVALID_P6_ENTRYPOINT_SKIPPED",
+            "lifecycle_verdict": "INVALID",
+            "lifecycle_detail": {"reason": "diagnostic_entrypoint_entered missing"},
+            "python_receipt": False,
+            "production_callback_entries": 0,
+            "ownership_attempt_rows": 0,
+            "ownership_claim_rows": 0,
+            "processing_verdict": "UNKNOWN",
+            "reject_code": "",
+            "mount_path_note": "Do not grade transport",
+        }
+    if not _has_stage(rows, "component_declared"):
+        return {
+            "overall": "INVALID_P6_COMPONENT_NOT_DECLARED",
+            "transport_verdict": "INVALID_P6_COMPONENT_NOT_DECLARED",
+            "lifecycle_verdict": "INVALID",
+            "lifecycle_detail": {"reason": "entrypoint ran but component_declared missing"},
+            "python_receipt": False,
+            "production_callback_entries": _count_stage_rows(rows, "callback_entry", "on_change_callback_entry"),
+            "ownership_attempt_rows": 0,
+            "ownership_claim_rows": 0,
+            "processing_verdict": "UNKNOWN",
+            "reject_code": "",
+            "mount_path_note": "Do not grade transport",
+        }
+    return None
 
 
 def _post_expiration_rows_present(rows: list[dict[str, Any]]) -> dict[str, bool]:
@@ -278,6 +312,20 @@ def score_p6_from_evidence(
     mount_invalid_timer: bool = False,
 ) -> dict[str, Any]:
     rows = payload.get("ledger_rows") if isinstance(payload.get("ledger_rows"), list) else []
+    gate = _score_p6_entrypoint_gate(rows)
+    if gate is not None:
+        gate.update(
+            {
+                "pick_processing_disabled": bool(payload.get("pick_processing_disabled")),
+                "pre_send_session_token": False,
+                "stale_state_finding": payload.get("stale_state") if isinstance(payload.get("stale_state"), dict) else {},
+                "pre_expiration_mount_complete": _pre_expiration_mount_stages_ok(rows),
+                "post_expiration_rows": _post_expiration_rows_present(rows),
+                "streamlit_session_ids": sorted(session_ids or []),
+                "streamlit_session_changed": len(session_ids or set()) > 1,
+            }
+        )
+        return gate
     had_mount = _has_stage(rows, "component_declaration_attempted") or _has_stage(rows, "component_declared")
     if mount_invalid_timer and not _has_stage(rows, "component_declared"):
         return {
@@ -324,9 +372,23 @@ def score_p6_from_evidence(
             "streamlit_session_changed": True,
         }
     if not _has_stage(rows, "component_declared"):
+        gate2 = _score_p6_entrypoint_gate(rows)
+        if gate2 is not None:
+            gate2.update(
+                {
+                    "pick_processing_disabled": bool(payload.get("pick_processing_disabled")),
+                    "pre_send_session_token": compute_pre_send_from_ledger(payload, browser_send_ts=browser_send_ts),
+                    "stale_state_finding": payload.get("stale_state") if isinstance(payload.get("stale_state"), dict) else {},
+                    "pre_expiration_mount_complete": _pre_expiration_mount_stages_ok(rows),
+                    "post_expiration_rows": _post_expiration_rows_present(rows),
+                    "streamlit_session_ids": sorted(session_ids or []),
+                    "streamlit_session_changed": len(session_ids or set()) > 1,
+                }
+            )
+            return gate2
         return {
-            "overall": "INVALID_P6_MOUNT_PATH_SKIPPED",
-            "transport_verdict": "INVALID_P6_MOUNT_PATH_SKIPPED",
+            "overall": "INVALID_P6_COMPONENT_NOT_DECLARED",
+            "transport_verdict": "INVALID_P6_COMPONENT_NOT_DECLARED",
             "lifecycle_verdict": peak.get("lifecycle_verdict") if isinstance(peak.get("lifecycle_verdict"), str) else "UNKNOWN",
             "lifecycle_detail": peak.get("lifecycle_detail") or {},
             "python_receipt": False,
@@ -386,7 +448,8 @@ def score_p6_from_evidence(
         }
     browser_table = build_browser_unique_event_table(peak=peak2, browser_peak={})
     browser_ok = (
-        browser_table["unique_timer_armed"] == 1
+        browser_table["production_iframe_instances"] == 1
+        and browser_table["unique_timer_armed"] == 1
         and browser_table["unique_deadline_crossed"] == 1
         and browser_table["unique_setComponentValue"] == 1
         and browser_table["unique_transport_postMessage"] == 1
@@ -459,6 +522,10 @@ def interpret_p6_scored(scored: dict[str, Any], *, peak: dict[str, Any]) -> str:
             "Streamlit session changed between declaration and expiration; "
             "same-session ledger lost — not a callback registration failure."
         )
+    if overall == "INVALID_P6_ENTRYPOINT_SKIPPED":
+        return "Dedicated P6 entrypoint did not execute; do not grade transport."
+    if overall == "INVALID_P6_COMPONENT_NOT_DECLARED":
+        return "Entrypoint ran but production try_solo_persistent_wake_ldr_entry did not record component_declared."
     if overall == "INVALID_P6_MOUNT_PATH_SKIPPED":
         return "P6 diagnostic routing still invalid; do not conclude production transport from this run."
     if overall == "PASS":
@@ -539,7 +606,9 @@ def run_p6_writer_session(browser, *, deploy: dict[str, Any], run_id: str) -> di
             parent_rows = dedupe_parent_rows_by_fingerprint(parent_rows, expected_token=expected)
             sc = repro.get("stage_counts") if isinstance(repro.get("stage_counts"), dict) else {}
             rows = payload.get("ledger_rows") if isinstance(payload.get("ledger_rows"), list) else []
-            mount_complete = _has_stage(rows, "component_declared")
+            mount_complete = _has_stage(rows, "component_declared") and _has_stage(
+                rows, "diagnostic_entrypoint_entered"
+            )
             sid = str(payload.get("streamlit_session_id") or "").strip()
             if sid:
                 session_ids_seen.add(sid)
@@ -621,7 +690,7 @@ def run_p6_writer_session(browser, *, deploy: dict[str, Any], run_id: str) -> di
             "cloud_build": deploy.get("cloud_build"),
             "run_id": run_id,
             "writer_url": writer_url,
-            "mode": "p6_early_exclusive_shell_ldr_branch",
+            "mode": "p6_dedicated_entrypoint",
             "peak": peak,
             "expected_token": expected,
             "synthetic_room_id": f"PARITY_{run_id.replace('-', '')[:8]}",
