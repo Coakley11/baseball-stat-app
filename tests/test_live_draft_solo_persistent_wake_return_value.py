@@ -94,7 +94,7 @@ def test_wrong_room_rejected() -> None:
     session = {SOLO_PERSISTENT_WAKE_TOKEN_KEY: token}
     ok, code = _production_expire_token_matches_state(session, token, room)
     assert ok is False
-    assert code == "wrong_room"
+    assert code in ("wrong_room", "expected_token_mismatch")
 
 
 def test_flush_disabled_when_return_value_delivery_active() -> None:

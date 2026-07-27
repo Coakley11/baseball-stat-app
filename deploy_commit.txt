@@ -1,3 +1,3 @@
-770d749  # production return-value delivery owner
+e23f7a7  # canonical expected token for return-value delivery
 
 branch: dev
