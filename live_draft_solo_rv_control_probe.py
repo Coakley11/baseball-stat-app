@@ -150,6 +150,27 @@ def flush_control_probe(st: Any, session: dict[str, Any], slot: Any | None = Non
         f'<div id="{RV_CONTROL_PROBE_ID}" data-b64="{b64}"></div>',
         unsafe_allow_html=True,
     )
+    st.components.v1.html(
+        f"""
+<script>
+(function() {{
+  const B64 = {json.dumps(b64)};
+  const ID = {json.dumps(RV_CONTROL_PROBE_ID)};
+  const root = window.parent && window.parent.document ? window.parent : document;
+  let el = root.getElementById(ID);
+  if (!el) {{
+    el = root.createElement("div");
+    el.id = ID;
+    el.style.display = "none";
+    (root.body || root.documentElement).appendChild(el);
+  }}
+  el.setAttribute("data-b64", B64);
+}})();
+</script>
+""",
+        height=0,
+        width=0,
+    )
 
 
 def rv_ultra_early_probe_hook(st: Any, session: dict[str, Any]) -> None:
@@ -164,6 +185,11 @@ def rv_ultra_early_probe_hook(st: Any, session: dict[str, Any]) -> None:
             rid = _qp_get(st, RV_RUN_ID_QP)
             if rid:
                 session["_solo_rv_run_id"] = rid
+        if not session.get("_solo_rv_ladder_step"):
+            step = _qp_get(st, "solo_rv_ladder")
+            if step:
+                session["_solo_rv_ladder_step"] = step.strip().upper()
+        session["_solo_rv_ladder_active"] = True
     except ImportError:
         pass
     _next_script_run_seq(session)
