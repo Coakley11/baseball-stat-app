@@ -13,7 +13,8 @@ def test_production_always_declares_at_early_entry_not_deferred_to_active() -> N
     src = (ROOT / "live_draft_solo_persistent_wake.py").read_text(encoding="utf-8")
     assert "_actionable_solo_timer(session, room_dict):" not in src.split("try_solo_persistent_wake_ldr_entry")[1][:1200]
     assert "return True" in src.split("try_solo_persistent_wake_ldr_entry")[1]
-    assert "render_micro_isolation_once(" in src.split("try_solo_persistent_wake_ldr_entry")[1]
+    entry_body = src.split("try_solo_persistent_wake_ldr_entry")[1]
+    assert "render_micro_isolation_once(" in entry_body or "_mount_persistent_wake_micro_controlled(" in entry_body
     assert "SOLO_INERT_EXPIRE_TOKEN" in src
 
 

@@ -27,6 +27,116 @@ def solo_persistent_chain_persist_key(session: dict[str, Any], room: dict[str, A
 
 SOLO_SKIP_LATE_FLUSH_TOKEN_KEY = "_solo_skip_late_flush_token"
 SOLO_PENDING_CALLBACK_SOURCE_KEY = "_solo_pending_callback_source"
+SOLO_PERSISTENT_RETURN_VALUE_DELIVERY_KEY = "_solo_persistent_return_value_delivery"
+
+
+def resolve_production_component_delivery_mode(
+    st: Any,
+    session: dict[str, Any],
+    deliver_callback: Any,
+) -> str:
+    """Production persistent wake: return_value (default) vs on_change (P6 R0–R2 controls only)."""
+    if deliver_callback is None:
+        return "on_change"
+    if getattr(deliver_callback, "__name__", "") != "_production_deliver_callback":
+        return "on_change"
+    try:
+        from live_draft_solo_parity_p6_persistent_diag import p6_persistent_diag_active
+        from live_draft_solo_p6_declaration_audit import resolve_p6_callback_control
+
+        if p6_persistent_diag_active(st, session):
+            ctrl = resolve_p6_callback_control(st, session)
+            if ctrl in ("R0", "R1", "R2"):
+                return "on_change"
+    except ImportError:
+        pass
+    return "return_value"
+
+
+def production_return_value_delivery_active(session: dict[str, Any]) -> bool:
+    return bool(session.get(SOLO_PERSISTENT_RETURN_VALUE_DELIVERY_KEY))
+
+
+def _production_expire_token_matches_state(
+    session: dict[str, Any],
+    token: str,
+    live: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    tok = str(token or "").strip()
+    if not tok:
+        return False, "empty_raw"
+    if tok == SOLO_INERT_EXPIRE_TOKEN:
+        return False, "empty_raw"
+    expected = str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or "").strip()
+    if not expected or tok != expected:
+        return False, "expected_token_mismatch"
+    if not isinstance(live, dict):
+        return False, "wrong_room"
+    try:
+        from solo_countdown_component import parse_solo_expire_token
+
+        parsed = parse_solo_expire_token(tok)
+        if not parsed:
+            return False, "malformed_token"
+        live_draft_id = str(live.get("draft_room_id") or live.get("draft_id") or "").strip()
+        if parsed["draft_id"] and live_draft_id and parsed["draft_id"] != live_draft_id:
+            return False, "wrong_room"
+        if int(live.get("current_pick_index") or 0) != int(parsed["pick_index"]):
+            return False, "wrong_pick"
+        from live_draft_timer_logic import live_draft_timer_deadline
+
+        live_deadline = live_draft_timer_deadline(live)
+        tok_deadline = float(parsed.get("deadline") or 0.0)
+        if live_deadline is not None and tok_deadline > 0:
+            if abs(float(live_deadline) - tok_deadline) > 0.75:
+                return False, "stale_deadline"
+    except ImportError:
+        pass
+    return True, ""
+
+
+def process_production_expire_token(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    raw_token: Any,
+    widget_key: str,
+    source: str = "native_component_return",
+) -> bool:
+    """Validate component return value against live production state; route to delivery owner."""
+    from live_draft_solo_heartbeat import _coerce_wake_token
+
+    token = _coerce_wake_token(raw_token)
+    if not token:
+        return False
+    live = _resolve_room(session, None)
+    ok, reject_code = _production_expire_token_matches_state(session, token, live if isinstance(live, dict) else None)
+    if not ok:
+        if reject_code not in ("empty_raw", "expected_token_mismatch"):
+            try:
+                from live_draft_stage1_expire_audit import (
+                    mark_wake_token_rejected,
+                    record_callback_invocation,
+                )
+
+                record_callback_invocation(
+                    st,
+                    session,
+                    callback_source=source,
+                    raw_value=raw_token,
+                    room=live if isinstance(live, dict) else None,
+                    reject_code=reject_code,
+                    delivery_claimed=False,
+                )
+                mark_wake_token_rejected(session, token, reject_code)
+            except ImportError:
+                pass
+        return False
+    session[SOLO_PENDING_CALLBACK_SOURCE_KEY] = source
+    _production_deliver_callback(st, session, raw_token, widget_key)
+    return True
+
+
 def solo_persistent_wake_active(session: dict[str, Any]) -> bool:
     """True when early-route production wake owns expiration (Cloud wake owner)."""
     if not session.get(SOLO_PERSISTENT_WAKE_LATCH_KEY):
@@ -634,6 +744,8 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
 
 def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
     """After widget values bind, deliver expire token from session_state (on_change equivalent)."""
+    if production_return_value_delivery_active(session):
+        return
     if session.get("_solo_persistent_wake_flush_disabled"):
         return
     try:
@@ -750,6 +862,12 @@ def _mount_persistent_wake_micro_controlled(
     except ImportError:
         pass
 
+    delivery_mode = resolve_production_component_delivery_mode(st, session, deliver)
+    if delivery_mode == "return_value":
+        session[SOLO_PERSISTENT_RETURN_VALUE_DELIVERY_KEY] = True
+    else:
+        session.pop(SOLO_PERSISTENT_RETURN_VALUE_DELIVERY_KEY, None)
+
     return render_micro_isolation_once(
         st,
         session,
@@ -767,6 +885,7 @@ def _mount_persistent_wake_micro_controlled(
         deliver_callback=deliver,
         suppress_immediate_session_on_change=suppress,
         chain_persist_key=chain_persist_key,
+        production_use_return_value_delivery=(delivery_mode == "return_value"),
     )
 
 

@@ -29,6 +29,7 @@ REJECT_REASON_TO_CODE = {
 CALLBACK_SOURCES = frozenset(
     {
         "native_component_on_change",
+        "native_component_return",
         "late_page_flush",
         "post_mount_session_state_poll",
         "manual_diagnostic_invocation",

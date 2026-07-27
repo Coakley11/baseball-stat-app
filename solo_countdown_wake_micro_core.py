@@ -56,6 +56,7 @@ class MicroCycleResult:
     on_change_fired: bool
     stages: list[str]
     should_stop: bool = False
+    component_return: Any = None
 
 
 def _session_keys(prefix: str) -> dict[str, str]:
@@ -94,6 +95,7 @@ def render_micro_isolation_once(
     production_delivery_only: bool = False,
     suppress_immediate_session_on_change: bool = False,
     chain_persist_key: str = "",
+    production_use_return_value_delivery: bool = False,
 ) -> MicroCycleResult:
     """Mount exactly once; retain probe after expiration without starting cycle 1."""
     from solo_countdown_component import build_solo_expire_token, mount_solo_countdown_wake_direct
@@ -226,7 +228,7 @@ def render_micro_isolation_once(
             except ImportError:
                 pass
 
-        if production_delivery_only and session.get(sk["mounted"]):
+        if production_delivery_only and session.get(sk["mounted"]) and not production_use_return_value_delivery:
             raw = st.session_state.get(key)
             if raw is not None:
                 session["_solo_pending_callback_source"] = "post_mount_session_state_poll"
@@ -240,6 +242,9 @@ def render_micro_isolation_once(
                     stages=stages,
                     should_stop=False,
                 )
+
+        use_return_delivery = bool(production_use_return_value_delivery)
+        mount_on_change = None if use_return_delivery else _prod_on_change
 
         if first_mount:
             _rec(
@@ -264,12 +269,13 @@ def render_micro_isolation_once(
                 },
             )
         session_state_before = repr(st.session_state.get(key))[:400] if key in st.session_state else "missing"
+        on_change_label = "None" if use_return_delivery else "_prod_on_change"
         component_kwargs = {
             "room": "(production_room dict)",
             "key": key,
             "expire_token": token,
             "actionable": production_actionable,
-            "on_change": "_prod_on_change",
+            "on_change": on_change_label,
             "chain_persist_key": chain_persist_key,
         }
         try:
@@ -286,7 +292,7 @@ def render_micro_isolation_once(
                     widget_key=key,
                     default=None,
                     expected_token=token,
-                    on_change_fn=_prod_on_change,
+                    on_change_fn=mount_on_change,
                     deliver_callback=deliver_callback,
                     suppress_flag=bool(suppress_immediate_session_on_change),
                     force_flag=None,
@@ -295,15 +301,15 @@ def render_micro_isolation_once(
                 )
         except ImportError:
             pass
-        mount_solo_countdown_wake_with_token(
+        raw_component_value = mount_solo_countdown_wake_with_token(
             production_room,
             key=key,
             expire_token=token,
             actionable=production_actionable,
-            on_change=_prod_on_change,
+            on_change=mount_on_change,
             chain_persist_key=chain_persist_key,
         )
-        comp_return = st.session_state.get(key) if key in st.session_state else None
+        comp_return = raw_component_value
         session_state_after = repr(st.session_state.get(key))[:400] if key in st.session_state else "missing"
         try:
             from live_draft_solo_p6_declaration_audit import (
@@ -325,8 +331,21 @@ def render_micro_isolation_once(
         session[sk["mounted"]] = True
         session[mounted_token_key] = token
         session[mount_sig_key] = sig
-        raw = st.session_state.get(key)
-        if not suppress_immediate_session_on_change and raw is not None:
+        raw = raw_component_value
+        if use_return_delivery and deliver_callback is not None:
+            try:
+                from live_draft_solo_persistent_wake import process_production_expire_token
+
+                process_production_expire_token(
+                    st,
+                    session,
+                    raw_token=raw_component_value,
+                    widget_key=key,
+                    source="native_component_return",
+                )
+            except ImportError:
+                pass
+        elif not suppress_immediate_session_on_change and raw is not None:
             _prod_on_change()
 
         return MicroCycleResult(
@@ -337,6 +356,7 @@ def render_micro_isolation_once(
             on_change_fired=False,
             stages=stages,
             should_stop=False,
+            component_return=raw_component_value,
         )
 
     if session.get(sk["complete"]):
