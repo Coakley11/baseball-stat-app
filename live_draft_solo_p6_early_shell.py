@@ -21,31 +21,18 @@ P6_RUN_SCOPED_ROOM_KEY = "_solo_p6_run_scoped_room"
 
 
 def _normalize_page(page: str) -> str:
-    p = str(page or "").strip()
+    p = str(page or "").strip().replace("+", " ")
     if p.lower().replace("_", " ") == "live draft room":
         return "Live Draft Room"
     return p
-
-
-def _active_page_is_live_draft(st: Any, session: dict[str, Any]) -> bool:
-    from live_draft_solo_parity_p6_persistent_diag import _qp_get
-
-    page = _normalize_page(str(session.get("active_page") or _qp_get(st, "active_page") or ""))
-    return page == "Live Draft Room"
-
-
-def _qp_get_early(st: Any, name: str) -> str:
-    from live_draft_solo_parity_p6_persistent_diag import _qp_get
-
-    return _qp_get(st, name)
 
 
 def p6_early_shell_blocks_deep_parity(session: dict[str, Any]) -> bool:
     return bool(session.get(P6_EARLY_SHELL_STOP_KEY))
 
 
-def try_p6_early_exclusive_shell(st: Any, session: dict[str, Any]) -> bool:
-    """Run P6 mount once, keep writer probe alive, stop before main LDR UI."""
+def try_p6_early_exclusive_shell(st: Any, session: dict[str, Any], *, ldr_branch: bool = False) -> bool:
+    """Run P6 mount once inside Live Draft Room, keep writer probe alive, stop before main LDR UI."""
     from live_draft_solo_parity_p6_persistent_diag import (
         P6_DIAG_LATCHED_KEY,
         P6_MOUNTED_RUN_ID_KEY,
@@ -68,16 +55,13 @@ def try_p6_early_exclusive_shell(st: Any, session: dict[str, Any]) -> bool:
     run_id = resolve_p6_run_id(st, session)
     if not run_id:
         return False
-    # Query-driven P6 runs may keep Live Draft Room in session while sidebar body page differs.
-    page_qp = _normalize_page(_qp_get_early(st, "active_page"))
-    if page_qp == "Live Draft Room":
-        session["active_page"] = page_qp
-    elif not _active_page_is_live_draft(st, session):
+    if _normalize_page(str(session.get("active_page") or "")) != "Live Draft Room":
+        return False
+    if ldr_branch is False:
         return False
 
     session[P6_EARLY_SHELL_ACTIVE_KEY] = True
     session[P6_EARLY_SHELL_STOP_KEY] = True
-    append_p6_ledger_row(session, "early_p6_shell_entered", st=st)
     session[PARITY_CONTROL_KEY] = "P6"
     session["_solo_parity_ladder_control"] = "P6"
     session[PARITY_P6_DISABLE_PICK_KEY] = True

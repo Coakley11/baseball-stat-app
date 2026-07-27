@@ -239,6 +239,28 @@ def resolve_body_page(
     radio = _norm(radio_selected)
     active = _norm(session.get("active_page"))
     sidebar = _norm(session.get("main_sidebar_page"))
+    if session.get("_solo_p6_force_ldr_branch") and str(session.get("_solo_p6_run_id") or "").strip():
+        ldr = _norm("Live Draft Room")
+        if ldr:
+            assign_nav_key(
+                session,
+                "active_page",
+                ldr,
+                function=function,
+                reason="p6_exclusive_ldr_diagnostic",
+                st=st,
+            )
+            log_nav_event(
+                session,
+                function=function,
+                reason="p6_force_ldr_branch",
+                key="body_active_page",
+                previous=active,
+                new=ldr,
+                extra={"solo_p6_run_id": str(session.get("_solo_p6_run_id") or "")[:80]},
+                st=st,
+            )
+            return ldr
     owned = _norm(session.get("_suite_user_owned_page"))
     skip = _norm(session.get("_skip_page_restore_for"))
     navigate = _norm(session.get("_navigate_to_page"))
