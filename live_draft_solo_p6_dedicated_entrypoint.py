@@ -229,25 +229,14 @@ def run_p6_dedicated_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
     except ImportError:
         pass
     mark_p6_dedicated_route_requested(st, session)
+    mounted = try_p6_dedicated_entrypoint(st, session, force=True)
     try:
-        from live_draft_solo_parity_p6_persistent_diag import append_p6_ledger_row
+        from live_draft_solo_parity_p6_persistent_diag import render_p6_writer_probe
 
-        append_p6_ledger_row(
-            session,
-            "diagnostic_pre_try_p6",
-            st=st,
-            entrypoint="run_p6_dedicated_pre_app_shell",
-        )
+        render_p6_writer_probe(st, session)
     except ImportError:
         pass
-    mounted = try_p6_dedicated_entrypoint(st, session, force=True)
     if not mounted:
-        try:
-            from live_draft_solo_parity_p6_persistent_diag import render_p6_writer_probe
-
-            render_p6_writer_probe(st, session)
-        except ImportError:
-            pass
         st.warning("P6 dedicated entrypoint did not mount; see writer probe ledger.")
     st.caption("P6 dedicated persistent-wake diagnostic (production entrypoint).")
     st.stop()

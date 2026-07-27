@@ -451,7 +451,8 @@ def on_ultra_early_script_run(st: Any, session: dict[str, Any], *, after_workspa
         script_run=run_n,
         active_page=str(session.get("active_page") or _qp_get(st, "active_page") or ""),
     )
-    render_p6_writer_probe(st, session)
+    if not after_workspace:
+        render_p6_writer_probe(st, session)
 
 
 def _room_declaration_fields(session: dict[str, Any], *, expire_token: str) -> dict[str, Any]:
