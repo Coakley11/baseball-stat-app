@@ -36,15 +36,26 @@ def p6_dedicated_entrypoint_requested(st: Any, session: dict[str, Any]) -> bool:
     return bool(rid)
 
 
-def p6_dedicated_auth_ready(session: dict[str, Any]) -> bool:
+def p6_dedicated_auth_ready(st: Any, session: dict[str, Any]) -> bool:
     try:
-        from suite_auth import is_auth_enabled, is_authenticated
+        from suite_auth import auth_session_complete, is_auth_enabled, is_authenticated
 
         if not is_auth_enabled():
             return True
-        return bool(is_authenticated(session))
+        if is_authenticated(session) and auth_session_complete(session):
+            return True
     except ImportError:
         return True
+    try:
+        from live_draft_solo_parity_p6_persistent_diag import _qp_get
+        from suite_auth_browser import SESSION_QUERY_PARAM, SESSION_STATE_SID_KEY
+
+        sid = str(session.get(SESSION_STATE_SID_KEY) or _qp_get(st, SESSION_QUERY_PARAM) or "").strip()
+        if len(sid) >= 8:
+            return True
+    except ImportError:
+        pass
+    return False
 
 
 def try_p6_dedicated_entrypoint(st: Any, session: dict[str, Any]) -> bool:
@@ -62,7 +73,15 @@ def try_p6_dedicated_entrypoint(st: Any, session: dict[str, Any]) -> bool:
 
     if not p6_dedicated_entrypoint_requested(st, session):
         return False
-    if not p6_dedicated_auth_ready(session):
+    if not p6_dedicated_auth_ready(st, session):
+        from live_draft_solo_parity_p6_persistent_diag import append_p6_ledger_row
+
+        append_p6_ledger_row(
+            session,
+            "diagnostic_entrypoint_auth_blocked",
+            st=st,
+            reason="suite_auth_not_ready",
+        )
         return False
 
     latch_p6_diag_mode(st, session)
