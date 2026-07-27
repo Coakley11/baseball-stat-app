@@ -1,3 +1,3 @@
-96df0a4  # RV hydrate via prepare_live_draft_state
+535d61e  # RV1 control URL retains Live Draft active_page
 
 branch: dev
