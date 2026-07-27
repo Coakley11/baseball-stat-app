@@ -1,4 +1,4 @@
-135a154  # P6 early dedicated hook
+ade2569  # P6 workspace order
 
 branch: dev
 
