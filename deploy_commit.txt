@@ -1,4 +1,3 @@
-a85bd03  # native RV ledger probe
+f879bea  # RV1-RV3 diagnostic hydration and ladder epoch grading
 
 branch: dev
-
