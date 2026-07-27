@@ -412,7 +412,7 @@ def run_rv_real_step(context, step: str, run_id: str, *, cloud_sha: str, cloud_b
         return {"step": step, "verdict": "INVALID", "reason": "draft_start_invalid", "run_id": run_id, "start": start_val}
     goto_and_wake(page, url, timeout_s=120)
     page.wait_for_timeout(10000)
-    goto_and_wake(page, rv_url(step, run_id, ldr=(step in ("RV2", "RV3"))), timeout_s=240)
+    goto_and_wake(page, rv_url(step, run_id, ldr=(step in ("RV1", "RV2", "RV3"))), timeout_s=240)
     page.wait_for_timeout(8000)
     exp, probe, reg, epoch_ms, meta = wait_rv_control_with_epoch(
         page,
