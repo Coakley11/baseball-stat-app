@@ -133,10 +133,32 @@ def try_p6_dedicated_entrypoint(st: Any, session: dict[str, Any], *, force: bool
         entrypoint="live_draft_solo_p6_dedicated_entrypoint.try_p6_dedicated_entrypoint",
     )
 
+    from live_draft_solo_p6_declaration_audit import resolve_p6_callback_control
+
+    callback_control = resolve_p6_callback_control(st, session)
+    v1_return_control = callback_control in ("R4", "R5")
+
     if session.get(P6_DEDICATED_COMPLETED_RUN_KEY) == run_id:
         from live_draft_solo_parity_p6_persistent_diag import get_p6_ledger_for_run
 
         prior = get_p6_ledger_for_run(session, run_id)
+        if v1_return_control:
+            token, synth = ensure_p6_latched_production_token(session)
+            from live_draft_solo_p6_v1_return_value import mount_p6_v1_return_value_control
+
+            mount_p6_v1_return_value_control(
+                st,
+                session,
+                synth,
+                run_id=run_id,
+                control=callback_control,
+                expire_token=token,
+                chain_persist_key=str(session.get("_solo_parity_ls_key") or ""),
+            )
+            render_p6_writer_probe(st, session)
+            st.caption(f"P6 V1 return-value control {callback_control} (redeclare each run).")
+            st.stop()
+            return True
         if any(isinstance(r, dict) and r.get("stage") == "component_declared" for r in prior):
             render_p6_writer_probe(st, session)
             st.stop()
@@ -156,21 +178,41 @@ def try_p6_dedicated_entrypoint(st: Any, session: dict[str, Any], *, force: bool
         expected_token=token,
         actual_token=token,
         synthetic_room_id=room_id,
-        on_change_callback="_production_deliver_callback",
+        on_change_callback=(
+            None if v1_return_control else "_production_deliver_callback"
+        ),
+        callback_control=callback_control,
     )
     session[SOLO_PERSISTENT_WAKE_LATCH_KEY] = True
     session["_solo_expire_owner"] = "wake"
     session[PARITY_HANDLED_WAKE_KEY] = True
     session.pop("_solo_persistent_wake_flush_disabled", None)
 
-    from live_draft_solo_persistent_wake import try_solo_persistent_wake_ldr_entry
+    if v1_return_control:
+        from live_draft_solo_p6_v1_return_value import mount_p6_v1_return_value_control
 
-    try_solo_persistent_wake_ldr_entry(st, session, synth)
+        mount_p6_v1_return_value_control(
+            st,
+            session,
+            synth,
+            run_id=run_id,
+            control=callback_control,
+            expire_token=token,
+            chain_persist_key=str(session.get("_solo_parity_ls_key") or ""),
+        )
+    else:
+        from live_draft_solo_persistent_wake import try_solo_persistent_wake_ldr_entry
+
+        try_solo_persistent_wake_ldr_entry(st, session, synth)
     session[PARITY_MOUNTED_KEY] = True
     session[P6_MOUNTED_RUN_ID_KEY] = run_id
     session[P6_DEDICATED_COMPLETED_RUN_KEY] = run_id
     render_p6_writer_probe(st, session)
-    st.caption("P6 dedicated persistent-wake diagnostic (production entrypoint).")
+    st.caption(
+        "P6 dedicated persistent-wake diagnostic (production entrypoint)."
+        if not v1_return_control
+        else f"P6 V1 return-value control {callback_control}."
+    )
     st.stop()
     return True
 

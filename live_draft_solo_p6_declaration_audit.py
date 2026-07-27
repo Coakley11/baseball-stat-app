@@ -8,7 +8,7 @@ from typing import Any, Callable
 P6_CALLBACK_CONTROL_QP = "solo_p6_callback_control"
 P6_CALLBACK_CONTROL_SESSION_KEY = "_solo_p6_callback_control"
 P6_DECLARATION_DIFF_KEY = "_solo_p6_declaration_diff"
-VALID_CONTROLS = frozenset({"R0", "R1", "R2", "R3"})
+VALID_CONTROLS = frozenset({"R0", "R1", "R2", "R3", "R4", "R5"})
 
 
 def _qp_get(st: Any | None, name: str) -> str:

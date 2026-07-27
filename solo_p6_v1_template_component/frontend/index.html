@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="https://unpkg.com/streamlit-component-lib@2.0.0/dist/streamlit-component-lib.js"></script>
+  </head>
+  <body>
+    <div id="root" style="display: none"></div>
+    <script>
+      (function () {
+        let sent = false;
+        let expected = "";
+
+        function onRender() {
+          const args = Streamlit.getComponentArgs() || {};
+          expected = String(args.expire_token || "").trim();
+          if (!expected || sent) return;
+          const parts = expected.split("|");
+          if (parts.length < 3) return;
+          const deadline = parseFloat(parts[2]);
+          if (!isFinite(deadline)) return;
+          const fire = function () {
+            if (sent || !expected) return;
+            sent = true;
+            Streamlit.setComponentValue(expected);
+          };
+          const remMs = Math.max(0, deadline * 1000 - Date.now());
+          window.setTimeout(fire, remMs);
+        }
+
+        Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
+        Streamlit.setComponentReady();
+        Streamlit.setFrameHeight(0);
+      })();
+    </script>
+  </body>
+</html>

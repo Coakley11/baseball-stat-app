@@ -109,6 +109,8 @@ def _ordered_ledger(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "declaration_attempt",
         "declaration_returned",
         "sentinel_callback_entry",
+        "r4_component_return_value",
+        "r5_component_return_value",
         "callback_entry",
         "on_change_callback_entry",
         "raw_widget_value",

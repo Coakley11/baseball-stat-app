@@ -4,6 +4,10 @@ try:
     import solo_countdown_component  # noqa: F401 — register wake component at app import
 except ImportError:
     pass
+try:
+    import solo_p6_v1_template_component  # noqa: F401 — P6 R5 V1 template probe
+except ImportError:
+    pass
 import pandas as pd
 from dataframe_utils import (
     coerce_dataframe,

@@ -74,5 +74,21 @@ Post-expiration probe consistently shows `session_state_raw: "None"` despite par
 | **Smallest proposed correction (for a follow-up change, not implemented)** | Treat as **Streamlit custom-component callback delivery gap on Cloud** after iframe `setComponentValue`, not a wrong function reference in the declaration. Likely needs an **explicit Python-side delivery hook** wired from the same transport boundary already observed (without altering ownership/timer/frontend contract) — design TBD after confirming with local vs Cloud Streamlit version. |
 | **Tests** | `tests/test_live_draft_solo_p6_declaration_audit.py`; extend with unit test asserting audit rows on mock mount; re-run `scripts/run_solo_p6_callback_registration_controls.py` after any fix. |
 
+## 6. R4 / R5 — V1 return-value path (not implemented as production fix)
+
+See `docs/STREAMLIT_V1_CUSTOM_COMPONENT_API_1.59.1.md`.
+
+| Control | Behavior |
+|---------|----------|
+| **R4** | P6 dedicated route; production frontend + key + token; **`on_change=None`**; `raw = mount_solo_countdown_wake_with_token(...)`; ledger **`r4_component_return_value`** every script run; **redeclare on each rerun** (no post-first-run early stop); **no clear-after-first-mount**. |
+| **R5** | Only if R4 ≠ PASS; **`solo_p6_v1_template_component`** uses **`Streamlit.setComponentReady` / `RENDER_EVENT` / `Streamlit.setComponentValue`**; ledger **`r5_component_return_value`**. |
+
+Runner: `python scripts/run_solo_p6_v1_return_value_r4_r5_auth.py` → `data/solo_p6_v1_return_value_r4_r5.json`.
+
+**Grades:** `PASS_RETURN_VALUE_DELIVERY`, `VALID_FAIL_RETURN_VALUE_NOT_DELIVERED`, `INVALID` (per spec §3).
+
+**Countdown frontend note:** production iframe calls **`window.parent.postMessage({type:"streamlit:setComponentValue"})`** — not the component-library API. Parent capture alone ≠ Streamlit widget state.
+
+
 - `tests/test_live_draft_solo_p6_declaration_audit.py` — control resolution, diff storage, sentinel wrap.
 - Existing P6 dedicated entrypoint tests unchanged.
