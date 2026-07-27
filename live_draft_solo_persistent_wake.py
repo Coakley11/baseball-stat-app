@@ -1120,7 +1120,7 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         )
         return True
 
-    _ = _mount_persistent_wake_micro_controlled(
+    micro_result = _mount_persistent_wake_micro_controlled(
         st,
         session,
         location="ldr_page_entry_early_persistent",
@@ -1137,7 +1137,9 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         from live_draft_solo_transport_boundary_diag import PRODUCTION_CALLBACK_FLAG
 
         session[PRODUCTION_CALLBACK_FLAG] = True
-    comp_return = st.session_state.get(key) if key in st.session_state else None
+    comp_return = getattr(micro_result, "component_return", None)
+    if comp_return is None and key in st.session_state:
+        comp_return = st.session_state.get(key)
     record_production_component_declaration(
         st,
         session,
@@ -1181,7 +1183,7 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         production_key=key,
         expected_token=expire_token,
         phase="post_mount",
-        on_change_registered=True,
+        on_change_registered=not production_return_value_delivery_active(session),
         expected_minimal_token=minimal_token_expected,
     )
     render_transport_boundary_probe(st, session)

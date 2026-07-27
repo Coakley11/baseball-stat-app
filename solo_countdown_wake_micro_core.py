@@ -336,6 +336,29 @@ def render_micro_isolation_once(
         raw = raw_component_value
         if use_return_delivery and deliver_callback is not None:
             try:
+                from live_draft_solo_component_diagnostics import (
+                    record_solo_component_mount_attempt,
+                    solo_component_diag_enabled,
+                )
+
+                if solo_component_diag_enabled(st, session):
+                    from live_draft_solo_heartbeat import _coerce_wake_token
+
+                    record_solo_component_mount_attempt(
+                        session,
+                        production_room,
+                        key=key,
+                        mounted=True,
+                        reason="persistent_wake_return_value",
+                        expire_token=token,
+                        widget_return_type=type(raw_component_value).__name__
+                        if raw_component_value is not None
+                        else "NoneType",
+                        returned_token=_coerce_wake_token(raw_component_value),
+                    )
+            except ImportError:
+                pass
+            try:
                 from live_draft_solo_persistent_wake import process_production_expire_token
 
                 process_production_expire_token(
