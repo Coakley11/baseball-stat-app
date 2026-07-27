@@ -640,8 +640,12 @@ try:
         except Exception:
             pass
         try:
-            from live_draft_solo_parity_p6_persistent_diag import on_ultra_early_script_run
+            from live_draft_solo_parity_p6_persistent_diag import (
+                enable_p6_persistent_diag_from_query,
+                on_ultra_early_script_run,
+            )
 
+            enable_p6_persistent_diag_from_query(st, st.session_state)
             on_ultra_early_script_run(st, st.session_state, after_workspace=True)
         except ImportError:
             pass
