@@ -17,11 +17,19 @@ from live_draft_solo_persistent_wake import SOLO_PERSISTENT_WAKE_WIDGET_KEY
 P6_DEDICATED_ACTIVE_KEY = "_solo_p6_dedicated_entry_active"
 P6_DEDICATED_COMPLETED_RUN_KEY = "_solo_p6_dedicated_entry_completed_run"
 P6_DEDICATED_STOP_KEY = "_solo_p6_dedicated_entry_stop_remainder"
+P6_DEDICATED_ROUTE_REQUESTED_KEY = "_solo_p6_dedicated_route_requested"
 P6_RUN_SCOPED_ROOM_KEY = "_solo_p6_run_scoped_room"
 
 
+def mark_p6_dedicated_route_requested(st: Any, session: dict[str, Any]) -> None:
+    if p6_dedicated_entrypoint_requested(st, session):
+        session[P6_DEDICATED_ROUTE_REQUESTED_KEY] = True
+
+
 def p6_dedicated_blocks_deep_parity(session: dict[str, Any]) -> bool:
-    return bool(session.get(P6_DEDICATED_STOP_KEY))
+    if session.get(P6_DEDICATED_STOP_KEY):
+        return True
+    return bool(session.get(P6_DEDICATED_ROUTE_REQUESTED_KEY))
 
 
 def p6_dedicated_entrypoint_requested(st: Any, session: dict[str, Any]) -> bool:

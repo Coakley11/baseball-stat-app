@@ -620,11 +620,13 @@ except Exception:
 
 try:
     from live_draft_solo_p6_dedicated_entrypoint import (
+        mark_p6_dedicated_route_requested,
         p6_dedicated_entrypoint_requested,
         try_p6_dedicated_entrypoint,
     )
 
     if p6_dedicated_entrypoint_requested(st, st.session_state):
+        mark_p6_dedicated_route_requested(st, st.session_state)
         try:
             from live_draft_queue_survival import begin_queue_script_pass
 
@@ -637,7 +639,20 @@ try:
             prepare_baseball_workspace(st)
         except Exception:
             pass
+        try:
+            from live_draft_solo_parity_p6_persistent_diag import on_ultra_early_script_run
+
+            on_ultra_early_script_run(st, st.session_state, after_workspace=True)
+        except ImportError:
+            pass
         try_p6_dedicated_entrypoint(st, st.session_state)
+        try:
+            from live_draft_solo_parity_p6_persistent_diag import render_p6_writer_probe
+
+            render_p6_writer_probe(st, st.session_state)
+        except ImportError:
+            pass
+        st.stop()
 except ImportError:
     pass
 except Exception as _p6_early_dedicated_exc:

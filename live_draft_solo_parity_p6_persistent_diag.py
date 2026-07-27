@@ -146,6 +146,7 @@ def reset_p6_diagnostic_lifecycle_for_run_id(session: dict[str, Any], new_run_id
         session.pop(P6_DEDICATED_ACTIVE_KEY, None)
         session.pop(P6_DEDICATED_COMPLETED_RUN_KEY, None)
         session.pop(P6_DEDICATED_STOP_KEY, None)
+        session.pop(P6_DEDICATED_ROUTE_REQUESTED_KEY, None)
         session.pop(P6_RUN_SCOPED_ROOM_KEY, None)
     except ImportError:
         pass
@@ -213,6 +214,12 @@ def enable_p6_persistent_diag_from_query(st: Any, session: dict[str, Any]) -> No
         resolve_p6_run_id(st, session)
     if not p6_persistent_diag_active(st, session):
         return
+    try:
+        from live_draft_solo_p6_dedicated_entrypoint import mark_p6_dedicated_route_requested
+
+        mark_p6_dedicated_route_requested(st, session)
+    except ImportError:
+        pass
     if _qp_flag(st, "solo_transport_probe"):
         try:
             from live_draft_solo_transport_boundary_diag import bootstrap_transport_diagnostics
@@ -417,7 +424,14 @@ def record_p6_token_latched(session: dict[str, Any], *, token: str, st: Any | No
     )
 
 
-def on_ultra_early_script_run(st: Any, session: dict[str, Any]) -> None:
+def on_ultra_early_script_run(st: Any, session: dict[str, Any], *, after_workspace: bool = False) -> None:
+    try:
+        from live_draft_solo_p6_dedicated_entrypoint import p6_dedicated_entrypoint_requested
+
+        if not after_workspace and p6_dedicated_entrypoint_requested(st, session):
+            return
+    except ImportError:
+        pass
     if not p6_persistent_diag_active(st, session):
         return
     if not resolve_p6_run_id(st, session):
@@ -685,22 +699,6 @@ def render_p6_writer_probe(st: Any, session: dict[str, Any]) -> None:
         f'data-row-count="{len(payload.get("ledger_rows") or [])}" '
         f'data-b64="{b64}"></div>'
     )
-    try:
-        from live_draft_solo_p6_dedicated_entrypoint import P6_DEDICATED_ACTIVE_KEY
-
-        if session.get(P6_DEDICATED_ACTIVE_KEY):
-            st.sidebar.markdown(html, unsafe_allow_html=True)
-            return
-    except ImportError:
-        pass
-    try:
-        from live_draft_solo_p6_early_shell import P6_EARLY_SHELL_ACTIVE_KEY
-
-        if session.get(P6_EARLY_SHELL_ACTIVE_KEY):
-            st.sidebar.markdown(html, unsafe_allow_html=True)
-            return
-    except ImportError:
-        pass
     st.markdown(html, unsafe_allow_html=True)
 
 
