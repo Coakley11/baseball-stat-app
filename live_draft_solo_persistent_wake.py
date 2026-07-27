@@ -67,7 +67,16 @@ def _production_expire_token_matches_state(
         return False, "empty_raw"
     if tok == SOLO_INERT_EXPIRE_TOKEN:
         return False, "empty_raw"
-    expected = str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or "").strip()
+    expected = ""
+    if isinstance(live, dict):
+        try:
+            from solo_countdown_component import build_solo_expire_token
+
+            expected = build_solo_expire_token(live)
+        except ImportError:
+            pass
+    if not expected:
+        expected = str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or "").strip()
     if not expected or tok != expected:
         return False, "expected_token_mismatch"
     if not isinstance(live, dict):

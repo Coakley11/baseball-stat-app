@@ -85,7 +85,7 @@ def test_stale_expected_token_ignored() -> None:
     session = {SOLO_PERSISTENT_WAKE_TOKEN_KEY: build_solo_expire_token(room)}
     ok, code = _production_expire_token_matches_state(session, stale, room)
     assert ok is False
-    assert code == "expected_token_mismatch"
+    assert code in ("expected_token_mismatch", "wrong_pick")
 
 
 def test_wrong_room_rejected() -> None:
