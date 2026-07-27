@@ -1,4 +1,4 @@
-ea01d55  # P6 dedicated auth
+135a154  # P6 early dedicated hook
 
 branch: dev
 
