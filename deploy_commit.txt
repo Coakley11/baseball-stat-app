@@ -1,4 +1,4 @@
-3d4797d  # P6 run-id shell reset
+cb5752d  # P6 shell completed guard
 
 branch: dev
 
