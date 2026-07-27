@@ -309,6 +309,8 @@ def render_micro_isolation_once(
             on_change=mount_on_change,
             chain_persist_key=chain_persist_key,
         )
+        if use_return_delivery and raw_component_value is None and key in st.session_state:
+            raw_component_value = st.session_state.get(key)
         comp_return = raw_component_value
         session_state_after = repr(st.session_state.get(key))[:400] if key in st.session_state else "missing"
         try:

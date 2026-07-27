@@ -67,18 +67,6 @@ def _production_expire_token_matches_state(
         return False, "empty_raw"
     if tok == SOLO_INERT_EXPIRE_TOKEN:
         return False, "empty_raw"
-    expected = ""
-    if isinstance(live, dict):
-        try:
-            from solo_countdown_component import build_solo_expire_token
-
-            expected = build_solo_expire_token(live)
-        except ImportError:
-            pass
-    if not expected:
-        expected = str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or "").strip()
-    if not expected or tok != expected:
-        return False, "expected_token_mismatch"
     if not isinstance(live, dict):
         return False, "wrong_room"
     try:
@@ -95,12 +83,26 @@ def _production_expire_token_matches_state(
         from live_draft_timer_logic import live_draft_timer_deadline
 
         live_deadline = live_draft_timer_deadline(live)
+        if live_deadline is None and live.get("timer_deadline") is not None:
+            live_deadline = float(live.get("timer_deadline") or 0.0)
         tok_deadline = float(parsed.get("deadline") or 0.0)
         if live_deadline is not None and tok_deadline > 0:
             if abs(float(live_deadline) - tok_deadline) > 0.75:
                 return False, "stale_deadline"
+        armed = str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or "").strip()
+        if armed and tok != armed:
+            try:
+                from solo_countdown_component import build_solo_expire_token
+
+                canonical = build_solo_expire_token(live)
+            except ImportError:
+                canonical = ""
+            if canonical and tok != canonical:
+                return False, "expected_token_mismatch"
     except ImportError:
-        pass
+        armed = str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or "").strip()
+        if not armed or tok != armed:
+            return False, "expected_token_mismatch"
     return True, ""
 
 
@@ -121,6 +123,18 @@ def process_production_expire_token(
     live = _resolve_room(session, None)
     ok, reject_code = _production_expire_token_matches_state(session, token, live if isinstance(live, dict) else None)
     if not ok:
+        try:
+            from live_draft_solo_expire_chain import note_solo_expire_chain
+
+            note_solo_expire_chain(
+                session,
+                "return_value_rejected",
+                source="persistent_wake",
+                reason=reject_code,
+                token=str(token or "")[:400],
+            )
+        except ImportError:
+            pass
         if reject_code not in ("empty_raw", "expected_token_mismatch"):
             try:
                 from live_draft_stage1_expire_audit import (
