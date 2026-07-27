@@ -131,8 +131,26 @@ def assert_cloud_implementation_ready(page, required: str) -> tuple[bool, str, s
     return False, sha, build
 
 
-def poll_control_probe_best(page, best: dict[str, Any]) -> dict[str, Any]:
+def scrape_control_probe(page) -> dict[str, Any]:
     probe = scrape_b64_probe(page, "solo-rv-control-probe")
+    if probe.get("rows"):
+        return probe
+    try:
+        b64 = page.evaluate(
+            """() => {
+              try { return localStorage.getItem('__solo_rv_control_probe_v1') || ''; } catch (e) { return ''; }
+            }"""
+        )
+        if b64:
+            pad = b64 + "==="[: (4 - len(b64) % 4) % 4]
+            return json.loads(base64.b64decode(pad).decode("utf-8"))
+    except Exception:
+        pass
+    return probe
+
+
+def poll_control_probe_best(page, best: dict[str, Any]) -> dict[str, Any]:
+    probe = scrape_control_probe(page)
     if probe and len(probe.get("rows") or []) >= len(best.get("rows") or []):
         return probe
     return best

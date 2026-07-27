@@ -165,6 +165,9 @@ def flush_control_probe(st: Any, session: dict[str, Any], slot: Any | None = Non
     (root.body || root.documentElement).appendChild(el);
   }}
   el.setAttribute("data-b64", B64);
+  try {{
+    root.localStorage.setItem("__solo_rv_control_probe_v1", B64);
+  }} catch (e) {{}}
 }})();
 </script>
 """,
@@ -178,20 +181,25 @@ def rv_ultra_early_probe_hook(st: Any, session: dict[str, Any]) -> None:
     if not rv_control_probe_active(st, session):
         return
     try:
-        from live_draft_solo_rv_binding_ladder import RV_RUN_ID_QP, _qp_get, resolve_rv_ladder_step
+        from live_draft_solo_rv_binding_ladder import enable_rv_ladder_session
 
-        resolve_rv_ladder_step(st, session)
-        if not session.get("_solo_rv_run_id"):
-            rid = _qp_get(st, RV_RUN_ID_QP)
-            if rid:
-                session["_solo_rv_run_id"] = rid
-        if not session.get("_solo_rv_ladder_step"):
-            step = _qp_get(st, "solo_rv_ladder")
-            if step:
-                session["_solo_rv_ladder_step"] = step.strip().upper()
-        session["_solo_rv_ladder_active"] = True
+        enable_rv_ladder_session(st, session)
     except ImportError:
-        pass
+        try:
+            from live_draft_solo_rv_binding_ladder import RV_RUN_ID_QP, _qp_get, resolve_rv_ladder_step
+
+            resolve_rv_ladder_step(st, session)
+            if not session.get("_solo_rv_run_id"):
+                rid = _qp_get(st, RV_RUN_ID_QP)
+                if rid:
+                    session["_solo_rv_run_id"] = rid
+            if not session.get("_solo_rv_ladder_step"):
+                step = _qp_get(st, "solo_rv_ladder")
+                if step:
+                    session["_solo_rv_ladder_step"] = step.strip().upper()
+            session["_solo_rv_ladder_active"] = True
+        except ImportError:
+            pass
     _next_script_run_seq(session)
     append_control_event(st, session, "script_begin", control_name=str(session.get("_solo_rv_ladder_step") or ""))
     ph = ensure_probe_placeholder(st, session)
