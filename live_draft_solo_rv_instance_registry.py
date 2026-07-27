@@ -21,8 +21,11 @@ def render_rv_instance_registry_listener(st: Any, session: dict[str, Any]) -> No
 (function() {{
   const RUN_ID = {json.dumps(run_id)};
   const LS = "__solo_rv_instance_registry_v1";
-  if (!window[LS]) {{
-    window[LS] = {{
+  const root = window.parent && window.parent.document ? window.parent : window;
+  if (root.__solo_rv_parent_listener_installed) return;
+  root.__solo_rv_parent_listener_installed = true;
+  if (!root[LS]) {{
+    root[LS] = {{
       run_id: RUN_ID,
       current_production_instance_id: "",
       current_widget_key: "solo_countdown_wake_solo_persistent",
@@ -31,8 +34,8 @@ def render_rv_instance_registry_listener(st: Any, session: dict[str, Any]) -> No
       logical_sends: [],
       seq: 0,
     }};
-    window.addEventListener("message", function(ev) {{
-      const reg = window[LS];
+    root.addEventListener("message", function(ev) {{
+      const reg = root[LS];
       if (!reg) return;
       const d = ev.data;
       if (!d || typeof d !== "object") return;
@@ -41,7 +44,7 @@ def render_rv_instance_registry_listener(st: Any, session: dict[str, Any]) -> No
       let iframeIdx = -1;
       let instanceFromDom = "";
       let connected = false;
-      const iframes = document.querySelectorAll("iframe");
+      const iframes = root.document.querySelectorAll("iframe");
       for (let i = 0; i < iframes.length; i++) {{
         try {{
           if (iframes[i].contentWindow === ev.source) {{
@@ -93,7 +96,7 @@ def render_rv_instance_registry_listener(st: Any, session: dict[str, Any]) -> No
         reg.logical_sends.push(row);
       }}
       try {{
-        localStorage.setItem(LS, JSON.stringify({{
+        root.localStorage.setItem(LS, JSON.stringify({{
           run_id: reg.run_id,
           current: reg.current_production_instance_id,
           raw_count: reg.raw_events.length,

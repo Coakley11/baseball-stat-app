@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
 OUT = ROOT / "data" / "solo_rv_binding_ladder.json"
@@ -87,21 +89,42 @@ def scrape_registry_localstorage(page) -> dict[str, Any]:
               } catch (e) { return {}; }
             }"""
         )
+        if isinstance(raw, dict) and raw.get("last"):
+            return raw
+        probe = scrape_b64_probe(page, "solo-rv-instance-registry")
+        if probe:
+            return {"python_side_probe": probe, "last": [], "logical": []}
         return raw if isinstance(raw, dict) else {}
     except Exception:
         return {}
 
 
 def verify_cloud_sha(page) -> tuple[str, str]:
+    from cloud_streamlit_wake import scrape_deploy_sha_from_page
     from run_production_solo_soak import all_frames_text, scrape_deploy_build
     from run_solo_clean_verification import scrape_live_sha
+    from verify_cloud_deploy_playwright import scrape_deploy
 
-    sha = (scrape_live_sha(page) or scrape_deploy_build(page) or "").strip().lower()[:7]
-    build = ""
-    m = __import__("re").search(r"baseball-dev-([0-9a-f]{7})", all_frames_text(page), __import__("re").I)
-    if m:
-        build = f"baseball-dev-{m.group(1).lower()}"
+    probe = scrape_deploy(page) or {}
+    sha = (
+        scrape_live_sha(page)
+        or scrape_deploy_sha_from_page(page)
+        or scrape_deploy_build(page)
+        or str(probe.get("sha") or "")
+    ).strip().lower()[:7]
+    build = str(probe.get("build") or "").strip()
+    if not build:
+        m = __import__("re").search(r"baseball-dev-([0-9a-f]{7})", all_frames_text(page), __import__("re").I)
+        if m:
+            build = f"baseball-dev-{m.group(1).lower()}"
     return sha, build
+
+
+def assert_cloud_implementation_ready(page, required: str) -> tuple[bool, str, str]:
+    sha, build = verify_cloud_sha(page)
+    if sha == required[:7]:
+        return True, sha, build
+    return False, sha, build
 
 
 def _annotate_post_delivery_rows(rows: list[dict[str, Any]], expiration: dict[str, Any]) -> None:
@@ -165,27 +188,28 @@ def evaluate_step(step: str, *, run_id: str, expiration: dict[str, Any], decl: d
     }
 
 
-def run_rv0(context, run_id: str, cloud_sha: str) -> dict[str, Any]:
+def run_rv0(context, run_id: str, *, cloud_sha: str, cloud_build: str) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
 
     page = context.new_page()
     goto_and_wake(page, rv_url("RV0", run_id), timeout_s=240)
     page.wait_for_timeout(12000)
-    sha, build = verify_cloud_sha(page)
-    if sha != REQUIRED_SHA[:7]:
-        page.close()
-        return {"step": "RV0", "verdict": "INVALID", "reason": f"cloud_sha_mismatch_{sha}", "run_id": run_id}
     exp = wait_one_expiration(page, timeout_s=95.0)
+    page.wait_for_timeout(8000)
+    try:
+        page.wait_for_selector("#solo-rv-declaration-audit", timeout=15000)
+    except Exception:
+        pass
     decl = scrape_b64_probe(page, "solo-rv-declaration-audit")
     reg = scrape_registry_localstorage(page)
     result = evaluate_step("RV0", run_id=run_id, expiration=exp, decl=decl, reg=reg)
-    result["cloud_sha"] = sha
-    result["cloud_build"] = build
+    result["cloud_sha"] = cloud_sha
+    result["cloud_build"] = cloud_build
     page.close()
     return result
 
 
-def run_rv_real_step(context, step: str, run_id: str) -> dict[str, Any]:
+def run_rv_real_step(context, step: str, run_id: str, *, cloud_sha: str, cloud_build: str) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
 
     page = context.new_page()
@@ -201,17 +225,12 @@ def run_rv_real_step(context, step: str, run_id: str) -> dict[str, Any]:
         return {"step": step, "verdict": "INVALID", "reason": "draft_start_invalid", "run_id": run_id, "start": start_val}
     goto_and_wake(page, rv_url(step, run_id, ldr=(step in ("RV2", "RV3"))), timeout_s=240)
     page.wait_for_timeout(12000)
-    sha, build = verify_cloud_sha(page)
-    if sha != REQUIRED_SHA[:7]:
-        page.close()
-        return {
-            "step": step,
-            "verdict": "INVALID",
-            "reason": f"cloud_sha_mismatch_{sha}",
-            "run_id": run_id,
-            "room_id": start_val.get("latched_room_id"),
-        }
     exp = wait_one_expiration(page, timeout_s=95.0)
+    page.wait_for_timeout(8000)
+    try:
+        page.wait_for_selector("#solo-rv-declaration-audit", timeout=15000)
+    except Exception:
+        pass
     decl = scrape_b64_probe(page, "solo-rv-declaration-audit")
     reg = scrape_registry_localstorage(page)
     result = evaluate_step(
@@ -222,8 +241,8 @@ def run_rv_real_step(context, step: str, run_id: str) -> dict[str, Any]:
         reg=reg,
         room_id=str(start_val.get("latched_room_id") or ""),
     )
-    result["cloud_sha"] = sha
-    result["cloud_build"] = build
+    result["cloud_sha"] = cloud_sha
+    result["cloud_build"] = cloud_build
     page.close()
     return result
 
@@ -244,10 +263,35 @@ def main() -> int:
         "stopped_at": None,
         "first_valid_failure": None,
     }
+    from cloud_streamlit_wake import goto_and_wake
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+        pre_ctx = browser.new_context(
+            storage_state=str(STORAGE_PATH),
+            viewport={"width": 1440, "height": 1400},
+        )
+        pre_page = pre_ctx.new_page()
+        goto_and_wake(
+            pre_page,
+            append_suite_sid_to_url(f"{BASE}/?solo_delivery_diag=1"),
+            timeout_s=240,
+        )
+        pre_page.wait_for_timeout(10000)
+        ok, verified_sha, verified_build = assert_cloud_implementation_ready(pre_page, REQUIRED_SHA)
+        pre_page.close()
+        pre_ctx.close()
+        summary["cloud_sha_verified_at_start"] = verified_sha
+        summary["cloud_build_verified_at_start"] = verified_build
+        if not ok:
+            summary["aborted"] = True
+            summary["abort_reason"] = f"cloud_sha_mismatch_{verified_sha}_need_{REQUIRED_SHA[:7]}"
+            browser.close()
+            OUT.parent.mkdir(parents=True, exist_ok=True)
+            OUT.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+            print(json.dumps(summary, indent=2, default=str))
+            return 1
         for step in ("RV0", "RV1", "RV2", "RV3"):
             run_id = str(uuid.uuid4())
             context = browser.new_context(
@@ -255,9 +299,11 @@ def main() -> int:
                 viewport={"width": 1440, "height": 1400},
             )
             if step == "RV0":
-                result = run_rv0(context, run_id, REQUIRED_SHA)
+                result = run_rv0(context, run_id, cloud_sha=verified_sha, cloud_build=verified_build)
             else:
-                result = run_rv_real_step(context, step, run_id)
+                result = run_rv_real_step(
+                    context, step, run_id, cloud_sha=verified_sha, cloud_build=verified_build
+                )
             context.close()
             summary["steps"].append(result)
             v = str(result.get("verdict") or "")
@@ -273,7 +319,9 @@ def main() -> int:
                 break
         browser.close()
     summary["finished_at"] = time.time()
-    if summary["steps"]:
+    summary["implementation_sha_observed"] = summary.get("cloud_sha_verified_at_start")
+    summary["cloud_build_observed"] = summary.get("cloud_build_verified_at_start")
+    if summary["steps"] and summary["steps"][-1].get("cloud_sha"):
         summary["implementation_sha_observed"] = summary["steps"][-1].get("cloud_sha")
         summary["cloud_build_observed"] = summary["steps"][-1].get("cloud_build")
     OUT.parent.mkdir(parents=True, exist_ok=True)
