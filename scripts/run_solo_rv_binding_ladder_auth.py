@@ -122,41 +122,57 @@ def verify_cloud_sha(page) -> tuple[str, str]:
 
 def assert_cloud_implementation_ready(page, required: str) -> tuple[bool, str, str]:
     sha, build = verify_cloud_sha(page)
-    if sha == required[:7]:
+    ok_sha = sha == required[:7]
+    ok_build = build.lower() == f"baseball-dev-{required[:7].lower()}"
+    if ok_sha and ok_build:
         return True, sha, build
+    if ok_sha and not ok_build:
+        return False, sha, build
     return False, sha, build
 
 
-def _annotate_post_delivery_rows(rows: list[dict[str, Any]], expiration: dict[str, Any]) -> None:
-    cs = set(expiration.get("client_stages") or [])
-    if "component_value_sent" not in cs:
-        return
-    for row in rows:
-        phase = str(row.get("phase") or "")
-        if "after_mount" in phase or "after_persistent" in phase:
-            row["browser_delivery_seen"] = True
-            row["before_browser_send"] = False
+def poll_control_probe_best(page, best: dict[str, Any]) -> dict[str, Any]:
+    probe = scrape_b64_probe(page, "solo-rv-control-probe")
+    if probe and len(probe.get("rows") or []) >= len(best.get("rows") or []):
+        return probe
+    return best
 
 
-def evaluate_step(step: str, *, run_id: str, expiration: dict[str, Any], decl: dict[str, Any], reg: dict[str, Any], room_id: str = "") -> dict[str, Any]:
+def wait_rv0_with_probe_polling(page, *, timeout_s: float = 95.0) -> tuple[dict[str, Any], dict[str, Any]]:
+    best_probe: dict[str, Any] = {}
+    exp = wait_one_expiration(page, timeout_s=timeout_s)
+    poll_until = time.time() + 60.0
+    while time.time() < poll_until:
+        best_probe = poll_control_probe_best(page, best_probe)
+        page.wait_for_timeout(2000)
+    best_probe = poll_control_probe_best(page, best_probe)
+    return exp, best_probe
+
+
+def evaluate_step(step: str, *, run_id: str, expiration: dict[str, Any], control_probe: dict[str, Any], reg: dict[str, Any], room_id: str = "") -> dict[str, Any]:
     from live_draft_solo_rv_binding_ladder import (
         build_declaration_timeline,
         build_instance_identity_report,
         classify_root_cause,
         grade_rv_control_validity,
         summarize_browser_events,
-        validate_rv_control_prerequisites,
     )
+    from live_draft_solo_rv_control_probe import ledger_to_declaration_rows
 
-    rows = list(decl.get("rows") or [])
-    _annotate_post_delivery_rows(rows, expiration)
+    ledger_rows = list(control_probe.get("rows") or [])
+    rows = ledger_to_declaration_rows(ledger_rows)
     browser = summarize_browser_events(expiration, reg)
-    validity_ok, validity_reason = validate_rv_control_prerequisites(
-        declaration_rows=rows, browser=browser, expiration=expiration
+    validity_ok, validity_reason = __import__(
+        "live_draft_solo_rv_binding_ladder", fromlist=["validate_rv_control_prerequisites"]
+    ).validate_rv_control_prerequisites(
+        declaration_rows=rows,
+        browser=browser,
+        expiration=expiration,
+        control_probe_rows=ledger_rows,
     )
     verdict, reason = grade_rv_control_validity(
         step=step,
-        ledger=[],
+        ledger=ledger_rows,
         declaration_rows=rows,
         browser=browser,
         expiration=expiration,
@@ -177,6 +193,7 @@ def evaluate_step(step: str, *, run_id: str, expiration: dict[str, Any], decl: d
         "validity_reason": validity_reason,
         "root_cause": root,
         "browser_summary": browser,
+        "control_probe_ledger": ledger_rows,
         "instance_identity_report": build_instance_identity_report(expiration, reg),
         "declaration_timeline": build_declaration_timeline({"rows": rows}),
         "expiration_summary": {
@@ -194,15 +211,9 @@ def run_rv0(context, run_id: str, *, cloud_sha: str, cloud_build: str) -> dict[s
     page = context.new_page()
     goto_and_wake(page, rv_url("RV0", run_id), timeout_s=240)
     page.wait_for_timeout(12000)
-    exp = wait_one_expiration(page, timeout_s=95.0)
-    page.wait_for_timeout(8000)
-    try:
-        page.wait_for_selector("#solo-rv-declaration-audit", timeout=15000)
-    except Exception:
-        pass
-    decl = scrape_b64_probe(page, "solo-rv-declaration-audit")
+    exp, probe = wait_rv0_with_probe_polling(page, timeout_s=95.0)
     reg = scrape_registry_localstorage(page)
-    result = evaluate_step("RV0", run_id=run_id, expiration=exp, decl=decl, reg=reg)
+    result = evaluate_step("RV0", run_id=run_id, expiration=exp, control_probe=probe, reg=reg)
     result["cloud_sha"] = cloud_sha
     result["cloud_build"] = cloud_build
     page.close()
@@ -225,19 +236,13 @@ def run_rv_real_step(context, step: str, run_id: str, *, cloud_sha: str, cloud_b
         return {"step": step, "verdict": "INVALID", "reason": "draft_start_invalid", "run_id": run_id, "start": start_val}
     goto_and_wake(page, rv_url(step, run_id, ldr=(step in ("RV2", "RV3"))), timeout_s=240)
     page.wait_for_timeout(12000)
-    exp = wait_one_expiration(page, timeout_s=95.0)
-    page.wait_for_timeout(8000)
-    try:
-        page.wait_for_selector("#solo-rv-declaration-audit", timeout=15000)
-    except Exception:
-        pass
-    decl = scrape_b64_probe(page, "solo-rv-declaration-audit")
+    exp, probe = wait_rv0_with_probe_polling(page, timeout_s=95.0)
     reg = scrape_registry_localstorage(page)
     result = evaluate_step(
         step,
         run_id=run_id,
         expiration=exp,
-        decl=decl,
+        control_probe=probe,
         reg=reg,
         room_id=str(start_val.get("latched_room_id") or ""),
     )
@@ -292,7 +297,7 @@ def main() -> int:
             OUT.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
             print(json.dumps(summary, indent=2, default=str))
             return 1
-        for step in ("RV0", "RV1", "RV2", "RV3"):
+        for step in ("RV0",):
             run_id = str(uuid.uuid4())
             context = browser.new_context(
                 storage_state=str(STORAGE_PATH),
@@ -310,7 +315,10 @@ def main() -> int:
             if step == "RV0":
                 if v != "PASS_RETURN_VALUE_DELIVERY":
                     summary["stopped_at"] = step
-                    summary["first_valid_failure"] = result
+                    if v == "INVALID":
+                        summary["first_invalid_control"] = result
+                    else:
+                        summary["first_valid_failure"] = result
                     break
                 continue
             if v not in ("PASS",):

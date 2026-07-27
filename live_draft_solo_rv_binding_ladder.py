@@ -104,7 +104,7 @@ def mount_rv_r4_style(
     expire_token: str,
     location: str,
 ) -> Any:
-    from live_draft_solo_rv_declaration_audit import mount_with_rv_declaration_audit
+    from live_draft_solo_rv_control_probe import mount_with_rv_control_declaration
     from solo_countdown_component import mount_solo_countdown_wake_with_token
 
     widget_key = SOLO_PERSISTENT_WAKE_WIDGET_KEY
@@ -121,13 +121,14 @@ def mount_rv_r4_style(
             rv_diag_run_id=str(session.get("_solo_rv_run_id") or ""),
         )
 
-    raw = mount_with_rv_declaration_audit(
+    raw = mount_with_rv_control_declaration(
         st,
         session,
         room,
         widget_key=widget_key,
         mount_fn=_mount,
-        phase_prefix=location,
+        control_name=str(session.get("_solo_rv_ladder_step") or location),
+        location=location,
     )
     _append_ledger(
         session,
@@ -150,15 +151,16 @@ def execute_rv_step_mount(st: Any, session: dict[str, Any], step: str) -> dict[s
             _append_ledger(session, "rv_real_room_missing", step=step)
             return {"ok": False, "reason": "real_room_missing"}
     session["live_draft_room"] = room
+    from live_draft_solo_rv_control_probe import ensure_probe_placeholder, flush_control_probe
     from live_draft_solo_rv_instance_registry import render_rv_instance_registry_listener
 
+    ph = ensure_probe_placeholder(st, session)
     render_rv_instance_registry_listener(st, session)
     raw = mount_rv_r4_style(st, session, room, expire_token=token, location=f"rv_{step.lower()}_shell")
-    from live_draft_solo_rv_declaration_audit import render_rv_declaration_audit_probe
     from live_draft_solo_rv_instance_registry import render_rv_instance_registry_probe
 
-    render_rv_declaration_audit_probe(st, session)
     render_rv_instance_registry_probe(st, session)
+    flush_control_probe(st, session, ph)
     return {"ok": True, "token": token, "room_id": str(room.get("draft_room_id") or ""), "raw": raw}
 
 
@@ -224,18 +226,31 @@ def grade_rv_control_validity(
         declaration_rows=declaration_rows,
         browser=browser,
         expiration=expiration or {},
+        control_probe_rows=declaration_rows,
     )
     if not inv:
+        if inv_reason in (
+            "INVALID_PYTHON_DECLARATION_PROBE_MISSING",
+            "INVALID_POST_DELIVERY_REDECLARATION_MISSING",
+        ):
+            return "INVALID", inv_reason
         return "INVALID", inv_reason
     post_decl = [
         r
         for r in declaration_rows
         if str(r.get("phase") or "").endswith("after_mount")
         or "after_persistent" in str(r.get("phase") or "")
+        or r.get("event") == "post_delivery_redeclaration"
+        or r.get("event") == "declaration_returned"
     ]
     post_after_send = [r for r in post_decl if r.get("browser_delivery_seen") or not r.get("before_browser_send", True)]
     if not post_after_send:
         return "INVALID", "INVALID_POST_DELIVERY_REDECLARATION_MISSING"
+    pre_mount = [r for r in declaration_rows if "before_mount" in str(r.get("phase") or "") or "before_persistent" in str(r.get("phase") or "")]
+    post_keys = {str(r.get("widget_key") or "") for r in post_after_send if r.get("widget_key")}
+    pre_keys = {str(r.get("widget_key") or "") for r in pre_mount if r.get("widget_key")}
+    if post_keys and pre_keys and not post_keys.intersection(pre_keys):
+        return "INVALID", "post_delivery_component_key_mismatch"
     last = post_after_send[-1]
     expected = str(last.get("expected_token") or "")
     coalesced = _coalesce_from_row(last)
@@ -260,40 +275,137 @@ def _coalesce_from_row(row: dict[str, Any]) -> str:
     return ""
 
 
+def extract_transport_send_evidence(expiration: dict[str, Any]) -> dict[str, Any]:
+    double = dict(expiration.get("double_production_send_analysis") or {})
+    timeline = list(double.get("timeline") or [])
+    token_sent = str(expiration.get("token_sent") or "").strip()
+    transports = [t for t in timeline if str(t.get("stage") or "") == "transport_before_postMessage"]
+    import re
+
+    matched: list[dict[str, Any]] = []
+    bse_ids: set[str] = set()
+    for row in transports:
+        preview = str(row.get("token_preview") or "").strip()
+        extra = str(row.get("extra_preview") or "")
+        bse_m = re.search(r'"browser_send_event_id"\s*:\s*"([^"]+)"', extra)
+        bse = bse_m.group(1) if bse_m else ""
+        tok_ok = bool(token_sent) and (preview == token_sent or token_sent.startswith(preview) or preview in token_sent)
+        if bse and tok_ok:
+            bse_ids.add(bse)
+            matched.append({"ts": row.get("ts"), "browser_send_event_id": bse, "token_preview": preview})
+    return {
+        "transport_postmessage_count": len(transports),
+        "matched_transport_send_count": len(matched),
+        "unique_browser_send_event_ids": sorted(bse_ids),
+        "unique_browser_send_event_count": len(bse_ids),
+        "token_match": len(matched) >= 1 and len(bse_ids) == 1,
+        "matched": matched,
+    }
+
+
+def browser_send_proven(expiration: dict[str, Any]) -> bool:
+    cs = set(expiration.get("client_stages") or [])
+    if "component_value_sent" in cs:
+        return True
+    ev = extract_transport_send_evidence(expiration)
+    return bool(ev.get("token_match") and int(ev.get("unique_browser_send_event_count") or 0) == 1)
+
+
+def analyze_timer_arms(expiration: dict[str, Any], registry: dict[str, Any]) -> dict[str, Any]:
+    double = dict(expiration.get("double_production_send_analysis") or {})
+    raw_ts = list(double.get("timer_armed_timestamps") or [])
+    raw_count = len(raw_ts)
+    timeline = list(double.get("timeline") or [])
+    instance_id = str(registry.get("current") or "")
+    if not instance_id:
+        inst = registry.get("instances") or {}
+        if isinstance(inst, dict) and inst:
+            instance_id = str(next(iter(inst.values()), {}).get("instance_id") or "")
+    token = str(expiration.get("token_sent") or "").strip()
+    fingerprints: set[tuple[str, str, str]] = set()
+    for row in timeline:
+        if str(row.get("stage") or "") != "timer_armed":
+            continue
+        extra = str(row.get("extra_preview") or "")
+        iid = instance_id
+        if "solo_" in extra:
+            import re
+
+            m = re.search(r"(solo_[0-9]+_[a-z0-9]+)", extra)
+            if m:
+                iid = m.group(1)
+        fingerprints.add((iid, token, str(row.get("widget_key") or "")))
+    logical_count = len(fingerprints) if fingerprints else (1 if raw_count else 0)
+    if raw_count >= 2 and logical_count == 1:
+        dup = True
+    else:
+        dup = raw_count > logical_count
+    return {
+        "raw_timer_arms": raw_count,
+        "logical_timer_arms": logical_count,
+        "instrumentation_duplicate": dup,
+        "fingerprints": [list(f) for f in fingerprints],
+    }
+
+
 def validate_rv_control_prerequisites(
     *,
     declaration_rows: list[dict[str, Any]],
     browser: dict[str, Any],
     expiration: dict[str, Any],
+    control_probe_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[bool, str]:
-    pre_mount = [r for r in declaration_rows if "before_mount" in str(r.get("phase") or "") or "before_persistent" in str(r.get("phase") or "")]
-    if not pre_mount and not declaration_rows:
-        return False, "component_declared_before_expiration_not_proven"
+    rows = control_probe_rows if control_probe_rows is not None else declaration_rows
+    if not rows:
+        return False, "INVALID_PYTHON_DECLARATION_PROBE_MISSING"
+    events = {str(r.get("event") or r.get("phase") or "") for r in rows}
+    if "declaration_attempt" not in events and "before_mount" not in events:
+        return False, "INVALID_PYTHON_DECLARATION_PROBE_MISSING"
+    if "declaration_returned" not in events and "after_mount" not in events:
+        return False, "INVALID_PYTHON_DECLARATION_PROBE_MISSING"
+    pre_mount = [
+        r
+        for r in declaration_rows
+        if r.get("event") == "declaration_attempt"
+        or "before_mount" in str(r.get("phase") or "")
+    ]
+    if not pre_mount:
+        return False, "INVALID_PYTHON_DECLARATION_PROBE_MISSING"
+    session_ids = {str(r.get("streamlit_session_id") or r.get("script_run_id") or "") for r in rows}
+    session_ids.discard("")
+    if len(session_ids) > 1:
+        return False, "stable_streamlit_session_not_proven"
+    timer = dict(browser.get("timer_arm_accounting") or {})
+    if int(timer.get("logical_timer_arms") or 0) != 1:
+        return False, f"logical_timer_arm_count={timer.get('logical_timer_arms')}_need_1"
     logical = int(browser.get("logical_send_count") or 0)
     raw = int(browser.get("raw_listener_count") or 0)
     if logical != 1:
         return False, f"logical_send_count={logical}_need_1"
     if raw < 1:
-        return False, "no_raw_parent_events"
+        return False, "no_raw_parent_observations"
     sends = int(browser.get("unique_send_events") or 0)
     if sends != 1:
-        return False, f"unique_send_events={sends}_need_1"
+        return False, f"unique_browser_send_events={sends}_need_1"
     cs = set(expiration.get("client_stages") or [])
-    if "timer_armed" not in cs:
-        return False, "timer_armed_missing"
     if "browser_deadline_crossed" not in cs:
         return False, "deadline_cross_missing"
-    if "component_value_sent" not in cs:
-        return False, "component_value_sent_missing"
+    if not browser_send_proven(expiration):
+        return False, "browser_send_not_proven"
+    if not browser.get("parent_listener_on_app_window"):
+        return False, "parent_listener_not_on_app_window"
     if not browser.get("sending_iframe_identified"):
         return False, "sending_iframe_not_identified"
-    if browser.get("sender_current_status") not in ("current", "stale", "unknown"):
-        return False, "sender_current_status_unknown"
+    if browser.get("sender_current_status") not in ("current", "stale"):
+        return False, f"iframe_current_or_stale_unknown_{browser.get('sender_current_status')}"
+    if browser_send_proven(expiration):
+        if "post_delivery_redeclaration" not in events:
+            return False, "INVALID_POST_DELIVERY_REDECLARATION_MISSING"
     return True, ""
 
 
 def summarize_browser_events(expiration: dict[str, Any], registry: dict[str, Any]) -> dict[str, Any]:
-    cs = set(expiration.get("client_stages") or [])
+    transport = extract_transport_send_evidence(expiration)
     logical_list = list(registry.get("logical") or [])
     raw_list = list(registry.get("last") or [])
     logical_sends = [e for e in raw_list if isinstance(e, dict) and e.get("counts_as_logical_delivery")]
@@ -303,6 +415,8 @@ def summarize_browser_events(expiration: dict[str, Any], registry: dict[str, Any
         if isinstance(e, dict) and (e.get("browser_send_event_id") or e.get("token"))
     }
     send_ids.discard("")
+    if not send_ids and transport.get("unique_browser_send_event_ids"):
+        send_ids = set(transport["unique_browser_send_event_ids"])
     token_sent = str(expiration.get("token_sent") or "")
     sender = logical_sends[-1] if logical_sends else (raw_list[-1] if raw_list else {})
     sender_status = "unknown"
@@ -313,13 +427,19 @@ def summarize_browser_events(expiration: dict[str, Any], registry: dict[str, Any
             sender_status = "stale"
         elif sender.get("source_connected") is False:
             sender_status = "disconnected"
+    unique_sends = len(send_ids) if send_ids else (1 if browser_send_proven(expiration) else 0)
+    timer_arm_accounting = analyze_timer_arms(expiration, registry)
     return {
         "logical_send_count": len(logical_list) or len(logical_sends),
         "raw_listener_count": len(raw_list),
-        "unique_send_events": len(send_ids) if send_ids else (1 if "component_value_sent" in cs else 0),
+        "unique_send_events": unique_sends,
+        "unique_transport_postmessage_count": int(transport.get("transport_postmessage_count") or 0),
+        "transport_send_evidence": transport,
         "deduped_logical_sends": logical_list,
         "raw_listener_observations": raw_list,
         "token_sent": token_sent,
+        "timer_arm_accounting": timer_arm_accounting,
+        "parent_listener_on_app_window": bool(raw_list or logical_list or registry.get("instances")),
         "sending_iframe_identified": bool(isinstance(sender, dict) and sender.get("instance_id")),
         "sender_current_status": sender_status,
         "sender_row": sender if isinstance(sender, dict) else {},

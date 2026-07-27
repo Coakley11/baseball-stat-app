@@ -568,6 +568,13 @@ except ImportError:
     pass
 
 try:
+    from live_draft_solo_rv_control_probe import rv_ultra_early_probe_hook
+
+    rv_ultra_early_probe_hook(st, st.session_state)
+except ImportError:
+    pass
+
+try:
     from live_draft_solo_rv_dedicated_entrypoint import run_rv_pre_app_shell
 
     if run_rv_pre_app_shell(st, st.session_state):
