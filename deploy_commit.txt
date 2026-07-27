@@ -1,3 +1,3 @@
-8a7201a  # return-value validation + session coalesce
+a2aaa8e  # return-value delivery + diag propagation
 
 branch: dev
