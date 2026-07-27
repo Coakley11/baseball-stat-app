@@ -1,4 +1,4 @@
-a318b9d  # P6 pre-shell wake
+781ca4b  # P6 reset NameError fix
 
 branch: dev
 
