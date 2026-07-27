@@ -1,4 +1,4 @@
-608e421  # P6 shell trace
+a11db36  # P6 hook
 
 branch: dev
 
