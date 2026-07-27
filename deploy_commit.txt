@@ -1,4 +1,4 @@
-c198e2b  # P6 relatch after workspace
+a318b9d  # P6 pre-shell wake
 
 branch: dev
 
