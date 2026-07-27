@@ -1,4 +1,4 @@
-bf7cbef  # P6 callback registration audit
+c78b422  # P6 R4 R5 V1 return
 
 branch: dev
 
