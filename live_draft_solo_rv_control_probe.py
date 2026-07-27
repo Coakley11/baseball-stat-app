@@ -8,7 +8,7 @@ import time
 from typing import Any, Callable
 
 RV_CONTROL_PROBE_ID = "solo-rv-control-probe"
-RV_LEDGERS_BY_RUN_KEY = "_solo_rv_control_ledgers_by_run_id"
+RV_LEDGERS_BY_RUN_KEY = "solo_rv_control_ledgers_v1"
 RV_SCRIPT_RUN_SEQ_KEY = "_solo_rv_control_script_run_seq"
 RV_PROBE_PH_KEY = "_solo_rv_control_probe_placeholder"
 MAX_LEDGER_ROWS = 200
@@ -126,33 +126,22 @@ def append_control_event(
     return row
 
 
-def ensure_probe_placeholder(st: Any, session: dict[str, Any]) -> Any:
-    if RV_PROBE_PH_KEY not in session:
-        session[RV_PROBE_PH_KEY] = st.empty()
-    return session[RV_PROBE_PH_KEY]
-
-
-def flush_control_probe(st: Any, session: dict[str, Any], slot: Any | None = None) -> None:
+def publish_rv_control_ledger_to_parent(st: Any, session: dict[str, Any]) -> None:
+    """Always push current Python ledger to parent DOM/localStorage (runs every script pass)."""
     if not rv_control_probe_active(st, session):
         return
     run_id = _qp_run_id(st, session)
-    ph = slot or ensure_probe_placeholder(st, session)
     rows = _ledger_for_run(session, run_id)
     payload = json.dumps(
         {
             "probe_id": RV_CONTROL_PROBE_ID,
             "run_id": run_id,
             "step": str(session.get("_solo_rv_ladder_step") or ""),
-            "script_run_seq": int(session.get(RV_SCRIPT_RUN_SEQ_KEY) or 0),
             "rows": rows,
         },
         default=str,
     )[:48000]
     b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-    ph.markdown(
-        f'<div id="{RV_CONTROL_PROBE_ID}" data-b64="{b64}"></div>',
-        unsafe_allow_html=True,
-    )
     st.components.v1.html(
         f"""
 <script>
@@ -168,15 +157,50 @@ def flush_control_probe(st: Any, session: dict[str, Any], slot: Any | None = Non
     (root.body || root.documentElement).appendChild(el);
   }}
   el.setAttribute("data-b64", B64);
-  try {{
-    root.localStorage.setItem("__solo_rv_control_probe_v1", B64);
-  }} catch (e) {{}}
+  try {{ root.localStorage.setItem("__solo_rv_control_probe_v1", B64); }} catch (e) {{}}
 }})();
 </script>
 """,
         height=0,
         width=0,
     )
+
+
+def ensure_probe_placeholder(st: Any, session: dict[str, Any]) -> Any:
+    try:
+        if RV_PROBE_PH_KEY not in session:
+            session[RV_PROBE_PH_KEY] = st.empty()
+        return session[RV_PROBE_PH_KEY]
+    except Exception:
+        return None
+
+
+def flush_control_probe(st: Any, session: dict[str, Any], slot: Any | None = None) -> None:
+    if not rv_control_probe_active(st, session):
+        return
+    run_id = _qp_run_id(st, session)
+    ph = slot if slot is not None else ensure_probe_placeholder(st, session)
+    rows = _ledger_for_run(session, run_id)
+    payload = json.dumps(
+        {
+            "probe_id": RV_CONTROL_PROBE_ID,
+            "run_id": run_id,
+            "step": str(session.get("_solo_rv_ladder_step") or ""),
+            "script_run_seq": int(session.get(RV_SCRIPT_RUN_SEQ_KEY) or 0),
+            "rows": rows,
+        },
+        default=str,
+    )[:48000]
+    b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    if ph is not None:
+        try:
+            ph.markdown(
+                f'<div id="{RV_CONTROL_PROBE_ID}" data-b64="{b64}"></div>',
+                unsafe_allow_html=True,
+            )
+        except Exception:
+            pass
+    publish_rv_control_ledger_to_parent(st, session)
 
 
 def rv_ultra_early_probe_hook(st: Any, session: dict[str, Any]) -> None:
@@ -219,7 +243,6 @@ def mount_with_rv_control_declaration(
     control_name: str,
     location: str,
 ) -> Any:
-    ph = ensure_probe_placeholder(st, session)
     expected = str(session.get("_solo_persistent_wake_last_token") or session.get("_solo_parity_expected_token") or "")
     post_delivery = bool(session.get("_solo_rv_prior_declaration_returned"))
     append_control_event(
@@ -232,7 +255,7 @@ def mount_with_rv_control_declaration(
         expected_token=expected,
         extra={"location": location, "post_delivery_candidate": post_delivery},
     )
-    flush_control_probe(st, session, ph)
+    flush_control_probe(st, session, None)
     raw = mount_fn()
     coerced = ""
     if raw is not None:
@@ -270,48 +293,8 @@ def mount_with_rv_control_declaration(
         )
     if coerced:
         session["_solo_rv_browser_delivery_recorded"] = True
-    flush_control_probe(st, session, ph)
+    flush_control_probe(st, session, None)
     return raw
-
-
-def publish_rv_control_ledger_to_parent(st: Any, session: dict[str, Any]) -> None:
-    """Always push current Python ledger to parent DOM/localStorage (runs every script pass)."""
-    if not rv_control_probe_active(st, session):
-        return
-    run_id = _qp_run_id(st, session)
-    rows = _ledger_for_run(session, run_id)
-    payload = json.dumps(
-        {
-            "probe_id": RV_CONTROL_PROBE_ID,
-            "run_id": run_id,
-            "step": str(session.get("_solo_rv_ladder_step") or ""),
-            "rows": rows,
-        },
-        default=str,
-    )[:48000]
-    b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-    st.components.v1.html(
-        f"""
-<script>
-(function() {{
-  const B64 = {json.dumps(b64)};
-  const ID = {json.dumps(RV_CONTROL_PROBE_ID)};
-  const root = window.parent && window.parent.document ? window.parent : document;
-  let el = root.getElementById(ID);
-  if (!el) {{
-    el = root.createElement("div");
-    el.id = ID;
-    el.style.display = "none";
-    (root.body || root.documentElement).appendChild(el);
-  }}
-  el.setAttribute("data-b64", B64);
-  try {{ root.localStorage.setItem("__solo_rv_control_probe_v1", B64); }} catch (e) {{}}
-}})();
-</script>
-""",
-        height=0,
-        width=0,
-    )
 
 
 def ledger_rows_for_probe_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
