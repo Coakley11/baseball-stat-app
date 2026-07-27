@@ -43,7 +43,7 @@ from solo_wiring_matrix_harness_core import (  # noqa: E402
 )
 
 
-def p6_writer_url(*, run_id: str, ls_key: str) -> str:
+def p6_writer_url(*, run_id: str, ls_key: str, callback_control: str | None = None) -> str:
     q = {
         "active_page": "Live Draft Room",
         "solo_delivery_diag": "1",
@@ -52,6 +52,8 @@ def p6_writer_url(*, run_id: str, ls_key: str) -> str:
         "solo_p6_run_id": run_id,
         "solo_parity_ls_key": ls_key,
     }
+    if callback_control:
+        q["solo_p6_callback_control"] = callback_control
     return append_suite_sid_to_url(f"{BASE}/?{urlencode(q)}")
 
 
@@ -103,6 +105,10 @@ def _ordered_ledger(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "production_token_latched",
         "component_declaration_attempted",
         "component_declared",
+        "declaration_diff_recorded",
+        "declaration_attempt",
+        "declaration_returned",
+        "sentinel_callback_entry",
         "callback_entry",
         "on_change_callback_entry",
         "raw_widget_value",
@@ -553,11 +559,17 @@ def _parity_expire_token(value: str) -> bool:
     return s.startswith("PARITY|") or (s.startswith("PARITY_") and "|" in s)
 
 
-def run_p6_writer_session(browser, *, deploy: dict[str, Any], run_id: str) -> dict[str, Any]:
+def run_p6_writer_session(
+    browser,
+    *,
+    deploy: dict[str, Any],
+    run_id: str,
+    writer_url: str | None = None,
+) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
 
     ls_key = f"solo_parity_ls_p6_{int(time.time())}"
-    writer_url = p6_writer_url(run_id=run_id, ls_key=ls_key)
+    writer_url = writer_url or p6_writer_url(run_id=run_id, ls_key=ls_key)
     syn_prefix = f"PARITY_{run_id.replace('-', '')[:8]}|"
     ctx = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
     install_p6_harness_init(ctx)

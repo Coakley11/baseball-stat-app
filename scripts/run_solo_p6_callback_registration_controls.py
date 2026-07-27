@@ -8,7 +8,6 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = Path(__file__).resolve().parent
@@ -19,32 +18,16 @@ if str(SCRIPTS) not in sys.path:
 
 OUT = ROOT / "data" / "solo_p6_callback_registration_controls.json"
 
-from run_solo_persistent_parity_ladder_auth import BASE, official_required_sha, verify_official_deploy  # noqa: E402
+from run_solo_persistent_parity_ladder_auth import official_required_sha, verify_official_deploy  # noqa: E402
 from run_solo_persistent_parity_p6_only_auth import (  # noqa: E402
     _has_stage,
-    _post_expiration_rows_present,
     _pre_expiration_mount_stages_ok,
     _score_p6_entrypoint_gate,
+    p6_writer_url,
     run_p6_writer_session,
-    scrape_p6_writer_probe,
 )
 from playwright_daniel_auth_session import harness_ready  # noqa: E402
 from replay_playwright_daniel_auth_preflight import run_preflight  # noqa: E402
-
-
-def p6_control_url(*, run_id: str, control: str, ls_key: str) -> str:
-    from playwright_daniel_auth_session import append_suite_sid_to_url
-
-    q = {
-        "active_page": "Live Draft Room",
-        "solo_delivery_diag": "1",
-        "solo_persistent_parity": "P6",
-        "solo_transport_probe": "1",
-        "solo_p6_run_id": run_id,
-        "solo_parity_ls_key": ls_key,
-        "solo_p6_callback_control": control,
-    }
-    return append_suite_sid_to_url(f"{BASE}/?{urlencode(q)}")
 
 
 def _callback_entries(rows: list[dict[str, Any]]) -> int:
@@ -59,7 +42,8 @@ def classify_control_run(
     *,
     control: str,
     rows: list[dict[str, Any]],
-    browser: dict[str, Any],
+    peak: dict[str, Any],
+    p6_overall: str,
     r0_class: str | None,
 ) -> str:
     gate = _score_p6_entrypoint_gate(rows)
@@ -67,8 +51,13 @@ def classify_control_run(
         return "INVALID"
     if not _pre_expiration_mount_stages_ok(rows):
         return "INVALID"
-    send = int(browser.get("unique_setComponentValue") or browser.get("unique_transport_postMessage") or 0)
-    parent = int(browser.get("deduped_parent_receipt") or browser.get("unique_transport_postMessage") or 0)
+    send = int(
+        peak.get("setComponentValue_invocation")
+        or peak.get("browser_set_component_value")
+        or peak.get("setComponentValue")
+        or 0
+    )
+    parent = int(peak.get("parent_message") or peak.get("deduped_parent_receipt") or 0)
     if send < 1 or parent < 1:
         return "INVALID"
     cb = _callback_entries(rows)
@@ -77,14 +66,13 @@ def classify_control_run(
         if control == "R1" and r0_class in (
             "VALID_FAIL_CALLBACK_NOT_TRIGGERED",
             "VALID_FAIL_CALLBACK_REGISTRATION",
-            "VALID_FAIL_ORIGINAL_CALLBACK_BINDING",
         ):
             return "VALID_FAIL_SUPPRESS_FLAG"
         return "PASS_CALLBACK_REGISTERED"
     if sentinel and cb == 0:
         return "VALID_FAIL_ORIGINAL_CALLBACK_BINDING"
-    if control == "R1" and r0_class and r0_class != "PASS_CALLBACK_REGISTERED" and cb >= 1:
-        return "VALID_FAIL_SUPPRESS_FLAG"
+    if control == "R0" and p6_overall == "VALID_FAIL_CALLBACK_REGISTRATION":
+        return "VALID_FAIL_CALLBACK_NOT_TRIGGERED"
     return "VALID_FAIL_CALLBACK_NOT_TRIGGERED"
 
 
@@ -92,17 +80,12 @@ def main() -> int:
     if not harness_ready():
         print(json.dumps({"error": "playwright harness storage not ready"}))
         return 2
-    pre = run_preflight()
-    if not pre.get("ok"):
-        print(json.dumps({"error": "auth preflight failed", "preflight": pre}))
+    if not run_preflight().get("authenticated_restored"):
+        print(json.dumps({"error": "auth preflight failed"}))
         return 2
-    deploy = verify_official_deploy()
-    if not deploy.get("deploy_ok"):
-        print(json.dumps({"error": "deploy not ready", "deploy": deploy}))
-        return 2
+
+    required = official_required_sha()
     from playwright.sync_api import sync_playwright
-    from playwright_daniel_auth_session import STORAGE_PATH
-    from solo_wiring_matrix_harness_core import install_p6_harness_init
 
     results: list[dict[str, Any]] = []
     r0_class: str | None = None
@@ -110,71 +93,60 @@ def main() -> int:
     declaration_diff: dict[str, Any] | None = None
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+        deploy_page = browser.new_context(viewport={"width": 1440, "height": 900}).new_page()
+        deploy = verify_official_deploy(deploy_page, required=required)
+        deploy_page.context.close()
+        if not deploy.get("deploy_ok"):
+            print(json.dumps({"error": "deploy not ready", "deploy": deploy}))
+            browser.close()
+            return 2
+
         for control in ("R0", "R1", "R2", "R3"):
             run_id = str(uuid.uuid4())
-            ls_key = f"solo_parity_ls_p6_ctrl_{control}_{int(time.time())}"
-            row: dict[str, Any] = {"control": control, "run_id": run_id}
-            ctx = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
-            install_p6_harness_init(ctx)
-            page = ctx.new_page()
-            try:
-                from cloud_streamlit_wake import goto_and_wake
-
-                url = p6_control_url(run_id=run_id, control=control, ls_key=ls_key)
-                goto_and_wake(page, url, timeout_s=240)
-                t0 = time.time()
-                last_payload: dict[str, Any] = {}
-                browser_peak: dict[str, Any] = {}
-                while time.time() - t0 < 48.0:
-                    probe = scrape_p6_writer_probe(page)
-                    payload = probe.get("payload") if isinstance(probe.get("payload"), dict) else {}
-                    if payload:
-                        last_payload = payload
-                    from solo_wiring_matrix_harness_core import collect_p6_browser_peak
-
-                    browser_peak = collect_p6_browser_peak(page)
-                    if _has_stage(payload.get("ledger_rows") or [], "component_declared"):
-                        if time.time() - t0 > 12.0:
-                            break
-                    time.sleep(0.45)
-                rows = last_payload.get("ledger_rows") if isinstance(last_payload.get("ledger_rows"), list) else []
-                outcome = classify_control_run(
-                    control=control, rows=rows, browser=browser_peak, r0_class=r0_class
-                )
-                row.update(
-                    {
-                        "outcome": outcome,
-                        "callback_entries": _callback_entries(rows),
-                        "sentinel": _has_stage(rows, "sentinel_callback_entry"),
-                        "browser": browser_peak,
-                        "post_expiration": _post_expiration_rows_present(rows),
-                        "declaration_diff": last_payload.get("declaration_diff"),
-                        "declaration_audit": {
-                            s: True
-                            for s in ("declaration_attempt", "declaration_returned")
-                            if _has_stage(rows, s)
-                        },
-                    }
-                )
-                if control == "R0":
-                    r0_class = outcome
-                    declaration_diff = last_payload.get("declaration_diff") if isinstance(
-                        last_payload.get("declaration_diff"), dict
-                    ) else None
-                results.append(row)
-                if control != "R0" and r0_class and outcome != r0_class:
-                    stopped_at = control
-                    break
-                if outcome == "PASS_CALLBACK_REGISTERED" and control == "R1":
-                    stopped_at = control
-                    break
-            finally:
-                ctx.close()
+            ls_key = f"solo_parity_ls_p6_{control}_{int(time.time())}"
+            url = p6_writer_url(run_id=run_id, ls_key=ls_key, callback_control=control)
+            run = run_p6_writer_session(browser, deploy=deploy, run_id=run_id, writer_url=url)
+            rows = run.get("ordered_ledger") if isinstance(run.get("ordered_ledger"), list) else []
+            peak = run.get("peak") if isinstance(run.get("peak"), dict) else {}
+            p6_overall = str((run.get("scored") or {}).get("overall") or "")
+            last_payload = run.get("last_payload") if isinstance(run.get("last_payload"), dict) else {}
+            outcome = classify_control_run(
+                control=control,
+                rows=rows,
+                peak=peak,
+                p6_overall=p6_overall,
+                r0_class=r0_class,
+            )
+            row = {
+                "control": control,
+                "run_id": run_id,
+                "p6_overall": p6_overall,
+                "outcome": outcome,
+                "callback_entries": _callback_entries(rows),
+                "sentinel": _has_stage(rows, "sentinel_callback_entry"),
+                "peak": peak,
+                "declaration_diff": last_payload.get("declaration_diff"),
+                "declaration_audit": {
+                    s: _has_stage(rows, s) for s in ("declaration_attempt", "declaration_returned", "declaration_diff_recorded")
+                },
+                "ordered_stages": [r.get("stage") for r in rows if isinstance(r, dict)],
+            }
+            if control == "R0":
+                r0_class = outcome
+                if isinstance(last_payload.get("declaration_diff"), dict):
+                    declaration_diff = last_payload["declaration_diff"]
+            results.append(row)
+            if control != "R0" and r0_class and outcome != r0_class:
+                stopped_at = control
+                break
+            if outcome == "PASS_CALLBACK_REGISTERED" and control == "R1":
+                stopped_at = control
+                break
         browser.close()
 
     report = {
-        "required_sha": official_required_sha(deploy),
+        "required_sha": required,
         "deploy": deploy,
         "r0_baseline": r0_class,
         "stopped_at": stopped_at,
@@ -184,11 +156,26 @@ def main() -> int:
     }
     if stopped_at == "R1" and r0_class != "PASS_CALLBACK_REGISTERED":
         report["smallest_fix_hypothesis"] = (
-            "suppress_immediate_session_on_change=True defers Streamlit on_change until browser postMessage; "
-            "setting False allows immediate _prod_on_change after mount (diagnostic R1 only)."
+            "suppress_immediate_session_on_change=True skips the post-mount _prod_on_change() poll; "
+            "R1 (suppress=False) is the first control that registers/triggers Python callback."
         )
-    OUT.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps(report, default=str))
+    elif r0_class == "VALID_FAIL_CALLBACK_NOT_TRIGGERED":
+        for r in results:
+            if r.get("outcome") == "VALID_FAIL_ORIGINAL_CALLBACK_BINDING":
+                report["smallest_fix_hypothesis"] = (
+                    "Streamlit invokes on_change on the sentinel wrapper but not on the production deliver binding "
+                    "passed into _prod_on_change — inspect closure/deliver_callback identity at declaration time."
+                )
+                break
+            if r.get("outcome") == "PASS_CALLBACK_REGISTERED" and r.get("control") == "R3":
+                report["smallest_fix_hypothesis"] = (
+                    "B2 helper declaration at same key/token succeeds; production _mount_persistent_wake_micro_controlled "
+                    "kwargs (session_prefix/persistent/placement) affect Streamlit callback registration."
+                )
+                break
+
+    OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    print(json.dumps(report, indent=2, default=str))
     return 0
 
 

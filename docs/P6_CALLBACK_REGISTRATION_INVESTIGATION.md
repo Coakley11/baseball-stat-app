@@ -44,18 +44,35 @@ Query param: `solo_p6_callback_control=R0|R1|R2|R3` (latched in session).
 
 Runner: `python scripts/run_solo_p6_callback_registration_controls.py` (stops at first outcome change vs R0).
 
-## 4. Smallest-fix report (pending Cloud control matrix)
+## 4. Cloud control matrix (`bf7cbef`, `data/solo_p6_callback_registration_controls.json`)
 
-After the control run artifact `data/solo_p6_callback_registration_controls.json` is produced:
+| Control | P6 overall | Browser send + parent | Python callback | Sentinel |
+|---------|------------|----------------------|-----------------|----------|
+| **R0** (suppress=True) | flaky mount timer on one run | often **no** crossing (tick cancelled) | 0 | no |
+| **R1** (suppress=False) | `VALID_FAIL_CALLBACK_REGISTRATION` | yes | 0 | no |
+| **R2** (sentinel wrap) | `VALID_FAIL_CALLBACK_REGISTRATION` | yes | 0 | **no** |
+| **R3** (B2 helper, same key/token) | `VALID_FAIL_CALLBACK_REGISTRATION` | yes | 0 | no |
 
-- **If R1 → `PASS_CALLBACK_REGISTERED`:** boundary is post-mount immediate callback suppression (`suppress_immediate_session_on_change=True` at `solo_countdown_wake_micro_core.py` ~278–279); Streamlit native `on_change` may not fire for parent iframe delivery on Cloud while suppress blocks the synchronous poll path.
-- **If R2 sentinel enters, production ledger does not:** original `_production_deliver_callback` binding is not the Streamlit-registered target (wrapper identity).
-- **If R3 passes, R0 fails:** differences in `session_prefix` / `persistent` / `placement` / `location` alter mount lifecycle or callback registration despite identical `_COMPONENT` kwargs.
-- **If all fail callback:** dedicated route context prevents Streamlit from triggering registered `on_change` after browser `setComponentValue` (not a declaration-arg typo).
+**First control that changes callback outcome:** none — R1/R2/R3 match R0 failure mode when browser delivery completes.
 
-**Do not implement production fixes until the control artifact confirms which row applies.**
+**Classification (when mount + browser established):** `VALID_FAIL_CALLBACK_NOT_TRIGGERED` for all of R1–R3.
 
-## 5. Relevant tests
+- **Not** `VALID_FAIL_SUPPRESS_FLAG` — R1 (`suppress_immediate_session_on_change=False`) did not produce a Python callback.
+- **Not** `VALID_FAIL_ORIGINAL_CALLBACK_BINDING` — sentinel never entered (`sentinel_callback_entry` absent).
+- **Not** fixed by R3 — B2 micro-wrapper at the same P6 location does not restore callback.
+
+Post-expiration probe consistently shows `session_state_raw: "None"` despite parent `setComponentValue` with matching token.
+
+## 5. Smallest-fix report (evidence only — no production patch applied)
+
+| Item | Detail |
+|------|--------|
+| **Failing line (registration surface)** | `solo_countdown_wake_micro_core.py` → `mount_solo_countdown_wake_with_token(..., on_change=_prod_on_change)` inside `render_micro_isolation_once` (production path uses `suppress_immediate_session_on_change=True` at `live_draft_solo_persistent_wake.py` → `_mount_persistent_wake_micro_controlled`). |
+| **Passing B2 line (parity)** | Same `mount_solo_countdown_wake_with_token` + same `_prod_on_change` pattern via `_mount_b2_style`; differs only in **micro-wrapper kwargs** (`session_prefix`, `persistent`, `placement`, `location`, synthetic room id). |
+| **Differing args that matter for diagnosis** | Not `on_change` name, key, default, or `_COMPONENT` kwargs (identical). Differs: `persistent` (False for B2 vs True for production), `session_prefix`, `placement`/`location`. **R3 copied B2 helper with production key/token and still no callback** → those kwargs are not sufficient to explain Cloud behavior alone. |
+| **Why on_change does not run (observed)** | Browser delivers token via component iframe; Streamlit parent receives postMessage; **`st.session_state[widget_key]` stays unset** and **no Streamlit `on_change` callback fires** (production or sentinel). Immediate post-mount poll is intentionally skipped when `suppress=True`; setting `suppress=False` (R1) still did not produce a callback after deadline delivery. |
+| **Smallest proposed correction (for a follow-up change, not implemented)** | Treat as **Streamlit custom-component callback delivery gap on Cloud** after iframe `setComponentValue`, not a wrong function reference in the declaration. Likely needs an **explicit Python-side delivery hook** wired from the same transport boundary already observed (without altering ownership/timer/frontend contract) — design TBD after confirming with local vs Cloud Streamlit version. |
+| **Tests** | `tests/test_live_draft_solo_p6_declaration_audit.py`; extend with unit test asserting audit rows on mock mount; re-run `scripts/run_solo_p6_callback_registration_controls.py` after any fix. |
 
 - `tests/test_live_draft_solo_p6_declaration_audit.py` — control resolution, diff storage, sentinel wrap.
 - Existing P6 dedicated entrypoint tests unchanged.
