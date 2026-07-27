@@ -91,12 +91,18 @@ def test_ready_hydrated_allows_epoch() -> None:
         _row("script_begin"),
         _row("rv_entrypoint_entered"),
         _row("production_room_creation_attempted"),
-        _row("production_room_created", room_id="ABCD1234"),
-        _row("production_draft_started", room_id="ABCD1234"),
+        _row(
+            "production_room_created",
+            room_id="ABCD1234",
+            extra={"creation_event_id": "c1", "room_fingerprint": "fp1"},
+        ),
+        _row("production_draft_started", room_id="ABCD1234", extra={"draft_start_event_id": "s1"}),
+        _row("production_setup_owner_established", room_id="ABCD1234", extra={"room_fingerprint": "fp1"}),
+        _row("production_room_reused", room_id="ABCD1234", script_run_seq=2),
         _row("real_room_hydrated", room_id="ABCD1234", pick_index=0, deadline=99.0, expected_token="ABCD1234|0|99.0"),
         _row("room_state_source", extra={"room_state_source": "same_session_production_create"}),
-        _row("declaration_attempt", expected_token="ABCD1234|0|99.0"),
-        _row("declaration_returned", expected_token="ABCD1234|0|99.0"),
+        _row("declaration_attempt", expected_token="ABCD1234|0|99.0", script_run_seq=2),
+        _row("declaration_returned", expected_token="ABCD1234|0|99.0", script_run_seq=2),
     ]
     text = RV_LEDGER_B64_PREFIX + "e30="
     assert ledger_ready(rows, page_text=text)

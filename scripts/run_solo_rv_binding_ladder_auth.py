@@ -701,6 +701,40 @@ def evaluate_step(
         matched = [r for r in ledger_rows if str(r.get("run_id") or "") == run_id]
         if matched:
             ledger_rows = matched
+    room_reuse_report: dict[str, Any] = {}
+    if step == "RV1":
+        from solo_rv_ladder_runner_state import (
+            build_rv1_room_reuse_report,
+            rv1_logical_setup_invalid_reason,
+        )
+
+        room_reuse_report = build_rv1_room_reuse_report(ledger_rows, run_id=run_id)
+        dup_reason = rv1_logical_setup_invalid_reason(ledger_rows)
+        if dup_reason:
+            browser = summarize_browser_events(expiration, reg)
+            hydrated_row = next((r for r in ledger_rows if r.get("event") == "real_room_hydrated"), None)
+            return {
+                "step": step,
+                "run_id": run_id,
+                "room_id": room_id,
+                "created_room_id": room_id,
+                "hydrated_room_id": str((hydrated_row or {}).get("room_id") or ""),
+                "pick_index": (hydrated_row or {}).get("pick_index"),
+                "deadline": (hydrated_row or {}).get("deadline"),
+                "expected_token": str((hydrated_row or {}).get("expected_token") or ""),
+                "instrumentation_epoch_ms": instrumentation_epoch_ms or expiration.get("instrumentation_epoch_ms"),
+                "verdict": "INVALID",
+                "reason": dup_reason,
+                "validity_ok": False,
+                "validity_reason": dup_reason,
+                "root_cause": "",
+                "room_reuse_report": room_reuse_report,
+                "browser_summary": browser,
+                "control_probe_ledger": ledger_rows,
+                "expiration_skipped": bool(
+                    expiration.get("skipped_expiration") or expiration.get("hydration_failed")
+                ),
+            }
     rows = ledger_to_declaration_rows(ledger_rows)
     browser = summarize_browser_events(expiration, reg)
     validity_ok, validity_reason = __import__(
@@ -752,6 +786,7 @@ def evaluate_step(
             "post_send_observation_s": expiration.get("post_send_observation_s"),
             "client_stages_tail": list(expiration.get("client_stages") or [])[-20:],
         },
+        "room_reuse_report": room_reuse_report if step == "RV1" else {},
     }
 
 

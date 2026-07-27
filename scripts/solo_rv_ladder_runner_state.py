@@ -77,7 +77,7 @@ def classify_page_shell(
     if dom.get("has_streamlit_error") and not dom.get("has_ledger_prefix"):
         if not events.intersection({"production_room_created", "declaration_attempt", "real_room_hydrated"}):
             return "APP_ERROR"
-    if dom.get("has_login") or ("not signed in" in lower and "signed in as" not in lower):
+    if "not signed in" in lower and "signed in as" not in lower and "welcome back" not in lower:
         return "AUTH_LOST"
     loading = bool(dom.get("has_streamlit_app")) and (
         dom.get("app_loading") or ("running" in lower[:500] and "live draft" not in lower)
@@ -169,6 +169,9 @@ def classify_rv1_ledger_after_ready(
         return "invalid", "INVALID", "INVALID_RV_COMPONENT_NOT_DECLARED_missing_declaration_attempt"
     if "declaration_returned" not in events:
         return "invalid", "INVALID", "INVALID_RV_COMPONENT_NOT_DECLARED_missing_declaration_returned"
+    setup_invalid = rv1_logical_setup_invalid_reason(rows)
+    if setup_invalid:
+        return "invalid", "INVALID", setup_invalid
     return "READY_HYDRATED", "", ""
 
 
@@ -226,3 +229,173 @@ def verify_rv1_control_url(url: str, *, run_id: str, harness_room_id: str = "") 
 
 def filter_timeline_after_epoch(timeline: list[dict[str, Any]], epoch_ms: float) -> list[dict[str, Any]]:
     return [t for t in timeline if float(t.get("ts") or 0) >= epoch_ms]
+
+
+def _row_extra(row: dict[str, Any]) -> dict[str, Any]:
+    extra = row.get("extra")
+    return extra if isinstance(extra, dict) else {}
+
+
+def build_rv1_room_reuse_report(rows: list[dict[str, Any]], *, run_id: str) -> dict[str, Any]:
+    """Runner-only logical setup + reuse timeline for RV1."""
+    track_events = frozenset(
+        {
+            "production_room_creation_attempted",
+            "production_room_created",
+            "production_draft_start_attempted",
+            "production_draft_started",
+            "production_setup_owner_established",
+            "production_room_reused",
+            "real_room_hydrated",
+            "room_state_source",
+            "declaration_attempt",
+            "declaration_returned",
+        }
+    )
+    timeline: list[dict[str, Any]] = []
+    for r in rows:
+        ev = str(r.get("event") or "")
+        if ev not in track_events:
+            continue
+        extra = _row_extra(r)
+        timeline.append(
+            {
+                "event": ev,
+                "event_sequence": r.get("event_sequence"),
+                "script_run_seq": r.get("script_run_seq"),
+                "streamlit_session_id": str(r.get("streamlit_session_id") or ""),
+                "room_id": str(r.get("room_id") or extra.get("room_id") or "").strip().upper(),
+                "pick_index": r.get("pick_index"),
+                "deadline": r.get("deadline"),
+                "expected_token": str(r.get("expected_token") or "")[:400],
+                "widget_key": str(r.get("widget_key") or ""),
+                "creation_event_id": str(extra.get("creation_event_id") or ""),
+                "draft_start_event_id": str(extra.get("draft_start_event_id") or ""),
+                "room_fingerprint": str(extra.get("room_fingerprint") or ""),
+            }
+        )
+    logical = analyze_rv1_logical_setup(rows)
+    return {
+        "solo_rv_run_id": run_id,
+        **logical,
+        "timeline": timeline,
+    }
+
+
+def analyze_rv1_logical_setup(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    created = [r for r in rows if r.get("event") == "production_room_created"]
+    started = [r for r in rows if r.get("event") == "production_draft_started"]
+    reused = [r for r in rows if r.get("event") == "production_room_reused"]
+    owners = [r for r in rows if r.get("event") == "production_setup_owner_established"]
+    creation_ids = {
+        str(_row_extra(r).get("creation_event_id") or "")
+        for r in created
+        if str(_row_extra(r).get("creation_event_id") or "")
+    }
+    start_ids = {
+        str(_row_extra(r).get("draft_start_event_id") or "")
+        for r in started
+        if str(_row_extra(r).get("draft_start_event_id") or "")
+    }
+    room_ids = {
+        str(r.get("room_id") or _row_extra(r).get("room_id") or "").strip().upper()
+        for r in created + reused + owners
+        if str(r.get("room_id") or _row_extra(r).get("room_id") or "").strip()
+    }
+    fingerprints = {
+        str(_row_extra(r).get("room_fingerprint") or "")
+        for r in created + owners
+        if str(_row_extra(r).get("room_fingerprint") or "")
+    }
+    tokens = {
+        str(r.get("expected_token") or "").strip()
+        for r in rows
+        if r.get("event")
+        in (
+            "real_room_hydrated",
+            "declaration_attempt",
+            "declaration_returned",
+            "production_draft_started",
+            "production_setup_owner_established",
+        )
+        and str(r.get("expected_token") or "").strip()
+    }
+    script_runs = {int(r.get("script_run_seq") or 0) for r in rows if r.get("script_run_seq") is not None}
+    return {
+        "logical_room_creation_count": len(creation_ids) if creation_ids else len(created),
+        "logical_draft_start_count": len(start_ids) if start_ids else len(started),
+        "production_room_reused_count": len(reused),
+        "production_setup_owner_established_count": len(owners),
+        "raw_production_room_created_rows": len(created),
+        "raw_production_draft_started_rows": len(started),
+        "distinct_creation_event_ids": sorted(creation_ids),
+        "distinct_draft_start_event_ids": sorted(start_ids),
+        "distinct_production_room_ids": sorted(room_ids),
+        "distinct_room_fingerprints": sorted(fingerprints),
+        "distinct_expected_tokens": sorted(tokens),
+        "max_script_run_seq": max(script_runs) if script_runs else 0,
+        "room_reuse_observed": len(reused) > 0,
+    }
+
+
+def rv1_logical_setup_invalid_reason(rows: list[dict[str, Any]]) -> str:
+    """Invalid setup reasons based on logical events, not raw row name counts alone."""
+    info = analyze_rv1_logical_setup(rows)
+    room_ids = list(info.get("distinct_production_room_ids") or [])
+    if len(room_ids) > 1:
+        return "INVALID_RV_DUPLICATE_ROOM_CREATION_room_id_mismatch"
+    creation_ids = list(info.get("distinct_creation_event_ids") or [])
+    if len(creation_ids) > 1:
+        return "INVALID_RV_DUPLICATE_ROOM_CREATION_multiple_creation_event_ids"
+    fingerprints = list(info.get("distinct_room_fingerprints") or [])
+    if len(fingerprints) > 1:
+        return "INVALID_RV_DUPLICATE_ROOM_CREATION_fingerprint_mismatch"
+    tokens = list(info.get("distinct_expected_tokens") or [])
+    if len(tokens) > 1:
+        return "INVALID_RV_DUPLICATE_ROOM_CREATION_token_mismatch"
+    start_ids = list(info.get("distinct_draft_start_event_ids") or [])
+    if len(start_ids) > 1:
+        return "INVALID_RV_DUPLICATE_DRAFT_START_multiple_start_event_ids"
+    logical_starts = int(info.get("logical_draft_start_count") or 0)
+    raw_created = int(info.get("raw_production_room_created_rows") or 0)
+    raw_started = int(info.get("raw_production_draft_started_rows") or 0)
+    if len(room_ids) == 1 and not creation_ids and raw_created > 1:
+        return "INVALID_RV_ROOM_REUSE_PROVENANCE_UNCLEAR"
+    if len(room_ids) == 1 and not start_ids and raw_started > 1:
+        return "INVALID_RV_ROOM_REUSE_PROVENANCE_UNCLEAR"
+    if logical_starts > 1:
+        return "INVALID_RV_DUPLICATE_DRAFT_START"
+    logical_creates = int(info.get("logical_room_creation_count") or 0)
+    if logical_creates > 1:
+        return "INVALID_RV_DUPLICATE_ROOM_CREATION"
+    if logical_creates == 0:
+        return "INVALID_RV_PRODUCTION_ROOM_CREATION_missing_logical_create"
+    if logical_starts == 0:
+        return "INVALID_RV_PRODUCTION_DRAFT_START_missing_logical_start"
+    max_run = int(info.get("max_script_run_seq") or 0)
+    reused_count = int(info.get("production_room_reused_count") or 0)
+    if max_run > 1 and reused_count < 1:
+        return "INVALID_RV_ROOM_REUSE_missing_production_room_reused"
+    if int(info.get("production_setup_owner_established_count") or 0) != 1:
+        return "INVALID_RV_ROOM_REUSE_missing_setup_owner"
+    return ""
+
+
+def rv1_duplicate_room_invalid_reason(report: dict[str, Any]) -> str:
+    """Backward-compatible wrapper — prefer rv1_logical_setup_invalid_reason on raw rows."""
+    rows = report.get("_ledger_rows") or []
+    if rows:
+        return rv1_logical_setup_invalid_reason(rows)
+    return rv1_logical_setup_invalid_reason_from_report(report)
+
+
+def rv1_logical_setup_invalid_reason_from_report(report: dict[str, Any]) -> str:
+    room_ids = list(report.get("distinct_production_room_ids") or [])
+    if len(room_ids) > 1:
+        return "INVALID_RV_DUPLICATE_ROOM_CREATION_room_id_mismatch"
+    creation_ids = list(report.get("distinct_creation_event_ids") or [])
+    if len(creation_ids) > 1:
+        return "INVALID_RV_DUPLICATE_ROOM_CREATION_multiple_creation_event_ids"
+    if int(report.get("logical_draft_start_count") or 0) > 1:
+        return "INVALID_RV_DUPLICATE_DRAFT_START"
+    return ""
