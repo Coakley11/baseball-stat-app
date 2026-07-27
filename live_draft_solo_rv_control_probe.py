@@ -1,4 +1,4 @@
-"""Stable RV control probe (#solo-rv-control-probe) — declaration ledger (diag-only)."""
+"""Native Streamlit RV control ledger (diag-only) — no HTML/localStorage probe."""
 
 from __future__ import annotations
 
@@ -7,10 +7,9 @@ import json
 import time
 from typing import Any, Callable
 
-RV_CONTROL_PROBE_ID = "solo-rv-control-probe"
 RV_LEDGERS_BY_RUN_KEY = "solo_rv_control_ledgers_v1"
 RV_SCRIPT_RUN_SEQ_KEY = "_solo_rv_control_script_run_seq"
-RV_PROBE_PH_KEY = "_solo_rv_control_probe_placeholder"
+RV_LEDGER_B64_PREFIX = "SOLO_RV_CONTROL_LEDGER_B64:"
 MAX_LEDGER_ROWS = 200
 
 
@@ -58,14 +57,53 @@ def _ledger_for_run(session: dict[str, Any], run_id: str) -> list[dict[str, Any]
     if not run_id:
         return []
     store = dict(session.get(RV_LEDGERS_BY_RUN_KEY) or {})
-    rows = list(store.get(run_id) or [])
-    return rows
+    return list(store.get(run_id) or [])
 
 
 def _persist_ledger(session: dict[str, Any], run_id: str, rows: list[dict[str, Any]]) -> None:
     store = dict(session.get(RV_LEDGERS_BY_RUN_KEY) or {})
     store[run_id] = rows[-MAX_LEDGER_ROWS:]
     session[RV_LEDGERS_BY_RUN_KEY] = store
+
+
+def build_control_probe_payload(session: dict[str, Any], run_id: str) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "step": str(session.get("_solo_rv_ladder_step") or ""),
+        "script_run_seq": int(session.get(RV_SCRIPT_RUN_SEQ_KEY) or 0),
+        "rows": _ledger_for_run(session, run_id),
+    }
+
+
+def encode_control_probe_payload(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, default=str)[:48000]
+    return RV_LEDGER_B64_PREFIX + base64.b64encode(raw.encode("utf-8")).decode("ascii")
+
+
+def decode_control_probe_text(text: str) -> dict[str, Any]:
+    if not text:
+        return {}
+    idx = text.find(RV_LEDGER_B64_PREFIX)
+    if idx < 0:
+        return {}
+    b64 = text[idx + len(RV_LEDGER_B64_PREFIX) :].strip().split()[0]
+    if not b64:
+        return {}
+    pad = b64 + "==="[: (4 - len(b64) % 4) % 4]
+    try:
+        return json.loads(base64.b64decode(pad).decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def render_native_control_probe(st: Any, session: dict[str, Any], probe_placeholder: Any) -> None:
+    """Render ledger via st.code on a local placeholder (never stored in session_state)."""
+    if probe_placeholder is None:
+        return
+    run_id = _qp_run_id(st, session)
+    payload = build_control_probe_payload(session, run_id)
+    line = encode_control_probe_payload(payload)
+    probe_placeholder.code(line, language=None)
 
 
 def append_control_event(
@@ -81,6 +119,7 @@ def append_control_event(
     coalesced_value: str = "",
     callback_mode: str = "on_change=None",
     component_widget_id: str = "",
+    browser_send_seen: bool | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     run_id = _qp_run_id(st, session)
@@ -94,12 +133,20 @@ def append_control_event(
     if widget_key:
         ss_before = repr(session.get(widget_key))[:400] if widget_key in session else "missing"
         ss_after = ss_before
-    browser_send_seen = bool(
-        session.get("_solo_rv_browser_delivery_recorded")
-        or session.get("_solo_rv_prior_declaration_returned")
+    if browser_send_seen is None:
+        browser_send_seen = bool(
+            session.get("_solo_rv_browser_delivery_recorded")
+            or session.get("_solo_rv_prior_declaration_returned")
+        )
+    rows = _ledger_for_run(session, run_id)
+    event_seq = len(rows) + 1
+    decl_num = sum(1 for r in rows if r.get("event") == "declaration_attempt") + (
+        1 if event == "declaration_attempt" else 0
     )
     row: dict[str, Any] = {
         "event": event,
+        "event_sequence": event_seq,
+        "declaration_occurrence_number": decl_num if event == "declaration_attempt" else None,
         "ts": time.time(),
         "streamlit_session_id": _streamlit_session_id(st),
         "script_run_seq": int(session.get(RV_SCRIPT_RUN_SEQ_KEY) or 0),
@@ -120,91 +167,13 @@ def append_control_event(
     }
     if extra:
         row.update(extra)
-    rows = _ledger_for_run(session, run_id)
     rows.append(row)
     _persist_ledger(session, run_id, rows)
     return row
 
 
-def publish_rv_control_ledger_to_parent(st: Any, session: dict[str, Any]) -> None:
-    """Always push current Python ledger to parent DOM/localStorage (runs every script pass)."""
-    if not rv_control_probe_active(st, session):
-        return
-    run_id = _qp_run_id(st, session)
-    rows = _ledger_for_run(session, run_id)
-    payload = json.dumps(
-        {
-            "probe_id": RV_CONTROL_PROBE_ID,
-            "run_id": run_id,
-            "step": str(session.get("_solo_rv_ladder_step") or ""),
-            "rows": rows,
-        },
-        default=str,
-    )[:48000]
-    b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-    st.components.v1.html(
-        f"""
-<script>
-(function() {{
-  const B64 = {json.dumps(b64)};
-  const ID = {json.dumps(RV_CONTROL_PROBE_ID)};
-  const root = window.parent && window.parent.document ? window.parent : document;
-  let el = root.getElementById(ID);
-  if (!el) {{
-    el = root.createElement("div");
-    el.id = ID;
-    el.style.display = "none";
-    (root.body || root.documentElement).appendChild(el);
-  }}
-  el.setAttribute("data-b64", B64);
-  try {{ root.localStorage.setItem("__solo_rv_control_probe_v1", B64); }} catch (e) {{}}
-}})();
-</script>
-""",
-        height=0,
-        width=0,
-    )
-
-
-def ensure_probe_placeholder(st: Any, session: dict[str, Any]) -> Any:
-    try:
-        if RV_PROBE_PH_KEY not in session:
-            session[RV_PROBE_PH_KEY] = st.empty()
-        return session[RV_PROBE_PH_KEY]
-    except Exception:
-        return None
-
-
-def flush_control_probe(st: Any, session: dict[str, Any], slot: Any | None = None) -> None:
-    if not rv_control_probe_active(st, session):
-        return
-    run_id = _qp_run_id(st, session)
-    ph = slot if slot is not None else ensure_probe_placeholder(st, session)
-    rows = _ledger_for_run(session, run_id)
-    payload = json.dumps(
-        {
-            "probe_id": RV_CONTROL_PROBE_ID,
-            "run_id": run_id,
-            "step": str(session.get("_solo_rv_ladder_step") or ""),
-            "script_run_seq": int(session.get(RV_SCRIPT_RUN_SEQ_KEY) or 0),
-            "rows": rows,
-        },
-        default=str,
-    )[:48000]
-    b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-    if ph is not None:
-        try:
-            ph.markdown(
-                f'<div id="{RV_CONTROL_PROBE_ID}" data-b64="{b64}"></div>',
-                unsafe_allow_html=True,
-            )
-        except Exception:
-            pass
-    publish_rv_control_ledger_to_parent(st, session)
-
-
 def rv_ultra_early_probe_hook(st: Any, session: dict[str, Any]) -> None:
-    """Before RV shell / st.stop — script_begin + stable probe slot."""
+    """Latch RV query params only — native probe renders in dedicated entrypoint."""
     if not rv_control_probe_active(st, session):
         return
     try:
@@ -212,25 +181,8 @@ def rv_ultra_early_probe_hook(st: Any, session: dict[str, Any]) -> None:
 
         enable_rv_ladder_session(st, session)
     except ImportError:
-        try:
-            from live_draft_solo_rv_binding_ladder import RV_RUN_ID_QP, _qp_get, resolve_rv_ladder_step
-
-            resolve_rv_ladder_step(st, session)
-            if not session.get("_solo_rv_run_id"):
-                rid = _qp_get(st, RV_RUN_ID_QP)
-                if rid:
-                    session["_solo_rv_run_id"] = rid
-            if not session.get("_solo_rv_ladder_step"):
-                step = _qp_get(st, "solo_rv_ladder")
-                if step:
-                    session["_solo_rv_ladder_step"] = step.strip().upper()
-            session["_solo_rv_ladder_active"] = True
-        except ImportError:
-            pass
+        pass
     _next_script_run_seq(session)
-    append_control_event(st, session, "script_begin", control_name=str(session.get("_solo_rv_ladder_step") or ""))
-    ph = ensure_probe_placeholder(st, session)
-    flush_control_probe(st, session, ph)
 
 
 def mount_with_rv_control_declaration(
@@ -242,9 +194,10 @@ def mount_with_rv_control_declaration(
     mount_fn: Callable[[], Any],
     control_name: str,
     location: str,
+    probe_placeholder: Any = None,
 ) -> Any:
     expected = str(session.get("_solo_persistent_wake_last_token") or session.get("_solo_parity_expected_token") or "")
-    post_delivery = bool(session.get("_solo_rv_prior_declaration_returned"))
+    was_post_delivery_run = bool(session.get("_solo_rv_prior_declaration_returned"))
     append_control_event(
         st,
         session,
@@ -253,9 +206,10 @@ def mount_with_rv_control_declaration(
         widget_key=widget_key,
         room=room,
         expected_token=expected,
-        extra={"location": location, "post_delivery_candidate": post_delivery},
+        browser_send_seen=was_post_delivery_run,
+        extra={"location": location},
     )
-    flush_control_probe(st, session, None)
+    render_native_control_probe(st, session, probe_placeholder)
     raw = mount_fn()
     coerced = ""
     if raw is not None:
@@ -263,7 +217,6 @@ def mount_with_rv_control_declaration(
     ss_after = repr(session.get(widget_key))[:400] if widget_key in session else "missing"
     if not coerced and ss_after not in ("missing", "None", "''", '""'):
         coerced = ss_after.strip("'\"")
-    widget_id = ""
     append_control_event(
         st,
         session,
@@ -274,11 +227,10 @@ def mount_with_rv_control_declaration(
         expected_token=expected,
         component_return=raw,
         coalesced_value=coerced,
-        extra={"location": location, "session_state_after": ss_after, "component_widget_id": widget_id},
+        browser_send_seen=was_post_delivery_run,
+        extra={"location": location, "session_state_after": ss_after},
     )
-    if not session.get("_solo_rv_prior_declaration_returned"):
-        session["_solo_rv_prior_declaration_returned"] = True
-    else:
+    if was_post_delivery_run:
         append_control_event(
             st,
             session,
@@ -289,11 +241,14 @@ def mount_with_rv_control_declaration(
             expected_token=expected,
             component_return=raw,
             coalesced_value=coerced,
+            browser_send_seen=True,
             extra={"location": location, "session_state_after": ss_after},
         )
+    elif not session.get("_solo_rv_prior_declaration_returned"):
+        session["_solo_rv_prior_declaration_returned"] = True
     if coerced:
         session["_solo_rv_browser_delivery_recorded"] = True
-    flush_control_probe(st, session, None)
+    render_native_control_probe(st, session, probe_placeholder)
     return raw
 
 
@@ -302,7 +257,6 @@ def ledger_rows_for_probe_payload(payload: dict[str, Any]) -> list[dict[str, Any
 
 
 def ledger_to_declaration_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Map control-probe events to legacy declaration row shape for grading."""
     mapped: list[dict[str, Any]] = []
     for row in rows:
         ev = str(row.get("event") or "")

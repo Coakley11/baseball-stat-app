@@ -13,9 +13,7 @@ from live_draft_solo_rv_binding_ladder import (
 )
 from live_draft_solo_rv_control_probe import (
     append_control_event,
-    ensure_probe_placeholder,
-    flush_control_probe,
-    publish_rv_control_ledger_to_parent,
+    render_native_control_probe,
 )
 
 
@@ -32,15 +30,15 @@ def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
         rv2_mount_if_needed(st, session)
         st.caption(f"RV ladder {step}: initial mount complete; page continues.")
         return False
-    ph = ensure_probe_placeholder(st, session)
+    probe_placeholder = st.empty()
+    render_native_control_probe(st, session, probe_placeholder)
+    append_control_event(st, session, "script_begin", control_name=step)
     append_control_event(st, session, "rv_entrypoint_entered", control_name=step)
-    flush_control_probe(st, session, ph)
-    result = execute_rv_step_mount(st, session, step)
-    flush_control_probe(st, session, ph)
+    render_native_control_probe(st, session, probe_placeholder)
+    result = execute_rv_step_mount(st, session, step, probe_placeholder=probe_placeholder)
     st.caption(f"RV ladder {step}: mount={'ok' if result.get('ok') else 'fail'} token={str(result.get('token') or '')[:60]}")
     if rv_pre_app_shell_should_stop(session):
-        flush_control_probe(st, session, ph)
-        publish_rv_control_ledger_to_parent(st, session)
+        render_native_control_probe(st, session, probe_placeholder)
         return True
     return False
 

@@ -103,6 +103,7 @@ def mount_rv_r4_style(
     *,
     expire_token: str,
     location: str,
+    probe_placeholder: Any = None,
 ) -> Any:
     from live_draft_solo_rv_control_probe import mount_with_rv_control_declaration
     from solo_countdown_component import mount_solo_countdown_wake_with_token
@@ -129,6 +130,7 @@ def mount_rv_r4_style(
         mount_fn=_mount,
         control_name=str(session.get("_solo_rv_ladder_step") or location),
         location=location,
+        probe_placeholder=probe_placeholder,
     )
     _append_ledger(
         session,
@@ -140,7 +142,9 @@ def mount_rv_r4_style(
     return raw
 
 
-def execute_rv_step_mount(st: Any, session: dict[str, Any], step: str) -> dict[str, Any]:
+def execute_rv_step_mount(
+    st: Any, session: dict[str, Any], step: str, *, probe_placeholder: Any = None
+) -> dict[str, Any]:
     """Mount production countdown once for RV0–RV2 pre-shell paths."""
     session[SOLO_PERSISTENT_WAKE_LATCH_KEY] = True
     if step == "RV0":
@@ -151,16 +155,20 @@ def execute_rv_step_mount(st: Any, session: dict[str, Any], step: str) -> dict[s
             _append_ledger(session, "rv_real_room_missing", step=step)
             return {"ok": False, "reason": "real_room_missing"}
     session["live_draft_room"] = room
-    from live_draft_solo_rv_control_probe import ensure_probe_placeholder, flush_control_probe
     from live_draft_solo_rv_instance_registry import render_rv_instance_registry_listener
 
-    ph = ensure_probe_placeholder(st, session)
     render_rv_instance_registry_listener(st, session)
-    raw = mount_rv_r4_style(st, session, room, expire_token=token, location=f"rv_{step.lower()}_shell")
+    raw = mount_rv_r4_style(
+        st,
+        session,
+        room,
+        expire_token=token,
+        location=f"rv_{step.lower()}_shell",
+        probe_placeholder=probe_placeholder,
+    )
     from live_draft_solo_rv_instance_registry import render_rv_instance_registry_probe
 
     render_rv_instance_registry_probe(st, session)
-    flush_control_probe(st, session, ph)
     return {"ok": True, "token": token, "room_id": str(room.get("draft_room_id") or ""), "raw": raw}
 
 

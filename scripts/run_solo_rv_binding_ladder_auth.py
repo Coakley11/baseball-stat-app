@@ -132,21 +132,31 @@ def assert_cloud_implementation_ready(page, required: str) -> tuple[bool, str, s
 
 
 def scrape_control_probe(page) -> dict[str, Any]:
-    probe = scrape_b64_probe(page, "solo-rv-control-probe")
-    if probe.get("rows"):
-        return probe
+    from live_draft_solo_rv_control_probe import RV_LEDGER_B64_PREFIX, decode_control_probe_text
+
     try:
-        b64 = page.evaluate(
+        text = page.evaluate(
             """() => {
-              try { return localStorage.getItem('__solo_rv_control_probe_v1') || ''; } catch (e) { return ''; }
+              function allText() {
+                let t = document.body ? document.body.innerText : '';
+                for (const f of document.querySelectorAll('iframe')) {
+                  try {
+                    if (f.contentDocument && f.contentDocument.body) {
+                      t += '\\n' + f.contentDocument.body.innerText;
+                    }
+                  } catch (e) {}
+                }
+                return t;
+              }
+              return allText();
             }"""
         )
-        if b64:
-            pad = b64 + "==="[: (4 - len(b64) % 4) % 4]
-            return json.loads(base64.b64decode(pad).decode("utf-8"))
+        payload = decode_control_probe_text(str(text or ""))
+        if payload.get("rows"):
+            return payload
     except Exception:
         pass
-    return probe
+    return {}
 
 
 def poll_control_probe_best(page, best: dict[str, Any]) -> dict[str, Any]:
