@@ -55,9 +55,9 @@ def try_p6_early_exclusive_shell(st: Any, session: dict[str, Any], *, ldr_branch
     run_id = resolve_p6_run_id(st, session)
     if not run_id:
         return False
+    if ldr_branch:
+        session["active_page"] = "Live Draft Room"
     if _normalize_page(str(session.get("active_page") or "")) != "Live Draft Room":
-        return False
-    if ldr_branch is False:
         return False
 
     session[P6_EARLY_SHELL_ACTIVE_KEY] = True

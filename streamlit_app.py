@@ -22147,6 +22147,13 @@ elif active_page == DRAFT_LAB_PAGE:
 
 elif active_page == "Live Draft Room":
     try:
+        from live_draft_solo_parity_p6_persistent_diag import append_p6_ledger_row, p6_persistent_diag_active, resolve_p6_run_id
+
+        if p6_persistent_diag_active(st, st.session_state) and resolve_p6_run_id(st, st.session_state):
+            append_p6_ledger_row(st.session_state, "ldr_branch_entered", st=st, body_active_page=active_page)
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_p6_early_shell import try_p6_early_exclusive_shell
 
         try_p6_early_exclusive_shell(st, st.session_state, ldr_branch=True)
