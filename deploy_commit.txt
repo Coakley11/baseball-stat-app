@@ -1,3 +1,3 @@
-535d61e  # RV1 control URL retains Live Draft active_page
+0603d56  # RV harness room query + prepare hydration
 
 branch: dev
