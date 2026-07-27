@@ -33,11 +33,26 @@ def p6_dedicated_blocks_deep_parity(session: dict[str, Any]) -> bool:
 
 
 def p6_dedicated_entrypoint_requested(st: Any, session: dict[str, Any]) -> bool:
-    from live_draft_solo_parity_p6_persistent_diag import P6_RUN_ID_QP, PARITY_QP, _qp_flag, _qp_get, resolve_p6_run_id
+    from live_draft_solo_parity_p6_persistent_diag import (
+        P6_DIAG_LATCHED_KEY,
+        P6_RUN_ID_QP,
+        PARITY_QP,
+        _qp_flag,
+        _qp_get,
+        resolve_p6_run_id,
+    )
 
-    if _qp_get(st, PARITY_QP).strip().upper() != "P6":
-        if str(session.get(PARITY_CONTROL_KEY) or session.get("_solo_parity_ladder_control") or "").strip().upper() != "P6":
-            return False
+    if session.get(P6_DEDICATED_ROUTE_REQUESTED_KEY):
+        rid = resolve_p6_run_id(st, session) or _qp_get(st, P6_RUN_ID_QP).strip()
+        return bool(rid)
+
+    p6_qp = _qp_get(st, PARITY_QP).strip().upper() == "P6"
+    p6_session = (
+        str(session.get(PARITY_CONTROL_KEY) or session.get("_solo_parity_ladder_control") or "").strip().upper() == "P6"
+        or bool(session.get(P6_DIAG_LATCHED_KEY))
+    )
+    if not p6_qp and not p6_session:
+        return False
     if not _qp_flag(st, "solo_delivery_diag") and not session.get("_solo_delivery_diag_enabled"):
         return False
     rid = resolve_p6_run_id(st, session) or _qp_get(st, P6_RUN_ID_QP).strip()
@@ -95,6 +110,12 @@ def try_p6_dedicated_entrypoint(st: Any, session: dict[str, Any]) -> bool:
     latch_p6_diag_mode(st, session)
     run_id = resolve_p6_run_id(st, session)
     if not run_id:
+        append_p6_ledger_row(
+            session,
+            "diagnostic_entrypoint_run_id_missing",
+            st=st,
+            reason="resolve_p6_run_id_empty",
+        )
         return False
 
     session[P6_DEDICATED_ACTIVE_KEY] = True
@@ -207,6 +228,7 @@ def run_p6_dedicated_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
         on_ultra_early_script_run(st, session, after_workspace=True)
     except ImportError:
         pass
+    mark_p6_dedicated_route_requested(st, session)
     mounted = try_p6_dedicated_entrypoint(st, session)
     if not mounted:
         try:
