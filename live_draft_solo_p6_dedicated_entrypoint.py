@@ -229,6 +229,17 @@ def run_p6_dedicated_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
     except ImportError:
         pass
     mark_p6_dedicated_route_requested(st, session)
+    try:
+        from live_draft_solo_parity_p6_persistent_diag import append_p6_ledger_row
+
+        append_p6_ledger_row(
+            session,
+            "diagnostic_pre_try_p6",
+            st=st,
+            entrypoint="run_p6_dedicated_pre_app_shell",
+        )
+    except ImportError:
+        pass
     mounted = try_p6_dedicated_entrypoint(st, session, force=True)
     if not mounted:
         try:
