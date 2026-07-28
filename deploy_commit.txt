@@ -1,5 +1,2 @@
-501924f  # Stage 1A frame-2 parent boundary validation
-
-
-
+23b9bcb  # auto-generated; Streamlit Cloud reads this at runtime
 branch: dev
