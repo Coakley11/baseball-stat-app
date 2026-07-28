@@ -1,3 +1,3 @@
-2d7a38e  # RV3: skip duplicate global prepare after bootstrap restore
+d986cda  # One-shot iframe expiration send latch (widget+token)
 
 branch: dev
