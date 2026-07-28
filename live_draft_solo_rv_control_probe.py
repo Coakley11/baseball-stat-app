@@ -88,18 +88,25 @@ _B64_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0
 def _b64_after_prefix(raw: str, idx: int) -> str:
     tail = raw[idx + len(RV_LEDGER_B64_PREFIX) :]
     chars: list[str] = []
-    for ch in tail:
+    i = 0
+    while i < len(tail):
+        rest = tail[i:]
+        stripped = rest.lstrip()
+        if stripped.startswith(RV_LEDGER_B64_PREFIX):
+            break
+        ch = tail[i]
         if ch in _B64_ALPHABET:
             chars.append(ch)
         elif ch.isspace():
-            continue
+            pass
         else:
             break
+        i += 1
     return "".join(chars)
 
 
 def extract_ledger_b64_payload(text: str) -> tuple[str, str]:
-    """Extract base64 after prefix; pick longest match (Streamlit may leave older st.code copies in DOM)."""
+    """Extract base64 after the last prefix (newest st.code render wins)."""
     raw = html.unescape(str(text or ""))
     best_b64 = ""
     best_idx = -1
@@ -109,9 +116,8 @@ def extract_ledger_b64_payload(text: str) -> tuple[str, str]:
         if idx < 0:
             break
         b64 = _b64_after_prefix(raw, idx)
-        if len(b64) > len(best_b64):
-            best_b64 = b64
-            best_idx = idx
+        best_b64 = b64
+        best_idx = idx
         start = idx + len(RV_LEDGER_B64_PREFIX)
     if best_idx < 0:
         return "", ""
@@ -126,12 +132,14 @@ def playwright_ledger_scrape_script() -> str:
     return f"""() => {{
       const prefix = {json.dumps(prefix)};
       function extractB64(t) {{
-        const idx = t.indexOf(prefix);
-        if (idx < 0) return '';
-        let tail = t.slice(idx + prefix.length);
+        let lastIdx = t.lastIndexOf(prefix);
+        if (lastIdx < 0) return '';
+        let tail = t.slice(lastIdx + prefix.length);
         let b64 = '';
         const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
         for (let i = 0; i < tail.length; i++) {{
+          const rest = tail.slice(i).replace(/^\\s+/, '');
+          if (rest.startsWith(prefix)) break;
           const ch = tail[i];
           if (alphabet.includes(ch)) b64 += ch;
           else if (/\\s/.test(ch)) continue;
@@ -140,6 +148,7 @@ def playwright_ledger_scrape_script() -> str:
         return b64;
       }}
       let best = '';
+      let bestEl = null;
       const roots = [document];
       for (const f of document.querySelectorAll('iframe')) {{
         try {{ if (f.contentDocument) roots.push(f.contentDocument); }} catch (e) {{}}
@@ -149,14 +158,13 @@ def playwright_ledger_scrape_script() -> str:
         for (const el of root.querySelectorAll('[data-testid="stCodeBlock"] pre, pre, code')) {{
           const t = el.textContent || '';
           if (!t.includes(prefix)) continue;
-          const b64 = extractB64(t);
-          if (b64.length > best.length) best = b64;
+          bestEl = el;
         }}
-        const bodyT = root.body ? root.body.innerText : '';
-        const b64 = extractB64(bodyT);
-        if (b64.length > best.length) best = b64;
       }}
-      if (best.length) return prefix + best;
+      if (bestEl) {{
+        const b64 = extractB64(bestEl.textContent || '');
+        if (b64.length) return prefix + b64;
+      }}
       let t = document.body ? document.body.innerText : '';
       for (const f of document.querySelectorAll('iframe')) {{
         try {{

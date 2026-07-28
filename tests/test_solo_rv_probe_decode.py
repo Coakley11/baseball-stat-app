@@ -82,7 +82,7 @@ def test_encode_does_not_truncate_large_ledger():
     assert len(line) > 70000
 
 
-def test_extract_longest_ledger_when_multiple_prefix_copies():
+def test_last_ledger_prefix_wins_when_multiple_copies():
     small = encode_control_probe_payload({"run_id": "small", "rows": [{"event": "a"}]})
     large = encode_control_probe_payload(
         {"run_id": "large", "rows": [{"event": "b", "extra": {"pad": "z" * 8000}}]}
@@ -91,6 +91,15 @@ def test_extract_longest_ledger_when_multiple_prefix_copies():
     decoded, meta = decode_control_probe_text_with_meta(text)
     assert meta.get("decode_ok") is True
     assert decoded.get("run_id") == "large"
+
+
+def test_does_not_merge_two_ledgers_in_one_code_block():
+    a = encode_control_probe_payload({"run_id": "first", "rows": [{"event": "a"}]})
+    b = encode_control_probe_payload({"run_id": "second", "rows": [{"event": "b"}]})
+    combined = a + "\n" + b
+    decoded, meta = decode_control_probe_text_with_meta(combined)
+    assert meta.get("decode_ok") is True
+    assert decoded.get("run_id") == "second"
 
 
 def test_neither_ledger_nor_exception_is_page_not_ready():
