@@ -14517,20 +14517,40 @@ if _needs_live_prep:
         )
     except ImportError:
         pass
+    _skip_global_live_prep = False
     try:
-        from live_draft_state import prepare_live_draft_state
+        from live_draft_setup_persist import should_skip_live_draft_state_prep
 
-        prepare_live_draft_state(st.session_state)
-    except Exception as _ld_exc:
+        _skip_global_live_prep = should_skip_live_draft_state_prep(st.session_state)
+    except ImportError:
+        pass
+    if _needs_live_prep and not _skip_global_live_prep:
         try:
-            from fantasy_workflow_trace import note_suppressed_exception
+            from live_draft_state import prepare_live_draft_state
 
-            note_suppressed_exception(
+            prepare_live_draft_state(st.session_state)
+        except Exception as _ld_exc:
+            try:
+                from fantasy_workflow_trace import note_suppressed_exception
+
+                note_suppressed_exception(
+                    st.session_state,
+                    function="prepare_live_draft_state",
+                    exc=_ld_exc,
+                    page=_active_page_for_prep,
+                    st=st,
+                )
+            except ImportError:
+                pass
+    elif _needs_live_prep and _skip_global_live_prep:
+        try:
+            from live_draft_setup_persist import record_rv3_duplicate_live_draft_prepare_skipped
+
+            record_rv3_duplicate_live_draft_prepare_skipped(
+                st,
                 st.session_state,
-                function="prepare_live_draft_state",
-                exc=_ld_exc,
-                page=_active_page_for_prep,
-                st=st,
+                prepare_location="global_begin_draft_restore",
+                prepare_reason="begin:draft_restore",
             )
         except ImportError:
             pass
@@ -22631,6 +22651,18 @@ elif active_page == "Live Draft Room":
                         prepare_live_draft_state(st.session_state)
                 except ImportError:
                     prepare_live_draft_state(st.session_state)
+            else:
+                try:
+                    from live_draft_setup_persist import record_rv3_duplicate_live_draft_prepare_skipped
+
+                    record_rv3_duplicate_live_draft_prepare_skipped(
+                        st,
+                        st.session_state,
+                        prepare_location="ldr_prepare_live_draft_state",
+                        prepare_reason="ldr_room_restoration_reconciliation",
+                    )
+                except ImportError:
+                    pass
             try:
                 from live_draft_room_mutation_audit import room_mutation_checkpoint
 

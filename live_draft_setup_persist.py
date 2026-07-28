@@ -21,6 +21,26 @@ def is_live_draft_pre_pick_setup(session: dict[str, Any], room: dict[str, Any] |
     return status in ("", "not_started") and board_len == 0
 
 
+def rv3_duplicate_live_draft_prepare_skip_active(session: dict[str, Any]) -> bool:
+    """RV3 ladder: skip duplicate global prepare after pre-app bootstrap restored owned room."""
+    if str(session.get("_solo_rv_ladder_step") or "") != "RV3":
+        return False
+    run_id = str(session.get("_solo_rv_run_id") or "").strip()
+    if not run_id:
+        return False
+    if str(session.get("active_page") or "") != "Live Draft Room":
+        return False
+    try:
+        from live_draft_solo_rv_production_room_setup import RV1_SETUP_OWNER_KEY
+
+        owner = session.get(RV1_SETUP_OWNER_KEY) or {}
+    except ImportError:
+        return False
+    if not isinstance(owner, dict) or not owner.get("setup_completed"):
+        return False
+    return str(owner.get("owner_run_id") or "").strip() == run_id
+
+
 def should_skip_draft_room_prep_for_live_setup(session: dict[str, Any]) -> bool:
     """Skip simulator canonical board hydrate/sync during pure live-draft setup reruns."""
     if str(session.get("active_page") or "") != "Live Draft Room":
@@ -29,10 +49,61 @@ def should_skip_draft_room_prep_for_live_setup(session: dict[str, Any]) -> bool:
 
 
 def should_skip_live_draft_state_prep(session: dict[str, Any]) -> bool:
-    """Skip live_draft_state hydrate when no runtime room exists yet."""
+    """Skip live_draft_state hydrate when no runtime room exists yet, or RV3 duplicate global prepare."""
     if str(session.get("active_page") or "") != "Live Draft Room":
         return False
+    if rv3_duplicate_live_draft_prepare_skip_active(session):
+        return True
     return is_live_draft_pre_pick_setup(session)
+
+
+def record_rv3_duplicate_live_draft_prepare_skipped(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    prepare_location: str,
+    prepare_reason: str = "",
+) -> None:
+    """Ledger row when a global prepare_live_draft_state call is skipped for RV3 continuity."""
+    if not rv3_duplicate_live_draft_prepare_skip_active(session):
+        return
+    run_id = str(session.get("_solo_rv_run_id") or "").strip()
+    try:
+        from live_draft_solo_rv3_room_continuity import snapshot_rv3_room_presence
+        from live_draft_solo_rv_control_probe import append_control_event
+        from live_draft_solo_rv_production_room_setup import RV1_SETUP_OWNER_KEY, room_state_fingerprint
+
+        snap = snapshot_rv3_room_presence(session)
+        owner = session.get(RV1_SETUP_OWNER_KEY) or {}
+        owner_rid = str((owner.get("room_id") if isinstance(owner, dict) else "") or "").strip().upper()
+        live = session.get("live_draft_room")
+        room_fp = ""
+        if isinstance(live, dict):
+            try:
+                room_fp = room_state_fingerprint(live)
+            except Exception:
+                room_fp = str(snap.get("live_draft_room_fingerprint") or "")
+        append_control_event(
+            st,
+            session,
+            "rv3_duplicate_live_draft_prepare_skipped",
+            control_name="RV3",
+            room=live if isinstance(live, dict) else None,
+            extra={
+                "solo_rv_run_id": run_id,
+                "prepare_location": str(prepare_location or ""),
+                "prepare_reason": str(prepare_reason or ""),
+                "active_page": str(session.get("active_page") or ""),
+                "room_id": str(snap.get("live_draft_room_id") or owner_rid),
+                "owner_room_id": owner_rid,
+                "room_fingerprint": room_fp or str(snap.get("setup_owner_fingerprint") or ""),
+                "live_draft_room_present": bool(snap.get("live_draft_room_present")),
+                "canonical_live_draft_present": bool(snap.get("canonical_live_draft_present")),
+                "canonical_live_draft_room_id": str(snap.get("canonical_live_draft_room_id") or ""),
+            },
+        )
+    except ImportError:
+        pass
 
 
 def should_skip_live_draft_recommendations(session: dict[str, Any], room: dict[str, Any] | None = None) -> bool:
