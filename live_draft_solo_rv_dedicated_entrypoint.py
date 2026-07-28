@@ -180,6 +180,18 @@ def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
             render_native_control_probe(st, session, probe_placeholder)
             st.caption(f"RV ladder {step}: mount prep failed {prep.get('invalid') or prep.get('reason')}")
             return True
+        if phase == RV3_PHASE_POST_DELIVERY and not session.get("_solo_rv_rv3_post_delivery_full_rerun"):
+            try:
+                from solo_countdown_wake_micro_core import solo_persistent_wake_widget_key
+
+                key = solo_persistent_wake_widget_key(session)
+                if st.session_state.get(key) and session.get("_solo_rv_prior_declaration_returned"):
+                    session["_solo_rv_rv3_post_delivery_full_rerun"] = True
+                    render_native_control_probe(st, session, probe_placeholder)
+                    st.rerun()
+                    return True
+            except ImportError:
+                pass
         st.caption(f"RV ladder {step}: phase={phase} room reuse/hydrate on LDR entry")
         return False
     if step in ("RV1", "RV2"):

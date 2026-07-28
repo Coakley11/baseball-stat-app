@@ -456,6 +456,7 @@ def run_rv_control_observation(
         probe=probe,
         rows=rows,
         instrumentation_epoch_id=instrumentation_epoch_id,
+        control_step=control_step,
     )
     return {
         "verdict": None,
@@ -480,6 +481,7 @@ def _rv1_post_declaration_epoch(
     probe: dict[str, Any],
     rows: list[dict[str, Any]],
     instrumentation_epoch_id: str = "",
+    control_step: str = "RV1",
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], float | None, dict[str, Any]]:
     from solo_rv_browser_observation import (
         attach_rv_page_listeners,
@@ -514,15 +516,21 @@ def _rv1_post_declaration_epoch(
         page.wait_for_timeout(2000)
 
     exp = wait_rv_control_expiration(page, timeout_s=95.0)
+    exp["control_step"] = control_step
     reg = scrape_registry_localstorage(page)
     exp, reg = filter_observations_by_run_identity(exp, reg, identity)
     exp["harness_room_id"] = harness_room_id
     exp["hydrated_room_id"] = hydrated_room
     exp["instrumentation_epoch_id"] = instrumentation_epoch_id
     exp["expected_token_ledger"] = expected_token
-    poll_until = time.time() + 60.0
+    poll_until = time.time() + (120.0 if control_step == "RV3" else 60.0)
     while time.time() < poll_until:
         probe = poll_control_probe_best(page, probe)
+        rows = state_ledger_rows_for_run(probe, run_id)
+        if control_step == "RV3" and any(
+            str(r.get("event") or "") == "post_delivery_redeclaration" for r in rows
+        ):
+            break
         attach_rv_page_listeners(page, expected_token=expected_token)
         page.wait_for_timeout(2000)
     probe = poll_control_probe_best(page, probe)
