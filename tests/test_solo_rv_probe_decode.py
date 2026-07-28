@@ -62,6 +62,37 @@ def test_malformed_base64_reports_probe_decode_failed():
     assert "PROBE_DECODE_FAILED" in str(meta.get("decode_error") or "")
 
 
+def test_encode_does_not_truncate_large_ledger():
+    """Regression: [:48000] JSON cap produced ~64k b64 and invalid JSON on Cloud RV3 runs."""
+    rows = []
+    for i in range(120):
+        rows.append(
+            {
+                "event": "rv3_room_checkpoint",
+                "event_sequence": i + 1,
+                "run_id": "r-large",
+                "extra": {"checkpoint": "before_prepare_live_draft_state", "padding": "x" * 400},
+            }
+        )
+    payload = {"run_id": "r-large", "step": "RV3", "script_run_seq": 4, "rows": rows}
+    line = encode_control_probe_payload(payload)
+    decoded, meta = decode_control_probe_text_with_meta(line)
+    assert meta.get("decode_ok") is True
+    assert len(decoded.get("rows") or []) == 120
+    assert len(line) > 70000
+
+
+def test_extract_longest_ledger_when_multiple_prefix_copies():
+    small = encode_control_probe_payload({"run_id": "small", "rows": [{"event": "a"}]})
+    large = encode_control_probe_payload(
+        {"run_id": "large", "rows": [{"event": "b", "extra": {"pad": "z" * 8000}}]}
+    )
+    text = f"noise\n{small}\nmore\n{large}\n"
+    decoded, meta = decode_control_probe_text_with_meta(text)
+    assert meta.get("decode_ok") is True
+    assert decoded.get("run_id") == "large"
+
+
 def test_neither_ledger_nor_exception_is_page_not_ready():
     state = classify_page_shell(
         page_text="Loading...",

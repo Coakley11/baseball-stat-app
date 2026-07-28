@@ -77,19 +77,15 @@ def build_control_probe_payload(session: dict[str, Any], run_id: str) -> dict[st
 
 
 def encode_control_probe_payload(payload: dict[str, Any]) -> str:
-    raw = json.dumps(payload, default=str)[:48000]
+    """Full ledger JSON → base64 (never truncate — 48k cap caused invalid PROBE_DECODE_FAILED on Cloud)."""
+    raw = json.dumps(payload, default=str, separators=(",", ":"))
     return RV_LEDGER_B64_PREFIX + base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
 
 _B64_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
 
 
-def extract_ledger_b64_payload(text: str) -> tuple[str, str]:
-    """Extract contiguous base64 after prefix, ignoring whitespace from st.code wraps."""
-    raw = html.unescape(str(text or ""))
-    idx = raw.find(RV_LEDGER_B64_PREFIX)
-    if idx < 0:
-        return "", ""
+def _b64_after_prefix(raw: str, idx: int) -> str:
     tail = raw[idx + len(RV_LEDGER_B64_PREFIX) :]
     chars: list[str] = []
     for ch in tail:
@@ -99,10 +95,78 @@ def extract_ledger_b64_payload(text: str) -> tuple[str, str]:
             continue
         else:
             break
-    b64 = "".join(chars)
-    snippet_end = idx + len(RV_LEDGER_B64_PREFIX) + min(len(b64), 240)
-    snippet = raw[idx:snippet_end]
-    return b64, snippet
+    return "".join(chars)
+
+
+def extract_ledger_b64_payload(text: str) -> tuple[str, str]:
+    """Extract base64 after prefix; pick longest match (Streamlit may leave older st.code copies in DOM)."""
+    raw = html.unescape(str(text or ""))
+    best_b64 = ""
+    best_idx = -1
+    start = 0
+    while start < len(raw):
+        idx = raw.find(RV_LEDGER_B64_PREFIX, start)
+        if idx < 0:
+            break
+        b64 = _b64_after_prefix(raw, idx)
+        if len(b64) > len(best_b64):
+            best_b64 = b64
+            best_idx = idx
+        start = idx + len(RV_LEDGER_B64_PREFIX)
+    if best_idx < 0:
+        return "", ""
+    snippet_end = best_idx + len(RV_LEDGER_B64_PREFIX) + min(len(best_b64), 240)
+    snippet = raw[best_idx:snippet_end]
+    return best_b64, snippet
+
+
+def playwright_ledger_scrape_script() -> str:
+    """JS body: return page text preferring longest st.code block that contains the ledger prefix."""
+    prefix = RV_LEDGER_B64_PREFIX
+    return f"""() => {{
+      const prefix = {json.dumps(prefix)};
+      function extractB64(t) {{
+        const idx = t.indexOf(prefix);
+        if (idx < 0) return '';
+        let tail = t.slice(idx + prefix.length);
+        let b64 = '';
+        const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+        for (let i = 0; i < tail.length; i++) {{
+          const ch = tail[i];
+          if (alphabet.includes(ch)) b64 += ch;
+          else if (/\\s/.test(ch)) continue;
+          else break;
+        }}
+        return b64;
+      }}
+      let best = '';
+      const roots = [document];
+      for (const f of document.querySelectorAll('iframe')) {{
+        try {{ if (f.contentDocument) roots.push(f.contentDocument); }} catch (e) {{}}
+      }}
+      for (const root of roots) {{
+        if (!root) continue;
+        for (const el of root.querySelectorAll('[data-testid="stCodeBlock"] pre, pre, code')) {{
+          const t = el.textContent || '';
+          if (!t.includes(prefix)) continue;
+          const b64 = extractB64(t);
+          if (b64.length > best.length) best = b64;
+        }}
+        const bodyT = root.body ? root.body.innerText : '';
+        const b64 = extractB64(bodyT);
+        if (b64.length > best.length) best = b64;
+      }}
+      if (best.length) return prefix + best;
+      let t = document.body ? document.body.innerText : '';
+      for (const f of document.querySelectorAll('iframe')) {{
+        try {{
+          if (f.contentDocument && f.contentDocument.body) {{
+            t += '\\n' + f.contentDocument.body.innerText;
+          }}
+        }} catch (e) {{}}
+      }}
+      return t;
+    }}"""
 
 
 def _decode_b64_json_payload(b64: str) -> dict[str, Any]:

@@ -184,6 +184,15 @@ def attach_page_diagnostics(page) -> dict[str, Any]:
 
 
 def scrape_visible_page_text(page) -> str:
+    from live_draft_solo_rv_control_probe import playwright_ledger_scrape_script
+
+    try:
+        return str(page.evaluate(playwright_ledger_scrape_script()) or "")
+    except Exception:
+        return ""
+
+
+def scrape_visible_page_text_legacy(page) -> str:
     try:
         return str(
             page.evaluate(
@@ -559,26 +568,11 @@ def _rv1_post_declaration_epoch(
 
 
 def scrape_control_probe(page) -> dict[str, Any]:
-    from live_draft_solo_rv_control_probe import decode_control_probe_text_with_meta
+    from live_draft_solo_rv_control_probe import decode_control_probe_text_with_meta, playwright_ledger_scrape_script
 
     try:
-        text = page.evaluate(
-            """() => {
-              function allText() {
-                let t = document.body ? document.body.innerText : '';
-                for (const f of document.querySelectorAll('iframe')) {
-                  try {
-                    if (f.contentDocument && f.contentDocument.body) {
-                      t += '\\n' + f.contentDocument.body.innerText;
-                    }
-                  } catch (e) {}
-                }
-                return t;
-              }
-              return allText();
-            }"""
-        )
-        payload, meta = decode_control_probe_text_with_meta(str(text or ""))
+        text = str(page.evaluate(playwright_ledger_scrape_script()) or "")
+        payload, meta = decode_control_probe_text_with_meta(text)
         out: dict[str, Any] = {"_probe_parse": meta, "rows": list(payload.get("rows") or [])}
         if payload.get("run_id"):
             out["run_id"] = payload.get("run_id")
