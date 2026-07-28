@@ -487,16 +487,44 @@ def build_rv3_production_placement_report(rows: list[dict[str, Any]]) -> dict[st
     }
 
 
+def rv3_room_continuity_invalid_reason(rows: list[dict[str, Any]]) -> str:
+    """Room continuity lane (not binding A–D)."""
+    events = [str(r.get("event") or "") for r in rows]
+    if "rv_mount_failed" not in events:
+        return ""
+    fail_idx = max(i for i, ev in enumerate(events) if ev == "rv_mount_failed")
+    tail = rows[fail_idx + 1 :]
+    hydrated_after = any(str(r.get("event") or "") == "real_room_hydrated" for r in tail)
+    decl_after = any(str(r.get("event") or "") == "declaration_attempt" for r in tail)
+    if decl_after and not hydrated_after:
+        return "INVALID_RV3_POST_DELIVERY_ROOM_STATE_LOST"
+    fail_row = rows[fail_idx]
+    extra = _row_extra_dict(fail_row)
+    inv = str(extra.get("invalid") or "")
+    if inv == "INVALID_RV3_POST_DELIVERY_ROOM_STATE_LOST":
+        return inv
+    reason = str(extra.get("reason") or fail_row.get("reason") or "")
+    if "rv3_post_setup_without_live_room" in reason and not hydrated_after:
+        return "INVALID_RV3_POST_DELIVERY_ROOM_STATE_LOST"
+    return ""
+
+
 def rv3_production_placement_invalid_reason(rows: list[dict[str, Any]]) -> str:
     inv = rv3_ledger_invalid_reason(rows)
     if inv:
         return inv
+    room_inv = rv3_room_continuity_invalid_reason(rows)
+    if room_inv:
+        return room_inv
     events = {str(r.get("event") or "") for r in rows}
     if "rv_mount_failed" in events:
         row = next(r for r in rows if r.get("event") == "rv_mount_failed")
         inv = str(_row_extra_dict(row).get("invalid") or "")
         if inv.startswith("INVALID_RV3"):
             return inv
+        room_inv = rv3_room_continuity_invalid_reason(rows)
+        if room_inv:
+            return room_inv
         reason = str(_row_extra_dict(row).get("reason") or row.get("reason") or "mount_failed")
         return f"INVALID_RV3_PRODUCTION_DECLARATION_NOT_REACHED"
     report = build_rv3_production_placement_report(rows)

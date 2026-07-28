@@ -97,6 +97,7 @@ def test_rv3_hydrated_allows_declaration():
         "_solo_rv_run_id": "r1",
         "_solo_rv_rv3_phase": RV3_PHASE_PRODUCTION_MOUNT,
         "_solo_rv_rv3_real_room_hydrated": True,
+        "_solo_rv_rv3_mount_ok_this_run": True,
     }
     session["_solo_rv_rv3_phase_run_id"] = "r1"
     try:

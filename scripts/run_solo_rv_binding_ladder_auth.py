@@ -797,6 +797,40 @@ def _grade_rv_real_control_step(
         root = binding_fail[1]
     elif overall in ("PASS_RETURN_VALUE_DELIVERY", "PASS_WITH_OBSERVABILITY_WARN", "PASS"):
         root = ""
+    if step == "RV3":
+        from solo_rv_ladder_runner_state import rv3_room_continuity_invalid_reason
+
+        room_inv = rv3_room_continuity_invalid_reason(ledger_rows)
+        setup_inv = __import__(
+            "solo_rv_ladder_runner_state",
+            fromlist=["rv3_ledger_invalid_reason"],
+        ).rv3_ledger_invalid_reason(ledger_rows)
+        events = {str(r.get("event") or "") for r in ledger_rows}
+        placement_lane = (
+            "PASS"
+            if not setup_inv
+            and "rv3_production_placement_entered" in events
+            and "declaration_returned" in events
+            else ("FAIL" if setup_inv else "PENDING")
+        )
+        room_lane = "FAIL" if room_inv else "PASS"
+        if (
+            room_inv
+            and placement_lane == "PASS"
+            and delivery_ok
+            and python_verdict == "PASS_RETURN_VALUE_DELIVERY"
+        ):
+            overall = "INVALID"
+            overall_reason = room_inv
+            root = ""
+            binding_fail = None
+        result_room = {
+            "production_placement_verdict": placement_lane,
+            "room_continuity_verdict": room_lane,
+            "room_continuity_reason": room_inv or "PASS",
+        }
+    else:
+        result_room = {}
     hydrated_row = next((r for r in ledger_rows if r.get("event") == "real_room_hydrated"), None)
     streamlit_session = ""
     for row in ledger_rows:
@@ -844,6 +878,7 @@ def _grade_rv_real_control_step(
         "room_reuse_report": room_reuse_report,
         "run_identity": identity,
         "expiration_skipped": bool(expiration.get("skipped_expiration") or expiration.get("hydration_failed")),
+        **result_room,
     }
 
 
@@ -883,8 +918,11 @@ def evaluate_step(
         room_reuse_report = build_rv1_room_reuse_report(ledger_rows, run_id=run_id)
         if step == "RV3":
             dup_reason = rv3_production_placement_invalid_reason(ledger_rows)
+            room_continuity_only = dup_reason == "INVALID_RV3_POST_DELIVERY_ROOM_STATE_LOST"
             if not dup_reason:
                 dup_reason = rv1_logical_setup_invalid_reason(ledger_rows)
+            elif room_continuity_only:
+                dup_reason = ""
         else:
             dup_reason = rv1_logical_setup_invalid_reason(ledger_rows)
         placement_report: dict[str, Any] = {}

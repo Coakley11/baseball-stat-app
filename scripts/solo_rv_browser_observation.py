@@ -320,6 +320,7 @@ def grade_rv_python_binding(ledger_rows: list[dict[str, Any]], *, expected_token
     if not expected_token:
         return "INVALID", "INVALID_PYTHON_BINDING_missing_expected_token"
     from live_draft_solo_rv3_phase import is_rv3_rejected_token
+    from live_draft_solo_rv3_room_continuity import extract_micro_cycle_binding_token
 
     for row in reversed(ledger_rows):
         ev = str(row.get("event") or "")
@@ -330,12 +331,17 @@ def grade_rv_python_binding(ledger_rows: list[dict[str, Any]], *, expected_token
             continue
         if expected_token and tok and tok != expected_token and expected_token not in tok:
             continue
-        coalesced = str(row.get("coalesced_value") or "").strip().strip("'\"")
+        coalesced = extract_micro_cycle_binding_token(row.get("coalesced_value"))
+        if not coalesced:
+            coalesced = extract_micro_cycle_binding_token(row.get("component_return"))
         if not coalesced:
             cr = str(row.get("component_return") or "").strip().strip("'\"")
-            if cr and cr != "None":
+            if cr and cr != "None" and not cr.startswith("MicroCycleResult"):
                 coalesced = cr
         ss_after = str(row.get("session_state_after") or "")
+        extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+        if not ss_after and isinstance(extra, dict):
+            ss_after = str(extra.get("session_state_after") or "")
         if expected_token in ss_after:
             return "PASS_RETURN_VALUE_DELIVERY", "rv1_python_coalesced_or_session_state"
         if coalesced == expected_token:

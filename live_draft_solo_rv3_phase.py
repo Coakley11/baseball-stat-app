@@ -11,6 +11,8 @@ RV3_BLOCK_DIAG_KEY = "_solo_rv_rv3_block_diag_countdowns"
 RV3_HYDRATED_KEY = "_solo_rv_rv3_real_room_hydrated"
 RV3_DECLARED_THIS_RUN_KEY = "_solo_rv_rv3_production_declared_this_run"
 RV3_SETUP_COMPLETE_KEY = "_solo_rv_rv3_setup_complete"
+RV3_MOUNT_OK_THIS_RUN_KEY = "_solo_rv_rv3_mount_ok_this_run"
+RV3_MOUNT_BLOCK_REASON_KEY = "_solo_rv_rv3_mount_block_reason"
 
 RV3_PHASE_SETUP = "SETUP"
 RV3_PHASE_PRODUCTION_MOUNT = "PRODUCTION_MOUNT"
@@ -130,6 +132,11 @@ def rv3_declaration_allowed(
         return False, "INVALID_RV3_PREMATURE_COMPONENT_DECLARATION"
     if not session.get(RV3_HYDRATED_KEY):
         return False, "INVALID_RV3_PREMATURE_COMPONENT_DECLARATION"
+    if not session.get(RV3_MOUNT_OK_THIS_RUN_KEY):
+        blocked = str(session.get(RV3_MOUNT_BLOCK_REASON_KEY) or "").strip()
+        if blocked.startswith("INVALID_RV3"):
+            return False, blocked
+        return False, "INVALID_RV3_POST_DELIVERY_ROOM_STATE_LOST"
     rid = _owner_room_id(session)
     if is_rv3_rejected_token(expected_token):
         return False, "INVALID_RV3_PREMATURE_COMPONENT_DECLARATION"
@@ -172,23 +179,42 @@ def prepare_rv3_production_mount(
     """Reuse room, hydrate ledger fields, enter production placement (PRODUCTION_MOUNT / POST_DELIVERY)."""
     from live_draft_solo_rv_binding_ladder import hydrate_real_room_for_rv_ladder
     from live_draft_solo_rv_control_probe import append_control_event, render_native_control_probe
-    from live_draft_solo_rv_production_room_setup import ensure_rv1_production_solo_room
+    from live_draft_solo_rv3_room_continuity import (
+        record_rv3_room_checkpoint,
+        restore_rv3_run_scoped_room,
+        rv3_reuse_owned_room_only,
+    )
 
     phase = get_rv3_phase(session)
     if phase not in (RV3_PHASE_PRODUCTION_MOUNT, RV3_PHASE_POST_DELIVERY):
         return {"ok": False, "reason": "wrong_phase", "invalid": "INVALID_RV3_PRODUCTION_DECLARATION_NOT_REACHED"}
 
-    setup = ensure_rv1_production_solo_room(st, session, probe_placeholder=probe_placeholder)
+    record_rv3_room_checkpoint(st, session, "before_prepare_rv3_production_mount", probe_placeholder=probe_placeholder)
+    restore_rv3_run_scoped_room(session)
+
+    if phase == RV3_PHASE_POST_DELIVERY:
+        setup = rv3_reuse_owned_room_only(st, session, probe_placeholder=probe_placeholder)
+    else:
+        from live_draft_solo_rv_production_room_setup import ensure_rv1_production_solo_room
+
+        setup = ensure_rv1_production_solo_room(st, session, probe_placeholder=probe_placeholder)
     if not setup.get("ok"):
         inv = str(setup.get("invalid") or "INVALID_RV3_REAL_ROOM_NOT_HYDRATED")
+        session.pop(RV3_MOUNT_OK_THIS_RUN_KEY, None)
+        session[RV3_MOUNT_BLOCK_REASON_KEY] = inv
+        record_rv3_room_checkpoint(st, session, "after_prepare_rv3_production_mount_failed", probe_placeholder=probe_placeholder)
         return {"ok": False, "reason": str(setup.get("reason") or ""), "invalid": inv}
 
     hydrated = hydrate_real_room_for_rv_ladder(st, session, probe_placeholder=probe_placeholder)
     if not hydrated.get("ok"):
+        inv = "INVALID_RV3_POST_DELIVERY_ROOM_STATE_LOST" if phase == RV3_PHASE_POST_DELIVERY else "INVALID_RV3_REAL_ROOM_NOT_HYDRATED"
+        session.pop(RV3_MOUNT_OK_THIS_RUN_KEY, None)
+        session[RV3_MOUNT_BLOCK_REASON_KEY] = inv
+        record_rv3_room_checkpoint(st, session, "after_prepare_rv3_production_mount_failed", probe_placeholder=probe_placeholder)
         return {
             "ok": False,
             "reason": str(hydrated.get("reason") or "hydration_failed"),
-            "invalid": "INVALID_RV3_REAL_ROOM_NOT_HYDRATED",
+            "invalid": inv,
         }
 
     owner_rid = _owner_room_id(session)
@@ -201,6 +227,9 @@ def prepare_rv3_production_mount(
         return {"ok": False, "reason": "token_mismatch", "invalid": "INVALID_RV3_PRODUCTION_DECLARATION_NOT_REACHED"}
 
     mark_rv3_hydrated(session)
+    session[RV3_MOUNT_OK_THIS_RUN_KEY] = True
+    session.pop(RV3_MOUNT_BLOCK_REASON_KEY, None)
+    record_rv3_room_checkpoint(st, session, "after_prepare_rv3_production_mount", probe_placeholder=probe_placeholder)
     append_control_event(
         st,
         session,
@@ -223,3 +252,5 @@ def prepare_rv3_production_mount(
 def rv3_on_script_run_begin(session: dict[str, Any]) -> None:
     if rv3_active(session):
         session.pop(RV3_DECLARED_THIS_RUN_KEY, None)
+        session.pop(RV3_MOUNT_OK_THIS_RUN_KEY, None)
+        session.pop(RV3_MOUNT_BLOCK_REASON_KEY, None)

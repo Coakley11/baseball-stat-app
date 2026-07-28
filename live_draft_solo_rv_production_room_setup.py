@@ -279,9 +279,20 @@ def ensure_rv1_production_solo_room(
 
     if step == "RV3":
         try:
-            from live_draft_solo_rv3_phase import RV3_PHASE_SETUP, get_rv3_phase
+            from live_draft_solo_rv3_phase import RV3_PHASE_POST_DELIVERY, RV3_PHASE_SETUP, get_rv3_phase
 
-            if get_rv3_phase(session) != RV3_PHASE_SETUP:
+            phase = get_rv3_phase(session)
+            if phase == RV3_PHASE_POST_DELIVERY:
+                from live_draft_solo_rv3_room_continuity import rv3_reuse_owned_room_only
+
+                return rv3_reuse_owned_room_only(st, session, probe_placeholder=probe_placeholder)
+            if phase != RV3_PHASE_SETUP:
+                try:
+                    from live_draft_solo_rv3_room_continuity import restore_rv3_run_scoped_room
+
+                    restore_rv3_run_scoped_room(session)
+                except ImportError:
+                    pass
                 reused = _try_rv1_reuse_owned_room(
                     st, session, run_id=run_id, step=step, probe_placeholder=probe_placeholder
                 )
@@ -289,7 +300,7 @@ def ensure_rv1_production_solo_room(
                     return reused
                 return {
                     "ok": False,
-                    "invalid": "INVALID_RV3_REAL_ROOM_NOT_HYDRATED",
+                    "invalid": "INVALID_RV3_POST_DELIVERY_ROOM_STATE_LOST",
                     "reason": "rv3_post_setup_without_live_room",
                 }
         except ImportError:

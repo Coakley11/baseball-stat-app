@@ -19,8 +19,24 @@ from live_draft_solo_rv_control_probe import (
 
 def _rv_real_room_bootstrap(st: Any, session: dict[str, Any], *, step: str = "") -> None:
     """Diag-only: restore auth/workspace before RV1+ mount (no cross-nav room hydration)."""
+    rv3 = step == "RV3"
+    probe_placeholder = None
+    if rv3:
+        try:
+            from live_draft_solo_rv3_room_continuity import record_rv3_room_checkpoint
+
+            record_rv3_room_checkpoint(st, session, "script_begin")
+        except ImportError:
+            pass
     if step not in ("RV1", "RV2", "RV3"):
         _apply_harness_room_query_context(st, session)
+    if rv3:
+        try:
+            from live_draft_solo_rv3_room_continuity import record_rv3_room_checkpoint
+
+            record_rv3_room_checkpoint(st, session, "before_auth_restore")
+        except ImportError:
+            pass
     try:
         from suite_workspace import bootstrap_suite_workspace
 
@@ -46,18 +62,42 @@ def _rv_real_room_bootstrap(st: Any, session: dict[str, Any], *, step: str = "")
             process_pending_auth_login(st)
     except Exception:
         pass
+    if rv3:
+        try:
+            from live_draft_solo_rv3_room_continuity import record_rv3_room_checkpoint
+
+            record_rv3_room_checkpoint(st, session, "after_auth_restore")
+            record_rv3_room_checkpoint(st, session, "before_workspace_preparation")
+        except ImportError:
+            pass
     try:
         from baseball_persistent_state import prepare_baseball_workspace
 
         prepare_baseball_workspace(st)
     except Exception:
         pass
+    if rv3:
+        try:
+            from live_draft_solo_rv3_room_continuity import record_rv3_room_checkpoint
+
+            record_rv3_room_checkpoint(st, session, "after_workspace_preparation")
+            record_rv3_room_checkpoint(st, session, "before_prepare_live_draft_state")
+        except ImportError:
+            pass
     try:
         from live_draft_state import prepare_live_draft_state
 
         prepare_live_draft_state(session)
     except Exception:
         pass
+    if rv3:
+        try:
+            from live_draft_solo_rv3_room_continuity import record_rv3_room_checkpoint, restore_rv3_run_scoped_room
+
+            record_rv3_room_checkpoint(st, session, "after_prepare_live_draft_state")
+            restore_rv3_run_scoped_room(session)
+        except ImportError:
+            pass
     try:
         from live_draft_queue_survival import begin_queue_script_pass
 

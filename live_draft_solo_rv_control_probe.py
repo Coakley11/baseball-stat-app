@@ -208,6 +208,7 @@ def mount_with_rv_control_declaration(
             set_rv3_phase,
             RV3_PHASE_POST_DELIVERY,
         )
+        from live_draft_solo_rv3_room_continuity import record_rv3_room_checkpoint
 
         allowed, invalid = rv3_declaration_allowed(
             session, expected_token=expected, location=location
@@ -241,6 +242,7 @@ def mount_with_rv_control_declaration(
             )
             render_native_control_probe(st, session, probe_placeholder)
             return None
+        record_rv3_room_checkpoint(st, session, "before_production_declaration", probe_placeholder=probe_placeholder)
     was_post_delivery_run = bool(session.get("_solo_rv_prior_declaration_returned"))
     append_control_event(
         st,
@@ -292,8 +294,10 @@ def mount_with_rv_control_declaration(
         session["_solo_rv_prior_declaration_returned"] = True
     if str(session.get("_solo_rv_ladder_step") or control_name or "") == "RV3" or control_name == "RV3":
         from live_draft_solo_rv3_phase import mark_rv3_production_declared, set_rv3_phase, RV3_PHASE_POST_DELIVERY
+        from live_draft_solo_rv3_room_continuity import record_rv3_room_checkpoint
 
         mark_rv3_production_declared(session)
+        record_rv3_room_checkpoint(st, session, "after_component_return_processing", probe_placeholder=probe_placeholder)
         if was_post_delivery_run:
             set_rv3_phase(session, RV3_PHASE_POST_DELIVERY)
     if coerced:
