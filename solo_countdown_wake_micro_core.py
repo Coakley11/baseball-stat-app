@@ -301,6 +301,12 @@ def render_micro_isolation_once(
                 )
         except ImportError:
             pass
+        try:
+            from live_draft_stage1_parent_boundary import stage1_parent_boundary_probe_enabled
+
+            boundary_probe = stage1_parent_boundary_probe_enabled(st, session)
+        except ImportError:
+            boundary_probe = False
         raw_component_value = mount_solo_countdown_wake_with_token(
             production_room,
             key=key,
@@ -308,6 +314,7 @@ def render_micro_isolation_once(
             actionable=production_actionable,
             on_change=mount_on_change,
             chain_persist_key=chain_persist_key,
+            stage1_parent_boundary_probe=boundary_probe,
         )
         if use_return_delivery and raw_component_value is None and key in st.session_state:
             raw_component_value = st.session_state.get(key)

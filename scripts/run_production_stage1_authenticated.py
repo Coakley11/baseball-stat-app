@@ -31,6 +31,7 @@ OUT_CLEANUP = ROOT / "data" / "production_stage1a_preflight_cleanup.json"
 OUT_RETURN_CHAIN = ROOT / "data" / "production_stage1a_return_value_chain.json"
 OUT_SERVER_LEDGER = ROOT / "data" / "production_stage1a_server_ledger_merged.json"
 OUT_DIAG_RUN = ROOT / "data" / "production_stage1a_instrumented_diag.json"
+OUT_PARENT_BOUNDARY = ROOT / "data" / "production_stage1a_parent_boundary_validation.json"
 REQUIRED_CLOUD_SHA = ""
 
 
@@ -70,7 +71,10 @@ def ensure_fresh_setup_lobby(page, *, max_wait_s: int = 180) -> dict[str, Any]:
 
 
 def production_url() -> str:
-    base = f"{BASE}/?active_page=Live%20Draft%20Room&solo_component_diag=1&solo_diag_timer=10"
+    base = (
+        f"{BASE}/?active_page=Live%20Draft%20Room"
+        f"&solo_component_diag=1&solo_diag_timer=10&solo_stage1_parent_boundary=1"
+    )
     return append_suite_sid_to_url(base)
 
 
@@ -277,6 +281,18 @@ def build_return_value_chain_report(
     from live_draft_stage1_receipt_levels import classify_receipt_levels, is_logical_value_receipt, refine_a5a_subclass
 
     logical_imm = [m for m in parent_msgs if is_logical_value_receipt(m, expected_token=token_sent)]
+    frame2_msgs = list(exp.get("frame2_parent_messages") or [])
+    frame2_scv = [
+        m
+        for m in frame2_msgs
+        if m.get("is_set_component_value")
+        and token_sent
+        and (
+            str(m.get("value_preview") or "") == token_sent
+            or token_sent in str(m.get("payload_json") or "")
+        )
+    ]
+    frame2_probe = [m for m in frame2_msgs if m.get("is_parent_probe")]
     deduped_parent = len(logical_imm)
     levels = classify_receipt_levels(
         expected_token=token_sent,
@@ -288,8 +304,22 @@ def build_return_value_chain_report(
         direct_return=decl_return or mount_return or expire_return,
         token_claim_accepted=bool(accepted_native),
     )
+    levels["LEVEL_2_ACTUAL_IMMEDIATE_PARENT_FRAME2"] = len(frame2_scv) >= 1
+    levels["LEVEL_2_LEGACY_IMMEDIATE_OBSERVER"] = levels.get("LEVEL_2_TOP_PARENT_MESSAGE_RECEIVED_IMMEDIATE")
+    levels["LEVEL_2_TOP_INFORMATIONAL_ONLY"] = levels.get("LEVEL_2_TOP_PARENT_MESSAGE_RECEIVED_TOP")
+    levels["LEVEL_2_IMMEDIATE_PARENT_RECEIPT_STATUS"] = (
+        "PASS_FRAME2" if frame2_scv else "UNPROVEN_OBSERVER_CONTEXT"
+    )
+    levels["frame2_parent_probe_receipt_count"] = len(frame2_probe)
+    levels["frame2_set_component_value_receipt_count"] = len(frame2_scv)
     tick_after_send = tick_cancelled >= 1 and "component_value_sent" in cs
-    a5a_refined = refine_a5a_subclass(levels, unrelated_render_after_send=tick_after_send and not levels.get("LEVEL_5_PYTHON_VALUE_BOUND"))
+    a5a_refined = ""
+    if frame2_scv and not levels.get("LEVEL_5_PYTHON_VALUE_BOUND"):
+        a5a_refined = "A5a3"
+    elif frame2_scv:
+        a5a_refined = refine_a5a_subclass(levels, unrelated_render_after_send=tick_after_send)
+    else:
+        a5a_refined = "UNSET_PENDING_FRAME2_BOUNDARY"
 
     parsed_match_live = False
     if parsed_coalesced and room_id:
@@ -336,6 +366,7 @@ def build_return_value_chain_report(
             "misleading_legacy_deduped_parent_count": levels.get("misleading_legacy_deduped_parent_count"),
             "authoritative_receipt_levels": levels,
             "refined_boundary_a5a": a5a_refined,
+            "overall_parent_boundary_verdict": exp.get("parent_boundary_validation", {}).get("overall_verdict", ""),
             "iframe_remounts": remounts,
             "tick_cancellations": tick_cancelled,
             "double_production_send_analysis": double,
@@ -494,7 +525,13 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
         install_harness_top_observer,
         merge_ledger_rows,
         scrape_parent_observer_exports,
-        scrape_stage1_production_ledger,
+    )
+    from stage1_frame2_parent_boundary import (
+        classify_parent_boundary_p,
+        collect_observer_execution_contexts,
+        install_frame2_parent_listener,
+        scrape_frame2_parent_messages,
+        scrape_stage1_ledger_all_frames,
     )
 
     t0 = time.time()
@@ -523,6 +560,8 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
     install_harness_top_observer(page)
     install_immediate_parent_listeners(page)
     merged_server_ledger: list[dict[str, Any]] = []
+    frame2_install_log: list[dict[str, Any]] = []
+    frame2_meta_initial: dict[str, Any] = {}
     supabase_requests: list[dict[str, Any]] = []
 
     def _on_request(req: Any) -> None:
@@ -543,8 +582,22 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
     while time.time() < observe_until:
         install_harness_top_observer(page)
         install_immediate_parent_listeners(page)
-        ledger_snap = scrape_stage1_production_ledger(page)
-        merged_server_ledger = merge_ledger_rows(merged_server_ledger, list(ledger_snap.get("rows") or []))
+        f2 = install_frame2_parent_listener(page)
+        frame2_install_log.append({"ts": time.time(), **f2})
+        if f2.get("ok") and not frame2_meta_initial:
+            frame2_meta_initial = dict(f2.get("result") or {})
+        ledger_snap = scrape_stage1_ledger_all_frames(page)
+        best = ledger_snap.get("best") or {}
+        if best.get("b64"):
+            try:
+                from stage1_parent_observer_probe import decode_ledger_b64
+
+                decoded = decode_ledger_b64(str(best.get("b64") or ""))
+                merged_server_ledger = merge_ledger_rows(
+                    merged_server_ledger, list(decoded.get("rows") or [])
+                )
+            except Exception:
+                pass
         snap = scrape_snapshot(page)
         snap["elapsed_s"] = round(time.time() - t0, 1)
         snap["state"] = scrape_timer_fields(page)
@@ -634,8 +687,20 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
             row.setdefault("receiving_window", "app_early_observer_top")
             row.setdefault("receiving_window_level", "LEVEL_2_TOP")
             top_parent_messages.append(row)
-    ledger_final = scrape_stage1_production_ledger(page)
-    merged_server_ledger = merge_ledger_rows(merged_server_ledger, list(ledger_final.get("rows") or []))
+    ledger_final = scrape_stage1_ledger_all_frames(page)
+    best_ledger = ledger_final.get("best") or {}
+    if best_ledger.get("b64"):
+        try:
+            from stage1_parent_observer_probe import decode_ledger_b64
+
+            decoded = decode_ledger_b64(str(best_ledger.get("b64") or ""))
+            merged_server_ledger = merge_ledger_rows(
+                merged_server_ledger, list(decoded.get("rows") or [])
+            )
+        except Exception:
+            pass
+    frame2_final = scrape_frame2_parent_messages(page)
+    observer_contexts = collect_observer_execution_contexts(page)
     # Prefer topology captured while component iframes are still attached (Playwright detaches on teardown).
     if (frame_topology_final.get("frame_count") or 0) < 5:
         for snap in reversed(samples):
@@ -773,8 +838,14 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
         "top_parent_messages": top_parent_messages,
         "app_parent_observer_messages": app_observer_msgs,
         "merged_server_ledger": merged_server_ledger,
-        "merged_server_ledger_run_id": ledger_final.get("run_id") or "",
-        "merged_server_ledger_source": ledger_final.get("source") or "",
+        "merged_server_ledger_run_id": best_ledger.get("run_id") or "",
+        "merged_server_ledger_source": best_ledger.get("sanitized_url") or "",
+        "merged_server_ledger_probe_hits": ledger_final.get("hits") or [],
+        "frame2_parent_messages": list(frame2_final.get("messages") or []),
+        "frame2_observer_meta": frame2_final.get("meta") or {},
+        "frame2_navigation": frame2_final.get("navigation") or {},
+        "frame2_install_log": frame2_install_log[-40:],
+        "observer_execution_contexts": observer_contexts,
         "double_production_send_analysis": double_production,
         "value_sent_at_elapsed_s": round(value_sent_at - t0, 1) if value_sent_at else None,
         "post_send_observation_s": round(time.time() - value_sent_at, 1) if value_sent_at else None,
@@ -964,6 +1035,81 @@ def queue_text(page) -> str:
     text = all_frames_text(page)
     m = re.search(r"Draft Queue[\s\S]{0,800}", text, re.I)
     return m.group(0) if m else ""
+
+
+def build_parent_boundary_validation(exp: dict[str, Any], *, token_sent: str) -> dict[str, Any]:
+    from stage1_frame2_parent_boundary import classify_parent_boundary_p
+
+    frame2_msgs = list(exp.get("frame2_parent_messages") or [])
+    top_msgs = list(exp.get("top_parent_messages") or [])
+    cs = set(exp.get("client_stages") or [])
+    coalesced = str(exp.get("component_return") or "")
+    probe_ok = any(m.get("is_parent_probe") for m in frame2_msgs)
+    scv_ok = any(
+        m.get("is_set_component_value")
+        and token_sent
+        and (
+            str(m.get("value_preview") or "") == token_sent
+            or token_sent in str(m.get("payload_json") or "")
+        )
+        for m in frame2_msgs
+    )
+    reg_inst = ""
+    for msg in frame2_msgs:
+        inst = str((msg.get("source_association") or {}).get("iframe_instance_id") or "")
+        if inst:
+            reg_inst = inst
+            break
+    stale = False
+    current = False
+    for m in frame2_msgs:
+        if not m.get("is_set_component_value"):
+            continue
+        inst = str((m.get("source_association") or {}).get("iframe_instance_id") or "")
+        if reg_inst and inst and inst == reg_inst:
+            current = True
+        elif reg_inst and inst and inst != reg_inst:
+            stale = True
+    sender_stale = "sender_window_validity" in str(exp.get("client_chain") or "") and "frame_element_connected\": false" in str(
+        exp.get("iframe_lifecycle") or ""
+    )
+    meta = exp.get("frame2_observer_meta") or {}
+    observer_in_f2 = bool(meta.get("installed_at") or exp.get("frame2_install_log"))
+    nav0 = str((exp.get("frame2_navigation") or {}).get("url") or "")
+    nav1 = str(meta.get("navigation_id") or meta.get("document_url") or "")
+    listener_lost = bool(nav0 and nav1 and nav0 not in nav1 and not scv_ok and not probe_ok)
+    python_bound = bool(coalesced and token_sent and token_sent in coalesced)
+    p_class = classify_parent_boundary_p(
+        frame2_probe_received=probe_ok,
+        frame2_scv_received=scv_ok,
+        sender_stale_or_detached=bool(sender_stale),
+        observer_in_frame2=observer_in_f2,
+        frame2_listener_lost=listener_lost,
+        scv_from_stale_source=stale and not current,
+        scv_from_current_source=current,
+        python_bound=python_bound,
+    )
+    overall = "INCONCLUSIVE_PARENT_BOUNDARY_WITH_PYTHON_BINDING_FAILURE"
+    if scv_ok and not python_bound:
+        overall = "FRAME2_SCV_RECEIVED_PYTHON_UNBOUND"
+    elif not scv_ok and not probe_ok:
+        overall = "INCONCLUSIVE_PARENT_BOUNDARY_WITH_PYTHON_BINDING_FAILURE"
+    elif scv_ok and python_bound:
+        overall = "PASS_BOUNDARY_AND_PYTHON"
+    return {
+        "p_classification": p_class,
+        "overall_verdict": overall,
+        "frame2_probe_received": probe_ok,
+        "frame2_scv_received": scv_ok,
+        "top_scv_count": sum(1 for m in top_msgs if m.get("is_set_component_value")),
+        "top_probe_count": sum(1 for m in top_msgs if m.get("message_type") == "solo:stage1ImmediateParentProbe"),
+        "level_1_iframe_send": "component_value_sent" in cs,
+        "level_2_frame2_status": "PASS" if scv_ok else "FAIL_OR_UNPROVEN",
+        "level_5_python": "PASS" if python_bound else "FAIL",
+        "registered_iframe_instance_id": reg_inst,
+        "scv_from_current_source": current,
+        "scv_from_stale_source": stale,
+    }
 
 
 def run_stage_1b_queue(page) -> dict[str, Any]:
@@ -1229,6 +1375,14 @@ def main() -> int:
             return 1
 
         exp = wait_one_expiration(page, timeout_s=95.0)
+        exp["parent_boundary_validation"] = build_parent_boundary_validation(
+            exp, token_sent=str(exp.get("token_sent") or "")
+        )
+        OUT_PARENT_BOUNDARY.parent.mkdir(parents=True, exist_ok=True)
+        OUT_PARENT_BOUNDARY.write_text(
+            json.dumps(exp["parent_boundary_validation"], indent=2, default=str),
+            encoding="utf-8",
+        )
         return_chain = build_return_value_chain_report(
             page,
             exp,
@@ -1282,8 +1436,13 @@ def main() -> int:
             "token": exp.get("token_sent"),
             "queue_seed": queue_meta,
             "frame_topology": exp.get("frame_topology"),
+            "parent_boundary_validation": exp.get("parent_boundary_validation"),
+            "observer_execution_contexts": exp.get("observer_execution_contexts"),
+            "frame2_parent_messages": exp.get("frame2_parent_messages"),
             "authoritative_receipt_levels": (return_chain.get("browser") or {}).get("authoritative_receipt_levels"),
             "refined_boundary_a5a": (return_chain.get("browser") or {}).get("refined_boundary_a5a"),
+            "overall_verdict": (return_chain.get("browser") or {}).get("overall_parent_boundary_verdict")
+            or (exp.get("parent_boundary_validation") or {}).get("overall_verdict"),
             "source_classification_immediate": source_imm,
             "source_classification_top": source_top,
             "correlation_timeline": correlation,

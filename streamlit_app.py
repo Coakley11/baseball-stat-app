@@ -22234,6 +22234,12 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
     try:
+        from live_draft_stage1_parent_boundary import bootstrap_stage1_parent_boundary_probe
+
+        bootstrap_stage1_parent_boundary_probe(st, st.session_state)
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_delivery_diag import enable_delivery_diag_from_query
 
         enable_delivery_diag_from_query(st, st.session_state)

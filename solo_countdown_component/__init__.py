@@ -75,6 +75,7 @@ def mount_solo_countdown_wake_direct(
     actionable: bool = True,
     chain_persist_key: str = "",
     rv_diag_run_id: str = "",
+    stage1_parent_boundary_probe: bool = False,
 ) -> Any:
     """Minimal-repro mount: declare_component only, no deadline guards."""
     token = str(expire_token if expire_token is not None else "").strip()
@@ -86,6 +87,7 @@ def mount_solo_countdown_wake_direct(
         chain_persist_key=str(chain_persist_key or ""),
         widget_key=str(key),
         rv_diag_run_id=str(rv_diag_run_id or ""),
+        stage1_parent_boundary_probe=bool(stage1_parent_boundary_probe),
         key=key,
         default=None,
         on_change=on_change,
@@ -101,6 +103,7 @@ def mount_solo_countdown_wake_with_token(
     actionable: bool = True,
     chain_persist_key: str = "",
     rv_diag_run_id: str = "",
+    stage1_parent_boundary_probe: bool = False,
 ) -> Any:
     """Early persistent wake — explicit token (inert or live pick deadline)."""
     return mount_solo_countdown_wake_direct(
@@ -111,6 +114,7 @@ def mount_solo_countdown_wake_with_token(
         actionable=actionable,
         chain_persist_key=chain_persist_key,
         rv_diag_run_id=rv_diag_run_id,
+        stage1_parent_boundary_probe=stage1_parent_boundary_probe,
     )
 
 

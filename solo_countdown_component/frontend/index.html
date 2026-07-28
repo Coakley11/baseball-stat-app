@@ -31,6 +31,77 @@
         let browserSendSeq = 0;
         const FALLBACK_PERSIST_KEY = "solo_iframe_lifecycle_global";
 
+        function classifyTargetWindow(target) {
+          if (!target || target === window) return "self";
+          if (target === window.parent) return "immediate_parent";
+          if (target === window.top) return "top";
+          return "other";
+        }
+
+        function recordSenderWindowValidity(phase, browserSendEventId) {
+          var fe = null;
+          try {
+            fe = window.frameElement;
+          } catch (e0) {
+            fe = null;
+          }
+          var row = {
+            phase: phase,
+            browser_send_event_id: String(browserSendEventId || ""),
+            document_connected: !!(document && document.isConnected),
+            frame_element_exists: !!fe,
+            frame_element_connected: fe ? !!fe.isConnected : false,
+            parent_is_self: window.parent === window,
+            parent_is_top: window.parent === window.top,
+            iframe_instance: IFRAME_INSTANCE_ID,
+            widget_key: widgetKeyArg || chainPersistKey || "",
+            target_origin: "*",
+            post_message_fn: "window.parent.postMessage",
+          };
+          try {
+            row.sender_href = String(location.href || "").slice(0, 220);
+          } catch (e1) {}
+          noteClient("sender_window_validity", JSON.stringify(row).slice(0, 1900));
+          return row;
+        }
+
+        function invokeParentPostMessage(target, payload, targetOrigin, label, browserSendEventId) {
+          var targetClass = classifyTargetWindow(target);
+          recordSenderWindowValidity(label || "postMessage", browserSendEventId);
+          var serialized = "";
+          try {
+            serialized = JSON.stringify(payload).slice(0, 1900);
+          } catch (e2) {
+            serialized = String(payload);
+          }
+          noteClient(
+            "outgoing_payload_" + (label || "message"),
+            serialized
+          );
+          target.postMessage(payload, targetOrigin || "*");
+        }
+
+        function sendStage1ImmediateParentProbe(valueToken, valueWidgetKey, browserSendEventId) {
+          if (!stage1ParentBoundaryProbe) return;
+          var probePayload = {
+            type: "solo:stage1ImmediateParentProbe",
+            expected_token: valueToken,
+            browser_send_event_id: browserSendEventId,
+            iframe_instance_id: IFRAME_INSTANCE_ID,
+            widget_key: valueWidgetKey,
+            sender_ts: Date.now(),
+            sender_document_href: String(location.href || "").slice(0, 220),
+          };
+          invokeParentPostMessage(
+            window.parent,
+            probePayload,
+            "*",
+            "solo_stage1ImmediateParentProbe",
+            browserSendEventId
+          );
+          noteClient("stage1_immediate_parent_probe_sent", browserSendEventId);
+        }
+
         function sendMessage(type, data) {
           var payload = Object.assign({ isStreamlitMessage: true, type: type }, data || {});
           if (type === "streamlit:setComponentValue") {
@@ -69,12 +140,19 @@
                   }).slice(0, 1900)
                 );
               }
+              sendStage1ImmediateParentProbe(valueToken, valueWidgetKey, browserSendEventId);
               var payloadWithMeta = Object.assign({}, payload, {
                 iframe_instance: IFRAME_INSTANCE_ID,
                 browser_send_event_id: browserSendEventId,
                 widget_key: valueWidgetKey,
               });
-              window.parent.postMessage(payloadWithMeta, "*");
+              invokeParentPostMessage(
+                window.parent,
+                payloadWithMeta,
+                "*",
+                "streamlit_setComponentValue",
+                browserSendEventId
+              );
               pmOk = true;
             } catch (e) {
               pmErr = String(e);
@@ -97,6 +175,7 @@
         let chainPersistKey = "";
         let widgetKeyArg = "";
         let activeToken = "";
+        let stage1ParentBoundaryProbe = false;
         let tickTimer = null;
         let checkpointTimer = null;
         let sentTokens = {};
@@ -339,6 +418,12 @@
           const args = (event && event.detail && event.detail.args) || {};
           chainPersistKey = String(args.chain_persist_key || "").trim();
           widgetKeyArg = String(args.widget_key || "").trim();
+          stage1ParentBoundaryProbe = !!(
+            args.stage1_parent_boundary_probe === true ||
+            args.stage1_parent_boundary_probe === 1 ||
+            args.stage1_parent_boundary_probe === "1" ||
+            args.stage1_parent_boundary_probe === "true"
+          );
           const expireToken = String(args.expire_token || "");
           const actionable =
             !(
