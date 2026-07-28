@@ -1,4 +1,4 @@
-298edd0  # Stage 1A parent-receipt diagnostics (observers + ledger + harness)
+501924f  # Stage 1A frame-2 parent boundary validation
 
 
 
