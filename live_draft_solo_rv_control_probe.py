@@ -294,6 +294,20 @@ def mount_with_rv_control_declaration(
         allowed, invalid = rv3_declaration_allowed(
             session, expected_token=expected, location=location
         )
+        try:
+            from live_draft_solo_rv3_phase import trace_rv3_decl
+
+            trace_rv3_decl(
+                st,
+                session,
+                "mount_with_rv_control_declaration",
+                rv3_declaration_allowed=allowed,
+                rv3_declaration_invalid=invalid,
+                expected_token=str(expected or "")[:120],
+                location=location,
+            )
+        except ImportError:
+            pass
         if not allowed:
             append_control_event(
                 st,
@@ -312,6 +326,19 @@ def mount_with_rv_control_declaration(
             render_native_control_probe(st, session, probe_placeholder)
             return None
         if is_rv3_rejected_token(expected):
+            try:
+                from live_draft_solo_rv3_phase import trace_rv3_decl
+
+                trace_rv3_decl(
+                    st,
+                    session,
+                    "mount_with_rv_control_declaration",
+                    exit=False,
+                    reason="is_rv3_rejected_token",
+                    expected_token=str(expected or "")[:120],
+                )
+            except ImportError:
+                pass
             append_control_event(
                 st,
                 session,
@@ -324,6 +351,12 @@ def mount_with_rv_control_declaration(
             render_native_control_probe(st, session, probe_placeholder)
             return None
         record_rv3_room_checkpoint(st, session, "before_production_declaration", probe_placeholder=probe_placeholder)
+        try:
+            from live_draft_solo_rv3_phase import trace_rv3_decl
+
+            trace_rv3_decl(st, session, "mount_with_rv_control_declaration", before="declaration_attempt")
+        except ImportError:
+            pass
     run_id = _qp_run_id(st, session)
     from live_draft_solo_rv_declaration_ledger import (
         browser_send_observed_for_declaration,

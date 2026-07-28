@@ -156,6 +156,21 @@ def mark_rv3_hydrated(session: dict[str, Any]) -> None:
     session[RV3_BLOCK_DIAG_KEY] = False
 
 
+def trace_rv3_decl(st: Any, session: dict[str, Any], step: str, **detail: Any) -> None:
+    """Temporary RV3 declaration-path diagnostics (control ledger row)."""
+    if str(session.get("_solo_rv_ladder_step") or "") != "RV3":
+        return
+    from live_draft_solo_rv_control_probe import append_control_event
+
+    append_control_event(
+        st,
+        session,
+        "rv3_decl_trace",
+        control_name="RV3",
+        extra={"step": str(step or ""), **detail},
+    )
+
+
 def append_rv3_setup_complete(st: Any, session: dict[str, Any], *, probe_placeholder: Any = None) -> None:
     from live_draft_solo_rv_control_probe import append_control_event, render_native_control_probe
 

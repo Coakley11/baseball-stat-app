@@ -326,15 +326,48 @@ def expire_token_for_persistent_wake(
 
 
 def _should_mount_persistent_wake(st: Any, session: dict[str, Any]) -> bool:
-    if _diag_blocks_persistent_wake(st, session):
+    diag_block = _diag_blocks_persistent_wake(st, session)
+    if diag_block:
+        try:
+            from live_draft_solo_rv3_phase import trace_rv3_decl
+
+            trace_rv3_decl(
+                st,
+                session,
+                "should_mount_persistent_wake",
+                allowed=False,
+                reason="diag_blocks_persistent_wake",
+            )
+        except ImportError:
+            pass
         return False
     try:
         from live_draft_solo_expire_chain import solo_expire_owner
 
-        if solo_expire_owner(session) != "wake":
+        owner = solo_expire_owner(session)
+        if owner != "wake":
+            try:
+                from live_draft_solo_rv3_phase import trace_rv3_decl
+
+                trace_rv3_decl(
+                    st,
+                    session,
+                    "should_mount_persistent_wake",
+                    allowed=False,
+                    reason="solo_expire_owner_not_wake",
+                    solo_expire_owner=owner,
+                )
+            except ImportError:
+                pass
             return False
     except ImportError:
         return False
+    try:
+        from live_draft_solo_rv3_phase import trace_rv3_decl
+
+        trace_rv3_decl(st, session, "should_mount_persistent_wake", allowed=True)
+    except ImportError:
+        pass
     return True
 
 
@@ -872,6 +905,18 @@ def _mount_persistent_wake_micro_controlled(
             except ImportError:
                 pass
             if control == "R3":
+                try:
+                    from live_draft_solo_rv3_phase import trace_rv3_decl
+
+                    trace_rv3_decl(
+                        st,
+                        session,
+                        "mount_micro_controlled",
+                        exit="p6_r3_b2_helper",
+                        p6_callback_control=control,
+                    )
+                except ImportError:
+                    pass
                 return mount_r3_b2_helper_at_p6(
                     st,
                     session,
@@ -880,6 +925,18 @@ def _mount_persistent_wake_micro_controlled(
                     chain_persist_key=chain_persist_key,
                     deliver_callback=deliver,
                 )
+            try:
+                from live_draft_solo_rv3_phase import trace_rv3_decl
+
+                trace_rv3_decl(
+                    st,
+                    session,
+                    "mount_micro_controlled",
+                    p6_persistent_diag=True,
+                    p6_callback_control=control,
+                )
+            except ImportError:
+                pass
     except ImportError:
         pass
 
@@ -894,8 +951,37 @@ def _mount_persistent_wake_micro_controlled(
         try:
             from live_draft_solo_rv3_phase import RV3_MOUNT_BLOCK_REASON_KEY
 
-            if session.get(RV3_MOUNT_BLOCK_REASON_KEY):
+            blocked = str(session.get(RV3_MOUNT_BLOCK_REASON_KEY) or "").strip()
+            if blocked:
+                try:
+                    from live_draft_solo_rv3_phase import trace_rv3_decl
+
+                    trace_rv3_decl(
+                        st,
+                        session,
+                        "mount_micro_controlled",
+                        exit=False,
+                        reason="rv3_mount_block_reason",
+                        rv3_mount_block_reason=blocked,
+                    )
+                except ImportError:
+                    pass
                 return False
+        except ImportError:
+            pass
+
+        try:
+            from live_draft_solo_rv3_phase import trace_rv3_decl
+
+            trace_rv3_decl(
+                st,
+                session,
+                "mount_micro_controlled",
+                before="mount_with_rv_control_declaration",
+                expire_token=str(expire_token or "")[:120],
+                widget_key=widget_key,
+                location=location,
+            )
         except ImportError:
             pass
 
@@ -958,13 +1044,31 @@ def _mount_persistent_wake_micro_controlled(
 
 def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: Any) -> bool:
     """Mount/update the Solo wake at LDR page entry. Never st.stop(). Returns True when handled."""
+    try:
+        from live_draft_solo_rv3_phase import trace_rv3_decl
+
+        trace_rv3_decl(st, session, "try_persistent_wake_ldr_entry", entered=True)
+    except ImportError:
+        pass
     if not _should_mount_persistent_wake(st, session):
+        try:
+            from live_draft_solo_rv3_phase import trace_rv3_decl
+
+            trace_rv3_decl(st, session, "try_persistent_wake_ldr_entry", exit=False, reason="should_mount_false")
+        except ImportError:
+            pass
         return False
 
     try:
         from live_draft_solo_rv3_phase import rv3_active, rv3_allows_full_ldr_countdown, rv3_blocks_diag_countdowns
 
         if rv3_active(session) and rv3_blocks_diag_countdowns(session):
+            try:
+                from live_draft_solo_rv3_phase import trace_rv3_decl
+
+                trace_rv3_decl(st, session, "try_persistent_wake_ldr_entry", exit=False, reason="rv3_blocks_diag_countdowns")
+            except ImportError:
+                pass
             return False
     except ImportError:
         pass
@@ -1016,9 +1120,29 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
 
         if rv3_active(session):
             if not rv3_allows_full_ldr_countdown(session):
+                try:
+                    from live_draft_solo_rv3_phase import get_rv3_phase, trace_rv3_decl
+
+                    trace_rv3_decl(
+                        st,
+                        session,
+                        "try_persistent_wake_ldr_entry",
+                        exit=False,
+                        reason="rv3_disallows_full_ldr_countdown",
+                        rv3_phase=get_rv3_phase(session),
+                        rv3_hydrated=bool(session.get("_solo_rv_rv3_real_room_hydrated")),
+                    )
+                except ImportError:
+                    pass
                 return False
             if isolated == "minimal":
                 isolated = "production"
+            try:
+                from live_draft_solo_rv3_phase import trace_rv3_decl
+
+                trace_rv3_decl(st, session, "try_persistent_wake_rv3_isolated", isolated=isolated)
+            except ImportError:
+                pass
     except ImportError:
         pass
     if isolated == "production":
