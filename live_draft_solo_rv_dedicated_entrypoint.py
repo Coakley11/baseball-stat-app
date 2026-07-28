@@ -19,7 +19,7 @@ from live_draft_solo_rv_control_probe import (
 
 def _rv_real_room_bootstrap(st: Any, session: dict[str, Any], *, step: str = "") -> None:
     """Diag-only: restore auth/workspace before RV1+ mount (no cross-nav room hydration)."""
-    if step != "RV1":
+    if step not in ("RV1", "RV2"):
         _apply_harness_room_query_context(st, session)
     try:
         from suite_workspace import bootstrap_suite_workspace
@@ -83,19 +83,38 @@ def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
         append_control_event(st, session, "script_begin", control_name=step)
         append_control_event(st, session, "rv_entrypoint_entered", control_name=step)
         render_native_control_probe(st, session, probe_placeholder)
-        result = execute_rv_step_mount(st, session, step, probe_placeholder=probe_placeholder)
-        if not result.get("ok"):
+        from live_draft_solo_rv_production_room_setup import ensure_rv1_production_solo_room
+
+        setup = ensure_rv1_production_solo_room(st, session, probe_placeholder=probe_placeholder)
+        if not setup.get("ok"):
             append_control_event(
                 st,
                 session,
                 "rv_mount_failed",
                 control_name=step,
-                extra={"reason": str(result.get("reason") or "")},
+                extra={
+                    "reason": str(setup.get("reason") or setup.get("invalid") or "production_setup_failed"),
+                    "invalid": str(setup.get("invalid") or ""),
+                },
             )
             render_native_control_probe(st, session, probe_placeholder)
         else:
-            session["_solo_rv_rv2_initial_mount_done"] = True
-        st.caption(f"RV ladder {step}: mount={'ok' if result.get('ok') else 'fail'} token={str(result.get('token') or '')[:60]}")
+            result = execute_rv_step_mount(st, session, step, probe_placeholder=probe_placeholder)
+            if not result.get("ok"):
+                append_control_event(
+                    st,
+                    session,
+                    "rv_mount_failed",
+                    control_name=step,
+                    extra={"reason": str(result.get("reason") or "")},
+                )
+                render_native_control_probe(st, session, probe_placeholder)
+            elif result.get("ok"):
+                session["_solo_rv_rv2_initial_mount_done"] = True
+            st.caption(
+                f"RV ladder {step}: mount={'ok' if result.get('ok') else 'fail'} "
+                f"token={str(result.get('token') or '')[:60]}"
+            )
         return False
     probe_placeholder = st.empty()
     render_native_control_probe(st, session, probe_placeholder)

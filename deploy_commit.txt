@@ -1,4 +1,4 @@
-5e5a6f6  # RV1 reuse deadline tolerance
+5e5a6f6  # RV1 reuse deadline tolerance (superseded by next deploy for RV2 entrypoint)
 
 branch: dev
 

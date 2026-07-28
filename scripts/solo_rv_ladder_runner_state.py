@@ -118,6 +118,12 @@ def _room_id_from_production_created(rows: list[dict[str, Any]]) -> str:
     return ""
 
 
+def classify_rv_real_room_ledger_after_ready(
+    rows: list[dict[str, Any]], *, harness_room_id: str = "", step: str = "RV1"
+) -> tuple[str, str, str]:
+    return classify_rv1_ledger_after_ready(rows, harness_room_id=harness_room_id)
+
+
 def classify_rv1_ledger_after_ready(
     rows: list[dict[str, Any]],
     *,
@@ -190,12 +196,12 @@ def should_begin_instrumentation_epoch(
     return True, "", ""
 
 
-def verify_rv1_control_url(url: str, *, run_id: str, harness_room_id: str = "") -> dict[str, Any]:
+def verify_rv_control_url(url: str, *, step: str, run_id: str, harness_room_id: str = "") -> dict[str, Any]:
     parsed = urlparse(url)
     q = parse_qs(parsed.query)
     required = {
         "active_page": "Live Draft Room",
-        "solo_rv_ladder": "RV1",
+        "solo_rv_ladder": step,
         "solo_rv_run_id": run_id,
         "solo_delivery_diag": "1",
         "solo_component_diag": "1",
@@ -210,7 +216,7 @@ def verify_rv1_control_url(url: str, *, run_id: str, harness_room_id: str = "") 
         elif got != want:
             mismatched[key] = got
     hid = str(harness_room_id or "").strip().upper()
-    if hid:
+    if hid and step == "RV1":
         got_h = (q.get("solo_rv_harness_room_id") or [""])[0].strip().upper()
         if got_h != hid:
             if not got_h:
@@ -225,6 +231,10 @@ def verify_rv1_control_url(url: str, *, run_id: str, harness_room_id: str = "") 
         "has_suite_sid": has_suite,
         "query": {k: (v[0] if v else "") for k, v in q.items()},
     }
+
+
+def verify_rv1_control_url(url: str, *, run_id: str, harness_room_id: str = "") -> dict[str, Any]:
+    return verify_rv_control_url(url, step="RV1", run_id=run_id, harness_room_id=harness_room_id)
 
 
 def filter_timeline_after_epoch(timeline: list[dict[str, Any]], epoch_ms: float) -> list[dict[str, Any]]:
