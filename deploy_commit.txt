@@ -1,4 +1,3 @@
-5e5a6f6  # RV1 reuse deadline tolerance (superseded by next deploy for RV2 entrypoint)
+eace890  # RV2 production setup + RV observability grading
 
 branch: dev
-
