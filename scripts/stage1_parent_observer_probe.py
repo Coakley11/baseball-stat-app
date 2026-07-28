@@ -6,7 +6,7 @@ import base64
 import json
 from typing import Any
 
-from live_draft_stage1_production_ledger import STAGE1_PROBE_ID
+STAGE1_PROBE_ID = "solo-stage1-production-ledger"
 
 _INSTALL_TOP_OBSERVER_JS = r"""
 () => {

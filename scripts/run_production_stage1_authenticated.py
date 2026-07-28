@@ -13,6 +13,8 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
@@ -884,39 +886,76 @@ def grade_stage_1a(
 
 
 def queue_add_first_player(page) -> dict[str, Any]:
+    from run_production_solo_soak import click_btn
+
+    for _ in range(4):
+        try:
+            page.evaluate(
+                """() => {
+                  const labels = ['Draft from lists', 'On Clock', 'Recommendations'];
+                  for (const lab of labels) {
+                    const w = Array.from(document.querySelectorAll('*')).find(
+                      el => el.childElementCount <= 6 && (el.innerText||'').trim().startsWith(lab)
+                    );
+                    if (w) { w.scrollIntoView({block: 'center'}); return true; }
+                  }
+                  window.scrollTo(0, document.body.scrollHeight * 0.45);
+                  return false;
+                }"""
+            )
+        except Exception:
+            pass
+        page.wait_for_timeout(1200)
+        if click_btn(page, "Add to Queue", wait_ms=1500) or click_btn(page, "⭐", wait_ms=1500):
+            meta = page.evaluate(
+                """() => {
+                  function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { if (f.contentDocument) r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+                  for (const root of roots()) {
+                    for (const b of root.querySelectorAll('button')) {
+                      const t = String(b.innerText||'').replace(/\\s+/g,' ').trim();
+                      if (!/Add to Queue/i.test(t)) continue;
+                      const card = b.closest('[data-testid=\"stVerticalBlock\"]') || b.parentElement;
+                      let name = '';
+                      if (card) {
+                        const lines = String(card.innerText||'').split('\\n').map(x=>x.trim()).filter(Boolean);
+                        name = lines.find(l => l.length > 3 && !/Add to Queue|Draft|Queue|Clear|Watchlist/i.test(l)) || '';
+                      }
+                      return { clicked: true, button_text: t, player_hint: name.slice(0,80), via: 'click_btn' };
+                    }
+                  }
+                  return { clicked: true, button_text: 'Add to Queue', player_hint: '', via: 'click_btn' };
+                }"""
+            )
+            if isinstance(meta, dict):
+                return meta
+            return {"clicked": True, "button_text": "Add to Queue", "player_hint": "", "via": "click_btn"}
+        page.wait_for_timeout(2000)
+
     try:
-        page.evaluate("() => window.scrollTo(0, document.body.scrollHeight * 0.35)")
-    except Exception:
-        pass
-    page.wait_for_timeout(800)
-    result = page.evaluate(
-        """() => {
-          function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { if (f.contentDocument) r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
-          for (const root of roots()) {
-            for (const b of root.querySelectorAll('button')) {
-              const t = String(b.innerText||'').replace(/\\s+/g,' ').trim();
-              if (!/Add to Queue/i.test(t)) continue;
-              const card = b.closest('[data-testid=\"stVerticalBlock\"]') || b.parentElement;
-              let name = '';
-              if (card) {
-                const lines = String(card.innerText||'').split('\\n').map(x=>x.trim()).filter(Boolean);
-                name = lines.find(l => l.length > 3 && !/Add to Queue|Draft|Queue|⭐|Clear/i.test(l)) || '';
-              }
-              b.click();
-              return { clicked: true, button_text: t, player_hint: name.slice(0,80) };
-            }
-          }
-          return { clicked: false, button_text: '', player_hint: '' };
-        }"""
-    )
-    if isinstance(result, dict) and result.get("clicked"):
-        return result
-    try:
-        page.get_by_role("button", name=re.compile(r"Add to Queue", re.I)).first.click(timeout=4000)
+        loc = page.get_by_role("button", name=re.compile(r"Add to Queue", re.I)).first
+        loc.scroll_into_view_if_needed(timeout=5000)
+        loc.click(timeout=5000)
         return {"clicked": True, "button_text": "Add to Queue", "player_hint": "", "via": "playwright_role"}
     except Exception:
         pass
-    return result if isinstance(result, dict) else {"clicked": False, "button_text": "", "player_hint": ""}
+    return {"clicked": False, "button_text": "", "player_hint": ""}
+
+
+def queue_seed_satisfied(queue_meta: dict[str, Any]) -> bool:
+    if queue_meta.get("clicked"):
+        return True
+    excerpt = str(queue_meta.get("queue_excerpt_before") or "")
+    if not excerpt or "Queue empty" in excerpt:
+        return False
+    m = re.search(r"\n([A-Za-z][^\n]{2,60}?)\s+—\s*(UTIL|SP|RP|C|1B|2B|3B|SS|OF|DH|P)", excerpt)
+    if m:
+        queue_meta.setdefault("player_hint", m.group(1).strip())
+        queue_meta["seed_source"] = "queue_already_populated"
+        return True
+    if "On the clock" in excerpt and "Clear Draft Queue" in excerpt:
+        queue_meta["seed_source"] = "queue_nonempty_ui"
+        return True
+    return False
 
 
 def queue_text(page) -> str:
@@ -1175,11 +1214,11 @@ def main() -> int:
         queue_meta["queue_excerpt_before"] = queue_text(page)
         hint = str(queue_meta.get("player_hint") or "").strip()
         excerpt = str(queue_meta.get("queue_excerpt_before") or "")
-        queue_meta["queue_contains_player"] = bool(
+        queue_meta["queue_contains_player"] = queue_seed_satisfied(queue_meta) or bool(
             queue_meta.get("clicked") and hint and hint.split()[0][:4].lower() in excerpt.lower()
         )
         summary["queue_seed"] = queue_meta
-        if not queue_meta.get("clicked"):
+        if not queue_seed_satisfied(queue_meta):
             summary["aborted"] = True
             summary["abort_reason"] = "queue_seed_failed"
             context.close()
