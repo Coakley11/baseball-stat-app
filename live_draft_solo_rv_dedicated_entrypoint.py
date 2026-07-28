@@ -159,6 +159,7 @@ def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
             return True
         from live_draft_solo_rv3_phase import (
             RV3_PHASE_POST_DELIVERY,
+            RV3_PHASE_PRODUCTION_MOUNT,
             prepare_rv3_production_mount,
         )
 
