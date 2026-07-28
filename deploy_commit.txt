@@ -1,3 +1,3 @@
-afac8b8  # RV3 post-delivery proof from production declaration ledger
+d61a092  # RV3 pre-app shell: import RV3_PHASE_PRODUCTION_MOUNT (NameError fix)
 
 branch: dev
