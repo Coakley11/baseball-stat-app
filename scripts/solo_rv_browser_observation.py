@@ -255,8 +255,11 @@ def validate_rv_browser_delivery(
     browser: dict[str, Any],
     expiration: dict[str, Any],
     control_probe_rows: list[dict[str, Any]],
+    expected_token: str = "",
 ) -> tuple[bool, str]:
     """Browser delivery lane — expiration send chain; timer_arm row not required."""
+    from live_draft_solo_rv_declaration_ledger import ledger_post_delivery_proof_satisfied
+
     events = {str(r.get("event") or "") for r in control_probe_rows}
     logical = int(browser.get("logical_send_count") or 0)
     if logical != 1:
@@ -275,7 +278,14 @@ def validate_rv_browser_delivery(
     if browser.get("sender_current_status") == "disconnected":
         return False, "INVALID_BROWSER_IFRAME_DISCONNECTED"
     if browser.get("browser_send_proven") or "component_value_sent" in cs or logical == 1:
-        if "post_delivery_redeclaration" not in events:
+        exp = str(expected_token or "").strip()
+        if not exp:
+            for row in control_probe_rows:
+                if str(row.get("expected_token") or "").count("|") >= 2:
+                    exp = str(row.get("expected_token") or "").strip()
+                    break
+        proven, _src = ledger_post_delivery_proof_satisfied(control_probe_rows, expected_token=exp)
+        if not proven and "post_delivery_redeclaration" not in events:
             return False, "INVALID_POST_DELIVERY_REDECLARATION_MISSING"
     return True, "PASS"
 
@@ -316,6 +326,18 @@ def validate_rv_browser_validity(
     return True, "PASS"
 
 
+def grade_rv_post_delivery_lane(
+    ledger_rows: list[dict[str, Any]], *, expected_token: str
+) -> tuple[str, str]:
+    from live_draft_solo_rv_declaration_ledger import ledger_post_delivery_proof_satisfied
+
+    proven, src = ledger_post_delivery_proof_satisfied(ledger_rows, expected_token=expected_token)
+    if proven:
+        label = "PASS — explicit ledger row" if src == "explicit_ledger_row" else f"PASS — {src or 'component_return_exact'}"
+        return "PASS", label
+    return "INCOMPLETE_POST_DELIVERY_REDECLARATION_MARKER", "INCOMPLETE_POST_DELIVERY_REDECLARATION_MARKER"
+
+
 def grade_rv_python_binding(ledger_rows: list[dict[str, Any]], *, expected_token: str) -> tuple[str, str]:
     if not expected_token:
         return "INVALID", "INVALID_PYTHON_BINDING_missing_expected_token"
@@ -344,6 +366,12 @@ def grade_rv_python_binding(ledger_rows: list[dict[str, Any]], *, expected_token
             ss_after = str(extra.get("session_state_after") or "")
         if expected_token in ss_after:
             return "PASS_RETURN_VALUE_DELIVERY", "rv1_python_coalesced_or_session_state"
+        micro_cr = ""
+        extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+        if isinstance(extra, dict):
+            micro_cr = str(extra.get("micro_cycle_component_return") or "").strip()
+        if micro_cr == expected_token:
+            return "PASS_RETURN_VALUE_DELIVERY", "rv1_python_component_return_exact"
         if coalesced == expected_token:
             return "PASS_RETURN_VALUE_DELIVERY", "rv1_python_coalesced_value"
     return "FAIL", "FAIL_CLASS_A_empty_or_mismatch_binding"

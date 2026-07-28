@@ -1052,6 +1052,13 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         and not pending_consumed
         and session.get(SOLO_PERSISTENT_WAKE_LATCH_KEY)
     )
+    if delivery_only and str(session.get("_solo_rv_ladder_step") or "").strip():
+        try:
+            from live_draft_solo_rv_declaration_ledger import note_browser_send_observed
+
+            note_browser_send_observed(session)
+        except ImportError:
+            pass
     if pending_token and pending_token != SOLO_INERT_EXPIRE_TOKEN:
         props_room = room_dict if isinstance(room_dict, dict) else {}
         actionable = True

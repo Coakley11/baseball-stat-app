@@ -140,9 +140,12 @@ def append_control_event(
         )
     rows = _ledger_for_run(session, run_id)
     event_seq = len(rows) + 1
-    decl_num = sum(1 for r in rows if r.get("event") == "declaration_attempt") + (
-        1 if event == "declaration_attempt" else 0
-    )
+    decl_num = None
+    if event == "declaration_attempt":
+        if extra and extra.get("declaration_occurrence_number") is not None:
+            decl_num = int(extra.get("declaration_occurrence_number") or 0)
+        else:
+            decl_num = sum(1 for r in rows if r.get("event") == "declaration_attempt") + 1
     row: dict[str, Any] = {
         "event": event,
         "event_sequence": event_seq,
@@ -170,6 +173,14 @@ def append_control_event(
             if key not in row or row.get(key) in ("", None):
                 row[key] = val
         row["extra"] = extra
+        if extra.get("session_state_after"):
+            row["session_state_after"] = str(extra.get("session_state_after") or "")[:400]
+        if extra.get("declaration_occurrence_number") is not None and event in (
+            "declaration_attempt",
+            "declaration_returned",
+            "post_delivery_redeclaration",
+        ):
+            row["declaration_occurrence_number"] = int(extra.get("declaration_occurrence_number") or 0)
     rows.append(row)
     _persist_ledger(session, run_id, rows)
     return row
@@ -243,7 +254,24 @@ def mount_with_rv_control_declaration(
             render_native_control_probe(st, session, probe_placeholder)
             return None
         record_rv3_room_checkpoint(st, session, "before_production_declaration", probe_placeholder=probe_placeholder)
-    was_post_delivery_run = bool(session.get("_solo_rv_prior_declaration_returned"))
+        record_rv3_room_checkpoint(st, session, "before_production_declaration", probe_placeholder=probe_placeholder)
+    run_id = _qp_run_id(st, session)
+    from live_draft_solo_rv_declaration_ledger import (
+        browser_send_observed_for_declaration,
+        evaluate_post_delivery_proof,
+        increment_declaration_occurrence,
+        micro_cycle_to_ledger_fields,
+        note_browser_send_observed,
+    )
+
+    ss_before_decl = repr(session.get(widget_key))[:400] if widget_key in session else "missing"
+    occurrence = increment_declaration_occurrence(session, run_id)
+    browser_send_seen = browser_send_observed_for_declaration(
+        session,
+        widget_key=widget_key,
+        expected_token=expected,
+        ss_before=ss_before_decl,
+    )
     append_control_event(
         st,
         session,
@@ -252,17 +280,50 @@ def mount_with_rv_control_declaration(
         widget_key=widget_key,
         room=room,
         expected_token=expected,
-        browser_send_seen=was_post_delivery_run,
-        extra={"location": location},
+        browser_send_seen=browser_send_seen,
+        extra={
+            "location": location,
+            "placement_label": location,
+            "solo_rv_run_id": run_id,
+            "declaration_occurrence_number": occurrence,
+        },
     )
+    if browser_send_seen:
+        note_browser_send_observed(session)
     render_native_control_probe(st, session, probe_placeholder)
     raw = mount_fn()
-    coerced = ""
-    if raw is not None:
+    micro = micro_cycle_to_ledger_fields(raw)
+    coerced = str(micro.get("coalesced_value_exact") or micro.get("micro_cycle_component_return") or "").strip()
+    if not coerced and raw is not None:
         coerced = raw.strip() if isinstance(raw, str) else str(raw).strip()
     ss_after = repr(session.get(widget_key))[:400] if widget_key in session else "missing"
     if not coerced and ss_after not in ("missing", "None", "''", '""'):
         coerced = ss_after.strip("'\"")
+    if micro.get("raw_received"):
+        note_browser_send_observed(session)
+    proven, proof_source = evaluate_post_delivery_proof(
+        expected_token=expected,
+        widget_key=widget_key,
+        location=location,
+        occurrence=occurrence,
+        micro=micro,
+        ss_after=ss_after,
+        coalesced=coerced,
+        browser_send_observed=bool(session.get("_solo_rv_browser_send_observed")),
+    )
+    decl_extra = {
+        "location": location,
+        "placement_label": location,
+        "session_state_after": ss_after,
+        "solo_rv_run_id": run_id,
+        "declaration_occurrence_number": occurrence,
+        "micro_cycle_component_return": micro.get("micro_cycle_component_return"),
+        "raw_received": micro.get("raw_received"),
+        "delivered": micro.get("delivered"),
+        "on_change_fired": micro.get("on_change_fired"),
+        "post_delivery_redeclaration_proven": proven,
+        "proof_source": proof_source if proven else "",
+    }
     append_control_event(
         st,
         session,
@@ -273,10 +334,10 @@ def mount_with_rv_control_declaration(
         expected_token=expected,
         component_return=raw,
         coalesced_value=coerced,
-        browser_send_seen=was_post_delivery_run,
-        extra={"location": location, "session_state_after": ss_after},
+        browser_send_seen=browser_send_seen,
+        extra=decl_extra,
     )
-    if was_post_delivery_run:
+    if proven:
         append_control_event(
             st,
             session,
@@ -288,8 +349,13 @@ def mount_with_rv_control_declaration(
             component_return=raw,
             coalesced_value=coerced,
             browser_send_seen=True,
-            extra={"location": location, "session_state_after": ss_after},
+            extra={
+                **decl_extra,
+                "proof_source": proof_source,
+                "post_delivery_redeclaration_proven": True,
+            },
         )
+        session["_solo_rv_post_delivery_redeclaration_proven"] = True
     elif not session.get("_solo_rv_prior_declaration_returned"):
         session["_solo_rv_prior_declaration_returned"] = True
     if str(session.get("_solo_rv_ladder_step") or control_name or "") == "RV3" or control_name == "RV3":
@@ -298,9 +364,9 @@ def mount_with_rv_control_declaration(
 
         mark_rv3_production_declared(session)
         record_rv3_room_checkpoint(st, session, "after_component_return_processing", probe_placeholder=probe_placeholder)
-        if was_post_delivery_run:
+        if proven or session.get("_solo_rv_post_delivery_redeclaration_proven"):
             set_rv3_phase(session, RV3_PHASE_POST_DELIVERY)
-    if coerced:
+    if coerced and proven:
         session["_solo_rv_browser_delivery_recorded"] = True
     render_native_control_probe(st, session, probe_placeholder)
     return raw

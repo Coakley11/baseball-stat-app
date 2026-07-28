@@ -367,7 +367,7 @@ def wait_for_rv1_control_ready(
         if events >= {"script_begin", "rv_entrypoint_entered"}:
             if "rv_mount_failed" in events or "production_room_creation_failed" in events:
                 return "READY", best_probe, best_rows, last_text
-            if "declaration_returned" in events and "real_room_hydrated" in events:
+            if control_step != "RV3" and "declaration_returned" in events and "real_room_hydrated" in events:
                 return "READY", best_probe, best_rows, last_text
         page.wait_for_timeout(2000)
     if not best_rows and not ledger_ready(best_rows, page_text=last_text):
@@ -524,12 +524,18 @@ def _rv1_post_declaration_epoch(
     exp["instrumentation_epoch_id"] = instrumentation_epoch_id
     exp["expected_token_ledger"] = expected_token
     poll_until = time.time() + (120.0 if control_step == "RV3" else 60.0)
+    from live_draft_solo_rv_declaration_ledger import ledger_post_delivery_proof_satisfied
+
     while time.time() < poll_until:
         probe = poll_control_probe_best(page, probe)
         rows = state_ledger_rows_for_run(probe, run_id)
-        if control_step == "RV3" and any(
-            str(r.get("event") or "") == "post_delivery_redeclaration" for r in rows
-        ):
+        if control_step == "RV3":
+            if any(str(r.get("event") or "") == "rv_mount_failed" for r in rows):
+                break
+            proven, _src = ledger_post_delivery_proof_satisfied(rows, expected_token=expected_token)
+            if proven:
+                break
+        elif any(str(r.get("event") or "") == "post_delivery_redeclaration" for r in rows):
             break
         attach_rv_page_listeners(page, expected_token=expected_token)
         page.wait_for_timeout(2000)
@@ -746,6 +752,7 @@ def _grade_rv_real_control_step(
         build_run_identity_from_ledger,
         classify_rv2_binding_failure,
         combine_rv_control_verdicts,
+        grade_rv_post_delivery_lane,
         grade_rv_python_binding,
         lifecycle_instrumentation_report,
         summarize_rv_control_browser,
@@ -763,6 +770,10 @@ def _grade_rv_real_control_step(
         browser=browser,
         expiration=filtered_exp,
         control_probe_rows=ledger_rows,
+        expected_token=expected,
+    )
+    post_delivery_lane, post_delivery_reason = grade_rv_post_delivery_lane(
+        ledger_rows, expected_token=expected
     )
     lifecycle_lane, observability_warnings = lifecycle_instrumentation_report(
         browser, browser_delivery_ok=delivery_ok
@@ -836,7 +847,37 @@ def _grade_rv_real_control_step(
             "production_placement_verdict": placement_lane,
             "room_continuity_verdict": room_lane,
             "room_continuity_reason": room_inv or "PASS",
+            "post_delivery_redeclaration_verdict": post_delivery_lane,
+            "post_delivery_redeclaration_reason": post_delivery_reason,
         }
+        if (
+            not room_inv
+            and placement_lane == "PASS"
+            and delivery_ok
+            and python_verdict == "PASS_RETURN_VALUE_DELIVERY"
+            and post_delivery_lane == "PASS"
+        ):
+            overall = (
+                "PASS_WITH_OBSERVABILITY_WARN"
+                if observability_warnings
+                else "PASS_RETURN_VALUE_DELIVERY"
+            )
+            overall_reason = (
+                observability_warnings[0]
+                if observability_warnings
+                else "rv3_production_binding_and_post_delivery_proven"
+            )
+            root = ""
+            binding_fail = None
+        elif (
+            not room_inv
+            and placement_lane == "PASS"
+            and delivery_ok
+            and python_verdict == "PASS_RETURN_VALUE_DELIVERY"
+            and post_delivery_lane.startswith("INCOMPLETE")
+        ):
+            overall = "INCOMPLETE_OBSERVABILITY"
+            overall_reason = post_delivery_reason
     else:
         result_room = {}
     hydrated_row = next((r for r in ledger_rows if r.get("event") == "real_room_hydrated"), None)
