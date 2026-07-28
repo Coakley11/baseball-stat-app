@@ -23054,6 +23054,28 @@ elif active_page == "Live Draft Room":
         render_solo_deploy_probe(st)
     except ImportError:
         pass
+    try:
+        from live_draft_stage1_production_ledger import (
+            bump_stage1_script_run_seq,
+            note_stage1_event,
+            render_stage1_production_ledger_probe,
+            stage1_production_ledger_enabled,
+        )
+
+        if stage1_production_ledger_enabled(st, st.session_state):
+            seq = bump_stage1_script_run_seq(st.session_state)
+            note_stage1_event(
+                st.session_state,
+                "production_stage1_script_begin",
+                st=st,
+                room=st.session_state.get("live_draft_room")
+                if isinstance(st.session_state.get("live_draft_room"), dict)
+                else None,
+                extra={"active_page": str(st.session_state.get("active_page") or ""), "script_run_seq": seq},
+            )
+            render_stage1_production_ledger_probe(st, st.session_state)
+    except ImportError:
+        pass
 
     if "live_draft_room" not in st.session_state:
         st.session_state["live_draft_room"] = None

@@ -497,6 +497,22 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             claimed, reject_code = True, ""
         else:
             claimed, reject_code = try_claim_token_delivery(session, token, delivery_via)
+        try:
+            from live_draft_stage1_production_ledger import note_stage1_token_claim, stage1_production_ledger_enabled
+
+            if stage1_production_ledger_enabled(st, session):
+                live_room = _resolve_room(session, None)
+                note_stage1_token_claim(
+                    session,
+                    st=st,
+                    room=live_room if isinstance(live_room, dict) else None,
+                    token=token,
+                    source=delivery_via,
+                    accepted=claimed if skip_claim or claimed else False,
+                    reject_code=reject_code if not skip_claim else "",
+                )
+        except ImportError:
+            pass
         record_callback_invocation(
             st,
             session,
@@ -799,6 +815,36 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
 def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
     """After widget values bind, deliver expire token from session_state (on_change equivalent)."""
     if production_return_value_delivery_active(session):
+        if not solo_persistent_wake_active(session):
+            return
+        key = solo_persistent_wake_widget_key(session)
+        raw = st.session_state.get(key)
+        if raw is None:
+            return
+        from live_draft_solo_heartbeat import SOLO_COMPONENT_WAKE_SEEN_KEY, _coerce_wake_token
+
+        token = _coerce_wake_token(raw)
+        if not token or token == SOLO_INERT_EXPIRE_TOKEN:
+            return
+        if token == str(session.get(SOLO_SKIP_LATE_FLUSH_TOKEN_KEY) or ""):
+            return
+        if token == str(session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or ""):
+            return
+        try:
+            from live_draft_stage1_expire_audit import try_claim_token_delivery
+
+            owners = session.get("_solo_token_delivery_owner") or {}
+            if isinstance(owners, dict) and token in owners:
+                return
+        except ImportError:
+            pass
+        process_production_expire_token(
+            st,
+            session,
+            raw_token=raw,
+            widget_key=key,
+            source="return_value_session_bind",
+        )
         return
     if session.get("_solo_persistent_wake_flush_disabled"):
         return
@@ -1052,6 +1098,19 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         pass
     if not _should_mount_persistent_wake(st, session):
         try:
+            from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+
+            if stage1_production_ledger_enabled(st, session):
+                note_stage1_event(
+                    session,
+                    "production_stage1_persistent_wake_eligibility",
+                    st=st,
+                    room=room if isinstance(room, dict) else None,
+                    extra={"eligible": False, "reason": "should_mount_false"},
+                )
+        except ImportError:
+            pass
+        try:
             from live_draft_solo_rv3_phase import trace_rv3_decl
 
             trace_rv3_decl(st, session, "try_persistent_wake_ldr_entry", exit=False, reason="should_mount_false")
@@ -1154,6 +1213,26 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
 
     room_dict = _resolve_room(session, room)
     session[SOLO_PERSISTENT_WAKE_LATCH_KEY] = True
+    try:
+        from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+
+        if stage1_production_ledger_enabled(st, session):
+            note_stage1_event(
+                session,
+                "production_stage1_persistent_wake_eligibility",
+                st=st,
+                room=room_dict if isinstance(room_dict, dict) else None,
+                extra={"eligible": True, "location": "ldr_page_entry_early_persistent"},
+            )
+            note_stage1_event(
+                session,
+                "production_stage1_room_checkpoint",
+                st=st,
+                room=room_dict if isinstance(room_dict, dict) else None,
+                extra={"checkpoint": "before_persistent_mount"},
+            )
+    except ImportError:
+        pass
 
     key = solo_persistent_wake_widget_key(session)
     from live_draft_solo_heartbeat import _coerce_wake_token

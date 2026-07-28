@@ -359,6 +359,39 @@ def render_micro_isolation_once(
             except ImportError:
                 pass
             try:
+                from live_draft_solo_heartbeat import _coerce_wake_token
+                from live_draft_stage1_production_ledger import (
+                    note_stage1_declaration_returned,
+                    note_stage1_event,
+                    stage1_production_ledger_enabled,
+                )
+
+                if stage1_production_ledger_enabled(st, session):
+                    coerced = _coerce_wake_token(raw_component_value) or _coerce_wake_token(
+                        st.session_state.get(key)
+                    )
+                    note_stage1_event(
+                        session,
+                        "production_stage1_declaration_attempt",
+                        st=st,
+                        room=production_room,
+                        widget_key=key,
+                        extra={"expected_token": token, "delivery_only": production_delivery_only},
+                    )
+                    note_stage1_declaration_returned(
+                        session,
+                        st=st,
+                        room=production_room,
+                        widget_key=key,
+                        expected_token=token,
+                        direct_return=raw_component_value,
+                        coalesced=str(coerced or ""),
+                        raw_received=raw_component_value is not None,
+                        delivered=False,
+                    )
+            except ImportError:
+                pass
+            try:
                 from live_draft_solo_persistent_wake import process_production_expire_token
 
                 process_production_expire_token(

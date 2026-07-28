@@ -474,6 +474,19 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
     if room.get("status") != "in_progress":
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
 
+    try:
+        from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+
+        if stage1_production_ledger_enabled(None, session):
+            note_stage1_event(
+                session,
+                "production_stage1_autopick_handler_entered",
+                room=room,
+                extra={"source": source, "expiration_token": expiration_token},
+            )
+    except ImportError:
+        pass
+
     if room.get("status") == "complete":
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
 
