@@ -36,6 +36,21 @@ class Stage1ProductionLedgerTests(unittest.TestCase):
             rows = session.get("_solo_stage1_production_ledger") or []
             self.assertEqual(rows[-1]["event"], "production_stage1_script_begin")
             self.assertEqual(rows[-1]["script_run_seq"], 1)
+            self.assertTrue(str(rows[-1].get("event_id") or ""))
+
+    def test_merged_ledger_dedupes_event_id_across_notes(self) -> None:
+        session: dict = {"_solo_component_diag_enabled": True}
+        st = mock.Mock()
+        with mock.patch(
+            "live_draft_solo_component_diagnostics.solo_component_diag_enabled",
+            return_value=True,
+        ):
+            note_stage1_event(session, "production_stage1_flush_persistent_wake_delivery_entry", st=st)
+            note_stage1_event(session, "production_stage1_flush_persistent_wake_delivery_entry", st=st)
+        merged = session.get("_solo_stage1_production_ledger_merged") or []
+        self.assertEqual(len(merged), 2)
+        eids = [str(r.get("event_id")) for r in merged]
+        self.assertEqual(len(set(eids)), 2)
 
 
 class ReturnValueSessionBindFlushTests(unittest.TestCase):

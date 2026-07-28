@@ -129,6 +129,8 @@ _INSTALL_IMMEDIATE_PARENT_JS = """
     const valStr = typeof val === "string" ? val : "";
     const row = {
       ts: Date.now(),
+      receiving_window: "immediate_parent_of_production_iframe",
+      receiving_window_level: "LEVEL_2_IMMEDIATE_PARENT",
       sending_child_role: (valStr.indexOf("|minimal|") >= 0 ? "minimal_control" : (valStr ? "production_countdown" : "unknown")),
       sending_child_playwright_index: childMeta.child_playwright_index,
       receiving_parent_sanitized_url: sanitizeUrl(location.href),

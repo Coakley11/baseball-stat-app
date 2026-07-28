@@ -115,6 +115,20 @@ def process_production_expire_token(
     source: str = "native_component_return",
 ) -> bool:
     """Validate component return value against live production state; route to delivery owner."""
+    try:
+        from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+
+        if stage1_production_ledger_enabled(st, session):
+            note_stage1_event(
+                session,
+                "production_stage1_process_production_expire_token_entry",
+                st=st,
+                room=_resolve_room(session, None) if isinstance(_resolve_room(session, None), dict) else None,
+                widget_key=widget_key,
+                extra={"source": source, "raw_preview": repr(raw_token)[:200]},
+            )
+    except ImportError:
+        pass
     from live_draft_solo_heartbeat import _coerce_wake_token
 
     token = _coerce_wake_token(raw_token)
@@ -814,6 +828,29 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
 
 def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
     """After widget values bind, deliver expire token from session_state (on_change equivalent)."""
+    try:
+        from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+
+        if stage1_production_ledger_enabled(st, session):
+            key_probe = solo_persistent_wake_widget_key(session)
+            ss_val = ""
+            if production_return_value_delivery_active(session):
+                try:
+                    ss_val = repr(st.session_state.get(key_probe))[:300]
+                except Exception:
+                    pass
+            note_stage1_event(
+                session,
+                "production_stage1_flush_persistent_wake_delivery_entry",
+                st=st,
+                widget_key=key_probe,
+                extra={
+                    "return_value_delivery_active": production_return_value_delivery_active(session),
+                    "session_state_value": ss_val,
+                },
+            )
+    except ImportError:
+        pass
     if production_return_value_delivery_active(session):
         if not solo_persistent_wake_active(session):
             return
@@ -845,6 +882,19 @@ def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
             widget_key=key,
             source="return_value_session_bind",
         )
+        try:
+            from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+
+            if stage1_production_ledger_enabled(st, session):
+                note_stage1_event(
+                    session,
+                    "production_stage1_return_value_session_bind_entry",
+                    st=st,
+                    widget_key=key,
+                    extra={"token_preview": repr(raw)[:200]},
+                )
+        except ImportError:
+            pass
         return
     if session.get("_solo_persistent_wake_flush_disabled"):
         return
