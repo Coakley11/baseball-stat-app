@@ -132,11 +132,9 @@ def rv3_declaration_allowed(
         return False, "INVALID_RV3_PREMATURE_COMPONENT_DECLARATION"
     if not session.get(RV3_HYDRATED_KEY):
         return False, "INVALID_RV3_PREMATURE_COMPONENT_DECLARATION"
-    if not session.get(RV3_MOUNT_OK_THIS_RUN_KEY):
-        blocked = str(session.get(RV3_MOUNT_BLOCK_REASON_KEY) or "").strip()
-        if blocked.startswith("INVALID_RV3"):
-            return False, blocked
-        return False, "INVALID_RV3_POST_DELIVERY_ROOM_STATE_LOST"
+    blocked = str(session.get(RV3_MOUNT_BLOCK_REASON_KEY) or "").strip()
+    if blocked:
+        return False, blocked
     rid = _owner_room_id(session)
     if is_rv3_rejected_token(expected_token):
         return False, "INVALID_RV3_PREMATURE_COMPONENT_DECLARATION"

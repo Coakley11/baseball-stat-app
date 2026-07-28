@@ -157,6 +157,29 @@ def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
             st.caption(f"RV ladder {step}: setup complete room={str(setup.get('room_id') or '')[:16]}")
             st.rerun()
             return True
+        from live_draft_solo_rv3_phase import (
+            RV3_PHASE_POST_DELIVERY,
+            prepare_rv3_production_mount,
+        )
+
+        if session.get("_solo_rv_prior_declaration_returned") and phase == RV3_PHASE_PRODUCTION_MOUNT:
+            set_rv3_phase(session, RV3_PHASE_POST_DELIVERY)
+            phase = RV3_PHASE_POST_DELIVERY
+        prep = prepare_rv3_production_mount(st, session, probe_placeholder=probe_placeholder)
+        if not prep.get("ok"):
+            append_control_event(
+                st,
+                session,
+                "rv_mount_failed",
+                control_name=step,
+                extra={
+                    "reason": str(prep.get("reason") or "rv3_prepare_failed"),
+                    "invalid": str(prep.get("invalid") or "INVALID_RV3_POST_DELIVERY_ROOM_STATE_LOST"),
+                },
+            )
+            render_native_control_probe(st, session, probe_placeholder)
+            st.caption(f"RV ladder {step}: mount prep failed {prep.get('invalid') or prep.get('reason')}")
+            return True
         st.caption(f"RV ladder {step}: phase={phase} room reuse/hydrate on LDR entry")
         return False
     if step in ("RV1", "RV2"):
@@ -260,21 +283,24 @@ def rv3_on_ldr_entry(st: Any, session: dict[str, Any], room: Any, *, phase: str)
     if not rv3_allows_full_ldr_countdown(session):
         return
     if phase == "before":
-        prep = prepare_rv3_production_mount(st, session)
-        if not prep.get("ok"):
-            from live_draft_solo_rv_control_probe import append_control_event
+        from live_draft_solo_rv3_phase import RV3_MOUNT_OK_THIS_RUN_KEY
 
-            append_control_event(
-                st,
-                session,
-                "rv_mount_failed",
-                control_name="RV3",
-                extra={
-                    "reason": str(prep.get("reason") or "rv3_prepare_failed"),
-                    "invalid": str(prep.get("invalid") or "INVALID_RV3_REAL_ROOM_NOT_HYDRATED"),
-                },
-            )
-            return
+        if not session.get(RV3_MOUNT_OK_THIS_RUN_KEY):
+            prep = prepare_rv3_production_mount(st, session)
+            if not prep.get("ok"):
+                from live_draft_solo_rv_control_probe import append_control_event
+
+                append_control_event(
+                    st,
+                    session,
+                    "rv_mount_failed",
+                    control_name="RV3",
+                    extra={
+                        "reason": str(prep.get("reason") or "rv3_prepare_failed"),
+                        "invalid": str(prep.get("invalid") or "INVALID_RV3_REAL_ROOM_NOT_HYDRATED"),
+                    },
+                )
+                return
     from live_draft_solo_rv_binding_ladder import try_rv3_ldr_persistent_mount
 
     try_rv3_ldr_persistent_mount(st, session, room, phase=phase)

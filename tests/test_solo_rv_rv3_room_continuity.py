@@ -10,10 +10,9 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from live_draft_solo_rv3_phase import (
-    RV3_MOUNT_OK_THIS_RUN_KEY,
+    RV3_MOUNT_BLOCK_REASON_KEY,
     RV3_PHASE_POST_DELIVERY,
     rv3_declaration_allowed,
-    rv3_on_script_run_begin,
 )
 from live_draft_solo_rv3_room_continuity import (
     extract_micro_cycle_binding_token,
@@ -84,16 +83,15 @@ def test_post_delivery_reuse_never_creates():
     assert result.get("invalid") == "INVALID_RV3_POST_DELIVERY_ROOM_STATE_LOST"
 
 
-def test_declaration_blocked_without_mount_ok_this_run():
+def test_declaration_blocked_after_mount_failure():
     session = {
         "_solo_rv_ladder_step": "RV3",
         "_solo_rv_run_id": "r1",
         "_solo_rv_rv3_phase": RV3_PHASE_POST_DELIVERY,
         "_solo_rv_rv3_real_room_hydrated": True,
-        RV1_SETUP_OWNER_KEY: {"room_id": "438B2C1F", "setup_completed": True, "owner_run_id": "r1"},
+        RV3_MOUNT_BLOCK_REASON_KEY: "INVALID_RV3_POST_DELIVERY_ROOM_STATE_LOST",
     }
     session["_solo_rv_rv3_phase_run_id"] = "r1"
-    rv3_on_script_run_begin(session)
     ok, reason = rv3_declaration_allowed(session, expected_token="438B2C1F|0|1.0", location="x")
     assert ok is False
     assert reason == "INVALID_RV3_POST_DELIVERY_ROOM_STATE_LOST"

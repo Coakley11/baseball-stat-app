@@ -892,9 +892,9 @@ def _mount_persistent_wake_micro_controlled(
     if str(session.get("_solo_rv_ladder_step") or "") == "RV3":
 
         try:
-            from live_draft_solo_rv3_phase import RV3_MOUNT_OK_THIS_RUN_KEY
+            from live_draft_solo_rv3_phase import RV3_MOUNT_BLOCK_REASON_KEY
 
-            if not session.get(RV3_MOUNT_OK_THIS_RUN_KEY):
+            if session.get(RV3_MOUNT_BLOCK_REASON_KEY):
                 return False
         except ImportError:
             pass
