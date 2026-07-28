@@ -165,6 +165,11 @@ def playwright_ledger_scrape_script() -> str:
         const b64 = extractB64(bestEl.textContent || '');
         if (b64.length) return prefix + b64;
       }}
+      try {{
+        if (window.__soloRvLedgerB64 && String(window.__soloRvLedgerB64).includes(prefix)) {{
+          return String(window.__soloRvLedgerB64);
+        }}
+      }} catch (e) {{}}
       let t = document.body ? document.body.innerText : '';
       for (const f of document.querySelectorAll('iframe')) {{
         try {{
@@ -239,13 +244,36 @@ def decode_control_probe_text(text: str) -> dict[str, Any]:
 
 
 def render_native_control_probe(st: Any, session: dict[str, Any], probe_placeholder: Any) -> None:
-    """Render ledger via st.code on a local placeholder (never stored in session_state)."""
+    """Render ledger via st.code; mirror payload on window for runner scrape (diag-only)."""
     if probe_placeholder is None:
         return
     run_id = _qp_run_id(st, session)
     payload = build_control_probe_payload(session, run_id)
     line = encode_control_probe_payload(payload)
     probe_placeholder.code(line, language=None)
+    try:
+        import json as _json
+
+        import streamlit.components.v1 as components
+
+        row_count = len(payload.get("rows") or [])
+        components.html(
+            f"""<script>
+            window.__soloRvLedgerB64 = {_json.dumps(line)};
+            window.__soloRvLedgerRowCount = {int(row_count)};
+            window.__soloRvLedgerRunId = {_json.dumps(run_id)};
+            </script>""",
+            height=0,
+            width=0,
+        )
+    except Exception:
+        pass
+    try:
+        store = dict(session.get(RV_LEDGERS_BY_RUN_KEY) or {})
+        if run_id:
+            session["_solo_rv_control_ledger_export_row_count"] = len(store.get(run_id) or [])
+    except Exception:
+        pass
 
 
 def append_control_event(

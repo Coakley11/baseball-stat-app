@@ -611,3 +611,68 @@ def rv3_ledger_invalid_reason(rows: list[dict[str, Any]]) -> str:
             return "INVALID_RV3_PRODUCTION_PLACEMENT_ORDER"
     return ""
 
+
+def rv3_post_delivery_observation_boundary(
+    rows: list[dict[str, Any]], *, browser_send_ts: float | None = None
+) -> dict[str, Any]:
+    """Runner diagnosis: first missing step after production placement / browser send."""
+    from live_draft_solo_rv_declaration_ledger import _row_ts_seconds
+
+    placement = next((r for r in rows if str(r.get("event") or "") == "rv3_production_placement_entered"), None)
+    out: dict[str, Any] = {
+        "classification": "",
+        "placement_entered_ts": _row_ts_seconds(placement) if placement else None,
+        "browser_send_ts": browser_send_ts,
+        "last_event": "",
+        "last_event_sequence": 0,
+        "max_script_run_seq": 0,
+        "has_mount_with_rv_decl_trace": False,
+        "has_declaration_attempt": False,
+        "has_declaration_returned": False,
+        "has_post_delivery_redeclaration": False,
+        "post_send_declaration_returned": False,
+    }
+    if not rows:
+        out["classification"] = "E"
+        return out
+    out["last_event"] = str(rows[-1].get("event") or "")
+    out["last_event_sequence"] = int(rows[-1].get("event_sequence") or 0)
+    out["max_script_run_seq"] = max(int(r.get("script_run_seq") or 0) for r in rows)
+    events = {str(r.get("event") or "") for r in rows}
+    out["has_mount_with_rv_decl_trace"] = any(
+        str((r.get("extra") or {}).get("step") or r.get("step") or "") == "mount_with_rv_control_declaration"
+        for r in rows
+        if str(r.get("event") or "") == "rv3_decl_trace"
+    )
+    out["has_declaration_attempt"] = "declaration_attempt" in events
+    out["has_declaration_returned"] = "declaration_returned" in events
+    out["has_post_delivery_redeclaration"] = "post_delivery_redeclaration" in events
+    send_ts = browser_send_ts
+    for row in rows:
+        if str(row.get("event") or "") != "declaration_returned":
+            continue
+        if send_ts is None or _row_ts_seconds(row) >= send_ts - 0.05:
+            out["post_send_declaration_returned"] = True
+            break
+    if not placement:
+        out["classification"] = "A"
+        return out
+    if not out["has_mount_with_rv_decl_trace"] and not out["has_declaration_attempt"]:
+        out["classification"] = "A"
+        return out
+    if out["has_mount_with_rv_decl_trace"] and not out["has_declaration_attempt"]:
+        out["classification"] = "B"
+        return out
+    if out["has_declaration_attempt"] and not out["has_declaration_returned"]:
+        out["classification"] = "C"
+        return out
+    if send_ts and out["has_declaration_returned"] and not out["post_send_declaration_returned"]:
+        if not out["has_post_delivery_redeclaration"]:
+            out["classification"] = "D"
+            return out
+    if out["post_send_declaration_returned"] or out["has_post_delivery_redeclaration"]:
+        out["classification"] = ""
+        return out
+    out["classification"] = "E"
+    return out
+

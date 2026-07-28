@@ -89,6 +89,113 @@ def _session_state_token(ss_after: str) -> str:
     return s.strip("'\"")
 
 
+def _row_ts_seconds(row: dict[str, Any]) -> float:
+    ts = row.get("ts")
+    if ts is None:
+        return 0.0
+    try:
+        val = float(ts)
+    except (TypeError, ValueError):
+        return 0.0
+    if val > 1e12:
+        return val / 1000.0
+    return val
+
+
+def infer_browser_send_ts_seconds(
+    ledger_rows: list[dict[str, Any]] | None = None,
+    *,
+    expiration: dict[str, Any] | None = None,
+) -> float | None:
+    """Best-effort browser expiration send time (seconds) from runner observations."""
+    exp = expiration or {}
+    transport = dict(exp.get("transport_send_evidence") or {})
+    matched = list(transport.get("matched") or [])
+    if matched:
+        try:
+            ts_ms = float(matched[0].get("ts") or 0)
+            if ts_ms > 0:
+                return ts_ms / 1000.0 if ts_ms > 1e12 else ts_ms
+        except (TypeError, ValueError):
+            pass
+    deduped = list(exp.get("deduped_logical_sends") or [])
+    if deduped:
+        try:
+            ts_ms = float(deduped[0].get("ts") or 0)
+            if ts_ms > 0:
+                return ts_ms / 1000.0 if ts_ms > 1e12 else ts_ms
+        except (TypeError, ValueError):
+            pass
+    for row in ledger_rows or []:
+        if str(row.get("event") or "") == "post_delivery_redeclaration":
+            t = _row_ts_seconds(row)
+            if t:
+                return t
+    return None
+
+
+def ledger_post_delivery_proof_satisfied(
+    rows: list[dict[str, Any]],
+    *,
+    expected_token: str = "",
+    browser_send_ts: float | None = None,
+) -> tuple[bool, str]:
+    """Runner grading: post-send declaration proof (explicit row or declaration_returned after browser send)."""
+    exp = str(expected_token or "").strip()
+    send_ts = browser_send_ts
+    if send_ts is None:
+        send_ts = infer_browser_send_ts_seconds(rows)
+
+    for row in reversed(rows):
+        ev = str(row.get("event") or "")
+        if ev == "post_delivery_redeclaration":
+            tok = str(row.get("expected_token") or "")
+            extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+            proof = str(extra.get("proof_source") or row.get("proof_source") or "")
+            if exp and tok and tok != exp and exp not in tok:
+                continue
+            if send_ts is not None and _row_ts_seconds(row) < send_ts - 0.05:
+                continue
+            if proof or not exp or tok == exp or exp in str(row.get("coalesced_value") or ""):
+                return True, proof or "explicit_ledger_row"
+        if ev != "declaration_returned":
+            continue
+        row_ts = _row_ts_seconds(row)
+        if send_ts is not None and row_ts > 0 and row_ts < send_ts - 0.05:
+            continue
+        extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+        if extra.get("post_delivery_redeclaration_proven"):
+            return True, str(extra.get("proof_source") or "component_return_exact")
+        occ = int(extra.get("declaration_occurrence_number") or row.get("declaration_occurrence_number") or 0)
+        browser_seen = bool(
+            row.get("browser_send_seen")
+            or extra.get("browser_send_seen")
+            or extra.get("post_delivery_redeclaration_proven")
+        )
+        micro_cr = str(extra.get("micro_cycle_component_return") or "").strip()
+        if not micro_cr:
+            from live_draft_solo_rv3_room_continuity import extract_micro_cycle_binding_token
+
+            micro_cr = extract_micro_cycle_binding_token(row.get("component_return")) or extract_micro_cycle_binding_token(
+                extra.get("component_return_repr")
+            )
+        coalesced = str(extra.get("coalesced_value_exact") or row.get("coalesced_value") or "").strip().strip("'\"")
+        ss_tok = _session_state_token(str(extra.get("session_state_after") or row.get("session_state_after") or ""))
+        if exp and micro_cr == exp:
+            if send_ts is None or row_ts >= send_ts - 0.05:
+                return True, "component_return_exact"
+            if occ >= 2 and browser_seen:
+                return True, "component_return_exact"
+        if exp and send_ts is not None and row_ts >= send_ts - 0.05:
+            if coalesced == exp or ss_tok == exp:
+                return True, "coalesced_value_exact" if coalesced == exp else "session_state_exact"
+        if exp:
+            if micro_cr == exp and extra.get("proof_source") == "component_return_exact":
+                if send_ts is None or row_ts >= send_ts - 0.05:
+                    return True, "component_return_exact"
+    return False, ""
+
+
 def evaluate_post_delivery_proof(
     *,
     expected_token: str,
@@ -123,35 +230,6 @@ def evaluate_post_delivery_proof(
             return True, "coalesced_value_exact"
         if ss_tok == exp:
             return True, "session_state_exact"
-    return False, ""
-
-
-def ledger_post_delivery_proof_satisfied(
-    rows: list[dict[str, Any]],
-    *,
-    expected_token: str = "",
-) -> tuple[bool, str]:
-    """Runner grading: explicit row or declaration_returned with proof metadata."""
-    exp = str(expected_token or "").strip()
-    for row in reversed(rows):
-        ev = str(row.get("event") or "")
-        if ev == "post_delivery_redeclaration":
-            tok = str(row.get("expected_token") or "")
-            extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
-            proof = str(extra.get("proof_source") or row.get("proof_source") or "")
-            if exp and tok and tok != exp and exp not in tok:
-                continue
-            if proof or not exp or tok == exp or exp in str(row.get("coalesced_value") or ""):
-                return True, proof or "explicit_ledger_row"
-        if ev != "declaration_returned":
-            continue
-        extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
-        if extra.get("post_delivery_redeclaration_proven"):
-            return True, str(extra.get("proof_source") or "component_return_exact")
-        if exp:
-            micro_cr = str(extra.get("micro_cycle_component_return") or "")
-            if micro_cr == exp and extra.get("proof_source") == "component_return_exact":
-                return True, "component_return_exact"
     return False, ""
 
 

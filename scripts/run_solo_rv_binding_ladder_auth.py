@@ -541,23 +541,31 @@ def _rv1_post_declaration_epoch(
     exp["hydrated_room_id"] = hydrated_room
     exp["instrumentation_epoch_id"] = instrumentation_epoch_id
     exp["expected_token_ledger"] = expected_token
-    poll_until = time.time() + (120.0 if control_step == "RV3" else 60.0)
-    from live_draft_solo_rv_declaration_ledger import ledger_post_delivery_proof_satisfied
+    poll_until = time.time() + (180.0 if control_step == "RV3" else 60.0)
+    from live_draft_solo_rv_declaration_ledger import infer_browser_send_ts_seconds, ledger_post_delivery_proof_satisfied
 
+    browser_send_ts = infer_browser_send_ts_seconds(rows, expiration=exp)
     while time.time() < poll_until:
-        probe = poll_control_probe_best(page, probe)
+        probe = poll_control_probe_best(page, probe, run_id=run_id)
         rows = state_ledger_rows_for_run(probe, run_id)
         if control_step == "RV3":
             if any(str(r.get("event") or "") == "rv_mount_failed" for r in rows):
                 break
-            proven, _src = ledger_post_delivery_proof_satisfied(rows, expected_token=expected_token)
+            if browser_send_ts is None:
+                browser_send_ts = infer_browser_send_ts_seconds(rows, expiration=exp)
+            proven, _src = ledger_post_delivery_proof_satisfied(
+                rows, expected_token=expected_token, browser_send_ts=browser_send_ts
+            )
             if proven:
+                break
+            if any(str(r.get("event") or "") == "post_delivery_redeclaration" for r in rows):
                 break
         elif any(str(r.get("event") or "") == "post_delivery_redeclaration" for r in rows):
             break
         attach_rv_page_listeners(page, expected_token=expected_token)
         page.wait_for_timeout(2000)
-    probe = poll_control_probe_best(page, probe)
+    probe = poll_control_probe_best(page, probe, run_id=run_id)
+    rows = state_ledger_rows_for_run(probe, run_id)
     return exp, probe, reg, None, {
         "expected_token": expected_token,
         "hydrated_room_id": hydrated_room,
@@ -567,29 +575,75 @@ def _rv1_post_declaration_epoch(
     }
 
 
+def merge_ledger_rows(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Union ledger rows by event_sequence (runner polls may see partial DOM refreshes)."""
+    merged: dict[int, dict[str, Any]] = {}
+    fallback = 0
+    for row in list(a or []) + list(b or []):
+        if not isinstance(row, dict):
+            continue
+        seq = int(row.get("event_sequence") or 0)
+        if seq <= 0:
+            fallback += 1
+            seq = -fallback
+        merged[seq] = row
+    return sorted(merged.values(), key=lambda r: (int(r.get("event_sequence") or 0), float(r.get("ts") or 0)))
+
+
+def merge_probe_ledgers(best: dict[str, Any], fresh: dict[str, Any], *, run_id: str = "") -> dict[str, Any]:
+    if not fresh:
+        return best
+    rid = str(run_id or fresh.get("run_id") or best.get("run_id") or "")
+    best_rows = ledger_rows_for_run(best, rid) if rid else list(best.get("rows") or [])
+    fresh_rows = ledger_rows_for_run(fresh, rid) if rid else list(fresh.get("rows") or [])
+    merged_rows = merge_ledger_rows(best_rows, fresh_rows)
+    out = dict(fresh)
+    if merged_rows:
+        out["rows"] = merged_rows
+    parse = dict(out.get("_probe_parse") or {})
+    if parse.get("decode_ok") or merged_rows:
+        parse["decode_ok"] = bool(parse.get("decode_ok") or merged_rows)
+        out["_probe_parse"] = parse
+    try:
+        win_count = fresh.get("_window_ledger_row_count")
+        if win_count is not None:
+            out["_window_ledger_row_count"] = win_count
+    except Exception:
+        pass
+    return out
+
+
 def scrape_control_probe(page) -> dict[str, Any]:
     from live_draft_solo_rv_control_probe import decode_control_probe_text_with_meta, playwright_ledger_scrape_script
 
     try:
         text = str(page.evaluate(playwright_ledger_scrape_script()) or "")
+        win_meta = page.evaluate(
+            """() => ({
+              rowCount: (typeof window.__soloRvLedgerRowCount === 'number') ? window.__soloRvLedgerRowCount : null,
+              hasB64: !!(window.__soloRvLedgerB64),
+              runId: String(window.__soloRvLedgerRunId || ''),
+            })"""
+        )
         payload, meta = decode_control_probe_text_with_meta(text)
         out: dict[str, Any] = {"_probe_parse": meta, "rows": list(payload.get("rows") or [])}
+        if isinstance(win_meta, dict):
+            out["_window_ledger_row_count"] = win_meta.get("rowCount")
+            out["_window_ledger_run_id"] = win_meta.get("runId")
         if payload.get("run_id"):
             out["run_id"] = payload.get("run_id")
         if payload.get("step"):
             out["step"] = payload.get("step")
         if meta.get("decode_ok") and out["rows"]:
-            return {**payload, "_probe_parse": meta}
+            return {**payload, "_probe_parse": meta, **{k: out[k] for k in out if k.startswith("_window")}}
         return out
     except Exception as exc:
         return {"rows": [], "_probe_parse": {"decode_ok": False, "decode_error": f"scrape_exception:{exc}"}}
 
 
-def poll_control_probe_best(page, best: dict[str, Any]) -> dict[str, Any]:
+def poll_control_probe_best(page, best: dict[str, Any], *, run_id: str = "") -> dict[str, Any]:
     probe = scrape_control_probe(page)
-    if probe and len(probe.get("rows") or []) >= len(best.get("rows") or []):
-        return probe
-    return best
+    return merge_probe_ledgers(best, probe, run_id=run_id)
 
 
 def ledger_rows_for_run(probe: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
@@ -773,6 +827,9 @@ def _grade_rv_real_control_step(
     filtered_exp = browser.pop("_filtered_expiration", expiration)
     browser.pop("_filtered_registry", None)
     expected = str(identity.get("expected_token") or expiration.get("expected_token_ledger") or "")
+    from live_draft_solo_rv_declaration_ledger import infer_browser_send_ts_seconds
+
+    browser_send_ts = infer_browser_send_ts_seconds(ledger_rows, expiration=filtered_exp)
     python_verdict, python_reason = grade_rv_python_binding(ledger_rows, expected_token=expected)
     delivery_ok, delivery_reason = validate_rv_browser_delivery(
         browser=browser,
@@ -781,7 +838,7 @@ def _grade_rv_real_control_step(
         expected_token=expected,
     )
     post_delivery_lane, post_delivery_reason = grade_rv_post_delivery_lane(
-        ledger_rows, expected_token=expected
+        ledger_rows, expected_token=expected, browser_send_ts=browser_send_ts
     )
     lifecycle_lane, observability_warnings = lifecycle_instrumentation_report(
         browser, browser_delivery_ok=delivery_ok
@@ -884,8 +941,17 @@ def _grade_rv_real_control_step(
             and python_verdict == "PASS_RETURN_VALUE_DELIVERY"
             and post_delivery_lane.startswith("INCOMPLETE")
         ):
-            overall = "INCOMPLETE_OBSERVABILITY"
-            overall_reason = post_delivery_reason
+            overall = "INCOMPLETE_OBSERVABILITY_POST_DELIVERY_DECLARATION"
+            overall_reason = post_delivery_reason or "INCOMPLETE_OBSERVABILITY"
+        try:
+            from solo_rv_ladder_runner_state import rv3_post_delivery_observation_boundary
+
+            result_room["post_delivery_observation_boundary"] = rv3_post_delivery_observation_boundary(
+                ledger_rows, browser_send_ts=browser_send_ts
+            )
+        except ImportError:
+            pass
+        result_room["overall_verdict"] = overall
     else:
         result_room = {}
     hydrated_row = next((r for r in ledger_rows if r.get("event") == "real_room_hydrated"), None)

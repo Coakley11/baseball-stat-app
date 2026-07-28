@@ -33,6 +33,36 @@ def test_declaration_occurrence_persists_across_reruns():
     assert int((session.get(RV_DECLARATION_OCC_BY_RUN_KEY) or {})["run-x"]) == 2
 
 
+def test_ledger_post_delivery_requires_post_send_declaration():
+    token = "R|0|10.0"
+    rows = [
+        {
+            "event": "declaration_returned",
+            "ts": 9.0,
+            "expected_token": token,
+            "extra": {"micro_cycle_component_return": token, "session_state_after": f"'{token}'"},
+        }
+    ]
+    ok, _ = ledger_post_delivery_proof_satisfied(rows, expected_token=token, browser_send_ts=10.0)
+    assert ok is False
+
+
+def test_ledger_post_delivery_passes_post_send_component_return():
+    token = "R|0|10.0"
+    rows = [
+        {
+            "event": "declaration_returned",
+            "ts": 10.5,
+            "expected_token": token,
+            "component_return": f"MicroCycleResult(... token='{token}' ...)",
+            "extra": {"micro_cycle_component_return": token, "proof_source": "component_return_exact"},
+        }
+    ]
+    ok, src = ledger_post_delivery_proof_satisfied(rows, expected_token=token, browser_send_ts=10.0)
+    assert ok is True
+    assert src == "component_return_exact"
+
+
 def test_component_return_exact_proves_post_delivery():
     micro = micro_cycle_to_ledger_fields(
         MicroCycleResult(

@@ -257,10 +257,7 @@ def validate_rv_browser_delivery(
     control_probe_rows: list[dict[str, Any]],
     expected_token: str = "",
 ) -> tuple[bool, str]:
-    """Browser delivery lane — expiration send chain; timer_arm row not required."""
-    from live_draft_solo_rv_declaration_ledger import ledger_post_delivery_proof_satisfied
-
-    events = {str(r.get("event") or "") for r in control_probe_rows}
+    """Browser delivery lane — one real transport/send/receipt; independent of post-delivery declaration proof."""
     logical = int(browser.get("logical_send_count") or 0)
     if logical != 1:
         return False, f"INVALID_BROWSER_SEND_COUNT_{logical}_need_1"
@@ -277,16 +274,13 @@ def validate_rv_browser_delivery(
         return False, "INVALID_BROWSER_IFRAME_NOT_IDENTIFIED"
     if browser.get("sender_current_status") == "disconnected":
         return False, "INVALID_BROWSER_IFRAME_DISCONNECTED"
-    if browser.get("browser_send_proven") or "component_value_sent" in cs or logical == 1:
-        exp = str(expected_token or "").strip()
-        if not exp:
-            for row in control_probe_rows:
-                if str(row.get("expected_token") or "").count("|") >= 2:
-                    exp = str(row.get("expected_token") or "").strip()
-                    break
-        proven, _src = ledger_post_delivery_proof_satisfied(control_probe_rows, expected_token=exp)
-        if not proven and "post_delivery_redeclaration" not in events:
-            return False, "INVALID_POST_DELIVERY_REDECLARATION_MISSING"
+    exp = str(expected_token or browser.get("token_sent") or "").strip()
+    if exp:
+        sent = str(browser.get("token_sent") or "").strip()
+        transport = dict(browser.get("transport_send_evidence") or {})
+        if sent and sent != exp and exp not in sent:
+            if not transport.get("token_match", True):
+                return False, "INVALID_BROWSER_TOKEN_MISMATCH"
     return True, "PASS"
 
 
@@ -327,15 +321,20 @@ def validate_rv_browser_validity(
 
 
 def grade_rv_post_delivery_lane(
-    ledger_rows: list[dict[str, Any]], *, expected_token: str
+    ledger_rows: list[dict[str, Any]],
+    *,
+    expected_token: str,
+    browser_send_ts: float | None = None,
 ) -> tuple[str, str]:
     from live_draft_solo_rv_declaration_ledger import ledger_post_delivery_proof_satisfied
 
-    proven, src = ledger_post_delivery_proof_satisfied(ledger_rows, expected_token=expected_token)
+    proven, src = ledger_post_delivery_proof_satisfied(
+        ledger_rows, expected_token=expected_token, browser_send_ts=browser_send_ts
+    )
     if proven:
         label = "PASS — explicit ledger row" if src == "explicit_ledger_row" else f"PASS — {src or 'component_return_exact'}"
         return "PASS", label
-    return "INCOMPLETE_POST_DELIVERY_REDECLARATION_MARKER", "INCOMPLETE_POST_DELIVERY_REDECLARATION_MARKER"
+    return "INCOMPLETE_OBSERVABILITY", "INCOMPLETE_POST_DELIVERY_REDECLARATION_MARKER"
 
 
 def grade_rv_python_binding(ledger_rows: list[dict[str, Any]], *, expected_token: str) -> tuple[str, str]:

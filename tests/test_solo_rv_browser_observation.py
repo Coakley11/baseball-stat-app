@@ -14,6 +14,8 @@ from solo_rv_browser_observation import (
     combine_rv1_verdicts,
     filter_observations_by_run_identity,
     grade_rv1_python_binding,
+    grade_rv_post_delivery_lane,
+    validate_rv_browser_delivery,
 )
 
 
@@ -29,6 +31,29 @@ def test_grade_rv1_python_binding_coalesced():
     ]
     verdict, reason = grade_rv1_python_binding(rows, expected_token=token)
     assert verdict == "PASS_RETURN_VALUE_DELIVERY"
+
+
+def test_browser_delivery_pass_without_post_delivery_ledger():
+    browser = {
+        "logical_send_count": 1,
+        "unique_send_events": 1,
+        "browser_send_proven": True,
+        "parent_listener_on_app_window": True,
+        "sending_iframe_identified": True,
+        "sender_current_status": "current",
+        "token_sent": "R|0|9.0",
+        "transport_send_evidence": {"token_match": True},
+    }
+    ok, reason = validate_rv_browser_delivery(
+        browser=browser,
+        expiration={"client_stages": ["component_value_sent"], "deduped_logical_sends": [{"ts": 9000, "token": "R|0|9.0"}]},
+        control_probe_rows=[{"event": "rv3_production_placement_entered"}],
+        expected_token="R|0|9.0",
+    )
+    assert ok is True
+    assert reason == "PASS"
+    lane, _ = grade_rv_post_delivery_lane([], expected_token="R|0|9.0", browser_send_ts=9.0)
+    assert lane.startswith("INCOMPLETE")
 
 
 def test_combine_python_pass_browser_timer_miss():
@@ -100,3 +125,13 @@ def test_filter_keeps_pre_declaration_timer_arm():
     arms = analyze_timer_arms_identity(fexp, freg, identity)
     assert arms["logical_timer_arms"] == 1
     assert arms["raw_timer_arms"] == 1
+
+
+def test_merge_ledger_rows_unions_by_event_sequence():
+    from run_solo_rv_binding_ladder_auth import merge_ledger_rows
+
+    a = [{"event_sequence": 1, "event": "a", "ts": 1.0}]
+    b = [{"event_sequence": 2, "event": "b", "ts": 2.0}, {"event_sequence": 1, "event": "a2", "ts": 1.1}]
+    merged = merge_ledger_rows(a, b)
+    assert len(merged) == 2
+    assert merged[1]["event"] == "b"
