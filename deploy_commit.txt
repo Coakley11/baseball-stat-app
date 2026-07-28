@@ -1,3 +1,3 @@
-ac06a49  # RV3 runner: independent browser lane + ledger poll/merge
-
-branch: dev
+db6092e  # Stage 1A return-value session bind + production ledger
+
+branch: dev
