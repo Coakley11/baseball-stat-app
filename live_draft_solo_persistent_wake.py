@@ -413,8 +413,6 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
         from live_draft_solo_transport_boundary_diag import record_transport_python_run, transport_boundary_active
 
         if transport_boundary_active(st, session):
-            from live_draft_solo_persistent_wake import SOLO_PERSISTENT_WAKE_TOKEN_KEY
-
             record_transport_python_run(
                 st,
                 session,
