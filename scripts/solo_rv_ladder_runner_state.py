@@ -178,6 +178,11 @@ def classify_rv1_ledger_after_ready(
     setup_invalid = rv1_logical_setup_invalid_reason(rows)
     if setup_invalid:
         return "invalid", "INVALID", setup_invalid
+    step_name = str(next((r.get("control_name") for r in rows if r.get("control_name")), ""))
+    if step_name == "RV3":
+        placement_invalid = rv3_production_placement_invalid_reason(rows)
+        if placement_invalid:
+            return "invalid", "INVALID", placement_invalid
     return "READY_HYDRATED", "", ""
 
 
@@ -400,4 +405,72 @@ def rv1_logical_setup_invalid_reason_from_report(report: dict[str, Any]) -> str:
         return "INVALID_RV_DUPLICATE_ROOM_CREATION_multiple_creation_event_ids"
     if int(report.get("logical_draft_start_count") or 0) > 1:
         return "INVALID_RV_DUPLICATE_DRAFT_START"
+    return ""
+
+
+RV3_PRODUCTION_LOCATION_MARKERS = (
+    "ldr_page_entry",
+    "early_persistent",
+    "persistent_wake",
+)
+
+
+def _row_extra_dict(row: dict[str, Any]) -> dict[str, Any]:
+    extra = row.get("extra")
+    return extra if isinstance(extra, dict) else {}
+
+
+def build_rv3_production_placement_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Runner-only: where RV3 production persistent-wake declared on the full LDR page."""
+    prod_attempts = []
+    for row in rows:
+        if str(row.get("event") or "") != "declaration_attempt":
+            continue
+        loc = str(_row_extra_dict(row).get("location") or "")
+        if any(m in loc for m in RV3_PRODUCTION_LOCATION_MARKERS):
+            prod_attempts.append(
+                {
+                    "event_sequence": row.get("event_sequence"),
+                    "script_run_seq": row.get("script_run_seq"),
+                    "location": loc,
+                    "widget_key": row.get("widget_key"),
+                    "expected_token": row.get("expected_token"),
+                }
+            )
+    first = prod_attempts[0] if prod_attempts else {}
+    return {
+        "source_module": "live_draft_solo_persistent_wake",
+        "source_function": "try_solo_persistent_wake_ldr_entry",
+        "mount_function": "_mount_persistent_wake_micro_controlled",
+        "streamlit_call_site": "streamlit_app.py:early_persistent_wake_ldr_entry",
+        "active_page": "Live Draft Room",
+        "branch": "early_persistent_wake_before_full_ldr_body",
+        "persistent_wake_eligible": True,
+        "on_change": None,
+        "return_value_delivery": True,
+        "pick_processing_disabled": True,
+        "widget_key": str(first.get("widget_key") or "solo_countdown_wake_solo_persistent"),
+        "declaration_occurrence_order": len(prod_attempts),
+        "production_declaration_attempts": prod_attempts,
+        "first_production_location": str(first.get("location") or ""),
+    }
+
+
+def rv3_production_placement_invalid_reason(rows: list[dict[str, Any]]) -> str:
+    step_rows = [r for r in rows if str(r.get("control_name") or "") == "RV3" or r.get("event")]
+    events = {str(r.get("event") or "") for r in rows}
+    if "rv_mount_failed" in events:
+        row = next(r for r in rows if r.get("event") == "rv_mount_failed")
+        inv = str(_row_extra_dict(row).get("invalid") or "")
+        if inv.startswith("INVALID_RV3"):
+            return inv
+        reason = str(_row_extra_dict(row).get("reason") or row.get("reason") or "mount_failed")
+        return f"INVALID_RV3_PRODUCTION_PLACEMENT_{reason}"
+    report = build_rv3_production_placement_report(rows)
+    if not report.get("production_declaration_attempts"):
+        if "declaration_attempt" not in events:
+            return "INVALID_RV3_PRODUCTION_PLACEMENT_missing_declaration_attempt"
+        return "INVALID_RV3_PRODUCTION_PLACEMENT_not_at_persistent_wake_site"
+    if "declaration_returned" not in events:
+        return "INVALID_RV3_PRODUCTION_PLACEMENT_missing_declaration_returned"
     return ""

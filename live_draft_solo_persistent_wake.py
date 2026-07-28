@@ -891,6 +891,44 @@ def _mount_persistent_wake_micro_controlled(
     else:
         session.pop(SOLO_PERSISTENT_RETURN_VALUE_DELIVERY_KEY, None)
 
+    if str(session.get("_solo_rv_ladder_step") or "") == "RV3":
+
+        def _rv3_production_mount() -> Any:
+            return render_micro_isolation_once(
+                st,
+                session,
+                placement="PROD",
+                location=location,
+                draft_id=draft_id,
+                route=True,
+                persistent=True,
+                session_prefix=SOLO_PERSISTENT_WAKE_SESSION_PREFIX,
+                widget_key=widget_key,
+                production_room=props_room,
+                production_expire_token=expire_token,
+                production_actionable=actionable,
+                production_delivery_only=delivery_only,
+                deliver_callback=deliver,
+                suppress_immediate_session_on_change=suppress,
+                chain_persist_key=chain_persist_key,
+                production_use_return_value_delivery=(delivery_mode == "return_value"),
+            )
+
+        from live_draft_solo_rv_control_probe import mount_with_rv_control_declaration
+
+        session["_solo_persistent_wake_last_token"] = expire_token
+        session["_solo_parity_expected_token"] = expire_token
+        return mount_with_rv_control_declaration(
+            st,
+            session,
+            props_room,
+            widget_key=widget_key,
+            mount_fn=_rv3_production_mount,
+            control_name="RV3",
+            location=location,
+            probe_placeholder=None,
+        )
+
     return render_micro_isolation_once(
         st,
         session,

@@ -19,7 +19,7 @@ from live_draft_solo_rv_control_probe import (
 
 def _rv_real_room_bootstrap(st: Any, session: dict[str, Any], *, step: str = "") -> None:
     """Diag-only: restore auth/workspace before RV1+ mount (no cross-nav room hydration)."""
-    if step not in ("RV1", "RV2"):
+    if step not in ("RV1", "RV2", "RV3"):
         _apply_harness_room_query_context(st, session)
     try:
         from suite_workspace import bootstrap_suite_workspace
@@ -74,6 +74,33 @@ def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
     if not step:
         return False
     if step == "RV3":
+        _rv_real_room_bootstrap(st, session, step=step)
+        probe_placeholder = st.empty()
+        render_native_control_probe(st, session, probe_placeholder)
+        append_control_event(st, session, "script_begin", control_name=step)
+        append_control_event(st, session, "rv_entrypoint_entered", control_name=step)
+        render_native_control_probe(st, session, probe_placeholder)
+        from live_draft_solo_rv_production_room_setup import ensure_rv1_production_solo_room
+
+        setup = ensure_rv1_production_solo_room(st, session, probe_placeholder=probe_placeholder)
+        if setup.get("ok") and not session.get("_solo_rv_rv3_production_setup_done"):
+            session["_solo_rv_rv3_production_setup_done"] = True
+        if not setup.get("ok"):
+            append_control_event(
+                st,
+                session,
+                "rv_mount_failed",
+                control_name=step,
+                extra={
+                    "reason": str(setup.get("reason") or setup.get("invalid") or "production_setup_failed"),
+                    "invalid": str(setup.get("invalid") or ""),
+                },
+            )
+            render_native_control_probe(st, session, probe_placeholder)
+        st.caption(
+            f"RV ladder {step}: production setup={'ok' if setup.get('ok') else 'fail'} "
+            f"room={str(setup.get('room_id') or '')[:16]}"
+        )
         return False
     if step in ("RV1", "RV2"):
         _rv_real_room_bootstrap(st, session, step=step)

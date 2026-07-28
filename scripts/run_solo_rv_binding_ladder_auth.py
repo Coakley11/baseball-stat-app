@@ -66,7 +66,7 @@ def rv_url(step: str, run_id: str, *, ldr: bool = False, harness_room_id: str = 
     }
     if harness_room_id:
         q["solo_rv_harness_room_id"] = harness_room_id.strip().upper()
-    if ldr or step in ("RV1", "RV2"):
+    if ldr or step in ("RV1", "RV2", "RV3"):
         q["active_page"] = "Live Draft Room"
     base = f"{BASE}/?{urlencode(q)}"
     return append_suite_sid_to_url(base)
@@ -327,6 +327,7 @@ def wait_for_rv1_control_ready(
     run_id: str,
     *,
     timeout_s: float = 120.0,
+    control_step: str = "RV1",
 ) -> tuple[str, dict[str, Any], list[dict[str, Any]], str]:
     """Wait until READY or terminal page state. Returns (page_state, probe, rows, visible_text)."""
     deadline = time.time() + timeout_s
@@ -384,7 +385,12 @@ def run_rv_control_observation(
     session_trace: list[dict[str, Any]],
     instrumentation_epoch_id: str = "",
 ) -> dict[str, Any]:
-    page_state, probe, rows, _text = wait_for_rv1_control_ready(page, run_id, timeout_s=120.0)
+    page_state, probe, rows, _text = wait_for_rv1_control_ready(
+        page,
+        run_id,
+        timeout_s=180.0 if control_step == "RV3" else 120.0,
+        control_step=control_step,
+    )
     session_trace.append(
         {
             "phase": f"{control_step.lower()}_control_url",
@@ -750,7 +756,7 @@ def _grade_rv_real_control_step(
     )
     binding_fail: tuple[str, str] | None = None
     if python_verdict.startswith("FAIL") and delivery_ok:
-        if step == "RV2":
+        if step in ("RV2", "RV3"):
             fail_v, fail_r = classify_rv2_binding_failure(
                 browser=browser, declaration_rows=ledger_rows, python_verdict=python_verdict
             )
@@ -784,6 +790,8 @@ def _grade_rv_real_control_step(
     )
     if binding_fail and binding_fail[0] == "FAIL":
         root = binding_fail[1]
+    elif overall in ("PASS_RETURN_VALUE_DELIVERY", "PASS_WITH_OBSERVABILITY_WARN", "PASS"):
+        root = ""
     hydrated_row = next((r for r in ledger_rows if r.get("event") == "real_room_hydrated"), None)
     streamlit_session = ""
     for row in ledger_rows:
@@ -859,14 +867,22 @@ def evaluate_step(
         if matched:
             ledger_rows = matched
     room_reuse_report: dict[str, Any] = {}
-    if step in ("RV1", "RV2"):
+    if step in ("RV1", "RV2", "RV3"):
         from solo_rv_ladder_runner_state import (
             build_rv1_room_reuse_report,
+            build_rv3_production_placement_report,
             rv1_logical_setup_invalid_reason,
+            rv3_production_placement_invalid_reason,
         )
 
         room_reuse_report = build_rv1_room_reuse_report(ledger_rows, run_id=run_id)
         dup_reason = rv1_logical_setup_invalid_reason(ledger_rows)
+        placement_report: dict[str, Any] = {}
+        if step == "RV3" and not dup_reason:
+            placement_invalid = rv3_production_placement_invalid_reason(ledger_rows)
+            if placement_invalid:
+                dup_reason = placement_invalid
+            placement_report = build_rv3_production_placement_report(ledger_rows)
         if dup_reason:
             browser = summarize_browser_events(expiration, reg)
             hydrated_row = next((r for r in ledger_rows if r.get("event") == "real_room_hydrated"), None)
@@ -894,6 +910,7 @@ def evaluate_step(
                 "validity_reason": dup_reason,
                 "root_cause": "",
                 "room_reuse_report": room_reuse_report,
+                "production_placement_report": placement_report if step == "RV3" else {},
                 "browser_summary": browser,
                 "control_probe_ledger": ledger_rows,
                 "expiration_skipped": bool(
@@ -901,8 +918,8 @@ def evaluate_step(
                 ),
             }
     rows = ledger_to_declaration_rows(ledger_rows)
-    if step in ("RV1", "RV2"):
-        return _grade_rv_real_control_step(
+    if step in ("RV1", "RV2", "RV3"):
+        result = _grade_rv_real_control_step(
             step=step,
             run_id=run_id,
             expiration=expiration,
@@ -913,6 +930,11 @@ def evaluate_step(
             room_reuse_report=room_reuse_report,
             instrumentation_epoch_ms=instrumentation_epoch_ms,
         )
+        if step == "RV3":
+            from solo_rv_ladder_runner_state import build_rv3_production_placement_report
+
+            result["production_placement_report"] = build_rv3_production_placement_report(ledger_rows)
+        return result
     browser = summarize_browser_events(expiration, reg)
     validity_ok, validity_reason = __import__(
         "live_draft_solo_rv_binding_ladder", fromlist=["validate_rv_control_prerequisites"]
@@ -1109,6 +1131,10 @@ def run_rv1_direct(context, run_id: str, *, cloud_sha: str, cloud_build: str) ->
     return _run_rv_direct(context, run_id, control_step="RV1", cloud_sha=cloud_sha, cloud_build=cloud_build)
 
 
+def run_rv3_direct(context, run_id: str, *, cloud_sha: str, cloud_build: str) -> dict[str, Any]:
+    return _run_rv_direct(context, run_id, control_step="RV3", cloud_sha=cloud_sha, cloud_build=cloud_build)
+
+
 def run_rv2_direct(context, run_id: str, *, cloud_sha: str, cloud_build: str) -> dict[str, Any]:
     return _run_rv_direct(context, run_id, control_step="RV2", cloud_sha=cloud_sha, cloud_build=cloud_build)
 
@@ -1283,6 +1309,8 @@ def main() -> int:
                 result = run_rv1_direct(context, run_id, cloud_sha=verified_sha, cloud_build=verified_build)
             elif step == "RV2":
                 result = run_rv2_direct(context, run_id, cloud_sha=verified_sha, cloud_build=verified_build)
+            elif step == "RV3":
+                result = run_rv3_direct(context, run_id, cloud_sha=verified_sha, cloud_build=verified_build)
             else:
                 result = run_rv_real_step(
                     context, step, run_id, cloud_sha=verified_sha, cloud_build=verified_build
