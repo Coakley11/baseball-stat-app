@@ -200,6 +200,47 @@ def mount_with_rv_control_declaration(
     probe_placeholder: Any = None,
 ) -> Any:
     expected = str(session.get("_solo_persistent_wake_last_token") or session.get("_solo_parity_expected_token") or "")
+    if str(session.get("_solo_rv_ladder_step") or control_name or "") == "RV3" or control_name == "RV3":
+        from live_draft_solo_rv3_phase import (
+            is_rv3_rejected_token,
+            mark_rv3_production_declared,
+            rv3_declaration_allowed,
+            set_rv3_phase,
+            RV3_PHASE_POST_DELIVERY,
+        )
+
+        allowed, invalid = rv3_declaration_allowed(
+            session, expected_token=expected, location=location
+        )
+        if not allowed:
+            append_control_event(
+                st,
+                session,
+                "rv3_premature_component_declaration",
+                control_name="RV3",
+                widget_key=widget_key,
+                room=room,
+                expected_token=expected,
+                extra={
+                    "invalid": invalid,
+                    "location": location,
+                    "component_type": "blocked",
+                },
+            )
+            render_native_control_probe(st, session, probe_placeholder)
+            return None
+        if is_rv3_rejected_token(expected):
+            append_control_event(
+                st,
+                session,
+                "rv3_premature_component_declaration",
+                control_name="RV3",
+                widget_key=widget_key,
+                expected_token=expected,
+                extra={"invalid": "INVALID_RV3_PREMATURE_COMPONENT_DECLARATION", "location": location},
+            )
+            render_native_control_probe(st, session, probe_placeholder)
+            return None
     was_post_delivery_run = bool(session.get("_solo_rv_prior_declaration_returned"))
     append_control_event(
         st,
@@ -249,6 +290,12 @@ def mount_with_rv_control_declaration(
         )
     elif not session.get("_solo_rv_prior_declaration_returned"):
         session["_solo_rv_prior_declaration_returned"] = True
+    if str(session.get("_solo_rv_ladder_step") or control_name or "") == "RV3" or control_name == "RV3":
+        from live_draft_solo_rv3_phase import mark_rv3_production_declared, set_rv3_phase, RV3_PHASE_POST_DELIVERY
+
+        mark_rv3_production_declared(session)
+        if was_post_delivery_run:
+            set_rv3_phase(session, RV3_PHASE_POST_DELIVERY)
     if coerced:
         session["_solo_rv_browser_delivery_recorded"] = True
     render_native_control_probe(st, session, probe_placeholder)

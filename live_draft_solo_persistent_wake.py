@@ -954,9 +954,17 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         return False
 
     try:
+        from live_draft_solo_rv3_phase import rv3_active, rv3_allows_full_ldr_countdown, rv3_blocks_diag_countdowns
+
+        if rv3_active(session) and rv3_blocks_diag_countdowns(session):
+            return False
+    except ImportError:
+        pass
+
+    try:
         from live_draft_solo_parity_p6_persistent_diag import p6_persistent_diag_active, resolve_p6_run_id
 
-        if p6_persistent_diag_active(st, session):
+        if p6_persistent_diag_active(st, session) and str(session.get("_solo_rv_ladder_step") or "") != "RV3":
             resolve_p6_run_id(st, session)
     except ImportError:
         pass
@@ -995,6 +1003,16 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         render_transport_parent_listener(st)
 
     isolated = transport_isolated_mode(st, session)
+    try:
+        from live_draft_solo_rv3_phase import rv3_active, rv3_allows_full_ldr_countdown
+
+        if rv3_active(session):
+            if not rv3_allows_full_ldr_countdown(session):
+                return False
+            if isolated == "minimal":
+                isolated = "production"
+    except ImportError:
+        pass
     if isolated == "production":
         session.pop("_solo_persistent_wake_flush_disabled", None)
     elif isolated == "minimal":

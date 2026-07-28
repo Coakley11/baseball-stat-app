@@ -65,21 +65,29 @@ def build_run_identity_from_ledger(
     for event in (
         "real_room_hydrated",
         "production_draft_started",
+        "production_setup_owner_established",
         "declaration_attempt",
         "declaration_returned",
-        "production_setup_owner_established",
     ):
         for row in rows:
             if str(row.get("event") or "") != event:
                 continue
             if str(row.get("run_id") or "") not in ("", run_id):
                 continue
+            tok = str(row.get("expected_token") or "").strip()
+            if control_name == "RV3" and tok:
+                try:
+                    from live_draft_solo_rv3_phase import is_rv3_rejected_token
+
+                    if is_rv3_rejected_token(tok):
+                        continue
+                except ImportError:
+                    pass
             identity["room_id"] = str(row.get("room_id") or identity["room_id"] or "").strip().upper()
             if row.get("pick_index") is not None:
                 identity["pick_index"] = row.get("pick_index")
             if row.get("deadline") is not None:
                 identity["deadline"] = row.get("deadline")
-            tok = str(row.get("expected_token") or "").strip()
             if tok:
                 identity["expected_token"] = tok
             wk = str(row.get("widget_key") or "").strip()
@@ -117,6 +125,9 @@ def _timeline_row_matches_identity(row: dict[str, Any], identity: dict[str, Any]
     widget = str(identity.get("widget_key") or DEFAULT_WIDGET_KEY)
     token = str(identity.get("expected_token") or "")
     room_id = str(identity.get("room_id") or "")
+    preview = str(row.get("token_preview") or "").strip()
+    if preview and any(x in preview.upper() for x in ("PARITY", "MINIMAL", "WIRING")):
+        return False
     row_widget = str(row.get("widget_key") or "")
     if row_widget and widget and row_widget != widget:
         return False
@@ -308,9 +319,16 @@ def validate_rv_browser_validity(
 def grade_rv_python_binding(ledger_rows: list[dict[str, Any]], *, expected_token: str) -> tuple[str, str]:
     if not expected_token:
         return "INVALID", "INVALID_PYTHON_BINDING_missing_expected_token"
+    from live_draft_solo_rv3_phase import is_rv3_rejected_token
+
     for row in reversed(ledger_rows):
         ev = str(row.get("event") or "")
         if ev not in ("declaration_returned", "post_delivery_redeclaration"):
+            continue
+        tok = str(row.get("expected_token") or "")
+        if is_rv3_rejected_token(tok):
+            continue
+        if expected_token and tok and tok != expected_token and expected_token not in tok:
             continue
         coalesced = str(row.get("coalesced_value") or "").strip().strip("'\"")
         if not coalesced:

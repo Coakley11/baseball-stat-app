@@ -277,6 +277,24 @@ def ensure_rv1_production_solo_room(
     step = str(session.get("_solo_rv_ladder_step") or "RV1")
     run_id = str(session.get("_solo_rv_run_id") or _qp_get(st, "solo_rv_run_id") or "").strip()
 
+    if step == "RV3":
+        try:
+            from live_draft_solo_rv3_phase import RV3_PHASE_SETUP, get_rv3_phase
+
+            if get_rv3_phase(session) != RV3_PHASE_SETUP:
+                reused = _try_rv1_reuse_owned_room(
+                    st, session, run_id=run_id, step=step, probe_placeholder=probe_placeholder
+                )
+                if reused is not None:
+                    return reused
+                return {
+                    "ok": False,
+                    "invalid": "INVALID_RV3_REAL_ROOM_NOT_HYDRATED",
+                    "reason": "rv3_post_setup_without_live_room",
+                }
+        except ImportError:
+            pass
+
     if step == "RV2" and session.get("_solo_rv_rv2_production_setup_done"):
         reused = _try_rv1_reuse_owned_room(
             st, session, run_id=run_id, step=step, probe_placeholder=probe_placeholder
@@ -287,17 +305,6 @@ def ensure_rv1_production_solo_room(
             "ok": False,
             "invalid": "INVALID_RV_REAL_ROOM_HYDRATION_room_not_in_session",
             "reason": "rv2_setup_owner_without_live_room",
-        }
-    if step == "RV3" and session.get("_solo_rv_rv3_production_setup_done"):
-        reused = _try_rv1_reuse_owned_room(
-            st, session, run_id=run_id, step=step, probe_placeholder=probe_placeholder
-        )
-        if reused is not None:
-            return reused
-        return {
-            "ok": False,
-            "invalid": "INVALID_RV_ROOM_REUSE_FAILED_live_room_missing",
-            "reason": "rv3_setup_owner_without_live_room",
         }
 
     reused = _try_rv1_reuse_owned_room(

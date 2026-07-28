@@ -876,12 +876,14 @@ def evaluate_step(
         )
 
         room_reuse_report = build_rv1_room_reuse_report(ledger_rows, run_id=run_id)
-        dup_reason = rv1_logical_setup_invalid_reason(ledger_rows)
+        if step == "RV3":
+            dup_reason = rv3_production_placement_invalid_reason(ledger_rows)
+            if not dup_reason:
+                dup_reason = rv1_logical_setup_invalid_reason(ledger_rows)
+        else:
+            dup_reason = rv1_logical_setup_invalid_reason(ledger_rows)
         placement_report: dict[str, Any] = {}
         if step == "RV3" and not dup_reason:
-            placement_invalid = rv3_production_placement_invalid_reason(ledger_rows)
-            if placement_invalid:
-                dup_reason = placement_invalid
             placement_report = build_rv3_production_placement_report(ledger_rows)
         if dup_reason:
             browser = summarize_browser_events(expiration, reg)

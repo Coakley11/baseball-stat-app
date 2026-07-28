@@ -61,7 +61,13 @@ def enable_rv_ladder_session(st: Any, session: dict[str, Any]) -> str:
     session[RV_DECLARATION_AUDIT_ACTIVE_KEY] = True
     session["_solo_rv_instance_registry_force"] = True
     session["_solo_delivery_diag_enabled"] = True
-    session[PARITY_CONTROL_KEY] = "P6"
+    if step == "RV3":
+        from live_draft_solo_rv3_phase import init_rv3_run_state
+
+        init_rv3_run_state(session, run_id)
+        session.pop(PARITY_CONTROL_KEY, None)
+    else:
+        session[PARITY_CONTROL_KEY] = "P6"
     session[PARITY_P6_DISABLE_PICK_KEY] = True
     session["_solo_expire_owner"] = "wake"
     session.pop("_solo_persistent_wake_flush_disabled", None)

@@ -180,6 +180,10 @@ def classify_rv1_ledger_after_ready(
         return "invalid", "INVALID", setup_invalid
     step_name = str(next((r.get("control_name") for r in rows if r.get("control_name")), ""))
     if step_name == "RV3":
+        rv3_inv = rv3_ledger_invalid_reason(rows)
+        if rv3_inv:
+            return "invalid", "INVALID", rv3_inv
+    if step_name == "RV3":
         placement_invalid = rv3_production_placement_invalid_reason(rows)
         if placement_invalid:
             return "invalid", "INVALID", placement_invalid
@@ -420,23 +424,50 @@ def _row_extra_dict(row: dict[str, Any]) -> dict[str, Any]:
     return extra if isinstance(extra, dict) else {}
 
 
-def build_rv3_production_placement_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Runner-only: where RV3 production persistent-wake declared on the full LDR page."""
-    prod_attempts = []
-    for row in rows:
+def _rv3_hydrated_index(rows: list[dict[str, Any]]) -> int | None:
+    for i, row in enumerate(rows):
+        if str(row.get("event") or "") == "real_room_hydrated":
+            return i
+    return None
+
+
+def _rv3_declaration_tokens(rows: list[dict[str, Any]]) -> list[tuple[int, str, str]]:
+    out: list[tuple[int, str, str]] = []
+    for i, row in enumerate(rows):
         if str(row.get("event") or "") != "declaration_attempt":
             continue
-        loc = str(_row_extra_dict(row).get("location") or "")
-        if any(m in loc for m in RV3_PRODUCTION_LOCATION_MARKERS):
-            prod_attempts.append(
-                {
-                    "event_sequence": row.get("event_sequence"),
-                    "script_run_seq": row.get("script_run_seq"),
-                    "location": loc,
-                    "widget_key": row.get("widget_key"),
-                    "expected_token": row.get("expected_token"),
-                }
-            )
+        tok = str(row.get("expected_token") or "")
+        loc = str(_row_extra_dict(row).get("location") or row.get("location") or "")
+        out.append((i, tok, loc))
+    return out
+
+
+def build_rv3_production_placement_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Runner-only: where RV3 production persistent-wake declared on the full LDR page."""
+    from live_draft_solo_rv3_phase import is_rv3_rejected_token
+
+    hydrated_idx = _rv3_hydrated_index(rows)
+    prod_attempts = []
+    for i, row in enumerate(rows):
+        if str(row.get("event") or "") != "declaration_attempt":
+            continue
+        if hydrated_idx is not None and i < hydrated_idx:
+            continue
+        tok = str(row.get("expected_token") or "")
+        if is_rv3_rejected_token(tok):
+            continue
+        loc = str(_row_extra_dict(row).get("location") or row.get("location") or "")
+        if not any(m in loc for m in RV3_PRODUCTION_LOCATION_MARKERS):
+            continue
+        prod_attempts.append(
+            {
+                "event_sequence": row.get("event_sequence"),
+                "script_run_seq": row.get("script_run_seq"),
+                "location": loc,
+                "widget_key": row.get("widget_key"),
+                "expected_token": row.get("expected_token"),
+            }
+        )
     first = prod_attempts[0] if prod_attempts else {}
     return {
         "source_module": "live_draft_solo_persistent_wake",
@@ -457,7 +488,9 @@ def build_rv3_production_placement_report(rows: list[dict[str, Any]]) -> dict[st
 
 
 def rv3_production_placement_invalid_reason(rows: list[dict[str, Any]]) -> str:
-    step_rows = [r for r in rows if str(r.get("control_name") or "") == "RV3" or r.get("event")]
+    inv = rv3_ledger_invalid_reason(rows)
+    if inv:
+        return inv
     events = {str(r.get("event") or "") for r in rows}
     if "rv_mount_failed" in events:
         row = next(r for r in rows if r.get("event") == "rv_mount_failed")
@@ -465,12 +498,70 @@ def rv3_production_placement_invalid_reason(rows: list[dict[str, Any]]) -> str:
         if inv.startswith("INVALID_RV3"):
             return inv
         reason = str(_row_extra_dict(row).get("reason") or row.get("reason") or "mount_failed")
-        return f"INVALID_RV3_PRODUCTION_PLACEMENT_{reason}"
+        return f"INVALID_RV3_PRODUCTION_DECLARATION_NOT_REACHED"
     report = build_rv3_production_placement_report(rows)
     if not report.get("production_declaration_attempts"):
         if "declaration_attempt" not in events:
-            return "INVALID_RV3_PRODUCTION_PLACEMENT_missing_declaration_attempt"
-        return "INVALID_RV3_PRODUCTION_PLACEMENT_not_at_persistent_wake_site"
+            return "INVALID_RV3_PRODUCTION_DECLARATION_NOT_REACHED"
+        return "INVALID_RV3_PRODUCTION_PLACEMENT_ORDER"
     if "declaration_returned" not in events:
-        return "INVALID_RV3_PRODUCTION_PLACEMENT_missing_declaration_returned"
+        return "INVALID_RV3_PRODUCTION_DECLARATION_NOT_REACHED"
     return ""
+
+
+def rv3_ledger_invalid_reason(rows: list[dict[str, Any]]) -> str:
+    """RV3 setup/placement invalid reasons (not binding A–D)."""
+    from live_draft_solo_rv3_phase import is_rv3_rejected_token
+
+    events = {str(r.get("event") or "") for r in rows}
+    if "rv3_premature_component_declaration" in events:
+        return "INVALID_RV3_PREMATURE_COMPONENT_DECLARATION"
+    hydrated_idx = _rv3_hydrated_index(rows)
+    for i, tok, loc in _rv3_declaration_tokens(rows):
+        if is_rv3_rejected_token(tok):
+            if hydrated_idx is None or i < hydrated_idx:
+                return "INVALID_RV3_PREMATURE_COMPONENT_DECLARATION"
+            return "INVALID_RV3_PRODUCTION_PLACEMENT_ORDER"
+        if hydrated_idx is not None and i < hydrated_idx:
+            return "INVALID_RV3_PRODUCTION_PLACEMENT_ORDER"
+    for req in (
+        "production_room_creation_attempted",
+        "production_room_created",
+        "production_draft_start_attempted",
+        "production_draft_started",
+        "production_setup_owner_established",
+        "rv3_setup_complete",
+        "rv3_setup_rerun_requested",
+    ):
+        if req not in events:
+            return "INVALID_RV3_SETUP_NOT_COMPLETED"
+    if "production_room_reused" not in events:
+        return "INVALID_RV3_SETUP_NOT_COMPLETED"
+    if "real_room_hydrated" not in events or "room_state_source" not in events:
+        return "INVALID_RV3_REAL_ROOM_NOT_HYDRATED"
+    if "rv3_production_placement_entered" not in events:
+        return "INVALID_RV3_PRODUCTION_DECLARATION_NOT_REACHED"
+    if "declaration_attempt" not in events or "declaration_returned" not in events:
+        return "INVALID_RV3_PRODUCTION_DECLARATION_NOT_REACHED"
+    setup_invalid = rv1_logical_setup_invalid_reason(rows)
+    if setup_invalid:
+        return setup_invalid
+    prod_decls = [
+        (i, tok)
+        for i, tok, _loc in _rv3_declaration_tokens(rows)
+        if hydrated_idx is not None and i >= hydrated_idx and not is_rv3_rejected_token(tok)
+    ]
+    if not prod_decls:
+        return "INVALID_RV3_PRODUCTION_PLACEMENT_ORDER"
+    owner_tokens = {
+        str(r.get("expected_token") or "").strip()
+        for r in rows
+        if r.get("event") == "production_setup_owner_established"
+        and str(r.get("expected_token") or "").strip()
+    }
+    if owner_tokens:
+        want = next(iter(owner_tokens))
+        if prod_decls[0][1] != want:
+            return "INVALID_RV3_PRODUCTION_PLACEMENT_ORDER"
+    return ""
+
