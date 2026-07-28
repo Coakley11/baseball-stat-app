@@ -64,7 +64,9 @@ def enable_rv_ladder_session(st: Any, session: dict[str, Any]) -> str:
     if step == "RV3":
         from live_draft_solo_rv3_phase import init_rv3_run_state
 
-        init_rv3_run_state(session, run_id)
+        prior_run = str(session.get("_solo_rv_rv3_phase_run_id") or "")
+        if prior_run != run_id:
+            init_rv3_run_state(session, run_id)
         session.pop(PARITY_CONTROL_KEY, None)
     else:
         session[PARITY_CONTROL_KEY] = "P6"

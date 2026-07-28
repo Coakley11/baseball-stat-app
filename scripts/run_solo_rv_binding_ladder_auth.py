@@ -359,6 +359,11 @@ def wait_for_rv1_control_ready(
             elif last_state in ("APP_ERROR", "AUTH_LOST"):
                 return last_state, best_probe, best_rows, last_text
         events = {str(r.get("event") or "") for r in rows}
+        if control_step == "RV3":
+            if events >= {"real_room_hydrated", "declaration_returned"}:
+                return "READY", best_probe, best_rows, last_text
+            if "rv3_setup_rerun_requested" in events or "production_room_reused" in events:
+                last_state = "READY_PENDING"
         if events >= {"script_begin", "rv_entrypoint_entered"}:
             if "rv_mount_failed" in events or "production_room_creation_failed" in events:
                 return "READY", best_probe, best_rows, last_text

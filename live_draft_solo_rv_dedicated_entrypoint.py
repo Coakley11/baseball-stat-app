@@ -76,9 +76,11 @@ def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
     if step == "RV3":
         from live_draft_solo_rv3_phase import (
             RV3_PHASE_SETUP,
+            RV3_SETUP_COMPLETE_KEY,
             append_rv3_setup_complete,
             get_rv3_phase,
             rv3_on_script_run_begin,
+            set_rv3_phase,
         )
 
         _rv_real_room_bootstrap(st, session, step=step)
@@ -89,6 +91,9 @@ def run_rv_pre_app_shell(st: Any, session: dict[str, Any]) -> bool:
         append_control_event(st, session, "rv_entrypoint_entered", control_name=step)
         render_native_control_probe(st, session, probe_placeholder)
         phase = get_rv3_phase(session)
+        if phase == RV3_PHASE_SETUP and session.get(RV3_SETUP_COMPLETE_KEY):
+            set_rv3_phase(session, RV3_PHASE_PRODUCTION_MOUNT)
+            phase = RV3_PHASE_PRODUCTION_MOUNT
         if phase == RV3_PHASE_SETUP:
             from live_draft_solo_rv_production_room_setup import ensure_rv1_production_solo_room
 
