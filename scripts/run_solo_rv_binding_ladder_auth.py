@@ -233,7 +233,7 @@ def scrape_page_dom_snapshot(page) -> dict[str, Any]:
               return {{
                 has_streamlit_app: !!document.querySelector('[data-testid="stApp"]'),
                 has_st_exception: !!document.querySelector('.stException, [data-testid="stException"]'),
-                has_streamlit_error: /Traceback|Error:/i.test(text),
+                has_streamlit_error: !!document.querySelector('.stException, [data-testid="stException"]'),
                 has_login: /sign in|log in|not signed in/i.test(text) && !/signed in as/i.test(text),
                 has_ledger_prefix: text.includes(prefix),
                 has_probe_el: hasProbe,
@@ -290,7 +290,10 @@ def capture_rv1_failure_evidence(
         "run_id": run_id,
         "harness_room_id": harness_room_id,
         "page_state": page_state,
-        "invalid_reason": page_state_to_invalid_reason(page_state),
+        "invalid_reason": page_state_to_invalid_reason(
+            page_state, probe_parse=(probe or {}).get("_probe_parse")
+        ),
+        "probe_parse": dict((probe or {}).get("_probe_parse") or {}),
         "final_url_redacted": redact_url(page.url),
         "page_title": page.title(),
         "visible_text_head": text[:12000],
@@ -343,7 +346,9 @@ def wait_for_rv1_control_ready(
         if probe and len(probe.get("rows") or []) >= len(best_probe.get("rows") or []):
             best_probe = probe
             best_rows = rows
-        last_state = classify_page_shell(page_text=last_text, dom=dom, rows=rows)
+        last_state = classify_page_shell(page_text=last_text, dom=dom, rows=rows, probe=probe)
+        if last_state == "READY_LEDGER":
+            last_state = "READY_PENDING"
         if last_state == "READY" and not (
             {str(r.get("event") or "") for r in rows} >= {"real_room_hydrated", "declaration_returned"}
         ):
@@ -404,9 +409,13 @@ def run_rv_control_observation(
         }
     )
     if page_state != "READY":
-        reason = page_state_to_invalid_reason(page_state)
+        reason = page_state_to_invalid_reason(page_state, probe_parse=(probe or {}).get("_probe_parse"))
         if not rows and page_state in ("READY_PENDING", "PAGE_NOT_READY"):
-            reason = "INVALID_RV_CONTROL_PAGE_NOT_OBSERVED"
+            parse = dict((probe or {}).get("_probe_parse") or {})
+            if parse.get("prefix_found") and not parse.get("decode_ok"):
+                reason = page_state_to_invalid_reason("PAGE_NOT_READY", probe_parse=parse)
+            elif not parse.get("decode_ok"):
+                reason = "INVALID_RV_CONTROL_PAGE_NOT_OBSERVED"
         evidence = capture_rv1_failure_evidence(
             page,
             run_id=run_id,
@@ -550,7 +559,7 @@ def _rv1_post_declaration_epoch(
 
 
 def scrape_control_probe(page) -> dict[str, Any]:
-    from live_draft_solo_rv_control_probe import RV_LEDGER_B64_PREFIX, decode_control_probe_text
+    from live_draft_solo_rv_control_probe import decode_control_probe_text_with_meta
 
     try:
         text = page.evaluate(
@@ -569,12 +578,17 @@ def scrape_control_probe(page) -> dict[str, Any]:
               return allText();
             }"""
         )
-        payload = decode_control_probe_text(str(text or ""))
-        if payload.get("rows"):
-            return payload
-    except Exception:
-        pass
-    return {}
+        payload, meta = decode_control_probe_text_with_meta(str(text or ""))
+        out: dict[str, Any] = {"_probe_parse": meta, "rows": list(payload.get("rows") or [])}
+        if payload.get("run_id"):
+            out["run_id"] = payload.get("run_id")
+        if payload.get("step"):
+            out["step"] = payload.get("step")
+        if meta.get("decode_ok") and out["rows"]:
+            return {**payload, "_probe_parse": meta}
+        return out
+    except Exception as exc:
+        return {"rows": [], "_probe_parse": {"decode_ok": False, "decode_error": f"scrape_exception:{exc}"}}
 
 
 def poll_control_probe_best(page, best: dict[str, Any]) -> dict[str, Any]:

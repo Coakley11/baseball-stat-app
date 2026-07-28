@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import json
 import time
 from typing import Any, Callable
@@ -80,20 +81,89 @@ def encode_control_probe_payload(payload: dict[str, Any]) -> str:
     return RV_LEDGER_B64_PREFIX + base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
 
-def decode_control_probe_text(text: str) -> dict[str, Any]:
-    if not text:
-        return {}
-    idx = text.find(RV_LEDGER_B64_PREFIX)
+_B64_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
+
+
+def extract_ledger_b64_payload(text: str) -> tuple[str, str]:
+    """Extract contiguous base64 after prefix, ignoring whitespace from st.code wraps."""
+    raw = html.unescape(str(text or ""))
+    idx = raw.find(RV_LEDGER_B64_PREFIX)
     if idx < 0:
-        return {}
-    b64 = text[idx + len(RV_LEDGER_B64_PREFIX) :].strip().split()[0]
+        return "", ""
+    tail = raw[idx + len(RV_LEDGER_B64_PREFIX) :]
+    chars: list[str] = []
+    for ch in tail:
+        if ch in _B64_ALPHABET:
+            chars.append(ch)
+        elif ch.isspace():
+            continue
+        else:
+            break
+    b64 = "".join(chars)
+    snippet_end = idx + len(RV_LEDGER_B64_PREFIX) + min(len(b64), 240)
+    snippet = raw[idx:snippet_end]
+    return b64, snippet
+
+
+def _decode_b64_json_payload(b64: str) -> dict[str, Any]:
+    """Decode base64 JSON; trim trailing junk characters if innerText picked up extras."""
+    cleaned = "".join(ch for ch in b64 if ch in _B64_ALPHABET)
+    last_err: Exception | None = None
+    for trim in range(0, min(len(cleaned), 8)):
+        candidate = cleaned[: len(cleaned) - trim] if trim else cleaned
+        if not candidate:
+            continue
+        pad = candidate + "=" * ((4 - len(candidate) % 4) % 4)
+        try:
+            decoded = json.loads(base64.b64decode(pad).decode("utf-8"))
+        except Exception as exc:
+            last_err = exc
+            continue
+        if isinstance(decoded, dict):
+            return decoded
+    if last_err:
+        raise last_err
+    raise ValueError("empty_b64")
+
+
+def decode_control_probe_text_with_meta(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Decode ledger from page text; meta includes decode_error and matched snippet."""
+    meta: dict[str, Any] = {
+        "decode_ok": False,
+        "decode_error": "",
+        "matched_snippet": "",
+        "raw_b64_payload": "",
+        "raw_b64_len": 0,
+        "prefix_found": False,
+    }
+    if not text:
+        meta["decode_error"] = "empty_text"
+        return {}, meta
+    b64, snippet = extract_ledger_b64_payload(text)
+    meta["matched_snippet"] = snippet[:500]
+    meta["raw_b64_payload"] = b64[:8000]
+    meta["raw_b64_len"] = len(b64)
+    meta["prefix_found"] = RV_LEDGER_B64_PREFIX in html.unescape(str(text))
     if not b64:
-        return {}
-    pad = b64 + "==="[: (4 - len(b64) % 4) % 4]
+        meta["decode_error"] = "no_b64_after_prefix" if meta["prefix_found"] else "prefix_missing"
+        return {}, meta
     try:
-        return json.loads(base64.b64decode(pad).decode("utf-8"))
-    except Exception:
-        return {}
+        decoded = _decode_b64_json_payload(b64)
+    except Exception as exc:
+        meta["decode_error"] = f"PROBE_DECODE_FAILED:{type(exc).__name__}:{exc}"
+        return {}, meta
+    if not isinstance(decoded, dict):
+        meta["decode_error"] = "PROBE_DECODE_FAILED:not_object"
+        return {}, meta
+    meta["decode_ok"] = True
+    return decoded, meta
+
+
+def decode_control_probe_text(text: str) -> dict[str, Any]:
+    payload, meta = decode_control_probe_text_with_meta(text)
+    if meta.get("decode_ok"):
+        return payload
+    return {}
 
 
 def render_native_control_probe(st: Any, session: dict[str, Any], probe_placeholder: Any) -> None:
@@ -253,7 +323,6 @@ def mount_with_rv_control_declaration(
             )
             render_native_control_probe(st, session, probe_placeholder)
             return None
-        record_rv3_room_checkpoint(st, session, "before_production_declaration", probe_placeholder=probe_placeholder)
         record_rv3_room_checkpoint(st, session, "before_production_declaration", probe_placeholder=probe_placeholder)
     run_id = _qp_run_id(st, session)
     from live_draft_solo_rv_declaration_ledger import (

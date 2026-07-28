@@ -28,6 +28,14 @@ def ledger_has_prefix(page_text: str) -> bool:
     return RV_LEDGER_B64_PREFIX in str(page_text or "")
 
 
+def page_text_has_streamlit_traceback(page_text: str) -> bool:
+    """True when visible text includes a Streamlit-style traceback (not a bare 'Error' word)."""
+    text = str(page_text or "")
+    if "Traceback:" not in text:
+        return False
+    return ('File "' in text) or ('File "/mount' in text) or ("stException" in text)
+
+
 def ledger_ready(rows: list[dict[str, Any]], *, page_text: str = "") -> bool:
     if not ledger_has_prefix(page_text) and not rows:
         return False
@@ -67,15 +75,18 @@ def classify_page_shell(
     page_text: str,
     dom: dict[str, Any],
     rows: list[dict[str, Any]],
+    probe: dict[str, Any] | None = None,
 ) -> str:
-    """Return PAGE_NOT_READY | APP_ERROR | AUTH_LOST | ROUTE_NOT_ENTERED | READY_PENDING | READY."""
+    """READY_LEDGER | PAGE_NOT_READY | APP_ERROR | AUTH_LOST | ROUTE_NOT_ENTERED | READY_PENDING | READY."""
     text = str(page_text or "")
     lower = text.lower()
+    parse = dict((probe or {}).get("_probe_parse") or {})
+    probe_rows = list((probe or {}).get("rows") or [])
+    if parse.get("decode_ok") and probe_rows:
+        return "READY_LEDGER"
     events = {str(r.get("event") or "") for r in rows}
-    if dom.get("has_st_exception"):
-        return "APP_ERROR"
-    if dom.get("has_streamlit_error") and not dom.get("has_ledger_prefix"):
-        if not events.intersection({"production_room_created", "declaration_attempt", "real_room_hydrated"}):
+    if dom.get("has_st_exception") or page_text_has_streamlit_traceback(text):
+        if not parse.get("decode_ok"):
             return "APP_ERROR"
     if "not signed in" in lower and "signed in as" not in lower and "welcome back" not in lower:
         return "AUTH_LOST"
@@ -87,6 +98,8 @@ def classify_page_shell(
     events = {str(r.get("event") or "") for r in rows}
     if ledger_ready(rows, page_text=text):
         return "READY"
+    if ledger_has_prefix(text) and not parse.get("decode_ok"):
+        return "PAGE_NOT_READY"
     if dom.get("has_streamlit_app") and "rv_entrypoint_entered" not in events:
         if ledger_has_prefix(text) or "script_begin" in events:
             return "READY_PENDING"
@@ -99,7 +112,12 @@ def classify_page_shell(
     return "READY_PENDING"
 
 
-def page_state_to_invalid_reason(state: str) -> str:
+def page_state_to_invalid_reason(state: str, *, probe_parse: dict[str, Any] | None = None) -> str:
+    parse = dict(probe_parse or {})
+    if state == "PAGE_NOT_READY" and parse.get("prefix_found") and not parse.get("decode_ok"):
+        err = str(parse.get("decode_error") or "")
+        if err.startswith("PROBE_DECODE_FAILED") or err == "no_b64_after_prefix":
+            return "INVALID_RV_CONTROL_PAGE_NOT_READY_OR_PROBE_PARSE_FAILED"
     mapping = {
         "APP_ERROR": "INVALID_RV_CONTROL_APP_ERROR",
         "AUTH_LOST": "INVALID_RV_CONTROL_AUTH_LOST",
