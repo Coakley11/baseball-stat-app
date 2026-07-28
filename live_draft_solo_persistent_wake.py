@@ -115,6 +115,8 @@ def process_production_expire_token(
     source: str = "native_component_return",
 ) -> bool:
     """Validate component return value against live production state; route to delivery owner."""
+    live = _resolve_room(session, None)
+    live_dict = live if isinstance(live, dict) else None
     try:
         from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
 
@@ -123,7 +125,7 @@ def process_production_expire_token(
                 session,
                 "production_stage1_process_production_expire_token_entry",
                 st=st,
-                room=_resolve_room(session, None) if isinstance(_resolve_room(session, None), dict) else None,
+                room=live_dict,
                 widget_key=widget_key,
                 extra={"source": source, "raw_preview": repr(raw_token)[:200]},
             )
@@ -132,11 +134,70 @@ def process_production_expire_token(
     from live_draft_solo_heartbeat import _coerce_wake_token
 
     token = _coerce_wake_token(raw_token)
+    gate_ctx: dict[str, Any] = {}
+    try:
+        from live_draft_stage1_process_token_gate import (
+            build_process_token_gate_context,
+            note_process_token_gate,
+        )
+
+        gate_ctx = build_process_token_gate_context(
+            st,
+            session,
+            raw_token=raw_token,
+            normalized_token=str(token or ""),
+            widget_key=widget_key,
+            source=source,
+            live=live_dict,
+        )
+        note_process_token_gate(
+            session,
+            st=st,
+            gate_name="process_token_after_entry",
+            gate_result="entered",
+            decision="continue",
+            widget_key=widget_key,
+            live=live_dict,
+            context=gate_ctx,
+        )
+    except ImportError:
+        pass
     if not token:
+        try:
+            from live_draft_stage1_process_token_gate import note_process_token_gate
+
+            note_process_token_gate(
+                session,
+                st=st,
+                gate_name="coerce_wake_token",
+                gate_result="empty",
+                decision="return",
+                return_reason="empty_raw",
+                widget_key=widget_key,
+                live=live_dict,
+                context=gate_ctx,
+            )
+        except ImportError:
+            pass
         return False
-    live = _resolve_room(session, None)
-    ok, reject_code = _production_expire_token_matches_state(session, token, live if isinstance(live, dict) else None)
+    ok, reject_code = _production_expire_token_matches_state(session, token, live_dict)
     if not ok:
+        try:
+            from live_draft_stage1_process_token_gate import note_process_token_gate
+
+            note_process_token_gate(
+                session,
+                st=st,
+                gate_name="expire_token_matches_state",
+                gate_result=str(reject_code or "rejected"),
+                decision="return",
+                return_reason=str(reject_code or "rejected"),
+                widget_key=widget_key,
+                live=live_dict,
+                context=gate_ctx,
+            )
+        except ImportError:
+            pass
         try:
             from live_draft_solo_expire_chain import note_solo_expire_chain
 
@@ -161,7 +222,7 @@ def process_production_expire_token(
                     session,
                     callback_source=source,
                     raw_value=raw_token,
-                    room=live if isinstance(live, dict) else None,
+                    room=live_dict,
                     reject_code=reject_code,
                     delivery_claimed=False,
                 )
@@ -169,6 +230,31 @@ def process_production_expire_token(
             except ImportError:
                 pass
         return False
+    try:
+        from live_draft_stage1_process_token_gate import note_process_token_gate
+
+        note_process_token_gate(
+            session,
+            st=st,
+            gate_name="expire_token_matches_state",
+            gate_result="ok",
+            decision="continue",
+            widget_key=widget_key,
+            live=live_dict,
+            context=gate_ctx,
+        )
+        note_process_token_gate(
+            session,
+            st=st,
+            gate_name="invoke_production_deliver_callback",
+            gate_result="pending",
+            decision="continue",
+            widget_key=widget_key,
+            live=live_dict,
+            context=gate_ctx,
+        )
+    except ImportError:
+        pass
     session[SOLO_PENDING_CALLBACK_SOURCE_KEY] = source
     _production_deliver_callback(st, session, raw_token, widget_key)
     return True
@@ -414,6 +500,10 @@ def render_persistent_wake_lifecycle_probe(
 
 
 def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key: str) -> None:
+    deliver_gate_ctx: dict[str, Any] = {}
+    note_process_token_gate = None
+    note_try_claim_about_to_call = None
+    note_try_claim_result = None
     try:
         from live_draft_solo_parity_p6_persistent_diag import p6_persistent_diag_active, resolve_p6_run_id
 
@@ -478,6 +568,39 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
     delivery_via = str(session.pop(SOLO_PENDING_CALLBACK_SOURCE_KEY, "") or "native_component_on_change")
     token = _coerce_wake_token(raw)
     live = _resolve_room(session, None)
+    live_dict = live if isinstance(live, dict) else None
+    try:
+        from live_draft_stage1_process_token_gate import (
+            build_process_token_gate_context,
+            note_process_token_gate as _note_gate,
+            note_try_claim_about_to_call as _note_about,
+            note_try_claim_result as _note_result,
+        )
+
+        note_process_token_gate = _note_gate
+        note_try_claim_about_to_call = _note_about
+        note_try_claim_result = _note_result
+        deliver_gate_ctx = build_process_token_gate_context(
+            st,
+            session,
+            raw_token=raw,
+            normalized_token=str(token or ""),
+            widget_key=key,
+            source=delivery_via,
+            live=live_dict,
+        )
+        note_process_token_gate(
+            session,
+            st=st,
+            gate_name="production_deliver_callback_entered",
+            gate_result="entered",
+            decision="continue",
+            widget_key=key,
+            live=live_dict,
+            context=deliver_gate_ctx,
+        )
+    except ImportError:
+        pass
 
     try:
         from live_draft_stage1_expire_audit import (
@@ -508,22 +631,63 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
         except ImportError:
             pass
         if skip_claim:
+            try:
+                if note_process_token_gate is not None:
+                    note_process_token_gate(
+                        session,
+                        st=st,
+                        gate_name="skip_delivery_claim_flag",
+                        gate_result="true",
+                        decision="continue",
+                        return_reason="",
+                        widget_key=key,
+                        live=live_dict,
+                        context=deliver_gate_ctx,
+                    )
+            except Exception:
+                pass
             claimed, reject_code = True, ""
         else:
+            try:
+                if note_try_claim_about_to_call is not None:
+                    note_try_claim_about_to_call(
+                        session,
+                        st=st,
+                        token=str(token or ""),
+                        delivery_via=delivery_via,
+                        widget_key=key,
+                        live=live_dict,
+                        context=deliver_gate_ctx,
+                    )
+            except Exception:
+                pass
             claimed, reject_code = try_claim_token_delivery(session, token, delivery_via)
+            try:
+                if note_try_claim_result is not None:
+                    note_try_claim_result(
+                        session,
+                        st=st,
+                        token=str(token or ""),
+                        delivery_via=delivery_via,
+                        accepted=bool(claimed),
+                        reject_code=str(reject_code or ""),
+                        widget_key=key,
+                        live=live_dict,
+                    )
+            except Exception:
+                pass
         try:
-            from live_draft_stage1_production_ledger import note_stage1_token_claim, stage1_production_ledger_enabled
+            from live_draft_stage1_production_ledger import stage1_production_ledger_enabled
 
             if stage1_production_ledger_enabled(st, session):
-                live_room = _resolve_room(session, None)
-                note_stage1_token_claim(
+                from live_draft_stage1_production_ledger import note_stage1_event
+
+                note_stage1_event(
                     session,
+                    "production_stage1_token_claim_attempt",
                     st=st,
-                    room=live_room if isinstance(live_room, dict) else None,
-                    token=token,
-                    source=delivery_via,
-                    accepted=claimed if skip_claim or claimed else False,
-                    reject_code=reject_code if not skip_claim else "",
+                    room=live_dict,
+                    extra={"token": str(token or "")[:400], "source": delivery_via},
                 )
         except ImportError:
             pass
@@ -576,6 +740,21 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             pass
         if not claimed:
             try:
+                if note_process_token_gate is not None:
+                    note_process_token_gate(
+                        session,
+                        st=st,
+                        gate_name="try_claim_token_delivery",
+                        gate_result=str(reject_code or "rejected"),
+                        decision="return",
+                        return_reason=str(reject_code or "claim_rejected"),
+                        widget_key=key,
+                        live=live_dict,
+                        context=deliver_gate_ctx,
+                    )
+            except Exception:
+                pass
+            try:
                 from live_draft_solo_expire_chain import note_solo_expire_chain
 
                 note_solo_expire_chain(
@@ -625,6 +804,22 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
     except ImportError:
         claimed = True
         reject_code = ""
+        try:
+            from live_draft_stage1_process_token_gate import note_process_token_gate
+
+            note_process_token_gate(
+                session,
+                st=st,
+                gate_name="try_claim_import_unavailable",
+                gate_result="ImportError",
+                decision="continue",
+                return_reason="expire_audit_import_failed_assume_claimed",
+                widget_key=key,
+                live=live_dict,
+                context=deliver_gate_ctx,
+            )
+        except ImportError:
+            pass
 
     try:
         from live_draft_callback_boundary_diag import (
@@ -707,6 +902,22 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
     else:
         token = _coerce_wake_token(raw)
     if not session.get(SOLO_PERSISTENT_WAKE_ACTIONABLE_KEY):
+        try:
+            from live_draft_stage1_process_token_gate import note_process_token_gate
+
+            note_process_token_gate(
+                session,
+                st=st,
+                gate_name="persistent_wake_actionable",
+                gate_result="false",
+                decision="return",
+                return_reason="not_actionable",
+                widget_key=key,
+                live=live_dict if isinstance(live, dict) else None,
+                context=deliver_gate_ctx if deliver_gate_ctx else None,
+            )
+        except ImportError:
+            pass
         if boundary_diag_enabled(session):
             record_callback_boundary(
                 session,

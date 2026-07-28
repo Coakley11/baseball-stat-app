@@ -374,6 +374,7 @@ def render_micro_isolation_once(
                 )
 
                 if stage1_production_ledger_enabled(st, session):
+                    session["_solo_stage1_last_delivery_only"] = bool(production_delivery_only)
                     coerced = _coerce_wake_token(raw_component_value) or _coerce_wake_token(
                         st.session_state.get(key)
                     )
