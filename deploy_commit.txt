@@ -1,3 +1,5 @@
-db6092e  # Stage 1A return-value session bind + production ledger
-
-branch: dev
+298edd0  # Stage 1A parent-receipt diagnostics (observers + ledger + harness)
+
+
+
+branch: dev
