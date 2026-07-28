@@ -34,15 +34,21 @@
         function sendMessage(type, data) {
           var payload = Object.assign({ isStreamlitMessage: true, type: type }, data || {});
           if (type === "streamlit:setComponentValue") {
+            const valueToken = String((data && data.value) || "").slice(0, 400);
+            const valueWidgetKey = String((data && data.widget_key) || "");
+            if (valueToken && isExpirationSendClaimed(valueToken, valueWidgetKey)) {
+              noteExpirationSendSuppressed(valueToken, valueWidgetKey);
+              return;
+            }
             browserSendSeq += 1;
             const browserSendEventId =
               "bse_" + browserSendSeq + "_" + Date.now();
             var transportExtra = JSON.stringify({
-              widget_key: String((data && data.widget_key) || ""),
+              widget_key: valueWidgetKey,
               iframe: IFRAME_INSTANCE_ID,
               iframe_instance: IFRAME_INSTANCE_ID,
               browser_send_event_id: browserSendEventId,
-              token: String((data && data.value) || "").slice(0, 400),
+              token: valueToken,
               target_origin: "*",
             });
             noteClient("transport_before_postMessage", transportExtra);
@@ -50,10 +56,23 @@
             var pmErr = "";
             var t0 = Date.now();
             try {
+              if (valueToken) {
+                claimExpirationSend(valueToken, browserSendEventId, valueWidgetKey);
+                noteClient(
+                  "expiration_send_claimed",
+                  JSON.stringify({
+                    token: valueToken,
+                    widget_key: valueWidgetKey,
+                    iframe_instance: IFRAME_INSTANCE_ID,
+                    first_send_id: browserSendEventId,
+                    claimed_at: Date.now(),
+                  }).slice(0, 1900)
+                );
+              }
               var payloadWithMeta = Object.assign({}, payload, {
                 iframe_instance: IFRAME_INSTANCE_ID,
                 browser_send_event_id: browserSendEventId,
-                widget_key: String((data && data.widget_key) || ""),
+                widget_key: valueWidgetKey,
               });
               window.parent.postMessage(payloadWithMeta, "*");
               pmOk = true;
@@ -83,6 +102,75 @@
         let sentTokens = {};
         let remountCount = 0;
         let activeDeadline = 0;
+
+        function expirationSendClaimKey(expireToken, widgetKeyOverride) {
+          const wk = String(
+            widgetKeyOverride !== undefined
+              ? widgetKeyOverride
+              : widgetKeyArg || chainPersistKey || ""
+          ).trim();
+          const tok = String(expireToken || "").trim();
+          return wk + "::" + tok;
+        }
+
+        function readGlobalSendClaims() {
+          try {
+            const root = window;
+            if (!root.__soloExpirationSendClaims) {
+              root.__soloExpirationSendClaims = Object.create(null);
+            }
+            return root.__soloExpirationSendClaims;
+          } catch (e) {
+            return sentTokens;
+          }
+        }
+
+        function isExpirationSendClaimed(expireToken, widgetKeyOverride) {
+          const key = expirationSendClaimKey(expireToken, widgetKeyOverride);
+          if (!key || key === "::") return false;
+          if (sentTokens[expireToken]) return true;
+          const claims = readGlobalSendClaims();
+          return Boolean(claims[key]);
+        }
+
+        function claimExpirationSend(expireToken, browserSendEventId, widgetKeyOverride) {
+          const key = expirationSendClaimKey(expireToken, widgetKeyOverride);
+          sentTokens[expireToken] = true;
+          if (key && key !== "::") {
+            const claims = readGlobalSendClaims();
+            claims[key] = {
+              token: expireToken,
+              widget_key: String(
+                widgetKeyOverride !== undefined
+                  ? widgetKeyOverride
+                  : widgetKeyArg || chainPersistKey || ""
+              ),
+              iframe_instance: IFRAME_INSTANCE_ID,
+              first_browser_send_event_id: String(browserSendEventId || ""),
+              claimed_at: Date.now(),
+            };
+          }
+        }
+
+        function noteExpirationSendSuppressed(expireToken, widgetKeyOverride) {
+          const key = expirationSendClaimKey(expireToken, widgetKeyOverride);
+          const claims = readGlobalSendClaims();
+          const prior = claims[key] || {};
+          noteClient(
+            "expiration_send_suppressed_duplicate",
+            JSON.stringify({
+              token: expireToken,
+              widget_key: String(
+                widgetKeyOverride !== undefined
+                  ? widgetKeyOverride
+                  : widgetKeyArg || chainPersistKey || ""
+              ),
+              iframe_instance: IFRAME_INSTANCE_ID,
+              first_send_id: String(prior.first_browser_send_event_id || ""),
+              suppression_ts: Date.now(),
+            }).slice(0, 1900)
+          );
+        }
 
         function persistStorageKey() {
           return chainPersistKey || FALLBACK_PERSIST_KEY;
@@ -199,8 +287,10 @@
 
         function sendExpireToken(expireToken) {
           if (!expireToken || activeToken !== expireToken) return;
-          if (sentTokens[expireToken]) return;
-          sentTokens[expireToken] = true;
+          if (isExpirationSendClaimed(expireToken)) {
+            noteExpirationSendSuppressed(expireToken);
+            return;
+          }
           noteClient("before_setComponentValue", expireToken);
           noteClient("iframe_setComponentValue_called");
           noteClient("setComponentValue_called");
@@ -353,10 +443,6 @@
                 " abs_deadline_sec=" +
                 deadline
             );
-            if (initialRemMs <= 0) {
-              delete sentTokens[expireToken];
-              noteClient("expire_token_resend_allowed", expireToken);
-            }
           }
 
           let armedThisRender = false;

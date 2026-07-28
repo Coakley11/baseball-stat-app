@@ -23,6 +23,10 @@ class SoloCountdownComponentPackagingTests(unittest.TestCase):
         self.assertIn("streamlit:setComponentValue", content)
         self.assertIn("solo-expire-client", content)
         self.assertNotIn("location.assign", content)
+        self.assertIn("expiration_send_claimed", content)
+        self.assertIn("expiration_send_suppressed_duplicate", content)
+        self.assertIn("__soloExpirationSendClaims", content)
+        self.assertNotIn("expire_token_resend_allowed", content)
 
     def test_component_ready(self) -> None:
         self.assertTrue(component_frontend_ready())
