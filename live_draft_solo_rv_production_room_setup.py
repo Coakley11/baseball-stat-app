@@ -34,7 +34,6 @@ def room_state_fingerprint(room: dict[str, Any]) -> str:
         "draft_room_id": str(room.get("draft_room_id") or ""),
         "status": str(room.get("status") or ""),
         "current_pick_index": int(room.get("current_pick_index") or 0),
-        "timer_deadline": room.get("timer_deadline"),
         "pick_order_len": len(list(room.get("pick_order") or [])),
     }
     raw = json.dumps(payload, sort_keys=True, default=str)
@@ -67,11 +66,11 @@ def _room_matches_owner(owner: dict[str, Any], live: dict[str, Any]) -> bool:
     rid = str(live.get("draft_room_id") or "").strip().upper()
     if rid != str(owner.get("room_id") or "").strip().upper():
         return False
-    if room_state_fingerprint(live) != str(owner.get("room_fingerprint") or ""):
-        return False
     if int(live.get("current_pick_index") or 0) != int(owner.get("initial_pick") or 0):
         return False
-    if live.get("timer_deadline") != owner.get("initial_deadline"):
+    token = _expected_token_for_room(live)
+    owner_token = str(owner.get("expected_token") or "")
+    if owner_token and token and token != owner_token:
         return False
     return True
 

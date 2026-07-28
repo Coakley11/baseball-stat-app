@@ -269,9 +269,9 @@ def build_rv1_room_reuse_report(rows: list[dict[str, Any]], *, run_id: str) -> d
                 "deadline": r.get("deadline"),
                 "expected_token": str(r.get("expected_token") or "")[:400],
                 "widget_key": str(r.get("widget_key") or ""),
-                "creation_event_id": str(extra.get("creation_event_id") or ""),
-                "draft_start_event_id": str(extra.get("draft_start_event_id") or ""),
-                "room_fingerprint": str(extra.get("room_fingerprint") or ""),
+                "creation_event_id": _extra_field(r, "creation_event_id"),
+                "draft_start_event_id": _extra_field(r, "draft_start_event_id"),
+                "room_fingerprint": _extra_field(r, "room_fingerprint"),
             }
         )
     logical = analyze_rv1_logical_setup(rows)
@@ -282,31 +282,23 @@ def build_rv1_room_reuse_report(rows: list[dict[str, Any]], *, run_id: str) -> d
     }
 
 
+def _extra_field(row: dict[str, Any], key: str) -> str:
+    return str(row.get(key) or _row_extra(row).get(key) or "")
+
+
 def analyze_rv1_logical_setup(rows: list[dict[str, Any]]) -> dict[str, Any]:
     created = [r for r in rows if r.get("event") == "production_room_created"]
     started = [r for r in rows if r.get("event") == "production_draft_started"]
     reused = [r for r in rows if r.get("event") == "production_room_reused"]
     owners = [r for r in rows if r.get("event") == "production_setup_owner_established"]
-    creation_ids = {
-        str(_row_extra(r).get("creation_event_id") or "")
-        for r in created
-        if str(_row_extra(r).get("creation_event_id") or "")
-    }
-    start_ids = {
-        str(_row_extra(r).get("draft_start_event_id") or "")
-        for r in started
-        if str(_row_extra(r).get("draft_start_event_id") or "")
-    }
+    creation_ids = {_extra_field(r, "creation_event_id") for r in created if _extra_field(r, "creation_event_id")}
+    start_ids = {_extra_field(r, "draft_start_event_id") for r in started if _extra_field(r, "draft_start_event_id")}
     room_ids = {
-        str(r.get("room_id") or _row_extra(r).get("room_id") or "").strip().upper()
+        str(r.get("room_id") or _extra_field(r, "room_id") or "").strip().upper()
         for r in created + reused + owners
-        if str(r.get("room_id") or _row_extra(r).get("room_id") or "").strip()
+        if str(r.get("room_id") or _extra_field(r, "room_id") or "").strip()
     }
-    fingerprints = {
-        str(_row_extra(r).get("room_fingerprint") or "")
-        for r in created + owners
-        if str(_row_extra(r).get("room_fingerprint") or "")
-    }
+    fingerprints = {_extra_field(r, "room_fingerprint") for r in created + owners if _extra_field(r, "room_fingerprint")}
     tokens = {
         str(r.get("expected_token") or "").strip()
         for r in rows

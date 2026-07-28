@@ -166,7 +166,10 @@ def append_control_event(
         "callback_mode": callback_mode,
     }
     if extra:
-        row.update(extra)
+        for key, val in extra.items():
+            if key not in row or row.get(key) in ("", None):
+                row[key] = val
+        row["extra"] = extra
     rows.append(row)
     _persist_ledger(session, run_id, rows)
     return row
