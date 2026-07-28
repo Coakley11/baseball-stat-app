@@ -118,7 +118,11 @@ def test_second_rerun_reuses_without_init() -> None:
     }
     with patch("streamlit_app.live_draft_init_room") as init_mock:
         with patch("streamlit_app.live_draft_start") as start_mock:
-            result = ensure_rv1_production_solo_room(st, session, probe_placeholder=None)
+            with patch(
+                "live_draft_solo_rv_production_room_setup._expected_token_for_room",
+                return_value="TEST1234|0|99999.0",
+            ):
+                result = ensure_rv1_production_solo_room(st, session, probe_placeholder=None)
     assert result.get("ok") and result.get("reused")
     init_mock.assert_not_called()
     start_mock.assert_not_called()

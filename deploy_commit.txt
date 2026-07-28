@@ -1,4 +1,4 @@
-9e06ddd8eb008945fa54db961179d346fb91801f  # RV1 setup owner + logical reuse grading
+5e5a6f6  # RV1 reuse deadline tolerance
 
 branch: dev
 
