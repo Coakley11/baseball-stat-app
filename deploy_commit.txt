@@ -1,3 +1,3 @@
-df3dddc  # RV3 production persistent-wake ladder
+3fd272a  # RV3 ladder + deliver callback UnboundLocalError fix
 
 branch: dev
