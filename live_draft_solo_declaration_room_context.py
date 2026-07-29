@@ -51,6 +51,41 @@ def _deadline_for_room(room: dict[str, Any]) -> float | None:
     return None
 
 
+def _context_meta_from_room(room: dict[str, Any] | None, ctx: dict[str, Any] | None) -> dict[str, Any]:
+    if isinstance(ctx, dict):
+        return {
+            "present": True,
+            "room_id": str(ctx.get("room_id") or ""),
+            "status": str((ctx.get("room") or {}).get("status") or "") if isinstance(ctx.get("room"), dict) else "",
+            "pick": ctx.get("pick_index"),
+            "deadline": ctx.get("deadline"),
+            "fingerprint": str(ctx.get("room_fingerprint") or ""),
+            "widget_key": str(ctx.get("widget_key") or ""),
+            "declaration_occurrence": str(ctx.get("expected_token") or "")[:400],
+        }
+    if isinstance(room, dict):
+        return {
+            "present": True,
+            "room_id": _room_id(room),
+            "status": str(room.get("status") or ""),
+            "pick": room.get("current_pick_index"),
+            "deadline": _deadline_for_room(room),
+            "fingerprint": _room_fingerprint(room),
+            "widget_key": "",
+            "declaration_occurrence": "",
+        }
+    return {
+        "present": False,
+        "room_id": "",
+        "status": "",
+        "pick": None,
+        "deadline": None,
+        "fingerprint": "",
+        "widget_key": "",
+        "declaration_occurrence": "",
+    }
+
+
 def clear_declaration_room_context(session: dict[str, Any], *, reason: str = "") -> None:
     session.pop(SOLO_DECLARATION_ROOM_CONTEXT_KEY, None)
     if reason:
@@ -70,6 +105,8 @@ def register_production_countdown_declaration_context(
         return
     if str(widget_key or "") != SOLO_PRODUCTION_COUNTDOWN_WIDGET_KEY:
         return
+    if str(room.get("status") or "") != "in_progress":
+        return
     tok = str(expected_token or "").strip()
     rid = _room_id(room)
     pick = int(room.get("current_pick_index") or 0)
@@ -86,8 +123,9 @@ def register_production_countdown_declaration_context(
                 and dl is not None
                 and abs(float(prior["deadline"]) - dl) > 0.01
             )
+            or (str(prior.get("expected_token") or "") and str(prior.get("expected_token") or "") != tok)
         ):
-            clear_declaration_room_context(session, reason="room_pick_or_deadline_changed")
+            clear_declaration_room_context(session, reason="room_pick_deadline_or_token_changed")
     ctx = {
         "room": copy.deepcopy(room),
         "room_id": rid,
@@ -98,6 +136,7 @@ def register_production_countdown_declaration_context(
         "widget_key": str(widget_key),
         "registered_at": time.time(),
         "declaration_script_run": _script_run_id(session),
+        "declaration_occurrence": tok,
     }
     session[SOLO_DECLARATION_ROOM_CONTEXT_KEY] = ctx
 
@@ -117,6 +156,8 @@ def get_declaration_context(session: dict[str, Any]) -> dict[str, Any] | None:
 
 def _valid_runtime_room(room: Any) -> bool:
     if not isinstance(room, dict) or not room:
+        return False
+    if str(room.get("status") or "") != "in_progress":
         return False
     try:
         from live_draft_state import is_runtime_room
@@ -143,11 +184,11 @@ def _room_from_canonical(session: dict[str, Any]) -> dict[str, Any] | None:
         from live_draft_state import LIVE_DRAFT_ROOM_KEY, LIVE_DRAFT_STATE_KEY, is_runtime_room
 
         live = session.get(LIVE_DRAFT_ROOM_KEY)
-        if is_runtime_room(live):
+        if _valid_runtime_room(live):
             return live
         blob = session.get(LIVE_DRAFT_STATE_KEY)
         if isinstance(blob, dict) and blob.get("draft_room_id"):
-            if is_runtime_room(blob):
+            if str(blob.get("status") or "") == "in_progress" and is_runtime_room(blob):
                 return blob
     except ImportError:
         pass
@@ -164,6 +205,7 @@ def validate_declaration_room_for_token(
     token: str,
     widget_key: str,
     stored_context: dict[str, Any] | None = None,
+    require_stored_context_match: bool = True,
 ) -> tuple[bool, str]:
     if str(widget_key or "") != SOLO_PRODUCTION_COUNTDOWN_WIDGET_KEY:
         return False, "invalid_widget_key"
@@ -199,7 +241,7 @@ def validate_declaration_room_for_token(
         pass
     decl_fp = _room_fingerprint(declaration_room)
     ctx = stored_context if isinstance(stored_context, dict) else get_declaration_context(session)
-    if isinstance(ctx, dict):
+    if require_stored_context_match and isinstance(ctx, dict):
         ctx_tok = str(ctx.get("expected_token") or "").strip()
         if ctx_tok and ctx_tok != tok:
             try:
@@ -222,27 +264,79 @@ def validate_declaration_room_for_token(
         ctx_pick = ctx.get("pick_index")
         if ctx_pick is not None and int(ctx_pick) != int(parsed["pick_index"]):
             return False, "declaration_context_pick_stale"
+        if str(ctx.get("widget_key") or "") and str(ctx.get("widget_key") or "") != widget_key:
+            return False, "declaration_context_widget_mismatch"
     return True, ""
+
+
+def validate_registered_declaration_context(
+    session: dict[str, Any],
+    *,
+    token: str,
+) -> tuple[bool, str, dict[str, Any] | None]:
+    ctx = get_declaration_context(session)
+    if not isinstance(ctx, dict):
+        return False, "registered_context_missing", None
+    run_id = _script_run_id(session)
+    ctx_run = str(ctx.get("declaration_script_run") or "")
+    if ctx_run and run_id and ctx_run != run_id:
+        return False, "registered_context_session_mismatch", None
+    room = get_registered_declaration_room(session)
+    if not isinstance(room, dict):
+        return False, "registered_context_room_missing", None
+    ok, reason = validate_declaration_room_for_token(
+        session,
+        declaration_room=room,
+        token=token,
+        widget_key=str(ctx.get("widget_key") or SOLO_PRODUCTION_COUNTDOWN_WIDGET_KEY),
+        stored_context=ctx,
+        require_stored_context_match=True,
+    )
+    if not ok:
+        return False, reason, None
+    return True, "", room
 
 
 def resolve_effective_production_room(
     st: Any | None,
     session: dict[str, Any],
     *,
-    declaration_room: dict[str, Any] | None,
+    explicit_declaration_room: dict[str, Any] | None,
     token: str,
 ) -> tuple[dict[str, Any] | None, str, dict[str, Any]]:
-    """Resolve live room: session state, canonical, then validated declaration snapshot."""
+    """Resolve: live session, canonical, registered context, then explicit render prop."""
+    reg_ctx = get_declaration_context(session)
+    reg_room = get_registered_declaration_room(session)
     meta: dict[str, Any] = {
         "live_room_id": "",
         "canonical_room_id": "",
-        "declaration_room_id": _room_id(declaration_room) if isinstance(declaration_room, dict) else "",
         "supplied_token": str(token or "")[:400],
     }
+    reg_m = _context_meta_from_room(reg_room, reg_ctx if isinstance(reg_ctx, dict) else None)
+    exp_m = _context_meta_from_room(
+        explicit_declaration_room if isinstance(explicit_declaration_room, dict) else None,
+        None,
+    )
+    meta["registered_context_present"] = reg_m["present"]
+    meta["registered_context_room_id"] = reg_m["room_id"]
+    meta["registered_context_status"] = reg_m["status"]
+    meta["registered_context_pick"] = reg_m["pick"]
+    meta["registered_context_deadline"] = reg_m["deadline"]
+    meta["registered_context_fingerprint"] = reg_m["fingerprint"]
+    meta["registered_context_widget_key"] = reg_m["widget_key"]
+    meta["registered_context_declaration_occurrence"] = reg_m["declaration_occurrence"]
+    meta["explicit_context_present"] = exp_m["present"]
+    meta["explicit_context_room_id"] = exp_m["room_id"]
+    meta["explicit_context_status"] = exp_m["status"]
+    meta["explicit_context_pick"] = exp_m["pick"]
+    meta["explicit_context_deadline"] = exp_m["deadline"]
+    meta["explicit_context_fingerprint"] = exp_m["fingerprint"]
+
     st_room = _room_from_st_session_state(st)
     if st_room is not None:
         meta["resolution_source"] = "st_session_state_live_draft_room"
         meta["resolved_room_id"] = _room_id(st_room)
+        meta["live_room_id"] = meta["resolved_room_id"]
         return st_room, meta["resolution_source"], meta
     session_live = session.get("live_draft_room")
     if _valid_runtime_room(session_live):
@@ -260,26 +354,55 @@ def resolve_effective_production_room(
     canon_blob = session.get("live_draft_state")
     if isinstance(canon_blob, dict):
         meta["canonical_room_id"] = _room_id(canon_blob)
-    reg = get_registered_declaration_room(session)
-    decl = declaration_room if isinstance(declaration_room, dict) else reg
-    if decl is not None:
-        ok, reason = validate_declaration_room_for_token(
+
+    reg_ok, reg_reason, reg_validated = validate_registered_declaration_context(session, token=token)
+    meta["registered_context_validation_ok"] = reg_ok
+    meta["registered_context_validation_reason"] = reg_reason if not reg_ok else ""
+
+    def _annotate_explicit_rejection() -> None:
+        if not isinstance(explicit_declaration_room, dict):
+            return
+        exp_ok, exp_reason = validate_declaration_room_for_token(
             session,
-            declaration_room=decl,
+            declaration_room=explicit_declaration_room,
             token=token,
             widget_key=SOLO_PRODUCTION_COUNTDOWN_WIDGET_KEY,
+            stored_context=reg_ctx if isinstance(reg_ctx, dict) else None,
+            require_stored_context_match=False,
         )
-        meta["declaration_validation_ok"] = ok
-        meta["declaration_validation_reason"] = reason
-        if ok:
-            meta["resolution_source"] = "validated_declaration_room"
-            meta["resolved_room_id"] = _room_id(decl)
-            return copy.deepcopy(decl), meta["resolution_source"], meta
-        meta["resolution_source"] = "declaration_room_rejected"
-        meta["resolved_room_id"] = ""
-        return None, meta["resolution_source"], meta
-    meta["resolution_source"] = "none"
+        meta["explicit_context_validation_ok"] = exp_ok
+        meta["explicit_context_rejected"] = not exp_ok
+        meta["explicit_context_rejection_reason"] = exp_reason if not exp_ok else ""
+
+    if reg_ok and isinstance(reg_validated, dict):
+        _annotate_explicit_rejection()
+        meta["resolution_source"] = "validated_registered_declaration_context"
+        meta["resolved_room_id"] = _room_id(reg_validated)
+        meta["declaration_validation_ok"] = True
+        return copy.deepcopy(reg_validated), meta["resolution_source"], meta
+
+    if isinstance(explicit_declaration_room, dict):
+        exp_ok, exp_reason = validate_declaration_room_for_token(
+            session,
+            declaration_room=explicit_declaration_room,
+            token=token,
+            widget_key=SOLO_PRODUCTION_COUNTDOWN_WIDGET_KEY,
+            stored_context=reg_ctx if isinstance(reg_ctx, dict) else None,
+            require_stored_context_match=False,
+        )
+        meta["explicit_context_validation_ok"] = exp_ok
+        meta["explicit_context_rejected"] = not exp_ok
+        meta["explicit_context_rejection_reason"] = exp_reason if not exp_ok else ""
+        if exp_ok:
+            meta["resolution_source"] = "validated_explicit_declaration_room"
+            meta["resolved_room_id"] = _room_id(explicit_declaration_room)
+            meta["declaration_validation_ok"] = True
+            return copy.deepcopy(explicit_declaration_room), meta["resolution_source"], meta
+
+    meta["resolution_source"] = "declaration_context_rejected"
     meta["resolved_room_id"] = ""
+    meta["declaration_validation_ok"] = False
+    meta["declaration_validation_reason"] = reg_reason if not reg_ok else meta.get("explicit_context_rejection_reason", "")
     return None, meta["resolution_source"], meta
 
 
@@ -289,6 +412,7 @@ def restore_production_room_from_declaration(
     room: dict[str, Any],
     *,
     token: str,
+    restoration_label: str = "declaration_room_restore_for_expire_token",
 ) -> tuple[bool, dict[str, Any]]:
     """Restore full runtime + canonical room from a validated declaration snapshot."""
     before: dict[str, Any] = {
@@ -303,7 +427,7 @@ def restore_production_room_from_declaration(
         write_canonical_live_draft_state(
             session,
             room_copy,
-            reason="declaration_room_restore_for_expire_token",
+            reason=restoration_label,
             local_edit=True,
         )
     except ImportError:

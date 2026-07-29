@@ -144,11 +144,11 @@ def process_production_expire_token(
             restore_production_room_from_declaration,
         )
 
-        reg_room = declaration_room if isinstance(declaration_room, dict) else get_registered_declaration_room(session)
+        reg_room = get_registered_declaration_room(session)
         resolved_live, resolution_source, resolution_meta = resolve_effective_production_room(
             st,
             session,
-            declaration_room=reg_room,
+            explicit_declaration_room=declaration_room if isinstance(declaration_room, dict) else None,
             token=token,
         )
         if isinstance(resolved_live, dict):
@@ -168,7 +168,7 @@ def process_production_expire_token(
                         "resolution_source": resolution_source,
                         "live_room_id": resolution_meta.get("live_room_id") or "",
                         "canonical_room_id": resolution_meta.get("canonical_room_id") or "",
-                        "declaration_room_id": resolution_meta.get("declaration_room_id") or "",
+                        "declaration_room_id": resolution_meta.get("resolved_room_id") or "",
                         "resolved_room_id": resolution_meta.get("resolved_room_id") or "",
                         "room_status": str((resolved_live or {}).get("status") or ""),
                         "pick_index": (resolved_live or {}).get("current_pick_index"),
@@ -177,19 +177,62 @@ def process_production_expire_token(
                         "expected_token": str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or "")[:400],
                         "supplied_token": str(token or "")[:400],
                         "declaration_validation_ok": resolution_meta.get("declaration_validation_ok"),
-                        "declaration_validation_reason": resolution_meta.get("declaration_validation_reason") or "",
+                        "declaration_validation_reason": (
+                            resolution_meta.get("declaration_validation_reason")
+                            or resolution_meta.get("registered_context_validation_reason")
+                            or resolution_meta.get("explicit_context_rejection_reason")
+                            or ""
+                        ),
+                        **{
+                            k: resolution_meta.get(k)
+                            for k in (
+                                "registered_context_present",
+                                "registered_context_room_id",
+                                "registered_context_status",
+                                "registered_context_pick",
+                                "registered_context_deadline",
+                                "registered_context_fingerprint",
+                                "registered_context_widget_key",
+                                "registered_context_declaration_occurrence",
+                                "registered_context_validation_ok",
+                                "registered_context_validation_reason",
+                                "explicit_context_present",
+                                "explicit_context_room_id",
+                                "explicit_context_status",
+                                "explicit_context_pick",
+                                "explicit_context_deadline",
+                                "explicit_context_fingerprint",
+                                "explicit_context_rejected",
+                                "explicit_context_rejection_reason",
+                            )
+                            if k in resolution_meta
+                        },
                     },
                 )
         except ImportError:
             pass
         session_had_live = bool(live_dict)
+        restore_sources = (
+            "validated_registered_declaration_context",
+            "validated_explicit_declaration_room",
+            "validated_declaration_room",
+        )
         if (
-            resolution_source == "validated_declaration_room"
+            resolution_source in restore_sources
             and isinstance(resolved_live, dict)
             and not session_had_live
         ):
+            restore_event = (
+                "production_stage1_room_restored_from_registered_declaration_context"
+                if resolution_source == "validated_registered_declaration_context"
+                else "production_stage1_room_restored_from_declaration_context"
+            )
             restored_ok, restore_detail = restore_production_room_from_declaration(
-                st, session, resolved_live, token=token
+                st,
+                session,
+                resolved_live,
+                token=token,
+                restoration_label=restore_event,
             )
             try:
                 from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
@@ -197,7 +240,7 @@ def process_production_expire_token(
                 if stage1_production_ledger_enabled(st, session):
                     note_stage1_event(
                         session,
-                        "production_stage1_room_restored_from_declaration_context",
+                        restore_event,
                         st=st,
                         room=session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else None,
                         widget_key=widget_key,
@@ -210,7 +253,7 @@ def process_production_expire_token(
             live_dict = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else resolved_live
         elif isinstance(resolved_live, dict):
             live_dict = resolved_live
-        elif resolution_source == "declaration_room_rejected":
+        elif resolution_source in ("declaration_context_rejected", "declaration_room_rejected"):
             return False
     except ImportError:
         pass

@@ -32,6 +32,7 @@ OUT_RETURN_CHAIN = ROOT / "data" / "production_stage1a_return_value_chain.json"
 OUT_SERVER_LEDGER = ROOT / "data" / "production_stage1a_server_ledger_merged.json"
 OUT_DIAG_RUN = ROOT / "data" / "production_stage1a_instrumented_diag.json"
 OUT_PARENT_BOUNDARY = ROOT / "data" / "production_stage1a_parent_boundary_validation.json"
+OUT_DURABLE_PARENT_SINK = ROOT / "data" / "production_stage1a_durable_parent_sink.json"
 REQUIRED_CLOUD_SHA = ""
 
 
@@ -293,6 +294,10 @@ def build_return_value_chain_report(
         )
     ]
     frame2_probe = [m for m in frame2_msgs if m.get("is_parent_probe")]
+    sink_data = dict(exp.get("parent_event_sink") or {})
+    sink_logic = sink_data.get("logical") or {}
+    durable_scv_count = int(sink_logic.get("scv_count") or 0)
+    durable_probe_count = int(sink_logic.get("probe_count") or 0)
     deduped_parent = len(logical_imm)
     levels = classify_receipt_levels(
         expected_token=token_sent,
@@ -304,20 +309,22 @@ def build_return_value_chain_report(
         direct_return=decl_return or mount_return or expire_return,
         token_claim_accepted=bool(accepted_native),
     )
-    levels["LEVEL_2_ACTUAL_IMMEDIATE_PARENT_FRAME2"] = len(frame2_scv) >= 1
-    levels["LEVEL_2_LEGACY_IMMEDIATE_OBSERVER"] = levels.get("LEVEL_2_TOP_PARENT_MESSAGE_RECEIVED_IMMEDIATE")
-    levels["LEVEL_2_TOP_INFORMATIONAL_ONLY"] = levels.get("LEVEL_2_TOP_PARENT_MESSAGE_RECEIVED_TOP")
+    levels["LEVEL_2_ACTUAL_IMMEDIATE_PARENT_FRAME2"] = durable_scv_count >= 1
     levels["LEVEL_2_IMMEDIATE_PARENT_RECEIPT_STATUS"] = (
-        "PASS_FRAME2" if frame2_scv else "UNPROVEN_OBSERVER_CONTEXT"
+        "PASS_DURABLE_SINK"
+        if durable_scv_count >= 1
+        else ("PARTIAL_DURABLE_SINK" if durable_probe_count >= 1 else "UNRESOLVED_OBSERVER_LIFETIME")
     )
-    levels["frame2_parent_probe_receipt_count"] = len(frame2_probe)
-    levels["frame2_set_component_value_receipt_count"] = len(frame2_scv)
+    levels["durable_sink_probe_count"] = durable_probe_count
+    levels["durable_sink_scv_count"] = durable_scv_count
+    levels["frame2_window_message_count"] = len(frame2_msgs)
     tick_after_send = tick_cancelled >= 1 and "component_value_sent" in cs
     a5a_refined = ""
-    if frame2_scv and not levels.get("LEVEL_5_PYTHON_VALUE_BOUND"):
+    pbv = dict(exp.get("parent_boundary_validation") or {})
+    if pbv.get("a5a_refinement"):
+        a5a_refined = str(pbv.get("a5a_refinement"))
+    elif durable_scv_count >= 1 and not levels.get("LEVEL_5_PYTHON_VALUE_BOUND"):
         a5a_refined = "A5a3"
-    elif frame2_scv:
-        a5a_refined = refine_a5a_subclass(levels, unrelated_render_after_send=tick_after_send)
     else:
         a5a_refined = "UNSET_PENDING_FRAME2_BOUNDARY"
 
@@ -506,7 +513,12 @@ def validate_production_draft_start(
     }
 
 
-def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
+def wait_one_expiration(
+    page,
+    *,
+    timeout_s: float = 55.0,
+    parent_sink: Any | None = None,
+) -> dict[str, Any]:
     from run_production_solo_soak import (
         dom_counts,
         scrape_client_chain,
@@ -562,6 +574,9 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
     merged_server_ledger: list[dict[str, Any]] = []
     frame2_install_log: list[dict[str, Any]] = []
     frame2_meta_initial: dict[str, Any] = {}
+    durable_wait_result: dict[str, Any] = {}
+    durable_wait_done = False
+    send_browser_event_id = ""
     supabase_requests: list[dict[str, Any]] = []
 
     def _on_request(req: Any) -> None:
@@ -654,6 +669,30 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
         if {"browser_deadline_crossed", "component_value_sent"} & client_merged and value_sent_at is None:
             value_sent_at = time.time()
             observe_until = max(observe_until, value_sent_at + 45.0)
+            try:
+                life_entries = list((iframe_life.get("entries") or []))
+                for ent in reversed(life_entries):
+                    if str(ent.get("stage") or "") == "transport_before_postMessage":
+                        extra = str(ent.get("extra") or "")
+                        m = re.search(r"bse_[0-9]+_[0-9]+", extra)
+                        if m:
+                            send_browser_event_id = m.group(0)
+                            break
+            except Exception:
+                pass
+            if parent_sink is not None and not durable_wait_done:
+                durable_wait_done = True
+                from stage1_parent_event_sink import wait_for_durable_receipts_after_send
+
+                tok_guess = str((merged_client if isinstance(merged_client, dict) else {}).get("token") or "")
+                if not tok_guess:
+                    tok_guess = str(client.get("token") or "")
+                durable_wait_result = wait_for_durable_receipts_after_send(
+                    parent_sink,
+                    expected_token=tok_guess,
+                    browser_send_event_id=send_browser_event_id,
+                    timeout_s=5.0,
+                )
         if {"pick_committed", "commit_confirmed"} & merged_stages:
             break
         if accepted_now:
@@ -782,6 +821,25 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
     if value_sent_at is not None:
         supabase_after_send = [r for r in supabase_requests if float(r.get("ts") or 0) >= float(value_sent_at) - 0.5]
 
+    parent_event_sink_export: dict[str, Any] = {}
+    if parent_sink is not None:
+        from stage1_parent_event_sink import paired_probe_scv_report
+
+        parent_event_sink_export = {
+            "installed_at": parent_sink.installed_at,
+            "binding_calls": parent_sink.binding_calls,
+            "console_rows": parent_sink.console_rows,
+            "raw_events": parent_sink.raw_events,
+            "durable_wait_after_send": durable_wait_result,
+            "send_browser_event_id": send_browser_event_id,
+            "paired_receipts": paired_probe_scv_report(
+                parent_sink,
+                expected_token=token_sent,
+                browser_send_event_id=send_browser_event_id,
+            ),
+            "logical": parent_sink.logical_receipts(expected_token=token_sent),
+        }
+
     transport_final = dict(transport_final or {})
     transport_final["frame_topology"] = frame_topology_final
     transport_final["frame_topology_at_start"] = frame_topology_initial
@@ -846,6 +904,8 @@ def wait_one_expiration(page, *, timeout_s: float = 55.0) -> dict[str, Any]:
         "frame2_navigation": frame2_final.get("navigation") or {},
         "frame2_install_log": frame2_install_log[-40:],
         "observer_execution_contexts": observer_contexts,
+        "parent_event_sink": parent_event_sink_export,
+        "send_browser_event_id": send_browser_event_id,
         "double_production_send_analysis": double_production,
         "value_sent_at_elapsed_s": round(value_sent_at - t0, 1) if value_sent_at else None,
         "post_send_observation_s": round(time.time() - value_sent_at, 1) if value_sent_at else None,
@@ -1012,19 +1072,43 @@ def queue_add_first_player(page) -> dict[str, Any]:
     return {"clicked": False, "button_text": "", "player_hint": ""}
 
 
+def scrape_queue_container_state(page) -> dict[str, Any]:
+    try:
+        data = page.evaluate(
+            """() => {
+              function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { if (f.contentDocument) r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+              for (const root of roots()) {
+                const all = root.querySelectorAll('div, section');
+                for (const el of all) {
+                  const t = String(el.innerText||'');
+                  if (!/^Draft queue\\n/i.test(t) && !/\\nDraft queue\\n/i.test(t)) continue;
+                  if (/Draft from lists|Baseball Insight|Choose Page/i.test(t.slice(0,120))) continue;
+                  const empty = /Queue empty|Empty — add players/i.test(t);
+                  const players = [];
+                  for (const line of t.split('\\n').map(x=>x.trim()).filter(Boolean)) {
+                    const m = line.match(/^([A-Za-z][A-Za-z .\\'-]{2,60})\\s+—\\s*(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)/);
+                    if (m && !/Draft queue|Clear Draft Queue|Watchlist|Empty/i.test(m[1])) players.push({name: m[1].trim(), slot: m[2]});
+                  }
+                  return {found: true, empty: empty && players.length===0, players: players.slice(0,8), excerpt: t.slice(0,600)};
+                }
+              }
+              return {found: false, empty: true, players: [], excerpt: ''};
+            }"""
+        )
+        return data if isinstance(data, dict) else {"found": False, "empty": True, "players": [], "excerpt": ""}
+    except Exception as exc:
+        return {"found": False, "empty": True, "players": [], "excerpt": "", "error": str(exc)[:200]}
+
+
 def queue_seed_satisfied(queue_meta: dict[str, Any]) -> bool:
-    if queue_meta.get("clicked"):
+    container = queue_meta.get("queue_container") if isinstance(queue_meta.get("queue_container"), dict) else {}
+    players = list(container.get("players") or [])
+    if players:
+        queue_meta["player_hint"] = str(players[0].get("name") or "")
+        queue_meta["queued_slot"] = str(players[0].get("slot") or "")
+        queue_meta["seed_source"] = "queue_container_player"
         return True
-    excerpt = str(queue_meta.get("queue_excerpt_before") or "")
-    if not excerpt or "Queue empty" in excerpt:
-        return False
-    m = re.search(r"\n([A-Za-z][^\n]{2,60}?)\s+—\s*(UTIL|SP|RP|C|1B|2B|3B|SS|OF|DH|P)", excerpt)
-    if m:
-        queue_meta.setdefault("player_hint", m.group(1).strip())
-        queue_meta["seed_source"] = "queue_already_populated"
-        return True
-    if "On the clock" in excerpt and "Clear Draft Queue" in excerpt:
-        queue_meta["seed_source"] = "queue_nonempty_ui"
+    if queue_meta.get("clicked") and players:
         return True
     return False
 
@@ -1038,77 +1122,88 @@ def queue_text(page) -> str:
 
 
 def build_parent_boundary_validation(exp: dict[str, Any], *, token_sent: str) -> dict[str, Any]:
-    from stage1_frame2_parent_boundary import classify_parent_boundary_p
+    from stage1_parent_event_sink import classify_durable_p, ParentEventSinkStore
 
     frame2_msgs = list(exp.get("frame2_parent_messages") or [])
-    top_msgs = list(exp.get("top_parent_messages") or [])
+    sink_data = dict(exp.get("parent_event_sink") or {})
+    store = ParentEventSinkStore()
+    store.raw_events = list(sink_data.get("raw_events") or [])
+    store.binding_events = [e for e in store.raw_events if e.get("ingress") == "expose_binding"]
+    store.console_events = [e for e in store.raw_events if e.get("ingress") == "console"]
+    store.installed_at = sink_data.get("installed_at")
+    logical = store.logical_receipts(expected_token=token_sent)
+    durable_probes = list(logical.get("probe_logical_receipts") or [])
+    durable_scvs = list(logical.get("scv_logical_receipts") or [])
+    paired = dict(sink_data.get("paired_receipts") or {})
+
+    probe_ok = bool(durable_probes)
+    scv_ok = bool(durable_scvs)
+    frame2_window_empty = len(frame2_msgs) == 0
     cs = set(exp.get("client_stages") or [])
     coalesced = str(exp.get("component_return") or "")
-    probe_ok = any(m.get("is_parent_probe") for m in frame2_msgs)
-    scv_ok = any(
-        m.get("is_set_component_value")
-        and token_sent
-        and (
-            str(m.get("value_preview") or "") == token_sent
-            or token_sent in str(m.get("payload_json") or "")
-        )
-        for m in frame2_msgs
-    )
+    python_bound = bool(coalesced and token_sent and token_sent in coalesced)
+    sender_connected = "sender_window_validity" in str(exp.get("client_chain") or "")
+
     reg_inst = ""
-    for msg in frame2_msgs:
-        inst = str((msg.get("source_association") or {}).get("iframe_instance_id") or "")
+    for msg in durable_scvs + durable_probes + frame2_msgs:
+        if not isinstance(msg, dict):
+            continue
+        pm = (msg.get("source_association") or {}).get("primary_match") or {}
+        inst = str(pm.get("iframe_instance_id") or msg.get("iframe_instance_id") or "")
         if inst:
             reg_inst = inst
             break
-    stale = False
-    current = False
-    for m in frame2_msgs:
-        if not m.get("is_set_component_value"):
-            continue
-        inst = str((m.get("source_association") or {}).get("iframe_instance_id") or "")
-        if reg_inst and inst and inst == reg_inst:
-            current = True
-        elif reg_inst and inst and inst != reg_inst:
-            stale = True
-    sender_stale = "sender_window_validity" in str(exp.get("client_chain") or "") and "frame_element_connected\": false" in str(
-        exp.get("iframe_lifecycle") or ""
-    )
-    meta = exp.get("frame2_observer_meta") or {}
-    observer_in_f2 = bool(meta.get("installed_at") or exp.get("frame2_install_log"))
-    nav0 = str((exp.get("frame2_navigation") or {}).get("url") or "")
-    nav1 = str(meta.get("navigation_id") or meta.get("document_url") or "")
-    listener_lost = bool(nav0 and nav1 and nav0 not in nav1 and not scv_ok and not probe_ok)
-    python_bound = bool(coalesced and token_sent and token_sent in coalesced)
-    p_class = classify_parent_boundary_p(
-        frame2_probe_received=probe_ok,
-        frame2_scv_received=scv_ok,
-        sender_stale_or_detached=bool(sender_stale),
-        observer_in_frame2=observer_in_f2,
-        frame2_listener_lost=listener_lost,
-        scv_from_stale_source=stale and not current,
-        scv_from_current_source=current,
+
+    p_short = classify_durable_p(
+        store=store,
+        expected_token=token_sent,
+        frame2_window_empty=frame2_window_empty,
+        sender_connected=sender_connected,
         python_bound=python_bound,
+        registered_instance_id=reg_inst,
+        init_script_installed=bool(sink_data.get("installed_at")),
     )
-    overall = "INCONCLUSIVE_PARENT_BOUNDARY_WITH_PYTHON_BINDING_FAILURE"
-    if scv_ok and not python_bound:
-        overall = "FRAME2_SCV_RECEIVED_PYTHON_UNBOUND"
-    elif not scv_ok and not probe_ok:
-        overall = "INCONCLUSIVE_PARENT_BOUNDARY_WITH_PYTHON_BINDING_FAILURE"
-    elif scv_ok and python_bound:
-        overall = "PASS_BOUNDARY_AND_PYTHON"
+    p_label = p_short
+    if p_short == "P2":
+        p_label = "P2_PARENT_OBSERVER_LOG_WAS_LOST"
+    if p_short == "P8":
+        a5a = "A5a3"
+    elif p_short == "P7":
+        a5a = "A5a2"
+    elif p_short == "P4":
+        a5a = "A5a3" if not python_bound else ""
+    else:
+        a5a = "UNSET_PENDING_FRAME2_BOUNDARY"
+
+    if scv_ok:
+        level2 = "PASS_DURABLE_SINK"
+    elif probe_ok:
+        level2 = "PARTIAL_DURABLE_SINK"
+    else:
+        level2 = "UNRESOLVED_OBSERVER_LIFETIME"
+
     return {
-        "p_classification": p_class,
-        "overall_verdict": overall,
-        "frame2_probe_received": probe_ok,
-        "frame2_scv_received": scv_ok,
-        "top_scv_count": sum(1 for m in top_msgs if m.get("is_set_component_value")),
-        "top_probe_count": sum(1 for m in top_msgs if m.get("message_type") == "solo:stage1ImmediateParentProbe"),
+        "p_classification_short": p_short,
+        "p_classification": p_label,
+        "a5a_refinement": a5a,
+        "overall_verdict": "INCONCLUSIVE_PARENT_BOUNDARY_WITH_PYTHON_BINDING_FAILURE",
+        "durable_sink_probe_received": probe_ok,
+        "durable_sink_scv_received": scv_ok,
+        "frame2_window_scrape_empty": frame2_window_empty,
+        "frame2_window_probe_received": any(m.get("is_parent_probe") for m in frame2_msgs),
+        "frame2_window_scv_received": any(m.get("is_set_component_value") for m in frame2_msgs),
+        "paired_receipts": paired,
         "level_1_iframe_send": "component_value_sent" in cs,
-        "level_2_frame2_status": "PASS" if scv_ok else "FAIL_OR_UNPROVEN",
+        "level_2_immediate_parent_status": level2,
         "level_5_python": "PASS" if python_bound else "FAIL",
         "registered_iframe_instance_id": reg_inst,
-        "scv_from_current_source": current,
-        "scv_from_stale_source": stale,
+        "durable_sink_binding_calls": sink_data.get("binding_calls"),
+        "durable_sink_console_rows": sink_data.get("console_rows"),
+        "primary_hypothesis": (
+            "P2_PENDING_PARENT_OBSERVER_LOG_LOST_ON_FRAME_DOCUMENT_REPLACEMENT"
+            if frame2_window_empty and not probe_ok and not scv_ok
+            else ("P2_OVERRIDDEN_BY_DURABLE_SINK" if frame2_window_empty and (probe_ok or scv_ok) else "")
+        ),
     }
 
 
@@ -1221,6 +1316,9 @@ def main() -> int:
     }
 
     url = production_url()
+    from stage1_parent_event_sink import ParentEventSinkStore, install_parent_event_sink
+
+    parent_sink_store = ParentEventSinkStore()
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = browser.new_context(
@@ -1228,6 +1326,8 @@ def main() -> int:
             viewport={"width": 1440, "height": 1400},
         )
         page = context.new_page()
+        sink_install = install_parent_event_sink(page, parent_sink_store)
+        summary["parent_event_sink_install"] = sink_install
         try:
             from stage1_parent_observer_probe import HARNESS_TOP_OBSERVER_INIT_SCRIPT
 
@@ -1355,32 +1455,58 @@ def main() -> int:
         summary["room_id"] = start_val.get("latched_room_id")
         summary["authenticated_at_start"] = authenticated_probe(page, preflight=pre)
 
-        queue_meta = queue_add_first_player(page)
+        page.wait_for_timeout(12000)
+        queue_meta: dict[str, Any] = {"clicked": False}
+        for attempt in range(8):
+            queue_meta = queue_add_first_player(page)
+            if queue_meta.get("clicked"):
+                queue_meta["seed_attempt"] = attempt + 1
+                break
+            page.wait_for_timeout(2500)
         page.wait_for_timeout(3500)
         queue_meta["queue_excerpt_before"] = queue_text(page)
-        hint = str(queue_meta.get("player_hint") or "").strip()
-        excerpt = str(queue_meta.get("queue_excerpt_before") or "")
-        queue_meta["queue_contains_player"] = queue_seed_satisfied(queue_meta) or bool(
-            queue_meta.get("clicked") and hint and hint.split()[0][:4].lower() in excerpt.lower()
-        )
-        summary["queue_seed"] = queue_meta
-        if not queue_seed_satisfied(queue_meta):
+        queue_meta["queue_container"] = scrape_queue_container_state(page)
+        queue_meta["queue_contains_player"] = queue_seed_satisfied(queue_meta)
+        queue_meta["grading"] = "QUEUE_CONTAINER" if queue_meta["queue_contains_player"] else "QUEUE_NOT_PROVEN"
+        if not queue_meta["queue_contains_player"]:
+            for extra in range(6):
+                page.wait_for_timeout(2000)
+                queue_meta = queue_add_first_player(page)
+                page.wait_for_timeout(2500)
+                queue_meta["queue_excerpt_before"] = queue_text(page)
+                queue_meta["queue_container"] = scrape_queue_container_state(page)
+                queue_meta["queue_contains_player"] = queue_seed_satisfied(queue_meta)
+                if queue_meta["queue_contains_player"]:
+                    queue_meta["seed_attempt_extra"] = extra + 1
+                    break
+        if not queue_meta.get("queue_contains_player"):
+            summary["stage1a"] = {
+                "verdict": "INVALID",
+                "reason": "queue_not_populated_before_expiration",
+                "queue_seed": queue_meta,
+            }
             summary["aborted"] = True
-            summary["abort_reason"] = "queue_seed_failed"
+            summary["abort_reason"] = "queue_not_populated_before_expiration"
             context.close()
             browser.close()
             summary["finished_at"] = time.time()
             OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
-            print(json.dumps(summary, indent=2, default=str))
+            print(json.dumps({"aborted": True, "reason": "queue_not_populated", "queue_seed": queue_meta}, indent=2))
             return 1
+        summary["queue_seed"] = queue_meta
 
-        exp = wait_one_expiration(page, timeout_s=95.0)
+        exp = wait_one_expiration(page, timeout_s=95.0, parent_sink=parent_sink_store)
         exp["parent_boundary_validation"] = build_parent_boundary_validation(
             exp, token_sent=str(exp.get("token_sent") or "")
         )
         OUT_PARENT_BOUNDARY.parent.mkdir(parents=True, exist_ok=True)
         OUT_PARENT_BOUNDARY.write_text(
             json.dumps(exp["parent_boundary_validation"], indent=2, default=str),
+            encoding="utf-8",
+        )
+        OUT_DURABLE_PARENT_SINK.parent.mkdir(parents=True, exist_ok=True)
+        OUT_DURABLE_PARENT_SINK.write_text(
+            json.dumps(exp.get("parent_event_sink") or {}, indent=2, default=str),
             encoding="utf-8",
         )
         return_chain = build_return_value_chain_report(
