@@ -91,12 +91,10 @@ def solo_expire_chain_summary(session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def render_solo_deploy_probe(st: Any) -> None:
+def render_solo_deploy_probe(st: Any, session: dict[str, Any] | None = None) -> None:
     """Always-on hidden deploy marker for production soak deploy polling."""
-    try:
-        from suite_deploy_marker import format_build_label, resolve_git_commit_short
-    except ImportError:
-        return
+    from suite_deploy_marker import format_build_label, resolve_git_commit_short
+
     build = format_build_label()
     sha = resolve_git_commit_short()
     st.markdown(
@@ -113,6 +111,13 @@ def render_solo_deploy_probe(st: Any) -> None:
         )
     except ImportError:
         pass
+    if session is not None:
+        try:
+            from solo_cloud_deploy_identity import render_visible_deploy_diag_caption
+
+            render_visible_deploy_diag_caption(st, session, sha=sha, build=build)
+        except ImportError:
+            pass
 
 
 def render_solo_expire_chain_probe(st: Any, session: dict[str, Any], room: dict[str, Any] | None) -> None:

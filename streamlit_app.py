@@ -5,6 +5,16 @@ try:
 except ImportError:
     pass
 try:
+    from solo_cloud_deploy_identity import emit_startup_identity_once, log_deploy_probe_import_status
+
+    emit_startup_identity_once(__file__)
+    log_deploy_probe_import_status()
+except Exception as _solo_identity_boot_exc:
+    print(
+        f"SOLO_CLOUD_DEPLOY_IDENTITY bootstrap_failed {type(_solo_identity_boot_exc).__name__}: {_solo_identity_boot_exc}",
+        flush=True,
+    )
+try:
     import solo_p6_v1_template_component  # noqa: F401 — P6 R5 V1 template probe
 except ImportError:
     pass
@@ -22195,11 +22205,29 @@ elif active_page == DRAFT_LAB_PAGE:
 
 elif active_page == "Live Draft Room":
     try:
-        from live_draft_solo_expire_chain import render_solo_deploy_probe
+        from solo_cloud_deploy_identity import (
+            log_deploy_probe_call_begin,
+            log_deploy_probe_call_end,
+            log_deploy_probe_call_failed,
+            log_ldr_branch_entered,
+        )
 
-        render_solo_deploy_probe(st)
-    except ImportError:
-        pass
+        log_ldr_branch_entered(st, st.session_state, active_page)
+        log_deploy_probe_call_begin()
+        try:
+            from live_draft_solo_expire_chain import render_solo_deploy_probe
+
+            render_solo_deploy_probe(st, st.session_state)
+            log_deploy_probe_call_end()
+        except Exception as _deploy_probe_exc:
+            log_deploy_probe_call_failed(_deploy_probe_exc)
+            raise
+    except ImportError as _ldr_identity_import_exc:
+        print(
+            f"SOLO_LDR_BRANCH_IDENTITY_IMPORT_FAILED {type(_ldr_identity_import_exc).__name__}: {_ldr_identity_import_exc}",
+            flush=True,
+        )
+        raise
     try:
         from live_draft_cloud_diagnostics import bootstrap_cloud_accept_mode
 
@@ -23069,7 +23097,7 @@ elif active_page == "Live Draft Room":
     try:
         from live_draft_solo_expire_chain import render_solo_deploy_probe
 
-        render_solo_deploy_probe(st)
+        render_solo_deploy_probe(st, st.session_state)
     except ImportError:
         pass
     try:
