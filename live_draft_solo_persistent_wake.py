@@ -113,6 +113,7 @@ def process_production_expire_token(
     raw_token: Any,
     widget_key: str,
     source: str = "native_component_return",
+    declaration_room: dict[str, Any] | None = None,
 ) -> bool:
     """Validate component return value against live production state; route to delivery owner."""
     live = _resolve_room(session, None)
@@ -134,6 +135,85 @@ def process_production_expire_token(
     from live_draft_solo_heartbeat import _coerce_wake_token
 
     token = _coerce_wake_token(raw_token)
+    try:
+        from live_draft_solo_declaration_room_context import (
+            _deadline_for_room,
+            _room_fingerprint,
+            get_registered_declaration_room,
+            resolve_effective_production_room,
+            restore_production_room_from_declaration,
+        )
+
+        reg_room = declaration_room if isinstance(declaration_room, dict) else get_registered_declaration_room(session)
+        resolved_live, resolution_source, resolution_meta = resolve_effective_production_room(
+            st,
+            session,
+            declaration_room=reg_room,
+            token=token,
+        )
+        if isinstance(resolved_live, dict):
+            resolution_meta.setdefault("deadline", _deadline_for_room(resolved_live))
+            resolution_meta.setdefault("room_fingerprint", _room_fingerprint(resolved_live))
+        try:
+            from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+
+            if stage1_production_ledger_enabled(st, session):
+                note_stage1_event(
+                    session,
+                    "production_stage1_room_resolution",
+                    st=st,
+                    room=resolved_live if isinstance(resolved_live, dict) else live_dict,
+                    widget_key=widget_key,
+                    extra={
+                        "resolution_source": resolution_source,
+                        "live_room_id": resolution_meta.get("live_room_id") or "",
+                        "canonical_room_id": resolution_meta.get("canonical_room_id") or "",
+                        "declaration_room_id": resolution_meta.get("declaration_room_id") or "",
+                        "resolved_room_id": resolution_meta.get("resolved_room_id") or "",
+                        "room_status": str((resolved_live or {}).get("status") or ""),
+                        "pick_index": (resolved_live or {}).get("current_pick_index"),
+                        "deadline": resolution_meta.get("deadline"),
+                        "room_fingerprint": resolution_meta.get("room_fingerprint") or "",
+                        "expected_token": str(session.get(SOLO_PERSISTENT_WAKE_TOKEN_KEY) or "")[:400],
+                        "supplied_token": str(token or "")[:400],
+                        "declaration_validation_ok": resolution_meta.get("declaration_validation_ok"),
+                        "declaration_validation_reason": resolution_meta.get("declaration_validation_reason") or "",
+                    },
+                )
+        except ImportError:
+            pass
+        session_had_live = bool(live_dict)
+        if (
+            resolution_source == "validated_declaration_room"
+            and isinstance(resolved_live, dict)
+            and not session_had_live
+        ):
+            restored_ok, restore_detail = restore_production_room_from_declaration(
+                st, session, resolved_live, token=token
+            )
+            try:
+                from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+
+                if stage1_production_ledger_enabled(st, session):
+                    note_stage1_event(
+                        session,
+                        "production_stage1_room_restored_from_declaration_context",
+                        st=st,
+                        room=session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else None,
+                        widget_key=widget_key,
+                        extra=restore_detail,
+                    )
+            except ImportError:
+                pass
+            if not restored_ok:
+                return False
+            live_dict = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else resolved_live
+        elif isinstance(resolved_live, dict):
+            live_dict = resolved_live
+        elif resolution_source == "declaration_room_rejected":
+            return False
+    except ImportError:
+        pass
     gate_ctx: dict[str, Any] = {}
     try:
         from live_draft_stage1_process_token_gate import (
@@ -1086,12 +1166,17 @@ def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
                 return
         except ImportError:
             pass
+        try:
+            from live_draft_solo_declaration_room_context import get_registered_declaration_room
+        except ImportError:
+            get_registered_declaration_room = lambda _s: None  # type: ignore[assignment,misc]
         process_production_expire_token(
             st,
             session,
             raw_token=raw,
             widget_key=key,
             source="return_value_session_bind",
+            declaration_room=get_registered_declaration_room(session),
         )
         try:
             from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled

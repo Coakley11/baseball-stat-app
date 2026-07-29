@@ -137,6 +137,18 @@ def render_micro_isolation_once(
             if production_expire_token is not None
             else build_solo_expire_token(production_room)
         )
+        try:
+            from live_draft_solo_declaration_room_context import register_production_countdown_declaration_context
+
+            register_production_countdown_declaration_context(
+                st,
+                session,
+                room=production_room,
+                expected_token=token,
+                widget_key=key,
+            )
+        except ImportError:
+            pass
         session[sk["token"]] = token
         mounted_token_key = f"{sk['mounted']}_token"
         mount_sig_key = f"{sk['mounted']}_sig"
@@ -400,17 +412,41 @@ def render_micro_isolation_once(
             except ImportError:
                 pass
             try:
+                from live_draft_solo_declaration_room_context import (
+                    get_registered_declaration_room,
+                    register_production_countdown_declaration_context,
+                )
                 from live_draft_solo_persistent_wake import process_production_expire_token
 
+                register_production_countdown_declaration_context(
+                    st,
+                    session,
+                    room=production_room,
+                    expected_token=token,
+                    widget_key=key,
+                )
                 process_production_expire_token(
                     st,
                     session,
                     raw_token=raw_component_value,
                     widget_key=key,
                     source="native_component_return",
+                    declaration_room=production_room,
                 )
             except ImportError:
-                pass
+                try:
+                    from live_draft_solo_persistent_wake import process_production_expire_token
+
+                    process_production_expire_token(
+                        st,
+                        session,
+                        raw_token=raw_component_value,
+                        widget_key=key,
+                        source="native_component_return",
+                        declaration_room=production_room,
+                    )
+                except ImportError:
+                    pass
         elif not suppress_immediate_session_on_change and raw is not None:
             _prod_on_change()
 
