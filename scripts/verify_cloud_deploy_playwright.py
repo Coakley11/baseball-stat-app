@@ -43,6 +43,8 @@ ACCEPTABLE_DEPLOY_SHAS = frozenset(
         "aa51121",
         "1771812",
         "750fb9a",
+        "628ff2a",
+        "5270394",
     }
 )
 
@@ -64,6 +66,29 @@ def deploy_acceptable(seen: str, target: str) -> bool:
 
 
 def scrape_deploy(page) -> dict[str, str]:
+    for frame in getattr(page, "frames", []) or []:
+        try:
+            probe = frame.evaluate(
+                """() => {
+                  const el = document.querySelector('#solo-deploy-build');
+                  if (el) {
+                    return {
+                      sha: (el.getAttribute('data-sha') || '').toLowerCase(),
+                      build: el.getAttribute('data-build') || '',
+                    };
+                  }
+                  const html = document.documentElement ? document.documentElement.innerHTML : '';
+                  const m = html.match(/solo-deploy-build sha=([0-9a-f]{7})/i);
+                  if (m) return { sha: m[1].toLowerCase(), build: '' };
+                  const bm = html.match(/baseball-dev-([0-9a-f]{7})/i);
+                  if (bm) return { sha: bm[1].toLowerCase(), build: 'baseball-dev-' + bm[1].toLowerCase() };
+                  return null;
+                }"""
+            )
+            if isinstance(probe, dict) and probe.get("sha"):
+                return {"sha": str(probe.get("sha") or ""), "build": str(probe.get("build") or "")}
+        except Exception:
+            continue
     return page.evaluate(
         """() => {
           function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }

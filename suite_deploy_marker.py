@@ -32,15 +32,15 @@ _ENV_BRANCH_KEYS = (
 @lru_cache(maxsize=1)
 def resolve_git_commit_short() -> str:
     """Best-effort short SHA for the deployed revision."""
-    for key in _ENV_COMMIT_KEYS:
-        val = os.environ.get(key, "").strip()
-        if val:
-            return val[:7] if len(val) > 7 else val
     if _DEPLOY_COMMIT_FILE.is_file():
         for line in _DEPLOY_COMMIT_FILE.read_text(encoding="utf-8").splitlines():
             token = line.strip().split("#", 1)[0].strip()
             if token and token.lower() != "unknown":
                 return token[:7] if len(token) > 7 else token
+    for key in _ENV_COMMIT_KEYS:
+        val = os.environ.get(key, "").strip()
+        if val:
+            return val[:7] if len(val) > 7 else val
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],

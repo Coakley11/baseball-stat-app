@@ -22195,6 +22195,12 @@ elif active_page == DRAFT_LAB_PAGE:
 
 elif active_page == "Live Draft Room":
     try:
+        from live_draft_solo_expire_chain import render_solo_deploy_probe
+
+        render_solo_deploy_probe(st)
+    except ImportError:
+        pass
+    try:
         from live_draft_cloud_diagnostics import bootstrap_cloud_accept_mode
 
         bootstrap_cloud_accept_mode(st, st.session_state)
