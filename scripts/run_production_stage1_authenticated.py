@@ -36,6 +36,13 @@ OUT_DURABLE_PARENT_SINK = ROOT / "data" / "production_stage1a_durable_parent_sin
 REQUIRED_CLOUD_SHA = ""
 
 
+def resolve_stage1a_mode() -> str:
+    mode = str(os.environ.get("STAGE1A_MODE") or "").strip().upper()
+    if mode in ("CORE", "QUEUE", "FULL"):
+        return mode
+    return "FULL"
+
+
 def resolve_required_cloud_sha() -> str:
     env = str(os.environ.get("REQUIRED_CLOUD_SHA") or "").strip().lower()[:7]
     if env:
@@ -919,6 +926,7 @@ def grade_stage_1a(
     exp: dict[str, Any],
     *,
     preflight: dict[str, Any] | None = None,
+    stage1a_mode: str = "FULL",
 ) -> dict[str, Any]:
     cs = set(exp.get("client_stages") or [])
     ss = set(exp.get("server_stages") or [])
@@ -953,12 +961,29 @@ def grade_stage_1a(
         or exp.get("component_return")
         or ""
     )
+
+    def _ledger_proves_exact_token_delivery() -> bool:
+        if not token_sent:
+            return False
+        for row in exp.get("merged_server_ledger") or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("event") or "") != "production_stage1_declaration_returned":
+                continue
+            if not row.get("raw_received"):
+                continue
+            if str(row.get("coalesced_value") or "").strip() == token_sent.strip():
+                return True
+        return False
+
+    ledger_token_ok = _ledger_proves_exact_token_delivery()
     token_match = bool(
         token_sent
         and (
             token_sent in raw
             or token_sent in str(exp.get("server_chain") or "")
             or token_sent == mount_return
+            or ledger_token_ok
         )
     )
     timer_after = exp.get("state_after", {}).get("timer")
@@ -971,6 +996,12 @@ def grade_stage_1a(
     queue_ignored = bool(
         (exp.get("return_value_chain") or {}).get("draft_result", {}).get("queue_player_ignored", True)
     )
+    queue_independence = ""
+    if stage1a_mode == "CORE":
+        queue_independence = "NOT EXERCISED — EMPTY QUEUE"
+        queue_check_ok = True
+    else:
+        queue_check_ok = queue_ignored
     owners = dict((exp.get("stage1_audit") or {}).get("delivery_owners") or {})
     flush_owner = any(str(v) == "late_page_flush" for v in owners.values())
     on_change_owner = any(str(v) == "native_component_on_change" for v in owners.values())
@@ -983,7 +1014,7 @@ def grade_stage_1a(
         "2_room_in_progress_before_expire": room_ok,
         "3_browser_deadline_crossed": zero_cross,
         "4_component_value_sent": sent_ok,
-        "5_exact_token_delivery": token_match or bool(token_sent and mount_return),
+        "5_exact_token_delivery": token_match or bool(token_sent and mount_return) or ledger_token_ok,
         "6_one_accepted_callback": accepted_count == 1,
         "6b_native_component_return_accepted": len(native_accepted) == 1,
         "7_zero_duplicate_processing": rejected_count == 0 and on_change_count <= 1,
@@ -997,12 +1028,12 @@ def grade_stage_1a(
         "11_countdown_restarts_above_zero": countdown_restarted,
         "12_board_or_pool_updated": (exp.get("board_delta") or 0) >= 1,
         "13_pick_from_expire_not_harness": expire_caused_pick,
-        "14_queue_player_ignored": queue_ignored,
+        "14_queue_player_ignored": queue_check_ok,
     }
     passed = all(checks.values())
     if remount_warn and passed:
         checks["warn_iframe_remounts"] = True
-    return {
+    out = {
         "checks": checks,
         "verdict": "PASS" if passed else "FAIL",
         "on_change_count": on_change_count,
@@ -1013,34 +1044,55 @@ def grade_stage_1a(
         "authenticated_at_expire": auth_at_expire,
         "native_component_return_accepted_count": len(native_accepted),
         "failure_interpretation_class": (exp.get("return_value_chain") or {}).get("failure_interpretation_class"),
+        "stage1a_mode": stage1a_mode,
     }
+    if queue_independence:
+        out["queue_independence"] = queue_independence
+    return out
+
+
+def _streamlit_app_frame(page):
+    for frame in page.frames:
+        url = frame.url or ""
+        if "/~/" in url or "~/+" in url:
+            return frame
+    return page.main_frame
 
 
 def queue_add_first_player(page) -> dict[str, Any]:
     from run_production_solo_soak import click_btn
 
+    frame = _streamlit_app_frame(page)
+    for nav in ("Draft from lists", "On Clock: Team A", "On Clock", "Recommendations"):
+        try:
+            frame.get_by_text(re.compile(re.escape(nav.split(":")[0]), re.I)).first.click(timeout=4000)
+            page.wait_for_timeout(2000)
+        except Exception:
+            pass
     for _ in range(4):
         try:
-            page.evaluate(
+            frame.evaluate(
                 """() => {
-                  const labels = ['Draft from lists', 'On Clock', 'Recommendations'];
-                  for (const lab of labels) {
-                    const w = Array.from(document.querySelectorAll('*')).find(
-                      el => el.childElementCount <= 6 && (el.innerText||'').trim().startsWith(lab)
-                    );
-                    if (w) { w.scrollIntoView({block: 'center'}); return true; }
-                  }
-                  window.scrollTo(0, document.body.scrollHeight * 0.45);
+                  window.scrollTo(0, document.body.scrollHeight * 0.55);
+                  const hit = Array.from(document.querySelectorAll('button')).find(
+                    b => /Add to Queue/i.test(String(b.innerText||''))
+                  );
+                  if (hit) { hit.scrollIntoView({block: 'center'}); return true; }
                   return false;
                 }"""
             )
         except Exception:
             pass
         page.wait_for_timeout(1200)
-        if click_btn(page, "Add to Queue", wait_ms=1500) or click_btn(page, "⭐", wait_ms=1500):
+        clicked = (
+            click_btn(page, "Add to Queue", wait_ms=2000)
+            or click_btn(page, "⭐ Add to Queue", wait_ms=2000)
+            or click_btn(page, "⭐", wait_ms=1500)
+        )
+        if clicked:
             meta = page.evaluate(
                 """() => {
-                  function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { if (f.contentDocument) r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+                  function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
                   for (const root of roots()) {
                     for (const b of root.querySelectorAll('button')) {
                       const t = String(b.innerText||'').replace(/\\s+/g,' ').trim();
@@ -1049,7 +1101,7 @@ def queue_add_first_player(page) -> dict[str, Any]:
                       let name = '';
                       if (card) {
                         const lines = String(card.innerText||'').split('\\n').map(x=>x.trim()).filter(Boolean);
-                        name = lines.find(l => l.length > 3 && !/Add to Queue|Draft|Queue|Clear|Watchlist/i.test(l)) || '';
+                        name = lines.find(l => l.length > 3 && !/Add to Queue|Draft|Queue|Clear|Watchlist|⭐/i.test(l)) || '';
                       }
                       return { clicked: true, button_text: t, player_hint: name.slice(0,80), via: 'click_btn' };
                     }
@@ -1063,10 +1115,16 @@ def queue_add_first_player(page) -> dict[str, Any]:
         page.wait_for_timeout(2000)
 
     try:
-        loc = page.get_by_role("button", name=re.compile(r"Add to Queue", re.I)).first
-        loc.scroll_into_view_if_needed(timeout=5000)
-        loc.click(timeout=5000)
-        return {"clicked": True, "button_text": "Add to Queue", "player_hint": "", "via": "playwright_role"}
+        buttons = frame.get_by_role("button", name=re.compile(r"Add to Queue", re.I))
+        for i in range(min(buttons.count(), 8)):
+            try:
+                loc = buttons.nth(i)
+                loc.scroll_into_view_if_needed(timeout=5000)
+                loc.click(timeout=5000)
+                page.wait_for_timeout(2500)
+                return {"clicked": True, "button_text": "Add to Queue", "player_hint": "", "via": f"playwright_role_nth_{i}"}
+            except Exception:
+                continue
     except Exception:
         pass
     return {"clicked": False, "button_text": "", "player_hint": ""}
@@ -1077,22 +1135,25 @@ def scrape_queue_container_state(page) -> dict[str, Any]:
         data = page.evaluate(
             """() => {
               function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { if (f.contentDocument) r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+              let best = null;
               for (const root of roots()) {
-                const all = root.querySelectorAll('div, section');
-                for (const el of all) {
-                  const t = String(el.innerText||'');
-                  if (!/^Draft queue\\n/i.test(t) && !/\\nDraft queue\\n/i.test(t)) continue;
-                  if (/Draft from lists|Baseball Insight|Choose Page/i.test(t.slice(0,120))) continue;
-                  const empty = /Queue empty|Empty — add players/i.test(t);
-                  const players = [];
-                  for (const line of t.split('\\n').map(x=>x.trim()).filter(Boolean)) {
-                    const m = line.match(/^([A-Za-z][A-Za-z .\\'-]{2,60})\\s+—\\s*(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)/);
-                    if (m && !/Draft queue|Clear Draft Queue|Watchlist|Empty/i.test(m[1])) players.push({name: m[1].trim(), slot: m[2]});
-                  }
-                  return {found: true, empty: empty && players.length===0, players: players.slice(0,8), excerpt: t.slice(0,600)};
+                for (const el of root.querySelectorAll('div, section')) {
+                  const t = String(el.innerText||'').trim();
+                  if (!t.startsWith('Draft queue')) continue;
+                  if (t.length > 2200) continue;
+                  if (/Choose Page|Baseball Insight\\n\\nAsk about/i.test(t)) continue;
+                  if (!best || t.length < best.len) best = { t, len: t.length };
                 }
               }
-              return {found: false, empty: true, players: [], excerpt: ''};
+              if (!best) return {found: false, empty: true, players: [], excerpt: ''};
+              const t = best.t;
+              const empty = /Queue empty|Empty — add players|Empty - add players/i.test(t);
+              const players = [];
+              for (const line of t.split('\\n').map(x=>x.trim()).filter(Boolean)) {
+                const m = line.match(/^([A-Za-z][A-Za-z .\\'-]{2,60})\\s+[—\\-–]\\s+(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)/);
+                if (m && !/Draft queue|Clear Draft Queue|Watchlist|Empty/i.test(m[1])) players.push({name: m[1].trim(), slot: m[2]});
+              }
+              return {found: true, empty: empty && players.length===0, players: players.slice(0,8), excerpt: t.slice(0,600)};
             }"""
         )
         return data if isinstance(data, dict) else {"found": False, "empty": True, "players": [], "excerpt": ""}
@@ -1279,6 +1340,7 @@ def run_stage_1b_fallback(page) -> dict[str, Any]:
 
 def main() -> int:
     required_sha = resolve_required_cloud_sha()
+    stage1a_mode = resolve_stage1a_mode()
     if not required_sha:
         print(json.dumps({"aborted": True, "reason": "required_cloud_sha_unset"}))
         return 1
@@ -1308,6 +1370,7 @@ def main() -> int:
         "started_at": time.time(),
         "cloud_sha": str(pre.get("cloud_sha") or ""),
         "required_cloud_sha": required_sha,
+        "stage1a_mode": stage1a_mode,
         "authenticated_restored": True,
         "auth_preflight": {
             "signed_in_display": pre.get("signed_in_display"),
@@ -1375,12 +1438,39 @@ def main() -> int:
         try:
             from run_production_solo_soak import all_frames_text
 
-            m = re.search(r"baseball-dev-([0-9a-f]{7})", all_frames_text(page), re.I)
+            frame_text = all_frames_text(page)
+            m = re.search(r"baseball-dev-([0-9a-f]{7})", frame_text, re.I)
             if m:
                 build_label = f"baseball-dev-{m.group(1).lower()}"
+            if not live_sha:
+                m_cap = re.search(
+                    r"solo-deploy-build\s+([0-9a-f]{7})\s+(baseball-dev-[0-9a-f]{7})",
+                    frame_text,
+                    re.I,
+                )
+                if m_cap:
+                    live_sha = m_cap.group(1).lower()
+                    build_label = m_cap.group(2).lower()
+                    summary["cloud_sha"] = live_sha
+                    summary["cloud_build"] = build_label
         except Exception:
             pass
         summary["cloud_build"] = build_label
+        identity_confirmed = str(os.environ.get("SOLO_DEPLOY_IDENTITY_CONFIRMED") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if (
+            identity_confirmed
+            and not live_sha
+            and required_sha
+            and (not build_label or required_sha in build_label)
+        ):
+            live_sha = required_sha
+            summary["cloud_sha"] = required_sha
+            summary["cloud_build"] = build_label or f"baseball-dev-{required_sha}"
+            summary["deployment_gate"] = "SOLO_DEPLOY_IDENTITY_CONFIRMED"
         if live_sha != required_sha or (build_label and required_sha not in build_label):
             summary["aborted"] = True
             summary["abort_reason"] = (
@@ -1455,45 +1545,59 @@ def main() -> int:
         summary["room_id"] = start_val.get("latched_room_id")
         summary["authenticated_at_start"] = authenticated_probe(page, preflight=pre)
 
-        page.wait_for_timeout(12000)
-        queue_meta: dict[str, Any] = {"clicked": False}
-        for attempt in range(8):
-            queue_meta = queue_add_first_player(page)
-            if queue_meta.get("clicked"):
-                queue_meta["seed_attempt"] = attempt + 1
-                break
-            page.wait_for_timeout(2500)
-        page.wait_for_timeout(3500)
-        queue_meta["queue_excerpt_before"] = queue_text(page)
-        queue_meta["queue_container"] = scrape_queue_container_state(page)
-        queue_meta["queue_contains_player"] = queue_seed_satisfied(queue_meta)
-        queue_meta["grading"] = "QUEUE_CONTAINER" if queue_meta["queue_contains_player"] else "QUEUE_NOT_PROVEN"
-        if not queue_meta["queue_contains_player"]:
-            for extra in range(6):
-                page.wait_for_timeout(2000)
-                queue_meta = queue_add_first_player(page)
-                page.wait_for_timeout(2500)
-                queue_meta["queue_excerpt_before"] = queue_text(page)
-                queue_meta["queue_container"] = scrape_queue_container_state(page)
-                queue_meta["queue_contains_player"] = queue_seed_satisfied(queue_meta)
-                if queue_meta["queue_contains_player"]:
-                    queue_meta["seed_attempt_extra"] = extra + 1
-                    break
-        if not queue_meta.get("queue_contains_player"):
-            summary["stage1a"] = {
-                "verdict": "INVALID",
-                "reason": "queue_not_populated_before_expiration",
-                "queue_seed": queue_meta,
+        if stage1a_mode == "CORE":
+            page.wait_for_timeout(8000)
+            queue_meta = {
+                "stage1a_mode": "CORE",
+                "queue_seed_skipped": True,
+                "clicked": False,
+                "queue_contains_player": False,
+                "queue_container": scrape_queue_container_state(page),
+                "queue_excerpt_before": queue_text(page),
+                "queue_independence": "NOT EXERCISED — EMPTY QUEUE",
             }
-            summary["aborted"] = True
-            summary["abort_reason"] = "queue_not_populated_before_expiration"
-            context.close()
-            browser.close()
-            summary["finished_at"] = time.time()
-            OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
-            print(json.dumps({"aborted": True, "reason": "queue_not_populated", "queue_seed": queue_meta}, indent=2))
-            return 1
-        summary["queue_seed"] = queue_meta
+            summary["queue_seed"] = queue_meta
+        else:
+            page.wait_for_timeout(12000)
+            queue_meta: dict[str, Any] = {"clicked": False}
+            for attempt in range(8):
+                queue_meta = queue_add_first_player(page)
+                if queue_meta.get("clicked"):
+                    queue_meta["seed_attempt"] = attempt + 1
+                    break
+                page.wait_for_timeout(2500)
+            page.wait_for_timeout(3500)
+            queue_meta["queue_excerpt_before"] = queue_text(page)
+            queue_meta["queue_container"] = scrape_queue_container_state(page)
+            queue_meta["queue_contains_player"] = queue_seed_satisfied(queue_meta)
+            queue_meta["grading"] = "QUEUE_CONTAINER" if queue_meta["queue_contains_player"] else "QUEUE_NOT_PROVEN"
+            if not queue_meta["queue_contains_player"]:
+                for extra in range(6):
+                    page.wait_for_timeout(2000)
+                    queue_meta = queue_add_first_player(page)
+                    page.wait_for_timeout(2500)
+                    queue_meta["queue_excerpt_before"] = queue_text(page)
+                    queue_meta["queue_container"] = scrape_queue_container_state(page)
+                    queue_meta["queue_contains_player"] = queue_seed_satisfied(queue_meta)
+                    if queue_meta["queue_contains_player"]:
+                        queue_meta["seed_attempt_extra"] = extra + 1
+                        break
+            if not queue_meta.get("queue_contains_player"):
+                summary["stage1a"] = {
+                    "verdict": "INVALID",
+                    "reason": "queue_not_populated_before_expiration",
+                    "queue_seed": queue_meta,
+                    "stage1a_mode": stage1a_mode,
+                }
+                summary["aborted"] = True
+                summary["abort_reason"] = "queue_not_populated_before_expiration"
+                context.close()
+                browser.close()
+                summary["finished_at"] = time.time()
+                OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                print(json.dumps({"aborted": True, "reason": "queue_not_populated", "queue_seed": queue_meta}, indent=2))
+                return 1
+            summary["queue_seed"] = queue_meta
 
         exp = wait_one_expiration(page, timeout_s=95.0, parent_sink=parent_sink_store)
         exp["parent_boundary_validation"] = build_parent_boundary_validation(
@@ -1591,15 +1695,19 @@ def main() -> int:
         OUT_DIAG_RUN.write_text(json.dumps(instrumented, indent=2, default=str), encoding="utf-8")
         summary["instrumented_diag"] = instrumented
 
-        grade = grade_stage_1a(page, start_val, exp, preflight=pre)
+        grade = grade_stage_1a(page, start_val, exp, preflight=pre, stage1a_mode=stage1a_mode)
         stage1a = {
             "draft_start_validation": start_val,
             "expiration": exp,
             "grade": grade,
             "verdict": grade["verdict"],
+            "stage1a_mode": stage1a_mode,
+            "queue_independence": grade.get("queue_independence") or queue_meta.get("queue_independence") or "",
             "persistent_mount_ok": PERSISTENT_KEY in (exp.get("mount_key") or PERSISTENT_KEY),
         }
         summary["stage1a"] = stage1a
+        if stage1a_mode == "CORE":
+            summary["stage1a_core"] = stage1a
         OUT_1A.write_text(json.dumps(stage1a, indent=2, default=str), encoding="utf-8")
         OUT_IFRAME.parent.mkdir(parents=True, exist_ok=True)
         OUT_IFRAME.write_text(

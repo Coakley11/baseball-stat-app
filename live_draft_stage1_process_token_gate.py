@@ -186,6 +186,163 @@ def note_try_claim_about_to_call(
     )
 
 
+def _auto_pick_processing_enabled(session: dict[str, Any]) -> bool:
+    try:
+        from live_draft_solo_persistent_parity_ladder import parity_p6_pick_processing_disabled
+
+        if parity_p6_pick_processing_disabled(session):
+            return False
+    except ImportError:
+        pass
+    return True
+
+
+def build_post_claim_context(
+    st: Any | None,
+    session: dict[str, Any],
+    *,
+    deliver_gate_ctx: dict[str, Any],
+    live: dict[str, Any] | None,
+    token: str,
+    widget_key: str,
+    claimed: bool,
+    reject_code: str,
+) -> dict[str, Any]:
+    live_room = live if isinstance(live, dict) else {}
+    ctx = dict(deliver_gate_ctx or {})
+    ctx.update(
+        {
+            "claim_accepted": bool(claimed),
+            "claim_reason": str(reject_code or ""),
+            "room_id": str(live_room.get("draft_room_id") or live_room.get("draft_id") or ""),
+            "pick_index": live_room.get("current_pick_index"),
+            "deadline": ctx.get("current_deadline"),
+            "token": str(token or "")[:400],
+            "room_status": str(live_room.get("status") or ""),
+            "solo_persistent_wake_actionable": bool(session.get("_solo_persistent_wake_actionable")),
+            "auto_pick_processing_enabled": _auto_pick_processing_enabled(session),
+        }
+    )
+    return ctx
+
+
+def note_post_claim_entered(
+    session: dict[str, Any],
+    *,
+    st: Any | None,
+    deliver_gate_ctx: dict[str, Any],
+    live: dict[str, Any] | None,
+    token: str,
+    widget_key: str,
+    claimed: bool,
+    reject_code: str,
+) -> None:
+    try:
+        from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+    except ImportError:
+        return
+    if not stage1_production_ledger_enabled(st, session):
+        return
+    extra = build_post_claim_context(
+        st,
+        session,
+        deliver_gate_ctx=deliver_gate_ctx,
+        live=live,
+        token=token,
+        widget_key=widget_key,
+        claimed=claimed,
+        reject_code=reject_code,
+    )
+    note_stage1_event(
+        session,
+        "production_stage1_post_claim_entered",
+        st=st,
+        room=live if isinstance(live, dict) else None,
+        widget_key=widget_key,
+        extra=extra,
+    )
+
+
+def note_post_claim_gate(
+    session: dict[str, Any],
+    *,
+    st: Any | None,
+    gate_name: str,
+    gate_result: str,
+    decision: str,
+    return_reason: str = "",
+    deliver_gate_ctx: dict[str, Any] | None = None,
+    live: dict[str, Any] | None = None,
+    widget_key: str = "",
+) -> None:
+    try:
+        from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+    except ImportError:
+        return
+    if not stage1_production_ledger_enabled(st, session):
+        return
+    extra = dict(deliver_gate_ctx or {})
+    extra.update(
+        {
+            "gate_name": gate_name,
+            "gate_result": gate_result,
+            "decision": decision,
+            "return_reason": return_reason or "",
+        }
+    )
+    note_stage1_event(
+        session,
+        "production_stage1_post_claim_gate",
+        st=st,
+        room=live if isinstance(live, dict) else None,
+        widget_key=widget_key,
+        extra=extra,
+    )
+
+
+def note_autopick_about_to_enter(
+    session: dict[str, Any],
+    *,
+    st: Any | None,
+    live: dict[str, Any] | None,
+    token: str,
+    delivery_via: str,
+    widget_key: str,
+    deliver_gate_ctx: dict[str, Any] | None = None,
+) -> None:
+    try:
+        from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+    except ImportError:
+        return
+    if not stage1_production_ledger_enabled(st, session):
+        return
+    extra = dict(deliver_gate_ctx or {})
+    extra.update({"token": str(token or "")[:400], "delivery_via": delivery_via})
+    note_stage1_event(
+        session,
+        "production_stage1_autopick_about_to_enter",
+        st=st,
+        room=live if isinstance(live, dict) else None,
+        widget_key=widget_key,
+        extra=extra,
+    )
+
+
+def pre_claim_actionable_eligible(
+    st: Any | None,
+    session: dict[str, Any],
+    deliver_gate_ctx: dict[str, Any],
+) -> tuple[bool, str]:
+    """Observation-only paths must not consume the sole actionable expiration claim."""
+    if bool(deliver_gate_ctx.get("delivery_only")):
+        return False, "delivery_only_observation"
+    if not session.get("_solo_persistent_wake_actionable"):
+        return False, "not_actionable"
+    if not _auto_pick_processing_enabled(session):
+        return False, "diagnostic_pick_processing_disabled"
+    return True, ""
+
+
 def note_try_claim_result(
     session: dict[str, Any],
     *,

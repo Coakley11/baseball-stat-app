@@ -627,6 +627,10 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
     note_process_token_gate = None
     note_try_claim_about_to_call = None
     note_try_claim_result = None
+    _note_post_claim_entered_fn = None
+    _note_post_claim_gate_fn = None
+    _note_autopick_about_fn = None
+    _pre_claim_eligible_fn = None
     try:
         from live_draft_solo_parity_p6_persistent_diag import p6_persistent_diag_active, resolve_p6_run_id
 
@@ -722,8 +726,61 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             live=live_dict,
             context=deliver_gate_ctx,
         )
+        from live_draft_stage1_process_token_gate import (
+            note_autopick_about_to_enter as _note_autopick_about,
+            note_post_claim_entered as _note_post_claim_entered,
+            note_post_claim_gate as _note_post_claim_gate,
+            pre_claim_actionable_eligible as _pre_claim_eligible,
+        )
+
+        _note_post_claim_entered_fn = _note_post_claim_entered
+        _note_post_claim_gate_fn = _note_post_claim_gate
+        _note_autopick_about_fn = _note_autopick_about
+        _pre_claim_eligible_fn = _pre_claim_eligible
     except ImportError:
-        pass
+        _note_post_claim_entered_fn = None  # type: ignore[misc,assignment]
+        _note_post_claim_gate_fn = None  # type: ignore[misc,assignment]
+        _note_autopick_about_fn = None  # type: ignore[misc,assignment]
+        _pre_claim_eligible_fn = None  # type: ignore[misc,assignment]
+
+    def _post_claim_gate_return(
+        gate_name: str,
+        gate_result: str,
+        return_reason: str,
+        *,
+        claimed: bool = False,
+        reject_code: str = "",
+    ) -> None:
+        try:
+            if _note_post_claim_gate_fn is not None:
+                _note_post_claim_gate_fn(
+                    session,
+                    st=st,
+                    gate_name=gate_name,
+                    gate_result=gate_result,
+                    decision="return",
+                    return_reason=return_reason,
+                    deliver_gate_ctx=deliver_gate_ctx,
+                    live=live_dict,
+                    widget_key=key,
+                )
+        except Exception:
+            pass
+        try:
+            if note_process_token_gate is not None:
+                note_process_token_gate(
+                    session,
+                    st=st,
+                    gate_name=gate_name,
+                    gate_result=gate_result,
+                    decision="return",
+                    return_reason=return_reason,
+                    widget_key=key,
+                    live=live_dict,
+                    context=deliver_gate_ctx,
+                )
+        except Exception:
+            pass
 
     try:
         from live_draft_stage1_expire_audit import (
@@ -753,6 +810,40 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                 )
         except ImportError:
             pass
+        pre_claim_ok = True
+        pre_claim_reason = ""
+        if not skip_claim and _pre_claim_eligible_fn is not None:
+            pre_claim_ok, pre_claim_reason = _pre_claim_eligible_fn(st, session, deliver_gate_ctx)
+        if not skip_claim and not pre_claim_ok:
+            try:
+                if _note_post_claim_entered_fn is not None:
+                    _note_post_claim_entered_fn(
+                        session,
+                        st=st,
+                        deliver_gate_ctx=deliver_gate_ctx,
+                        live=live_dict,
+                        token=str(token or ""),
+                        widget_key=key,
+                        claimed=False,
+                        reject_code=pre_claim_reason,
+                    )
+            except Exception:
+                pass
+            _post_claim_gate_return(
+                "delivery_only" if pre_claim_reason == "delivery_only_observation" else pre_claim_reason,
+                pre_claim_reason,
+                pre_claim_reason,
+            )
+            record_callback_invocation(
+                st,
+                session,
+                callback_source=delivery_via,
+                raw_value=raw,
+                room=live if isinstance(live, dict) else None,
+                reject_code=pre_claim_reason,
+                delivery_claimed=False,
+            )
+            return
         if skip_claim:
             try:
                 if note_process_token_gate is not None:
@@ -945,6 +1036,21 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             pass
 
     try:
+        if _note_post_claim_entered_fn is not None:
+            _note_post_claim_entered_fn(
+                session,
+                st=st,
+                deliver_gate_ctx=deliver_gate_ctx,
+                live=live_dict,
+                token=str(token or ""),
+                widget_key=key,
+                claimed=bool(locals().get("claimed", True)),
+                reject_code=str(locals().get("reject_code", "") or ""),
+            )
+    except Exception:
+        pass
+
+    try:
         from live_draft_callback_boundary_diag import (
             boundary_diag_enabled,
             record_callback_boundary,
@@ -1025,22 +1131,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
     else:
         token = _coerce_wake_token(raw)
     if not session.get(SOLO_PERSISTENT_WAKE_ACTIONABLE_KEY):
-        try:
-            from live_draft_stage1_process_token_gate import note_process_token_gate
-
-            note_process_token_gate(
-                session,
-                st=st,
-                gate_name="persistent_wake_actionable",
-                gate_result="false",
-                decision="return",
-                return_reason="not_actionable",
-                widget_key=key,
-                live=live_dict if isinstance(live, dict) else None,
-                context=deliver_gate_ctx if deliver_gate_ctx else None,
-            )
-        except ImportError:
-            pass
+        _post_claim_gate_return("persistent_wake_actionable", "false", "not_actionable")
         if boundary_diag_enabled(session):
             record_callback_boundary(
                 session,
@@ -1052,6 +1143,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             )
         return
     if not token or token == SOLO_INERT_EXPIRE_TOKEN:
+        _post_claim_gate_return("inert_token", "true", "inert_token")
         if boundary_diag_enabled(session):
             record_callback_boundary(
                 session,
@@ -1064,6 +1156,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
         return
     live = _resolve_room(session, None)
     if not isinstance(live, dict):
+        _post_claim_gate_return("room_unavailable", "missing", "no_live_room")
         if boundary_diag_enabled(session):
             record_callback_boundary(
                 session,
@@ -1079,6 +1172,11 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
 
         if parity_p6_pick_processing_disabled(session):
             session[SOLO_SKIP_LATE_FLUSH_TOKEN_KEY] = token
+            _post_claim_gate_return(
+                "diagnostic_pick_processing_disabled",
+                "parity_p6_pick_processing_disabled",
+                "parity_p6_pick_processing_disabled",
+            )
             try:
                 from live_draft_solo_parity_p6_persistent_diag import (
                     record_p6_callback_return,
@@ -1127,25 +1225,46 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             return
     except ImportError:
         pass
-    if boundary_diag_enabled(session) and trace_helper is not None:
-        from functools import partial
-
-        trace_helper(
-            session,
-            "process_solo_component_wake",
-            partial(
-                process_solo_component_wake,
-                st,
+    try:
+        if _note_autopick_about_fn is not None:
+            _note_autopick_about_fn(
                 session,
-                live,
-                token,
+                st=st,
+                live=live if isinstance(live, dict) else None,
+                token=str(token or ""),
                 delivery_via=delivery_via,
-            ),
-            st=st,
-            callback_token=str(token or "")[:400],
+                widget_key=key,
+                deliver_gate_ctx=deliver_gate_ctx,
+            )
+    except Exception:
+        pass
+    try:
+        if boundary_diag_enabled(session) and trace_helper is not None:
+            from functools import partial
+
+            trace_helper(
+                session,
+                "process_solo_component_wake",
+                partial(
+                    process_solo_component_wake,
+                    st,
+                    session,
+                    live,
+                    token,
+                    delivery_via=delivery_via,
+                ),
+                st=st,
+                callback_token=str(token or "")[:400],
+            )
+        else:
+            process_solo_component_wake(st, session, live, token, delivery_via=delivery_via)
+    except Exception as exc:
+        _post_claim_gate_return(
+            "exception_before_autopick_handler",
+            type(exc).__name__,
+            "exception_before_autopick_handler",
         )
-    else:
-        process_solo_component_wake(st, session, live, token, delivery_via=delivery_via)
+        raise
     session[SOLO_SKIP_LATE_FLUSH_TOKEN_KEY] = token
     session.pop(SOLO_PERSISTENT_WAKE_PICK_LATCH_KEY, None)
     if boundary_diag_enabled(session):
