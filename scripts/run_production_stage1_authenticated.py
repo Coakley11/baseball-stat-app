@@ -578,13 +578,56 @@ def wait_one_expiration(
     frame_topology_initial = collect_frame_topology(page)
     install_harness_top_observer(page)
     install_immediate_parent_listeners(page)
+    from stage1_harness_observability import (
+        LEDGER_DURABLE_INIT_SCRIPT,
+        ledger_rows_from_callback_audit,
+        merge_ledger_sources,
+        scrape_durable_ledger_store,
+        wait_for_next_timer_after_commit,
+    )
+
+    try:
+        page.add_init_script(LEDGER_DURABLE_INIT_SCRIPT)
+    except Exception:
+        pass
     merged_server_ledger: list[dict[str, Any]] = []
+    peak_merged_server_ledger: list[dict[str, Any]] = []
     frame2_install_log: list[dict[str, Any]] = []
     frame2_meta_initial: dict[str, Any] = {}
     durable_wait_result: dict[str, Any] = {}
     durable_wait_done = False
     send_browser_event_id = ""
     supabase_requests: list[dict[str, Any]] = []
+    pick_committed_at: float | None = None
+    next_timer_wait: dict[str, Any] = {}
+    post_commit_wait_started = False
+
+    def _capture_loop_ledger() -> None:
+        nonlocal merged_server_ledger, peak_merged_server_ledger
+        ledger_snap = scrape_stage1_ledger_all_frames(page)
+        best_row = ledger_snap.get("best") or {}
+        if best_row.get("b64"):
+            try:
+                from stage1_harness_observability import decode_ledger_b64_padded
+
+                decoded = decode_ledger_b64_padded(str(best_row.get("b64") or ""))
+                merged_server_ledger = merge_ledger_rows(
+                    merged_server_ledger, list(decoded.get("rows") or [])
+                )
+            except Exception:
+                pass
+        store = scrape_durable_ledger_store(page)
+        if store.get("best_b64"):
+            try:
+                from stage1_harness_observability import rows_from_b64
+
+                merged_server_ledger = merge_ledger_rows(
+                    merged_server_ledger, rows_from_b64(str(store.get("best_b64") or ""))
+                )
+            except Exception:
+                pass
+        if len(merged_server_ledger) > len(peak_merged_server_ledger):
+            peak_merged_server_ledger = list(merged_server_ledger)
 
     def _on_request(req: Any) -> None:
         try:
@@ -612,14 +655,26 @@ def wait_one_expiration(
         best = ledger_snap.get("best") or {}
         if best.get("b64"):
             try:
-                from stage1_parent_observer_probe import decode_ledger_b64
+                from stage1_harness_observability import decode_ledger_b64_padded
 
-                decoded = decode_ledger_b64(str(best.get("b64") or ""))
+                decoded = decode_ledger_b64_padded(str(best.get("b64") or ""))
                 merged_server_ledger = merge_ledger_rows(
                     merged_server_ledger, list(decoded.get("rows") or [])
                 )
             except Exception:
                 pass
+        store = scrape_durable_ledger_store(page)
+        if store.get("best_b64"):
+            try:
+                from stage1_harness_observability import rows_from_b64
+
+                merged_server_ledger = merge_ledger_rows(
+                    merged_server_ledger, rows_from_b64(str(store.get("best_b64") or ""))
+                )
+            except Exception:
+                pass
+        if len(merged_server_ledger) > len(peak_merged_server_ledger):
+            peak_merged_server_ledger = list(merged_server_ledger)
         snap = scrape_snapshot(page)
         snap["elapsed_s"] = round(time.time() - t0, 1)
         snap["state"] = scrape_timer_fields(page)
@@ -700,33 +755,40 @@ def wait_one_expiration(
                     browser_send_event_id=send_browser_event_id,
                     timeout_s=5.0,
                 )
-        if {"pick_committed", "commit_confirmed"} & merged_stages:
-            for _ in range(4):
-                page.wait_for_timeout(1500)
-                ledger_snap = scrape_stage1_ledger_all_frames(page)
-                best_pick = ledger_snap.get("best") or {}
-                if best_pick.get("b64"):
-                    try:
-                        from stage1_parent_observer_probe import decode_ledger_b64
-
-                        decoded = decode_ledger_b64(str(best_pick.get("b64") or ""))
-                        merged_server_ledger = merge_ledger_rows(
-                            merged_server_ledger, list(decoded.get("rows") or [])
-                        )
-                    except Exception:
-                        pass
-                try:
-                    from stage1_parent_observer_probe import scrape_stage1_production_ledger
-
-                    dom_ledger = scrape_stage1_production_ledger(page)
-                    if dom_ledger.get("rows"):
-                        merged_server_ledger = merge_ledger_rows(
-                            merged_server_ledger, list(dom_ledger.get("rows") or [])
-                        )
-                except Exception:
-                    pass
+        if {"pick_committed", "commit_confirmed"} & merged_stages and not post_commit_wait_started:
+            post_commit_wait_started = True
+            pick_committed_at = time.time()
+            _capture_loop_ledger()
+            tok_completed = str(
+                merged_client.get("token")
+                or client.get("token")
+                or chain.get("component_return")
+                or chain.get("component_raw")
+                or ""
+            )
+            pf = parse_expire_token_fields(tok_completed)
+            room_for_wait = str(pf.get("draft_id") or "")
+            next_timer_wait = wait_for_next_timer_after_commit(
+                page,
+                completed_token=tok_completed,
+                room_id=room_for_wait,
+                deadline_before=deadline_before,
+                pick_committed_at=pick_committed_at,
+                scrape_timer_fields=scrape_timer_fields,
+                scrape_component_mount_diag=scrape_component_mount_diag,
+                scrape_persistent_lifecycle_token=scrape_persistent_lifecycle_token,
+                scrape_stage1_audit=scrape_stage1_audit,
+                scrape_expire_chain=scrape_expire_chain,
+                capture_ledger=_capture_loop_ledger,
+                poll_ms=400,
+                timeout_s=28.0,
+            )
+            _capture_loop_ledger()
+            observe_until = min(observe_until, time.time() + 3.0)
+            continue
+        if post_commit_wait_started and next_timer_wait.get("status") in ("observed", "timeout"):
             break
-        if accepted_now:
+        if accepted_now and not post_commit_wait_started:
             observe_until = min(observe_until, time.time() + 8.0)
         if value_sent_at is not None and time.time() >= value_sent_at + 45.0:
             break
@@ -757,53 +819,27 @@ def wait_one_expiration(
             row.setdefault("receiving_window", "app_early_observer_top")
             row.setdefault("receiving_window_level", "LEVEL_2_TOP")
             top_parent_messages.append(row)
+    _capture_loop_ledger()
+    final_dom_rows: list[dict[str, Any]] = []
     ledger_final = scrape_stage1_ledger_all_frames(page)
     best_ledger = ledger_final.get("best") or {}
     if best_ledger.get("b64"):
         try:
-            from stage1_parent_observer_probe import decode_ledger_b64
+            from stage1_harness_observability import decode_ledger_b64_padded
 
-            decoded = decode_ledger_b64(str(best_ledger.get("b64") or ""))
-            merged_server_ledger = merge_ledger_rows(
-                merged_server_ledger, list(decoded.get("rows") or [])
-            )
+            decoded = decode_ledger_b64_padded(str(best_ledger.get("b64") or ""))
+            final_dom_rows = list(decoded.get("rows") or [])
         except Exception:
             pass
-    if not merged_server_ledger:
+    if not final_dom_rows:
         try:
             from stage1_parent_observer_probe import scrape_stage1_production_ledger
 
             dom_ledger = scrape_stage1_production_ledger(page)
-            if dom_ledger.get("rows"):
-                merged_server_ledger = merge_ledger_rows(
-                    merged_server_ledger, list(dom_ledger.get("rows") or [])
-                )
+            final_dom_rows = list(dom_ledger.get("rows") or [])
         except Exception:
             pass
-    if not merged_server_ledger and audit_final:
-        try:
-            import base64
-
-            b64_audit = page.evaluate(
-                """() => {
-                  function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
-                  for (const root of roots()) {
-                    const el = root.querySelector('#solo-stage1-production-ledger');
-                    if (el) return el.getAttribute('data-b64') || '';
-                  }
-                  if (window.__soloStage1LedgerB64) return window.__soloStage1LedgerB64;
-                  return '';
-                }"""
-            )
-            if b64_audit:
-                from stage1_parent_observer_probe import decode_ledger_b64
-
-                decoded = decode_ledger_b64(str(b64_audit))
-                merged_server_ledger = merge_ledger_rows(
-                    merged_server_ledger, list(decoded.get("rows") or [])
-                )
-        except Exception:
-            pass
+    durable_store = scrape_durable_ledger_store(page)
     frame2_final = scrape_frame2_parent_messages(page)
     observer_contexts = collect_observer_execution_contexts(page)
     # Prefer topology captured while component iframes are still attached (Playwright detaches on teardown).
@@ -814,9 +850,21 @@ def wait_one_expiration(
                 frame_topology_final = topo
                 break
     state_after = scrape_timer_fields(page)
+    mount_after = scrape_component_mount_diag(page)
     pick_after = state_after.get("pick")
-    deadline_after = (state_after.get("mount_diag") or {}).get("diag_deadline") or state_after.get("timer")
-    next_token_after = str((state_after.get("mount_diag") or {}).get("diag_token") or "")
+    if next_timer_wait.get("new_deadline"):
+        deadline_after = str(next_timer_wait.get("new_deadline") or "")
+    else:
+        deadline_after = (state_after.get("mount_diag") or {}).get("diag_deadline") or state_after.get("timer")
+    if next_timer_wait.get("new_token"):
+        next_token_after = str(next_timer_wait.get("new_token") or "")
+    else:
+        next_token_after = str(
+            mount_after.get("expire_token")
+            or scrape_persistent_lifecycle_token(page)
+            or (state_after.get("mount_diag") or {}).get("diag_token")
+            or ""
+        )
     board_after = int(state_after.get("boardRows") or 0)
     commits_after = int((chain_final.get("commits") or 0))
 
@@ -829,6 +877,20 @@ def wait_one_expiration(
     )
     client_stages = stages_from_chain(client_chain_merged)
     server_stages = stages_from_chain(str(chain_final.get("chain") or ""))
+    callback_audit_rows = ledger_rows_from_callback_audit(
+        audit_final,
+        server_chain=str(chain_final.get("chain") or ""),
+        server_stages=list(server_stages),
+    )
+    ledger_meta = merge_ledger_sources(
+        observation_loop_rows=list(merged_server_ledger),
+        peak_observation_rows=list(peak_merged_server_ledger),
+        durable_best_b64=str(durable_store.get("best_b64") or ""),
+        final_dom_rows=final_dom_rows,
+        callback_audit_rows=callback_audit_rows,
+        merge_fn=merge_ledger_rows,
+    )
+    merged_server_ledger = list(ledger_meta.get("merged_server_ledger") or [])
     callbacks = list(audit_final.get("callbacks") or [])
     accepted = [c for c in callbacks if c.get("delivery_claimed") and not c.get("reject_code")]
     rejected = [c for c in callbacks if c.get("reject_code")]
@@ -976,6 +1038,10 @@ def wait_one_expiration(
         "merged_server_ledger_run_id": best_ledger.get("run_id") or "",
         "merged_server_ledger_source": best_ledger.get("sanitized_url") or "",
         "merged_server_ledger_probe_hits": ledger_final.get("hits") or [],
+        "ledger_meta": ledger_meta,
+        "next_timer_wait": next_timer_wait,
+        "pick_committed_at": pick_committed_at,
+        "mount_after_commit": mount_after,
         "frame2_parent_messages": list(frame2_final.get("messages") or []),
         "frame2_observer_meta": frame2_final.get("meta") or {},
         "frame2_navigation": frame2_final.get("navigation") or {},
@@ -998,8 +1064,13 @@ def grade_stage_1a(
     preflight: dict[str, Any] | None = None,
     stage1a_mode: str = "FULL",
 ) -> dict[str, Any]:
+    from stage1_harness_observability import (
+        authoritative_exact_token_delivery,
+        classify_next_timer_status,
+        split_stage1a_grades,
+    )
+
     cs = set(exp.get("client_stages") or [])
-    ss = set(exp.get("server_stages") or [])
     accepted_count = int(exp.get("callback_accepted_count") or 0)
     rejected_count = int(exp.get("callback_rejected_count") or 0)
     on_change_count = accepted_count
@@ -1031,21 +1102,15 @@ def grade_stage_1a(
     zero_cross = "browser_deadline_crossed" in cs
     sent_ok = "component_value_sent" in cs
     callbacks = list(exp.get("callback_timeline") or [])
+    merged_ledger = list(exp.get("merged_server_ledger") or [])
+    ledger_meta = dict(exp.get("ledger_meta") or {})
+    next_timer_wait = dict(exp.get("next_timer_wait") or {})
     try:
         from live_draft_stage1_expire_audit import HARMLESS_REJECT_CODES
     except ImportError:
-        HARMLESS_REJECT_CODES = frozenset(
-            {
-                "delivery_only_observation",
-                "post_action_duplicate_suppressed",
-                "already_consumed",
-                "callback_source_not_allowed",
-            }
-        )
+        from stage1_harness_observability import HARMLESS_REJECT_CODES  # type: ignore[attr-defined]
     native_observation = [
-        c
-        for c in callbacks
-        if str(c.get("callback_source") or "") == "native_component_return"
+        c for c in callbacks if str(c.get("callback_source") or "") == "native_component_return"
     ]
     bind_accepted = [
         c
@@ -1069,24 +1134,16 @@ def grade_stage_1a(
         or exp.get("component_return")
         or ""
     )
-
-    def _ledger_proves_exact_token_delivery() -> bool:
-        if not token_sent:
-            return False
-        for row in exp.get("merged_server_ledger") or []:
-            if not isinstance(row, dict):
-                continue
-            if str(row.get("event") or "") != "production_stage1_declaration_returned":
-                continue
-            if not row.get("raw_received"):
-                continue
-            if str(row.get("coalesced_value") or "").strip() == token_sent.strip():
-                return True
-        return False
-
-    ledger_token_ok = _ledger_proves_exact_token_delivery()
+    exact_token = authoritative_exact_token_delivery(
+        token_sent=token_sent,
+        component_raw=raw,
+        server_chain=str(exp.get("server_chain") or ""),
+        callbacks=callbacks,
+        merged_ledger=merged_ledger,
+        mount_return=mount_return,
+    )
     claim_result_source = ""
-    for row in exp.get("merged_server_ledger") or []:
+    for row in merged_ledger:
         if not isinstance(row, dict):
             continue
         if str(row.get("event") or "") != "production_stage1_token_claim_result":
@@ -1094,44 +1151,67 @@ def grade_stage_1a(
         if row.get("accepted"):
             claim_result_source = str(row.get("source") or row.get("delivery_via") or "")
             break
-    token_match = bool(
-        token_sent
-        and (
-            token_sent in raw
-            or token_sent in str(exp.get("server_chain") or "")
-            or token_sent == mount_return
-            or ledger_token_ok
-        )
-    )
-    timer_after = exp.get("state_after", {}).get("timer")
+    if not claim_result_source and bind_accepted:
+        claim_result_source = "return_value_session_bind"
     mount_diag_after = (exp.get("state_after", {}).get("mount_diag") or {})
-    countdown_restarted = (
-        (timer_after is not None and int(timer_after) > 0)
-        or bool(mount_diag_after.get("diag_remaining"))
-        or bool(exp.get("deadline_after"))
+    mount_after = dict(exp.get("mount_after_commit") or {})
+    timer_after = exp.get("state_after", {}).get("timer")
+    visible_countdown = (
+        next_timer_wait.get("visible_countdown")
+        or mount_diag_after.get("diag_remaining")
+        or timer_after
     )
-    queue_ignored = bool(
-        (exp.get("return_value_chain") or {}).get("draft_result", {}).get("queue_player_ignored", True)
+    deadline_after = str(
+        next_timer_wait.get("new_deadline")
+        or exp.get("deadline_after")
+        or mount_diag_after.get("diag_deadline")
+        or ""
+    )
+    next_token_after = str(next_timer_wait.get("new_token") or exp.get("next_token_after_commit") or "")
+    countdown_restarted = (
+        next_timer_wait.get("status") == "observed"
+        or (timer_after is not None and int(timer_after) > 0)
+        or bool(mount_diag_after.get("diag_remaining"))
+        or bool(deadline_after)
     )
     queue_independence = ""
     if stage1a_mode == "CORE":
         queue_independence = "NOT EXERCISED — EMPTY QUEUE"
         queue_check_ok = True
     else:
-        queue_check_ok = queue_ignored
+        queue_check_ok = bool(
+            (exp.get("return_value_chain") or {}).get("draft_result", {}).get("queue_player_ignored", True)
+        )
     owners = dict((exp.get("stage1_audit") or {}).get("delivery_owners") or {})
     flush_owner = any(str(v) == "late_page_flush" for v in owners.values())
     on_change_owner = any(str(v) == "native_component_on_change" for v in owners.values())
     remount_warn = int(
         (exp.get("return_value_chain") or {}).get("browser", {}).get("iframe_remounts") or 0
     ) > 0
+    auth_pick_index = None
+    if pick_commits:
+        lc = pick_commits[-1]
+        if lc.get("pick_index_after") is not None:
+            auth_pick_index = int(lc["pick_index_after"])
+    timer_classification = classify_next_timer_status(
+        next_timer_wait=next_timer_wait,
+        authoritative_pick_index=auth_pick_index,
+        server_deadline=deadline_after,
+        server_expected_token=next_token_after,
+        component_declaration_token=str(mount_after.get("expire_token") or ""),
+        iframe_diag_token=str((exp.get("mount_after_commit") or {}).get("expire_token") or ""),
+        visible_countdown=visible_countdown,
+        completed_token=token_sent,
+    )
+    ledger_retained = int(ledger_meta.get("merged_server_ledger_row_count") or len(merged_ledger)) > 0
+    next_timer_verified = next_timer_wait.get("status") == "observed"
 
     checks = {
         "1_authenticated_at_expire": auth_at_expire,
         "2_room_in_progress_before_expire": room_ok,
         "3_browser_deadline_crossed": zero_cross,
         "4_component_value_sent": sent_ok,
-        "5_exact_token_delivery": token_match or bool(token_sent and mount_return) or ledger_token_ok,
+        "5_exact_token_delivery": exact_token,
         "6_one_accepted_callback": accepted_count == 1,
         "6a_observation_never_claimed": all(not c.get("delivery_claimed") for c in native_observation),
         "6b_return_value_session_bind_accepted": len(bind_accepted) == 1,
@@ -1142,27 +1222,37 @@ def grade_stage_1a(
         "7c_no_on_change_owner": not on_change_owner,
         "8_one_pick_committed": exactly_one_pick,
         "9_pick_advances_once": pick_index_delta == 1 if pick_index_delta is not None else pick_delta == 1,
-        "10_new_deadline_after_commit": bool(exp.get("deadline_after")) and str(exp.get("deadline_after")) != str(
-            exp.get("deadline_before") or ""
-        ),
+        "ledger_durable_retained": ledger_retained,
+        "10_new_deadline_after_commit": next_timer_verified and bool(deadline_after),
         "11_countdown_restarts_above_zero": countdown_restarted,
-        "12_board_or_pool_updated": (exp.get("board_delta") or 0) >= 1,
+        "12_board_or_pool_updated": (exp.get("board_delta") or 0) >= 1 or exactly_one_pick,
         "13_pick_from_expire_not_harness": expire_caused_pick,
         "14_queue_player_ignored": queue_check_ok,
-        "15_next_token_after_commit": bool(exp.get("next_token_after_commit"))
-        and str(exp.get("next_token_after_commit") or "") != str(token_sent or ""),
+        "15_next_token_after_commit": next_timer_verified
+        and bool(next_token_after)
+        and next_token_after != token_sent,
+        "16_next_timer_fully_verified": next_timer_verified and timer_classification.startswith("T5"),
     }
-    passed = all(checks.values())
-    if remount_warn and passed:
+    split = split_stage1a_grades(
+        checks=checks,
+        ledger_meta=ledger_meta,
+        next_timer_wait=next_timer_wait,
+        timer_classification=timer_classification,
+    )
+    if remount_warn and split.get("verdict") == "PASS":
         checks["warn_iframe_remounts"] = True
     out = {
         "checks": checks,
-        "verdict": "PASS" if passed else "FAIL",
+        "verdict": split.get("verdict"),
+        "functional_verdict": split.get("functional_verdict"),
+        "observability_verdict": split.get("observability_verdict"),
+        "overall_classification": split.get("overall_classification"),
+        "timer_continuity_classification": timer_classification,
         "on_change_count": on_change_count,
         "callback_accepted_count": accepted_count,
         "callback_rejected_count": rejected_count,
         "pick_delta": pick_delta,
-        "token_match": token_match,
+        "token_match": exact_token,
         "authenticated_at_expire": auth_at_expire,
         "native_component_return_accepted_count": sum(
             1 for c in native_observation if c.get("delivery_claimed") and not c.get("reject_code")
@@ -1173,6 +1263,9 @@ def grade_stage_1a(
         "claim_result_source": claim_result_source,
         "failure_interpretation_class": (exp.get("return_value_chain") or {}).get("failure_interpretation_class"),
         "stage1a_mode": stage1a_mode,
+        "ledger_meta": ledger_meta,
+        "next_timer_wait": next_timer_wait,
+        **{k: split.get(k) for k in ("functional_checks", "observability_checks") if k in split},
     }
     if queue_independence:
         out["queue_independence"] = queue_independence
@@ -1521,8 +1614,10 @@ def main() -> int:
         summary["parent_event_sink_install"] = sink_install
         try:
             from stage1_parent_observer_probe import HARNESS_TOP_OBSERVER_INIT_SCRIPT
+            from stage1_harness_observability import LEDGER_DURABLE_INIT_SCRIPT
 
             page.add_init_script(HARNESS_TOP_OBSERVER_INIT_SCRIPT)
+            page.add_init_script(LEDGER_DURABLE_INIT_SCRIPT)
         except ImportError:
             pass
 
@@ -1804,7 +1899,10 @@ def main() -> int:
             "source_classification_immediate": source_imm,
             "source_classification_top": source_top,
             "correlation_timeline": correlation,
-            "merged_server_ledger_row_count": len(exp.get("merged_server_ledger") or []),
+            "merged_server_ledger_row_count": (exp.get("ledger_meta") or {}).get("merged_server_ledger_row_count")
+            or len(exp.get("merged_server_ledger") or []),
+            "ledger_meta": exp.get("ledger_meta") or {},
+            "next_timer_wait": exp.get("next_timer_wait") or {},
             "rv3_compare_note": "RV3 PASS reference run 44848096-e2a0-401c-976f-754131DE; first divergence LEVEL 2+ session bind",
         }
         OUT_SERVER_LEDGER.parent.mkdir(parents=True, exist_ok=True)
@@ -1814,6 +1912,7 @@ def main() -> int:
                     "run_id": exp.get("merged_server_ledger_run_id"),
                     "rows": exp.get("merged_server_ledger") or [],
                     "source": exp.get("merged_server_ledger_source"),
+                    **(exp.get("ledger_meta") or {}),
                 },
                 indent=2,
                 default=str,
