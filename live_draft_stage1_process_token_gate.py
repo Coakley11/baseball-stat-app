@@ -661,6 +661,7 @@ def pre_claim_actionable_eligible(
             token=str(deliver_gate_ctx.get("normalized_token") or ""),
             widget_key=str(deliver_gate_ctx.get("widget_key") or ""),
             call_site="pre_claim_actionable_eligible",
+            callback_function="_production_deliver_callback",
             module_name=__name__,
         )
     except ImportError:

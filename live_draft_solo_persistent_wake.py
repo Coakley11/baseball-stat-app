@@ -890,6 +890,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                     token=str(token or ""),
                     widget_key=key,
                     call_site="_production_deliver_callback",
+                    callback_function="_production_deliver_callback",
                     module_name=__name__,
                     room=live_dict,
                     extra={"gate": "pre_claim_actionable_eligible"},
@@ -1001,6 +1002,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                     token=str(token or ""),
                     widget_key=key,
                     call_site="try_claim_token_delivery",
+                    callback_function="_production_deliver_callback",
                     module_name=__name__,
                     room=live_dict,
                 )
@@ -1103,6 +1105,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                     token=str(token or ""),
                     widget_key=key,
                     call_site="_production_deliver_callback",
+                    callback_function="_production_deliver_callback",
                     module_name=__name__,
                     room=live_dict,
                     extra={"gate": "try_claim_token_delivery"},
