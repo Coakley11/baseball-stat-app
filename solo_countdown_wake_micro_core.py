@@ -416,9 +416,9 @@ def render_micro_isolation_once(
                     get_registered_declaration_room,
                     register_production_countdown_declaration_context,
                 )
-                from live_draft_stage1_process_token_gate import (
-                    mark_delivery_only_observation_completed,
-                    note_delivery_only_observation_completed,
+                from live_draft_stage1_post_bind_flush import (
+                    complete_delivery_only_observation_and_actionable_flush,
+                    widget_bound_token,
                 )
 
                 register_production_countdown_declaration_context(
@@ -428,39 +428,28 @@ def render_micro_isolation_once(
                     expected_token=token,
                     widget_key=key,
                 )
+                bound_token = widget_bound_token(
+                    raw_component_value=raw_component_value,
+                    session_state_value=st.session_state.get(key),
+                )
                 if production_delivery_only:
-                    session["_solo_stage1_last_delivery_only"] = True
-                    mark_delivery_only_observation_completed(
-                        session,
-                        str(_coerce_wake_token(raw_component_value) or token or ""),
-                        source="return_value_session_bind",
-                    )
-                    try:
-                        from live_draft_stage1_production_ledger import stage1_production_ledger_enabled
-
-                        if stage1_production_ledger_enabled(st, session):
-                            note_delivery_only_observation_completed(
-                                session,
-                                st=st,
-                                token=str(_coerce_wake_token(raw_component_value) or token or ""),
-                                widget_key=key,
-                                source="return_value_session_bind",
-                                deliver_gate_ctx={
-                                    "delivery_only": True,
-                                    "source": "return_value_session_bind",
-                                    "canonical_source": "return_value_session_bind",
-                                },
-                                live=production_room if isinstance(production_room, dict) else None,
-                            )
-                    except ImportError:
-                        pass
-                else:
+                    if bound_token:
+                        complete_delivery_only_observation_and_actionable_flush(
+                            st,
+                            session,
+                            bound_token=bound_token,
+                            mount_expire_token=str(token or ""),
+                            widget_key=key,
+                            production_room=production_room if isinstance(production_room, dict) else None,
+                            raw_component_value=raw_component_value,
+                        )
+                elif bound_token:
                     from live_draft_solo_persistent_wake import process_production_expire_token
 
                     process_production_expire_token(
                         st,
                         session,
-                        raw_token=raw_component_value,
+                        raw_token=raw_component_value if raw_component_value is not None else bound_token,
                         widget_key=key,
                         source="return_value_session_bind",
                         declaration_room=get_registered_declaration_room(session),

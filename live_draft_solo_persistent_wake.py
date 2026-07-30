@@ -1475,6 +1475,13 @@ def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
         token = _coerce_wake_token(raw)
         if not token or token == SOLO_INERT_EXPIRE_TOKEN:
             return
+        try:
+            from live_draft_stage1_post_bind_flush import post_bind_flush_already_dispatched
+
+            if post_bind_flush_already_dispatched(session, token):
+                return
+        except ImportError:
+            pass
         if token == str(session.get(SOLO_SKIP_LATE_FLUSH_TOKEN_KEY) or ""):
             return
         if token == str(session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or ""):
