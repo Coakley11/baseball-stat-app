@@ -12,7 +12,12 @@ from live_draft_solo_persistent_wake import (
     _production_deliver_callback,
 )
 from live_draft_stage1_expire_audit import SOLO_TOKEN_DELIVERY_OWNER_KEY, try_claim_token_delivery
-from live_draft_stage1_process_token_gate import pre_claim_actionable_eligible
+from live_draft_stage1_process_token_gate import (
+    compute_pending_session_delivery_only,
+    delivery_only_observation_completed,
+    mark_delivery_only_observation_completed,
+    pre_claim_actionable_eligible,
+)
 from solo_countdown_component import build_solo_expire_token
 
 
@@ -141,3 +146,52 @@ def test_parity_p6_pick_disabled_does_not_consume_claim() -> None:
             wake.assert_not_called()
     owners = session.get(SOLO_TOKEN_DELIVERY_OWNER_KEY) or {}
     assert token not in owners
+
+
+def test_observation_marks_token_and_actionable_pass_uses_delivery_only_false() -> None:
+    token = "ROOM1234|0|123.456"
+    session: dict = {SOLO_PERSISTENT_WAKE_LATCH_KEY: True}
+    assert compute_pending_session_delivery_only(
+        session,
+        pending_token=token,
+        pending_raw=token,
+        latch_active=True,
+    )
+    mark_delivery_only_observation_completed(session, token, source="native_component_return")
+    assert delivery_only_observation_completed(session, token)
+    assert not compute_pending_session_delivery_only(
+        session,
+        pending_token=token,
+        pending_raw=token,
+        latch_active=True,
+    )
+
+
+def test_observation_then_actionable_claims_once() -> None:
+    room = _room()
+    token = build_solo_expire_token(room)
+    st = mock.MagicMock()
+    session = {
+        SOLO_PERSISTENT_WAKE_TOKEN_KEY: token,
+        "live_draft_room": room,
+        SOLO_PERSISTENT_WAKE_LATCH_KEY: True,
+        SOLO_PERSISTENT_WAKE_ACTIONABLE_KEY: True,
+        "_solo_stage1_last_delivery_only": True,
+    }
+    with mock.patch("live_draft_solo_heartbeat.process_solo_component_wake") as wake:
+        _production_deliver_callback(st, session, token, "k")
+        wake.assert_not_called()
+    session["_solo_stage1_last_delivery_only"] = False
+    with mock.patch("live_draft_solo_heartbeat.process_solo_component_wake", return_value=True) as wake2:
+        _production_deliver_callback(st, session, token, "k2")
+        wake2.assert_called_once()
+    owners = session.get(SOLO_TOKEN_DELIVERY_OWNER_KEY) or {}
+    assert owners.get(token) == "native_component_on_change"
+    assert not delivery_only_observation_completed(session, token)
+
+
+def test_pre_claim_still_rejects_delivery_only_without_observation_marker() -> None:
+    session: dict = {SOLO_PERSISTENT_WAKE_ACTIONABLE_KEY: True}
+    ok, reason = pre_claim_actionable_eligible(None, session, {"delivery_only": True})
+    assert ok is False
+    assert reason == "delivery_only_observation"

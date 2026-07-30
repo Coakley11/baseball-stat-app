@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
+
+SOLO_STAGE1_DELIVERY_ONLY_OBSERVED_KEY = "_solo_stage1_delivery_only_observed_tokens"
 
 
 def _active_page(st: Any | None) -> str:
@@ -181,6 +184,299 @@ def note_try_claim_about_to_call(
         "production_stage1_try_claim_about_to_call",
         st=st,
         room=live if isinstance(live, dict) else None,
+        widget_key=widget_key,
+        extra=extra,
+    )
+
+
+def delivery_only_observation_completed(session: dict[str, Any], token: str) -> bool:
+    tok = str(token or "").strip()
+    if not tok:
+        return False
+    observed = session.get(SOLO_STAGE1_DELIVERY_ONLY_OBSERVED_KEY) or {}
+    return isinstance(observed, dict) and tok in observed
+
+
+def mark_delivery_only_observation_completed(
+    session: dict[str, Any],
+    token: str,
+    *,
+    source: str,
+) -> None:
+    tok = str(token or "").strip()
+    if not tok:
+        return
+    observed = dict(session.get(SOLO_STAGE1_DELIVERY_ONLY_OBSERVED_KEY) or {})
+    observed[tok] = {"source": str(source or ""), "ts": time.time()}
+    session[SOLO_STAGE1_DELIVERY_ONLY_OBSERVED_KEY] = observed
+
+
+def clear_delivery_only_observation(session: dict[str, Any], token: str) -> None:
+    tok = str(token or "").strip()
+    if not tok:
+        return
+    observed = session.get(SOLO_STAGE1_DELIVERY_ONLY_OBSERVED_KEY) or {}
+    if not isinstance(observed, dict) or tok not in observed:
+        return
+    updated = dict(observed)
+    del updated[tok]
+    session[SOLO_STAGE1_DELIVERY_ONLY_OBSERVED_KEY] = updated
+
+
+def compute_pending_session_delivery_only(
+    session: dict[str, Any],
+    *,
+    pending_token: str,
+    pending_raw: Any,
+    latch_active: bool,
+    inert_token: str = "",
+) -> bool:
+    """True when the pending session bind is observation-only (must not claim)."""
+    tok = str(pending_token or "").strip()
+    if not tok or tok == str(inert_token or ""):
+        return False
+    if pending_raw is None:
+        return False
+    if not latch_active:
+        return False
+    if delivery_only_observation_completed(session, tok):
+        return False
+    try:
+        from live_draft_solo_heartbeat import SOLO_COMPONENT_WAKE_SEEN_KEY
+    except ImportError:
+        SOLO_COMPONENT_WAKE_SEEN_KEY = "_solo_component_wake_seen_token"  # type: ignore[misc,assignment]
+    rejected = session.get("_solo_wake_rejected_tokens") or {}
+    pending_consumed = tok == str(session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or "") or (
+        isinstance(rejected, dict) and tok in rejected
+    )
+    if pending_consumed:
+        return False
+    return True
+
+
+def _script_run_seq(session: dict[str, Any]) -> int:
+    try:
+        return int(session.get("_solo_stage1_script_run_seq") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _orchestration_extra(
+    st: Any | None,
+    session: dict[str, Any],
+    *,
+    token: str = "",
+    widget_key: str = "",
+    delivery_only: bool | None = None,
+    pending_raw: Any = None,
+    next_location: str = "",
+) -> dict[str, Any]:
+    live = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else {}
+    ss_val = ""
+    if st is not None and widget_key:
+        try:
+            ss_val = repr(st.session_state.get(widget_key))[:300]
+        except Exception:
+            pass
+    return {
+        "script_run_seq": _script_run_seq(session),
+        "token": str(token or "")[:400],
+        "room_id": str((live or {}).get("draft_room_id") or (live or {}).get("draft_id") or ""),
+        "delivery_only": delivery_only,
+        "pending_session_state_value": ss_val,
+        "room_restored": bool(session.get("live_draft_room")),
+        "delivery_only_observation_completed": delivery_only_observation_completed(session, token),
+        "persistent_wake_actionable": bool(session.get("_solo_persistent_wake_actionable")),
+        "next_intended_location": next_location,
+        "page_execution_continues": True,
+    }
+
+
+def note_stage1_orchestration_event(
+    session: dict[str, Any],
+    event: str,
+    *,
+    st: Any | None = None,
+    widget_key: str = "",
+    extra: dict[str, Any] | None = None,
+) -> None:
+    try:
+        from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+    except ImportError:
+        return
+    if not stage1_production_ledger_enabled(st, session):
+        return
+    note_stage1_event(
+        session,
+        event,
+        st=st,
+        widget_key=widget_key,
+        extra=dict(extra or {}),
+    )
+
+
+def note_delivery_only_observation_completed(
+    session: dict[str, Any],
+    *,
+    st: Any | None,
+    token: str,
+    widget_key: str,
+    source: str,
+    deliver_gate_ctx: dict[str, Any] | None = None,
+    live: dict[str, Any] | None = None,
+) -> None:
+    extra = dict(deliver_gate_ctx or {})
+    if live and isinstance(live, dict):
+        extra.setdefault("room_status", str(live.get("status") or ""))
+        extra.setdefault("pick_index", live.get("current_pick_index"))
+    extra.update(
+        _orchestration_extra(
+            st,
+            session,
+            token=token,
+            widget_key=widget_key,
+            delivery_only=True,
+            next_location="actionable_mount_or_flush",
+        )
+    )
+    extra.update(
+        {
+            "source": source,
+            "raw_received": True,
+            "coalesced_value": str(token or "")[:400],
+            "actionable_declaration_eligible": True,
+        }
+    )
+    note_stage1_orchestration_event(
+        session,
+        "production_stage1_delivery_only_observation_completed",
+        st=st,
+        widget_key=widget_key,
+        extra=extra,
+    )
+
+
+def note_actionable_mount_eligibility(
+    session: dict[str, Any],
+    *,
+    st: Any | None,
+    widget_key: str,
+    pending_token: str,
+    pending_raw: Any,
+    delivery_only: bool,
+    actionable: bool,
+    skip_gate: str = "",
+    skip_reason: str = "",
+) -> None:
+    extra = _orchestration_extra(
+        st,
+        session,
+        token=pending_token,
+        widget_key=widget_key,
+        delivery_only=delivery_only,
+        pending_raw=pending_raw,
+        next_location="ldr_page_entry_early_persistent",
+    )
+    extra.update(
+        {
+            "actionable_mount_eligible": bool(actionable and not delivery_only),
+            "delivery_only_mount": bool(delivery_only),
+            "skip_gate": skip_gate,
+            "skip_reason": skip_reason,
+            "token_remains_available": pending_raw is not None and bool(str(pending_token or "").strip()),
+            "room_state_restored": bool(session.get("live_draft_room")),
+        }
+    )
+    note_stage1_orchestration_event(
+        session,
+        "production_stage1_actionable_mount_eligibility",
+        st=st,
+        widget_key=widget_key,
+        extra=extra,
+    )
+
+
+def note_actionable_declaration_about_to_mount(
+    session: dict[str, Any],
+    *,
+    st: Any | None,
+    widget_key: str,
+    token: str,
+    delivery_only: bool,
+) -> None:
+    extra = _orchestration_extra(
+        st,
+        session,
+        token=token,
+        widget_key=widget_key,
+        delivery_only=delivery_only,
+        next_location="_mount_persistent_wake_micro_controlled",
+    )
+    note_stage1_orchestration_event(
+        session,
+        "production_stage1_actionable_declaration_about_to_mount",
+        st=st,
+        widget_key=widget_key,
+        extra=extra,
+    )
+
+
+def note_actionable_declaration_skipped(
+    session: dict[str, Any],
+    *,
+    st: Any | None,
+    widget_key: str,
+    token: str,
+    skip_gate: str,
+    skip_reason: str,
+    pending_raw: Any = None,
+) -> None:
+    extra = _orchestration_extra(
+        st,
+        session,
+        token=token,
+        widget_key=widget_key,
+        pending_raw=pending_raw,
+    )
+    extra.update(
+        {
+            "skip_gate": skip_gate,
+            "skip_reason": skip_reason,
+            "token_remains_available": pending_raw is not None and bool(str(token or "").strip()),
+            "room_state_restored": bool(session.get("live_draft_room")),
+        }
+    )
+    note_stage1_orchestration_event(
+        session,
+        "production_stage1_actionable_declaration_skipped",
+        st=st,
+        widget_key=widget_key,
+        extra=extra,
+    )
+
+
+def note_after_early_persistent_wake(
+    session: dict[str, Any],
+    *,
+    st: Any | None,
+    widget_key: str,
+    token: str,
+    delivery_only: bool,
+    actionable: bool,
+) -> None:
+    extra = _orchestration_extra(
+        st,
+        session,
+        token=token,
+        widget_key=widget_key,
+        delivery_only=delivery_only,
+        next_location="flush_persistent_wake_delivery_or_page_continue",
+    )
+    extra.update({"actionable": actionable, "delivery_only_mount": delivery_only})
+    note_stage1_orchestration_event(
+        session,
+        "production_stage1_after_early_persistent_wake",
+        st=st,
         widget_key=widget_key,
         extra=extra,
     )

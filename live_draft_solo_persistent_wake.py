@@ -750,6 +750,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
         *,
         claimed: bool = False,
         reject_code: str = "",
+        decision: str = "return",
     ) -> None:
         try:
             if _note_post_claim_gate_fn is not None:
@@ -758,7 +759,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                     st=st,
                     gate_name=gate_name,
                     gate_result=gate_result,
-                    decision="return",
+                    decision=decision,
                     return_reason=return_reason,
                     deliver_gate_ctx=deliver_gate_ctx,
                     live=live_dict,
@@ -773,7 +774,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                     st=st,
                     gate_name=gate_name,
                     gate_result=gate_result,
-                    decision="return",
+                    decision=decision,
                     return_reason=return_reason,
                     widget_key=key,
                     live=live_dict,
@@ -829,11 +830,45 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                     )
             except Exception:
                 pass
-            _post_claim_gate_return(
-                "delivery_only" if pre_claim_reason == "delivery_only_observation" else pre_claim_reason,
-                pre_claim_reason,
-                pre_claim_reason,
+            gate_label = (
+                "actionable_eligibility"
+                if pre_claim_reason == "delivery_only_observation"
+                else pre_claim_reason
             )
+            decision_label = (
+                "return_without_claim"
+                if pre_claim_reason == "delivery_only_observation"
+                else "return"
+            )
+            _post_claim_gate_return(
+                gate_label,
+                pre_claim_reason,
+                pre_claim_reason,
+                decision=decision_label,
+            )
+            if pre_claim_reason == "delivery_only_observation":
+                try:
+                    from live_draft_stage1_process_token_gate import (
+                        mark_delivery_only_observation_completed,
+                        note_delivery_only_observation_completed,
+                    )
+
+                    mark_delivery_only_observation_completed(
+                        session,
+                        str(token or ""),
+                        source=delivery_via,
+                    )
+                    note_delivery_only_observation_completed(
+                        session,
+                        st=st,
+                        token=str(token or ""),
+                        widget_key=key,
+                        source=delivery_via,
+                        deliver_gate_ctx=deliver_gate_ctx,
+                        live=live_dict,
+                    )
+                except ImportError:
+                    pass
             record_callback_invocation(
                 st,
                 session,
@@ -876,6 +911,13 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             except Exception:
                 pass
             claimed, reject_code = try_claim_token_delivery(session, token, delivery_via)
+            if claimed:
+                try:
+                    from live_draft_stage1_process_token_gate import clear_delivery_only_observation
+
+                    clear_delivery_only_observation(session, str(token or ""))
+                except ImportError:
+                    pass
             try:
                 if note_try_claim_result is not None:
                     note_try_claim_result(
@@ -1332,6 +1374,7 @@ def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
             from live_draft_solo_declaration_room_context import get_registered_declaration_room
         except ImportError:
             get_registered_declaration_room = lambda _s: None  # type: ignore[assignment,misc]
+        session["_solo_stage1_last_delivery_only"] = False
         process_production_expire_token(
             st,
             session,
@@ -1756,13 +1799,32 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         pending_token == str(session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or "")
         or (isinstance(rejected, dict) and pending_token in rejected)
     )
-    delivery_only = bool(
-        pending_token
-        and pending_token != SOLO_INERT_EXPIRE_TOKEN
-        and pending_raw is not None
-        and not pending_consumed
-        and session.get(SOLO_PERSISTENT_WAKE_LATCH_KEY)
-    )
+    try:
+        from live_draft_stage1_process_token_gate import (
+            compute_pending_session_delivery_only,
+            note_actionable_declaration_about_to_mount,
+            note_actionable_mount_eligibility,
+            note_after_early_persistent_wake,
+        )
+
+        delivery_only = compute_pending_session_delivery_only(
+            session,
+            pending_token=str(pending_token or ""),
+            pending_raw=pending_raw,
+            latch_active=bool(session.get(SOLO_PERSISTENT_WAKE_LATCH_KEY)),
+            inert_token=SOLO_INERT_EXPIRE_TOKEN,
+        )
+    except ImportError:
+        delivery_only = bool(
+            pending_token
+            and pending_token != SOLO_INERT_EXPIRE_TOKEN
+            and pending_raw is not None
+            and not pending_consumed
+            and session.get(SOLO_PERSISTENT_WAKE_LATCH_KEY)
+        )
+        note_actionable_mount_eligibility = None  # type: ignore[misc,assignment]
+        note_actionable_declaration_about_to_mount = None  # type: ignore[misc,assignment]
+        note_after_early_persistent_wake = None  # type: ignore[misc,assignment]
     if delivery_only and str(session.get("_solo_rv_ladder_step") or "").strip():
         try:
             from live_draft_solo_rv_declaration_ledger import note_browser_send_observed
@@ -1783,6 +1845,19 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
     session[SOLO_PERSISTENT_WAKE_ACTIONABLE_KEY] = actionable
     session[SOLO_PERSISTENT_WAKE_TOKEN_KEY] = expire_token
     key = solo_persistent_wake_widget_key(session)
+    try:
+        if note_actionable_mount_eligibility is not None:
+            note_actionable_mount_eligibility(
+                session,
+                st=st,
+                widget_key=key,
+                pending_token=str(pending_token or expire_token or ""),
+                pending_raw=pending_raw,
+                delivery_only=delivery_only,
+                actionable=actionable,
+            )
+    except Exception:
+        pass
     did = str(props_room.get("draft_room_id") or props_room.get("draft_id") or "")
 
     persist_key = solo_persistent_chain_persist_key(session, room_dict)
@@ -1834,6 +1909,17 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         return True
 
     if isolated == "production":
+        try:
+            if note_actionable_declaration_about_to_mount is not None:
+                note_actionable_declaration_about_to_mount(
+                    session,
+                    st=st,
+                    widget_key=key,
+                    token=expire_token,
+                    delivery_only=delivery_only,
+                )
+        except Exception:
+            pass
         _ = _mount_persistent_wake_micro_controlled(
             st,
             session,
@@ -1898,6 +1984,18 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
             phase=phase,
             expire_token=expire_token,
         )
+        try:
+            if note_after_early_persistent_wake is not None:
+                note_after_early_persistent_wake(
+                    session,
+                    st=st,
+                    widget_key=key,
+                    token=expire_token,
+                    delivery_only=delivery_only,
+                    actionable=actionable,
+                )
+        except Exception:
+            pass
         return True
 
     micro_result = _mount_persistent_wake_micro_controlled(
@@ -2004,5 +2102,17 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
             room_status=str((room_dict or {}).get("status") or ""),
         )
     except ImportError:
+        pass
+    try:
+        if note_after_early_persistent_wake is not None:
+            note_after_early_persistent_wake(
+                session,
+                st=st,
+                widget_key=key,
+                token=expire_token,
+                delivery_only=delivery_only,
+                actionable=actionable,
+            )
+    except Exception:
         pass
     return True
