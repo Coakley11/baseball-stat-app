@@ -8,6 +8,7 @@ from typing import Any
 
 SOLO_DECLARATION_ROOM_CONTEXT_KEY = "_solo_persistent_wake_declaration_room_context"
 SOLO_PRODUCTION_COUNTDOWN_WIDGET_KEY = "solo_countdown_wake_solo_persistent"
+SOLO_EXPIRATION_SNAPSHOT_CONSUMED_KEY = "_solo_stage1_expiration_snapshot_consumed_token"
 
 
 def _script_run_id(session: dict[str, Any]) -> str:
@@ -138,6 +139,12 @@ def register_production_countdown_declaration_context(
         "declaration_script_run": _script_run_id(session),
         "declaration_occurrence": tok,
     }
+    try:
+        from live_draft_stage1_post_bind_flush import deployment_sha_for_session
+
+        ctx["deployment_sha"] = deployment_sha_for_session(session)
+    except ImportError:
+        ctx["deployment_sha"] = str(session.get("_solo_stage1_deployment_sha") or "")[:7]
     session[SOLO_DECLARATION_ROOM_CONTEXT_KEY] = ctx
 
 
@@ -267,6 +274,122 @@ def validate_declaration_room_for_token(
         if str(ctx.get("widget_key") or "") and str(ctx.get("widget_key") or "") != widget_key:
             return False, "declaration_context_widget_mismatch"
     return True, ""
+
+
+def consume_expiration_validation_snapshot(
+    session: dict[str, Any],
+    token: str,
+    *,
+    reason: str = "token_action_complete",
+) -> bool:
+    """Clear persisted declaration validation context after bind pipeline completes."""
+    tok = str(token or "").strip()
+    if not tok:
+        return False
+    ctx = get_declaration_context(session)
+    if not isinstance(ctx, dict):
+        return False
+    if str(ctx.get("expected_token") or "").strip() != tok:
+        return False
+    session[SOLO_EXPIRATION_SNAPSHOT_CONSUMED_KEY] = tok[:400]
+    clear_declaration_room_context(session, reason=reason)
+    return True
+
+
+def validate_expiration_snapshot_for_gate(
+    session: dict[str, Any],
+    snapshot: dict[str, Any],
+    *,
+    widget_key: str,
+    bound_token: str,
+) -> tuple[bool, str]:
+    """Validation-only: snapshot must agree with the exact direct/Session-State bind."""
+    if str(widget_key or "") != SOLO_PRODUCTION_COUNTDOWN_WIDGET_KEY:
+        return False, "invalid_widget_key"
+    tok = str(bound_token or "").strip()
+    snap_tok = str(snapshot.get("expected_token") or "").strip()
+    if not tok or not snap_tok or tok != snap_tok:
+        return False, "snapshot_token_mismatch"
+    if str(snapshot.get("widget_key") or "") and str(snapshot.get("widget_key") or "") != widget_key:
+        return False, "snapshot_widget_mismatch"
+    try:
+        from solo_countdown_component import parse_solo_expire_token
+
+        parsed = parse_solo_expire_token(tok)
+        if not parsed:
+            return False, "malformed_token"
+    except ImportError:
+        return False, "malformed_token"
+    snap_rid = str(snapshot.get("room_id") or "").strip().upper()
+    if snap_rid and snap_rid != str(parsed.get("draft_id") or "").strip().upper():
+        return False, "snapshot_room_mismatch"
+    snap_pick = snapshot.get("pick_index")
+    if snap_pick is not None and int(snap_pick) != int(parsed.get("pick_index") or 0):
+        return False, "snapshot_pick_mismatch"
+    snap_dl = snapshot.get("deadline")
+    tok_dl = float(parsed.get("deadline") or 0.0)
+    if snap_dl is not None and tok_dl > 0 and abs(float(snap_dl) - tok_dl) > 0.75:
+        return False, "snapshot_deadline_mismatch"
+    snap_fp = str(snapshot.get("room_fingerprint") or "")
+    room = snapshot.get("room")
+    if snap_fp and isinstance(room, dict):
+        if _room_fingerprint(room) != snap_fp:
+            return False, "snapshot_fingerprint_mismatch"
+    try:
+        from live_draft_stage1_post_bind_flush import deployment_sha_for_session
+
+        live_sha = deployment_sha_for_session(session)
+        snap_sha = str(snapshot.get("deployment_sha") or "")[:7]
+        if snap_sha and live_sha and snap_sha != live_sha:
+            return False, "snapshot_deployment_sha_mismatch"
+    except ImportError:
+        pass
+    consumed = str(session.get(SOLO_EXPIRATION_SNAPSHOT_CONSUMED_KEY) or "").strip()
+    if consumed and consumed == tok:
+        return False, "snapshot_already_consumed"
+    live = session.get("live_draft_room")
+    if isinstance(live, dict) and str(live.get("status") or "") == "in_progress":
+        live_rid = str(live.get("draft_room_id") or live.get("draft_id") or "").strip().upper()
+        live_pick = int(live.get("current_pick_index") or 0)
+        if snap_rid and live_rid and snap_rid == live_rid and snap_pick is not None and live_pick > int(snap_pick):
+            return False, "snapshot_superseded_by_room_advance"
+        if snap_rid and live_rid and snap_rid != live_rid:
+            return False, "snapshot_superseded_by_different_room"
+    return True, ""
+
+
+def resolve_gate_expected_from_declaration_snapshot(
+    session: dict[str, Any],
+    *,
+    widget_key: str,
+    direct_token: str,
+    session_state_token: str,
+) -> tuple[str, str, str]:
+    """
+    Recover expected expiration token from a prior in-progress declaration.
+    Snapshot is validation context only — not a bind source.
+    Returns (expected_token, source, rejection_reason).
+    """
+    snap = get_declaration_context(session)
+    if not isinstance(snap, dict):
+        return "", "", "snapshot_missing"
+    snap_expected = str(snap.get("expected_token") or "").strip()
+    if not snap_expected:
+        return "", "", "snapshot_expected_token_empty"
+    candidate = direct_token or session_state_token
+    if not candidate:
+        return "", "", "no_bound_python_surface"
+    if candidate != snap_expected:
+        return "", "", "bound_token_ne_snapshot_expected"
+    ok, reason = validate_expiration_snapshot_for_gate(
+        session,
+        snap,
+        widget_key=widget_key,
+        bound_token=candidate,
+    )
+    if not ok:
+        return "", "", reason
+    return snap_expected, "validated_declaration_snapshot", ""
 
 
 def validate_registered_declaration_context(

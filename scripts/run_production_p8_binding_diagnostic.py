@@ -224,7 +224,16 @@ def _python_binding_chain(exp: dict[str, Any], rv: dict[str, Any], token: str) -
         r
         for r in ledger
         if str(r.get("event") or "") == "production_stage1_delivery_only_observation_completed"
-        and (not token or str(r.get("token") or r.get("expected_token") or "") == token)
+        and (not token or str(r.get("bound_token") or r.get("token") or "") == token)
+        and str(r.get("bound_token_source") or "") in ("direct_component_return", "same_key_session_state")
+        and r.get("exact_match") is True
+    ]
+    post_bind = [
+        r
+        for r in ledger
+        if str(r.get("event") or "") == "production_stage1_post_bind_actionable_flush"
+        and (not token or str(r.get("bound_token") or "") == token)
+        and str(r.get("bound_token_source") or "") in ("direct_component_return", "same_key_session_state")
     ]
     flush_events = [
         r
@@ -236,7 +245,7 @@ def _python_binding_chain(exp: dict[str, Any], rv: dict[str, Any], token: str) -
             "production_stage1_return_value_session_bind_entry",
         )
     ]
-    post_bind_flush = [r for r in flush_events if r.get("event") == "production_stage1_post_bind_actionable_flush"]
+    post_bind_flush = post_bind
     rv_bind_entry = [r for r in flush_events if r.get("event") == "production_stage1_return_value_session_bind_entry"]
     proc_events = [
         r
@@ -468,6 +477,14 @@ def run_diagnostic() -> dict[str, Any]:
         wait_one_expiration,
         authenticated_probe,
     )
+    from p8_diagnostic_setup import (
+        classify_focused_p8_outcome,
+        collect_setup_stage_diagnostics,
+        ensure_p8_ldr_setup_surface,
+        retry_draft_start_if_stalled,
+        score_bound_token_gate_rows,
+        validate_p8_diagnostic_setup,
+    )
     from run_production_solo_soak import scrape_deploy_build
     from run_solo_clean_verification import scrape_live_sha
     from stage1_parent_event_sink import ParentEventSinkStore, install_parent_event_sink
@@ -526,16 +543,37 @@ def run_diagnostic() -> dict[str, Any]:
             browser.close()
             return report
 
+        report["p8_ldr_surface"] = ensure_p8_ldr_setup_surface(page, setup_url=url)
+
         draft = execute_solo_draft_start_workflow(page, url, navigate=False)
-        start_val = validate_production_draft_start(
-            page, draft, prior_room_id=str(cleanup.get("detected_room_id") or "")
+        draft = retry_draft_start_if_stalled(page, draft, setup_url=url)
+        report["draft_start_workflow"] = {
+            "start_success": draft.get("start_success"),
+            "first_missing_criterion": draft.get("first_missing_criterion"),
+            "room_id": draft.get("room_id"),
+            "start_click": draft.get("start_click"),
+        }
+        start_val = validate_p8_diagnostic_setup(
+            page,
+            draft,
+            prior_room_id=str(cleanup.get("detected_room_id") or ""),
+            auth_preflight=pre,
+            max_wait_s=75.0,
         )
+        report["setup_stage_diagnostics"] = start_val.get("setup_stage_final") or collect_setup_stage_diagnostics(
+            page, draft=draft, auth_preflight=pre
+        )
+        report["setup_stage_timeline"] = start_val.get("setup_stage_timeline") or []
         report["draft_start_validation"] = start_val
         if not start_val.get("valid"):
             report["aborted"] = True
-            report["abort_reason"] = "draft_start_invalid"
+            report["abort_reason"] = start_val.get("verdict") or "INVALID_DIAGNOSTIC_SETUP_ABORT"
+            report["failure_boundary"] = start_val.get("failure_boundary") or "PRE_EXPIRATION_SETUP"
+            report["setup_abort_reason"] = start_val.get("reason")
             context.close()
             browser.close()
+            OUT.parent.mkdir(parents=True, exist_ok=True)
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             return report
 
         page.wait_for_timeout(8000)
@@ -595,6 +633,34 @@ def run_diagnostic() -> dict[str, Any]:
             gate_rows=gate_rows,
         )
         ladder["bound_token_gate_events"] = gate_rows
+        ladder["bound_token_gate_score"] = score_bound_token_gate_rows(
+            gate_rows, str(ladder.get("exact_token") or token_for_filter)
+        )
+        ladder["focused_p8_outcome"] = classify_focused_p8_outcome(
+            setup_valid=True,
+            setup_abort_reason="",
+            python_chain=ladder.get("python_binding_chain") or {},
+            gate_rows=gate_rows,
+            browser_send=ladder.get("production_countdown_send") or {},
+            filtered_meta=filtered_meta,
+        )
+        report["ledger_integrity"] = {
+            "rows_before_filtering": filtered_meta.get("rows_before"),
+            "rows_retained": filtered_meta.get("rows_after"),
+            "rows_rejected": filtered_meta.get("rejected_count"),
+            "rejection_sample": filtered_meta.get("rejected"),
+            "rejection_reasons": filtered_meta.get("rejection_reasons"),
+            "filter_run_id": filtered_meta.get("filter_run_id"),
+            "filter_room_id": filtered_meta.get("filter_room_id"),
+            "filter_deployment_sha": filtered_meta.get("filter_deployment_sha"),
+            "merged_row_count": len(filtered_meta.get("filtered_rows") or []),
+            "ledger_source_used": (exp.get("ledger_meta") or {}).get("ledger_source_used"),
+            "durable_source": (exp.get("ledger_meta") or {}).get("durable_source")
+            or (exp.get("ledger_meta") or {}).get("durable_merged_count"),
+            "callback_audit_source": (exp.get("ledger_meta") or {}).get("callback_audit_source")
+            or (exp.get("stage1_audit") or {}).get("source"),
+        }
+        report["focused_p8_outcome"] = ladder["focused_p8_outcome"]
         baseline = load_baseline_summary()
         ladder["comparison_notes"] = compare_traces(ladder, baseline)
         report["expiration"] = {
@@ -623,29 +689,22 @@ def run_diagnostic() -> dict[str, Any]:
 
 def main() -> int:
     report = run_diagnostic()
-    print(json.dumps(report.get("p8_ladder") or report, indent=2, default=str))
+    outcome = report.get("focused_p8_outcome") or report.get("abort_reason") or ""
+    payload = report.get("p8_ladder") or report
+    print(json.dumps(payload, indent=2, default=str))
     print(f"artifact={OUT}")
-    ladder = report.get("p8_ladder") or {}
+    print(f"focused_p8_outcome={outcome}")
     if report.get("aborted"):
         return 1
-    if ladder.get("classification") == "P8_ALL_BOUNDARIES_PASS" and authoritative_diagnostic_pass(ladder):
-        print("P8_ALL_PASS — launching one Stage 1A-CORE")
-        required = resolve_required_sha()
-        os.environ["REQUIRED_CLOUD_SHA"] = required
-        os.environ["STAGE1A_MODE"] = "CORE"
-        import subprocess
+    if report.get("focused_p8_outcome") != "FOCUSED_P8_BINDING_PASS":
+        return 1
+    required = report.get("required_cloud_sha") or resolve_required_sha()
+    os.environ["REQUIRED_CLOUD_SHA"] = str(required)[:7]
+    os.environ["STAGE1A_MODE"] = "CORE"
+    print(f"FOCUSED_P8_BINDING_PASS — running exactly one Stage 1A-CORE on build {required}")
+    from run_production_stage1_authenticated import main as stage1_main
 
-        out_path = ROOT / "data" / f"stage1a_{required}_core_after_p8diag.out"
-        with open(out_path, "w", encoding="utf-8") as fh:
-            rc = subprocess.call(
-                [sys.executable, str(SCRIPTS / "run_production_stage1_authenticated.py")],
-                cwd=str(ROOT),
-                stdout=fh,
-                stderr=subprocess.STDOUT,
-            )
-        print(f"stage1a_core_exit={rc} artifact={out_path}")
-        return rc
-    return 1
+    return int(stage1_main())
 
 
 if __name__ == "__main__":

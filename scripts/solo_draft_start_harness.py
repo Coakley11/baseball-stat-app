@@ -168,6 +168,88 @@ def click_sidebar_for_ldr(page, *, settle_ms: int = 8000) -> str:
     return label
 
 
+_STARTER_ARIA_LABELS = frozenset(
+    {"C", "1B", "2B", "3B", "SS", "OF", "DH / UTIL", "DH", "UTIL", "P", "SP", "RP"}
+)
+
+
+def required_starter_slots_from_numbers(numbers: list[dict[str, Any]] | None) -> int:
+    total = 0
+    for row in numbers or []:
+        aria = str(row.get("aria") or "").strip()
+        if aria in ("Number of Teams", "Picks per Team", "Bench Spots", ""):
+            continue
+        if aria not in _STARTER_ARIA_LABELS and not re.match(r"^[A-Z0-9/ ]+$", aria):
+            continue
+        try:
+            total += max(0, int(row.get("value") or 0))
+        except (TypeError, ValueError):
+            continue
+    return max(total, 1)
+
+
+def set_number_via_playwright(page, aria: str, val: str) -> bool:
+    """Streamlit number inputs often ignore pure JS value assignment; use Playwright fill."""
+    from run_production_solo_soak import set_number
+
+    for frame in page.frames:
+        try:
+            loc = frame.locator(f'input[type="number"][aria-label="{aria}"]')
+            if loc.count() < 1:
+                continue
+            target = loc.first
+            if target.is_disabled():
+                continue
+            target.click(timeout=5000)
+            target.fill(str(val))
+            target.press("Tab")
+            page.wait_for_timeout(800)
+            return True
+        except Exception:
+            continue
+    return set_number(page, aria, val)
+
+
+def ensure_solo_setup_picks_meet_roster(page, checkpoints: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Harness-only: set Picks per Team >= required starter slots (Live Draft validation)."""
+    setup = page.evaluate(SCAN_SETUP_JS) or {}
+    numbers = list(setup.get("numbers") or [])
+    required = required_starter_slots_from_numbers(numbers)
+    target = str(max(required, 8))
+    current = next(
+        (str(r.get("value") or "") for r in numbers if r.get("aria") == "Picks per Team"),
+        "",
+    )
+    try:
+        current_i = int(current or 0)
+    except ValueError:
+        current_i = 0
+    ok = current_i >= required
+    if not ok:
+        ok = set_number_via_playwright(page, "Picks per Team", target)
+        page.wait_for_timeout(2000)
+        setup = page.evaluate(SCAN_SETUP_JS) or {}
+        numbers = list(setup.get("numbers") or [])
+        current = next(
+            (str(r.get("value") or "") for r in numbers if r.get("aria") == "Picks per Team"),
+            "",
+        )
+        try:
+            ok = int(current or 0) >= required
+        except ValueError:
+            ok = False
+    out = {
+        "required_starter_slots": required,
+        "target_picks_per_team": target,
+        "picks_per_team_after": current,
+        "picks_ok": ok,
+        "numbers": numbers,
+    }
+    if checkpoints is not None:
+        checkpoint(checkpoints, "solo_setup_picks_roster_gate", **out)
+    return out
+
+
 def _isolation_case_from_url(setup_url: str) -> str:
     import urllib.parse
 
@@ -470,17 +552,45 @@ def dispatch_start_new_live_draft_click(page, checkpoints: list[dict[str, Any]])
         duplicate=len(start_matches) != 1,
     )
     url_before = page.url
-    click_btn(page, "Start New Live Draft", wait_ms=1500)
-    checkpoint(checkpoints, "start_click_evaluate_dispatched")
+    evaluate_clicked = click_btn(page, "Start New Live Draft", wait_ms=1500)
+    checkpoint(checkpoints, "start_click_evaluate_dispatched", evaluate_clicked=evaluate_clicked)
     playwright_clicked = False
-    try:
-        loc = page.get_by_role("button", name=re.compile(r"Start New Live Draft", re.I))
-        if loc.count() >= 1 and not loc.first.is_disabled():
-            loc.first.click(timeout=15000)
+    frame_clicks: list[str] = []
+    name_re = re.compile(r"Start New Live Draft", re.I)
+    for frame in page.frames:
+        try:
+            loc = frame.get_by_role("button", name=name_re)
+            n = loc.count()
+            if n < 1:
+                continue
+            target = loc.first
+            if target.is_disabled():
+                continue
+            target.click(timeout=15000, force=True)
             playwright_clicked = True
-            checkpoint(checkpoints, "start_click_playwright_dispatched")
-    except Exception as exc:
-        checkpoint(checkpoints, "start_click_playwright_error", error=str(exc)[:300])
+            frame_clicks.append(getattr(frame, "name", "") or frame.url[:80])
+            checkpoint(
+                checkpoints,
+                "start_click_playwright_frame",
+                frame=frame_clicks[-1],
+            )
+            break
+        except Exception as exc:
+            checkpoint(
+                checkpoints,
+                "start_click_playwright_frame_skip",
+                frame=getattr(frame, "name", "") or "",
+                error=str(exc)[:120],
+            )
+    if not playwright_clicked:
+        try:
+            loc = page.get_by_role("button", name=name_re)
+            if loc.count() >= 1 and not loc.first.is_disabled():
+                loc.first.click(timeout=15000, force=True)
+                playwright_clicked = True
+                checkpoint(checkpoints, "start_click_playwright_dispatched")
+        except Exception as exc:
+            checkpoint(checkpoints, "start_click_playwright_error", error=str(exc)[:300])
     page.wait_for_timeout(2000)
     url_after = page.url
     checkpoint(
@@ -739,8 +849,9 @@ def execute_solo_draft_start_workflow(
     )
 
     report["clear_stale"] = maybe_clear_stale_draft(page, checkpoints)
-    teams_ok = set_number(page, "Number of Teams", "2")
-    picks_ok = set_number(page, "Picks per Team", "8")
+    teams_ok = set_number_via_playwright(page, "Number of Teams", "2")
+    picks_gate = ensure_solo_setup_picks_meet_roster(page, checkpoints)
+    picks_ok = bool(picks_gate.get("picks_ok"))
     page.wait_for_timeout(2500)
     setup_after = page.evaluate(SCAN_SETUP_JS)
     checkpoint(
@@ -748,6 +859,7 @@ def execute_solo_draft_start_workflow(
         "setup_fields_interacted",
         set_teams=teams_ok,
         set_picks=picks_ok,
+        picks_gate=picks_gate,
         numbers=setup_after.get("numbers"),
     )
     record_query_checkpoint(checkpoints, "query_before_start", setup_url=setup_url, page_url=page.url)

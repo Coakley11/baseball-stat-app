@@ -38,7 +38,7 @@ def _coerce(value: Any) -> str:
     return str(_coerce_wake_token(value) or "").strip()
 
 
-def _deployment_sha(session: dict[str, Any]) -> str:
+def deployment_sha_for_session(session: dict[str, Any]) -> str:
     sha = str(session.get("_solo_stage1_deployment_sha") or "").strip()
     if sha:
         return sha[:7]
@@ -48,6 +48,10 @@ def _deployment_sha(session: dict[str, Any]) -> str:
         return str(resolve_git_commit_short() or "")[:7]
     except ImportError:
         return ""
+
+
+def _deployment_sha(session: dict[str, Any]) -> str:
+    return deployment_sha_for_session(session)
 
 
 def note_bound_token_gate(
@@ -65,6 +69,14 @@ def note_bound_token_gate(
     room_id: str,
     pick_index: Any,
     call_site: str,
+    expected_token_source: str = "",
+    declaration_context_token: str = "",
+    same_key_session_state: str = "",
+    deadline: Any = None,
+    call_site_expected_token: str = "",
+    snapshot_validation_ok: bool = False,
+    snapshot_rejection_reason: str = "",
+    extra_instrumentation: dict[str, Any] | None = None,
 ) -> None:
     try:
         from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
@@ -95,8 +107,50 @@ def note_bound_token_gate(
             "deployment_sha": _deployment_sha(session),
             "decision": gate.decision,
             "call_site": call_site,
+            "expected_token": str(expected_expiration_token or "")[:400],
+            "expected_token_source": str(expected_token_source or "")[:80],
+            "declaration_context_token": str(declaration_context_token or "")[:400],
+            "same_key_session_state": str(same_key_session_state or "")[:400],
+            "deadline": deadline,
+            "call_site_expected_token": str(call_site_expected_token or "")[:400],
+            "snapshot_validation_ok": snapshot_validation_ok,
+            "snapshot_rejection_reason": str(snapshot_rejection_reason or "")[:200],
+            **(extra_instrumentation or {}),
         },
     )
+
+
+def snapshot_validation_fields(
+    session: dict[str, Any],
+    snapshot: dict[str, Any] | None,
+    *,
+    widget_key: str,
+    room_id: str,
+    pick_index: Any,
+    deadline: Any,
+) -> dict[str, Any]:
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    live = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else {}
+    return {
+        "snapshot_expected_token": str(snap.get("expected_token") or "")[:400],
+        "snapshot_room_id": str(snap.get("room_id") or "")[:32],
+        "snapshot_pick_index": snap.get("pick_index"),
+        "snapshot_deadline": snap.get("deadline"),
+        "snapshot_fingerprint": str(snap.get("room_fingerprint") or "")[:120],
+        "snapshot_widget_key": str(snap.get("widget_key") or "")[:80],
+        "snapshot_deployment_sha": str(snap.get("deployment_sha") or "")[:7],
+        "snapshot_declaration_timestamp": snap.get("registered_at"),
+        "current_room_id": str(
+            room_id or live.get("draft_room_id") or live.get("draft_id") or ""
+        )[:32],
+        "current_pick_index": pick_index if pick_index is not None else live.get("current_pick_index"),
+        "current_deadline": deadline if deadline is not None else live.get("timer_deadline"),
+        "current_widget_key": str(widget_key or "")[:80],
+        "current_deployment_sha": deployment_sha_for_session(session),
+        "snapshot_consumed_token": str(session.get("_solo_stage1_expiration_snapshot_consumed_token") or "")[
+            :400
+        ],
+    }
 
 
 def evaluate_bound_token_gate(
@@ -113,25 +167,69 @@ def evaluate_bound_token_gate(
 ) -> BoundTokenGateResult:
     """Only direct component return or same-key Session State may pass."""
     invocation_id = uuid.uuid4().hex[:12]
-    expected = _coerce(expected_expiration_token or mount_expire_token)
-    mount_t = _coerce(mount_expire_token)
-    pending_t = _coerce(pending_token)
-
     direct = _coerce(raw_component_return) if raw_component_return is not None else ""
     ss_present = bool(widget_key and hasattr(st, "session_state") and widget_key in st.session_state)
     ss_val = st.session_state.get(widget_key) if ss_present else session_state_value
     ss = _coerce(ss_val) if ss_val is not None else ""
 
+    expected_call = _coerce(expected_expiration_token or mount_expire_token)
+    call_site_expected = str(expected_expiration_token or "")[:400]
+    expected_source = "call_site" if expected_call else ""
+    declaration_context_token = ""
+    snap = None
+    snapshot_validation_ok = False
+    snapshot_rejection_reason = ""
+    expected = expected_call
+    if not expected:
+        try:
+            from live_draft_solo_declaration_room_context import (
+                get_declaration_context,
+                resolve_gate_expected_from_declaration_snapshot,
+            )
+
+            snap = get_declaration_context(session)
+            declaration_context_token = str((snap or {}).get("expected_token") or "")[:400]
+            recovered, recovered_source, reject_reason = resolve_gate_expected_from_declaration_snapshot(
+                session,
+                widget_key=widget_key,
+                direct_token=direct,
+                session_state_token=ss,
+            )
+            snapshot_rejection_reason = reject_reason or ""
+            if recovered:
+                expected = recovered
+                expected_source = recovered_source
+                snapshot_validation_ok = recovered_source == "validated_declaration_snapshot"
+            elif direct or ss:
+                snapshot_validation_ok = False
+                if not snapshot_rejection_reason:
+                    snapshot_rejection_reason = "snapshot_validation_failed"
+        except ImportError:
+            pass
+    elif expected_call:
+        snapshot_validation_ok = True
+
+    mount_t = _coerce(mount_expire_token)
+    pending_t = _coerce(pending_token)
+
     coalesced = direct or ss
     room_id = ""
     pick_index = None
+    deadline = None
     try:
         live = session.get("live_draft_room")
         if isinstance(live, dict):
             room_id = str(live.get("draft_room_id") or live.get("draft_id") or "")
             pick_index = live.get("current_pick_index")
+            deadline = live.get("timer_deadline")
     except Exception:
         pass
+    if (not room_id or pick_index is None) and isinstance(snap, dict):
+        room_id = room_id or str(snap.get("room_id") or "")
+        if pick_index is None:
+            pick_index = snap.get("pick_index")
+        if deadline is None:
+            deadline = snap.get("deadline")
 
     selected = ""
     source = ""
@@ -164,11 +262,30 @@ def evaluate_bound_token_gate(
         exact_match=exact_match,
         invocation_id=invocation_id,
     )
+    snap_fields = snapshot_validation_fields(
+        session,
+        snap if isinstance(snap, dict) else None,
+        widget_key=widget_key,
+        room_id=room_id,
+        pick_index=pick_index,
+        deadline=deadline,
+    )
+    if isinstance(snap, dict):
+        try:
+            live_fp = ""
+            room_obj = snap.get("room")
+            if isinstance(room_obj, dict):
+                from live_draft_solo_declaration_room_context import _room_fingerprint
+
+                live_fp = _room_fingerprint(room_obj)
+            snap_fields["current_fingerprint"] = live_fp
+        except Exception:
+            pass
     note_bound_token_gate(
         st,
         session,
         gate=gate,
-        expected_expiration_token=expected_expiration_token,
+        expected_expiration_token=expected,
         mount_expire_token=mount_expire_token,
         pending_token=pending_token,
         raw_component_return=raw_component_return,
@@ -178,6 +295,14 @@ def evaluate_bound_token_gate(
         room_id=room_id,
         pick_index=pick_index,
         call_site=call_site or "evaluate_bound_token_gate",
+        expected_token_source=expected_source,
+        declaration_context_token=declaration_context_token,
+        same_key_session_state=ss if ss_present else "",
+        deadline=deadline,
+        call_site_expected_token=call_site_expected,
+        snapshot_validation_ok=snapshot_validation_ok,
+        snapshot_rejection_reason=snapshot_rejection_reason,
+        extra_instrumentation=snap_fields,
     )
     return gate
 
@@ -288,4 +413,10 @@ def complete_delivery_only_observation_and_actionable_flush(
     except ImportError:
         return False
     mark_post_bind_flush_dispatched(session, bound_token)
+    try:
+        from live_draft_solo_declaration_room_context import consume_expiration_validation_snapshot
+
+        consume_expiration_validation_snapshot(session, bound_token, reason="post_bind_actionable_flush")
+    except ImportError:
+        pass
     return True

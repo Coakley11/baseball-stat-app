@@ -359,10 +359,23 @@ def note_delivery_only_observation_completed(
             "source": source,
             "raw_received": True,
             "actionable_declaration_eligible": True,
+            "token": str(token or "")[:400],
         }
     )
-    if "coalesced_value" not in extra:
-        extra["coalesced_value"] = str(token or "")[:400]
+    for key in (
+        "bound_token",
+        "bound_token_source",
+        "direct_return_value",
+        "session_state_value",
+        "coalesced_value",
+        "expected_token",
+        "exact_match",
+        "observation_invocation_id",
+    ):
+        if key in extra:
+            continue
+        if deliver_gate_ctx and key in deliver_gate_ctx:
+            extra[key] = deliver_gate_ctx[key]
     note_stage1_orchestration_event(
         session,
         "production_stage1_delivery_only_observation_completed",
