@@ -522,6 +522,7 @@ def wait_for_send_then_trace(
     from p8_boundary_instrumentation import (
         build_unified_timeline,
         classify_first_missing_boundary,
+        correlate_websocket_boundary,
         enrich_post_send_server_audit,
         install_production_immediate_parent_listener,
         scrape_immediate_parent_boundary_log,
@@ -553,6 +554,18 @@ def wait_for_send_then_trace(
             pick_index=pick_index,
             widget_key=PRODUCTION_WIDGET_KEY,
         )
+        if inst.get("ok") and ws_capture is not None:
+            try:
+                ws_capture.set_page_correlation_meta(
+                    page,
+                    expected_token=exact_token,
+                    widget_key=PRODUCTION_WIDGET_KEY,
+                    diagnostic_run_id=diagnostic_run_id or room_id,
+                    room_id=room_id,
+                    deployment_sha=deployment_sha,
+                )
+            except Exception:
+                pass
         if inst.get("ok"):
             immediate_install_log.append({"wall_ts": now, **inst})
 
@@ -621,7 +634,28 @@ def wait_for_send_then_trace(
         from p8_boundary_instrumentation import WebSocketBoundaryCapture
 
         ws_capture = WebSocketBoundaryCapture()
-    ws_frames = list(getattr(ws_capture, "frames", []) or [])
+    ws_frames = ws_capture.merged_frames(page) if hasattr(ws_capture, "merged_frames") else list(getattr(ws_capture, "frames", []) or [])
+
+    parent_receipt_ts: float | None = None
+    for r in list(immediate_final.get("records") or []):
+        if r.get("message_type") != "streamlit:setComponentValue":
+            continue
+        if exact_token not in str(r.get("exact_payload_preview") or ""):
+            continue
+        wt_ms = float(r.get("receipt_wall_ts") or 0)
+        parent_receipt_ts = wt_ms / 1000.0 if wt_ms > 1e12 else wt_ms
+        break
+
+    ws_correlation = correlate_websocket_boundary(
+        ws_frames,
+        send_epoch=send_epoch,
+        parent_receipt_epoch=parent_receipt_ts,
+        exact_token=exact_token,
+        widget_key=PRODUCTION_WIDGET_KEY,
+        diagnostic_run_id=diagnostic_run_id or room_id,
+        room_id=room_id,
+        deployment_sha=deployment_sha,
+    )
 
     poll = {
         "send_epoch": send_epoch,
@@ -637,6 +671,7 @@ def wait_for_send_then_trace(
         "immediate_parent_final": immediate_final,
         "immediate_parent_install_log": immediate_install_log,
         "websocket_frames": ws_frames,
+        "websocket_correlation": ws_correlation,
         "unified_timeline": build_unified_timeline(
             send_epoch=send_epoch,
             send_boundary=send_boundary,
@@ -644,6 +679,7 @@ def wait_for_send_then_trace(
             immediate_records=list(immediate_final.get("records") or []),
             ws_frames=ws_frames,
             post_send_server=post_send_server,
+            ws_correlation=ws_correlation,
         ),
     }
 
@@ -673,6 +709,8 @@ def wait_for_send_then_trace(
         post_send_server=post_send_server,
         peak_rows=merged_peak,
         iframe_entries=final_iframe_entries,
+        ws_correlation=ws_correlation,
+        page=page,
     )
     return {
         "ok": True,

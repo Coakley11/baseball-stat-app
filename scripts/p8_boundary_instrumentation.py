@@ -8,6 +8,114 @@ import time
 from typing import Any
 
 PRODUCTION_WIDGET_KEY = "solo_countdown_wake_solo_persistent"
+PRODUCTION_COMPONENT_NAME = "solo_countdown_wake"
+
+P8_WS_BOUNDARY_INIT_SCRIPT = """
+(function () {
+  if (window.__p8WsBoundaryHookInstalled) return;
+  window.__p8WsBoundaryHookInstalled = true;
+  window.__p8WsBoundaryLog = [];
+  var LOG = window.__p8WsBoundaryLog;
+  var Orig = WebSocket;
+  function sha256HexAsync(bytes, cb) {
+    try {
+      if (!crypto || !crypto.subtle) {
+        cb("");
+        return;
+      }
+      crypto.subtle.digest("SHA-256", bytes).then(function (buf) {
+        var arr = Array.from(new Uint8Array(buf));
+        cb(arr.map(function (b) { return ("0" + b.toString(16)).slice(-2); }).join("").slice(0, 64));
+      }).catch(function () { cb(""); });
+    } catch (e) {
+      cb("");
+    }
+  }
+  function toBytes(data) {
+    if (data == null) return new Uint8Array(0);
+    if (typeof data === "string") return new TextEncoder().encode(data);
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    return new TextEncoder().encode(String(data));
+  }
+  function searchMeta(bytes, meta) {
+    meta = meta || window.__p8WsCorrelationMeta || {};
+    var token = String(meta.expected_token || "");
+    var widget = String(meta.widget_key || "solo_countdown_wake_solo_persistent");
+    var comp = String(meta.component_name || "solo_countdown_wake");
+    function has(sub) {
+      if (!sub) return false;
+      var enc = new TextEncoder().encode(sub);
+      if (enc.length === 0 || bytes.length < enc.length) return false;
+      outer: for (var i = 0; i <= bytes.length - enc.length; i++) {
+        for (var j = 0; j < enc.length; j++) {
+          if (bytes[i + j] !== enc[j]) continue outer;
+        }
+        return true;
+      }
+      return false;
+    }
+    return {
+      expiration_token_bytes_present: has(token),
+      widget_key_bytes_present: has(widget),
+      component_name_bytes_present: has(comp),
+    };
+  }
+  function frameCategory(bytes) {
+    var s = "";
+    try {
+      s = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, Math.min(bytes.length, 8192)));
+    } catch (e1) {}
+    var low = s.toLowerCase();
+    if (low.indexOf("rerun") >= 0) return "rerun_request_hint";
+    if (low.indexOf("widget") >= 0 || low.indexOf("backmsg") >= 0) return "widget_state_backmsg_hint";
+    if (low.indexOf("component") >= 0 || low.indexOf("setcomponent") >= 0) return "component_value_hint";
+    if (low.indexOf("session") >= 0 || low.indexOf("delt") >= 0) return "client_state_hint";
+    if (bytes.length <= 4) return "heartbeat_or_control";
+    return "streamlit_binary_or_other";
+  }
+  function record(direction, data, wsMeta) {
+    var bytes = toBytes(data);
+    var wall = Date.now();
+    var meta = searchMeta(bytes, window.__p8WsCorrelationMeta);
+    var entry = {
+      wall_ts_ms: wall,
+      direction: direction,
+      byte_len: bytes.length,
+      frame_type_hint: frameCategory(bytes),
+      expiration_token_bytes_present: meta.expiration_token_bytes_present,
+      widget_key_bytes_present: meta.widget_key_bytes_present,
+      component_name_bytes_present: meta.component_name_bytes_present,
+      ws_url_redacted: wsMeta && wsMeta.url ? wsMeta.url : "",
+      diagnostic_run_id: String((window.__p8WsCorrelationMeta || {}).diagnostic_run_id || ""),
+      room_id: String((window.__p8WsCorrelationMeta || {}).room_id || ""),
+      deployment_sha: String((window.__p8WsCorrelationMeta || {}).deployment_sha || ""),
+    };
+    sha256HexAsync(bytes, function (hash) {
+      entry.sha256 = hash;
+      LOG.push(entry);
+      if (LOG.length > 600) LOG.splice(0, LOG.length - 500);
+    });
+  }
+  window.WebSocket = function (url, protocols) {
+    var ws = protocols !== undefined ? new Orig(url, protocols) : new Orig(url);
+    var wsMeta = { url: String(url || "").replace(/([?&])(token|key|sid|secret|auth)=[^&]+/gi, "$1$2=[redacted]") };
+    var send0 = ws.send.bind(ws);
+    ws.send = function (data) {
+      record("outbound", data, wsMeta);
+      return send0(data);
+    };
+    ws.addEventListener("message", function (ev) {
+      record("inbound", ev.data, wsMeta);
+    });
+    return ws;
+  };
+  window.WebSocket.prototype = Orig.prototype;
+  try {
+    Object.assign(window.WebSocket, Orig);
+  } catch (e2) {}
+})();
+"""
 
 P8_IMMEDIATE_PARENT_INSTALL_JS = """
 (meta) => {
@@ -180,11 +288,79 @@ def _sanitize(url: str) -> str:
 
 
 class WebSocketBoundaryCapture:
-    """Playwright WebSocket frame capture with safe token-presence hashing."""
+    """Playwright + in-page WebSocket.send hook capture (hashed/redacted; token byte search)."""
 
     def __init__(self) -> None:
         self.frames: list[dict[str, Any]] = []
         self.sockets: list[dict[str, Any]] = []
+        self._context_attached = False
+        self._exact_token = ""
+        self._widget_key = PRODUCTION_WIDGET_KEY
+
+    def attach_context(self, context) -> None:
+        try:
+            context.add_init_script(P8_WS_BOUNDARY_INIT_SCRIPT)
+            self._context_attached = True
+        except Exception:
+            pass
+
+    def set_page_correlation_meta(
+        self,
+        page,
+        *,
+        expected_token: str,
+        widget_key: str = PRODUCTION_WIDGET_KEY,
+        diagnostic_run_id: str = "",
+        room_id: str = "",
+        deployment_sha: str = "",
+    ) -> None:
+        meta = {
+            "expected_token": str(expected_token or ""),
+            "widget_key": str(widget_key or PRODUCTION_WIDGET_KEY),
+            "component_name": PRODUCTION_COMPONENT_NAME,
+            "diagnostic_run_id": str(diagnostic_run_id or ""),
+            "room_id": str(room_id or ""),
+            "deployment_sha": str(deployment_sha or "")[:7],
+        }
+        self._exact_token = str(expected_token or "")
+        self._widget_key = str(widget_key or PRODUCTION_WIDGET_KEY)
+        try:
+            page.evaluate(
+                """(m) => { window.__p8WsCorrelationMeta = Object.assign(window.__p8WsCorrelationMeta || {}, m); }""",
+                meta,
+            )
+        except Exception:
+            pass
+
+    def scrape_browser_log(self, page) -> list[dict[str, Any]]:
+        try:
+            raw = page.evaluate("() => (window.__p8WsBoundaryLog || []).slice()")
+            if isinstance(raw, list):
+                out: list[dict[str, Any]] = []
+                for row in raw:
+                    if not isinstance(row, dict):
+                        continue
+                    wt_ms = float(row.get("wall_ts_ms") or 0)
+                    out.append(
+                        {
+                            "wall_ts": wt_ms / 1000.0 if wt_ms > 1e12 else wt_ms,
+                            "direction": row.get("direction"),
+                            "byte_len": row.get("byte_len"),
+                            "frame_type_hint": row.get("frame_type_hint"),
+                            "sha256": row.get("sha256"),
+                            "expiration_token_bytes_present": bool(row.get("expiration_token_bytes_present")),
+                            "widget_key_bytes_present": bool(row.get("widget_key_bytes_present")),
+                            "component_name_bytes_present": bool(row.get("component_name_bytes_present")),
+                            "source": "browser_ws_hook",
+                            "diagnostic_run_id": row.get("diagnostic_run_id"),
+                            "room_id": row.get("room_id"),
+                            "deployment_sha": row.get("deployment_sha"),
+                        }
+                    )
+                return out
+        except Exception:
+            pass
+        return []
 
     def attach(self, page) -> None:
         def _on_ws(ws):
@@ -192,34 +368,50 @@ class WebSocketBoundaryCapture:
             self.sockets.append({"id": sid, "url": _redact_ws_url(ws.url), "opened_at": time.time()})
 
             def _record(direction: str, payload: Any) -> None:
-                text = payload if isinstance(payload, str) else str(payload)
-                if len(text) > 200000:
-                    text = text[:200000]
+                b = _payload_to_bytes(payload)
+                if len(b) > 200000:
+                    b = b[:200000]
+                meta = _byte_presence_meta(
+                    b,
+                    exact_token=self._exact_token,
+                    widget_key=self._widget_key,
+                    window_meta=None,
+                )
+                text = b.decode("utf-8", errors="ignore")
                 lowered = text.lower()
-                interesting = any(
-                    k in lowered
-                    for k in (
-                        "widget",
-                        "component",
-                        "setcomponent",
-                        "rerun",
-                        "delta",
-                        "session",
-                        "backmsg",
+                interesting = (
+                    meta["expiration_token_bytes_present"]
+                    or meta["widget_key_bytes_present"]
+                    or meta["component_name_bytes_present"]
+                    or any(
+                        k in lowered
+                        for k in (
+                            "widget",
+                            "component",
+                            "setcomponent",
+                            "rerun",
+                            "delta",
+                            "session",
+                            "backmsg",
+                        )
                     )
-                ) or PRODUCTION_WIDGET_KEY in text
-                if not interesting and len(text) < 40:
+                    or len(b) >= 40
+                )
+                if not interesting and len(b) < 8:
                     return
-                token_hint = _token_presence_indicator(text)
                 self.frames.append(
                     {
                         "wall_ts": time.time(),
                         "direction": direction,
                         "ws_id": sid,
-                        "byte_len": len(text.encode("utf-8", errors="ignore")),
-                        "frame_type_hint": _frame_type_hint(text),
-                        "sha256_prefix": hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:16],
-                        "token_presence": token_hint,
+                        "byte_len": len(b),
+                        "frame_type_hint": _frame_type_hint_bytes(b, text),
+                        "sha256_prefix": hashlib.sha256(b).hexdigest()[:16],
+                        "sha256": hashlib.sha256(b).hexdigest(),
+                        "expiration_token_bytes_present": meta["expiration_token_bytes_present"],
+                        "widget_key_bytes_present": meta["widget_key_bytes_present"],
+                        "component_name_bytes_present": meta["component_name_bytes_present"],
+                        "source": "playwright_ws",
                         "snippet_safe": _redact_snippet(text[:280]),
                     }
                 )
@@ -230,6 +422,167 @@ class WebSocketBoundaryCapture:
             ws.on("framereceived", lambda p: _record("inbound", p))
 
         page.on("websocket", _on_ws)
+
+    def merged_frames(self, page) -> list[dict[str, Any]]:
+        browser = self.scrape_browser_log(page)
+        merged = list(self.frames) + browser
+        merged.sort(key=lambda r: float(r.get("wall_ts") or 0))
+        dedup: list[dict[str, Any]] = []
+        seen: set[tuple[Any, ...]] = set()
+        for row in merged:
+            key = (
+                round(float(row.get("wall_ts") or 0), 3),
+                row.get("direction"),
+                row.get("byte_len"),
+                row.get("sha256") or row.get("sha256_prefix"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append(row)
+        return dedup
+
+
+def _payload_to_bytes(payload: Any) -> bytes:
+    if isinstance(payload, bytes):
+        return payload
+    if isinstance(payload, str):
+        return payload.encode("utf-8", errors="surrogateescape")
+    if isinstance(payload, (bytearray, memoryview)):
+        return bytes(payload)
+    return str(payload).encode("utf-8", errors="ignore")
+
+
+def _byte_presence_meta(
+    data: bytes,
+    *,
+    exact_token: str = "",
+    widget_key: str = PRODUCTION_WIDGET_KEY,
+    window_meta: dict[str, Any] | None,
+) -> dict[str, bool]:
+    tok = str(exact_token or (window_meta or {}).get("expected_token") or "")
+    wkey = str(widget_key or PRODUCTION_WIDGET_KEY)
+    comp = PRODUCTION_COMPONENT_NAME
+    return {
+        "expiration_token_bytes_present": bool(tok) and tok.encode("utf-8") in data,
+        "widget_key_bytes_present": wkey.encode("utf-8") in data,
+        "component_name_bytes_present": comp.encode("utf-8") in data,
+    }
+
+
+def _frame_type_hint_bytes(data: bytes, text: str) -> str:
+    low = (text or "").lower()
+    if "rerun" in low:
+        return "rerun_request_hint"
+    if "widget" in low or "backmsg" in low:
+        return "widget_state_backmsg_hint"
+    if "setcomponent" in text or "component" in low:
+        return "component_value_hint"
+    if "session" in low or "delta" in low:
+        return "client_state_hint"
+    if len(data) <= 4:
+        return "heartbeat_or_control"
+    return "streamlit_binary_or_other"
+
+
+def correlate_websocket_boundary(
+    frames: list[dict[str, Any]],
+    *,
+    send_epoch: float,
+    parent_receipt_epoch: float | None,
+    exact_token: str,
+    widget_key: str = PRODUCTION_WIDGET_KEY,
+    diagnostic_run_id: str = "",
+    room_id: str = "",
+    deployment_sha: str = "",
+) -> dict[str, Any]:
+    """Correlate outbound/inbound WS frames to immediate-parent SCV receipt."""
+    anchor = parent_receipt_epoch if parent_receipt_epoch and parent_receipt_epoch > 1e9 else send_epoch
+    outbound_window = [
+        f
+        for f in frames
+        if f.get("direction") == "outbound"
+        and anchor - 0.05 <= float(f.get("wall_ts") or 0) <= anchor + 2.0
+    ]
+    outbound_window.sort(key=lambda x: float(x.get("wall_ts") or 0))
+
+    def _is_widget_update(f: dict[str, Any]) -> bool:
+        return bool(
+            f.get("expiration_token_bytes_present")
+            or f.get("widget_key_bytes_present")
+            or f.get("frame_type_hint") in ("widget_state_backmsg_hint", "component_value_hint")
+        )
+
+    first_out = outbound_window[0] if outbound_window else None
+    correlated_out = next(
+        (
+            f
+            for f in outbound_window
+            if f.get("expiration_token_bytes_present") or f.get("widget_key_bytes_present")
+        ),
+        None,
+    )
+    pick_out = correlated_out or first_out
+    out_ts = float(pick_out.get("wall_ts") or 0) if pick_out else None
+
+    inbound_window: list[dict[str, Any]] = []
+    if out_ts:
+        inbound_window = [
+            f
+            for f in frames
+            if f.get("direction") == "inbound"
+            and out_ts - 0.02 <= float(f.get("wall_ts") or 0) <= out_ts + 3.0
+        ]
+        inbound_window.sort(key=lambda x: float(x.get("wall_ts") or 0))
+    first_in = inbound_window[0] if inbound_window else None
+
+    def _latency(from_ts: float | None, to_ts: float | None) -> float | None:
+        if from_ts is None or to_ts is None:
+            return None
+        return round(to_ts - from_ts, 4)
+
+    first_out_after_parent = next(
+        (f for f in outbound_window if float(f.get("wall_ts") or 0) >= anchor - 0.001),
+        None,
+    )
+    answers = {
+        "first_outbound_after_parent_contains_expiration_token": bool(
+            first_out_after_parent and first_out_after_parent.get("expiration_token_bytes_present")
+        ),
+        "first_outbound_after_parent_contains_widget_key": bool(
+            first_out_after_parent and first_out_after_parent.get("widget_key_bytes_present")
+        ),
+        "first_outbound_after_parent_is_widget_update": bool(
+            first_out_after_parent and _is_widget_update(first_out_after_parent)
+        ),
+        "first_outbound_after_parent_category": (
+            first_out_after_parent.get("frame_type_hint") if first_out_after_parent else None
+        ),
+    }
+    inbound_232_candidate = None
+    if out_ts:
+        for f in inbound_window:
+            rel = float(f.get("wall_ts") or 0) - send_epoch
+            if 0.15 <= rel <= 0.35:
+                inbound_232_candidate = f
+                break
+
+    return {
+        "anchor_epoch": anchor,
+        "diagnostic_run_id": diagnostic_run_id,
+        "room_id": room_id,
+        "deployment_sha": deployment_sha,
+        "outbound_within_2s_of_parent": outbound_window,
+        "correlated_outbound": pick_out,
+        "first_outbound_after_parent": first_out_after_parent,
+        "inbound_within_3s_of_outbound": inbound_window,
+        "correlated_inbound_first": first_in,
+        "inbound_near_232ms_after_send": inbound_232_candidate,
+        "parent_to_first_outbound_latency_s": _latency(anchor, out_ts),
+        "send_to_first_outbound_latency_s": _latency(send_epoch, out_ts),
+        "outbound_to_first_inbound_latency_s": _latency(out_ts, float(first_in.get("wall_ts") or 0) if first_in else None),
+        "explicit_answers": answers,
+    }
 
 
 def _redact_ws_url(url: str) -> str:
@@ -270,28 +623,44 @@ def enrich_post_send_server_audit(
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in peak_rows:
-        if str(row.get("event") or "") != "production_stage1_script_begin":
-            continue
+        ev = str(row.get("event") or "")
         ts = float(row.get("ts") or 0)
         if ts < send_epoch - 0.05:
             continue
-        out.append(
-            {
-                "event": "production_stage1_script_begin_durable",
-                "source": "harness_peak_ledger",
-                "server_ts": ts,
-                "script_run_seq": row.get("script_run_seq"),
-                "run_id": row.get("run_id"),
-                "room_id": row.get("room_id"),
-                "pick_index": row.get("pick_index"),
-                "deadline": row.get("deadline"),
-                "expected_token": row.get("expected_token"),
-                "session_state_widget_value": row.get("session_state_value") or row.get("pending_session_state_value"),
-                "active_page": row.get("active_page"),
-                "deployment_sha": deployment_sha,
-                "declaration_eligibility_hint": row.get("actionable_mount_eligible"),
-            }
-        )
+        if ev == "production_stage1_script_begin":
+            out.append(
+                {
+                    "event": "production_stage1_script_begin_durable",
+                    "source": "harness_peak_ledger",
+                    "server_ts": ts,
+                    "script_run_seq": row.get("script_run_seq"),
+                    "run_id": row.get("run_id"),
+                    "room_id": row.get("room_id"),
+                    "pick_index": row.get("pick_index"),
+                    "deadline": row.get("deadline"),
+                    "expected_token": row.get("expected_token"),
+                    "session_state_widget_value": row.get("session_state_value")
+                    or row.get("pending_session_state_value")
+                    or row.get("session_state_widget_value"),
+                    "active_page": row.get("active_page"),
+                    "deployment_sha": deployment_sha,
+                    "declaration_eligibility_hint": row.get("actionable_mount_eligible"),
+                }
+            )
+        elif ev in (
+            "production_global_script_run_canary",
+            "production_live_draft_branch_canary",
+            "production_countdown_declaration_pre",
+            "production_countdown_declaration_post",
+        ):
+            out.append(
+                {
+                    "event": ev,
+                    "source": "harness_peak_ledger",
+                    "server_ts": ts,
+                    **{k: v for k, v in row.items() if k not in ("event", "ts")},
+                }
+            )
     for row in peak_rows:
         if str(row.get("event") or "") != "production_stage1_declaration_returned":
             continue
@@ -300,10 +669,13 @@ def enrich_post_send_server_audit(
             continue
         if not out:
             continue
-        out[-1]["direct_component_return"] = row.get("direct_component_return")
-        out[-1]["session_state_value"] = row.get("session_state_value")
-        out[-1]["coalesced_value"] = row.get("coalesced_value")
-        out[-1]["declaration_returned_ts"] = ts
+        for entry in reversed(out):
+            if entry.get("event") == "production_stage1_script_begin_durable":
+                entry["direct_component_return"] = row.get("direct_component_return")
+                entry["session_state_value"] = row.get("session_state_value")
+                entry["coalesced_value"] = row.get("coalesced_value")
+                entry["declaration_returned_ts"] = ts
+                break
     return out
 
 
@@ -315,6 +687,7 @@ def build_unified_timeline(
     immediate_records: list[dict[str, Any]],
     ws_frames: list[dict[str, Any]],
     post_send_server: list[dict[str, Any]],
+    ws_correlation: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     from p8_sender_rerun_trace import normalize_epoch_ts
 
@@ -330,6 +703,24 @@ def build_unified_timeline(
         wt = wt_ms / 1000.0 if wt_ms > 1e12 else wt_ms
         t_rel = round(wt - send_epoch, 3) if wt > 1e9 else None
         add(t_rel, "production_stage1_immediate_parent_scv_received", "immediate_parent_listener", **rec)
+
+    if ws_correlation:
+        co = ws_correlation.get("correlated_outbound")
+        if isinstance(co, dict):
+            add(
+                round(float(co.get("wall_ts") or send_epoch) - send_epoch, 3),
+                "websocket_correlated_outbound",
+                "ws_correlation",
+                **co,
+            )
+        ci = ws_correlation.get("correlated_inbound_first")
+        if isinstance(ci, dict):
+            add(
+                round(float(ci.get("wall_ts") or send_epoch) - send_epoch, 3),
+                "websocket_correlated_inbound",
+                "ws_correlation",
+                **ci,
+            )
 
     for e in iframe_entries:
         ts = normalize_epoch_ts(e.get("ts"))
@@ -348,7 +739,8 @@ def build_unified_timeline(
 
     for row in post_send_server:
         ts = float(row.get("server_ts") or 0)
-        add(round(ts - send_epoch, 3), "production_stage1_script_begin_durable", "server_audit", **row)
+        kind = str(row.get("event") or "production_stage1_script_begin_durable")
+        add(round(ts - send_epoch, 3), kind, "server_audit", **row)
 
     events.sort(key=lambda x: (x.get("t_rel_send_s") is None, x.get("t_rel_send_s") or 999))
     return events
@@ -364,10 +756,11 @@ def classify_first_missing_boundary(
     post_send_server: list[dict[str, Any]],
     peak_rows: list[dict[str, Any]],
     iframe_entries: list[dict[str, Any]],
+    ws_correlation: dict[str, Any] | None = None,
+    page: Any | None = None,
 ) -> dict[str, Any]:
     from p8_sender_rerun_trace import normalize_epoch_ts
 
-    sending_inst = str(send_boundary.get("iframe_instance_id") or "")
     records = list(immediate_log.get("records") or [])
     scv_exact = [
         r
@@ -376,7 +769,70 @@ def classify_first_missing_boundary(
         and exact_token in str(r.get("exact_payload_preview") or "")
     ]
     scv_prod_match = [r for r in scv_exact if r.get("source_matches_production_iframe")]
-    iframe_disconnect_ts: float | None = None
+
+    parent_receipt_ts: float | None = None
+    if scv_prod_match:
+        wt_ms = float(scv_prod_match[0].get("receipt_wall_ts") or 0)
+        parent_receipt_ts = wt_ms / 1000.0 if wt_ms > 1e12 else wt_ms
+
+    merged_ws = ws_capture.merged_frames(page) if page is not None else list(ws_capture.frames)
+    if ws_correlation is None:
+        ws_correlation = correlate_websocket_boundary(
+            merged_ws,
+            send_epoch=send_epoch,
+            parent_receipt_epoch=parent_receipt_ts,
+            exact_token=exact_token,
+        )
+
+    correlated_out = ws_correlation.get("correlated_outbound")
+    outbound_has_token = bool(
+        correlated_out
+        and (
+            correlated_out.get("expiration_token_bytes_present")
+            or correlated_out.get("widget_key_bytes_present")
+        )
+    )
+    answers = ws_correlation.get("explicit_answers") or {}
+
+    def _post_rows(event: str) -> list[dict[str, Any]]:
+        return [
+            r
+            for r in peak_rows
+            if str(r.get("event") or "") == event and float(r.get("ts") or 0) >= send_epoch - 0.05
+        ]
+
+    global_canaries = _post_rows("production_global_script_run_canary")
+    branch_canaries = _post_rows("production_live_draft_branch_canary")
+    decl_pre = _post_rows("production_countdown_declaration_pre")
+    decl_post = _post_rows("production_countdown_declaration_post")
+    post_begins = [
+        r
+        for r in post_send_server
+        if r.get("event") == "production_stage1_script_begin_durable"
+        or (
+            str(r.get("event") or "") == "production_global_script_run_canary"
+            and float(r.get("server_ts") or 0) >= send_epoch - 0.05
+        )
+    ]
+    legacy_begins = _post_rows("production_stage1_script_begin")
+
+    decl_after = _post_rows("production_stage1_declaration_returned")
+    decl_post_rows = decl_post or decl_after
+    decl_nonempty = any(
+        str(r.get("direct_return_value") or r.get("coalesced_value") or "").strip() not in ("", "None", "''")
+        or (
+            str(r.get("same_key_session_state_value") or r.get("session_state_value") or "").strip()
+            not in ("", "missing", "''")
+            and exact_token in str(r.get("same_key_session_state_value") or r.get("session_state_value") or "")
+        )
+        for r in decl_post_rows
+    )
+
+    ws_out_after = [f for f in merged_ws if float(f.get("wall_ts") or 0) >= send_epoch - 0.02 and f.get("direction") == "outbound"]
+    ws_in_after = [f for f in merged_ws if float(f.get("wall_ts") or 0) >= send_epoch - 0.02 and f.get("direction") == "inbound"]
+    first_ws_out_ts = min((float(f["wall_ts"]) for f in ws_out_after), default=None)
+    first_ws_in_ts = min((float(f["wall_ts"]) for f in ws_in_after), default=None)
+
     streamlit_render_ts: float | None = None
     for e in iframe_entries:
         ts = normalize_epoch_ts(e.get("ts"))
@@ -386,113 +842,100 @@ def classify_first_missing_boundary(
         extra = str(e.get("extra") or "")
         if stage == "tick_cancelled" and "streamlit_render" in extra:
             streamlit_render_ts = ts
-        if stage == "iframe_remount":
-            iframe_disconnect_ts = ts
-
-    parent_receipt_ts: float | None = None
-    if scv_prod_match:
-        wt_ms = float(scv_prod_match[0].get("receipt_wall_ts") or 0)
-        parent_receipt_ts = wt_ms / 1000.0 if wt_ms > 1e12 else wt_ms
-
-    ws_after_send = [f for f in ws_capture.frames if float(f.get("wall_ts") or 0) >= send_epoch - 0.02]
-    ws_out_after = [f for f in ws_after_send if f.get("direction") == "outbound"]
-    ws_in_after = [f for f in ws_after_send if f.get("direction") == "inbound"]
-    first_ws_out_ts = min((float(f["wall_ts"]) for f in ws_out_after), default=None)
-    first_ws_in_ts = min((float(f["wall_ts"]) for f in ws_in_after), default=None)
-
-    post_begins = post_send_server
-    decl_after = [
-        r
-        for r in peak_rows
-        if str(r.get("event") or "") == "production_stage1_declaration_returned"
-        and float(r.get("ts") or 0) >= send_epoch - 0.05
-    ]
-    decl_nonempty = any(
-        str(r.get("coalesced_value") or "").strip() not in ("", "None") for r in decl_after
-    )
-
-    absence_note = None
-    if not scv_exact:
-        absence_note = {
-            "event": "production_stage1_immediate_parent_scv_absent",
-            "reason": (immediate_log.get("absence") or {}).get("reason") or "no_exact_token_scv_in_immediate_parent",
-            "expected_token": exact_token,
-            "sending_iframe_instance_id": sending_inst,
-        }
 
     code = "LIFECYCLE9"
     rationale = "Boundary trace incomplete or ambiguous."
     correction = "TBD after boundary pin"
+    first_missing = "unknown"
 
-    if not scv_exact:
-        if streamlit_render_ts or iframe_disconnect_ts:
-            code = "LIFECYCLE1"
-            rationale = "Production child send proven; immediate parent did not record exact SCV before render/remount."
-            correction = "Component teardown/remount timing relative to parent message delivery"
-        elif not ws_out_after and not post_begins:
-            code = "LIFECYCLE3"
-            rationale = "No authoritative immediate-parent SCV; no post-send WS/server rerun — loss likely before or at parent/protocol."
-            correction = "Immediate-parent message path (iframe → parent frame)"
-    elif scv_exact and not scv_prod_match:
-        code = "LIFECYCLE2"
-        rationale = "Immediate parent received message with exact token but source did not match production iframe."
-        correction = "Source association / nested iframe identity at parent listener"
-    elif scv_prod_match and not ws_out_after:
-        code = "LIFECYCLE3"
-        rationale = "Exact production SCV at immediate parent; no outbound WebSocket update observed after send."
-        correction = "Streamlit component protocol / frontend SCV → backend update"
-    elif scv_prod_match and ws_out_after and not post_begins:
-        code = "LIFECYCLE4"
-        rationale = "Outbound WebSocket after send; no post-send server script_begin in durable peak audit."
-        correction = "Frontend-to-backend update transport / rerun trigger"
-    elif post_begins and not decl_after:
-        code = "LIFECYCLE5"
-        rationale = "Post-send server script_begin captured; no declaration_returned after send."
-        correction = "Post-send page routing / declaration eligibility"
-    elif decl_after and not decl_nonempty:
-        code = "LIFECYCLE6"
-        rationale = "Post-send declaration occurred but return values empty."
-        correction = "Component identity/key or return-value lifecycle"
-    elif (
-        scv_prod_match
-        and parent_receipt_ts
-        and (iframe_disconnect_ts or streamlit_render_ts)
-        and first_ws_out_ts
-        and parent_receipt_ts < (iframe_disconnect_ts or streamlit_render_ts or 0) < first_ws_out_ts
+    has_parent_scv = bool(scv_prod_match or scv_exact)
+
+    if not has_parent_scv:
+        code = "LIFECYCLE9"
+        rationale = "Expected immediate-parent exact SCV not present in retained trace window."
+        correction = "Immediate-parent listener / send detection alignment"
+        first_missing = "immediate_parent_scv"
+    elif not outbound_has_token and not any(
+        f.get("expiration_token_bytes_present") or f.get("widget_key_bytes_present") for f in ws_out_after
     ):
+        code = "LIFECYCLE3"
+        rationale = "Immediate parent received exact SCV; no outbound WebSocket frame contained expiration token or widget key."
+        correction = "Streamlit parent SCV → outbound widget-state/back-message encoding"
+        first_missing = "outbound_ws_widget_update"
+    elif not global_canaries:
+        code = "LIFECYCLE4"
+        rationale = (
+            "Correlated outbound WebSocket carried production token/widget bytes; "
+            "no production_global_script_run_canary after send."
+        )
+        correction = "Frontend widget update → backend script execution trigger"
+        first_missing = "global_backend_script_run"
+    elif not branch_canaries:
+        code = "LIFECYCLE5"
+        rationale = "Global backend script canary fired after send; Live Draft branch canary absent."
+        correction = "Page routing / active_page → Live Draft Room branch entry"
+        first_missing = "live_draft_branch_canary"
+    elif not decl_pre:
+        code = "LIFECYCLE6"
+        rationale = "Global and Live Draft branch canaries present; countdown declaration pre absent."
+        correction = "Live Draft branch → production countdown declaration path"
+        first_missing = "countdown_declaration_pre"
+    elif not decl_nonempty:
         code = "LIFECYCLE7"
-        rationale = "Iframe replacement/render after parent receipt but before first outbound WebSocket."
-        correction = "Frontend acceptance window vs component remount timing"
+        rationale = "Countdown declaration pre/post observed; direct return and Session State remain empty."
+        correction = "Component declaration → return value / Session State bind"
+        first_missing = "non_empty_component_return"
+    elif global_canaries and not legacy_begins:
+        code = "LIFECYCLE8"
+        rationale = "Post-send global canary retained; legacy production_stage1_script_begin audit line absent."
+        correction = "Durable audit retention / event mirror (not bind transport)"
+        first_missing = "legacy_script_begin_retention"
+    else:
+        code = "LIFECYCLE9"
+        rationale = "All major transitions observed in trace; no single missing boundary under LIFECYCLE3–8 rules."
+        correction = "None for this pass (investigation complete or needs finer-grained bucket)"
+        first_missing = "none_under_rules"
 
     labels = {
-        "LIFECYCLE1": "LIFECYCLE1 — IFRAME_REMOVED_BEFORE_IMMEDIATE_PARENT_RECEIPT",
-        "LIFECYCLE2": "LIFECYCLE2 — IMMEDIATE_PARENT_SOURCE_MISMATCH",
-        "LIFECYCLE3": "LIFECYCLE3 — PARENT_RECEIVES_BUT_STREAMLIT_PROTOCOL_REJECTS",
-        "LIFECYCLE4": "LIFECYCLE4 — FRONTEND_SENDS_UPDATE_BUT_BACKEND_RERUN_DOES_NOT_START",
-        "LIFECYCLE5": "LIFECYCLE5 — BACKEND_RERUN_STARTS_BUT_COMPONENT_NOT_REDECLARED",
-        "LIFECYCLE6": "LIFECYCLE6 — COMPONENT_REDECLARED_BUT_RETURN_VALUE_EMPTY",
-        "LIFECYCLE7": "LIFECYCLE7 — IFRAME_REPLACED_DURING_FRONTEND_ACCEPTANCE_WINDOW",
-        "LIFECYCLE8": "LIFECYCLE8 — BACKEND RERUN OCCURRED BUT DURABLE AUDIT MISSED IT",
+        "LIFECYCLE3": "LIFECYCLE3 — PARENT_RECEIVES BUT FRONTEND DOES NOT SEND WIDGET UPDATE",
+        "LIFECYCLE4": "LIFECYCLE4 — FRONTEND SENDS EXACT UPDATE BUT BACKEND SCRIPT DOES NOT RUN",
+        "LIFECYCLE5": "LIFECYCLE5 — BACKEND RUNS BUT LIVE DRAFT BRANCH IS NOT ENTERED",
+        "LIFECYCLE6": "LIFECYCLE6 — LIVE DRAFT BRANCH RUNS BUT COMPONENT IS NOT REDECLARED",
+        "LIFECYCLE7": "LIFECYCLE7 — COMPONENT REDECLARED BUT RETURN VALUE REMAINS EMPTY",
+        "LIFECYCLE8": "LIFECYCLE8 — BACKEND RERUN OCCURRED BUT PRIOR DURABLE AUDIT MISSED IT",
         "LIFECYCLE9": "LIFECYCLE9 — OTHER",
     }
+
+    inbound_232 = ws_correlation.get("inbound_near_232ms_after_send")
+    inbound_232_kind = None
+    if isinstance(inbound_232, dict):
+        inbound_232_kind = inbound_232.get("frame_type_hint")
 
     return {
         "code": code,
         "label": labels.get(code, code),
         "rationale": rationale,
         "smallest_correction_boundary": correction,
-        "provisional_boundary": "PRODUCTION_POSTMESSAGE_EMITTED_BUT_NO_BACKEND_RERUN_OBSERVED",
-        "absence_note": absence_note,
+        "first_missing_transition": first_missing,
+        "provisional_boundary": "LIFECYCLE4_PROVISIONAL — FRONTEND SEND ACTIVITY PRESENT BUT BACKEND RERUN NOT OBSERVED",
+        "ws_correlation": ws_correlation,
+        "ws_explicit_answers": answers,
+        "inbound_232ms_frame_category": inbound_232_kind,
+        "absence_note": None,
         "facts": {
             "send_epoch": send_epoch,
-            "sending_iframe_instance_id": sending_inst,
             "parent_receipt_ts": parent_receipt_ts,
             "parent_scv_exact_count": len(scv_exact),
             "parent_scv_production_source_count": len(scv_prod_match),
-            "iframe_disconnect_or_render_ts": iframe_disconnect_ts or streamlit_render_ts,
+            "outbound_has_production_token_or_widget": outbound_has_token,
             "first_ws_outbound_ts": first_ws_out_ts,
             "first_ws_inbound_ts": first_ws_in_ts,
-            "post_send_script_begin_count": len(post_begins),
+            "streamlit_render_ts": streamlit_render_ts,
+            "post_send_global_canary_count": len(global_canaries),
+            "post_send_branch_canary_count": len(branch_canaries),
+            "post_send_declaration_pre_count": len(decl_pre),
+            "post_send_declaration_post_count": len(decl_post),
+            "post_send_script_begin_count": len(legacy_begins),
             "declaration_nonempty": decl_nonempty,
         },
     }

@@ -58,12 +58,20 @@ def test_classify_lifecycle3_no_parent_no_ws():
         peak_rows=[],
         iframe_entries=[{"ts": 100500, "stage": "tick_cancelled", "extra": "streamlit_render"}],
     )
-    assert cls["code"] in ("LIFECYCLE1", "LIFECYCLE3", "LIFECYCLE9")
+    assert cls["code"] in ("LIFECYCLE3", "LIFECYCLE9")
 
 
 def test_classify_lifecycle4_ws_no_server():
     ws = WebSocketBoundaryCapture()
-    ws.frames.append({"wall_ts": 100.2, "direction": "outbound", "byte_len": 50})
+    ws.frames.append(
+        {
+            "wall_ts": 100.2,
+            "direction": "outbound",
+            "byte_len": 50,
+            "expiration_token_bytes_present": True,
+            "widget_key_bytes_present": True,
+        }
+    )
     cls = classify_first_missing_boundary(
         send_epoch=100.0,
         exact_token="ROOM|0|99.0",
@@ -82,5 +90,9 @@ def test_classify_lifecycle4_ws_no_server():
         post_send_server=[],
         peak_rows=[],
         iframe_entries=[],
+        ws_correlation={
+            "correlated_outbound": ws.frames[0],
+            "explicit_answers": {"first_outbound_after_parent_contains_expiration_token": True},
+        },
     )
     assert cls["code"] == "LIFECYCLE4"

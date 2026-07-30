@@ -40,7 +40,7 @@ def run() -> dict:
     from stage1_parent_event_sink import ParentEventSinkStore, install_parent_event_sink
     from p8_ledger_observability import P8LedgerHarnessCollector, capture_all_ledger_sources
     from p8_sender_rerun_trace import P8_SENDER_RERUN_INIT_SCRIPT, wait_for_send_then_trace
-    from p8_boundary_instrumentation import WebSocketBoundaryCapture
+    from p8_boundary_instrumentation import WebSocketBoundaryCapture, P8_WS_BOUNDARY_INIT_SCRIPT
 
     if not harness_ready():
         return {"aborted": True, "reason": "auth_harness_incomplete"}
@@ -70,10 +70,18 @@ def run() -> dict:
             context.add_init_script(HARNESS_TOP_OBSERVER_INIT_SCRIPT)
             context.add_init_script(LEDGER_DURABLE_INIT_SCRIPT)
             context.add_init_script(P8_SENDER_RERUN_INIT_SCRIPT)
+            context.add_init_script(P8_WS_BOUNDARY_INIT_SCRIPT)
         except ImportError:
             context.add_init_script(P8_SENDER_RERUN_INIT_SCRIPT)
+            try:
+                from p8_boundary_instrumentation import P8_WS_BOUNDARY_INIT_SCRIPT
+
+                context.add_init_script(P8_WS_BOUNDARY_INIT_SCRIPT)
+            except ImportError:
+                pass
 
         page = context.new_page()
+        ws_capture.attach_context(context)
         ws_capture.attach(page)
         report["parent_event_sink_install"] = install_parent_event_sink(page, parent_sink)
         goto_and_wake(page, url, timeout_s=240)
@@ -165,11 +173,27 @@ def format_txt(report: dict) -> str:
     cls = report.get("classification") or {}
     facts = cls.get("facts") or {}
     imm = poll.get("immediate_parent_final") or {}
+    ws_corr = poll.get("websocket_correlation") or cls.get("ws_correlation") or {}
+    answers = cls.get("ws_explicit_answers") or ws_corr.get("explicit_answers") or {}
     lines.append(f"exact_send_epoch: {send.get('ts_epoch')} ({send.get('ts_source')})")
     lines.append(f"send_token: {send.get('token')}")
     lines.append(f"production_iframe_instance_id: {send.get('iframe_instance_id')}")
     lines.append(f"immediate_parent_url: {imm.get('parent_url')}")
     lines.append(f"immediate_parent_frame_index: {imm.get('parent_frame_index')}")
+    lines.append("")
+    lines.append("WebSocket explicit answers:")
+    lines.append(f"  first_outbound_after_parent_contains_expiration_token: {answers.get('first_outbound_after_parent_contains_expiration_token')}")
+    lines.append(f"  first_outbound_after_parent_contains_widget_key: {answers.get('first_outbound_after_parent_contains_widget_key')}")
+    lines.append(f"  first_outbound_after_parent_is_widget_update: {answers.get('first_outbound_after_parent_is_widget_update')}")
+    co = ws_corr.get("correlated_outbound") or {}
+    if co:
+        lines.append(f"  correlated_outbound_sha256: {co.get('sha256') or co.get('sha256_prefix')}")
+        lines.append(f"  correlated_outbound_frame_type: {co.get('frame_type_hint')}")
+    lines.append(f"  inbound_232ms_frame_category: {cls.get('inbound_232ms_frame_category')}")
+    lines.append("")
+    lines.append(f"post_send_global_canary_count: {facts.get('post_send_global_canary_count')}")
+    lines.append(f"post_send_branch_canary_count: {facts.get('post_send_branch_canary_count')}")
+    lines.append(f"post_send_declaration_pre_count: {facts.get('post_send_declaration_pre_count')}")
     lines.append("")
     lines.append(f"BOUNDARY CLASSIFICATION: {cls.get('label')}")
     lines.append(str(cls.get("rationale") or ""))

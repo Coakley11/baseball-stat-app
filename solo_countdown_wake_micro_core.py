@@ -319,6 +319,28 @@ def render_micro_isolation_once(
             boundary_probe = stage1_parent_boundary_probe_enabled(st, session)
         except ImportError:
             boundary_probe = False
+        decl_eligibility = {
+            "first_mount": first_mount,
+            "production_actionable": production_actionable,
+            "production_delivery_only": production_delivery_only,
+            "use_return_delivery": use_return_delivery,
+        }
+        try:
+            from live_draft_stage1_boundary_canaries import (
+                emit_production_countdown_declaration_post,
+                emit_production_countdown_declaration_pre,
+            )
+
+            emit_production_countdown_declaration_pre(
+                st,
+                session,
+                room=production_room,
+                widget_key=key,
+                expected_token=token,
+                declaration_eligibility=decl_eligibility,
+            )
+        except ImportError:
+            pass
         raw_component_value = mount_solo_countdown_wake_with_token(
             production_room,
             key=key,
@@ -328,6 +350,20 @@ def render_micro_isolation_once(
             chain_persist_key=chain_persist_key,
             stage1_parent_boundary_probe=boundary_probe,
         )
+        try:
+            from live_draft_stage1_boundary_canaries import emit_production_countdown_declaration_post
+
+            emit_production_countdown_declaration_post(
+                st,
+                session,
+                room=production_room,
+                widget_key=key,
+                expected_token=token,
+                direct_return=raw_component_value,
+                declaration_eligibility=decl_eligibility,
+            )
+        except ImportError:
+            pass
         if use_return_delivery and raw_component_value is None and key in st.session_state:
             raw_component_value = st.session_state.get(key)
         comp_return = raw_component_value

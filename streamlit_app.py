@@ -14793,6 +14793,12 @@ try:
 except ImportError:
     active_page = normalize_page_key(st.session_state.get("active_page") or _selected_page)
 try:
+    from live_draft_stage1_boundary_canaries import emit_production_global_script_run_canary
+
+    emit_production_global_script_run_canary(st, st.session_state, active_page=active_page)
+except ImportError:
+    pass
+try:
     from shared_draft_context import is_draft_sync_page, prepare_shared_draft_context
 
     if is_draft_sync_page(active_page) and not bool(st.session_state.get("_baseball_warm_startup_skipped")):
@@ -22204,6 +22210,12 @@ elif active_page == DRAFT_LAB_PAGE:
 
 
 elif active_page == "Live Draft Room":
+    try:
+        from live_draft_stage1_boundary_canaries import emit_production_live_draft_branch_canary
+
+        emit_production_live_draft_branch_canary(st, st.session_state, active_page=active_page)
+    except ImportError:
+        pass
     try:
         from solo_cloud_deploy_identity import (
             log_deploy_probe_call_begin,
