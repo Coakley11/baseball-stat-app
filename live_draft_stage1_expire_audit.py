@@ -88,6 +88,155 @@ def canonical_production_source(source: str) -> tuple[str, str]:
     return original, normalize_callback_source(original)
 
 
+def callback_sources_allowlist() -> list[str]:
+    return sorted(CALLBACK_SOURCES)
+
+
+def build_callback_source_boundary_fields(
+    source: str,
+    *,
+    delivery_only: bool = False,
+    token: str = "",
+    widget_key: str = "",
+    call_site: str = "",
+    module_name: str = "",
+    script_run_seq: int = 0,
+    deployment_sha: str = "",
+) -> dict[str, Any]:
+    original, canonical = canonical_production_source(source)
+    allowed = callback_sources_allowlist()
+    return {
+        "original_source": original,
+        "normalized_source": str(source or "").strip(),
+        "canonical_source": canonical,
+        "repr_original_source": repr(original),
+        "repr_canonical_source": repr(canonical),
+        "source_type": type(source).__name__,
+        "allowed_sources": allowed,
+        "membership_result": canonical in CALLBACK_SOURCES,
+        "delivery_only": bool(delivery_only),
+        "token": str(token or "")[:400],
+        "widget_key": str(widget_key or ""),
+        "call_site_function": str(call_site or ""),
+        "module_name": str(module_name or ""),
+        "script_run_seq": int(script_run_seq or 0),
+        "deployment_sha": str(deployment_sha or "")[:40],
+    }
+
+
+def _deployment_sha() -> str:
+    try:
+        from suite_deploy_marker import resolve_git_commit_short
+
+        return str(resolve_git_commit_short() or "")
+    except ImportError:
+        return ""
+
+
+def _script_run_seq(session: dict[str, Any]) -> int:
+    try:
+        return int(session.get("_solo_stage1_script_run_seq") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def note_callback_source_boundary(
+    st: Any | None,
+    session: dict[str, Any],
+    *,
+    source: str,
+    delivery_only: bool = False,
+    token: str = "",
+    widget_key: str = "",
+    call_site: str = "",
+    module_name: str = "",
+    room: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    fields = build_callback_source_boundary_fields(
+        source,
+        delivery_only=delivery_only,
+        token=token,
+        widget_key=widget_key,
+        call_site=call_site,
+        module_name=module_name or __name__,
+        script_run_seq=_script_run_seq(session),
+        deployment_sha=_deployment_sha(),
+    )
+    if extra:
+        fields.update(extra)
+    try:
+        from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+
+        if stage1_production_ledger_enabled(st, session):
+            note_stage1_event(
+                session,
+                "production_stage1_callback_source_boundary",
+                st=st,
+                room=room,
+                widget_key=widget_key,
+                extra=fields,
+            )
+    except ImportError:
+        pass
+    return fields
+
+
+def note_callback_source_rejected(
+    st: Any | None,
+    session: dict[str, Any],
+    *,
+    source: str,
+    rejection_reason: str,
+    delivery_only: bool = False,
+    token: str = "",
+    widget_key: str = "",
+    call_site: str = "",
+    module_name: str = "",
+    room: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    fields = build_callback_source_boundary_fields(
+        source,
+        delivery_only=delivery_only,
+        token=token,
+        widget_key=widget_key,
+        call_site=call_site,
+        module_name=module_name or __name__,
+        script_run_seq=_script_run_seq(session),
+        deployment_sha=_deployment_sha(),
+    )
+    fields["rejection_reason"] = str(rejection_reason or "")
+    if extra:
+        fields.update(extra)
+    try:
+        from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+
+        if stage1_production_ledger_enabled(st, session):
+            note_stage1_event(
+                session,
+                "production_stage1_callback_source_rejected",
+                st=st,
+                room=room,
+                widget_key=widget_key,
+                extra=fields,
+            )
+    except ImportError:
+        pass
+    return fields
+
+
+def authorize_production_callback_source(source: str) -> tuple[bool, str, str]:
+    """Canonicalize then verify membership in the production callback-source allowlist."""
+    original = str(source or "").strip() or "native_component_on_change"
+    canonical = normalize_callback_source(original)
+    if canonical not in CALLBACK_SOURCES:
+        return False, canonical, "callback_source_not_allowed"
+    if canonical == "other" and original != "other":
+        return False, canonical, "callback_source_not_allowed"
+    return True, canonical, ""
+
+
 def get_token_action_complete(session: dict[str, Any], token: str) -> dict[str, Any] | None:
     tok = str(token or "").strip()
     if not tok:
@@ -166,7 +315,9 @@ def map_legacy_reject_reason(reason: str) -> str:
 def try_claim_token_delivery(session: dict[str, Any], token: str, source: str) -> tuple[bool, str]:
     """First delivery owner wins for this token; later invocations are rejected."""
     tok = str(token or "").strip()
-    src = normalize_callback_source(source)
+    _authorized, src, auth_reason = authorize_production_callback_source(source)
+    if auth_reason:
+        return False, auth_reason
     if not tok:
         return False, "empty_raw"
     if is_token_action_complete(session, tok):
@@ -265,12 +416,15 @@ def record_callback_invocation(
         seen = str(session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or "")
     except ImportError:
         seen = str(session.get("_solo_component_wake_seen_token") or "")
+    raw_reject = str(reject_code or "").strip()
+    mapped_reject = map_legacy_reject_reason(raw_reject) if raw_reject else ""
     row: dict[str, Any] = {
         "ts": time.time(),
         "seq": seq,
         "callback_source": normalize_callback_source(callback_source),
         "delivery_claimed": bool(delivery_claimed),
-        "reject_code": map_legacy_reject_reason(reject_code) if reject_code else "",
+        "raw_reject_code": raw_reject,
+        "reject_code": mapped_reject,
         "token_already_consumed": bool(token_already_consumed)
         or (bool(token) and token == seen and not delivery_claimed),
         "committed_pick": bool(committed_pick),

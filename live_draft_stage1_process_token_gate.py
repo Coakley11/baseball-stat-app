@@ -645,8 +645,37 @@ def pre_claim_actionable_eligible(
     deliver_gate_ctx: dict[str, Any],
 ) -> tuple[bool, str]:
     """Observation-only paths must not consume the sole actionable expiration claim."""
+    delivery_via = str(
+        deliver_gate_ctx.get("canonical_source")
+        or deliver_gate_ctx.get("source")
+        or ""
+    ).strip()
+    try:
+        from live_draft_stage1_expire_audit import note_callback_source_boundary
+
+        note_callback_source_boundary(
+            st,
+            session,
+            source=delivery_via,
+            delivery_only=bool(deliver_gate_ctx.get("delivery_only")),
+            token=str(deliver_gate_ctx.get("normalized_token") or ""),
+            widget_key=str(deliver_gate_ctx.get("widget_key") or ""),
+            call_site="pre_claim_actionable_eligible",
+            module_name=__name__,
+        )
+    except ImportError:
+        pass
     if bool(deliver_gate_ctx.get("delivery_only")):
         return False, "delivery_only_observation"
+    if delivery_via == "return_value_session_bind" and bool(
+        deliver_gate_ctx.get("return_value_delivery_active")
+    ):
+        if bool(deliver_gate_ctx.get("persistent_wake_eligible")) or session.get(
+            "_solo_persistent_wake_early_latch"
+        ):
+            if not _auto_pick_processing_enabled(session):
+                return False, "diagnostic_pick_processing_disabled"
+            return True, ""
     if not session.get("_solo_persistent_wake_actionable"):
         return False, "not_actionable"
     if not _auto_pick_processing_enabled(session):

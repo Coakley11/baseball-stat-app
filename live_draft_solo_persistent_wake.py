@@ -879,6 +879,24 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             pre_claim_ok, pre_claim_reason = _pre_claim_eligible_fn(st, session, deliver_gate_ctx)
         if not skip_claim and not pre_claim_ok:
             try:
+                from live_draft_stage1_expire_audit import note_callback_source_rejected
+
+                note_callback_source_rejected(
+                    st,
+                    session,
+                    source=delivery_via,
+                    rejection_reason=pre_claim_reason,
+                    delivery_only=bool(deliver_gate_ctx.get("delivery_only")),
+                    token=str(token or ""),
+                    widget_key=key,
+                    call_site="_production_deliver_callback",
+                    module_name=__name__,
+                    room=live_dict,
+                    extra={"gate": "pre_claim_actionable_eligible"},
+                )
+            except ImportError:
+                pass
+            try:
                 if _note_post_claim_entered_fn is not None:
                     _note_post_claim_entered_fn(
                         session,
@@ -972,6 +990,22 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                     )
             except Exception:
                 pass
+            try:
+                from live_draft_stage1_expire_audit import note_callback_source_boundary
+
+                note_callback_source_boundary(
+                    st,
+                    session,
+                    source=delivery_via,
+                    delivery_only=bool(deliver_gate_ctx.get("delivery_only")),
+                    token=str(token or ""),
+                    widget_key=key,
+                    call_site="try_claim_token_delivery",
+                    module_name=__name__,
+                    room=live_dict,
+                )
+            except ImportError:
+                pass
             claimed, reject_code = try_claim_token_delivery(session, token, delivery_via)
             if claimed:
                 try:
@@ -1057,6 +1091,24 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
         except ImportError:
             pass
         if not claimed:
+            try:
+                from live_draft_stage1_expire_audit import note_callback_source_rejected
+
+                note_callback_source_rejected(
+                    st,
+                    session,
+                    source=delivery_via,
+                    rejection_reason=str(reject_code or "claim_rejected"),
+                    delivery_only=bool(deliver_gate_ctx.get("delivery_only")),
+                    token=str(token or ""),
+                    widget_key=key,
+                    call_site="_production_deliver_callback",
+                    module_name=__name__,
+                    room=live_dict,
+                    extra={"gate": "try_claim_token_delivery"},
+                )
+            except ImportError:
+                pass
             try:
                 if note_process_token_gate is not None:
                     note_process_token_gate(
@@ -1444,6 +1496,7 @@ def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
         except ImportError:
             get_registered_declaration_room = lambda _s: None  # type: ignore[assignment,misc]
         session["_solo_stage1_last_delivery_only"] = False
+        session[SOLO_PERSISTENT_WAKE_ACTIONABLE_KEY] = True
         process_production_expire_token(
             st,
             session,
