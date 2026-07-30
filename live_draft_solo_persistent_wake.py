@@ -283,6 +283,15 @@ def process_production_expire_token(
             live=live_dict,
             context=gate_ctx,
         )
+        from live_draft_stage1_process_token_gate import note_production_source_boundary
+
+        note_production_source_boundary(
+            session,
+            st=st,
+            widget_key=widget_key,
+            context=gate_ctx,
+            live=live_dict,
+        )
     except ImportError:
         pass
     if not token:
@@ -303,6 +312,32 @@ def process_production_expire_token(
         except ImportError:
             pass
         return False
+    try:
+        from live_draft_stage1_expire_audit import is_token_action_complete, record_callback_invocation
+        from live_draft_stage1_process_token_gate import note_post_action_duplicate_suppressed
+
+        if is_token_action_complete(session, token):
+            note_post_action_duplicate_suppressed(
+                session,
+                st=st,
+                token=str(token or ""),
+                widget_key=widget_key,
+                source=source,
+                live=live_dict,
+                context=gate_ctx,
+            )
+            record_callback_invocation(
+                st,
+                session,
+                callback_source=source,
+                raw_value=raw_token,
+                room=live_dict,
+                reject_code="post_action_duplicate_suppressed",
+                delivery_claimed=False,
+            )
+            return False
+    except ImportError:
+        pass
     ok, reject_code = _production_expire_token_matches_state(session, token, live_dict)
     if not ok:
         try:
@@ -743,6 +778,33 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
         _note_autopick_about_fn = None  # type: ignore[misc,assignment]
         _pre_claim_eligible_fn = None  # type: ignore[misc,assignment]
 
+    try:
+        from live_draft_stage1_expire_audit import is_token_action_complete, record_callback_invocation
+        from live_draft_stage1_process_token_gate import note_post_action_duplicate_suppressed
+
+        if is_token_action_complete(session, token):
+            note_post_action_duplicate_suppressed(
+                session,
+                st=st,
+                token=str(token or ""),
+                widget_key=key,
+                source=delivery_via,
+                live=live_dict,
+                context=deliver_gate_ctx,
+            )
+            record_callback_invocation(
+                st,
+                session,
+                callback_source=delivery_via,
+                raw_value=raw,
+                room=live if isinstance(live, dict) else None,
+                reject_code="post_action_duplicate_suppressed",
+                delivery_claimed=False,
+            )
+            return
+    except ImportError:
+        pass
+
     def _post_claim_gate_return(
         gate_name: str,
         gate_result: str,
@@ -1023,7 +1085,7 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
                 )
             except ImportError:
                 pass
-            if reject_code not in ("empty_raw",):
+            if reject_code not in ("empty_raw", "post_action_duplicate_suppressed"):
                 mark_wake_token_rejected(session, token, reject_code)
                 clear_persistent_wake_widget_value(st, session, token)
             try:
@@ -1362,6 +1424,13 @@ def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
             return
         if token == str(session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or ""):
             return
+        try:
+            from live_draft_stage1_expire_audit import is_token_action_complete
+
+            if is_token_action_complete(session, token):
+                return
+        except ImportError:
+            pass
         try:
             from live_draft_stage1_expire_audit import try_claim_token_delivery
 

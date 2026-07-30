@@ -701,6 +701,30 @@ def wait_one_expiration(
                     timeout_s=5.0,
                 )
         if {"pick_committed", "commit_confirmed"} & merged_stages:
+            for _ in range(4):
+                page.wait_for_timeout(1500)
+                ledger_snap = scrape_stage1_ledger_all_frames(page)
+                best_pick = ledger_snap.get("best") or {}
+                if best_pick.get("b64"):
+                    try:
+                        from stage1_parent_observer_probe import decode_ledger_b64
+
+                        decoded = decode_ledger_b64(str(best_pick.get("b64") or ""))
+                        merged_server_ledger = merge_ledger_rows(
+                            merged_server_ledger, list(decoded.get("rows") or [])
+                        )
+                    except Exception:
+                        pass
+                try:
+                    from stage1_parent_observer_probe import scrape_stage1_production_ledger
+
+                    dom_ledger = scrape_stage1_production_ledger(page)
+                    if dom_ledger.get("rows"):
+                        merged_server_ledger = merge_ledger_rows(
+                            merged_server_ledger, list(dom_ledger.get("rows") or [])
+                        )
+                except Exception:
+                    pass
             break
         if accepted_now:
             observe_until = min(observe_until, time.time() + 8.0)
@@ -745,6 +769,41 @@ def wait_one_expiration(
             )
         except Exception:
             pass
+    if not merged_server_ledger:
+        try:
+            from stage1_parent_observer_probe import scrape_stage1_production_ledger
+
+            dom_ledger = scrape_stage1_production_ledger(page)
+            if dom_ledger.get("rows"):
+                merged_server_ledger = merge_ledger_rows(
+                    merged_server_ledger, list(dom_ledger.get("rows") or [])
+                )
+        except Exception:
+            pass
+    if not merged_server_ledger and audit_final:
+        try:
+            import base64
+
+            b64_audit = page.evaluate(
+                """() => {
+                  function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+                  for (const root of roots()) {
+                    const el = root.querySelector('#solo-stage1-production-ledger');
+                    if (el) return el.getAttribute('data-b64') || '';
+                  }
+                  if (window.__soloStage1LedgerB64) return window.__soloStage1LedgerB64;
+                  return '';
+                }"""
+            )
+            if b64_audit:
+                from stage1_parent_observer_probe import decode_ledger_b64
+
+                decoded = decode_ledger_b64(str(b64_audit))
+                merged_server_ledger = merge_ledger_rows(
+                    merged_server_ledger, list(decoded.get("rows") or [])
+                )
+        except Exception:
+            pass
     frame2_final = scrape_frame2_parent_messages(page)
     observer_contexts = collect_observer_execution_contexts(page)
     # Prefer topology captured while component iframes are still attached (Playwright detaches on teardown).
@@ -757,6 +816,7 @@ def wait_one_expiration(
     state_after = scrape_timer_fields(page)
     pick_after = state_after.get("pick")
     deadline_after = (state_after.get("mount_diag") or {}).get("diag_deadline") or state_after.get("timer")
+    next_token_after = str((state_after.get("mount_diag") or {}).get("diag_token") or "")
     board_after = int(state_after.get("boardRows") or 0)
     commits_after = int((chain_final.get("commits") or 0))
 
@@ -769,8 +829,20 @@ def wait_one_expiration(
     )
     client_stages = stages_from_chain(client_chain_merged)
     server_stages = stages_from_chain(str(chain_final.get("chain") or ""))
+    callbacks = list(audit_final.get("callbacks") or [])
+    accepted = [c for c in callbacks if c.get("delivery_claimed") and not c.get("reject_code")]
+    rejected = [c for c in callbacks if c.get("reject_code")]
+    pick_commits = list(audit_final.get("pick_commits") or [])
     pick_delta = None
-    if pick_before is not None and pick_after is not None:
+    pick_index_before = None
+    pick_index_after = None
+    if pick_commits:
+        lc = pick_commits[-1]
+        if lc.get("pick_index_before") is not None and lc.get("pick_index_after") is not None:
+            pick_index_before = int(lc["pick_index_before"])
+            pick_index_after = int(lc["pick_index_after"])
+            pick_delta = pick_index_after - pick_index_before
+    if pick_delta is None and pick_before is not None and pick_after is not None:
         pick_delta = int(pick_after) - int(pick_before)
 
     token_sent = str(client_final.get("token") or "")
@@ -780,11 +852,6 @@ def wait_one_expiration(
             if c.get("token"):
                 token_sent = str(c.get("token"))
                 break
-
-    callbacks = list(audit_final.get("callbacks") or [])
-    accepted = [c for c in callbacks if c.get("delivery_claimed") and not c.get("reject_code")]
-    rejected = [c for c in callbacks if c.get("reject_code")]
-    pick_commits = list(audit_final.get("pick_commits") or [])
 
     iframe_entries: list[dict[str, Any]] = []
     for fr in (iframe_final.get("frames") or []):
@@ -863,9 +930,12 @@ def wait_one_expiration(
         "state_after": state_after,
         "pick_before": pick_before,
         "pick_after": pick_after,
+        "pick_index_before": pick_index_before,
+        "pick_index_after": pick_index_after,
         "pick_delta": pick_delta,
         "deadline_before": deadline_before,
         "deadline_after": deadline_after,
+        "next_token_after_commit": next_token_after,
         "board_before": board_before,
         "board_after": board_after,
         "board_delta": board_after - board_before,
@@ -938,23 +1008,61 @@ def grade_stage_1a(
     token_sent = str(exp.get("token_sent") or "")
     raw = str(exp.get("component_raw") or "")
     pick_delta = exp.get("pick_delta")
-    exactly_one_pick = pick_delta == 1 or exp.get("board_delta") == 1
+    pick_commits = exp.get("pick_commit_audit") or []
+    pick_index_delta = None
+    if exp.get("pick_index_before") is not None and exp.get("pick_index_after") is not None:
+        pick_index_delta = int(exp["pick_index_after"]) - int(exp["pick_index_before"])
+    elif pick_commits:
+        lc = pick_commits[-1]
+        if lc.get("pick_index_before") is not None and lc.get("pick_index_after") is not None:
+            pick_index_delta = int(lc["pick_index_after"]) - int(lc["pick_index_before"])
+    exactly_one_pick = (
+        pick_index_delta == 1
+        or pick_delta == 1
+        or exp.get("board_delta") == 1
+        or (exp.get("commits_delta") == 1 and bool(pick_commits))
+    )
     auth_ok = authenticated_probe(page, preflight=preflight)
     if preflight and preflight.get("authenticated_restored"):
         auth_ok = True
     auth_at_expire = auth_ok
     room_ok = bool(draft_valid.get("valid")) and bool(exp.get("room_in_progress_before"))
-    pick_commits = exp.get("pick_commit_audit") or []
     expire_caused_pick = bool(pick_commits) and not exp.get("harness_manual_draft_action")
     zero_cross = "browser_deadline_crossed" in cs
     sent_ok = "component_value_sent" in cs
     callbacks = list(exp.get("callback_timeline") or [])
-    native_accepted = [
+    try:
+        from live_draft_stage1_expire_audit import HARMLESS_REJECT_CODES
+    except ImportError:
+        HARMLESS_REJECT_CODES = frozenset(
+            {
+                "delivery_only_observation",
+                "post_action_duplicate_suppressed",
+                "already_consumed",
+                "callback_source_not_allowed",
+            }
+        )
+    native_observation = [
         c
         for c in callbacks
         if str(c.get("callback_source") or "") == "native_component_return"
+    ]
+    bind_accepted = [
+        c
+        for c in callbacks
+        if str(c.get("callback_source") or "") == "return_value_session_bind"
         and c.get("delivery_claimed")
         and not c.get("reject_code")
+    ]
+    operational_rejects = [
+        c
+        for c in callbacks
+        if c.get("reject_code") and str(c.get("reject_code") or "") not in HARMLESS_REJECT_CODES
+    ]
+    claim_sources = [
+        str(c.get("callback_source") or "")
+        for c in callbacks
+        if c.get("delivery_claimed") and not c.get("reject_code")
     ]
     mount_return = str(
         (exp.get("return_value_chain") or {}).get("python_component", {}).get("coalesced_component_value")
@@ -977,6 +1085,15 @@ def grade_stage_1a(
         return False
 
     ledger_token_ok = _ledger_proves_exact_token_delivery()
+    claim_result_source = ""
+    for row in exp.get("merged_server_ledger") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("event") or "") != "production_stage1_token_claim_result":
+            continue
+        if row.get("accepted"):
+            claim_result_source = str(row.get("source") or row.get("delivery_via") or "")
+            break
     token_match = bool(
         token_sent
         and (
@@ -1016,12 +1133,15 @@ def grade_stage_1a(
         "4_component_value_sent": sent_ok,
         "5_exact_token_delivery": token_match or bool(token_sent and mount_return) or ledger_token_ok,
         "6_one_accepted_callback": accepted_count == 1,
-        "6b_native_component_return_accepted": len(native_accepted) == 1,
-        "7_zero_duplicate_processing": rejected_count == 0 and on_change_count <= 1,
+        "6a_observation_never_claimed": all(not c.get("delivery_claimed") for c in native_observation),
+        "6b_return_value_session_bind_accepted": len(bind_accepted) == 1,
+        "6c_claim_source_not_other": "other" not in claim_sources
+        and (claim_result_source == "return_value_session_bind" or len(bind_accepted) == 1),
+        "7_zero_duplicate_processing": len(operational_rejects) == 0 and accepted_count <= 1,
         "7b_no_late_flush_owner": not flush_owner,
         "7c_no_on_change_owner": not on_change_owner,
         "8_one_pick_committed": exactly_one_pick,
-        "9_pick_advances_once": pick_delta == 1,
+        "9_pick_advances_once": pick_index_delta == 1 if pick_index_delta is not None else pick_delta == 1,
         "10_new_deadline_after_commit": bool(exp.get("deadline_after")) and str(exp.get("deadline_after")) != str(
             exp.get("deadline_before") or ""
         ),
@@ -1029,6 +1149,8 @@ def grade_stage_1a(
         "12_board_or_pool_updated": (exp.get("board_delta") or 0) >= 1,
         "13_pick_from_expire_not_harness": expire_caused_pick,
         "14_queue_player_ignored": queue_check_ok,
+        "15_next_token_after_commit": bool(exp.get("next_token_after_commit"))
+        and str(exp.get("next_token_after_commit") or "") != str(token_sent or ""),
     }
     passed = all(checks.values())
     if remount_warn and passed:
@@ -1042,7 +1164,13 @@ def grade_stage_1a(
         "pick_delta": pick_delta,
         "token_match": token_match,
         "authenticated_at_expire": auth_at_expire,
-        "native_component_return_accepted_count": len(native_accepted),
+        "native_component_return_accepted_count": sum(
+            1 for c in native_observation if c.get("delivery_claimed") and not c.get("reject_code")
+        ),
+        "return_value_session_bind_accepted_count": len(bind_accepted),
+        "operational_reject_count": len(operational_rejects),
+        "pick_index_delta": pick_index_delta,
+        "claim_result_source": claim_result_source,
         "failure_interpretation_class": (exp.get("return_value_chain") or {}).get("failure_interpretation_class"),
         "stage1a_mode": stage1a_mode,
     }

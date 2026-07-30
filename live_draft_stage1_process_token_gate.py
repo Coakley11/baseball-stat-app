@@ -97,8 +97,19 @@ def build_process_token_gate_context(
         diag_flags["p6_persistent_diag"] = False
     rv3 = str(session.get("_solo_rv_ladder_step") or "").strip()
     parsed = _parse_token_fields(normalized_token)
+    try:
+        from live_draft_stage1_expire_audit import canonical_production_source, is_token_action_complete
+
+        original_source, canonical_source = canonical_production_source(source)
+    except ImportError:
+        original_source, canonical_source = str(source or ""), str(source or "")
+    delivery_only_val = (
+        delivery_only if delivery_only is not None else bool(session.get("_solo_stage1_last_delivery_only"))
+    )
     return {
         "source": source,
+        "original_source": original_source,
+        "canonical_source": canonical_source,
         "raw_token": repr(raw_token)[:400],
         "normalized_token": str(normalized_token or "")[:400],
         "expected_token": expected[:400],
@@ -114,7 +125,11 @@ def build_process_token_gate_context(
         "live_draft_room_present": bool(live_room),
         "canonical_live_draft_state_present": bool(session.get("live_draft_room")),
         "return_value_delivery_active": bool(session.get("_solo_persistent_return_value_delivery")),
-        "delivery_only": delivery_only if delivery_only is not None else bool(session.get("_solo_stage1_last_delivery_only")),
+        "delivery_only": delivery_only_val,
+        "observation_completed": delivery_only_observation_completed(session, normalized_token),
+        "actionable_eligible": bool(session.get("_solo_persistent_wake_actionable"))
+        and not delivery_only_val,
+        "action_complete": is_token_action_complete(session, normalized_token),
         "suppress_flag": bool(session.get("_solo_suppress_immediate_session_on_change")),
         "persistent_wake_eligible": bool(session.get("_solo_persistent_wake_early_latch")),
         "widget_key": widget_key,
@@ -637,6 +652,89 @@ def pre_claim_actionable_eligible(
     if not _auto_pick_processing_enabled(session):
         return False, "diagnostic_pick_processing_disabled"
     return True, ""
+
+
+def note_post_action_duplicate_suppressed(
+    session: dict[str, Any],
+    *,
+    st: Any | None,
+    token: str,
+    widget_key: str,
+    source: str,
+    live: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> None:
+    try:
+        from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+        from live_draft_stage1_expire_audit import get_token_action_complete
+    except ImportError:
+        return
+    if not stage1_production_ledger_enabled(st, session):
+        return
+    extra = dict(context or {})
+    extra.update(
+        {
+            "token": str(token or "")[:400],
+            "source": source,
+            "action_complete": get_token_action_complete(session, token),
+        }
+    )
+    note_stage1_event(
+        session,
+        "production_stage1_post_action_duplicate_suppressed",
+        st=st,
+        room=live if isinstance(live, dict) else None,
+        widget_key=widget_key,
+        extra=extra,
+    )
+
+
+def note_production_source_boundary(
+    session: dict[str, Any],
+    *,
+    st: Any | None,
+    widget_key: str,
+    context: dict[str, Any] | None = None,
+    live: dict[str, Any] | None = None,
+) -> None:
+    try:
+        from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+    except ImportError:
+        return
+    if not stage1_production_ledger_enabled(st, session):
+        return
+    note_stage1_event(
+        session,
+        "production_stage1_production_source_boundary",
+        st=st,
+        room=live if isinstance(live, dict) else None,
+        widget_key=widget_key,
+        extra=dict(context or {}),
+    )
+
+
+def note_token_action_complete_marker(
+    session: dict[str, Any],
+    *,
+    st: Any | None,
+    marker: dict[str, Any],
+    widget_key: str = "",
+    live: dict[str, Any] | None = None,
+) -> None:
+    try:
+        from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
+    except ImportError:
+        return
+    if not stage1_production_ledger_enabled(st, session):
+        return
+    note_stage1_event(
+        session,
+        "production_stage1_token_action_complete",
+        st=st,
+        room=live if isinstance(live, dict) else None,
+        widget_key=widget_key,
+        extra=dict(marker or {}),
+    )
 
 
 def note_try_claim_result(

@@ -858,14 +858,21 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
             from live_draft_stage1_expire_audit import record_pick_commit_audit
 
             snap = getattr(result, "snapshot_before", None)
-            pick_before = int(getattr(snap, "pick_index", 0) or 0) + 1 if snap else int(tick_room.get("current_pick_index") or 0)
-            pick_after = int(tick_room.get("current_pick_index") or 0) + 1
+            if snap is not None:
+                pick_index_before = int(getattr(snap, "pick_index", 0) or 0)
+            else:
+                pick_index_after_raw = int(tick_room.get("current_pick_index") or 0)
+                pick_index_before = max(0, pick_index_after_raw - 1)
+            pick_index_after = int(tick_room.get("current_pick_index") or 0)
+            pick_before = pick_index_before + 1
+            pick_after = pick_index_after + 1
             board = tick_room.get("draft_board") or []
             last_pick = board[-1] if isinstance(board, list) and board else {}
             player = ""
             if isinstance(last_pick, dict):
                 player = str(last_pick.get("Player") or last_pick.get("player") or "")
             seq = session.get("_solo_last_callback_seq")
+            triggering_token = str(expire_token or session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or "")
             record_pick_commit_audit(
                 st,
                 session,
@@ -875,9 +882,30 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
                 selection_source=str(getattr(result, "reason", "") or "unknown"),
                 pick_before=pick_before,
                 pick_after=pick_after,
-                triggering_token=str(expire_token or session.get(SOLO_COMPONENT_WAKE_SEEN_KEY) or ""),
+                triggering_token=triggering_token,
                 triggering_callback_seq=int(seq) if seq is not None else None,
             )
+            try:
+                from live_draft_stage1_expire_audit import mark_token_action_complete
+
+                owners = session.get("_solo_token_delivery_owner") or {}
+                claim_source = ""
+                if isinstance(owners, dict):
+                    claim_source = str(owners.get(triggering_token) or "")
+                mark_token_action_complete(
+                    session,
+                    triggering_token,
+                    st=st,
+                    room_id=str(tick_room.get("draft_room_id") or tick_room.get("draft_id") or ""),
+                    pick_index_before=pick_index_before,
+                    pick_index_after=pick_index_after,
+                    committed_player=player,
+                    selection_source=str(getattr(result, "reason", "") or "unknown"),
+                    claim_source=claim_source,
+                    revision=str(tick_room.get("revision") or tick_room.get("_revision") or ""),
+                )
+            except ImportError:
+                pass
         except ImportError:
             pass
         rerun_ok = _after_expire_success(

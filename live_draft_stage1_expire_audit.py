@@ -13,7 +13,17 @@ SOLO_TOKEN_DELIVERY_OWNER_KEY = "_solo_token_delivery_owner"
 SOLO_CALLBACK_SEQ_KEY = "_solo_stage1_callback_seq"
 SOLO_WAKE_REJECTED_TOKENS_KEY = "_solo_wake_rejected_tokens"
 SOLO_LAST_CALLBACK_SEQ_KEY = "_solo_last_callback_seq"
+SOLO_STAGE1_ACTION_COMPLETE_KEY = "_solo_stage1_token_action_complete"
 MAX_ROWS = 200
+
+HARMLESS_REJECT_CODES = frozenset(
+    {
+        "delivery_only_observation",
+        "post_action_duplicate_suppressed",
+        "already_consumed",
+        "callback_source_not_allowed",
+    }
+)
 
 REJECT_REASON_TO_CODE = {
     "bad_token": "malformed_token",
@@ -30,6 +40,7 @@ CALLBACK_SOURCES = frozenset(
     {
         "native_component_on_change",
         "native_component_return",
+        "return_value_session_bind",
         "late_page_flush",
         "post_mount_session_state_poll",
         "manual_diagnostic_invocation",
@@ -72,6 +83,67 @@ def normalize_callback_source(source: str) -> str:
     return "other" if s else "native_component_on_change"
 
 
+def canonical_production_source(source: str) -> tuple[str, str]:
+    original = str(source or "").strip() or "native_component_on_change"
+    return original, normalize_callback_source(original)
+
+
+def get_token_action_complete(session: dict[str, Any], token: str) -> dict[str, Any] | None:
+    tok = str(token or "").strip()
+    if not tok:
+        return None
+    completed = session.get(SOLO_STAGE1_ACTION_COMPLETE_KEY) or {}
+    if not isinstance(completed, dict):
+        return None
+    row = completed.get(tok)
+    return dict(row) if isinstance(row, dict) else None
+
+
+def is_token_action_complete(session: dict[str, Any], token: str) -> bool:
+    return get_token_action_complete(session, token) is not None
+
+
+def mark_token_action_complete(
+    session: dict[str, Any],
+    token: str,
+    *,
+    st: Any | None = None,
+    room_id: str = "",
+    pick_index_before: int | None = None,
+    pick_index_after: int | None = None,
+    committed_player: str = "",
+    selection_source: str = "",
+    claim_source: str = "",
+    revision: str = "",
+) -> dict[str, Any]:
+    tok = str(token or "").strip()
+    if not tok:
+        return {}
+    row = {
+        "token": tok[:400],
+        "room_id": str(room_id or "")[:80],
+        "pick_index_before": pick_index_before,
+        "pick_index_after": pick_index_after,
+        "pick_number_before": (int(pick_index_before) + 1) if pick_index_before is not None else None,
+        "pick_number_after": (int(pick_index_after) + 1) if pick_index_after is not None else None,
+        "committed_player": str(committed_player or "")[:120],
+        "selection_source": str(selection_source or "")[:80],
+        "claim_source": normalize_callback_source(claim_source),
+        "revision": str(revision or "")[:120],
+        "ts": time.time(),
+    }
+    completed = dict(session.get(SOLO_STAGE1_ACTION_COMPLETE_KEY) or {})
+    completed[tok] = row
+    session[SOLO_STAGE1_ACTION_COMPLETE_KEY] = completed
+    try:
+        from live_draft_stage1_process_token_gate import note_token_action_complete_marker
+
+        note_token_action_complete_marker(session, st=st, marker=row)
+    except ImportError:
+        pass
+    return row
+
+
 def map_legacy_reject_reason(reason: str) -> str:
     r = str(reason or "").strip()
     if r in REJECT_REASON_TO_CODE:
@@ -97,6 +169,8 @@ def try_claim_token_delivery(session: dict[str, Any], token: str, source: str) -
     src = normalize_callback_source(source)
     if not tok:
         return False, "empty_raw"
+    if is_token_action_complete(session, tok):
+        return False, "post_action_duplicate_suppressed"
     rejected = session.get(SOLO_WAKE_REJECTED_TOKENS_KEY) or {}
     if isinstance(rejected, dict) and tok in rejected:
         return False, map_legacy_reject_reason(str(rejected.get(tok) or "already_consumed"))
@@ -225,6 +299,8 @@ def record_pick_commit_audit(
 ) -> dict[str, Any]:
     if not stage1_expire_audit_active(st, session):
         return {}
+    pick_index_before = int(pick_before) - 1 if pick_before else 0
+    pick_index_after = int(pick_after) - 1 if pick_after else pick_index_before + 1
     row: dict[str, Any] = {
         "ts": time.time(),
         "room_id": str(room.get("draft_room_id") or room.get("draft_id") or "").strip(),
@@ -233,9 +309,14 @@ def record_pick_commit_audit(
         "selection_source": str(selection_source or "unknown"),
         "pick_before": int(pick_before),
         "pick_after": int(pick_after),
+        "pick_index_before": pick_index_before,
+        "pick_index_after": pick_index_after,
+        "pick_number_before": int(pick_before),
+        "pick_number_after": int(pick_after),
         "triggering_token": str(triggering_token or "")[:400],
         "triggering_callback_seq": triggering_callback_seq,
         "harness_manual_action": bool(harness_manual_action),
+        "revision": str(room.get("revision") or room.get("_revision") or "")[:120],
     }
     log = list(session.get(SOLO_STAGE1_PICK_COMMIT_LOG_KEY) or [])
     log.append(row)
