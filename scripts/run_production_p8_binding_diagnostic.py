@@ -506,16 +506,32 @@ def run_diagnostic() -> dict[str, Any]:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
-        page = context.new_page()
-        report["parent_event_sink_install"] = install_parent_event_sink(page, parent_sink)
         try:
             from stage1_parent_observer_probe import HARNESS_TOP_OBSERVER_INIT_SCRIPT
             from stage1_harness_observability import LEDGER_DURABLE_INIT_SCRIPT
 
-            page.add_init_script(HARNESS_TOP_OBSERVER_INIT_SCRIPT)
-            page.add_init_script(LEDGER_DURABLE_INIT_SCRIPT)
+            context.add_init_script(HARNESS_TOP_OBSERVER_INIT_SCRIPT)
+            context.add_init_script(LEDGER_DURABLE_INIT_SCRIPT)
         except ImportError:
             pass
+        page = context.new_page()
+        from p8_ledger_observability import (
+            OUT_AFTER_SEND,
+            OUT_FINAL,
+            OUT_PRE,
+            P8LedgerHarnessCollector,
+            audit_stored_diagnostic_artifact,
+            capture_all_ledger_sources,
+            classify_observability_failure,
+            enrich_expiration_ledger,
+            observability_validity_gate,
+            summarize_filter_rejections,
+            write_checkpoint,
+        )
+
+        collector = P8LedgerHarnessCollector()
+        report["d73bcf3_observability_audit"] = audit_stored_diagnostic_artifact(OUT) if OUT.is_file() else {}
+        report["parent_event_sink_install"] = install_parent_event_sink(page, parent_sink)
         goto_and_wake(page, url, timeout_s=240)
         page.wait_for_timeout(15000)
         try:
@@ -576,8 +592,29 @@ def run_diagnostic() -> dict[str, Any]:
             OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             return report
 
+        pre_cap = capture_all_ledger_sources(page)
+        collector.absorb_capture(pre_cap, label="pre_expiration_setup")
+        write_checkpoint(
+            OUT_PRE,
+            {
+                "capture": pre_cap,
+                "collector_peak": len(collector.peak_rows()),
+                "room_id": start_val.get("latched_room_id"),
+                "cloud_sha": sha,
+            },
+        )
+
         page.wait_for_timeout(8000)
         exp = wait_one_expiration(page, timeout_s=95.0, parent_sink=parent_sink)
+        enrich_expiration_ledger(page, exp, collector, label="post_expiration_enrich")
+        write_checkpoint(
+            OUT_AFTER_SEND,
+            {
+                "collector_peak": len(collector.peak_rows()),
+                "ledger_meta": exp.get("ledger_meta"),
+                "merged_count": len(exp.get("merged_server_ledger") or []),
+            },
+        )
         exp["cloud_sha"] = sha
         exp["room_id"] = start_val.get("latched_room_id")
         cloud_build = report.get("cloud_build") or ""
@@ -614,6 +651,73 @@ def run_diagnostic() -> dict[str, Any]:
             deployment_sha=sha,
             exact_token=token_for_filter,
         )
+        reject_summary = summarize_filter_rejections(filtered_meta)
+        obs_sources = dict(exp.get("observability_sources") or {})
+        lm = dict(exp.get("ledger_meta") or {})
+        obs_loop_count = int(
+            lm.get("observation_loop_ledger_row_count")
+            or len(exp.get("merged_server_ledger") or [])
+            or 0
+        )
+        report["observability_evidence"] = {
+            "raw_dom_rows_before_filter": int(
+                obs_sources.get("raw_dom_rows_before_filter") or lm.get("raw_dom_ledger_row_count") or 0
+            ),
+            "durable_store_rows_before_filter": int(
+                obs_sources.get("durable_store_rows_before_filter") or lm.get("durable_ledger_row_count") or 0
+            ),
+            "observation_loop_rows_before_filter": obs_loop_count,
+            "callback_audit_rows_before_filter": int(
+                obs_sources.get("callback_audit_rows_before_filter") or lm.get("callback_audit_row_count") or 0
+            ),
+            "server_log_rows_found": 0,
+            "total_rows_before_filter": filtered_meta.get("rows_before"),
+            "total_rows_after_filter": filtered_meta.get("rows_after"),
+            **reject_summary,
+            "harness_run_id": run_id,
+            "application_ledger_run_id": exp.get("application_ledger_run_id") or "",
+            "ledger_probe_found": obs_sources.get("ledger_probe_found_any_frame"),
+            "durable_store_max_rows": obs_sources.get("durable_store_max_rows"),
+        }
+        browser_send_ok = bool(
+            (exp.get("client_stages") or [])
+            or (exp.get("parent_event_sink") or {}).get("logical")
+        )
+        validity = observability_validity_gate(
+            setup_valid=True,
+            browser_send_ok=True,
+            collector=collector,
+            unfiltered_rows=unfiltered,
+            filter_meta=filtered_meta,
+        )
+        report["observability_validity"] = validity
+        if not validity.get("valid"):
+            obs_class = classify_observability_failure(
+                capture_final=pre_cap,
+                filter_meta=filtered_meta,
+                exp=exp,
+                harness_run_id=run_id,
+                app_run_id=str(exp.get("application_ledger_run_id") or ""),
+            )
+            report["aborted"] = True
+            report["abort_reason"] = "INVALID_DIAGNOSTIC_OBSERVABILITY_EMPTY"
+            report["failure_boundary"] = "OBS1 — PRODUCTION_LEDGER_NOT_CAPTURED"
+            report["observability_classification"] = obs_class
+            report["focused_p8_outcome"] = "INVALID_DIAGNOSTIC_OBSERVABILITY_EMPTY"
+            write_checkpoint(
+                OUT_FINAL,
+                {
+                    "observability_evidence": report["observability_evidence"],
+                    "observability_classification": obs_class,
+                    "filtered_meta": filtered_meta,
+                    "collector_log": collector.capture_log,
+                },
+            )
+            context.close()
+            browser.close()
+            OUT.parent.mkdir(parents=True, exist_ok=True)
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            return report
         exp["filtered_ledger_rows"] = filtered_meta.get("filtered_rows") or []
         exp["ledger_filter"] = filtered_meta
         gate_rows = [
@@ -643,23 +747,32 @@ def run_diagnostic() -> dict[str, Any]:
             gate_rows=gate_rows,
             browser_send=ladder.get("production_countdown_send") or {},
             filtered_meta=filtered_meta,
+            observability_valid=bool((report.get("observability_validity") or {}).get("valid")),
         )
+        report["focused_p8_outcome"] = ladder["focused_p8_outcome"]
         report["ledger_integrity"] = {
             "rows_before_filtering": filtered_meta.get("rows_before"),
             "rows_retained": filtered_meta.get("rows_after"),
             "rows_rejected": filtered_meta.get("rejected_count"),
             "rejection_sample": filtered_meta.get("rejected"),
             "rejection_reasons": filtered_meta.get("rejection_reasons"),
+            **report.get("observability_evidence", {}),
             "filter_run_id": filtered_meta.get("filter_run_id"),
             "filter_room_id": filtered_meta.get("filter_room_id"),
             "filter_deployment_sha": filtered_meta.get("filter_deployment_sha"),
             "merged_row_count": len(filtered_meta.get("filtered_rows") or []),
             "ledger_source_used": (exp.get("ledger_meta") or {}).get("ledger_source_used"),
-            "durable_source": (exp.get("ledger_meta") or {}).get("durable_source")
-            or (exp.get("ledger_meta") or {}).get("durable_merged_count"),
-            "callback_audit_source": (exp.get("ledger_meta") or {}).get("callback_audit_source")
-            or (exp.get("stage1_audit") or {}).get("source"),
+            "durable_source": (exp.get("ledger_meta") or {}).get("durable_ledger_row_count"),
+            "callback_audit_source": (exp.get("ledger_meta") or {}).get("callback_audit_row_count"),
         }
+        write_checkpoint(
+            OUT_FINAL,
+            {
+                "observability_evidence": report.get("observability_evidence"),
+                "ledger_integrity": report["ledger_integrity"],
+                "filtered_rows": filtered_meta.get("filtered_rows"),
+            },
+        )
         report["focused_p8_outcome"] = ladder["focused_p8_outcome"]
         baseline = load_baseline_summary()
         ladder["comparison_notes"] = compare_traces(ladder, baseline)
@@ -695,6 +808,8 @@ def main() -> int:
     print(f"artifact={OUT}")
     print(f"focused_p8_outcome={outcome}")
     if report.get("aborted"):
+        return 1
+    if report.get("focused_p8_outcome") == "INVALID_DIAGNOSTIC_OBSERVABILITY_EMPTY":
         return 1
     if report.get("focused_p8_outcome") != "FOCUSED_P8_BINDING_PASS":
         return 1

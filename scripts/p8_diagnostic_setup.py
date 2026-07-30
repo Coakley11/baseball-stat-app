@@ -290,6 +290,7 @@ def classify_focused_p8_outcome(
     gate_rows: list[dict[str, Any]],
     browser_send: dict[str, Any],
     filtered_meta: dict[str, Any],
+    observability_valid: bool = False,
 ) -> str:
     if not setup_valid:
         return "INVALID_DIAGNOSTIC_SETUP_ABORT"
@@ -303,6 +304,8 @@ def classify_focused_p8_outcome(
         return "INVALID_DIAGNOSTIC_SETUP_ABORT"
 
     if not pass_gates and not python_chain.get("bound_in_python_surfaces"):
+        if observability_valid:
+            return "P8BIND4-REPRODUCIBLE — STREAMLIT COMPONENT VALUE NOT BOUND"
         return "P8BIND4 — DIRECT_RETURN_AND_SESSION_STATE_EMPTY"
 
     if pass_gates and not python_chain.get("bound_in_python_surfaces"):

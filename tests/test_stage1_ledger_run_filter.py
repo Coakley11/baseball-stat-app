@@ -28,6 +28,30 @@ def test_cross_run_rows_excluded() -> None:
     )
     assert out["rows_before"] == 2
     assert out["rows_after"] == 1
+
+
+def test_missing_run_id_not_rejected_when_filter_run_set() -> None:
+    rows = [
+        {
+            "run_id": "",
+            "room_id": "ROOM1111",
+            "deployment_sha": "d73bcf3",
+            "event": "production_stage1_script_begin",
+        },
+        {
+            "run_id": "other",
+            "room_id": "ROOM1111",
+            "event": "production_stage1_bound_token_gate",
+        },
+    ]
+    out = filter_ledger_rows_for_diagnostic_run(
+        rows,
+        run_id="targetrun",
+        room_id="ROOM1111",
+        deployment_sha="d73bcf3",
+    )
+    assert out["rows_after"] >= 1
+    assert out["rejection_reasons"].get("run_id_mismatch") == 1
     assert out["rejected_count"] == 1
     assert "run_id_mismatch" in out["rejected"][0]["reasons"]
 

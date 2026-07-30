@@ -70,4 +70,16 @@ def filter_ledger_rows_for_diagnostic_run(
         "filter_room_id": room,
         "filter_deployment_sha": sha,
         "filter_exact_token": tok,
+        "rejection_reasons": _rejection_reason_counts(rejected),
     }
+
+
+def _rejection_reason_counts(rejected: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in rejected:
+        if not isinstance(item, dict):
+            continue
+        for reason in item.get("reasons") or []:
+            key = str(reason)
+            counts[key] = counts.get(key, 0) + 1
+    return counts
