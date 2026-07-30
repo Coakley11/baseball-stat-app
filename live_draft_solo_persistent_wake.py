@@ -1902,6 +1902,20 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
         except ImportError:
             pass
     if pending_token and pending_token != SOLO_INERT_EXPIRE_TOKEN:
+        try:
+            from live_draft_stage1_post_commit_timer import pending_mount_token_usable
+
+            pending_usable = pending_mount_token_usable(
+                session,
+                room_dict if isinstance(room_dict, dict) else None,
+                str(pending_token or ""),
+                pending_raw=pending_raw,
+            )
+        except ImportError:
+            pending_usable = bool(pending_raw is not None)
+    else:
+        pending_usable = False
+    if pending_usable:
         props_room = room_dict if isinstance(room_dict, dict) else {}
         actionable = True
         expire_token = pending_token
@@ -1979,6 +1993,18 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
 
     if isolated == "production":
         try:
+            from live_draft_stage1_post_commit_timer import note_next_countdown_declaration_about_to_mount
+
+            note_next_countdown_declaration_about_to_mount(
+                st,
+                session,
+                room=props_room if isinstance(props_room, dict) else room_dict,
+                expire_token=str(expire_token or ""),
+                widget_key=key,
+            )
+        except ImportError:
+            pass
+        try:
             if note_actionable_declaration_about_to_mount is not None:
                 note_actionable_declaration_about_to_mount(
                     session,
@@ -2007,6 +2033,19 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
 
             session[PRODUCTION_CALLBACK_FLAG] = True
         comp_return = st.session_state.get(key) if key in st.session_state else None
+        try:
+            from live_draft_stage1_post_commit_timer import note_next_countdown_declaration_returned
+
+            note_next_countdown_declaration_returned(
+                st,
+                session,
+                room=props_room if isinstance(props_room, dict) else room_dict,
+                expire_token=str(expire_token or ""),
+                returned_value=comp_return,
+                widget_key=key,
+            )
+        except ImportError:
+            pass
         record_production_component_declaration(
             st,
             session,

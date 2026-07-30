@@ -906,6 +906,18 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
                 )
             except ImportError:
                 pass
+            try:
+                from live_draft_stage1_post_commit_timer import finalize_post_commit_timer_continuity
+
+                finalize_post_commit_timer_continuity(
+                    st,
+                    session,
+                    tick_room,
+                    completed_token=triggering_token,
+                    result=result,
+                )
+            except ImportError:
+                pass
         except ImportError:
             pass
         rerun_ok = _after_expire_success(
