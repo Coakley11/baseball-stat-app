@@ -97,6 +97,9 @@ def note_stage1_event(
     }
     if extra:
         row.update(extra)
+    sha = str(session.get("_solo_stage1_deployment_sha") or "").strip()
+    if sha:
+        row["deployment_sha"] = sha[:7]
     log = list(session.get(STAGE1_LEDGER_KEY) or [])
     log.append(row)
     session[STAGE1_LEDGER_KEY] = log[-MAX_ROWS:]

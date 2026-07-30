@@ -52,12 +52,88 @@ def resolve_required_sha() -> str:
 
 
 def _ledger_rows(exp: dict[str, Any]) -> list[dict[str, Any]]:
+    filtered = exp.get("filtered_ledger_rows")
+    if isinstance(filtered, list) and filtered:
+        return [r for r in filtered if isinstance(r, dict)]
     meta = exp.get("ledger_meta") or {}
     rows = list(meta.get("merged_server_ledger") or [])
     if not rows:
         rows = list(exp.get("merged_server_ledger") or [])
     return [r for r in rows if isinstance(r, dict)]
 
+
+def _infer_run_id(rows: list[dict[str, Any]], room_id: str) -> str:
+    room = str(room_id or "").strip().upper()
+    counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        rr = str(row.get("room_id") or "").strip().upper()
+        if room and rr and rr != room:
+            continue
+        rid = str(row.get("run_id") or "").strip()
+        if rid:
+            counts[rid] = counts.get(rid, 0) + 1
+    if not counts:
+        for row in rows:
+            rid = str(row.get("run_id") or "").strip()
+            if rid:
+                counts[rid] = counts.get(rid, 0) + 1
+    if not counts:
+        return ""
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+def classify_contradiction_root_cause(
+    *,
+    unfiltered_rows: list[dict[str, Any]],
+    filtered_meta: dict[str, Any],
+    python_chain: dict[str, Any],
+    gate_rows: list[dict[str, Any]],
+) -> str:
+    obs_before = sum(
+        1
+        for r in unfiltered_rows
+        if isinstance(r, dict) and r.get("event") == "production_stage1_delivery_only_observation_completed"
+    )
+    obs_after = sum(
+        1
+        for r in filtered_meta.get("filtered_rows") or []
+        if isinstance(r, dict) and r.get("event") == "production_stage1_delivery_only_observation_completed"
+    )
+    flush_before = sum(
+        1
+        for r in unfiltered_rows
+        if isinstance(r, dict) and r.get("event") == "production_stage1_post_bind_actionable_flush"
+    )
+    flush_after = sum(
+        1
+        for r in filtered_meta.get("filtered_rows") or []
+        if isinstance(r, dict) and r.get("event") == "production_stage1_post_bind_actionable_flush"
+    )
+    if (obs_before or flush_before) and obs_after == 0 and flush_after == 0:
+        return "P8C4"
+    if gate_rows:
+        decisions = {str(g.get("decision") or "") for g in gate_rows if isinstance(g, dict)}
+        if "reject_mount_token_not_bound" in decisions:
+            return "P8C1"
+        if "reject_pending_token_not_bound" in decisions:
+            return "P8C2"
+        if any(d.startswith("pass_") for d in decisions) and not python_chain.get("bound_in_python_surfaces"):
+            return "P8C3"
+    if (obs_after or flush_after) and not python_chain.get("bound_in_python_surfaces"):
+        for row in filtered_meta.get("filtered_rows") or []:
+            if not isinstance(row, dict):
+                continue
+            if row.get("event") == "production_stage1_post_bind_actionable_flush":
+                src = str(row.get("bound_token_source") or "")
+                if src in ("", "mount_token", "expected_token"):
+                    return "P8C5"
+    if python_chain.get("bound_in_python_surfaces") and not python_chain.get("reaches_process_with_exact_token"):
+        return "P8C7"
+    if not python_chain.get("bound_in_python_surfaces"):
+        return "P8BIND4"
+    return "P8C8"
 
 def _production_countdown_send_evidence(exp: dict[str, Any], rv: dict[str, Any]) -> dict[str, Any]:
     double = dict((rv.get("browser") or {}).get("double_production_send_analysis") or exp.get("double_production_send_analysis") or {})
@@ -99,13 +175,16 @@ def _iframe_source_grading(exp: dict[str, Any], rv: dict[str, Any]) -> dict[str,
         or levels.get("LEVEL_3_CURRENT_COMPONENT_SOURCE_MATCH_TOP")
     )
     authoritative = prod_match_count >= 1 and is_prod and level3
-    if prod_match_count == 0 and not is_prod and int(sink_logic.get("scv_count") or 0) >= 1:
+    if prod_match_count >= 1 and is_prod and not level3:
+        grade = "NOT_AUTHORITATIVELY_GRADED"
+        pass_l5 = None
+    elif prod_match_count == 0 and not is_prod and int(sink_logic.get("scv_count") or 0) >= 1:
         grade = "NOT_AUTHORITATIVELY_GRADED"
         pass_l5 = None
     elif authoritative:
         grade = "AUTHORITATIVE_PASS"
         pass_l5 = True
-    elif level3 is False and int(sink_logic.get("scv_count") or 0) >= 1:
+    elif level3 is False and int(sink_logic.get("scv_count") or 0) >= 1 and prod_match_count == 0:
         grade = "AUTHORITATIVE_FAIL"
         pass_l5 = False
     else:
@@ -241,7 +320,8 @@ def evaluate_p8_ladder(
         (
             "AUTH-3_delivery_only_observation_exact",
             python_chain.get("delivery_only_observation_events", 0) >= 1
-            and python_chain.get("observation_zero_claims"),
+            and python_chain.get("observation_zero_claims")
+            and python_chain.get("bound_in_python_surfaces"),
             "P8BIND6",
         ),
         (
@@ -475,10 +555,46 @@ def run_diagnostic() -> dict[str, Any]:
             "double_production_send_analysis"
         )
         exp["stage1_audit"] = exp.get("stage1_audit") or exp.get("audit")
+        unfiltered = _ledger_rows(exp)
+        if not unfiltered:
+            meta = exp.get("ledger_meta") or {}
+            unfiltered = list(meta.get("merged_server_ledger") or [])
+        room_latched = str(start_val.get("latched_room_id") or "")
+        token_for_filter = str(
+            exp.get("token_sent")
+            or rv.get("browser", {}).get("exact_expiration_token")
+            or (start_val.get("authoritative_state") or {}).get("production_token")
+            or ""
+        ).strip()
+        run_id = _infer_run_id(unfiltered, room_latched)
+        from stage1_ledger_run_filter import filter_ledger_rows_for_diagnostic_run
+
+        filtered_meta = filter_ledger_rows_for_diagnostic_run(
+            unfiltered,
+            run_id=run_id,
+            room_id=room_latched,
+            deployment_sha=sha,
+            exact_token=token_for_filter,
+        )
+        exp["filtered_ledger_rows"] = filtered_meta.get("filtered_rows") or []
+        exp["ledger_filter"] = filtered_meta
+        gate_rows = [
+            r
+            for r in exp["filtered_ledger_rows"]
+            if str(r.get("event") or "") == "production_stage1_bound_token_gate"
+        ]
         token_sent = str(exp.get("token_sent") or rv.get("browser", {}).get("exact_expiration_token") or "")
         pbv = build_parent_boundary_validation(exp, token_sent=token_sent)
         exp["parent_boundary_validation"] = pbv
         ladder = evaluate_p8_ladder(exp, rv, start_val=start_val)
+        ladder["ledger_filter"] = filtered_meta
+        ladder["contradiction_root_cause"] = classify_contradiction_root_cause(
+            unfiltered_rows=unfiltered,
+            filtered_meta=filtered_meta,
+            python_chain=ladder.get("python_binding_chain") or {},
+            gate_rows=gate_rows,
+        )
+        ladder["bound_token_gate_events"] = gate_rows
         baseline = load_baseline_summary()
         ladder["comparison_notes"] = compare_traces(ladder, baseline)
         report["expiration"] = {

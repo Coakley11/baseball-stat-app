@@ -358,10 +358,11 @@ def note_delivery_only_observation_completed(
         {
             "source": source,
             "raw_received": True,
-            "coalesced_value": str(token or "")[:400],
             "actionable_declaration_eligible": True,
         }
     )
+    if "coalesced_value" not in extra:
+        extra["coalesced_value"] = str(token or "")[:400]
     note_stage1_orchestration_event(
         session,
         "production_stage1_delivery_only_observation_completed",

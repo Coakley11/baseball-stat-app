@@ -418,7 +418,7 @@ def render_micro_isolation_once(
                 )
                 from live_draft_stage1_post_bind_flush import (
                     complete_delivery_only_observation_and_actionable_flush,
-                    widget_bound_token,
+                    evaluate_bound_token_gate,
                 )
 
                 register_production_countdown_declaration_context(
@@ -428,32 +428,43 @@ def render_micro_isolation_once(
                     expected_token=token,
                     widget_key=key,
                 )
-                bound_token = widget_bound_token(
-                    raw_component_value=raw_component_value,
-                    session_state_value=st.session_state.get(key),
-                )
+                pending_t = str(session.get("_solo_parity_expected_token") or session.get("_solo_persistent_wake_last_token") or "")
                 if production_delivery_only:
-                    if bound_token:
-                        complete_delivery_only_observation_and_actionable_flush(
-                            st,
-                            session,
-                            bound_token=bound_token,
-                            mount_expire_token=str(token or ""),
-                            widget_key=key,
-                            production_room=production_room if isinstance(production_room, dict) else None,
-                            raw_component_value=raw_component_value,
-                        )
-                elif bound_token:
-                    from live_draft_solo_persistent_wake import process_production_expire_token
-
-                    process_production_expire_token(
+                    complete_delivery_only_observation_and_actionable_flush(
                         st,
                         session,
-                        raw_token=raw_component_value if raw_component_value is not None else bound_token,
+                        expected_expiration_token=str(token or ""),
+                        mount_expire_token=str(token or ""),
+                        pending_token=pending_t,
                         widget_key=key,
-                        source="return_value_session_bind",
-                        declaration_room=get_registered_declaration_room(session),
+                        production_room=production_room if isinstance(production_room, dict) else None,
+                        raw_component_value=raw_component_value,
                     )
+                else:
+                    gate = evaluate_bound_token_gate(
+                        st,
+                        session,
+                        expected_expiration_token=str(token or ""),
+                        mount_expire_token=str(token or ""),
+                        pending_token=pending_t,
+                        raw_component_return=raw_component_value,
+                        session_state_value=st.session_state.get(key) if key in st.session_state else None,
+                        widget_key=key,
+                        call_site="render_micro_isolation_once_return_delivery",
+                    )
+                    if gate.passed and gate.selected_bound_token:
+                        from live_draft_solo_persistent_wake import process_production_expire_token
+
+                        process_production_expire_token(
+                            st,
+                            session,
+                            raw_token=raw_component_value
+                            if raw_component_value is not None
+                            else gate.selected_bound_token,
+                            widget_key=key,
+                            source="return_value_session_bind",
+                            declaration_room=get_registered_declaration_room(session),
+                        )
             except ImportError:
                 try:
                     from live_draft_solo_persistent_wake import process_production_expire_token
