@@ -16,6 +16,7 @@ if str(SCRIPTS) not in sys.path:
 OUT = ROOT / "data" / "p8_boundary_trace.json"
 OUT_TXT = ROOT / "data" / "p8_boundary_trace.txt"
 OUT_LEGACY = ROOT / "data" / "p8_sender_rerun_live_trace.json"
+OUT_GATE = ROOT / "data" / "p8_canary_deploy_gate.json"
 
 
 def resolve_required_sha() -> str:
@@ -26,8 +27,15 @@ def resolve_required_sha() -> str:
     return line.split("#", 1)[0].strip().lower()[:7]
 
 
-def run() -> dict:
-    required = resolve_required_sha()
+def run(*, skip_deploy_poll: bool = False) -> dict:
+    from p8_canary_build_gate import (
+        commit_has_canary_implementation,
+        git_head_short,
+        local_deploy_pin,
+        poll_live_cloud_sha,
+        verify_pre_trace_canaries,
+        verify_declaration_canaries_after_mount,
+    )
     from replay_playwright_daniel_auth_preflight import run_preflight
     from playwright_daniel_auth_session import STORAGE_PATH, harness_ready
     from cloud_streamlit_wake import goto_and_wake
@@ -37,6 +45,7 @@ def run() -> dict:
     from p8_diagnostic_setup import ensure_p8_ldr_setup_surface, retry_draft_start_if_stalled, validate_p8_diagnostic_setup
     from run_production_solo_soak import scrape_deploy_build
     from run_solo_clean_verification import scrape_live_sha
+    from verify_cloud_deploy_playwright import scrape_deploy
     from stage1_parent_event_sink import ParentEventSinkStore, install_parent_event_sink
     from p8_ledger_observability import P8LedgerHarnessCollector, capture_all_ledger_sources
     from p8_sender_rerun_trace import P8_SENDER_RERUN_INIT_SCRIPT, wait_for_send_then_trace
@@ -51,10 +60,32 @@ def run() -> dict:
 
     report: dict = {
         "started_at": time.time(),
-        "mode": "p8_boundary_trace",
-        "required_cloud_sha": required,
-        "provisional_boundary": "PRODUCTION_POSTMESSAGE_EMITTED_BUT_NO_BACKEND_RERUN_OBSERVED",
+        "mode": "p8_boundary_trace_canary_gated",
+        "proven_frontend_boundary": "FRONTEND_WIDGET_UPDATE_PROVEN",
+        "git_head": git_head_short(),
+        "local_deploy_pin": local_deploy_pin(),
     }
+
+    if not skip_deploy_poll and not os.environ.get("SKIP_CANARY_DEPLOY_POLL"):
+        deploy_poll = poll_live_cloud_sha(max_attempts=24, sleep_s=25.0)
+        OUT_GATE.parent.mkdir(parents=True, exist_ok=True)
+        OUT_GATE.write_text(json.dumps(deploy_poll, indent=2, default=str), encoding="utf-8")
+        report["deploy_poll"] = deploy_poll
+        report["implementation_at_live_sha"] = deploy_poll.get("implementation_at_live_sha") or {}
+        if not deploy_poll.get("ok"):
+            report["aborted"] = True
+            report["abort_reason"] = "canary_build_not_live_on_cloud"
+            report["classification"] = {
+                "code": "WAIT_FOR_CANARY_DEPLOY",
+                "label": "WAIT_FOR_CANARY_DEPLOY",
+            }
+            return report
+        required = str(deploy_poll.get("live_sha") or resolve_required_sha())[:7]
+    else:
+        required = resolve_required_sha()
+
+    report["required_cloud_sha"] = required
+
     parent_sink = ParentEventSinkStore()
     collector = P8LedgerHarnessCollector()
     ws_capture = WebSocketBoundaryCapture()
@@ -64,8 +95,8 @@ def run() -> dict:
         browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
         try:
-            from stage1_parent_observer_probe import HARNESS_TOP_OBSERVER_INIT_SCRIPT
             from stage1_harness_observability import LEDGER_DURABLE_INIT_SCRIPT
+            from stage1_parent_observer_probe import HARNESS_TOP_OBSERVER_INIT_SCRIPT
 
             context.add_init_script(HARNESS_TOP_OBSERVER_INIT_SCRIPT)
             context.add_init_script(LEDGER_DURABLE_INIT_SCRIPT)
@@ -74,8 +105,6 @@ def run() -> dict:
         except ImportError:
             context.add_init_script(P8_SENDER_RERUN_INIT_SCRIPT)
             try:
-                from p8_boundary_instrumentation import P8_WS_BOUNDARY_INIT_SCRIPT
-
                 context.add_init_script(P8_WS_BOUNDARY_INIT_SCRIPT)
             except ImportError:
                 pass
@@ -92,8 +121,34 @@ def run() -> dict:
         except Exception:
             pass
         page.wait_for_timeout(20000)
-        sha = (scrape_live_sha(page) or scrape_deploy_build(page) or "")[:7].lower()
+        probe = scrape_deploy(page)
+        sha = (scrape_live_sha(page) or scrape_deploy_build(page) or probe.get("sha") or "")[:7].lower()
+        build = str(probe.get("build") or "")
         report["cloud_sha"] = sha
+        report["cloud_build"] = build
+        impl = commit_has_canary_implementation(sha)
+        report["implementation_at_live_sha"] = impl
+        if not impl.get("ok"):
+            report["aborted"] = True
+            report["abort_reason"] = "live_sha_lacks_canary_implementation"
+            context.close()
+            browser.close()
+            return report
+
+        canary_pre = verify_pre_trace_canaries(page)
+        report["pre_trace_canary_validation"] = canary_pre
+        if canary_pre.get("classification") != "CANARY_PRE_TRACE_OK":
+            report["aborted"] = True
+            report["abort_reason"] = canary_pre.get("classification") or "INVALID_CANARY_DEPLOY_OR_CAPTURE"
+            report["classification"] = {
+                "code": "INVALID_CANARY_DEPLOY_OR_CAPTURE",
+                "label": "INVALID_CANARY_DEPLOY_OR_CAPTURE",
+                "reason": canary_pre.get("reason"),
+            }
+            context.close()
+            browser.close()
+            return report
+
         if sha != required[:7]:
             report["aborted"] = True
             report["abort_reason"] = "cloud_sha_mismatch"
@@ -128,6 +183,20 @@ def run() -> dict:
             browser.close()
             return report
 
+        decl_canary = verify_declaration_canaries_after_mount(page)
+        report["pre_trace_declaration_canary_validation"] = decl_canary
+        if decl_canary.get("classification") != "CANARY_DECLARATION_OK":
+            report["aborted"] = True
+            report["abort_reason"] = decl_canary.get("classification") or "INVALID_CANARY_DEPLOY_OR_CAPTURE"
+            report["classification"] = {
+                "code": "INVALID_CANARY_DEPLOY_OR_CAPTURE",
+                "label": "INVALID_CANARY_DEPLOY_OR_CAPTURE",
+                "reason": decl_canary.get("reason"),
+            }
+            context.close()
+            browser.close()
+            return report
+
         room_id = str(start_val.get("latched_room_id") or draft.get("room_id") or "")
         exact_token = str((start_val.get("authoritative_state") or {}).get("production_token") or "")
         pick_index = (start_val.get("authoritative_state") or {}).get("pick_index")
@@ -145,6 +214,7 @@ def run() -> dict:
             ws_capture=ws_capture,
             diagnostic_run_id=room_id,
             pick_index=pick_index,
+            canary_pre_trace_validated=True,
         )
         report["trace"] = trace
         report["classification"] = trace.get("boundary_classification") or trace.get("classification") or {}
@@ -158,13 +228,29 @@ def run() -> dict:
 
 def format_txt(report: dict) -> str:
     lines = [
-        "P8 boundary trace (immediate parent + WebSocket + server audit)",
-        f"cloud_sha={report.get('cloud_sha')} required={report.get('required_cloud_sha')}",
-        f"provisional={report.get('provisional_boundary')}",
+        "P8 boundary trace (canary-gated)",
+        f"git_head={report.get('git_head')} local_pin={report.get('local_deploy_pin')}",
+        f"cloud_sha={report.get('cloud_sha')} build={report.get('cloud_build')} required={report.get('required_cloud_sha')}",
+        f"proven_frontend={report.get('proven_frontend_boundary')}",
         "",
     ]
+    impl = report.get("implementation_at_live_sha") or {}
+    if impl:
+        lines.append(f"implementation_ok={impl.get('ok')} canary_file={impl.get('file_live_draft_stage1_boundary_canaries_py')}")
+        lines.append(
+            f"hooks global={impl.get('streamlit_global_canary_hook')} "
+            f"ldr={impl.get('streamlit_ldr_branch_canary_hook')} "
+            f"decl={impl.get('micro_core_declaration_canaries')}"
+        )
+        lines.append("")
+    pre = report.get("pre_trace_canary_validation") or {}
+    lines.append(f"pre_trace_canary: {pre.get('classification')} global={pre.get('global_canary_seen')} branch={pre.get('branch_canary_seen')}")
+    lines.append("")
     if report.get("aborted"):
         lines.append(f"ABORTED: {report.get('abort_reason')}")
+        cls = report.get("classification") or {}
+        if cls.get("code"):
+            lines.append(f"classification={cls.get('code')}")
         return "\n".join(lines) + "\n"
 
     tr = report.get("trace") or {}
@@ -177,36 +263,22 @@ def format_txt(report: dict) -> str:
     answers = cls.get("ws_explicit_answers") or ws_corr.get("explicit_answers") or {}
     lines.append(f"exact_send_epoch: {send.get('ts_epoch')} ({send.get('ts_source')})")
     lines.append(f"send_token: {send.get('token')}")
-    lines.append(f"production_iframe_instance_id: {send.get('iframe_instance_id')}")
-    lines.append(f"immediate_parent_url: {imm.get('parent_url')}")
-    lines.append(f"immediate_parent_frame_index: {imm.get('parent_frame_index')}")
+    lines.append(f"parent_receipt_ts: {facts.get('parent_receipt_ts')}")
     lines.append("")
-    lines.append("WebSocket explicit answers:")
-    lines.append(f"  first_outbound_after_parent_contains_expiration_token: {answers.get('first_outbound_after_parent_contains_expiration_token')}")
-    lines.append(f"  first_outbound_after_parent_contains_widget_key: {answers.get('first_outbound_after_parent_contains_widget_key')}")
-    lines.append(f"  first_outbound_after_parent_is_widget_update: {answers.get('first_outbound_after_parent_is_widget_update')}")
-    co = ws_corr.get("correlated_outbound") or {}
-    if co:
-        lines.append(f"  correlated_outbound_sha256: {co.get('sha256') or co.get('sha256_prefix')}")
-        lines.append(f"  correlated_outbound_frame_type: {co.get('frame_type_hint')}")
-    lines.append(f"  inbound_232ms_frame_category: {cls.get('inbound_232ms_frame_category')}")
+    lines.append("WebSocket:")
+    lines.append(f"  outbound_token: {answers.get('first_outbound_after_parent_contains_expiration_token')}")
+    lines.append(f"  outbound_widget_key: {answers.get('first_outbound_after_parent_contains_widget_key')}")
+    ci = ws_corr.get("correlated_inbound_first") or {}
+    lines.append(f"  first_inbound_category: {ci.get('frame_type_hint')}")
     lines.append("")
     lines.append(f"post_send_global_canary_count: {facts.get('post_send_global_canary_count')}")
     lines.append(f"post_send_branch_canary_count: {facts.get('post_send_branch_canary_count')}")
     lines.append(f"post_send_declaration_pre_count: {facts.get('post_send_declaration_pre_count')}")
+    lines.append(f"declaration_nonempty: {facts.get('declaration_nonempty')}")
     lines.append("")
-    lines.append(f"BOUNDARY CLASSIFICATION: {cls.get('label')}")
+    lines.append(f"FINAL: {cls.get('label')}")
     lines.append(str(cls.get("rationale") or ""))
     lines.append(f"smallest_correction_boundary: {cls.get('smallest_correction_boundary')}")
-    lines.append("")
-    lines.append(f"parent_scv_exact_count: {facts.get('parent_scv_exact_count')}")
-    lines.append(f"parent_receipt_ts: {facts.get('parent_receipt_ts')}")
-    lines.append(f"first_ws_outbound_ts: {facts.get('first_ws_outbound_ts')}")
-    lines.append(f"first_ws_inbound_ts: {facts.get('first_ws_inbound_ts')}")
-    lines.append(f"post_send_script_begin_count: {facts.get('post_send_script_begin_count')}")
-    lines.append(f"iframe_render/disconnect_ts: {facts.get('iframe_disconnect_or_render_ts')}")
-    if cls.get("absence_note"):
-        lines.append(f"absence: {cls.get('absence_note')}")
     return "\n".join(lines) + "\n"
 
 
@@ -217,8 +289,9 @@ def main() -> int:
     OUT_TXT.write_text(format_txt(report), encoding="utf-8")
     OUT_LEGACY.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     print(format_txt(report))
-    print(f"artifact={OUT}")
-    return 1 if report.get("aborted") or not (report.get("trace") or {}).get("ok") else 0
+    print(f"artifact={OUT} gate={OUT_GATE}")
+    ok_trace = (report.get("trace") or {}).get("ok")
+    return 1 if report.get("aborted") or not ok_trace else 0
 
 
 if __name__ == "__main__":

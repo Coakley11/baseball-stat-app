@@ -94,5 +94,6 @@ def test_classify_lifecycle4_ws_no_server():
             "correlated_outbound": ws.frames[0],
             "explicit_answers": {"first_outbound_after_parent_contains_expiration_token": True},
         },
+        canary_pre_trace_validated=True,
     )
     assert cls["code"] == "LIFECYCLE4"

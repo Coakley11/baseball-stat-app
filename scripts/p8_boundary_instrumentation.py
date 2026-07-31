@@ -762,6 +762,7 @@ def classify_first_missing_boundary(
     iframe_entries: list[dict[str, Any]],
     ws_correlation: dict[str, Any] | None = None,
     page: Any | None = None,
+    canary_pre_trace_validated: bool = False,
 ) -> dict[str, Any]:
     from p8_sender_rerun_trace import normalize_epoch_ts
 
@@ -867,13 +868,23 @@ def classify_first_missing_boundary(
         correction = "Streamlit parent SCV to outbound widget-state/back-message encoding"
         first_missing = "outbound_ws_widget_update"
     elif not global_canaries:
-        code = "LIFECYCLE4"
-        rationale = (
-            "Correlated outbound WebSocket carried production token/widget bytes; "
-            "no production_global_script_run_canary after send."
-        )
-        correction = "Frontend widget update to backend script execution trigger"
-        first_missing = "global_backend_script_run"
+        if not canary_pre_trace_validated:
+            code = "BACKEND_SCRIPT_EXECUTION_UNRESOLVED_ON_NON_CANARY_BUILD"
+            rationale = (
+                "Frontend widget update proven; post-send global canary count is zero but "
+                "canary instrumentation was not validated live before expiration trace."
+            )
+            correction = "Deploy and verify 118215f+ canary build before backend execution classification"
+            first_missing = "live_canary_pre_trace_validation"
+        else:
+            code = "LIFECYCLE4"
+            rationale = (
+                "Correlated outbound WebSocket carried production token/widget bytes; "
+                "canary instrumentation proven live before trace; "
+                "no production_global_script_run_canary after send."
+            )
+            correction = "Frontend widget update to backend script execution trigger"
+            first_missing = "global_backend_script_run"
     elif not branch_canaries:
         code = "LIFECYCLE5"
         rationale = "Global backend script canary fired after send; Live Draft branch canary absent."
@@ -891,8 +902,8 @@ def classify_first_missing_boundary(
         first_missing = "non_empty_component_return"
     elif global_canaries and not legacy_begins:
         code = "LIFECYCLE8"
-        rationale = "Post-send global canary retained; legacy production_stage1_script_begin audit line absent."
-        correction = "Durable audit retention / event mirror (not bind transport)"
+        rationale = "Post-send global canary proves backend script run; legacy production_stage1_script_begin remained absent."
+        correction = "Durable audit retention / legacy script_begin mirror (not bind transport)"
         first_missing = "legacy_script_begin_retention"
     else:
         code = "LIFECYCLE9"
@@ -906,7 +917,10 @@ def classify_first_missing_boundary(
         "LIFECYCLE5": "LIFECYCLE5 — BACKEND RUNS BUT LIVE DRAFT BRANCH IS NOT ENTERED",
         "LIFECYCLE6": "LIFECYCLE6 — LIVE DRAFT BRANCH RUNS BUT COMPONENT IS NOT REDECLARED",
         "LIFECYCLE7": "LIFECYCLE7 — COMPONENT REDECLARED BUT RETURN VALUE REMAINS EMPTY",
-        "LIFECYCLE8": "LIFECYCLE8 — BACKEND RERUN OCCURRED BUT PRIOR DURABLE AUDIT MISSED IT",
+        "LIFECYCLE8": "LIFECYCLE8 — BACKEND RERUN OCCURRED BUT LEGACY DURABLE AUDIT MISSED IT",
+        "BACKEND_SCRIPT_EXECUTION_UNRESOLVED_ON_NON_CANARY_BUILD": (
+            "BACKEND_SCRIPT_EXECUTION_UNRESOLVED_ON_NON_CANARY_BUILD"
+        ),
         "LIFECYCLE9": "LIFECYCLE9 — OTHER",
     }
 
@@ -921,7 +935,8 @@ def classify_first_missing_boundary(
         "rationale": rationale,
         "smallest_correction_boundary": correction,
         "first_missing_transition": first_missing,
-        "provisional_boundary": "LIFECYCLE4_PROVISIONAL — FRONTEND SEND ACTIVITY PRESENT BUT BACKEND RERUN NOT OBSERVED",
+        "proven_frontend_boundary": "FRONTEND_WIDGET_UPDATE_PROVEN",
+        "canary_pre_trace_validated": canary_pre_trace_validated,
         "ws_correlation": ws_correlation,
         "ws_explicit_answers": answers,
         "inbound_232ms_frame_category": inbound_232_kind,

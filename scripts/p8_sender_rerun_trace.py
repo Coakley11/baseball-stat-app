@@ -517,6 +517,7 @@ def wait_for_send_then_trace(
     ws_capture: Any | None = None,
     diagnostic_run_id: str = "",
     pick_index: int | None = None,
+    canary_pre_trace_validated: bool = False,
 ) -> dict[str, Any]:
     """Poll until production send, keep capturing from 5s before send through 15s after."""
     from p8_boundary_instrumentation import (
@@ -711,6 +712,7 @@ def wait_for_send_then_trace(
         iframe_entries=final_iframe_entries,
         ws_correlation=ws_correlation,
         page=page,
+        canary_pre_trace_validated=bool(canary_pre_trace_validated),
     )
     return {
         "ok": True,
