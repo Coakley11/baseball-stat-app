@@ -81,6 +81,39 @@ def main() -> int:
         OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
         return 1
 
+    from p8_canary_build_gate import commit_has_callback_observability, git_sha_is_ancestor
+
+    obs_sha = "919e196"
+    runtime_git = str(readiness.get("runtime_git_head_short") or poll.get("live_sha") or "")
+    impl_obs = commit_has_callback_observability(runtime_git)
+    if not impl_obs.get("ok") and not git_sha_is_ancestor(obs_sha, runtime_git):
+        for _ in range(36):
+            time.sleep(20)
+            poll = poll_live_cloud_sha(
+                max_attempts=1,
+                sleep_s=0,
+                require_canary_impl=False,
+                wait_for_binding_readiness=True,
+            )
+            readiness = poll.get("binding_readiness") or {}
+            runtime_dom = (poll.get("attempts") or [{}])[-1].get("runtime_probe") or {}
+            runtime_git = str(
+                runtime_dom.get("runtime_git_head_short")
+                or readiness.get("runtime_git_head_short")
+                or poll.get("live_sha")
+                or ""
+            )
+            impl_obs = commit_has_callback_observability(runtime_git)
+            if impl_obs.get("ok") or git_sha_is_ancestor(obs_sha, runtime_git):
+                break
+        report["observability_deploy_poll"] = poll
+        report["callback_observability_at_runtime"] = impl_obs
+        if not impl_obs.get("ok") and not git_sha_is_ancestor(obs_sha, runtime_git):
+            report["aborted"] = True
+            report["abort_reason"] = "callback_observability_not_on_cloud_runtime"
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            return 1
+
     report["live_sha"] = readiness.get("marker_sha") or poll.get("live_sha")
     report["live_build"] = readiness.get("marker_build") or poll.get("live_build")
 

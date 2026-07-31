@@ -295,6 +295,64 @@ def commit_has_binding_correction(sha: str) -> dict[str, Any]:
     return out
 
 
+CALLBACK_OBS_ANCHOR_SHA = "919e196"
+
+
+def commit_has_callback_observability(sha: str) -> dict[str, Any]:
+    sha = str(sha or "").strip()[:7]
+    out: dict[str, Any] = {
+        "sha": sha,
+        "file_prod_on_change_observability_py": False,
+        "prod_on_change_entered_event": False,
+        "callback_registration_event": False,
+        "ok": False,
+    }
+    if not sha:
+        return out
+
+    def _cat(path: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "cat-file", "-e", f"{sha}:{path}"],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _grep(pattern: str, *paths: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "grep", "-q", pattern, sha, "--", *paths],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            return True
+        except Exception:
+            return False
+
+    out["file_prod_on_change_observability_py"] = _cat("live_draft_prod_on_change_observability.py")
+    out["prod_on_change_entered_event"] = _grep(
+        "production_stage1_prod_on_change_entered",
+        "live_draft_prod_on_change_observability.py",
+    )
+    out["callback_registration_event"] = _grep(
+        "production_stage1_callback_registration",
+        "live_draft_prod_on_change_observability.py",
+    )
+    out["ok"] = (
+        out["file_prod_on_change_observability_py"]
+        and out["prod_on_change_entered_event"]
+        and out["callback_registration_event"]
+    )
+    return out
+
+
 BINDING_FIX_ANCHOR_SHA = "18e7c15"
 
 
