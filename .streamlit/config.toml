@@ -7,7 +7,7 @@ gatherUsageStats = false
 # Streamlit Cloud entrypoint MUST be streamlit_app.py (lowercase).
 # Do not use Streamlit_app.py — removed from dev branch; uppercase breaks Linux deploys.
 # App settings: repo Coakley11/baseball-stat-app · branch dev · not pinned to an old commit.
-# deploy_epoch: 2026-07-31T03:05Z — ledger probe on all diag script runs (Case A canary retention).
+# deploy_epoch: 2026-07-31T03:45Z — LDR branch canary on diag query (observability gate).
 #
 # Python runtime (required for stable native wheels):
 #   Manage app → Settings → Python version → 3.12
