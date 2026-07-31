@@ -7,7 +7,7 @@ gatherUsageStats = false
 # Streamlit Cloud entrypoint MUST be streamlit_app.py (lowercase).
 # Do not use Streamlit_app.py — removed from dev branch; uppercase breaks Linux deploys.
 # App settings: repo Coakley11/baseball-stat-app · branch dev · not pinned to an old commit.
-# deploy_epoch: 2026-07-31T00:40Z — Stage 1 boundary canary observability redeploy (118215f+); no bind/timer changes.
+# deploy_epoch: 2026-07-31T02:35Z — symmetric observability (ultra-early canary + declaration identity); no bind/timer changes.
 #
 # Python runtime (required for stable native wheels):
 #   Manage app → Settings → Python version → 3.12
