@@ -1,0 +1,94 @@
+{
+  "accepted_cloud": "6b21b58",
+  "accepted_classification": "S9C",
+  "case_a": {
+    "component_name": "minimal_wake_repro",
+    "module": "minimal_component_wake_repro_core",
+    "declare_fn": "render_one_cycle",
+    "streamlit_api": "_COMPONENT(expire_token, key, default=None, on_change=_on_change)",
+    "on_change_at_mount": true,
+    "reads_raw_return_after_mount": true,
+    "delivery_sources": [
+      "on_change",
+      "return_value"
+    ],
+    "wrappers": [],
+    "declarations_per_cycle": 1,
+    "user_key_pattern": "minimal_wake_repro_{cycle}"
+  },
+  "production": {
+    "component_name": "solo_countdown_wake",
+    "module": "solo_countdown_wake_micro_core",
+    "declare_fn": "render_micro_isolation_once",
+    "streamlit_api": "mount_solo_countdown_wake_with_token(..., default=None, on_change=...)",
+    "wrappers": [
+      "live_draft_solo_persistent_wake._mount_persistent_wake_micro_controlled",
+      "live_draft_stage1_post_bind_flush.evaluate_bound_token_gate",
+      "live_draft_stage1_post_bind_flush.complete_delivery_only_observation_and_actionable_flush"
+    ],
+    "user_key": "solo_countdown_wake_solo_persistent",
+    "delivery_mode_default": "return_value",
+    "prior_bug": "production_use_return_value_delivery set on_change=None at mount",
+    "correction_6b21b58_followup": "register _prod_on_change; single mount per script run; raw capture"
+  },
+  "signature_diffs": [
+    {
+      "field": "on_change_at_mount",
+      "case_a": true,
+      "production_before_fix": false,
+      "production_after_fix": true,
+      "first_exact_difference": "return_value delivery cleared mount on_change"
+    },
+    {
+      "field": "delivery_sources",
+      "case_a": [
+        "on_change",
+        "return_value"
+      ],
+      "production_before_fix": [
+        "return_value_only"
+      ],
+      "production_after_fix": [
+        "on_change",
+        "return_value",
+        "gate_coalesce"
+      ]
+    },
+    {
+      "field": "wrappers",
+      "case_a": [],
+      "production": [
+        "live_draft_solo_persistent_wake._mount_persistent_wake_micro_controlled",
+        "live_draft_stage1_post_bind_flush.evaluate_bound_token_gate",
+        "live_draft_stage1_post_bind_flush.complete_delivery_only_observation_and_actionable_flush"
+      ]
+    },
+    {
+      "field": "declarations_per_script_run",
+      "case_a": 1,
+      "production_risk": "multiple pre/post canaries per run if mount invoked more than once",
+      "guard_added": "per_run_key _solo_prod_mount_run_{key}"
+    }
+  ],
+  "first_difference": {
+    "field": "on_change_at_mount",
+    "case_a": true,
+    "production_before_fix": false,
+    "production_after_fix": true,
+    "first_exact_difference": "return_value delivery cleared mount on_change"
+  },
+  "withdrawn_hypotheses": [
+    "S1 stale widget ID",
+    "LIFECYCLE4 backend did not run",
+    "wrong iframe/parent",
+    "invalid BackMsg",
+    "wrong session/socket",
+    "missing Live Draft routing"
+  ],
+  "bind_classification": {
+    "code": "BIND5",
+    "rationale": "Production return_value path disabled on_change at mount; Case A always registers on_change and reads both Session State and raw return.",
+    "first_failure_boundary": "PYTHON_COMPONENT_RETURN_BINDING",
+    "smallest_correction_boundary": "Component return / on_change parity with Case A"
+  }
+}

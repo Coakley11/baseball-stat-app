@@ -1,0 +1,14 @@
+P8 component return binding comparison (Case A vs production)
+BIND=BIND5
+Production return_value path disabled on_change at mount; Case A always registers on_change and reads both Session State and raw return.
+boundary=Component return / on_change parity with Case A
+
+first_difference={
+  "field": "on_change_at_mount",
+  "case_a": true,
+  "production_before_fix": false,
+  "production_after_fix": true,
+  "first_exact_difference": "return_value delivery cleared mount on_change"
+}
+
+artifact=C:\Users\danie\Documents\GitHub\baseball-stat-app\data\p8_component_return_binding_trace.json

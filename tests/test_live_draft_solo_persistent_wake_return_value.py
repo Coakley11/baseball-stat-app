@@ -102,7 +102,7 @@ def test_flush_disabled_when_return_value_delivery_active() -> None:
     assert production_return_value_delivery_active(session)
 
 
-def test_micro_mount_uses_on_change_none_when_return_value_flag() -> None:
+def test_micro_mount_registers_on_change_when_return_value_flag() -> None:
     from solo_countdown_wake_micro_core import render_micro_isolation_once
 
     room = _room()
@@ -113,7 +113,7 @@ def test_micro_mount_uses_on_change_none_when_return_value_flag() -> None:
     deliver = mock.MagicMock()
     with mock.patch(
         "solo_countdown_component.mount_solo_countdown_wake_with_token",
-        return_value=None,
+        return_value=token,
     ) as mount:
         with mock.patch("live_draft_solo_persistent_wake.process_production_expire_token") as proc:
             render_micro_isolation_once(
@@ -128,5 +128,5 @@ def test_micro_mount_uses_on_change_none_when_return_value_flag() -> None:
                 session_prefix="_solo_persistent_wake_",
                 persistent=True,
             )
-            assert mount.call_args.kwargs.get("on_change") is None
+            assert mount.call_args.kwargs.get("on_change") is not None
             proc.assert_called_once()

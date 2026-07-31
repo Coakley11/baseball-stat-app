@@ -256,7 +256,9 @@ def render_micro_isolation_once(
                 )
 
         use_return_delivery = bool(production_use_return_value_delivery)
-        mount_on_change = None if use_return_delivery else _prod_on_change
+        # Case A registers on_change for widget updates; return_value path must not disable it.
+        mount_on_change = _prod_on_change
+        on_change_label = "_prod_on_change"
 
         if first_mount:
             _rec(
@@ -281,7 +283,49 @@ def render_micro_isolation_once(
                 },
             )
         session_state_before = repr(st.session_state.get(key))[:400] if key in st.session_state else "missing"
-        on_change_label = "None" if use_return_delivery else "_prod_on_change"
+        try:
+            from live_draft_component_binding_trace import (
+                PRODUCTION_PERSISTENT_KEY,
+                arguments_hash,
+                declaration_count_this_run,
+                record_binding_boundary,
+            )
+
+            run_id = ""
+            try:
+                from app_page_generation import current_script_run_id
+
+                run_id = str(current_script_run_id(session) or "")
+            except ImportError:
+                run_id = str(session.get("_live_draft_script_run_id") or "")
+            per_run_key = f"_solo_prod_mount_run_{key}"
+            if run_id and session.get(per_run_key) == run_id:
+                cached = session.get(f"_solo_prod_raw_return_{key}")
+                record_binding_boundary(
+                    session,
+                    boundary="duplicate_mount_skipped",
+                    call_site=location,
+                    user_key=key,
+                    raw_out=cached,
+                    extra={"invocation_order": declaration_count_this_run(session, key) + 1},
+                )
+                raw_component_value = cached
+                comp_return = cached
+                session_state_after = repr(st.session_state.get(key))[:400] if key in st.session_state else "missing"
+                return MicroCycleResult(
+                    widget_key=key,
+                    token=token,
+                    delivered=False,
+                    raw_received=cached is not None,
+                    on_change_fired=False,
+                    stages=stages,
+                    should_stop=False,
+                    component_return=cached,
+                )
+            if run_id:
+                session[per_run_key] = run_id
+        except ImportError:
+            pass
         component_kwargs = {
             "room": "(production_room dict)",
             "key": key,
@@ -350,6 +394,27 @@ def render_micro_isolation_once(
             chain_persist_key=chain_persist_key,
             stage1_parent_boundary_probe=boundary_probe,
         )
+        session[f"_solo_prod_raw_return_{key}"] = raw_component_value
+        try:
+            from live_draft_component_binding_trace import arguments_hash, record_binding_boundary
+
+            record_binding_boundary(
+                session,
+                boundary="component_mount",
+                call_site=location,
+                user_key=key,
+                raw_out=raw_component_value,
+                session_state_before=session_state_before,
+                session_state_after=repr(st.session_state.get(key))[:400] if key in st.session_state else "missing",
+                extra={
+                    "args_hash": arguments_hash(component_kwargs),
+                    "use_return_delivery": use_return_delivery,
+                    "delivery_only": production_delivery_only,
+                    "on_change": on_change_label,
+                },
+            )
+        except ImportError:
+            pass
         try:
             from live_draft_stage1_boundary_canaries import emit_production_countdown_declaration_post
 

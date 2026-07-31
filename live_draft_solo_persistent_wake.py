@@ -1917,6 +1917,17 @@ def try_solo_persistent_wake_ldr_entry(st: Any, session: dict[str, Any], room: A
     except ImportError:
         pass
 
+    try:
+        from app_page_generation import current_script_run_id
+
+        _entry_run = str(current_script_run_id(session) or "")
+    except ImportError:
+        _entry_run = str(session.get("_live_draft_script_run_id") or "")
+    if _entry_run and session.get("_solo_persistent_ldr_entry_run") == _entry_run:
+        return True
+    if _entry_run:
+        session["_solo_persistent_ldr_entry_run"] = _entry_run
+
     key = solo_persistent_wake_widget_key(session)
     from live_draft_solo_heartbeat import _coerce_wake_token
 
