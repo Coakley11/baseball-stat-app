@@ -57,10 +57,15 @@ def inbound_forwardmsg_ids_for_key(
     return hits
 
 
-def latest_forwardmsg_element_id(hits: list[dict[str, Any]]) -> tuple[str, float]:
-    if not hits:
+def latest_forwardmsg_element_id(
+    hits: list[dict[str, Any]], *, before_ts: float | None = None
+) -> tuple[str, float]:
+    filtered = hits or []
+    if before_ts is not None:
+        filtered = [h for h in filtered if float(h.get("wall_ts") or 0) <= before_ts + 0.05]
+    if not filtered:
         return "", 0.0
-    last = hits[-1]
+    last = filtered[-1]
     return str(last.get("forwardmsg_element_id") or ""), float(last.get("wall_ts") or 0)
 
 
@@ -85,10 +90,11 @@ def compute_active_at_send(
 ) -> dict[str, Any]:
     fwd_id, latest_mount_ts = latest_forwardmsg_element_id(
         [h for h in forwardmsg_hits if str(h.get("forwardmsg_element_id") or "") == outbound_id]
-        or forwardmsg_hits
+        or forwardmsg_hits,
+        before_ts=send_epoch,
     )
     if not fwd_id and forwardmsg_hits:
-        fwd_id, latest_mount_ts = latest_forwardmsg_element_id(forwardmsg_hits)
+        fwd_id, latest_mount_ts = latest_forwardmsg_element_id(forwardmsg_hits, before_ts=send_epoch)
 
     later_declarations = [
         r
@@ -158,19 +164,6 @@ def classify_authoritative(
     prod_globals = int(prod.get("post_send_global_canary_count") or 0)
     prod_branch = int(prod.get("post_send_branch_canary_count") or 0)
 
-    if triple_equal and active is False:
-        if (report.get("active_at_send_proof") or {}).get("superseding_declaration_count", 0) > 0:
-            return {
-                "code": "S4",
-                "rationale": "Another declaration superseded the sender before expiration.",
-                "smallest_correction_boundary": "Duplicate user key / redeclaration",
-            }
-        return {
-            "code": "S2",
-            "rationale": "Authoritative IDs align but component not active at send.",
-            "smallest_correction_boundary": "Mount lifecycle / iframe connection at send",
-        }
-
     if prod.get("server_dedupe_hint"):
         return {
             "code": "S6",
@@ -193,7 +186,7 @@ def classify_authoritative(
             "rationale": "Global canary observed post-send but Live Draft branch canary absent.",
             "smallest_correction_boundary": "LDR branch entry after script run",
         }
-    if prod_globals > 0 and prod_branch > 0 and prod.get("python_return_empty_hint"):
+    if triple_equal and active and prod_globals > 0 and prod_branch > 0 and prod.get("python_return_empty_hint"):
         return {
             "code": "S9C",
             "rationale": "Script and LDR branch ran but component return/session state empty.",
@@ -211,6 +204,20 @@ def classify_authoritative(
             "rationale": "Exact token validates through P8C7 chain.",
             "smallest_correction_boundary": "Post-bind flush / downstream",
         }
+
+    if triple_equal and active is False:
+        if (report.get("active_at_send_proof") or {}).get("superseding_declaration_count", 0) > 0:
+            return {
+                "code": "S4",
+                "rationale": "Another declaration superseded the sender before expiration.",
+                "smallest_correction_boundary": "Duplicate user key / redeclaration",
+            }
+        return {
+            "code": "S2",
+            "rationale": "Authoritative IDs align but component not active at send.",
+            "smallest_correction_boundary": "Mount lifecycle / iframe connection at send",
+        }
+
     if ctrl_globals >= 1 and prod_globals == 0 and not triple_equal:
         return {
             "code": "S10",

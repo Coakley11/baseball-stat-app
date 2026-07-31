@@ -814,7 +814,7 @@ def run(*, authoritative_acceptance: bool = False) -> dict[str, Any]:
         forward_hits = _mount_forwardmsg_hits(
             raw_ws, PROD_WIDGET_KEY_SUFFIX, prod_mount_t0, prod_out_ts + 2.0
         )
-        forwardmsg_id, latest_mount_ts = latest_forwardmsg_element_id(forward_hits)
+        forwardmsg_id, latest_mount_ts = latest_forwardmsg_element_id(forward_hits, before_ts=send_epoch)
         if not registered_id and outbound_id:
             registered_id = outbound_id
         if not forwardmsg_id and outbound_id:
@@ -947,9 +947,15 @@ def run(*, authoritative_acceptance: bool = False) -> dict[str, Any]:
         report["active_at_send_proof"] = active_proof
 
         first_diff: dict[str, Any] = {"kind": "unknown"}
-        if id_equal is False:
-            first_diff = {"kind": "widget_id_mismatch", "registered": registered_id, "outbound": outbound_id}
-        elif len(prod_globals) == 0 and len(ctrl_globals) > 0:
+        if triple_equal and int(prod.get("post_send_global_canary_count") or 0) > 0:
+            first_diff = {
+                "kind": "python_binding_surfaces",
+                "post_send_global_canary_count": prod.get("post_send_global_canary_count"),
+                "post_send_branch_canary_count": prod.get("post_send_branch_canary_count"),
+                "session_state_after_declaration": prod.get("session_state_after_declaration"),
+                "active_at_send": active_proof.get("active_at_send"),
+            }
+        elif triple_equal and int(prod.get("post_send_global_canary_count") or 0) == 0:
             first_diff = {
                 "kind": "production_global_canary_absent_control_present",
                 "production_outbound_ts": prod_out_ts,

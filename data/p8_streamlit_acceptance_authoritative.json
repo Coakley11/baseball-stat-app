@@ -1,0 +1,1326 @@
+{
+  "started_at": 1785499989.6479156,
+  "required_cloud_sha": "",
+  "accepted_prior": {
+    "WID1": "INSTRUMENTATION_PREDICTED_ID_INCORRECT",
+    "S1_withdrawn": true
+  },
+  "git_head": "6912448",
+  "local_deploy_pin": "6b21b58",
+  "control": {
+    "exact_value_sent": "repro|0|",
+    "python_callback_value": "repro|0|",
+    "control_widget_key": "",
+    "registered_widget_id": "$$ID-0354108240bdc767144d84b38d1f9c35-minimal_wake_repro_0",
+    "first_callback_ts": 1785500314.8323326,
+    "control_phase_start": 1785500065.0275128,
+    "outbound_ts": 1785500078.140025,
+    "send_anchor_ts": 1785500314.8323326,
+    "backmsg_decode": {
+      "byte_len": 296,
+      "sha256": "993662a9f925de1c9987dae2ad5f6bdd7dc8f17b258cc7733e38331ad4058287",
+      "parsed": true,
+      "widget_ids_in_binary": [
+        {
+          "internal_id_hash": "0354108240bdc767144d84b38d1f9c35",
+          "user_key_suffix": "minimal_wake_repro_0R"
+        }
+      ],
+      "parse_skip_bytes": 0,
+      "backmsg_oneof_type": "rerun_script",
+      "frame_type_hint": "backmsg_protobuf",
+      "backmsg_fields": [
+        "rerun_script"
+      ],
+      "client_state": {
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "page_name": "",
+        "fragment_id": "",
+        "query_string_preview": "solo_delivery_diag=1&solo_delivery_case=A&solo_component_diag=1",
+        "is_auto_rerun": false
+      },
+      "widget_state_count": 1,
+      "widget_states": [
+        {
+          "id": "$$ID-0354108240bdc767144d84b38d1f9c35-minimal_wake_repro_0",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": "\"repro|0|1785500077.940\""
+        }
+      ],
+      "widget_state_ids": [
+        "$$ID-0354108240bdc767144d84b38d1f9c35-minimal_wake_repro_0"
+      ]
+    },
+    "outbound_widget_id": "$$ID-0354108240bdc767144d84b38d1f9c35-minimal_wake_repro_0",
+    "ws_id": "ws_0",
+    "post_send_global_canary_count": 5,
+    "post_send_global_canaries": [
+      {
+        "event_id": "d2377923a28e4062:1:production_global_script_run_canary",
+        "ts": 1785500072.9259076,
+        "event": "production_global_script_run_canary",
+        "script_run_seq": 1,
+        "run_id": "d2377923a28e4062",
+        "widget_key": "solo_countdown_wake_solo_persistent",
+        "room_id": "",
+        "pick_index": null,
+        "deadline": null,
+        "expected_token": "",
+        "room_status": "",
+        "global_canary_seq": 1,
+        "streamlit_session_id_safe": "43139f45\u20265ede",
+        "deployment_sha": "6b21b58",
+        "active_page": "ultra_early_bootstrap",
+        "session_state_widget_value": "missing",
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id": "",
+        "diagnostic_run_id": "d2377923a28e4062"
+      },
+      {
+        "event_id": "d2377923a28e4062:2:production_global_script_run_canary",
+        "ts": 1785500078.5484624,
+        "event": "production_global_script_run_canary",
+        "script_run_seq": 2,
+        "run_id": "d2377923a28e4062",
+        "widget_key": "solo_countdown_wake_solo_persistent",
+        "room_id": "",
+        "pick_index": null,
+        "deadline": null,
+        "expected_token": "",
+        "room_status": "",
+        "global_canary_seq": 2,
+        "streamlit_session_id_safe": "43139f45\u20265ede",
+        "deployment_sha": "6b21b58",
+        "active_page": "ultra_early_bootstrap",
+        "session_state_widget_value": "missing",
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id": "",
+        "diagnostic_run_id": "d2377923a28e4062"
+      },
+      {
+        "event_id": "d2377923a28e4062:3:production_global_script_run_canary",
+        "ts": 1785500084.1322396,
+        "event": "production_global_script_run_canary",
+        "script_run_seq": 3,
+        "run_id": "d2377923a28e4062",
+        "widget_key": "solo_countdown_wake_solo_persistent",
+        "room_id": "",
+        "pick_index": null,
+        "deadline": null,
+        "expected_token": "",
+        "room_status": "",
+        "global_canary_seq": 3,
+        "streamlit_session_id_safe": "43139f45\u20265ede",
+        "deployment_sha": "6b21b58",
+        "active_page": "ultra_early_bootstrap",
+        "session_state_widget_value": "missing",
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id": "",
+        "diagnostic_run_id": "d2377923a28e4062"
+      },
+      {
+        "event_id": "d2377923a28e4062:4:production_global_script_run_canary",
+        "ts": 1785500089.5552447,
+        "event": "production_global_script_run_canary",
+        "script_run_seq": 4,
+        "run_id": "d2377923a28e4062",
+        "widget_key": "solo_countdown_wake_solo_persistent",
+        "room_id": "",
+        "pick_index": null,
+        "deadline": null,
+        "expected_token": "",
+        "room_status": "",
+        "global_canary_seq": 4,
+        "streamlit_session_id_safe": "43139f45\u20265ede",
+        "deployment_sha": "6b21b58",
+        "active_page": "ultra_early_bootstrap",
+        "session_state_widget_value": "missing",
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id": "",
+        "diagnostic_run_id": "d2377923a28e4062"
+      },
+      {
+        "event_id": "d2377923a28e4062:5:production_global_script_run_canary",
+        "ts": 1785500095.0523002,
+        "event": "production_global_script_run_canary",
+        "script_run_seq": 5,
+        "run_id": "d2377923a28e4062",
+        "widget_key": "solo_countdown_wake_solo_persistent",
+        "room_id": "",
+        "pick_index": null,
+        "deadline": null,
+        "expected_token": "",
+        "room_status": "",
+        "global_canary_seq": 5,
+        "streamlit_session_id_safe": "43139f45\u20265ede",
+        "deployment_sha": "6b21b58",
+        "active_page": "ultra_early_bootstrap",
+        "session_state_widget_value": "missing",
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id": "",
+        "diagnostic_run_id": "d2377923a28e4062"
+      }
+    ],
+    "first_inbound": {
+      "wall_ts": 1785500078.2610667,
+      "direction": "inbound",
+      "ws_id": "ws_0",
+      "byte_len": 412,
+      "forward_decode": {
+        "direction": "inbound",
+        "byte_len": 412,
+        "sha256": "c1b830dbdb0c6fe741bda9bf4883bcd52ebbcff3f5d1642b184ee9d3e3471034",
+        "parsed": true,
+        "widget_ids_in_binary": [],
+        "parse_skip_bytes": 0,
+        "frame_type_hint": "forwardmsg_protobuf",
+        "category": "new_session",
+        "metadata": {
+          "active_script_hash": "",
+          "is_fragment_run": false
+        },
+        "interpretation": "session_metadata",
+        "page_script_hash_hint": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id_hint": ""
+      }
+    },
+    "control_complete": true,
+    "python_proven": true,
+    "case_a": {
+      "passed": "1",
+      "callbacks": 4,
+      "cycles_done": 4,
+      "component_name": "minimal_wake_repro",
+      "key": "done",
+      "token": "",
+      "stages": "component_declaration_loaded|on_change_callback_entry|session_state_raw_received|token_coercion_complete|delivery_token_recorded|on_change_delivery_complete|component_declaration_loaded|on_change_callback_entry|session_state_raw_received|token_coercion_complete|delivery_token_recorded|on_change_delivery_complete|component_declaration_loaded|on_change_callback_entry|session_state_raw_received|token_coercion_complete|delivery_token_recorded|on_change_delivery_complete|component_declaration_loaded|on_change_callback_entry|session_state_raw_received|token_coercion_complete|delivery_token_recorded|on_change_delivery_complete",
+      "rerun": "5",
+      "json": "{'log': [{'ts': 1785500072.9398189, 'stage': 'component_declaration_loaded', 'component_name': 'minimal_wake_repro', 'widget_key': 'minimal_wake_repro_0', 'expire_token': 'repro|0|1785500077.940', 'mount_count': 1}, {'ts': 1785500078.5440261, 'stage': 'on_change_callback_entry', 'widget_key': 'minimal_wake_repro_0', 'raw_session_state': ''repro|0|1785500077.940''}, {'ts': 1785500078.54416, 'stage': 'session_state_raw_received', 'key': 'minimal_wake_repro_0', 'raw_type': 'str'}, {'ts': 1785500078.544199, 'stage': 'token_coercion_complete', 'token': 'repro|0|1785500077.940'}, {'ts': 1785500078.5443504, 'stage': 'delivery_token_recorded', 'source': 'on_change', 'token': 'repro|0|1785500077.940', 'cycles_done': 1}, {'ts': 1785500078.5444071, 'stage': 'on_change_delivery_complete', 'token': 'repro|0|1785500077.940'}, {'ts': 1785500078.5557663, 'stage': 'component_declaration_loaded', 'component_name': 'minimal_wake_repro', 'widget_key': 'minimal_wake_repro_1', 'expire_token': 'repro|1|1785500083.556', 'mount_count': 2}, {'ts': 1785500084.12692, 'stage': 'on_change_callback_entry', 'widget_key': 'minimal_wake_repro_1', 'raw_session_state': ''repro|1|1785500083.556''}, {'ts': 1785500084.12706, 'stage': 'session_state_raw_received', 'key': 'minimal_wake_repro_1', 'raw_type': 'str'}, {'ts': 1785500084.127099, 'stage': 'token_coercion_complete', 'token': 'repro|1|1785500083.556'}, {'ts': 1785500084.127275, 'stage': 'delivery_token_recorded', 'source': 'on_change', 'token': 'repro|1|1785500083.556', 'cycles_done': 2}, {'ts': 1785500084.1273115, 'stage': 'on_change_delivery_complete', 'token': 'repro|1|1785500083.556'}, {'ts': 1785500084.1431859, 'stage': 'component_declaration_loaded', 'component_name': 'minimal_wake_repro', 'widget_key': 'minimal_wake_repro_2', 'expire_token': 'repro|2|1785500089.143', 'mount_count': 3}, {'ts': 1785500089.5521293, 'stage': 'on_change_callback_entry', 'widget_key': 'minimal_wake_repro_2', 'raw_session_state': ''repro|2|1785500089.143''}, {'ts': 1785500089.5522578, 'stage': 'session_state_raw_received', 'key': 'minimal_wake_repro_2', 'raw_type': 'str'}, {'ts': 1785500089.552295, 'stage': 'token_coercion_complete', 'token': 'repro|2|1785500089.143'}, {'ts': 1785500089.5524442, 'stage': 'delivery_token_recorded', 'source': 'on_change', 'token': 'repro|2|1785500089.143', 'cycles_done': 3}, {'ts': 1785500089.552475, 'stage': 'on_change_delivery_complete', 'token': 'repro|2|1785500089.143'}, {'ts': 1785500089.5628831, 'stage': 'component_declaration_loaded', 'component_name': 'minimal_wake_repro', 'widget_key': 'minimal_wake_repro_3', 'expire_token': 'repro|3|1785500094.563', 'mount_count': 4}, {'ts': 1785500095.0462868, 'stage': 'on_change_callback_entry', 'widget_key': 'minimal_wake_repro_3', 'raw_session_state': ''repro|3|1785500094.563''}, {'ts': 1785500095.046487, 'stage': 'session_state_raw_received', 'key': 'minimal_wake_repro_3', 'raw_type': 'str'}, {'ts': 1785500095.0465474, 'stage': 'token_coercion_complete', 'token': 'repro|3|1785500094.563'}, {'ts': 1785500095.04683, 'stage': 'delivery_token_recorded', 'source': 'on_change', 'token': 'repro|3|1785500094.563', 'cycles_done': 4}, {'ts': 1785500095.0468862, 'stage': 'on_change_delivery_complete', 'token': 'repro|3|1785500094.563'}], 'meta': {'case': 'A', 'matrix_cell': 1, 'component_name': 'minimal_wake_repro', 'mount_location': 'streamlit_app_top', 'registration': 'minimal_component_wake_repro_core.render_one_cycle', 'rerun_count': 5, 'on_change_entered': true, 'on_change_ts': 1785500095.0462868}, 'diag': {'component_name': 'minimal_wake_repro', 'component_path': '/mount/src/baseball-stat-app/minimal_wake_repro_component/frontend', 'widget_key': 'minimal_wake_repro_3', 'expire_token': 'repro|3|1785500094.563', 'raw_return': null, 'raw_return_type': '', 'session_state_value': null, 'callback_count': 3, 'cycles_done': 3, 'mount_count': 4}, 'callbacks': [{'ts': 1785500078.544272, 'source': 'on_change', 'token': 'repro|0|1785500077.940', 'raw_type': 'str', 'raw_repr': 'repro|0|1785500077.940'}, {'ts': 1785500084.127174, 'source': 'on_change', 'token': 'repro|1|1785500083.556', 'raw_type': 'str', 'raw_repr': 'repro|1|1785500083.556'}, {'ts': 1785500089.5523684, 'source': 'on_change', 'token': 'repro|2|1785500089.143', 'raw_type': 'str', 'raw_repr': 'repro|2|1785500089.143'}, {'ts': 1785500095.0466998, 'source': 'on_change', 'token': 'repro|3|1785500094.563', 'raw_type': 'str', 'raw_repr': 'repro|3|1785500094.563'}], 'cycles_done': 4, 'required_cycles': 4, 'passed': true}"
+    },
+    "forwardmsg_element_id": "$$ID-0354108240bdc767144d84b38d1f9c35-minimal_wake_repro_0",
+    "browser_iframe_element_id": "$$ID-0354108240bdc767144d84b38d1f9c35-minimal_wake_repro_0",
+    "authoritative_triple_equal": true
+  },
+  "production": {
+    "exact_token": "0B0F3035|0|1785500436.107",
+    "outbound_ts": 1785500436.2802303,
+    "send_epoch": 1785500436.262,
+    "actual_registered_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+    "forwardmsg_element_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "browser_iframe_element_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "outbound_backmsg_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "registered_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "outbound_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "latest_mount_ts": 1785500436.9856708,
+    "forwardmsg_hits": [
+      {
+        "wall_ts": 1785500420.4795244,
+        "internal_id_hash": "ec067dd84b49566f12044da6d35ecce1",
+        "forwardmsg_element_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+        "page_script_hash": "a9f8353a3d822fea0c52d80f9407aae5",
+        "category": "delta",
+        "byte_len": 478
+      },
+      {
+        "wall_ts": 1785500425.8074143,
+        "internal_id_hash": "ec067dd84b49566f12044da6d35ecce1",
+        "forwardmsg_element_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+        "page_script_hash": "a9f8353a3d822fea0c52d80f9407aae5",
+        "category": "delta",
+        "byte_len": 478
+      },
+      {
+        "wall_ts": 1785500428.5086071,
+        "internal_id_hash": "ec067dd84b49566f12044da6d35ecce1",
+        "forwardmsg_element_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+        "page_script_hash": "b6e1be2283f84b916299e47f07d41cb3",
+        "category": "delta",
+        "byte_len": 505
+      },
+      {
+        "wall_ts": 1785500436.9856708,
+        "internal_id_hash": "ec067dd84b49566f12044da6d35ecce1",
+        "forwardmsg_element_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+        "page_script_hash": "a9f8353a3d822fea0c52d80f9407aae5",
+        "category": "delta",
+        "byte_len": 478
+      }
+    ],
+    "declaration_timeline": [
+      {
+        "event": "production_countdown_declaration_pre",
+        "ts": 1785500345.6321313,
+        "actual_registered_widget_id": "",
+        "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+        "generated_internal_widget_id": "",
+        "after_mount": false
+      },
+      {
+        "event": "production_countdown_declaration_post",
+        "ts": 1785500345.632993,
+        "actual_registered_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+        "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+        "generated_internal_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+        "after_mount": true
+      },
+      {
+        "event": "production_countdown_declaration_pre",
+        "ts": 1785500420.605871,
+        "actual_registered_widget_id": "",
+        "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+        "generated_internal_widget_id": "",
+        "after_mount": false
+      },
+      {
+        "event": "production_countdown_declaration_post",
+        "ts": 1785500420.6069844,
+        "actual_registered_widget_id": "",
+        "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+        "generated_internal_widget_id": "",
+        "after_mount": true
+      },
+      {
+        "event": "production_countdown_declaration_pre",
+        "ts": 1785500426.016115,
+        "actual_registered_widget_id": "",
+        "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+        "generated_internal_widget_id": "",
+        "after_mount": false
+      },
+      {
+        "event": "production_countdown_declaration_post",
+        "ts": 1785500426.017102,
+        "actual_registered_widget_id": "",
+        "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+        "generated_internal_widget_id": "",
+        "after_mount": true
+      }
+    ],
+    "browser_scrape": {
+      "dom_widget_ids": [],
+      "production_iframes": [],
+      "control_iframes": [],
+      "register_component_messages": [],
+      "production_dom_ids": [],
+      "control_dom_ids": []
+    },
+    "backmsg_decode": {
+      "byte_len": 3377,
+      "sha256": "292acb4405328a0d7d0dcb20cc4a5c405be3d72a5d4cb2d92db05b4035e66e62",
+      "parsed": true,
+      "widget_ids_in_binary": [
+        {
+          "internal_id_hash": "d8c39840632f6f972078729427ae056d",
+          "user_key_suffix": "portfolio_screenshot_mode"
+        },
+        {
+          "internal_id_hash": "8ae31ad81f99b3bac35d96d3fec0fab0",
+          "user_key_suffix": "portfolio_demo_mode"
+        },
+        {
+          "internal_id_hash": "d12c1dffe04c0d61b1fc5e8abcc0343d",
+          "user_key_suffix": "suite_auth_login_email2"
+        },
+        {
+          "internal_id_hash": "a3b2e5cb992e4c2ba007f54b3f52bc76",
+          "user_key_suffix": "suite_auth_login_password2"
+        },
+        {
+          "internal_id_hash": "d0d3bf79aa62c351ebf894f6719cfbcf",
+          "user_key_suffix": "suite_auth_signup_email2"
+        },
+        {
+          "internal_id_hash": "eba1c85efab0faed36d9f260691f7396",
+          "user_key_suffix": "suite_auth_signup_password2"
+        },
+        {
+          "internal_id_hash": "25dbef723bdc76b210cb2429b6b21af8",
+          "user_key_suffix": "suite_auth_reset_email2"
+        },
+        {
+          "internal_id_hash": "697f2772b88a6bfed8b66637886b74ea",
+          "user_key_suffix": "main_sidebar_page2"
+        },
+        {
+          "internal_id_hash": "ec97de5d6dbddb1a024a66981f7c0313",
+          "user_key_suffix": "ami_question_baseball_Live_Draft_Room_02"
+        },
+        {
+          "internal_id_hash": "4c978dadb691ca9aa1e1fa1466bc213c",
+          "user_key_suffix": "live_draft_setup_mode23Solo Draft \u2014 you control all teams (no room code)"
+        },
+        {
+          "internal_id_hash": "f178abf034d8497e13f025fe37ed6417",
+          "user_key_suffix": "live_draft_league_name2"
+        },
+        {
+          "internal_id_hash": "7155e9a8fb2ae79e6863ec1ed0ed2e1c",
+          "user_key_suffix": "live_draft_team_count("
+        },
+        {
+          "internal_id_hash": "b19cba71f0c2b8f636b747ac0fac2a9a",
+          "user_key_suffix": "live_draft_picks_per_team("
+        },
+        {
+          "internal_id_hash": "608728a14ab6e2f2915e14bf118a99ce",
+          "user_key_suffix": "live_draft_type2"
+        },
+        {
+          "internal_id_hash": "bac8579a87cb1a0c3ea01126cc0f40d5",
+          "user_key_suffix": "live_draft_scoring2"
+        },
+        {
+          "internal_id_hash": "65928edd64b5b138585b5d6d7479aa63",
+          "user_key_suffix": "live_draft_timer2"
+        },
+        {
+          "internal_id_hash": "d342ea826869ccd6184680fafacd2461",
+          "user_key_suffix": "live_draft_auto_rule2"
+        },
+        {
+          "internal_id_hash": "6f5e2f276a07ed6c92075e832d5c7827",
+          "user_key_suffix": "live_draft_proj_style2"
+        },
+        {
+          "internal_id_hash": "2eb5f6ab0f5971e4efd1dc1c674c13d2",
+          "user_key_suffix": "live_draft_proj_window2"
+        },
+        {
+          "internal_id_hash": "15cd63dc37f0ece8200b83a99c603eb0",
+          "user_key_suffix": "live_slot_c("
+        },
+        {
+          "internal_id_hash": "da209e61b2d0a9d09c98d1d4bc2bd629",
+          "user_key_suffix": "live_slot_1b("
+        },
+        {
+          "internal_id_hash": "33e61380016964c3a1640550d9399c34",
+          "user_key_suffix": "live_slot_2b("
+        },
+        {
+          "internal_id_hash": "678600d54d2e8ad5b284215b8417370a",
+          "user_key_suffix": "live_slot_3b("
+        },
+        {
+          "internal_id_hash": "3bab97d12d98996964db85f2cfe53924",
+          "user_key_suffix": "live_slot_ss("
+        },
+        {
+          "internal_id_hash": "e694f5310f995cfd20b6c9af2c956cc7",
+          "user_key_suffix": "live_slot_of("
+        },
+        {
+          "internal_id_hash": "960a440a0a1ae5d602e15fc09e1b5144",
+          "user_key_suffix": "live_slot_dh("
+        },
+        {
+          "internal_id_hash": "e9bf5633bdff066abc782cfa95d55576",
+          "user_key_suffix": "live_slot_p("
+        },
+        {
+          "internal_id_hash": "ffa4271ec20b0029fb2b572b2bd0eee8",
+          "user_key_suffix": "live_slot_bench("
+        },
+        {
+          "internal_id_hash": "e32bd8023c0a1259b2d753f416b85300",
+          "user_key_suffix": "live_draft_team_name_02"
+        },
+        {
+          "internal_id_hash": "41f2e8bce11db650b6025e47c2036e75",
+          "user_key_suffix": "live_draft_team_name_12"
+        },
+        {
+          "internal_id_hash": "b0c271ebab750e733c2d4c9e75ac271b",
+          "user_key_suffix": "live_draft_my_team2"
+        },
+        {
+          "internal_id_hash": "30118bb341ff1afde38a3d327943460d",
+          "user_key_suffix": "live_draft_manual_position_filter2"
+        },
+        {
+          "internal_id_hash": "65e817781dd0569a5e51b0d62a8039ae",
+          "user_key_suffix": "live_draft_player_view_only2"
+        },
+        {
+          "internal_id_hash": "ec067dd84b49566f12044da6d35ecce1",
+          "user_key_suffix": "solo_countdown_wake_solo_persistentR"
+        },
+        {
+          "internal_id_hash": "4be710dd6810a9c3de68d56de394a973",
+          "user_key_suffix": "solo_countdown_wake_transport_minimalR!\"0B0F3035|minimal|1785500436.107\""
+        }
+      ],
+      "parse_skip_bytes": 0,
+      "backmsg_oneof_type": "rerun_script",
+      "frame_type_hint": "backmsg_protobuf",
+      "backmsg_fields": [
+        "rerun_script"
+      ],
+      "client_state": {
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "page_name": "",
+        "fragment_id": "",
+        "query_string_preview": "active_page=Live+Draft+Room&solo_component_diag=1&solo_diag_timer=10&solo_stage1_parent_boundary=1&suite_sid=a38d0369-9c8f-48ed-b2be-e10237e9349b",
+        "is_auto_rerun": false
+      },
+      "widget_state_count": 35,
+      "widget_states": [
+        {
+          "id": "$$ID-d8c39840632f6f972078729427ae056d-portfolio_screenshot_mode",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-8ae31ad81f99b3bac35d96d3fec0fab0-portfolio_demo_mode",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-d12c1dffe04c0d61b1fc5e8abcc0343d-suite_auth_login_email",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-a3b2e5cb992e4c2ba007f54b3f52bc76-suite_auth_login_password",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-d0d3bf79aa62c351ebf894f6719cfbcf-suite_auth_signup_email",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-eba1c85efab0faed36d9f260691f7396-suite_auth_signup_password",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-25dbef723bdc76b210cb2429b6b21af8-suite_auth_reset_email",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-697f2772b88a6bfed8b66637886b74ea-main_sidebar_page",
+          "string_value_preview": "\ud83d\udce1 Live Draft Room",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-ec97de5d6dbddb1a024a66981f7c0313-ami_question_baseball_Live_Draft_Room_0",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-4c978dadb691ca9aa1e1fa1466bc213c-live_draft_setup_mode",
+          "string_value_preview": "Solo Draft \u2014 you control all teams (no room code)",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-f178abf034d8497e13f025fe37ed6417-live_draft_league_name",
+          "string_value_preview": "My Fantasy League",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-7155e9a8fb2ae79e6863ec1ed0ed2e1c-live_draft_team_count",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-b19cba71f0c2b8f636b747ac0fac2a9a-live_draft_picks_per_team",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-608728a14ab6e2f2915e14bf118a99ce-live_draft_type",
+          "string_value_preview": "Snake Draft",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-bac8579a87cb1a0c3ea01126cc0f40d5-live_draft_scoring",
+          "string_value_preview": "Roto (5x5)",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-65928edd64b5b138585b5d6d7479aa63-live_draft_timer",
+          "string_value_preview": "60 sec",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-d342ea826869ccd6184680fafacd2461-live_draft_auto_rule",
+          "string_value_preview": "balanced recommendation",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-6f5e2f276a07ed6c92075e832d5c7827-live_draft_proj_style",
+          "string_value_preview": "Conservative",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-2eb5f6ab0f5971e4efd1dc1c674c13d2-live_draft_proj_window",
+          "string_value_preview": "4",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-15cd63dc37f0ece8200b83a99c603eb0-live_slot_c",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-da209e61b2d0a9d09c98d1d4bc2bd629-live_slot_1b",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-33e61380016964c3a1640550d9399c34-live_slot_2b",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-678600d54d2e8ad5b284215b8417370a-live_slot_3b",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-3bab97d12d98996964db85f2cfe53924-live_slot_ss",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-e694f5310f995cfd20b6c9af2c956cc7-live_slot_of",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-960a440a0a1ae5d602e15fc09e1b5144-live_slot_dh",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-e9bf5633bdff066abc782cfa95d55576-live_slot_p",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-ffa4271ec20b0029fb2b572b2bd0eee8-live_slot_bench",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-e32bd8023c0a1259b2d753f416b85300-live_draft_team_name_0",
+          "string_value_preview": "Team A",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-41f2e8bce11db650b6025e47c2036e75-live_draft_team_name_1",
+          "string_value_preview": "Team B",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-b0c271ebab750e733c2d4c9e75ac271b-live_draft_my_team",
+          "string_value_preview": "Team A",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-30118bb341ff1afde38a3d327943460d-live_draft_manual_position_filter",
+          "string_value_preview": "All",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-65e817781dd0569a5e51b0d62a8039ae-live_draft_player_view_only",
+          "string_value_preview": "Shohei Ohtani",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": ""
+        },
+        {
+          "id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": "\"0B0F3035|0|1785500436.107\""
+        },
+        {
+          "id": "$$ID-4be710dd6810a9c3de68d56de394a973-solo_countdown_wake_transport_minimal",
+          "string_value_preview": "",
+          "trigger_value": false,
+          "set_value": false,
+          "json_value_preview": "\"0B0F3035|minimal|1785500436.107\""
+        }
+      ],
+      "widget_state_ids": [
+        "$$ID-d8c39840632f6f972078729427ae056d-portfolio_screenshot_mode",
+        "$$ID-8ae31ad81f99b3bac35d96d3fec0fab0-portfolio_demo_mode",
+        "$$ID-d12c1dffe04c0d61b1fc5e8abcc0343d-suite_auth_login_email",
+        "$$ID-a3b2e5cb992e4c2ba007f54b3f52bc76-suite_auth_login_password",
+        "$$ID-d0d3bf79aa62c351ebf894f6719cfbcf-suite_auth_signup_email",
+        "$$ID-eba1c85efab0faed36d9f260691f7396-suite_auth_signup_password",
+        "$$ID-25dbef723bdc76b210cb2429b6b21af8-suite_auth_reset_email",
+        "$$ID-697f2772b88a6bfed8b66637886b74ea-main_sidebar_page",
+        "$$ID-ec97de5d6dbddb1a024a66981f7c0313-ami_question_baseball_Live_Draft_Room_0",
+        "$$ID-4c978dadb691ca9aa1e1fa1466bc213c-live_draft_setup_mode",
+        "$$ID-f178abf034d8497e13f025fe37ed6417-live_draft_league_name",
+        "$$ID-7155e9a8fb2ae79e6863ec1ed0ed2e1c-live_draft_team_count",
+        "$$ID-b19cba71f0c2b8f636b747ac0fac2a9a-live_draft_picks_per_team",
+        "$$ID-608728a14ab6e2f2915e14bf118a99ce-live_draft_type",
+        "$$ID-bac8579a87cb1a0c3ea01126cc0f40d5-live_draft_scoring",
+        "$$ID-65928edd64b5b138585b5d6d7479aa63-live_draft_timer",
+        "$$ID-d342ea826869ccd6184680fafacd2461-live_draft_auto_rule",
+        "$$ID-6f5e2f276a07ed6c92075e832d5c7827-live_draft_proj_style",
+        "$$ID-2eb5f6ab0f5971e4efd1dc1c674c13d2-live_draft_proj_window",
+        "$$ID-15cd63dc37f0ece8200b83a99c603eb0-live_slot_c",
+        "$$ID-da209e61b2d0a9d09c98d1d4bc2bd629-live_slot_1b",
+        "$$ID-33e61380016964c3a1640550d9399c34-live_slot_2b",
+        "$$ID-678600d54d2e8ad5b284215b8417370a-live_slot_3b",
+        "$$ID-3bab97d12d98996964db85f2cfe53924-live_slot_ss",
+        "$$ID-e694f5310f995cfd20b6c9af2c956cc7-live_slot_of",
+        "$$ID-960a440a0a1ae5d602e15fc09e1b5144-live_slot_dh",
+        "$$ID-e9bf5633bdff066abc782cfa95d55576-live_slot_p",
+        "$$ID-ffa4271ec20b0029fb2b572b2bd0eee8-live_slot_bench",
+        "$$ID-e32bd8023c0a1259b2d753f416b85300-live_draft_team_name_0",
+        "$$ID-41f2e8bce11db650b6025e47c2036e75-live_draft_team_name_1",
+        "$$ID-b0c271ebab750e733c2d4c9e75ac271b-live_draft_my_team",
+        "$$ID-30118bb341ff1afde38a3d327943460d-live_draft_manual_position_filter",
+        "$$ID-65e817781dd0569a5e51b0d62a8039ae-live_draft_player_view_only",
+        "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+        "$$ID-4be710dd6810a9c3de68d56de394a973-solo_countdown_wake_transport_minimal"
+      ]
+    },
+    "first_inbound": {
+      "wall_ts": 1785500436.3530934,
+      "direction": "inbound",
+      "ws_id": "ws_76",
+      "byte_len": 412,
+      "forward_decode": {
+        "direction": "inbound",
+        "byte_len": 412,
+        "sha256": "7fef6629bcc64de30c58b52ae7822b87ac4414b37374d56f7efcf0675ac91875",
+        "parsed": true,
+        "widget_ids_in_binary": [],
+        "parse_skip_bytes": 0,
+        "frame_type_hint": "forwardmsg_protobuf",
+        "category": "new_session",
+        "metadata": {
+          "active_script_hash": "",
+          "is_fragment_run": false
+        },
+        "interpretation": "session_metadata",
+        "page_script_hash_hint": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id_hint": ""
+      }
+    },
+    "post_send_global_canary_count": 1,
+    "post_send_branch_canary_count": 1,
+    "python_return_empty_hint": true,
+    "inbound_handler_error_hint": false,
+    "server_dedupe_hint": false,
+    "session_state_after_declaration": "None",
+    "diagnostic_run_id": "0B0F3035",
+    "fragment_id": "",
+    "page_script_hash_declaration": "4643685248ca83aded02e6d78a49e44b"
+  },
+  "deploy_poll": {
+    "git_head": "6912448",
+    "local_deploy_pin": "6b21b58",
+    "attempts": [
+      {
+        "attempt": 0,
+        "ts": 1785500042.3240163,
+        "sha": "6b21b58",
+        "build": "baseball-dev-6b21b58",
+        "implementation": {
+          "sha": "6b21b58",
+          "file_widget_identity_py": true,
+          "declaration_identity_fields": true,
+          "ultra_early_global_canary_hook": true,
+          "forwardmsg_decode_helper": true,
+          "symmetric_harness": true,
+          "ok": true
+        },
+        "symmetric_observability": true
+      }
+    ],
+    "live_sha": "6b21b58",
+    "live_build": "baseball-dev-6b21b58",
+    "implementation_at_live_sha": {
+      "sha": "6b21b58",
+      "file_widget_identity_py": true,
+      "declaration_identity_fields": true,
+      "ultra_early_global_canary_hook": true,
+      "forwardmsg_decode_helper": true,
+      "symmetric_harness": true,
+      "ok": true
+    },
+    "ok": true
+  },
+  "observability_implementation_sha": "6912448",
+  "implementation_at_live": {
+    "sha": "6b21b58",
+    "file_widget_identity_py": true,
+    "declaration_identity_fields": true,
+    "ultra_early_global_canary_hook": true,
+    "forwardmsg_decode_helper": true,
+    "symmetric_harness": true,
+    "ok": true
+  },
+  "control_identity": {
+    "forwardmsg_element_id": "$$ID-0354108240bdc767144d84b38d1f9c35-minimal_wake_repro_0",
+    "browser_iframe_element_id": "$$ID-0354108240bdc767144d84b38d1f9c35-minimal_wake_repro_0",
+    "outbound_backmsg_widget_id": "$$ID-0354108240bdc767144d84b38d1f9c35-minimal_wake_repro_0",
+    "actual_registered_widget_id": "$$ID-0354108240bdc767144d84b38d1f9c35-minimal_wake_repro_0",
+    "authoritative_triple_equal": true
+  },
+  "control_gate": {
+    "ok": true,
+    "checks": {
+      "backmsg_rerun_script": true,
+      "exact_value_in_backmsg": true,
+      "python_proven": true,
+      "post_send_global_canary": true,
+      "widget_id_recorded": true,
+      "outbound_equals_registered": true,
+      "authoritative_triple_equal": true
+    },
+    "classification": "CONTROL_CANARY_PATH_OK"
+  },
+  "live_instrumentation_pre_control": {
+    "sha": "6b21b58",
+    "file_widget_identity_py": true,
+    "declaration_identity_fields": true,
+    "ultra_early_global_canary_hook": true,
+    "forwardmsg_decode_helper": true,
+    "symmetric_harness": true,
+    "ok": true
+  },
+  "cloud_sha": "6b21b58",
+  "cloud_build": "baseball-dev-6b21b58",
+  "implementation": {
+    "sha": "6b21b58",
+    "file_widget_identity_py": true,
+    "declaration_identity_fields": true,
+    "ultra_early_global_canary_hook": true,
+    "forwardmsg_decode_helper": true,
+    "symmetric_harness": true,
+    "ok": true
+  },
+  "pre_trace_canary_validation": {
+    "global_canary_seen": true,
+    "branch_canary_seen": true,
+    "global_canary_rows": [
+      {
+        "event_id": "c701a9bf0e734b7b:1:production_global_script_run_canary",
+        "ts": 1785500343.2309196,
+        "event": "production_global_script_run_canary",
+        "script_run_seq": 1,
+        "run_id": "c701a9bf0e734b7b",
+        "widget_key": "solo_countdown_wake_solo_persistent",
+        "room_id": "",
+        "pick_index": null,
+        "deadline": null,
+        "expected_token": "",
+        "room_status": "",
+        "global_canary_seq": 1,
+        "streamlit_session_id_safe": "b1ecf0e2\u2026a38a",
+        "deployment_sha": "6b21b58",
+        "active_page": "ultra_early_bootstrap",
+        "session_state_widget_value": "missing",
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id": "",
+        "diagnostic_run_id": "c701a9bf0e734b7b"
+      }
+    ],
+    "branch_canary_rows": [
+      {
+        "event_id": "c701a9bf0e734b7b:2:production_live_draft_branch_canary",
+        "ts": 1785500343.231241,
+        "event": "production_live_draft_branch_canary",
+        "script_run_seq": 1,
+        "run_id": "c701a9bf0e734b7b",
+        "widget_key": "solo_countdown_wake_solo_persistent",
+        "room_id": "",
+        "pick_index": null,
+        "deadline": null,
+        "expected_token": "",
+        "room_status": "",
+        "global_canary_seq": 1,
+        "streamlit_session_id_safe": "b1ecf0e2\u2026a38a",
+        "deployment_sha": "6b21b58",
+        "active_page": "Live Draft Room",
+        "session_state_widget_value": "missing",
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id": "",
+        "diagnostic_run_id": "c701a9bf0e734b7b"
+      }
+    ],
+    "classification": "CANARY_PRE_TRACE_OK",
+    "peak_ledger_row_count": 2
+  },
+  "declaration_canary_validation": {
+    "declaration_pre_seen": true,
+    "declaration_post_seen": true,
+    "declaration_pre_rows": [
+      {
+        "event_id": "c701a9bf0e734b7b:8:production_countdown_declaration_pre",
+        "ts": 1785500345.6321313,
+        "event": "production_countdown_declaration_pre",
+        "script_run_seq": 2,
+        "run_id": "c701a9bf0e734b7b",
+        "widget_key": "solo_countdown_wake_solo_persistent",
+        "room_id": "",
+        "pick_index": 0,
+        "deadline": null,
+        "expected_token": "",
+        "room_status": "setup",
+        "global_canary_seq": 2,
+        "streamlit_session_id_safe": "b1ecf0e2\u2026a38a",
+        "deployment_sha": "6b21b58",
+        "active_page": "Live Draft Room",
+        "session_state_widget_value": "missing",
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id": "",
+        "diagnostic_run_id": "c701a9bf0e734b7b",
+        "component_key": "solo_countdown_wake",
+        "direct_return_value": "",
+        "declaration_eligibility": {
+          "first_mount": true,
+          "production_actionable": false,
+          "production_delivery_only": false,
+          "use_return_delivery": true
+        },
+        "iframe_instance_observable": "",
+        "actual_registered_widget_id": "",
+        "actual_registered_id_source": "widget_state_unavailable",
+        "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+        "registered_widget_id_authority": "predicted_id_pre_mount",
+        "generated_internal_widget_id": "",
+        "user_widget_key": "solo_countdown_wake_solo_persistent",
+        "component_name": "solo_countdown_wake",
+        "component_frontend_path": "/mount/src/baseball-stat-app/solo_countdown_component/frontend",
+        "component_url": "",
+        "streamlit_session_id_full_prefix": "b1ecf0e2",
+        "declaration_script_run_seq": 2,
+        "declaration_ts": 1785500345.631769,
+        "after_mount": false,
+        "widget_active_in_run": false
+      },
+      {
+        "event_id": "c701a9bf0e734b7b:22:production_countdown_declaration_pre",
+        "ts": 1785500420.605871,
+        "event": "production_countdown_declaration_pre",
+        "script_run_seq": 5,
+        "run_id": "c701a9bf0e734b7b",
+        "widget_key": "solo_countdown_wake_solo_persistent",
+        "room_id": "",
+        "pick_index": 0,
+        "deadline": null,
+        "expected_token": "",
+        "room_status": "setup",
+        "global_canary_seq": 4,
+        "streamlit_session_id_safe": "b1ecf0e2\u2026a38a",
+        "deployment_sha": "6b21b58",
+        "active_page": "Live Draft Room",
+        "session_state_widget_value": "None",
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id": "",
+        "diagnostic_run_id": "c701a9bf0e734b7b",
+        "component_key": "solo_countdown_wake",
+        "direct_return_value": "",
+        "declaration_eligibility": {
+          "first_mount": false,
+          "production_actionable": false,
+          "production_delivery_only": false,
+          "use_return_delivery": true
+        },
+        "iframe_instance_observable": "",
+        "actual_registered_widget_id": "",
+        "actual_registered_id_source": "widget_state_unavailable",
+        "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+        "registered_widget_id_authority": "predicted_id_pre_mount",
+        "generated_internal_widget_id": "",
+        "user_widget_key": "solo_countdown_wake_solo_persistent",
+        "component_name": "solo_countdown_wake",
+        "component_frontend_path": "/mount/src/baseball-stat-app/solo_countdown_component/frontend",
+        "component_url": "",
+        "streamlit_session_id_full_prefix": "b1ecf0e2",
+        "declaration_script_run_seq": 5,
+        "declaration_ts": 1785500420.6055295,
+        "after_mount": false,
+        "widget_active_in_run": false
+      },
+      {
+        "event_id": "c701a9bf0e734b7b:36:production_countdown_declaration_pre",
+        "ts": 1785500426.016115,
+        "event": "production_countdown_declaration_pre",
+        "script_run_seq": 8,
+        "run_id": "c701a9bf0e734b7b",
+        "widget_key": "solo_countdown_wake_solo_persistent",
+        "room_id": "",
+        "pick_index": 0,
+        "deadline": null,
+        "expected_token": "",
+        "room_status": "setup",
+        "global_canary_seq": 6,
+        "streamlit_session_id_safe": "b1ecf0e2\u2026a38a",
+        "deployment_sha": "6b21b58",
+        "active_page": "Live Draft Room",
+        "session_state_widget_value": "None",
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id": "",
+        "diagnostic_run_id": "c701a9bf0e734b7b",
+        "component_key": "solo_countdown_wake",
+        "direct_return_value": "",
+        "declaration_eligibility": {
+          "first_mount": false,
+          "production_actionable": false,
+          "production_delivery_only": false,
+          "use_return_delivery": true
+        },
+        "iframe_instance_observable": "",
+        "actual_registered_widget_id": "",
+        "actual_registered_id_source": "widget_state_unavailable",
+        "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+        "registered_widget_id_authority": "predicted_id_pre_mount",
+        "generated_internal_widget_id": "",
+        "user_widget_key": "solo_countdown_wake_solo_persistent",
+        "component_name": "solo_countdown_wake",
+        "component_frontend_path": "/mount/src/baseball-stat-app/solo_countdown_component/frontend",
+        "component_url": "",
+        "streamlit_session_id_full_prefix": "b1ecf0e2",
+        "declaration_script_run_seq": 8,
+        "declaration_ts": 1785500426.0158477,
+        "after_mount": false,
+        "widget_active_in_run": false
+      }
+    ],
+    "declaration_post_rows": [
+      {
+        "event_id": "c701a9bf0e734b7b:9:production_countdown_declaration_post",
+        "ts": 1785500345.632993,
+        "event": "production_countdown_declaration_post",
+        "script_run_seq": 2,
+        "run_id": "c701a9bf0e734b7b",
+        "widget_key": "solo_countdown_wake_solo_persistent",
+        "room_id": "",
+        "pick_index": 0,
+        "deadline": null,
+        "expected_token": "",
+        "room_status": "setup",
+        "global_canary_seq": 2,
+        "streamlit_session_id_safe": "b1ecf0e2\u2026a38a",
+        "deployment_sha": "6b21b58",
+        "active_page": "Live Draft Room",
+        "session_state_widget_value": "None",
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id": "",
+        "diagnostic_run_id": "c701a9bf0e734b7b",
+        "component_key": "solo_countdown_wake",
+        "direct_return_value": "",
+        "same_key_session_state_value": "None",
+        "declaration_eligibility": {
+          "first_mount": true,
+          "production_actionable": false,
+          "production_delivery_only": false,
+          "use_return_delivery": true
+        },
+        "iframe_instance_observable": "",
+        "actual_registered_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+        "actual_registered_id_source": "streamlit_session_widget_states",
+        "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+        "registered_widget_id_authority": "actual_registered_id",
+        "generated_internal_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+        "user_widget_key": "solo_countdown_wake_solo_persistent",
+        "component_name": "solo_countdown_wake",
+        "component_frontend_path": "/mount/src/baseball-stat-app/solo_countdown_component/frontend",
+        "component_url": "",
+        "streamlit_session_id_full_prefix": "b1ecf0e2",
+        "declaration_script_run_seq": 2,
+        "declaration_ts": 1785500345.6327028,
+        "after_mount": true,
+        "widget_active_in_run": true
+      },
+      {
+        "event_id": "c701a9bf0e734b7b:23:production_countdown_declaration_post",
+        "ts": 1785500420.6069844,
+        "event": "production_countdown_declaration_post",
+        "script_run_seq": 5,
+        "run_id": "c701a9bf0e734b7b",
+        "widget_key": "solo_countdown_wake_solo_persistent",
+        "room_id": "",
+        "pick_index": 0,
+        "deadline": null,
+        "expected_token": "",
+        "room_status": "setup",
+        "global_canary_seq": 4,
+        "streamlit_session_id_safe": "b1ecf0e2\u2026a38a",
+        "deployment_sha": "6b21b58",
+        "active_page": "Live Draft Room",
+        "session_state_widget_value": "None",
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id": "",
+        "diagnostic_run_id": "c701a9bf0e734b7b",
+        "component_key": "solo_countdown_wake",
+        "direct_return_value": "",
+        "same_key_session_state_value": "None",
+        "declaration_eligibility": {
+          "first_mount": false,
+          "production_actionable": false,
+          "production_delivery_only": false,
+          "use_return_delivery": true
+        },
+        "iframe_instance_observable": "",
+        "actual_registered_widget_id": "",
+        "actual_registered_id_source": "widget_state_unavailable",
+        "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+        "registered_widget_id_authority": "predicted_id",
+        "generated_internal_widget_id": "",
+        "user_widget_key": "solo_countdown_wake_solo_persistent",
+        "component_name": "solo_countdown_wake",
+        "component_frontend_path": "/mount/src/baseball-stat-app/solo_countdown_component/frontend",
+        "component_url": "",
+        "streamlit_session_id_full_prefix": "b1ecf0e2",
+        "declaration_script_run_seq": 5,
+        "declaration_ts": 1785500420.6066399,
+        "after_mount": true,
+        "widget_active_in_run": false
+      },
+      {
+        "event_id": "c701a9bf0e734b7b:37:production_countdown_declaration_post",
+        "ts": 1785500426.017102,
+        "event": "production_countdown_declaration_post",
+        "script_run_seq": 8,
+        "run_id": "c701a9bf0e734b7b",
+        "widget_key": "solo_countdown_wake_solo_persistent",
+        "room_id": "",
+        "pick_index": 0,
+        "deadline": null,
+        "expected_token": "",
+        "room_status": "setup",
+        "global_canary_seq": 6,
+        "streamlit_session_id_safe": "b1ecf0e2\u2026a38a",
+        "deployment_sha": "6b21b58",
+        "active_page": "Live Draft Room",
+        "session_state_widget_value": "None",
+        "page_script_hash": "4643685248ca83aded02e6d78a49e44b",
+        "fragment_id": "",
+        "diagnostic_run_id": "c701a9bf0e734b7b",
+        "component_key": "solo_countdown_wake",
+        "direct_return_value": "",
+        "same_key_session_state_value": "None",
+        "declaration_eligibility": {
+          "first_mount": false,
+          "production_actionable": false,
+          "production_delivery_only": false,
+          "use_return_delivery": true
+        },
+        "iframe_instance_observable": "",
+        "actual_registered_widget_id": "",
+        "actual_registered_id_source": "widget_state_unavailable",
+        "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+        "registered_widget_id_authority": "predicted_id",
+        "generated_internal_widget_id": "",
+        "user_widget_key": "solo_countdown_wake_solo_persistent",
+        "component_name": "solo_countdown_wake",
+        "component_frontend_path": "/mount/src/baseball-stat-app/solo_countdown_component/frontend",
+        "component_url": "",
+        "streamlit_session_id_full_prefix": "b1ecf0e2",
+        "declaration_script_run_seq": 8,
+        "declaration_ts": 1785500426.0168514,
+        "after_mount": true,
+        "widget_active_in_run": false
+      }
+    ],
+    "classification": "CANARY_DECLARATION_OK",
+    "peak_ledger_row_count": 44
+  },
+  "declaration_identity_fields": {
+    "sample_event": "production_countdown_declaration_post",
+    "fields_present": {
+      "actual_registered_widget_id": false,
+      "predicted_element_id": true,
+      "page_script_hash": true,
+      "fragment_id": false,
+      "streamlit_session_id_safe": true,
+      "diagnostic_run_id": true
+    },
+    "ok": false
+  },
+  "widget_id_equality": {
+    "registered_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "outbound_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+    "forwardmsg_element_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "browser_iframe_element_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "authoritative_triple_equal": true,
+    "outbound_equals_registered": true,
+    "page_script_hash_mismatch": false,
+    "duplicate_key_superseded": false,
+    "registered_inactive_at_send": true
+  },
+  "session_socket_comparison": {
+    "control_ws_id": "ws_0",
+    "production_ws_id": "ws_76",
+    "same_ws_id": false,
+    "control_session_safe": "43139f45\u20265ede",
+    "production_canary_session_safe": "b1ecf0e2\u2026a38a",
+    "registered_declaration_session_safe": "b1ecf0e2\u2026a38a",
+    "production_update_wrong_session_or_socket": false
+  },
+  "backmsg_field_comparison": {
+    "control_has_widget_states": true,
+    "production_has_widget_states": true,
+    "control_has_rerun_script": true,
+    "production_has_rerun_script": true,
+    "field_set_symmetric_difference": [],
+    "widget_state_id_overlap": [],
+    "production_only_widget_state_ids": [
+      "$$ID-15cd63dc37f0ece8200b83a99c603eb0-live_slot_c",
+      "$$ID-25dbef723bdc76b210cb2429b6b21af8-suite_auth_reset_email",
+      "$$ID-2eb5f6ab0f5971e4efd1dc1c674c13d2-live_draft_proj_window",
+      "$$ID-30118bb341ff1afde38a3d327943460d-live_draft_manual_position_filter",
+      "$$ID-33e61380016964c3a1640550d9399c34-live_slot_2b",
+      "$$ID-3bab97d12d98996964db85f2cfe53924-live_slot_ss",
+      "$$ID-41f2e8bce11db650b6025e47c2036e75-live_draft_team_name_1",
+      "$$ID-4be710dd6810a9c3de68d56de394a973-solo_countdown_wake_transport_minimal",
+      "$$ID-4c978dadb691ca9aa1e1fa1466bc213c-live_draft_setup_mode",
+      "$$ID-608728a14ab6e2f2915e14bf118a99ce-live_draft_type",
+      "$$ID-65928edd64b5b138585b5d6d7479aa63-live_draft_timer",
+      "$$ID-65e817781dd0569a5e51b0d62a8039ae-live_draft_player_view_only",
+      "$$ID-678600d54d2e8ad5b284215b8417370a-live_slot_3b",
+      "$$ID-697f2772b88a6bfed8b66637886b74ea-main_sidebar_page",
+      "$$ID-6f5e2f276a07ed6c92075e832d5c7827-live_draft_proj_style",
+      "$$ID-7155e9a8fb2ae79e6863ec1ed0ed2e1c-live_draft_team_count",
+      "$$ID-8ae31ad81f99b3bac35d96d3fec0fab0-portfolio_demo_mode",
+      "$$ID-960a440a0a1ae5d602e15fc09e1b5144-live_slot_dh",
+      "$$ID-a3b2e5cb992e4c2ba007f54b3f52bc76-suite_auth_login_password",
+      "$$ID-b0c271ebab750e733c2d4c9e75ac271b-live_draft_my_team",
+      "$$ID-b19cba71f0c2b8f636b747ac0fac2a9a-live_draft_picks_per_team",
+      "$$ID-bac8579a87cb1a0c3ea01126cc0f40d5-live_draft_scoring",
+      "$$ID-d0d3bf79aa62c351ebf894f6719cfbcf-suite_auth_signup_email",
+      "$$ID-d12c1dffe04c0d61b1fc5e8abcc0343d-suite_auth_login_email",
+      "$$ID-d342ea826869ccd6184680fafacd2461-live_draft_auto_rule",
+      "$$ID-d8c39840632f6f972078729427ae056d-portfolio_screenshot_mode",
+      "$$ID-da209e61b2d0a9d09c98d1d4bc2bd629-live_slot_1b",
+      "$$ID-e32bd8023c0a1259b2d753f416b85300-live_draft_team_name_0",
+      "$$ID-e694f5310f995cfd20b6c9af2c956cc7-live_slot_of",
+      "$$ID-e9bf5633bdff066abc782cfa95d55576-live_slot_p",
+      "$$ID-eba1c85efab0faed36d9f260691f7396-suite_auth_signup_password",
+      "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+      "$$ID-ec97de5d6dbddb1a024a66981f7c0313-ami_question_baseball_Live_Draft_Room_0",
+      "$$ID-f178abf034d8497e13f025fe37ed6417-live_draft_league_name",
+      "$$ID-ffa4271ec20b0029fb2b572b2bd0eee8-live_slot_bench"
+    ],
+    "control_only_widget_state_ids": [
+      "$$ID-0354108240bdc767144d84b38d1f9c35-minimal_wake_repro_0"
+    ],
+    "structures_match": true,
+    "required_fields_differ": false
+  },
+  "production_identity": {
+    "actual_registered_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+    "forwardmsg_element_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "browser_iframe_element_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "outbound_backmsg_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "user_key": "solo_countdown_wake_solo_persistent",
+    "component_name": "solo_countdown_wake",
+    "authoritative_triple_equal": true,
+    "legacy_generated_internal_widget_id": ""
+  },
+  "active_at_send_proof": {
+    "active_at_send": true,
+    "latest_mount_ts": 1785500428.5086071,
+    "forwardmsg_element_id_at_mount": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "outbound_backmsg_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "browser_iframe_element_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+    "mount_before_send": true,
+    "iframe_id_matches_outbound": true,
+    "forwardmsg_matches_outbound": true,
+    "later_declaration_count": 0,
+    "superseding_declaration_count": 0,
+    "page_script_hash_match": true,
+    "fragment_id_match": true
+  },
+  "first_difference": {
+    "kind": "python_binding_surfaces",
+    "active_at_send": true,
+    "post_send_global_canary_count": 1,
+    "post_send_branch_canary_count": 1,
+    "session_state_after_declaration": "None"
+  },
+  "investigation_notes": "WID1 accepted: ledger generated_internal is not authoritative when predicted. Symmetric comparison uses actual_registered_widget_id, ForwardMsg, browser, outbound. S1 withdrawn when authoritative_triple_equal.",
+  "unresolved_production_boundary": "VALID PRODUCTION WIDGET UPDATE SENT \u2014 BACKEND/PYTHON OUTCOME STILL UNRESOLVED",
+  "deploy_marker_sha": "6b21b58",
+  "classification": {
+    "code": "S9C",
+    "rationale": "Script and LDR branch ran but component return/session state empty.",
+    "smallest_correction_boundary": "Component return / session state bind"
+  },
+  "finished_at": 1785500451.49168,
+  "origin_dev_head": "6912448"
+}

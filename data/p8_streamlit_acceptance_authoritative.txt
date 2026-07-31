@@ -1,0 +1,65 @@
+P8 Streamlit symmetric server-acceptance (control vs production)
+cloud_sha=6b21b58 build=baseball-dev-6b21b58
+classification=S9C (prior None)
+Script and LDR branch ran but component return/session state empty.
+smallest_correction_boundary=Component return / session state bind
+
+WID1 accepted: ledger generated_internal is not authoritative when predicted. Symmetric comparison uses actual_registered_widget_id, ForwardMsg, browser, outbound. S1 withdrawn when authoritative_triple_equal.
+
+=== SYMMETRIC COMPARISON ===
+control.backmsg=rerun_script prod.backmsg=rerun_script
+control.widget_id=$$ID-0354108240bdc767144d84b38d1f9c35-minimal_wake_repro_0
+prod.registered=$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent
+prod.outbound=$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent
+structures_match=True
+control.post_send_global_canary=5
+prod.post_send_global_canary=1
+
+=== CONTROL ===
+control_complete=True token=repro|0|
+python_callback=repro|0|
+page_script_hash=4643685248ca83aded02e6d78a49e44b
+first_inbound=session_metadata
+
+=== PRODUCTION ===
+token=0B0F3035|0|1785500436.107
+page_script_hash=4643685248ca83aded02e6d78a49e44b
+first_inbound=session_metadata
+
+=== SESSION / SOCKET ===
+{
+  "control_ws_id": "ws_0",
+  "production_ws_id": "ws_76",
+  "same_ws_id": false,
+  "control_session_safe": "43139f45\u20265ede",
+  "production_canary_session_safe": "b1ecf0e2\u2026a38a",
+  "registered_declaration_session_safe": "b1ecf0e2\u2026a38a",
+  "production_update_wrong_session_or_socket": false
+}
+
+=== FIRST DIFFERENCE ===
+{
+  "kind": "python_binding_surfaces",
+  "active_at_send": true,
+  "post_send_global_canary_count": 1,
+  "post_send_branch_canary_count": 1,
+  "session_state_after_declaration": "None"
+}
+
+artifact_json=C:\Users\danie\Documents\GitHub\baseball-stat-app\data\p8_streamlit_acceptance_symmetric.json
+
+=== AUTHORITATIVE ACCEPTANCE ===
+deploy_marker_sha=6b21b58
+observability_implementation_sha=6912448
+active_at_send=True
+production_identity={
+  "actual_registered_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+  "predicted_element_id": "$$ID-3ee6d98e8fd0227ed6be3814cf832947-solo_countdown_wake_solo_persistent",
+  "forwardmsg_element_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+  "browser_iframe_element_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+  "outbound_backmsg_widget_id": "$$ID-ec067dd84b49566f12044da6d35ecce1-solo_countdown_wake_solo_persistent",
+  "user_key": "solo_countdown_wake_solo_persistent",
+  "component_name": "solo_countdown_wake",
+  "authoritative_triple_equal": true,
+  "legacy_generated_internal_widget_id": ""
+}
