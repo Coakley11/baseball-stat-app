@@ -564,6 +564,16 @@ try:
             st.session_state,
             active_page=str(st.session_state.get("active_page") or "ultra_early_bootstrap"),
         )
+        try:
+            from live_draft_stage1_production_ledger import (
+                render_stage1_production_ledger_probe,
+                stage1_production_ledger_enabled,
+            )
+
+            if stage1_production_ledger_enabled(st, st.session_state):
+                render_stage1_production_ledger_probe(st, st.session_state)
+        except ImportError:
+            pass
     except ImportError:
         pass
     if st.session_state.get("_solo_delivery_diag_enabled") or st.session_state.get(

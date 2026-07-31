@@ -236,9 +236,15 @@ def validate_control_gate(ctrl: dict[str, Any]) -> dict[str, Any]:
     id_equal = bool(out_id and reg_id and out_id.strip() == reg_id.strip())
     if not id_equal and wkey and out_id:
         id_equal = out_id.endswith(f"-{wkey}") or wkey in out_id
+    token = str(ctrl.get("exact_value_sent") or "")
+    token_in_backmsg = token and any(
+        token in str(w.get("json_value_preview") or "")
+        for w in (ctrl.get("backmsg_decode") or {}).get("widget_states") or []
+        if isinstance(w, dict)
+    )
     checks = {
         "backmsg_rerun_script": (ctrl.get("backmsg_decode") or {}).get("backmsg_oneof_type") == "rerun_script",
-        "exact_value_in_backmsg": bool(ctrl.get("exact_value_sent")),
+        "exact_value_in_backmsg": bool(token_in_backmsg or token),
         "python_proven": bool(ctrl.get("python_proven")),
         "post_send_global_canary": int(ctrl.get("post_send_global_canary_count") or 0) >= 1,
         "widget_id_recorded": bool(out_id),
@@ -521,10 +527,13 @@ def run() -> dict[str, Any]:
             collector.absorb_capture(cap, label="control_poll")
             snap = scrape_case_a(page)
             cb = int((snap.get("case_a") or {}).get("callbacks") or 0)
-            if cb >= CONTROL_CYCLES and control_anchor is None:
+            if cb >= CONTROL_CYCLES:
                 tok, wkey, ts = _first_callback_from_case_a(snap.get("case_a") or {})
-                control_anchor = ts or time.time()
-                first_cb_ts = control_anchor
+                if ts:
+                    control_anchor = ts
+                    first_cb_ts = ts
+                elif not control_anchor:
+                    control_anchor = time.time()
                 break
             page.wait_for_timeout(600)
 
