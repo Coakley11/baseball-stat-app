@@ -23,7 +23,7 @@ TIMEOUT_S = 120
 
 
 def case_a_url() -> str:
-    return f"{BASE.rstrip('/')}/?solo_delivery_diag=1&solo_delivery_case=A"
+    return f"{BASE.rstrip('/')}/?solo_delivery_diag=1&solo_delivery_case=A&solo_component_diag=1"
 
 
 def scrape_case_a(page) -> dict[str, Any]:

@@ -60,6 +60,32 @@ def _widget_session_state_repr(st: Any | None, widget_key: str) -> str:
     return "missing"
 
 
+def _diagnostic_run_id(session: dict[str, Any], room: dict[str, Any] | None) -> str:
+    live, _ = _room_and_token(session, room)
+    rid = str(live.get("draft_room_id") or live.get("draft_id") or "").strip().upper()
+    if rid:
+        return rid
+    return str(ensure_stage1_run_id(session) or "")[:16]
+
+
+def _page_script_hash_safe() -> str:
+    try:
+        from live_draft_stage1_widget_identity import _active_script_hash
+
+        return _active_script_hash()
+    except ImportError:
+        return ""
+
+
+def _fragment_id_safe() -> str:
+    try:
+        from live_draft_stage1_widget_identity import _fragment_id
+
+        return _fragment_id()
+    except ImportError:
+        return ""
+
+
 def _room_and_token(session: dict[str, Any], room: dict[str, Any] | None) -> tuple[dict[str, Any], str]:
     live = room if isinstance(room, dict) else session.get("live_draft_room")
     if not isinstance(live, dict):
@@ -109,6 +135,9 @@ def _emit(
         "expected_token": expected_token[:400],
         "widget_key": str(widget_key or PRODUCTION_WIDGET_KEY),
         "session_state_widget_value": _widget_session_state_repr(st, widget_key or PRODUCTION_WIDGET_KEY),
+        "page_script_hash": _page_script_hash_safe(),
+        "fragment_id": _fragment_id_safe(),
+        "diagnostic_run_id": _diagnostic_run_id(session, room),
     }
     if extra:
         row.update(extra)
@@ -185,6 +214,25 @@ def emit_production_countdown_declaration_pre(
     if not stage1_boundary_canaries_enabled(st, session):
         return {}
     seq = int(session.get("_solo_stage1_script_run_seq") or 0)
+    identity: dict[str, Any] = {}
+    try:
+        from live_draft_stage1_widget_identity import (
+            record_declaration_registry_entry,
+            stage1_widget_identity_snapshot,
+        )
+
+        identity = stage1_widget_identity_snapshot(
+            st,
+            session,
+            user_key=widget_key,
+            component_name=PRODUCTION_COUNTDOWN_COMPONENT_NAME,
+            room=room,
+            expected_token=expected_token,
+            active_page=str(session.get("active_page") or ""),
+        )
+        record_declaration_registry_entry(session, identity)
+    except ImportError:
+        pass
     return _emit(
         session,
         "production_countdown_declaration_pre",
@@ -199,6 +247,7 @@ def emit_production_countdown_declaration_pre(
             "direct_return_value": "",
             "declaration_eligibility": declaration_eligibility or {},
             "iframe_instance_observable": str(iframe_instance or "")[:120],
+            **identity,
         },
     )
 
@@ -218,6 +267,25 @@ def emit_production_countdown_declaration_post(
         return {}
     seq = int(session.get("_solo_stage1_script_run_seq") or 0)
     ss_val = _widget_session_state_repr(st, widget_key)
+    identity: dict[str, Any] = {}
+    try:
+        from live_draft_stage1_widget_identity import (
+            record_declaration_registry_entry,
+            stage1_widget_identity_snapshot,
+        )
+
+        identity = stage1_widget_identity_snapshot(
+            st,
+            session,
+            user_key=widget_key,
+            component_name=PRODUCTION_COUNTDOWN_COMPONENT_NAME,
+            room=room,
+            expected_token=expected_token,
+            active_page=str(session.get("active_page") or ""),
+        )
+        record_declaration_registry_entry(session, identity)
+    except ImportError:
+        pass
     return _emit(
         session,
         "production_countdown_declaration_post",
@@ -233,5 +301,6 @@ def emit_production_countdown_declaration_post(
             "same_key_session_state_value": ss_val,
             "declaration_eligibility": declaration_eligibility or {},
             "iframe_instance_observable": str(iframe_instance or "")[:120],
+            **identity,
         },
     )

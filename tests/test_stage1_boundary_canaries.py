@@ -27,5 +27,7 @@ def test_global_canary_emits_when_diag_enabled():
     row = emit_production_global_script_run_canary(st, session, active_page="Live Draft Room")
     assert row.get("event") == "production_global_script_run_canary"
     assert row.get("room_id") == "ABCD1234"
+    assert "page_script_hash" in row
+    assert "diagnostic_run_id" in row
     ledger = session.get("_solo_stage1_production_ledger") or []
     assert any(r.get("event") == "production_global_script_run_canary" for r in ledger)

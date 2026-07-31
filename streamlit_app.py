@@ -553,6 +553,19 @@ try:
     from live_draft_solo_delivery_diag import enable_delivery_diag_from_query
 
     enable_delivery_diag_from_query(st, st.session_state)
+    try:
+        from live_draft_solo_component_diagnostics import bootstrap_solo_component_diag
+
+        bootstrap_solo_component_diag(st, st.session_state)
+        from live_draft_stage1_boundary_canaries import emit_production_global_script_run_canary
+
+        emit_production_global_script_run_canary(
+            st,
+            st.session_state,
+            active_page=str(st.session_state.get("active_page") or "ultra_early_bootstrap"),
+        )
+    except ImportError:
+        pass
     if st.session_state.get("_solo_delivery_diag_enabled") or st.session_state.get(
         "_solo_bridge_transition_enabled"
     ):
