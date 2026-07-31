@@ -192,7 +192,7 @@ def commit_has_symmetric_observability(sha: str) -> dict[str, Any]:
 
     out["file_widget_identity_py"] = _cat("live_draft_stage1_widget_identity.py")
     out["declaration_identity_fields"] = _grep(
-        "generated_internal_widget_id",
+        "actual_registered_widget_id",
         sha,
         "live_draft_stage1_boundary_canaries.py",
         "live_draft_stage1_widget_identity.py",
@@ -224,7 +224,8 @@ def commit_has_symmetric_observability(sha: str) -> dict[str, Any]:
 def declaration_rows_have_identity(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Ledger rows must carry declaration identity fields (not deploy_commit.txt alone)."""
     need = (
-        "generated_internal_widget_id",
+        "actual_registered_widget_id",
+        "predicted_element_id",
         "page_script_hash",
         "fragment_id",
         "streamlit_session_id_safe",

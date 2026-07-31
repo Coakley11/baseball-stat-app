@@ -229,6 +229,7 @@ def emit_production_countdown_declaration_pre(
             room=room,
             expected_token=expected_token,
             active_page=str(session.get("active_page") or ""),
+            after_mount=False,
         )
         record_declaration_registry_entry(session, identity)
     except ImportError:
@@ -282,6 +283,7 @@ def emit_production_countdown_declaration_post(
             room=room,
             expected_token=expected_token,
             active_page=str(session.get("active_page") or ""),
+            after_mount=True,
         )
         record_declaration_registry_entry(session, identity)
     except ImportError:

@@ -84,24 +84,35 @@ def predict_solo_countdown_component_element_id(user_key: str) -> str:
         return ""
 
 
-def resolve_registered_component_widget_id(st: Any | None, user_key: str) -> str:
-    """Best-effort widget id after registration (proto ids use $$ID- prefix)."""
+def read_actual_registered_widget_id(st: Any | None, user_key: str) -> tuple[str, str]:
+    """Return (widget_id, source) from Streamlit runtime widget states only."""
     if not user_key:
-        return ""
+        return "", "missing_user_key"
     try:
         from streamlit.runtime.scriptrunner import get_script_run_ctx
 
         ctx = get_script_run_ctx()
         if ctx:
+            matches: list[str] = []
             for ws in ctx.session_state.get_widget_states():
                 wid = str(getattr(ws, "id", "") or "")
                 if wid.endswith(f"-{user_key}") or f"-{user_key}" in wid:
-                    return wid
+                    matches.append(wid)
+            if matches:
+                return matches[-1], "streamlit_session_widget_states"
     except Exception:
         pass
+    return "", "widget_state_unavailable"
+
+
+def resolve_registered_component_widget_id(st: Any | None, user_key: str) -> str:
+    """Legacy helper: prefer actual runtime id, else predicted (for non-authoritative use)."""
+    actual, _ = read_actual_registered_widget_id(st, user_key)
+    if actual:
+        return actual
     predicted = predict_solo_countdown_component_element_id(user_key)
     if predicted and not predicted.startswith("$$"):
-        return f"$$ID-{predicted}" if predicted.startswith("ID-") else predicted
+        return f"$$ID-{predicted}" if not predicted.startswith("$$ID-") else predicted
     return predicted
 
 
@@ -114,31 +125,57 @@ def stage1_widget_identity_snapshot(
     room: dict[str, Any] | None = None,
     expected_token: str = "",
     active_page: str = "",
+    after_mount: bool = False,
 ) -> dict[str, Any]:
     live = room if isinstance(room, dict) else session.get("live_draft_room")
     if not isinstance(live, dict):
         live = {}
     rid = str(live.get("draft_room_id") or live.get("draft_id") or "").strip().upper()
     pick = live.get("current_pick_index")
-    internal_id = resolve_registered_component_widget_id(st, user_key)
-    if not internal_id:
-        internal_id = predict_solo_countdown_component_element_id(user_key)
+    predicted_raw = predict_solo_countdown_component_element_id(user_key)
+    predicted = predicted_raw
+    if predicted_raw and not predicted_raw.startswith("$$"):
+        predicted = f"$$ID-{predicted_raw}" if not predicted_raw.startswith("$$ID-") else predicted_raw
+    actual, actual_source = read_actual_registered_widget_id(st, user_key)
+    if actual_source == "streamlit_session_widget_states":
+        authority = "actual_registered_id"
+    elif predicted:
+        authority = "predicted_id" if after_mount else "predicted_id_pre_mount"
+    else:
+        authority = "missing"
+    # Deprecated ledger alias: actual runtime id only — never copy predicted_element_id here.
+    legacy_generated = str(actual or "")[:200]
     script_seq = int(session.get("_solo_stage1_script_run_seq") or 0)
+    try:
+        from solo_countdown_component import _COMPONENT, get_component_frontend_dir
+
+        component_path = str(get_component_frontend_dir())
+        component_url = str(getattr(_COMPONENT, "url", "") or "")
+    except Exception:
+        component_path = ""
+        component_url = ""
     return {
-        "generated_internal_widget_id": str(internal_id or "")[:200],
+        "actual_registered_widget_id": str(actual or "")[:200],
+        "actual_registered_id_source": actual_source,
+        "predicted_element_id": str(predicted or "")[:200],
+        "registered_widget_id_authority": authority,
+        "generated_internal_widget_id": str(legacy_generated or "")[:200],
         "user_widget_key": str(user_key or "")[:120],
         "component_name": str(component_name or "")[:80],
+        "component_frontend_path": component_path[:200],
+        "component_url": component_url[:200],
         "page_script_hash": _active_script_hash(),
         "fragment_id": _fragment_id(),
         "streamlit_session_id_safe": _safe_streamlit_session_id(),
         "streamlit_session_id_full_prefix": _full_streamlit_session_id()[:8],
         "declaration_script_run_seq": script_seq,
         "declaration_ts": time.time(),
+        "after_mount": after_mount,
         "active_page": str(active_page or session.get("active_page") or "")[:80],
         "room_id": rid,
         "pick_index": pick,
         "expected_token": str(expected_token or "")[:400],
-        "widget_active_in_run": bool(internal_id),
+        "widget_active_in_run": bool(actual or legacy_generated),
     }
 
 

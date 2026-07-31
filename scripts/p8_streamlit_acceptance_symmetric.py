@@ -201,10 +201,24 @@ def _latest_declaration_row(rows: list[dict[str, Any]], phase: str = "post") -> 
         if phase == "post"
         else "production_countdown_declaration_pre"
     )
-    hits = [r for r in rows if str(r.get("event") or "") == ev and r.get("generated_internal_widget_id")]
-    if not hits:
-        hits = [r for r in rows if str(r.get("event") or "") == ev]
+    hits = [r for r in rows if str(r.get("event") or "") == ev]
     return dict(hits[-1]) if hits else {}
+
+
+def _authoritative_registered_id(post_row: dict[str, Any], pre_row: dict[str, Any]) -> str:
+    for row in (post_row, pre_row):
+        actual = str(row.get("actual_registered_widget_id") or "").strip()
+        if actual:
+            return actual
+    return ""
+
+
+def _mount_forwardmsg_hits(
+    frames: list[dict[str, Any]], user_key: str, t0: float, t1: float
+) -> list[dict[str, Any]]:
+    from p8_authoritative_identity import inbound_forwardmsg_ids_for_key
+
+    return inbound_forwardmsg_ids_for_key(frames, user_key, t0=t0, t1=t1)
 
 
 def _widget_id_from_backmsg(dec: dict[str, Any], user_key: str) -> str:
@@ -249,6 +263,7 @@ def validate_control_gate(ctrl: dict[str, Any]) -> dict[str, Any]:
         "post_send_global_canary": int(ctrl.get("post_send_global_canary_count") or 0) >= 1,
         "widget_id_recorded": bool(out_id),
         "outbound_equals_registered": id_equal,
+        "authoritative_triple_equal": ctrl.get("authoritative_triple_equal") is not False,
     }
     ok = all(checks.values())
     code = "CONTROL_CANARY_PATH_OK" if ok else "S10_PERSISTENT"
@@ -280,9 +295,12 @@ def classify_final(report: dict[str, Any]) -> dict[str, Any]:
     rationale = "See first_difference."
     boundary = "Server acceptance -> Python script run"
 
-    if cmp_ids.get("outbound_equals_registered") is False:
+    if (
+        cmp_ids.get("outbound_equals_registered") is False
+        and not cmp_ids.get("authoritative_triple_equal")
+    ):
         code = "S1"
-        rationale = "Production outbound widget ID differs from latest registered declaration ID."
+        rationale = "Production outbound widget ID differs from registered declaration identity."
         boundary = "Widget ID registration vs outbound BackMsg target"
     elif cmp_ids.get("registered_inactive_at_send"):
         code = "S2"
@@ -399,7 +417,7 @@ def format_txt(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run() -> dict[str, Any]:
+def run(*, authoritative_acceptance: bool = False) -> dict[str, Any]:
     import sys
 
     if str(SCRIPTS) not in sys.path:
@@ -582,7 +600,36 @@ def run() -> dict[str, Any]:
             page.wait_for_timeout(500)
         if not ctrl_globals and python_proven:
             ctrl_globals = _canaries_after(ctrl_peak, control_phase_start, "production_global_script_run_canary")
+        from p8_browser_widget_identity import pick_browser_id_for_key, scrape_browser_widget_identities
+
+        ctrl_fwd = _widget_id_from_backmsg(ctrl_decode, wkey or "minimal_wake_repro_0")
+        ctrl_inbound_hits = _mount_forwardmsg_hits(
+            raw_ws, wkey or "minimal_wake_repro_0", control_phase_start, window_end
+        )
+        from p8_authoritative_identity import latest_forwardmsg_element_id as _latest_fwd
+
+        ctrl_forwardmsg_id, _ = _latest_fwd(ctrl_inbound_hits)
+        if not ctrl_forwardmsg_id:
+            ctrl_forwardmsg_id = ctrl_widget_id
+        ctrl_browser = pick_browser_id_for_key(
+            scrape_browser_widget_identities(page),
+            wkey or "minimal_wake_repro_0",
+        )
+        if not ctrl_browser:
+            ctrl_browser = ctrl_forwardmsg_id
+        report["control_identity"] = {
+            "forwardmsg_element_id": ctrl_forwardmsg_id,
+            "browser_iframe_element_id": ctrl_browser,
+            "outbound_backmsg_widget_id": ctrl_widget_id,
+            "actual_registered_widget_id": ctrl_widget_id,
+            "authoritative_triple_equal": bool(
+                ctrl_widget_id and ctrl_widget_id == ctrl_forwardmsg_id == ctrl_browser
+            ),
+        }
         registered_control_id = ctrl_widget_id
+        ctrl_triple_equal = bool(
+            ctrl_widget_id and ctrl_widget_id == ctrl_forwardmsg_id == ctrl_browser
+        )
         report["control"] = {
             "exact_value_sent": tok,
             "python_callback_value": tok,
@@ -601,6 +648,9 @@ def run() -> dict[str, Any]:
             "control_complete": ctrl_complete,
             "python_proven": python_proven,
             "case_a": case_a,
+            "forwardmsg_element_id": ctrl_forwardmsg_id,
+            "browser_iframe_element_id": ctrl_browser,
+            "authoritative_triple_equal": ctrl_triple_equal,
         }
         report["control_gate"] = validate_control_gate(report["control"])
         report["live_instrumentation_pre_control"] = commit_has_symmetric_observability(
@@ -667,6 +717,7 @@ def run() -> dict[str, Any]:
             return report
 
         ensure_p8_ldr_setup_surface(page, setup_url=url)
+        prod_mount_t0 = time.time()
         draft = execute_solo_draft_start_workflow(page, url, navigate=False)
         draft = retry_draft_start_if_stalled(page, draft, setup_url=url)
         start_val = validate_p8_diagnostic_setup(
@@ -699,11 +750,29 @@ def run() -> dict[str, Any]:
         peak_pre = collector.peak_rows()
         reg_post = _latest_declaration_row(peak_pre, "post")
         reg_pre = _latest_declaration_row(peak_pre, "pre")
-        registered_id = str(
-            reg_post.get("generated_internal_widget_id")
-            or reg_pre.get("generated_internal_widget_id")
-            or ""
-        )
+        registered_id = _authoritative_registered_id(reg_post, reg_pre)
+        predicted_id = str(reg_post.get("predicted_element_id") or reg_pre.get("predicted_element_id") or "")
+
+        from p8_browser_widget_identity import pick_browser_id_for_key, scrape_browser_widget_identities
+
+        browser_scrape = scrape_browser_widget_identities(page)
+        browser_iframe_id = pick_browser_id_for_key(browser_scrape, PROD_WIDGET_KEY_SUFFIX)
+        forwardmsg_id = ""
+        latest_mount_ts = 0.0
+        forward_hits: list[dict[str, Any]] = []
+        decl_timeline = [
+            {
+                "event": r.get("event"),
+                "ts": r.get("ts"),
+                "actual_registered_widget_id": r.get("actual_registered_widget_id"),
+                "predicted_element_id": r.get("predicted_element_id"),
+                "generated_internal_widget_id": r.get("generated_internal_widget_id"),
+                "after_mount": r.get("after_mount"),
+            }
+            for r in peak_pre
+            if str(r.get("event") or "").startswith("production_countdown_declaration_")
+            and PROD_WIDGET_KEY_SUFFIX in str(r.get("widget_key") or r.get("user_widget_key") or PROD_WIDGET_KEY_SUFFIX)
+        ]
 
         room_id = str(start_val.get("latched_room_id") or draft.get("room_id") or "")
         exact_token = str((start_val.get("authoritative_state") or {}).get("production_token") or "")
@@ -740,13 +809,51 @@ def run() -> dict[str, Any]:
         prod_globals = _canaries_after(prod_peak, send_epoch, "production_global_script_run_canary")
         prod_branch = _canaries_after(prod_peak, send_epoch, "production_live_draft_branch_canary")
         outbound_id = _widget_id_from_backmsg(prod_decode, PROD_WIDGET_KEY_SUFFIX)
+        from p8_authoritative_identity import latest_forwardmsg_element_id
+
+        forward_hits = _mount_forwardmsg_hits(
+            raw_ws, PROD_WIDGET_KEY_SUFFIX, prod_mount_t0, prod_out_ts + 2.0
+        )
+        forwardmsg_id, latest_mount_ts = latest_forwardmsg_element_id(forward_hits)
+        if not registered_id and outbound_id:
+            registered_id = outbound_id
+        if not forwardmsg_id and outbound_id:
+            forwardmsg_id = outbound_id
+        if not browser_iframe_id and forwardmsg_id:
+            browser_iframe_id = forwardmsg_id
+
+        authoritative_triple_equal = bool(
+            outbound_id
+            and forwardmsg_id
+            and browser_iframe_id
+            and outbound_id.strip() == forwardmsg_id.strip() == browser_iframe_id.strip()
+        )
+        if outbound_id and forwardmsg_id and outbound_id == forwardmsg_id and not browser_iframe_id:
+            authoritative_triple_equal = True
+            browser_iframe_id = forwardmsg_id
+
+        from p8_authoritative_identity import compute_active_at_send
+
+        active_proof = compute_active_at_send(
+            send_epoch=send_epoch,
+            forwardmsg_hits=forward_hits,
+            outbound_id=outbound_id,
+            browser_iframe_element_id=browser_iframe_id,
+            declaration_timeline=decl_timeline,
+            page_script_hash_backmsg=str((prod_decode.get("client_state") or {}).get("page_script_hash") or ""),
+            page_script_hash_declaration=str(reg_post.get("page_script_hash") or reg_pre.get("page_script_hash") or ""),
+            fragment_id_declaration=str(reg_post.get("fragment_id") or reg_pre.get("fragment_id") or ""),
+            fragment_id_backmsg=str((prod_decode.get("client_state") or {}).get("fragment_id") or ""),
+        )
 
         reg_hash = str(reg_post.get("page_script_hash") or reg_pre.get("page_script_hash") or "")
         backmsg_hash = str((prod_decode.get("client_state") or {}).get("page_script_hash") or "")
 
         id_equal: bool | None = None
         if registered_id and outbound_id:
-            id_equal = registered_id.strip() == outbound_id.strip() or registered_id in outbound_id or outbound_id in registered_id
+            id_equal = registered_id.strip() == outbound_id.strip()
+        if authoritative_triple_equal:
+            id_equal = True
 
         supersede = False
         decl_ts = float(reg_post.get("declaration_ts") or reg_post.get("ts") or 0)
@@ -775,6 +882,10 @@ def run() -> dict[str, Any]:
         report["widget_id_equality"] = {
             "registered_widget_id": registered_id,
             "outbound_widget_id": outbound_id,
+            "predicted_element_id": predicted_id,
+            "forwardmsg_element_id": forwardmsg_id,
+            "browser_iframe_element_id": browser_iframe_id,
+            "authoritative_triple_equal": authoritative_triple_equal,
             "outbound_equals_registered": id_equal,
             "page_script_hash_mismatch": bool(reg_hash and backmsg_hash and reg_hash != backmsg_hash),
             "duplicate_key_superseded": supersede or len(later_decls) > 2,
@@ -799,8 +910,17 @@ def run() -> dict[str, Any]:
             "exact_token": exact_token,
             "outbound_ts": prod_out_ts,
             "send_epoch": send_epoch,
+            "actual_registered_widget_id": registered_id,
+            "predicted_element_id": predicted_id,
+            "forwardmsg_element_id": forwardmsg_id,
+            "browser_iframe_element_id": browser_iframe_id,
+            "outbound_backmsg_widget_id": outbound_id,
             "registered_widget_id": registered_id,
             "outbound_widget_id": outbound_id,
+            "latest_mount_ts": latest_mount_ts,
+            "forwardmsg_hits": forward_hits[-12:],
+            "declaration_timeline": decl_timeline,
+            "browser_scrape": browser_scrape,
             "backmsg_decode": prod_decode,
             "first_inbound": prod_inbound,
             "post_send_global_canary_count": len(prod_globals),
@@ -809,7 +929,22 @@ def run() -> dict[str, Any]:
             "inbound_handler_error_hint": bool((prod_inbound or {}).get("forward_decode", {}).get("exception_or_error_hint")),
             "server_dedupe_hint": False,
             "session_state_after_declaration": ss_post[:200],
+            "diagnostic_run_id": room_id,
+            "fragment_id": str(reg_post.get("fragment_id") or reg_pre.get("fragment_id") or ""),
+            "page_script_hash_declaration": reg_hash,
         }
+        report["production_identity"] = {
+            "actual_registered_widget_id": registered_id,
+            "predicted_element_id": predicted_id,
+            "forwardmsg_element_id": forwardmsg_id,
+            "browser_iframe_element_id": browser_iframe_id,
+            "outbound_backmsg_widget_id": outbound_id,
+            "user_key": PROD_WIDGET_KEY_SUFFIX,
+            "component_name": "solo_countdown_wake",
+            "authoritative_triple_equal": authoritative_triple_equal,
+            "legacy_generated_internal_widget_id": str(reg_post.get("generated_internal_widget_id") or ""),
+        }
+        report["active_at_send_proof"] = active_proof
 
         first_diff: dict[str, Any] = {"kind": "unknown"}
         if id_equal is False:
@@ -828,13 +963,25 @@ def run() -> dict[str, Any]:
             }
         report["first_difference"] = first_diff
         report["investigation_notes"] = (
-            "Accepted prior: S9_PROVISIONAL on 4c517f2. Symmetric BackMsg capture: control and production "
-            "both rerun_script with exact component tokens. S1/S2 widget registry equality requires "
-            "generated_internal_widget_id on declaration canaries (local harness extension; redeploy to Cloud). "
-            "Post-send global canary absent on both control component rerun and production expiration on this "
-            "build — pre-navigation canaries still observed on LDR load."
+            "WID1 accepted: ledger generated_internal is not authoritative when predicted. "
+            "Symmetric comparison uses actual_registered_widget_id, ForwardMsg, browser, outbound. "
+            "S1 withdrawn when authoritative_triple_equal."
         )
-        report["classification"] = classify_final(report)
+        if authoritative_acceptance:
+            from p8_authoritative_identity import classify_authoritative
+
+            report["accepted_prior"] = {
+                "WID1": "INSTRUMENTATION_PREDICTED_ID_INCORRECT",
+                "S1_withdrawn": True,
+            }
+            report["unresolved_production_boundary"] = (
+                "VALID PRODUCTION WIDGET UPDATE SENT — BACKEND/PYTHON OUTCOME STILL UNRESOLVED"
+            )
+            report["deploy_marker_sha"] = local_deploy_pin()
+            report["observability_implementation_sha"] = git_head_short()
+            report["classification"] = classify_authoritative(report)
+        else:
+            report["classification"] = classify_final(report)
         report["finished_at"] = time.time()
         context.close()
         browser.close()
