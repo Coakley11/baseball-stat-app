@@ -179,28 +179,66 @@ def render_one_cycle(
         )
 
     def _on_change() -> None:
-        raw = st.session_state.get(key)
-        if record_stage:
-            record_stage(
-                "on_change_callback_entry",
-                {
-                    "widget_key": key,
-                    "raw_session_state": repr(raw)[:800],
-                },
+        inv_id = ""
+        t_cb = time.time()
+        key_at_entry = False
+        exc_status = ""
+        try:
+            from live_draft_prod_on_change_observability import (
+                emit_control_on_change_entered,
+                emit_control_on_change_exited,
             )
-            record_stage(
-                "session_state_raw_received",
-                {
-                    "key": key,
-                    "raw_type": type(raw).__name__ if raw is not None else "NoneType",
-                },
+
+            inv_id, key_at_entry = emit_control_on_change_entered(
+                st,
+                session,
+                widget_key=key,
+                expected_token=token,
+                on_change_fn=_on_change,
             )
-        tok = coerce_token(raw, token)
-        if record_stage:
-            record_stage("token_coercion_complete", {"token": tok})
-        if record_delivery(session, source="on_change", token=tok, raw=raw, record_stage=record_stage):
+        except Exception:
+            pass
+        try:
+            raw = st.session_state.get(key)
             if record_stage:
-                record_stage("on_change_delivery_complete", {"token": tok})
+                record_stage(
+                    "on_change_callback_entry",
+                    {
+                        "widget_key": key,
+                        "raw_session_state": repr(raw)[:800],
+                    },
+                )
+                record_stage(
+                    "session_state_raw_received",
+                    {
+                        "key": key,
+                        "raw_type": type(raw).__name__ if raw is not None else "NoneType",
+                    },
+                )
+            tok = coerce_token(raw, token)
+            if record_stage:
+                record_stage("token_coercion_complete", {"token": tok})
+            if record_delivery(session, source="on_change", token=tok, raw=raw, record_stage=record_stage):
+                if record_stage:
+                    record_stage("on_change_delivery_complete", {"token": tok})
+        except Exception as exc:
+            exc_status = f"{type(exc).__name__}:{exc}"[:300]
+            raise
+        finally:
+            try:
+                from live_draft_prod_on_change_observability import emit_control_on_change_exited
+
+                emit_control_on_change_exited(
+                    st,
+                    session,
+                    widget_key=key,
+                    callback_invocation_id=inv_id,
+                    key_existed_at_entry=key_at_entry,
+                    t0=t_cb,
+                    exception_status=exc_status,
+                )
+            except Exception:
+                pass
 
     raw_return = _COMPONENT(
         expire_token=token,
