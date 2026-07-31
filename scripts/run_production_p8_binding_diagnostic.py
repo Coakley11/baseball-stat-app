@@ -44,11 +44,16 @@ P8BIND_MAP = {
 
 
 def resolve_required_sha() -> str:
-    env = str(os.environ.get("REQUIRED_CLOUD_SHA") or "").strip().lower()[:7]
-    if env:
-        return env
-    line = (ROOT / "deploy_commit.txt").read_text(encoding="utf-8").splitlines()[0]
-    return line.split("#", 1)[0].strip().lower()[:7]
+    """Required binding implementation anchor from deploy pin (not stale env)."""
+    pin = ""
+    try:
+        line = (ROOT / "deploy_commit.txt").read_text(encoding="utf-8").splitlines()[0]
+        pin = line.split("#", 1)[0].strip().lower()[:7]
+    except Exception:
+        pin = ""
+    if pin:
+        return pin
+    return str(os.environ.get("REQUIRED_CLOUD_SHA") or "").strip().lower()[:7]
 
 
 def _ledger_rows(exp: dict[str, Any]) -> list[dict[str, Any]]:
@@ -463,6 +468,14 @@ def compare_traces(current: dict[str, Any], baseline: dict[str, Any]) -> list[st
 
 def run_diagnostic() -> dict[str, Any]:
     required = resolve_required_sha()
+    from p8_canary_build_gate import (
+        commit_has_binding_correction,
+        evaluate_cloud_binding_readiness,
+        git_head_short,
+        local_deploy_pin,
+        poll_live_cloud_sha,
+        scrape_cloud_runtime_deploy_probe,
+    )
     from replay_playwright_daniel_auth_preflight import run_preflight
     from playwright_daniel_auth_session import STORAGE_PATH, harness_ready
     from cloud_streamlit_wake import goto_and_wake
@@ -499,7 +512,39 @@ def run_diagnostic() -> dict[str, Any]:
         "started_at": time.time(),
         "required_cloud_sha": required,
         "mode": "p8_binding_diagnostic",
+        "git_head": git_head_short(),
+        "deploy_pin": local_deploy_pin(),
+        "implementation_presence_at_required": commit_has_binding_correction(required),
+        "accepted_root_cause": "BIND5",
     }
+    poll = poll_live_cloud_sha(
+        max_attempts=48,
+        sleep_s=25.0,
+        require_symmetric_observability=False,
+        require_canary_impl=False,
+        wait_for_binding_readiness=True,
+    )
+    report["deploy_poll"] = poll
+    readiness = poll.get("binding_readiness") or {}
+    report["cloud_binding_readiness"] = readiness
+    live_runtime = str(readiness.get("runtime_git_head_short") or poll.get("live_sha") or "")
+    report["implementation_presence_at_live"] = commit_has_binding_correction(live_runtime)
+    if not poll.get("ok") or not readiness.get("ok"):
+        report["aborted"] = True
+        report["abort_reason"] = "cloud_binding_readiness_not_proven_before_diagnostic"
+        report["focused_p8_outcome"] = "INVALID_FIX_NOT_DEPLOYED"
+        report["failure_boundary"] = "INVALID_FIX_NOT_DEPLOYED — BIND5 BYTECODE NOT ON CLOUD RUNTIME"
+        OUT.parent.mkdir(parents=True, exist_ok=True)
+        OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        return report
+    if not report["implementation_presence_at_live"].get("ok"):
+        report["aborted"] = True
+        report["abort_reason"] = "binding_correction_not_present_at_runtime_git"
+        report["focused_p8_outcome"] = "INVALID_FIX_NOT_DEPLOYED"
+        report["failure_boundary"] = "INVALID_FIX_NOT_DEPLOYED — RUNTIME IMPLEMENTATION CHECKS FAILED"
+        OUT.parent.mkdir(parents=True, exist_ok=True)
+        OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        return report
     parent_sink = ParentEventSinkStore()
     url = production_url()
 
@@ -540,14 +585,27 @@ def run_diagnostic() -> dict[str, Any]:
         except Exception:
             pass
         page.wait_for_timeout(20000)
-        sha = (scrape_live_sha(page) or scrape_deploy_build(page) or "")[:7].lower()
+        runtime_dom = scrape_cloud_runtime_deploy_probe(page)
+        sha = (runtime_dom.get("runtime_git_head_short") or scrape_live_sha(page) or scrape_deploy_build(page) or "")[:7].lower()
         report["cloud_sha"] = sha
-        report["cloud_build"] = f"baseball-dev-{sha}" if sha else ""
-        if sha != required[:7]:
+        report["cloud_runtime_probe"] = runtime_dom
+        report["cloud_build"] = runtime_dom.get("marker_build") or (f"baseball-dev-{required[:7]}" if required else "")
+        live_ready = evaluate_cloud_binding_readiness(
+            runtime_git_head_short=runtime_dom.get("runtime_git_head_short") or sha,
+            marker_sha=runtime_dom.get("marker_sha") or "",
+            marker_build=str(report["cloud_build"] or ""),
+            deploy_pin=local_deploy_pin(),
+            runtime_deploy_raw=runtime_dom.get("runtime_deploy_commit_raw") or "",
+        )
+        report["cloud_binding_readiness_at_run"] = live_ready
+        if not live_ready.get("ok"):
             report["aborted"] = True
-            report["abort_reason"] = "cloud_sha_mismatch"
+            report["abort_reason"] = "cloud_binding_readiness_lost_at_run"
+            report["focused_p8_outcome"] = "INVALID_FIX_NOT_DEPLOYED"
             context.close()
             browser.close()
+            OUT.parent.mkdir(parents=True, exist_ok=True)
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             return report
 
         cleanup = ensure_fresh_setup_lobby(page)
@@ -801,6 +859,7 @@ def run_diagnostic() -> dict[str, Any]:
 
 
 def main() -> int:
+    os.environ.pop("REQUIRED_CLOUD_SHA", None)
     report = run_diagnostic()
     outcome = report.get("focused_p8_outcome") or report.get("abort_reason") or ""
     payload = report.get("p8_ladder") or report

@@ -221,6 +221,223 @@ def commit_has_symmetric_observability(sha: str) -> dict[str, Any]:
     return out
 
 
+def commit_has_binding_correction(sha: str) -> dict[str, Any]:
+    """Verify BIND5 fix (18e7c15+): on_change parity, single mount, trace module."""
+    sha = str(sha or "").strip()[:7]
+    out: dict[str, Any] = {
+        "sha": sha,
+        "file_binding_trace_py": False,
+        "micro_core_on_change_not_cleared_for_return_value": False,
+        "micro_core_single_mount_guard": False,
+        "micro_core_raw_return_cache": False,
+        "persistent_wake_ldr_entry_guard": False,
+        "ok": False,
+    }
+    if not sha:
+        return out
+
+    def _cat(path: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "cat-file", "-e", f"{sha}:{path}"],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _grep(pattern: str, *paths: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "grep", "-q", pattern, sha, "--", *paths],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            return True
+        except Exception:
+            return False
+
+    out["file_binding_trace_py"] = _cat("live_draft_component_binding_trace.py")
+    out["micro_core_on_change_not_cleared_for_return_value"] = _grep(
+        "mount_on_change = _prod_on_change",
+        sha,
+        "solo_countdown_wake_micro_core.py",
+    )
+    out["micro_core_single_mount_guard"] = _grep(
+        "_solo_prod_mount_run_",
+        sha,
+        "solo_countdown_wake_micro_core.py",
+    )
+    out["micro_core_raw_return_cache"] = _grep(
+        "_solo_prod_raw_return_",
+        sha,
+        "solo_countdown_wake_micro_core.py",
+    )
+    out["persistent_wake_ldr_entry_guard"] = _grep(
+        "_solo_persistent_ldr_entry_run",
+        sha,
+        "live_draft_solo_persistent_wake.py",
+    )
+    out["ok"] = all(
+        [
+            out["file_binding_trace_py"],
+            out["micro_core_on_change_not_cleared_for_return_value"],
+            out["micro_core_single_mount_guard"],
+            out["micro_core_raw_return_cache"],
+            out["persistent_wake_ldr_entry_guard"],
+        ]
+    )
+    return out
+
+
+BINDING_FIX_ANCHOR_SHA = "18e7c15"
+
+
+def git_short_sha(sha: str) -> str:
+    return str(sha or "").strip().lower()[:7]
+
+
+def git_sha_is_ancestor(ancestor: str, descendant: str) -> bool:
+    anc = git_short_sha(ancestor)
+    des = git_short_sha(descendant)
+    if not anc or not des:
+        return False
+    if anc == des:
+        return True
+    try:
+        subprocess.check_call(
+            ["git", "merge-base", "--is-ancestor", anc, des],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+    except Exception:
+        return False
+
+
+def expected_build_label_for_pin(pin: str) -> str:
+    return f"baseball-dev-{git_short_sha(pin)}"
+
+
+def parse_deploy_pin_token(raw: str) -> str:
+    line = str(raw or "").splitlines()[0] if raw else ""
+    return line.split("#", 1)[0].strip().lower()[:7]
+
+
+def scrape_cloud_runtime_deploy_probe(page) -> dict[str, str]:
+    """DOM markers: deploy pin (data-sha), build label, runtime git HEAD from fs probe."""
+    from cloud_streamlit_wake import scrape_deploy_sha_from_page
+    from verify_cloud_deploy_playwright import scrape_deploy
+
+    out: dict[str, str] = {
+        "marker_sha": "",
+        "marker_build": "",
+        "runtime_git_head": "",
+        "runtime_git_head_short": "",
+        "runtime_deploy_commit_raw": "",
+    }
+    try:
+        probe = page.evaluate(
+            """() => {
+              function roots() {
+                const r = [document];
+                for (const f of document.querySelectorAll('iframe')) {
+                  try { r.push(f.contentDocument); } catch (e) {}
+                }
+                return r.filter(Boolean);
+              }
+              const o = { deploy: {}, fs: {} };
+              for (const root of roots()) {
+                const el = root.querySelector('#solo-deploy-build');
+                if (el && !o.deploy.sha) {
+                  o.deploy = {
+                    sha: (el.getAttribute('data-sha') || '').toLowerCase(),
+                    build: el.getAttribute('data-build') || '',
+                  };
+                }
+                const fs = root.querySelector('#solo-cloud-fs-probe');
+                if (fs && !o.fs.git_head) {
+                  o.fs = {
+                    git_head: fs.getAttribute('data-git-head') || '',
+                    deploy_raw: fs.getAttribute('data-deploy-commit-raw') || '',
+                  };
+                }
+              }
+              return o;
+            }"""
+        )
+        if isinstance(probe, dict):
+            dep = probe.get("deploy") or {}
+            fs = probe.get("fs") or {}
+            out["marker_sha"] = git_short_sha(dep.get("sha") or "")
+            out["marker_build"] = str(dep.get("build") or "").strip()
+            out["runtime_git_head"] = str(fs.get("git_head") or "").strip()
+            out["runtime_git_head_short"] = git_short_sha(out["runtime_git_head"])
+            out["runtime_deploy_commit_raw"] = str(fs.get("deploy_raw") or "")
+    except Exception:
+        pass
+    if not out["marker_sha"]:
+        harness = scrape_deploy(page)
+        out["marker_sha"] = git_short_sha(harness.get("sha") or scrape_deploy_sha_from_page(page) or "")
+        out["marker_build"] = str(harness.get("build") or "").strip()
+    if not out["runtime_git_head_short"] and out["marker_sha"]:
+        out["runtime_git_head_short"] = out["marker_sha"]
+    return out
+
+
+def evaluate_cloud_binding_readiness(
+    *,
+    runtime_git_head_short: str,
+    marker_sha: str,
+    marker_build: str,
+    deploy_pin: str | None = None,
+    runtime_deploy_raw: str = "",
+) -> dict[str, Any]:
+    """Cloud ready for BIND5 binding diagnostic — not deploy_commit.txt alone."""
+    pin = git_short_sha(deploy_pin or local_deploy_pin())
+    anchor = git_short_sha(BINDING_FIX_ANCHOR_SHA)
+    runtime = git_short_sha(runtime_git_head_short)
+    marker = git_short_sha(marker_sha)
+    pin_from_runtime_raw = parse_deploy_pin_token(runtime_deploy_raw)
+    expected_build = expected_build_label_for_pin(pin)
+    impl_runtime = commit_has_binding_correction(runtime) if runtime else {}
+    impl_at_marker = commit_has_binding_correction(marker) if marker else {}
+
+    checks: dict[str, bool] = {
+        "deploy_pin_marker_matches_local_pin": bool(pin and marker == pin),
+        "deploy_pin_runtime_raw_matches_local_pin": bool(
+            not pin_from_runtime_raw or pin_from_runtime_raw == pin
+        ),
+        "build_marker_matches_pin": marker_build == expected_build,
+        "runtime_git_contains_binding_anchor": bool(
+            runtime and (runtime == anchor or git_sha_is_ancestor(anchor, runtime))
+        ),
+        "binding_implementation_at_runtime_git": bool(impl_runtime.get("ok")),
+    }
+    ok = all(checks.values())
+    return {
+        "deploy_pin": pin,
+        "binding_fix_anchor": anchor,
+        "runtime_git_head_short": runtime,
+        "marker_sha": marker,
+        "marker_build": marker_build,
+        "expected_build": expected_build,
+        "checks": checks,
+        "implementation_at_runtime_git": impl_runtime,
+        "implementation_at_marker_sha": impl_at_marker,
+        "ok": ok,
+    }
+
+
 def declaration_rows_have_identity(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Ledger rows must carry declaration identity fields (not deploy_commit.txt alone)."""
     need = (
@@ -361,6 +578,8 @@ def poll_live_cloud_sha(
     sleep_s: float = 25.0,
     require_canary_impl: bool = True,
     require_symmetric_observability: bool = False,
+    wait_for_deploy_pin: bool = False,
+    wait_for_binding_readiness: bool = False,
 ) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
     from playwright.sync_api import sync_playwright
@@ -380,8 +599,11 @@ def poll_live_cloud_sha(
         "live_sha": "",
         "live_build": "",
         "implementation_at_live_sha": {},
+        "binding_readiness": {},
         "ok": False,
     }
+    pin = local_deploy_pin()
+    wait_binding = wait_for_binding_readiness or wait_for_deploy_pin
 
     for i in range(max_attempts):
         row: dict[str, Any] = {"attempt": i, "ts": time.time()}
@@ -392,18 +614,39 @@ def poll_live_cloud_sha(
                 goto_and_wake(page, url, timeout_s=240)
                 page.wait_for_timeout(8000)
                 probe = scrape_deploy(page)
-                sha = (scrape_live_sha(page) or scrape_deploy_build(page) or probe.get("sha") or "")[:7].lower()
-                build = str(probe.get("build") or "")
+                runtime_dom = scrape_cloud_runtime_deploy_probe(page)
+                sha = (
+                    runtime_dom.get("runtime_git_head_short")
+                    or runtime_dom.get("marker_sha")
+                    or (scrape_live_sha(page) or scrape_deploy_build(page) or probe.get("sha") or "")
+                )[:7].lower()
+                build = str(runtime_dom.get("marker_build") or probe.get("build") or "")
                 row["sha"] = sha
                 row["build"] = build
+                row["runtime_probe"] = runtime_dom
                 impl = commit_has_symmetric_observability(sha) if require_symmetric_observability else commit_has_canary_implementation(sha)
                 row["implementation"] = impl
                 row["symmetric_observability"] = require_symmetric_observability
+                readiness = evaluate_cloud_binding_readiness(
+                    runtime_git_head_short=runtime_dom.get("runtime_git_head_short") or sha,
+                    marker_sha=runtime_dom.get("marker_sha") or "",
+                    marker_build=build,
+                    deploy_pin=pin,
+                    runtime_deploy_raw=runtime_dom.get("runtime_deploy_commit_raw") or "",
+                )
+                row["binding_readiness"] = readiness
                 report["attempts"].append(row)
                 report["live_sha"] = sha
                 report["live_build"] = build
-                report["implementation_at_live_sha"] = impl
+                report["binding_readiness"] = readiness
+                report["implementation_at_live_sha"] = readiness.get("implementation_at_runtime_git") or impl
                 browser.close()
+                if wait_binding:
+                    if not readiness.get("ok"):
+                        time.sleep(sleep_s)
+                        continue
+                    report["ok"] = True
+                    return report
                 if require_symmetric_observability and impl.get("ok"):
                     report["ok"] = True
                     return report
