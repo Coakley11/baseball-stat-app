@@ -707,19 +707,21 @@ def build_unified_timeline(
     if ws_correlation:
         co = ws_correlation.get("correlated_outbound")
         if isinstance(co, dict):
+            co_extra = {k: v for k, v in co.items() if k != "source"}
             add(
                 round(float(co.get("wall_ts") or send_epoch) - send_epoch, 3),
                 "websocket_correlated_outbound",
                 "ws_correlation",
-                **co,
+                **co_extra,
             )
         ci = ws_correlation.get("correlated_inbound_first")
         if isinstance(ci, dict):
+            ci_extra = {k: v for k, v in ci.items() if k != "source"}
             add(
                 round(float(ci.get("wall_ts") or send_epoch) - send_epoch, 3),
                 "websocket_correlated_inbound",
                 "ws_correlation",
-                **ci,
+                **ci_extra,
             )
 
     for e in iframe_entries:
@@ -735,12 +737,14 @@ def build_unified_timeline(
         wt = float(wf.get("wall_ts") or 0)
         if wt < send_epoch - 5:
             continue
-        add(round(wt - send_epoch, 3), f"websocket_{wf.get('direction')}", "playwright_ws", **wf)
+        wf_extra = {k: v for k, v in wf.items() if k != "source"}
+        add(round(wt - send_epoch, 3), f"websocket_{wf.get('direction')}", "playwright_ws", **wf_extra)
 
     for row in post_send_server:
         ts = float(row.get("server_ts") or 0)
         kind = str(row.get("event") or "production_stage1_script_begin_durable")
-        add(round(ts - send_epoch, 3), kind, "server_audit", **row)
+        row_extra = {k: v for k, v in row.items() if k not in ("event", "source")}
+        add(round(ts - send_epoch, 3), kind, "server_audit", **row_extra)
 
     events.sort(key=lambda x: (x.get("t_rel_send_s") is None, x.get("t_rel_send_s") or 999))
     return events
@@ -860,7 +864,7 @@ def classify_first_missing_boundary(
     ):
         code = "LIFECYCLE3"
         rationale = "Immediate parent received exact SCV; no outbound WebSocket frame contained expiration token or widget key."
-        correction = "Streamlit parent SCV → outbound widget-state/back-message encoding"
+        correction = "Streamlit parent SCV to outbound widget-state/back-message encoding"
         first_missing = "outbound_ws_widget_update"
     elif not global_canaries:
         code = "LIFECYCLE4"
@@ -868,22 +872,22 @@ def classify_first_missing_boundary(
             "Correlated outbound WebSocket carried production token/widget bytes; "
             "no production_global_script_run_canary after send."
         )
-        correction = "Frontend widget update → backend script execution trigger"
+        correction = "Frontend widget update to backend script execution trigger"
         first_missing = "global_backend_script_run"
     elif not branch_canaries:
         code = "LIFECYCLE5"
         rationale = "Global backend script canary fired after send; Live Draft branch canary absent."
-        correction = "Page routing / active_page → Live Draft Room branch entry"
+        correction = "Page routing / active_page to Live Draft Room branch entry"
         first_missing = "live_draft_branch_canary"
     elif not decl_pre:
         code = "LIFECYCLE6"
         rationale = "Global and Live Draft branch canaries present; countdown declaration pre absent."
-        correction = "Live Draft branch → production countdown declaration path"
+        correction = "Live Draft branch to production countdown declaration path"
         first_missing = "countdown_declaration_pre"
     elif not decl_nonempty:
         code = "LIFECYCLE7"
         rationale = "Countdown declaration pre/post observed; direct return and Session State remain empty."
-        correction = "Component declaration → return value / Session State bind"
+        correction = "Component declaration to return value / Session State bind"
         first_missing = "non_empty_component_return"
     elif global_canaries and not legacy_begins:
         code = "LIFECYCLE8"
