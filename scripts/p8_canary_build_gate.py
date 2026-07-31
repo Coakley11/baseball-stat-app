@@ -286,7 +286,7 @@ def verify_pre_trace_canaries(
         report["reason"] = "no_production_global_script_run_canary_on_initial_load"
         return report
 
-    ensure_p8_ldr_setup_surface(page, setup_url=page.url.split("?")[0] + "/")
+    ensure_p8_ldr_setup_surface(page, setup_url=page.url)
     t1 = time.time()
     while time.time() - t1 < poll_s:
         peak = scrape_peak_ledger(page)

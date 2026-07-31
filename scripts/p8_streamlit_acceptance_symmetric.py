@@ -627,13 +627,13 @@ def run() -> dict[str, Any]:
         install_parent_event_sink(page, parent_sink)
         url = production_url()
         goto_and_wake(page, url, timeout_s=240)
-        page.wait_for_timeout(12000)
+        page.wait_for_timeout(20000)
         try:
             page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
             page.wait_for_timeout(3000)
         except Exception:
             pass
-        page.wait_for_timeout(12000)
+        page.wait_for_timeout(20000)
         probe = scrape_deploy(page)
         sha = (scrape_live_sha(page) or scrape_deploy_build(page) or probe.get("sha") or "")[:7].lower()
         report["cloud_sha"] = sha
@@ -648,11 +648,12 @@ def run() -> dict[str, Any]:
         if poll.get("live_sha") and sha != str(poll.get("live_sha"))[:7].lower():
             report["deploy_sha_drift"] = {"poll_sha": poll.get("live_sha"), "session_sha": sha}
 
-        canary_pre = verify_pre_trace_canaries(page)
+        canary_pre = verify_pre_trace_canaries(page, poll_s=90.0)
         report["pre_trace_canary_validation"] = canary_pre
         if canary_pre.get("classification") != "CANARY_PRE_TRACE_OK":
             report["aborted"] = True
             report["reason"] = "INVALID_CANARY_DEPLOY_OR_CAPTURE"
+            report["classification"] = classify_final(report)
             context.close()
             browser.close()
             return report

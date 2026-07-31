@@ -565,6 +565,20 @@ try:
             active_page=str(st.session_state.get("active_page") or "ultra_early_bootstrap"),
         )
         try:
+            from live_draft_cloud_diagnostics import _qp_get
+
+            qp_page = str(_qp_get(st, "active_page") or "").strip()
+            if qp_page == "Live Draft Room":
+                from live_draft_stage1_boundary_canaries import emit_production_live_draft_branch_canary
+
+                emit_production_live_draft_branch_canary(
+                    st,
+                    st.session_state,
+                    active_page="Live Draft Room",
+                )
+        except ImportError:
+            pass
+        try:
             from live_draft_stage1_production_ledger import (
                 render_stage1_production_ledger_probe,
                 stage1_production_ledger_enabled,
