@@ -86,12 +86,14 @@ def main() -> int:
         cap_a = capture_all_ledger_sources(page)
         collector.absorb_capture(cap_a, label="case_a")
         peak = collector.peak_rows()
+        control_entered = [r for r in peak if r.get("event") == CONTROL_ENTERED]
+        control_exited = [r for r in peak if r.get("event") == "production_stage1_control_on_change_exited"]
+        reg_hook_entered = [r for r in peak if r.get("event") == REG_HOOK_ENTERED]
         case_gate_a = evaluate_case_a_gate_a(
             peak_rows=peak,
-            case_a_delivery_proven=case_a_ok,
-            control_entered=[r for r in peak if r.get("event") == CONTROL_ENTERED],
-            control_exited=[],
-            reg_hook_entered=[r for r in peak if r.get("event") == REG_HOOK_ENTERED],
+            case_a_delivery_proven=case_a_ok and bool(control_entered or reg_hook_entered),
+            control_entered=control_entered or reg_hook_entered,
+            control_exited=control_exited,
             local_hook_self_test_ok=bool(hook_self_test.get("ok")),
         )
         report["case_a_dispatch_authority"] = bool(case_gate_a.get("case_a_dispatch_authority"))
