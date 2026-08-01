@@ -381,7 +381,7 @@ REGISTRATION_HOOK_OBS_SHA = "3125f9e"
 
 
 REGISTRATION_HOOK_OBS_SHA = "3125f9e"
-LEDGER_PIPELINE_OBS_SHA = "d9af9bb"
+LEDGER_PIPELINE_OBS_SHA = "764cdd2"
 
 
 def commit_has_ledger_pipeline_observability(sha: str) -> dict[str, Any]:
@@ -447,6 +447,7 @@ def commit_has_ledger_pipeline_observability(sha: str) -> dict[str, Any]:
             return False
 
     out["chunked_ledger_export"] = _grep("data-b64-chunk-count", prod_ledger)
+    out["gate_a_export_pins"] = _grep("GATE_A_EXPORT_PINNED_EVENTS", prod_ledger)
     out["no_json_truncation_cap"] = _grep("data-payload-json-len", prod_ledger) and not _grep_literal(
         "[:48000]", prod_ledger
     )
@@ -457,6 +458,7 @@ def commit_has_ledger_pipeline_observability(sha: str) -> dict[str, Any]:
             out["finalize_before_stop"],
             out["chunked_ledger_export"],
             out["no_json_truncation_cap"],
+            out["gate_a_export_pins"],
         ]
     )
     return out
