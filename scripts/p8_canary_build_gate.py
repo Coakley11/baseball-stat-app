@@ -296,6 +296,7 @@ def commit_has_binding_correction(sha: str) -> dict[str, Any]:
 
 
 CALLBACK_OBS_ANCHOR_SHA = "919e196"
+CALLBACK_OBS_GATE_SHA = "0df58b1"
 
 
 def commit_has_callback_observability(sha: str) -> dict[str, Any]:
@@ -304,7 +305,10 @@ def commit_has_callback_observability(sha: str) -> dict[str, Any]:
         "sha": sha,
         "file_prod_on_change_observability_py": False,
         "prod_on_change_entered_event": False,
+        "prod_on_change_exited_event": False,
         "callback_registration_event": False,
+        "control_on_change_entered_event": False,
+        "control_on_change_exited_event": False,
         "ok": False,
     }
     if not sha:
@@ -341,16 +345,95 @@ def commit_has_callback_observability(sha: str) -> dict[str, Any]:
         "production_stage1_prod_on_change_entered",
         "live_draft_prod_on_change_observability.py",
     )
+    out["prod_on_change_exited_event"] = _grep(
+        "production_stage1_prod_on_change_exited",
+        "live_draft_prod_on_change_observability.py",
+    )
     out["callback_registration_event"] = _grep(
         "production_stage1_callback_registration",
         "live_draft_prod_on_change_observability.py",
     )
-    out["ok"] = (
-        out["file_prod_on_change_observability_py"]
-        and out["prod_on_change_entered_event"]
-        and out["callback_registration_event"]
+    out["control_on_change_entered_event"] = _grep(
+        "production_stage1_control_on_change_entered",
+        "live_draft_prod_on_change_observability.py",
+    )
+    out["control_on_change_exited_event"] = _grep(
+        "production_stage1_control_on_change_exited",
+        "live_draft_prod_on_change_observability.py",
+    )
+    out["ok"] = all(
+        [
+            out["file_prod_on_change_observability_py"],
+            out["prod_on_change_entered_event"],
+            out["prod_on_change_exited_event"],
+            out["callback_registration_event"],
+            out["control_on_change_entered_event"],
+            out["control_on_change_exited_event"],
+        ]
     )
     return out
+
+
+def resolve_runtime_git_short_from_probe(probe: dict[str, str]) -> str:
+    full = str(probe.get("runtime_git_head") or "").strip().lower()
+    if full and not full.startswith("error:"):
+        return full[:7]
+    short = git_short_sha(probe.get("runtime_git_head_short") or "")
+    if short and short != git_short_sha(local_deploy_pin()):
+        return short
+    return short
+
+
+def evaluate_cloud_callback_observability_readiness(
+    *,
+    runtime_git_head_short: str,
+    runtime_git_head_full: str,
+    marker_sha: str,
+    marker_build: str,
+    deploy_pin: str | None = None,
+) -> dict[str, Any]:
+    pin = git_short_sha(deploy_pin or local_deploy_pin())
+    runtime = git_short_sha(runtime_git_head_full or runtime_git_head_short)
+    if not runtime or runtime == pin and not runtime_git_head_full:
+        runtime = git_short_sha(runtime_git_head_short)
+    expected_build = expected_build_label_for_pin(pin)
+    impl = commit_has_callback_observability(runtime) if runtime else {}
+    checks: dict[str, bool] = {
+        "deploy_pin_marker_matches_local_pin": bool(pin and git_short_sha(marker_sha) == pin),
+        "build_marker_matches_observability_pin": marker_build == expected_build,
+        "runtime_git_contains_observability_gate": bool(
+            runtime
+            and (
+                runtime == git_short_sha(CALLBACK_OBS_GATE_SHA)
+                or git_sha_is_ancestor(CALLBACK_OBS_GATE_SHA, runtime)
+            )
+        ),
+        "runtime_git_contains_instrumentation_anchor": bool(
+            runtime
+            and (
+                runtime == git_short_sha(CALLBACK_OBS_ANCHOR_SHA)
+                or git_sha_is_ancestor(CALLBACK_OBS_ANCHOR_SHA, runtime)
+            )
+        ),
+        "callback_observability_implementation_at_runtime_git": bool(impl.get("ok")),
+    }
+    ok = all(checks.values())
+    return {
+        "deploy_pin": pin,
+        "observability_gate_sha": git_short_sha(CALLBACK_OBS_GATE_SHA),
+        "instrumentation_anchor_sha": git_short_sha(CALLBACK_OBS_ANCHOR_SHA),
+        "observability_implementation_sha": git_short_sha(CALLBACK_OBS_ANCHOR_SHA),
+        "deploy_trigger_sha": git_short_sha(CALLBACK_OBS_GATE_SHA),
+        "runtime_git_head_short": runtime,
+        "runtime_git_head_full_prefix": str(runtime_git_head_full or "")[:12],
+        "fs_probe_git_head_present": bool(str(runtime_git_head_full or "").strip()),
+        "marker_sha": git_short_sha(marker_sha),
+        "marker_build": marker_build,
+        "expected_build": expected_build,
+        "checks": checks,
+        "implementation_at_runtime_git": impl,
+        "ok": ok,
+    }
 
 
 BINDING_FIX_ANCHOR_SHA = "18e7c15"
@@ -638,6 +721,7 @@ def poll_live_cloud_sha(
     require_symmetric_observability: bool = False,
     wait_for_deploy_pin: bool = False,
     wait_for_binding_readiness: bool = False,
+    wait_for_callback_observability: bool = False,
 ) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
     from playwright.sync_api import sync_playwright
@@ -658,10 +742,12 @@ def poll_live_cloud_sha(
         "live_build": "",
         "implementation_at_live_sha": {},
         "binding_readiness": {},
+        "callback_observability_readiness": {},
         "ok": False,
     }
     pin = local_deploy_pin()
     wait_binding = wait_for_binding_readiness or wait_for_deploy_pin
+    wait_callback_obs = wait_for_callback_observability
 
     for i in range(max_attempts):
         row: dict[str, Any] = {"attempt": i, "ts": time.time()}
@@ -693,12 +779,31 @@ def poll_live_cloud_sha(
                     runtime_deploy_raw=runtime_dom.get("runtime_deploy_commit_raw") or "",
                 )
                 row["binding_readiness"] = readiness
+                runtime_full = str(runtime_dom.get("runtime_git_head") or "")
+                runtime_short = resolve_runtime_git_short_from_probe(runtime_dom) or git_short_sha(
+                    runtime_dom.get("marker_sha") or sha
+                )
+                obs_readiness = evaluate_cloud_callback_observability_readiness(
+                    runtime_git_head_short=runtime_short,
+                    runtime_git_head_full=runtime_full,
+                    marker_sha=runtime_dom.get("marker_sha") or "",
+                    marker_build=build,
+                    deploy_pin=pin,
+                )
+                row["callback_observability_readiness"] = obs_readiness
                 report["attempts"].append(row)
-                report["live_sha"] = sha
+                report["live_sha"] = runtime_short or sha
                 report["live_build"] = build
                 report["binding_readiness"] = readiness
-                report["implementation_at_live_sha"] = readiness.get("implementation_at_runtime_git") or impl
+                report["callback_observability_readiness"] = obs_readiness
+                report["implementation_at_live_sha"] = obs_readiness.get("implementation_at_runtime_git") or readiness.get("implementation_at_runtime_git") or impl
                 browser.close()
+                if wait_callback_obs:
+                    if not obs_readiness.get("ok"):
+                        time.sleep(sleep_s)
+                        continue
+                    report["ok"] = True
+                    return report
                 if wait_binding:
                     if not readiness.get("ok"):
                         time.sleep(sleep_s)
