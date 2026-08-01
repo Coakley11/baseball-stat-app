@@ -14,10 +14,23 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
 OUT = ROOT / "data" / "production_callback_metadata_diagnostic.json"
+OUT_TXT = ROOT / "data" / "production_callback_metadata_diagnostic.txt"
 LEGACY_OUT = ROOT / "data" / "production_callback_binding_diagnostic.json"
 LOG = ROOT / "data" / "production_callback_binding_diagnostic_run.out"
 PRODUCTION_WIDGET_KEY = "solo_countdown_wake_solo_persistent"
 INVALID_OBS = "INVALID_OBSERVABILITY_NOT_DEPLOYED"
+
+
+def _persist_report(report: dict[str, Any]) -> None:
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    LEGACY_OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    try:
+        from p8_callback_metadata_diagnostic_report import format_metadata_diagnostic_txt
+
+        OUT_TXT.write_text(format_metadata_diagnostic_txt(report), encoding="utf-8")
+    except ImportError:
+        pass
 
 
 def _write_abort(report: dict[str, Any], *, reason: str, boundary: str = INVALID_OBS) -> None:
@@ -25,8 +38,10 @@ def _write_abort(report: dict[str, Any], *, reason: str, boundary: str = INVALID
     report["abort_reason"] = reason
     report["first_boundary"] = boundary
     report["smallest_correction_boundary"] = boundary
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    report["artifact_path"] = str(OUT)
+    report["artifact_txt_path"] = str(OUT_TXT)
+    report["finished_at"] = time.time()
+    _persist_report(report)
 
 
 def main() -> int:
@@ -41,14 +56,17 @@ def main() -> int:
     from p8_callback_metadata_classify import (
         BACKEND_STATE,
         CALLBACK_DISPATCH_EVALUATED,
+        CONTROL_PROBE_INVALID,
         INTERNAL_META,
+        INVALID_INTERNAL_METADATA_OBSERVABILITY,
         classify_callback_metadata_boundary,
+        evaluate_case_a_metadata_authority,
     )
     from p8_canary_build_gate import (
         CALLBACK_METADATA_OBS_ANCHOR_SHA,
         CALLBACK_METADATA_OBS_GATE_SHA,
+        METADATA_READ_FIX_SHA,
         CALLBACK_OBS_ANCHOR_SHA,
-        CALLBACK_OBS_GATE_SHA,
         git_head_short,
         local_deploy_pin,
         poll_live_cloud_sha,
@@ -90,14 +108,17 @@ def main() -> int:
     report: dict[str, Any] = {
         "started_at": time.time(),
         "accepted_prior_outcome": "CB1 — PRODUCTION_ON_CHANGE_NEVER_INVOKED",
-        "prior_abort": INVALID_OBS,
+        "prior_metadata_run_verdict": CONTROL_PROBE_INVALID,
+        "prior_metadata_run_sha": "f58f473",
         "deploy_pin": pin,
         "observability_implementation_sha": CALLBACK_OBS_ANCHOR_SHA,
         "callback_metadata_observability_sha": CALLBACK_METADATA_OBS_ANCHOR_SHA,
+        "metadata_fix_implementation_sha": METADATA_READ_FIX_SHA,
         "deploy_trigger_sha": CALLBACK_METADATA_OBS_GATE_SHA,
         "git_head": git_head_short(),
-        "mode": "callback_metadata_diagnostic",
+        "mode": "callback_metadata_diagnostic_v2",
         "artifact_path": str(OUT),
+        "artifact_txt_path": str(OUT_TXT),
         "legacy_artifact_path": str(LEGACY_OUT),
         "log_path": str(LOG),
     }
@@ -111,6 +132,7 @@ def main() -> int:
     obs = poll.get("callback_metadata_observability_readiness") or poll.get("callback_observability_readiness") or {}
     report["observability_deploy_poll"] = poll
     report["cloud_callback_observability_readiness"] = obs
+    report["metadata_read_fix_readiness"] = obs.get("metadata_read_fix_at_runtime_git")
     report["live_sha"] = obs.get("runtime_git_head_short") or poll.get("live_sha")
     report["live_build"] = obs.get("marker_build") or poll.get("live_build")
 
@@ -153,15 +175,58 @@ def main() -> int:
         peak = collector.peak_rows()
         control_entered = [r for r in peak if r.get("event") == CONTROL_ENTERED]
         control_exited = [r for r in peak if r.get("event") == "production_stage1_control_on_change_exited"]
+        case_dispatch = [r for r in peak if r.get("event") == CALLBACK_DISPATCH_EVALUATED]
+        case_backend = [r for r in peak if r.get("event") == BACKEND_STATE]
+        case_meta = [r for r in peak if r.get("event") == INTERNAL_META]
+        delivery_proven = case_a_ok and bool(control_entered)
+        case_authority = evaluate_case_a_metadata_authority(
+            peak_rows=peak,
+            case_a_delivery_proven=delivery_proven,
+            control_entered=control_entered,
+            control_exited=control_exited,
+        )
+        from p8_callback_metadata_diagnostic_report import summarize_internal_lane
+
         report["case_a"] = {
             "ok": case_a_ok,
             "scrape": snap,
             "callback_registration_timeline": [r for r in peak if r.get("event") == REGISTRATION],
-            "internal_metadata_timeline": [r for r in peak if r.get("event") == INTERNAL_META],
+            "internal_metadata_timeline": case_meta,
+            "dispatch_timeline": case_dispatch,
+            "backend_state_timeline": case_backend,
             "control_callback_entered_timeline": control_entered,
             "control_callback_exited_timeline": control_exited,
-            "control_delivery_proven": case_a_ok and bool(control_entered),
+            "control_delivery_proven": delivery_proven,
         }
+        report["case_a_metadata_authority"] = case_authority
+        report["case_a_internal_timeline_summary"] = {
+            "metadata": summarize_internal_lane(
+                [r for r in case_meta if str(r.get("diagnostic_surface") or "") == "case_a"]
+                or [r for r in case_meta if str(r.get("widget_key", "")).startswith("minimal_wake")],
+                label="case_a",
+            ),
+            "dispatch": summarize_internal_lane(case_dispatch, label="case_a_dispatch"),
+            "backend": summarize_internal_lane(case_backend, label="case_a_backend"),
+        }
+
+        if not case_authority.get("authoritative"):
+            report["first_boundary"] = INVALID_INTERNAL_METADATA_OBSERVABILITY
+            report["smallest_correction_boundary"] = INVALID_INTERNAL_METADATA_OBSERVABILITY
+            report["production_skipped"] = True
+            report["finished_at"] = time.time()
+            context.close()
+            browser.close()
+            _persist_report(report)
+            print(
+                json.dumps(
+                    {
+                        "first_boundary": INVALID_INTERNAL_METADATA_OBSERVABILITY,
+                        "artifact": str(OUT),
+                    },
+                    indent=2,
+                )
+            )
+            return 1
 
         url = production_url()
         goto_and_wake(page, url, timeout_s=240)
@@ -272,13 +337,29 @@ def main() -> int:
         report["internal_comparison"] = cm_classification.get("comparison")
         report["architectural_options"] = cm_classification.get("architectural_options") or []
         report["smallest_correction_boundary"] = cm_classification.get("smallest_correction_boundary")
+        report["production_internal_timeline_summary"] = {
+            "metadata": summarize_internal_lane(
+                [r for r in rows if r.get("event") == INTERNAL_META],
+                label="production",
+            ),
+            "dispatch": summarize_internal_lane(
+                [r for r in rows if r.get("event") == CALLBACK_DISPATCH_EVALUATED],
+                label="production_dispatch",
+            ),
+            "backend": summarize_internal_lane(
+                [r for r in rows if r.get("event") == BACKEND_STATE],
+                label="production_backend",
+            ),
+            "prod_callback_entered": len(prod_entered),
+            "prod_callback_exited": len(prod_exited),
+            "exact_expiration_token": token_sent,
+            "direct_component_return": direct_return,
+        }
         report["finished_at"] = time.time()
         context.close()
         browser.close()
 
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
-    LEGACY_OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    _persist_report(report)
     print(json.dumps({"first_boundary": report.get("first_boundary"), "artifact": str(OUT)}, indent=2))
     return 0
 

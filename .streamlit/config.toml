@@ -7,7 +7,7 @@ gatherUsageStats = false
 # Streamlit Cloud entrypoint MUST be streamlit_app.py (lowercase).
 # Do not use Streamlit_app.py — removed from dev branch; uppercase breaks Linux deploys.
 # App settings: repo Coakley11/baseball-stat-app · branch dev · not pinned to an old commit.
-# deploy_epoch: 2026-08-02T02:10Z — Cloud deploy pin f58f473 (WidgetMetadata + dispatch CM diagnostics).
+# deploy_epoch: 2026-08-02T03:25Z — Cloud deploy pin 39b9ef4 (metadata read fix for CM gate).
 #
 # Python runtime (required for stable native wheels):
 #   Manage app → Settings → Python version → 3.12

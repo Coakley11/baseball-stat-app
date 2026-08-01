@@ -130,7 +130,79 @@ def test_probe_after_declaration_emits_without_mutating_token() -> None:
         assert extra is None or emit.call_args[0][1] == INTERNAL_METADATA_REGISTERED
 
 
-def test_classify_cm1_when_app_passed_metadata_empty() -> None:
+def test_evaluate_case_a_authority_passes_when_metadata_and_dispatch_complete() -> None:
+    from scripts.p8_callback_metadata_classify import evaluate_case_a_metadata_authority
+
+    token = "repro|3|1.0"
+    peak = [
+        {
+            "event": "production_stage1_internal_widget_metadata_registered",
+            "diagnostic_surface": "case_a",
+            "widget_key": "minimal_wake_repro_3",
+            "authoritative_widget_id": "wid-3",
+            "application_on_change_argument_present": True,
+            "metadata_missing": False,
+            "metadata_callback_present": True,
+            "metadata_callback_identity": "mod._on_change",
+            "callback_registered_in_metadata": True,
+        },
+        {
+            "event": "production_stage1_callback_dispatch_evaluated",
+            "widget_key": "minimal_wake_repro_3",
+            "new_state_present": True,
+            "new_value_repr": token,
+            "old_value_repr": "old",
+            "widget_changed_result": True,
+            "callback_selected": True,
+        },
+        {
+            "event": "production_stage1_control_on_change_entered",
+            "widget_key": "minimal_wake_repro_3",
+            "expected_token": token,
+            "callback_function_identity": "_on_change",
+            "session_state_value_repr": repr(token),
+        },
+        {"event": "production_stage1_control_on_change_exited", "widget_key": "minimal_wake_repro_3"},
+    ]
+    out = evaluate_case_a_metadata_authority(
+        peak_rows=peak,
+        case_a_delivery_proven=True,
+        control_entered=[peak[2]],
+        control_exited=[peak[3]],
+    )
+    assert out["authoritative"] is True
+
+
+def test_evaluate_case_a_authority_fails_when_metadata_missing() -> None:
+    from scripts.p8_callback_metadata_classify import (
+        INVALID_INTERNAL_METADATA_OBSERVABILITY,
+        evaluate_case_a_metadata_authority,
+    )
+
+    peak = [
+        {
+            "event": "production_stage1_internal_widget_metadata_registered",
+            "diagnostic_surface": "case_a",
+            "widget_key": "minimal_wake_repro_0",
+            "metadata_missing": True,
+            "application_on_change_argument_present": True,
+        },
+        {
+            "event": "production_stage1_control_on_change_entered",
+            "widget_key": "minimal_wake_repro_0",
+            "expected_token": "t",
+            "callback_function_identity": "_on_change",
+        },
+    ]
+    out = evaluate_case_a_metadata_authority(
+        peak_rows=peak,
+        case_a_delivery_proven=True,
+        control_entered=[peak[1]],
+        control_exited=[],
+    )
+    assert out["authoritative"] is False
+    assert out["failure_boundary"] == INVALID_INTERNAL_METADATA_OBSERVABILITY
+
     from scripts.p8_callback_metadata_classify import classify_callback_metadata_boundary
 
     rows = [

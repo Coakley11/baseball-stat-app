@@ -375,7 +375,48 @@ def commit_has_callback_observability(sha: str) -> dict[str, Any]:
 
 
 CALLBACK_METADATA_OBS_ANCHOR_SHA = "f58f473"
-CALLBACK_METADATA_OBS_GATE_SHA = "f58f473"
+METADATA_READ_FIX_SHA = "39b9ef4"
+CALLBACK_METADATA_OBS_GATE_SHA = METADATA_READ_FIX_SHA
+
+
+def commit_has_metadata_read_fix(sha: str) -> dict[str, Any]:
+    sha = str(sha or "").strip()[:7]
+    out: dict[str, Any] = {
+        "sha": sha,
+        "script_ctx_session_state_lookup": False,
+        "widget_metadata_suffix_fallback": False,
+        "case_a_surface_label": False,
+        "ok": False,
+    }
+    if not sha:
+        return out
+    path = "live_draft_streamlit_widget_metadata_diag.py"
+    obs_path = "live_draft_prod_on_change_observability.py"
+
+    def _grep(pattern: str, *paths: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "grep", "-q", pattern, sha, "--", *paths],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            return True
+        except Exception:
+            return False
+
+    out["script_ctx_session_state_lookup"] = _grep("get_script_run_ctx", path)
+    out["widget_metadata_suffix_fallback"] = _grep("widget_metadata_key_suffix", path)
+    out["case_a_surface_label"] = _grep("minimal_wake_repro", obs_path)
+    out["ok"] = all(
+        [
+            out["script_ctx_session_state_lookup"],
+            out["widget_metadata_suffix_fallback"],
+            out["case_a_surface_label"],
+        ]
+    )
+    return out
 
 
 def commit_has_callback_metadata_observability(sha: str) -> dict[str, Any]:
@@ -456,6 +497,7 @@ def evaluate_cloud_callback_metadata_observability_readiness(
         runtime = git_short_sha(runtime_git_head_short)
     expected_build = expected_build_label_for_pin(pin)
     impl = commit_has_callback_metadata_observability(runtime) if runtime else {}
+    read_fix = commit_has_metadata_read_fix(runtime) if runtime else {}
     base = evaluate_cloud_callback_observability_readiness(
         runtime_git_head_short=runtime_git_head_short,
         runtime_git_head_full=runtime_git_head_full,
@@ -465,11 +507,20 @@ def evaluate_cloud_callback_metadata_observability_readiness(
     )
     checks = dict(base.get("checks") or {})
     checks["callback_metadata_observability_at_runtime_git"] = bool(impl.get("ok"))
+    checks["metadata_read_fix_at_runtime_git"] = bool(read_fix.get("ok")) and bool(
+        runtime
+        and (
+            runtime == git_short_sha(METADATA_READ_FIX_SHA)
+            or git_sha_is_ancestor(METADATA_READ_FIX_SHA, runtime)
+        )
+    )
     ok = all(checks.values())
     return {
         **base,
         "checks": checks,
         "callback_metadata_implementation_at_runtime_git": impl,
+        "metadata_read_fix_at_runtime_git": read_fix,
+        "metadata_read_fix_implementation_sha": git_short_sha(METADATA_READ_FIX_SHA),
         "ok": ok,
     }
 
