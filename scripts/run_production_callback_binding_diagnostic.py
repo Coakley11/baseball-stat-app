@@ -91,6 +91,7 @@ def main() -> int:
         production_url,
         wait_one_expiration,
     )
+    from p8_diagnostic_setup import ensure_p8_ldr_setup_surface
     from p8_production_start_harness import (
         INVALID_PRODUCTION_EXPIRATION_TRACE,
         run_gate_b_production_start,
