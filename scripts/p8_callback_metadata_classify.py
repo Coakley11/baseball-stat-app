@@ -39,6 +39,82 @@ def _case_a_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _rows(rows: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
+    return [r for r in rows if isinstance(r, dict) and str(r.get("event") or "") == event]
+
+
+def select_authoritative_metadata_at_registration(
+    *,
+    peak_rows: list[dict[str, Any]],
+    control_entered: list[dict[str, Any]],
+    dispatch_reference: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Strict Case A registration metadata row (not hook_entered, not post-declaration scan)."""
+    audit: dict[str, Any] = {
+        "ok": False,
+        "rejected_count": 0,
+        "rejection_reasons": [],
+        "candidate_count": 0,
+    }
+    if not control_entered:
+        audit["reason"] = "no_control_entered_reference"
+        return {}, audit
+    last_enter = control_entered[-1]
+    wkey = str(last_enter.get("widget_key") or "")
+    run_id = str(last_enter.get("diagnostic_run_id") or last_enter.get("run_id") or "")
+    enter_cb = str(last_enter.get("callback_function_identity") or "_on_change")
+    dispatch_reference = dispatch_reference or {}
+    auth_widget_id = str(
+        dispatch_reference.get("authoritative_widget_id") or dispatch_reference.get("widget_id") or ""
+    )
+    dispatch_run = str(
+        dispatch_reference.get("diagnostic_run_id") or dispatch_reference.get("run_id") or ""
+    )
+    if dispatch_run and not run_id:
+        run_id = dispatch_run
+
+    candidates = _case_a_rows(_rows(peak_rows, METADATA_AT_REGISTRATION))
+    audit["candidate_count"] = len(candidates)
+    qualified: list[dict[str, Any]] = []
+    for r in candidates:
+        reasons: list[str] = []
+        if str(r.get("diagnostic_surface") or "") != SURFACE_CASE_A_CONTROL:
+            reasons.append("surface_not_case_a_control")
+        if wkey and str(r.get("widget_key") or "") != wkey:
+            reasons.append("widget_key_mismatch")
+        rid = str(r.get("diagnostic_run_id") or r.get("run_id") or "")
+        if run_id and rid and rid != run_id:
+            reasons.append("diagnostic_run_id_mismatch")
+        if r.get("metadata_callback_present") is not True:
+            reasons.append("metadata_callback_present_not_true")
+        reg_cb = str(r.get("metadata_callback_identity") or "")
+        if not reg_cb or enter_cb not in reg_cb:
+            reasons.append("callback_identity_mismatch")
+        row_auth = str(r.get("authoritative_widget_id") or "")
+        if not row_auth:
+            reasons.append("missing_authoritative_widget_id")
+        elif auth_widget_id and row_auth != auth_widget_id:
+            reasons.append("authoritative_widget_id_mismatch_dispatch")
+        if str(r.get("event") or "") != METADATA_AT_REGISTRATION:
+            reasons.append("not_metadata_at_registration_event")
+        if reasons:
+            audit["rejected_count"] += 1
+            audit["rejection_reasons"].append({"widget_key": r.get("widget_key"), "reasons": reasons})
+            continue
+        qualified.append(r)
+
+    if not qualified:
+        audit["reason"] = "no_qualified_metadata_at_registration_row"
+        return {}, audit
+
+    selected = qualified[-1]
+    audit["ok"] = True
+    audit["selected_widget_key"] = selected.get("widget_key")
+    audit["selected_run_id"] = selected.get("diagnostic_run_id") or selected.get("run_id")
+    audit["selected_callback_identity"] = selected.get("metadata_callback_identity")
+    return selected, audit
+
+
 def evaluate_case_a_gate_a(
     *,
     peak_rows: list[dict[str, Any]],
@@ -62,18 +138,22 @@ def evaluate_case_a_gate_a(
     }
     hooks_installed = _rows(peak_rows, HOOKS_INSTALLED)
     hook_entered = _case_a_rows(_rows(peak_rows, REG_HOOK_ENTERED))
-    if not hook_entered:
-        hook_entered = _case_a_rows(_rows(peak_rows, METADATA_AT_REGISTRATION))
-    reg = hook_entered[-1] if hook_entered else {}
+    reg_hook_row = hook_entered[-1] if hook_entered else {}
+    dispatch_ref = authority.get("dispatch_reference") or {}
+    reg_meta, reg_meta_audit = select_authoritative_metadata_at_registration(
+        peak_rows=peak_rows,
+        control_entered=control_entered,
+        dispatch_reference=dispatch_ref,
+    )
     gate_checks = dict(authority.get("checks") or {})
     gate_checks["hooks_installed_event"] = bool(hooks_installed)
     gate_checks["registration_hook_entered"] = bool(hook_entered)
-    gate_checks["surface_case_a_control"] = str(reg.get("diagnostic_surface") or "") == SURFACE_CASE_A_CONTROL or bool(
-        authority.get("checks", {}).get("surface_case_a_control")
+    gate_checks["surface_case_a_control"] = bool(
+        reg_meta.get("diagnostic_surface") == SURFACE_CASE_A_CONTROL
+        or authority.get("checks", {}).get("surface_case_a_control")
     )
-    gate_checks["registration_callback_present"] = bool(
-        reg.get("metadata_callback_present") or reg.get("callback_registered_in_metadata")
-    )
+    gate_checks["metadata_at_registration_authoritative"] = bool(reg_meta_audit.get("ok"))
+    gate_checks["registration_callback_present"] = bool(reg_meta_audit.get("ok"))
     out["checks"] = gate_checks
     dispatch_ok = bool(authority.get("dispatch_authoritative"))
     reg_ok = gate_checks["registration_hook_entered"] and gate_checks["registration_callback_present"]
@@ -91,7 +171,9 @@ def evaluate_case_a_gate_a(
             out["failure_boundary"] = authority.get("failure_boundary") or INVALID_INTERNAL_METADATA_OBSERVABILITY
             failed = [k for k, v in gate_checks.items() if not v]
             out["reason"] = f"gate_a_failed:{','.join(failed)}"
-    out["registration_hook_reference"] = reg
+    out["registration_hook_reference"] = reg_hook_row
+    out["registration_metadata_reference"] = reg_meta
+    out["registration_metadata_audit"] = reg_meta_audit
     out["hooks_installed_reference"] = hooks_installed[-1] if hooks_installed else {}
     return out
 
@@ -253,10 +335,6 @@ def evaluate_case_a_metadata_authority(
         failed = [k for k, v in checks.items() if not v]
         out["reason"] = f"case_a_metadata_authority_failed:{','.join(failed)}"
     return out
-
-
-def _rows(rows: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
-    return [r for r in rows if isinstance(r, dict) and str(r.get("event") or "") == event]
 
 
 def _surface(rows: list[dict[str, Any]], surface: str) -> list[dict[str, Any]]:
