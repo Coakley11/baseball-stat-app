@@ -268,7 +268,7 @@ def emit_callback_registration(
             snapshot_widget_metadata,
         )
 
-        surface = "case_a" if "minimal_wake" in component_callable_identity else "production"
+        surface = "case_a" if "minimal_wake_repro" in component_callable_identity else "production"
         session["_solo_stage1_last_metadata_surface"] = surface
         metadata_probe = probe_after_declaration(
             st,

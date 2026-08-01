@@ -40,6 +40,16 @@ def _metadata_type_name(metadata: Any) -> str:
 
 
 def get_streamlit_session_state(st: Any | None) -> Any | None:
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        ctx = get_script_run_ctx()
+        if ctx and getattr(ctx, "session_state", None) is not None:
+            inner = ctx.session_state
+            if hasattr(inner, "_new_widget_state"):
+                return inner
+    except Exception:
+        pass
     if st is None:
         return None
     try:
@@ -64,6 +74,16 @@ def resolve_authoritative_widget_id(
 ) -> tuple[str, str]:
     if not user_key:
         return "", "missing_user_key"
+    ss = get_streamlit_session_state(st)
+    if ss is not None:
+        try:
+            meta_map = ss._new_widget_state.widget_metadata
+            suffix = f"-{user_key}"
+            matches = [wid for wid in meta_map if str(wid).endswith(suffix) or suffix in str(wid)]
+            if matches:
+                return matches[-1], "widget_metadata_key_suffix"
+        except Exception:
+            pass
     try:
         from live_draft_stage1_widget_identity import read_actual_registered_widget_id
 
