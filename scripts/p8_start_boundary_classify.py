@@ -52,17 +52,23 @@ def classify_start_boundary(
     authoritative_state: dict[str, Any],
     start_proof: dict[str, bool],
     click_ts: float = 0.0,
+    reconciled_audit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return classification and first missing server event."""
     rows = _after_ts(ledger_rows, click_ts)
+    recon = reconciled_audit or {}
     audit: dict[str, Any] = {
         "global_canary": bool(_rows(rows, EVENT_GLOBAL)),
         "ldr_branch_canary": bool(_rows(rows, EVENT_LDR)),
         "button_value_rows": len(_rows(rows, EVENT_BTN_VAL)),
-        "handler_entered": len(_rows(rows, EVENT_HANDLER_IN)),
-        "handler_exited": len(_rows(rows, EVENT_HANDLER_OUT)),
+        "handler_entered": max(len(_rows(rows, EVENT_HANDLER_IN)), int(recon.get("handler_entered_count") or 0)),
+        "handler_exited": max(len(_rows(rows, EVENT_HANDLER_OUT)), int(recon.get("handler_exited_count") or 0)),
         "room_creation_entered": len(_rows(rows, EVENT_ROOM_IN)),
-        "room_creation_exited": len(_rows(rows, EVENT_ROOM_OUT)),
+        "room_creation_exited": max(
+            len(_rows(rows, EVENT_ROOM_OUT)),
+            int(recon.get("room_creation_exited_count") or 0),
+        ),
+        "reconciled_audit_used": bool(recon),
     }
     dom_clicked = bool(click_transport.get("dom_click_dispatched"))
     ws_sent = bool(click_transport.get("streamlit_backmsg_sent"))
@@ -101,7 +107,11 @@ def classify_start_boundary(
             return _out(START7, audit, "button_value_not_armed")
 
     if audit["ldr_branch_canary"] and not audit["handler_entered"]:
-        return _out(START8, audit, "start_handler_not_entered")
+        inferred = str(recon.get("inferred_created_room_id") or "").strip()
+        if inferred or audit["handler_exited"] or audit["room_creation_exited"]:
+            audit["start8_suppressed"] = "authoritative_room_or_handler_in_reconciled_ledger"
+        else:
+            return _out(START8, audit, "start_handler_not_entered")
 
     if audit["handler_entered"] and not audit["room_creation_entered"]:
         if dom_clicked and ws_sent and rerun_seen:

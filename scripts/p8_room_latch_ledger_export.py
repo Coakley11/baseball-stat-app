@@ -103,8 +103,9 @@ def resolve_run_and_session(
             break
     if not run_id:
         for r in rows:
-            if str(r.get("run_id") or ""):
+            if r.get("event") == "production_stage1_room_creation_exited" and r.get("created_room_id"):
                 run_id = str(r.get("run_id") or "")
+                sid = str(r.get("streamlit_session_id") or sid)
                 break
     for r in rows:
         if str(r.get("streamlit_session_id") or ""):

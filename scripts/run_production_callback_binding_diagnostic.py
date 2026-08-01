@@ -87,14 +87,16 @@ def main() -> int:
     from playwright.sync_api import sync_playwright
     from run_case_a_app_shell_gate import case_a_url, scrape_case_a
     from run_production_stage1_authenticated import (
-        ensure_fresh_setup_lobby,
         production_url,
         wait_one_expiration,
     )
     from p8_diagnostic_setup import ensure_p8_ldr_setup_surface
-    from p8_production_start_harness import (
-        INVALID_PRODUCTION_EXPIRATION_TRACE,
-        run_gate_b_production_start,
+    from p8_canonical_production_start import establish_single_solo_live_draft
+    from p8_harness_start_classify import (
+        GATE_B_START_PATH_DIVERGENCE,
+        ROOM_LATCH_REFERENCE_CHAIN,
+        classify_harness_start_divergence,
+        compare_harness_chains,
     )
     from run_production_p8_binding_diagnostic import (
         _infer_run_id,
@@ -330,37 +332,54 @@ def main() -> int:
         url = production_url()
         goto_and_wake(page, url, timeout_s=240)
         page.wait_for_timeout(5000)
-        report["production_ldr_surface"] = ensure_p8_ldr_setup_surface(page, setup_url=url)
-        cleanup = ensure_fresh_setup_lobby(page, max_wait_s=180)
-        report["production_cleanup"] = cleanup
-        if not cleanup.get("ok"):
-            report["first_boundary"] = "INVALID_PRODUCTION_SETUP"
-            report["production_skipped"] = True
-            report["gate"] = "B_setup_failed"
-            report["finished_at"] = time.time()
-            context.close()
-            browser.close()
-            _persist_report(report)
-            return 1
-
-        start_val = run_gate_b_production_start(
-            page,
-            url,
-            prior_room_id=str(cleanup.get("detected_room_id") or ""),
-            auth_preflight=pre,
+        report["harness_chain_reference"] = ROOM_LATCH_REFERENCE_CHAIN
+        report["prior_gate_b_chain"] = {
+            "fresh_lobby_cleanup": "ensure_fresh_setup_lobby (separate before run_gate_b)",
+            "start_helper": "run_gate_b_production_start (UI-only proof poll)",
+            "ledger_filter": "single scrape, no filter_latch_ledger_rows",
+            "room_latch_verify": "not run",
+        }
+        report["harness_chain_compare"] = compare_harness_chains(
+            reference=ROOM_LATCH_REFERENCE_CHAIN,
+            actual={
+                "helper_name": "establish_single_solo_live_draft",
+                "fresh_lobby_cleanup": "inside canonical helper only",
+                "navigation_helper": "goto_and_wake(production_url)",
+                "setup_surface_helper": "ensure_p8_ldr_setup_surface (once in helper)",
+                "start_click_helper": "dispatch_start_single_authoritative_click",
+                "post_click_ledger_poll": "handler_exited_or_room_creation_exited",
+                "ledger_filter": "filter_latch_ledger_rows",
+                "room_latch_verify": "classify_room_latch_verify",
+            },
         )
+
+        start_val = establish_single_solo_live_draft(
+            page,
+            context,
+            setup_url=url,
+            prior_room_id="",
+            fresh_lobby_cleanup=True,
+        )
+        report["production_ldr_surface"] = start_val.get("ldr_surface")
+        report["production_cleanup"] = start_val.get("production_cleanup")
         report["production_start_timeline"] = start_val.get("timeline")
         report["production_start_boundary"] = start_val.get("start_boundary")
         report["production_setup"] = start_val
+        report["production_identity_timeline"] = start_val.get("identity_timeline")
+        report["room_latch_pass"] = bool(start_val.get("room_latch_pass"))
         if not start_val.get("valid"):
-            report["first_boundary"] = (
-                start_val.get("failure_boundary")
-                or f"{INVALID_PRODUCTION_EXPIRATION_TRACE} — PRE_EXPIRATION_SETUP"
+            func_label = str((start_val.get("start_classification") or {}).get("classification") or "")
+            harness_div = classify_harness_start_divergence(
+                result=start_val,
+                audit_reconcile=start_val.get("start_audit_reconcile"),
+                functional_start_label=func_label,
             )
-            report["smallest_correction_boundary"] = start_val.get("start_boundary") or report["first_boundary"]
+            report["harness_start_classification"] = harness_div
+            report["first_boundary"] = harness_div.get("accepted_fail_label") or GATE_B_START_PATH_DIVERGENCE
+            report["smallest_correction_boundary"] = harness_div.get("classification") or report["first_boundary"]
             report["production_skipped"] = True
-            report["gate"] = "B_start_proof_failed"
-            report["production_expiration_trace"] = INVALID_PRODUCTION_EXPIRATION_TRACE
+            report["gate"] = "B_harness_start_failed"
+            report["production_expiration_trace"] = GATE_B_START_PATH_DIVERGENCE
             report["finished_at"] = time.time()
             context.close()
             browser.close()
@@ -369,9 +388,9 @@ def main() -> int:
                 json.dumps(
                     {
                         "first_boundary": report["first_boundary"],
-                        "start_boundary": start_val.get("start_boundary"),
+                        "harness_start": harness_div.get("classification"),
                         "artifact": str(OUT),
-                        "gate": "B_start",
+                        "gate": "B_harness_start",
                     },
                     indent=2,
                 )

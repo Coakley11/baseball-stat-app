@@ -20,20 +20,15 @@ def main() -> int:
     from cloud_streamlit_wake import goto_and_wake
     from p8_boundary_instrumentation import P8_WS_BOUNDARY_INIT_SCRIPT
     from p8_canary_build_gate import git_head_short, local_deploy_pin, poll_live_cloud_sha
-    from p8_production_start_harness import dispatch_start_single_authoritative_click, scrape_stage1_ledger_rows
+    from p8_canonical_production_start import establish_single_solo_live_draft
     from p8_callback_metadata_classify import CONTROL_ENTERED, REG_HOOK_ENTERED, evaluate_case_a_gate_a
-    from p8_diagnostic_setup import ensure_p8_ldr_setup_surface
     from p8_ledger_observability import P8LedgerHarnessCollector, capture_all_ledger_sources
-    from p8_room_latch_ledger_export import filter_latch_ledger_rows, resolve_run_and_session
-    from p8_room_latch_timeline import build_room_state_timeline
-    from p8_room_latch_verify_classify import ACCEPTED_FAIL, VERIFY1, classify_room_latch_verify
+    from p8_room_latch_verify_classify import ACCEPTED_FAIL, VERIFY1
     from playwright.sync_api import sync_playwright
     from playwright_daniel_auth_session import STORAGE_PATH, harness_ready
-    from production_draft_start_authoritative import scrape_authoritative_start_state
     from replay_playwright_daniel_auth_preflight import run_preflight
     from run_case_a_app_shell_gate import case_a_url, scrape_case_a
-    from run_production_stage1_authenticated import ensure_fresh_setup_lobby, production_url
-    from solo_draft_start_harness import ensure_solo_setup_picks_meet_roster, maybe_clear_stale_draft, set_number_via_playwright, SOLO_RADIO_JS, SCAN_SETUP_JS
+    from run_production_stage1_authenticated import production_url
     from stage1_harness_observability import LEDGER_DURABLE_INIT_SCRIPT
     from stage1_parent_observer_probe import HARNESS_TOP_OBSERVER_INIT_SCRIPT
     from live_draft_streamlit_registration_hooks import run_local_case_a_hook_self_test
@@ -109,87 +104,32 @@ def main() -> int:
 
         url = production_url()
         goto_and_wake(page, url, timeout_s=240)
-        ensure_p8_ldr_setup_surface(page, setup_url=url)
-        cleanup = ensure_fresh_setup_lobby(page, max_wait_s=180)
-        report["production_cleanup"] = cleanup
-        setup_scan = page.evaluate(SCAN_SETUP_JS) or {}
-        if not setup_scan.get("soloSelected"):
-            page.evaluate(SOLO_RADIO_JS)
-            page.wait_for_timeout(2000)
-        checkpoints: list[dict] = []
-        maybe_clear_stale_draft(page, checkpoints)
-        set_number_via_playwright(page, "Number of Teams", "2")
-        ensure_solo_setup_picks_meet_roster(page, checkpoints)
-        page.wait_for_timeout(1500)
-        click = dispatch_start_single_authoritative_click(page, checkpoints)
-        click_ts = float(click.get("click_timestamp") or time.time())
-        report["start_click"] = click
-        report["start_click_count"] = 1
-
-        created_rid = ""
-        handler_rid = ""
-        t0 = time.time()
-        last_scrape: dict[str, Any] = {}
-        while time.time() - t0 < 90.0:
-            last_scrape = scrape_authoritative_start_state(page)
-            ledger_peek = scrape_stage1_ledger_rows(page)
-            for r in ledger_peek:
-                if r.get("event") == "production_stage1_start_handler_exited" and r.get("created_room_id"):
-                    handler_rid = str(r.get("created_room_id") or "").upper()
-                if r.get("event") == "production_stage1_room_creation_exited" and r.get("created_room_id"):
-                    created_rid = str(r.get("created_room_id") or "").upper()
-            if handler_rid or created_rid:
-                page.wait_for_timeout(4000)
-                break
-            page.wait_for_timeout(2000)
-
-        ledger_full = scrape_stage1_ledger_rows(page)
-        created = (created_rid or handler_rid).upper()
-        run_id, session_id = resolve_run_and_session(ledger_full, created_room_id=created)
-        report["diagnostic_run_id"] = run_id
-        report["streamlit_session_id"] = session_id
-        report["created_room_id"] = created
-        report["handler_room_id"] = handler_rid
-
-        filtered = filter_latch_ledger_rows(
-            ledger_full,
-            diagnostic_run_id=run_id,
-            streamlit_session_id=session_id,
-            created_room_id=created,
-            click_ts=click_ts,
+        start_result = establish_single_solo_live_draft(
+            page,
+            context,
+            setup_url=url,
+            prior_room_id="",
+            fresh_lobby_cleanup=True,
         )
-        timeline = build_room_state_timeline(filtered, created_room_id=created)
-        report["latch_ledger_export"] = {
-            "row_count_full_scrape": len(ledger_full),
-            "row_count_filtered": len(filtered),
-            "filter": {
-                "diagnostic_run_id": run_id,
-                "streamlit_session_id": session_id,
-                "created_room_id": created,
-                "click_ts": click_ts,
-            },
-            "rows": filtered,
-        }
-        report["room_state_timeline"] = timeline
-
-        final_surface_row = next(
-            (t for t in reversed(timeline) if t.get("operation") == "surface"),
+        report["production_start"] = start_result
+        report["start_click"] = start_result.get("start_click")
+        report["start_click_count"] = start_result.get("click_count")
+        report["diagnostic_run_id"] = start_result.get("diagnostic_run_id")
+        report["streamlit_session_id"] = start_result.get("streamlit_session_id")
+        report["created_room_id"] = start_result.get("room_id")
+        report["handler_room_id"] = start_result.get("room_id")
+        report["latch_ledger_export"] = start_result.get("latch_ledger_export")
+        report["room_state_timeline"] = start_result.get("room_state_timeline")
+        report["final_ui_scrape"] = start_result.get("authoritative_state")
+        report["final_server_surface_decision"] = next(
+            (t for t in reversed(start_result.get("room_state_timeline") or []) if t.get("operation") == "surface"),
             None,
         )
-        last_scrape = scrape_authoritative_start_state(page)
-        report["final_ui_scrape"] = last_scrape
-        report["final_server_surface_decision"] = final_surface_row
-
-        verify = classify_room_latch_verify(
-            timeline=timeline,
-            filtered_ledger=filtered,
-            created_room_id=created,
-            final_surface=final_surface_row,
-            final_scrape=last_scrape,
-        )
+        verify = start_result.get("verify_classification") or {}
         report["verify_classification"] = verify
         report["verify_boundary"] = verify.get("classification")
         report["smallest_supported_correction_boundary"] = verify.get("smallest_supported_correction_boundary")
+        report["identity_timeline"] = start_result.get("identity_timeline")
 
         if verify.get("classification") == VERIFY1:
             report["result"] = "ROOM_LATCH_PASS"

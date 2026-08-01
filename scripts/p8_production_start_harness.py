@@ -371,181 +371,36 @@ def run_gate_b_production_start(
     *,
     prior_room_id: str = "",
     auth_preflight: dict[str, Any] | None = None,
+    browser_context: Any | None = None,
 ) -> dict[str, Any]:
-    """
-    One setup + one start click + state-based proof gate (no duplicate starts).
-    """
-    from cloud_streamlit_wake import all_frames_text
-    from p8_diagnostic_setup import ensure_p8_ldr_setup_surface
-    from production_draft_start_authoritative import scrape_authoritative_start_state
-    from solo_draft_start_harness import (
-        SCAN_SETUP_JS,
-        SOLO_RADIO_JS,
-        checkpoint,
-        ensure_solo_setup_picks_meet_roster,
-        maybe_clear_stale_draft,
-        set_number_via_playwright,
-    )
+    """Delegate to canonical shared start helper (single implementation)."""
+    from p8_canonical_production_start import establish_single_solo_live_draft
 
-    timeline: list[dict[str, Any]] = []
-    checkpoints: list[dict[str, Any]] = []
-    out: dict[str, Any] = {
-        "timeline": timeline,
-        "checkpoints": checkpoints,
-        "start_attempts": 1,
-    }
-
-    ldr = ensure_p8_ldr_setup_surface(page, setup_url=setup_url)
-    out["ldr_surface"] = ldr
-    state = scrape_authoritative_start_state(page)
-    _step(
-        timeline,
-        step="live_draft_page_visible",
-        page=page,
-        state=state,
-        action="ensure_p8_ldr_setup_surface",
-        result="ok" if ldr.get("setup_visible") or ldr.get("live_draft_main_marker") else "fail",
-        first_missing="" if (ldr.get("setup_visible") or ldr.get("live_draft_main_marker")) else "setup_not_visible",
-        extra={"ldr_steps": ldr.get("steps"), "heading": ldr.get("heading")},
-    )
-    if not (ldr.get("setup_visible") or ldr.get("live_draft_main_marker") or state.get("in_progress")):
-        out["screenshot"] = _save_failure_screenshot(page, "start1_surface")
-        out["start_boundary"] = START1
-        out["valid"] = False
-        out["failure_boundary"] = f"{INVALID_PRODUCTION_EXPIRATION_TRACE} — PRE_EXPIRATION_SETUP"
-        return out
-
-    setup_scan = page.evaluate(SCAN_SETUP_JS) or {}
-    if not setup_scan.get("soloSelected"):
-        page.evaluate(SOLO_RADIO_JS)
-        page.wait_for_timeout(2000)
-        setup_scan = page.evaluate(SCAN_SETUP_JS) or {}
-    _step(
-        timeline,
-        step="solo_mode_selected",
-        page=page,
-        state=scrape_authoritative_start_state(page),
-        action="select_solo_radio",
-        result="ok" if setup_scan.get("soloSelected") else "fail",
-        first_missing="" if setup_scan.get("soloSelected") else "solo_not_selected",
-        extra={"radios": setup_scan.get("radios")},
-    )
-
-    maybe_clear_stale_draft(page, checkpoints)
-    set_number_via_playwright(page, "Number of Teams", "2")
-    picks_gate = ensure_solo_setup_picks_meet_roster(page, checkpoints)
-    page.wait_for_timeout(1500)
-    _step(
-        timeline,
-        step="setup_lobby_ready",
-        page=page,
-        state=scrape_authoritative_start_state(page),
-        action="configure_teams_picks",
-        result="ok" if picks_gate.get("picks_ok") else "partial",
-        extra={"picks_gate": picks_gate},
-    )
-
-    if state.get("in_progress") and _countdown_mounted(state):
-        proof = start_proof_from_state(
-            state,
-            {
-                "checks": {
-                    "nonempty_room_id": bool(state.get("room_id")),
-                    "room_in_progress": True,
-                    "pick_index_zero": state.get("pick_index") == 0,
-                    "deadline_exists": bool(state.get("deadline")),
-                    "production_token": bool(state.get("production_token")),
-                }
-            },
-        )
-        if all_start_proof_true(proof):
-            out["valid"] = True
-            out["authoritative_state"] = state
-            out["latched_room_id"] = str(state.get("room_id") or "").upper()
-            out["start_proof"] = proof
-            out["reused_existing_room"] = True
-            return out
-
-    click = dispatch_start_single_authoritative_click(page, checkpoints)
-    click_ts = float(click.get("click_timestamp") or time.time())
-    transport = capture_start_click_transport(page, click_ts=click_ts)
-    out["start_click_transport"] = transport
-    label = START_BUTTON_LABEL
-    _step(
-        timeline,
-        step="start_action_submitted",
-        page=page,
-        state=scrape_authoritative_start_state(page),
-        action=f"click:{label}",
-        result="submitted" if click.get("dom_click_dispatched") else "not_registered",
-        extra={
-            "start_selector": click.get("selector"),
-            "start_label": label,
-            "start_matches": click.get("start_matches"),
-            "dom_click_dispatched": click.get("dom_click_dispatched"),
-            "start_click_count": 1,
-            "bounding_box": click.get("bounding_box"),
-            "click_transport": transport,
-        },
-    )
-
-    proof_wait = wait_for_start_proof(
+    ctx = browser_context
+    if ctx is None:
+        try:
+            ctx = page.context
+        except Exception:
+            ctx = None
+    if ctx is None:
+        return {
+            "valid": False,
+            "failure_boundary": f"{INVALID_PRODUCTION_EXPIRATION_TRACE} — PRE_EXPIRATION_SETUP",
+            "start_boundary": START10,
+            "timeline": [],
+        }
+    result = establish_single_solo_live_draft(
         page,
+        ctx,
+        setup_url=setup_url,
         prior_room_id=prior_room_id,
-        start_click_dispatched=bool(click.get("dom_click_dispatched")),
-        timeline=timeline,
-        max_wait_s=90.0,
+        fresh_lobby_cleanup=True,
     )
-    ledger_rows = scrape_stage1_ledger_rows(page)
-    if any(r.get("event") == "production_global_script_run_canary" for r in ledger_rows):
-        transport["python_rerun_started"] = True
-    out["ledger_rows_after_start"] = ledger_rows
-    out.update(proof_wait)
-    out["start_click"] = click
+    result.setdefault("timeline", [])
+    if not result.get("valid"):
+        from p8_production_start_harness import _save_failure_screenshot
 
-    if proof_wait.get("valid"):
-        from p8_start_boundary_classify import START_PIPELINE_PASS, classify_start_boundary
-
-        out["start_classification"] = classify_start_boundary(
-            ldr_surface=ldr,
-            click_transport={**click, **transport},
-            ledger_rows=ledger_rows,
-            authoritative_state=proof_wait.get("authoritative_state") or {},
-            start_proof=proof_wait.get("start_proof") or {},
-            click_ts=click_ts,
-        )
-        out["start_boundary"] = START_PIPELINE_PASS
-        out["setup_gate"] = "PASS_POSITIVE_START_PROOF"
-        return out
-
-    state_f = proof_wait.get("authoritative_state") or {}
-    grade_f = proof_wait.get("authoritative_grade") or {}
-    proof_f = proof_wait.get("start_proof") or {}
-    from p8_start_boundary_classify import classify_start_boundary
-
-    classified = classify_start_boundary(
-        ldr_surface=ldr,
-        click_transport={**click, **transport},
-        ledger_rows=ledger_rows,
-        authoritative_state=state_f,
-        start_proof=proof_f,
-        click_ts=click_ts,
-    )
-    out["start_classification"] = classified
-    boundary = str(classified.get("classification") or START10)
-    out["start_boundary"] = boundary
-    out["valid"] = False
-    out["failure_boundary"] = f"{INVALID_PRODUCTION_EXPIRATION_TRACE} — PRE_EXPIRATION_SETUP"
-    out["screenshot"] = _save_failure_screenshot(page, boundary.split(" ")[0].lower())
-    _step(
-        timeline,
-        step="start_proof_failed",
-        page=page,
-        state=state_f,
-        grade=grade_f,
-        action="gate",
-        result="fail",
-        first_missing=first_missing_start_proof(proof_f),
-        extra={"start_boundary": boundary},
-    )
-    return out
+        label = str(result.get("start_boundary") or "harness_start_fail").split(" ")[0].lower()
+        result["screenshot"] = _save_failure_screenshot(page, label)
+        result["failure_boundary"] = f"{INVALID_PRODUCTION_EXPIRATION_TRACE} — PRE_EXPIRATION_SETUP"
+    return result
