@@ -377,6 +377,76 @@ def commit_has_callback_observability(sha: str) -> dict[str, Any]:
 CALLBACK_METADATA_OBS_ANCHOR_SHA = "f58f473"
 METADATA_READ_FIX_SHA = "39b9ef4"
 REGISTRATION_BOUNDARY_OBS_SHA = "f7ce65c"
+REGISTRATION_HOOK_OBS_SHA = "pending"
+
+
+def commit_has_registration_hook_observability(sha: str) -> dict[str, Any]:
+    sha = str(sha or "").strip()[:7]
+    out: dict[str, Any] = {
+        "sha": sha,
+        "registration_hooks_module": False,
+        "registration_hook_entered_event": False,
+        "registration_hooks_installed_event": False,
+        "multi_boundary_patch": False,
+        "local_case_a_self_test": False,
+        "ok": False,
+    }
+    if not sha:
+        return out
+    hooks_path = "live_draft_streamlit_registration_hooks.py"
+    self_test = "scripts/registration_hook_case_a_self_test.py"
+
+    def _cat(path: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "cat-file", "-e", f"{sha}:{path}"],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _grep(pattern: str, *paths: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "grep", "-q", pattern, sha, "--", *paths],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            return True
+        except Exception:
+            return False
+
+    out["registration_hooks_module"] = _cat(hooks_path)
+    out["registration_hook_entered_event"] = _grep(
+        "production_stage1_registration_hook_entered", hooks_path
+    )
+    out["registration_hooks_installed_event"] = _grep(
+        "production_stage1_registration_hooks_installed", hooks_path
+    )
+    out["multi_boundary_patch"] = _grep("install_registration_hooks", hooks_path) and _grep(
+        "register_widget_from_metadata", hooks_path
+    )
+    out["local_case_a_self_test"] = _cat(self_test) or _grep(
+        "run_local_case_a_hook_self_test", hooks_path
+    )
+    out["ok"] = all(
+        [
+            out["registration_hooks_module"],
+            out["registration_hook_entered_event"],
+            out["registration_hooks_installed_event"],
+            out["multi_boundary_patch"],
+            out["local_case_a_self_test"],
+        ]
+    )
+    return out
+
+
 CALLBACK_METADATA_OBS_GATE_SHA = REGISTRATION_BOUNDARY_OBS_SHA
 
 
@@ -426,7 +496,6 @@ def commit_has_registration_boundary_observability(sha: str) -> dict[str, Any]:
         ]
     )
     return out
-CALLBACK_METADATA_OBS_GATE_SHA = METADATA_READ_FIX_SHA
 
 
 def commit_has_metadata_read_fix(sha: str) -> dict[str, Any]:
@@ -549,6 +618,7 @@ def evaluate_cloud_callback_metadata_observability_readiness(
     impl = commit_has_callback_metadata_observability(runtime) if runtime else {}
     read_fix = commit_has_metadata_read_fix(runtime) if runtime else {}
     reg_boundary = commit_has_registration_boundary_observability(runtime) if runtime else {}
+    reg_hooks = commit_has_registration_hook_observability(runtime) if runtime else {}
     base = evaluate_cloud_callback_observability_readiness(
         runtime_git_head_short=runtime_git_head_short,
         runtime_git_head_full=runtime_git_head_full,
@@ -576,6 +646,17 @@ def evaluate_cloud_callback_metadata_observability_readiness(
                 or git_sha_is_ancestor(REGISTRATION_BOUNDARY_OBS_SHA, runtime)
             )
         )
+    checks["registration_hook_observability_at_runtime_git"] = bool(reg_hooks.get("ok"))
+    if REGISTRATION_HOOK_OBS_SHA != "pending":
+        checks["registration_hook_observability_at_runtime_git"] = checks[
+            "registration_hook_observability_at_runtime_git"
+        ] and bool(
+            runtime
+            and (
+                runtime == git_short_sha(REGISTRATION_HOOK_OBS_SHA)
+                or git_sha_is_ancestor(REGISTRATION_HOOK_OBS_SHA, runtime)
+            )
+        )
     ok = all(checks.values())
     return {
         **base,
@@ -583,8 +664,10 @@ def evaluate_cloud_callback_metadata_observability_readiness(
         "callback_metadata_implementation_at_runtime_git": impl,
         "metadata_read_fix_at_runtime_git": read_fix,
         "registration_boundary_observability_at_runtime_git": reg_boundary,
+        "registration_hook_observability_at_runtime_git": reg_hooks,
         "metadata_read_fix_implementation_sha": git_short_sha(METADATA_READ_FIX_SHA),
         "registration_boundary_implementation_sha": git_short_sha(REGISTRATION_BOUNDARY_OBS_SHA),
+        "registration_hook_implementation_sha": git_short_sha(REGISTRATION_HOOK_OBS_SHA),
         "ok": ok,
     }
 

@@ -38,6 +38,21 @@ def solo_component_diag_enabled(st: Any | None, session: dict[str, Any]) -> bool
     return bool(session.get(SOLO_MOUNT_DIAG_KEY))
 
 
+def _install_stage1_registration_and_dispatch_probes(st: Any | None, session: dict[str, Any]) -> None:
+    try:
+        from live_draft_streamlit_registration_hooks import install_registration_hooks
+
+        install_registration_hooks(st, session)
+    except ImportError:
+        pass
+    try:
+        from live_draft_streamlit_widget_metadata_diag import install_streamlit_callback_dispatch_probe
+
+        install_streamlit_callback_dispatch_probe(st, session)
+    except ImportError:
+        pass
+
+
 def bootstrap_solo_component_diag(st: Any | None, session: dict[str, Any]) -> None:
     """Read ?solo_component_diag=1 and ?solo_diag_timer=10 from URL once per session."""
     try:
@@ -48,6 +63,7 @@ def bootstrap_solo_component_diag(st: Any | None, session: dict[str, Any]) -> No
             timer_raw = _qp_get(st, "solo_diag_timer") if st is not None else ""
             if timer_raw.isdigit():
                 session[SOLO_DIAG_TIMER_SESSION_KEY] = max(5, min(60, int(timer_raw)))
+            _install_stage1_registration_and_dispatch_probes(st, session)
             return
     except ImportError:
         pass
@@ -56,18 +72,7 @@ def bootstrap_solo_component_diag(st: Any | None, session: dict[str, Any]) -> No
     timer_raw = _qp_get(st, "solo_diag_timer") if st is not None else ""
     if timer_raw.isdigit():
         session[SOLO_DIAG_TIMER_SESSION_KEY] = max(5, min(60, int(timer_raw)))
-    try:
-        from live_draft_streamlit_widget_metadata_diag import install_streamlit_callback_dispatch_probe
-
-        install_streamlit_callback_dispatch_probe(st, session)
-    except ImportError:
-        pass
-    try:
-        from live_draft_streamlit_widget_metadata_diag import install_streamlit_register_widget_probe
-
-        install_streamlit_register_widget_probe(st, session)
-    except ImportError:
-        pass
+    _install_stage1_registration_and_dispatch_probes(st, session)
 
 
 def solo_diag_timer_seconds(session: dict[str, Any], room: dict[str, Any] | None = None) -> int | None:

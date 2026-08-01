@@ -19,7 +19,12 @@ SURFACE_PRODUCTION = "production"
 
 INVALID_INTERNAL_METADATA_OBSERVABILITY = "INVALID_INTERNAL_METADATA_OBSERVABILITY"
 INVALID_REGISTRATION_BOUNDARY_OBSERVABILITY = "INVALID_REGISTRATION_BOUNDARY_OBSERVABILITY"
+INVALID_CLOUD_REGISTRATION_HOOK_INSTALLATION = "INVALID_CLOUD_REGISTRATION_HOOK_INSTALLATION"
 CONTROL_PROBE_INVALID = "CONTROL_PROBE_INVALID_FOR_METADATA_CLASSIFICATION"
+
+REG_HOOK_ENTERED = "production_stage1_registration_hook_entered"
+REG_HOOK_EXITED = "production_stage1_registration_hook_exited"
+HOOKS_INSTALLED = "production_stage1_registration_hooks_installed"
 
 
 def _case_a_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -31,6 +36,111 @@ def _case_a_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for r in rows
         if str(r.get("widget_key") or "").startswith("minimal_wake_repro_")
     ]
+
+
+def evaluate_case_a_gate_a(
+    *,
+    peak_rows: list[dict[str, Any]],
+    case_a_delivery_proven: bool,
+    control_entered: list[dict[str, Any]],
+    control_exited: list[dict[str, Any]],
+    local_hook_self_test_ok: bool = True,
+) -> dict[str, Any]:
+    """Gate A: hooks + registration evidence + dispatch + callbacks."""
+    authority = evaluate_case_a_dispatch_authority(
+        peak_rows=peak_rows,
+        case_a_delivery_proven=case_a_delivery_proven,
+        control_entered=control_entered,
+        control_exited=control_exited,
+    )
+    out: dict[str, Any] = {
+        **authority,
+        "gate": "A",
+        "authoritative": False,
+        "local_hook_self_test_ok": local_hook_self_test_ok,
+    }
+    hooks_installed = _rows(peak_rows, HOOKS_INSTALLED)
+    hook_entered = _case_a_rows(_rows(peak_rows, REG_HOOK_ENTERED))
+    if not hook_entered:
+        hook_entered = _case_a_rows(_rows(peak_rows, METADATA_AT_REGISTRATION))
+    reg = hook_entered[-1] if hook_entered else {}
+    gate_checks = dict(authority.get("checks") or {})
+    gate_checks["hooks_installed_event"] = bool(hooks_installed)
+    gate_checks["registration_hook_entered"] = bool(hook_entered)
+    gate_checks["surface_case_a_control"] = str(reg.get("diagnostic_surface") or "") == SURFACE_CASE_A_CONTROL or bool(
+        authority.get("checks", {}).get("surface_case_a_control")
+    )
+    gate_checks["registration_callback_present"] = bool(
+        reg.get("metadata_callback_present") or reg.get("callback_registered_in_metadata")
+    )
+    out["checks"] = gate_checks
+    dispatch_ok = bool(authority.get("dispatch_authoritative"))
+    reg_ok = gate_checks["registration_hook_entered"] and gate_checks["registration_callback_present"]
+    hooks_ok = gate_checks["hooks_installed_event"]
+    out["authoritative"] = dispatch_ok and reg_ok and hooks_ok
+    out["ok"] = out["authoritative"]
+    if not out["authoritative"]:
+        if local_hook_self_test_ok and dispatch_ok and not hook_entered:
+            out["failure_boundary"] = INVALID_CLOUD_REGISTRATION_HOOK_INSTALLATION
+            out["reason"] = "local_self_test_passed_but_no_cloud_registration_hook_events"
+        elif not hook_entered:
+            out["failure_boundary"] = INVALID_REGISTRATION_BOUNDARY_OBSERVABILITY
+            out["reason"] = "no_registration_hook_events"
+        else:
+            out["failure_boundary"] = authority.get("failure_boundary") or INVALID_INTERNAL_METADATA_OBSERVABILITY
+            failed = [k for k, v in gate_checks.items() if not v]
+            out["reason"] = f"gate_a_failed:{','.join(failed)}"
+    out["registration_hook_reference"] = reg
+    out["hooks_installed_reference"] = hooks_installed[-1] if hooks_installed else {}
+    return out
+
+
+def evaluate_case_a_dispatch_authority(
+    *,
+    peak_rows: list[dict[str, Any]],
+    case_a_delivery_proven: bool,
+    control_entered: list[dict[str, Any]],
+    control_exited: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Dispatch + callback path (authoritative even if post-declaration scan fails)."""
+    out: dict[str, Any] = {
+        "dispatch_authoritative": False,
+        "failure_boundary": INVALID_INTERNAL_METADATA_OBSERVABILITY,
+        "checks": {},
+    }
+    if not case_a_delivery_proven or not control_entered:
+        out["checks"]["case_a_python_delivery_proven"] = False
+        out["reason"] = "case_a_callbacks_or_delivery_not_proven"
+        return out
+    dispatch_rows = _case_a_rows(_rows(peak_rows, METADATA_AT_DISPATCH)) or _case_a_rows(
+        _rows(peak_rows, DISPATCH)
+    )
+    last_enter = control_entered[-1]
+    wkey = str(last_enter.get("widget_key") or "")
+    expected = str(last_enter.get("expected_token") or "")
+    disp_for = [r for r in dispatch_rows if r.get("widget_key") == wkey] or dispatch_rows
+    dispatch = disp_for[-1] if disp_for else {}
+    checks = {
+        "authoritative_control_widget_id": bool(
+            str(dispatch.get("authoritative_widget_id") or dispatch.get("widget_id") or "")
+        ),
+        "exact_new_value": bool(expected)
+        and expected
+        in str(dispatch.get("new_value") or dispatch.get("new_value_repr") or last_enter.get("session_state_value_repr") or ""),
+        "widget_changed_true": dispatch.get("widget_changed_result") is True,
+        "dispatch_callback_present": bool(
+            dispatch.get("metadata_callback_present") or dispatch.get("callback_present")
+        ),
+        "callback_selected_true": dispatch.get("callback_selected") is True,
+        "control_callback_entered": True,
+        "control_callback_exited": bool(control_exited),
+        "python_delivery_proven": True,
+        "surface_case_a_control": str(dispatch.get("diagnostic_surface") or "") == SURFACE_CASE_A_CONTROL,
+    }
+    out["checks"] = checks
+    out["dispatch_authoritative"] = all(checks.values())
+    out["dispatch_reference"] = dispatch
+    return out
 
 
 def evaluate_case_a_metadata_authority(
@@ -229,10 +339,17 @@ def classify_callback_metadata_boundary(
     )
     prod_reg_meta = [
         r
-        for r in _rows(filtered_rows, METADATA_AT_REGISTRATION)
+        for r in _rows(filtered_rows, REG_HOOK_ENTERED)
         if str(r.get("diagnostic_surface") or "") == SURFACE_PRODUCTION
         and (not production_widget_key or r.get("widget_key") == production_widget_key)
     ]
+    if not prod_reg_meta:
+        prod_reg_meta = [
+            r
+            for r in _rows(filtered_rows, METADATA_AT_REGISTRATION)
+            if str(r.get("diagnostic_surface") or "") == SURFACE_PRODUCTION
+            and (not production_widget_key or r.get("widget_key") == production_widget_key)
+        ]
     prod_meta_rows = prod_reg_meta or [
         r
         for r in _rows(filtered_rows, INTERNAL_META)
@@ -272,6 +389,10 @@ def classify_callback_metadata_boundary(
         last_meta.get("metadata_callback_present")
         or last_meta.get("callback_registered_in_metadata")
     )
+    dispatch_has_callback = bool(
+        last_dispatch.get("metadata_callback_present")
+        or last_dispatch.get("callback_present")
+    )
     hist: list[dict[str, Any]] = []
     wid = str(last_meta.get("authoritative_widget_id") or "")
     for r in prod_meta_rows:
@@ -300,7 +421,7 @@ def classify_callback_metadata_boundary(
     if control_entered and prod_meta_rows:
         pass  # Case A authority already validated before production classification.
 
-    if app_passed and not meta_has:
+    if app_passed and not meta_has and not dispatch_has_callback:
         report["classification"] = "CM1 — CALLBACK_ARGUMENT_NOT_STORED_AT_REGISTRATION"
         report["rationale"] = "Application passed on_change but WidgetMetadata has no callback/callbacks."
         report["architectural_options"] = [

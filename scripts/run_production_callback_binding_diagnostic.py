@@ -57,17 +57,22 @@ def main() -> int:
         BACKEND_STATE,
         CALLBACK_DISPATCH_EVALUATED,
         CONTROL_PROBE_INVALID,
+        HOOKS_INSTALLED,
         INTERNAL_META,
+        INVALID_CLOUD_REGISTRATION_HOOK_INSTALLATION,
         INVALID_INTERNAL_METADATA_OBSERVABILITY,
+        INVALID_REGISTRATION_BOUNDARY_OBSERVABILITY,
         METADATA_AT_DISPATCH,
         METADATA_AT_REGISTRATION,
+        REG_HOOK_ENTERED,
+        REG_HOOK_EXITED,
         classify_callback_metadata_boundary,
-        evaluate_case_a_metadata_authority,
+        evaluate_case_a_gate_a,
     )
     from p8_canary_build_gate import (
         CALLBACK_METADATA_OBS_ANCHOR_SHA,
         CALLBACK_METADATA_OBS_GATE_SHA,
-        METADATA_READ_FIX_SHA,
+        REGISTRATION_HOOK_OBS_SHA,
         REGISTRATION_BOUNDARY_OBS_SHA,
         CALLBACK_OBS_ANCHOR_SHA,
         git_head_short,
@@ -107,18 +112,35 @@ def main() -> int:
         _write_abort({"reason": "auth_preflight_failed", "preflight": pre}, reason="auth_preflight_failed")
         return 1
 
+    from live_draft_streamlit_registration_hooks import run_local_case_a_hook_self_test
+
+    hook_self_test = run_local_case_a_hook_self_test()
+    if not hook_self_test.get("ok"):
+        _write_abort(
+            {
+                "reason": "registration_hook_case_a_self_test_failed",
+                "hook_self_test": hook_self_test,
+            },
+            reason="registration_hook_case_a_self_test_failed",
+            boundary=INVALID_REGISTRATION_BOUNDARY_OBSERVABILITY,
+        )
+        return 1
+
     pin = local_deploy_pin()
     report: dict[str, Any] = {
         "started_at": time.time(),
-        "accepted_prior_outcome": "CB1 — PRODUCTION_ON_CHANGE_NEVER_INVOKED",
-        "prior_metadata_run_verdict": CONTROL_PROBE_INVALID,
-        "prior_invalid_internal_observability_sha": "39b9ef4",
+        "accepted_prior_invalid_registration_boundary": "INVALID_REGISTRATION_BOUNDARY_OBSERVABILITY @ f7ce65c",
+        "accepted_cb1": "CB1 — PRODUCTION_ON_CHANGE_NEVER_INVOKED",
+        "cm1_cm10_from_prior_run": "not_accepted",
         "deploy_pin": pin,
         "observability_implementation_sha": CALLBACK_OBS_ANCHOR_SHA,
+        "prior_invalid_registration_boundary_sha": "f7ce65c",
+        "registration_hook_observability_sha": REGISTRATION_HOOK_OBS_SHA,
         "metadata_fix_implementation_sha": REGISTRATION_BOUNDARY_OBS_SHA,
         "deploy_trigger_sha": CALLBACK_METADATA_OBS_GATE_SHA,
         "git_head": git_head_short(),
-        "mode": "callback_metadata_diagnostic_v3",
+        "mode": "callback_metadata_diagnostic_v4",
+        "local_registration_hook_self_test": hook_self_test,
         "artifact_path": str(OUT),
         "artifact_txt_path": str(OUT_TXT),
         "legacy_artifact_path": str(LEGACY_OUT),
@@ -180,19 +202,29 @@ def main() -> int:
         case_dispatch = [r for r in peak if r.get("event") == CALLBACK_DISPATCH_EVALUATED]
         case_backend = [r for r in peak if r.get("event") == BACKEND_STATE]
         case_meta = [r for r in peak if r.get("event") == INTERNAL_META]
+        hooks_installed = [r for r in peak if r.get("event") == HOOKS_INSTALLED]
+        reg_hook_entered = [r for r in peak if r.get("event") == REG_HOOK_ENTERED]
+        reg_hook_exited = [r for r in peak if r.get("event") == REG_HOOK_EXITED]
         delivery_proven = case_a_ok and bool(control_entered)
-        case_authority = evaluate_case_a_metadata_authority(
+        case_gate_a = evaluate_case_a_gate_a(
             peak_rows=peak,
             case_a_delivery_proven=delivery_proven,
             control_entered=control_entered,
             control_exited=control_exited,
+            local_hook_self_test_ok=bool(hook_self_test.get("ok")),
         )
         from p8_callback_metadata_diagnostic_report import summarize_internal_lane
 
         report["case_a"] = {
             "ok": case_a_ok,
             "scrape": snap,
+            "registration_hooks_installed_timeline": hooks_installed,
+            "registration_hook_entered_timeline": reg_hook_entered,
+            "registration_hook_exited_timeline": reg_hook_exited,
             "callback_registration_timeline": [r for r in peak if r.get("event") == REGISTRATION],
+            "legacy_metadata_at_registration_timeline": [
+                r for r in peak if r.get("event") == METADATA_AT_REGISTRATION
+            ],
             "internal_metadata_timeline": case_meta,
             "dispatch_timeline": case_dispatch,
             "backend_state_timeline": case_backend,
@@ -200,7 +232,11 @@ def main() -> int:
             "control_callback_exited_timeline": control_exited,
             "control_delivery_proven": delivery_proven,
         }
-        report["case_a_metadata_authority"] = case_authority
+        report["case_a_gate_a"] = case_gate_a
+        report["runtime_registration_map_paths"] = {
+            "json": "data/p8_streamlit_registration_runtime_map.json",
+            "txt": "data/p8_streamlit_registration_runtime_map.txt",
+        }
         report["case_a_internal_timeline_summary"] = {
             "metadata": summarize_internal_lane(
                 [r for r in case_meta if str(r.get("diagnostic_surface") or "") == "case_a"]
@@ -211,10 +247,15 @@ def main() -> int:
             "backend": summarize_internal_lane(case_backend, label="case_a_backend"),
         }
 
-        if not case_authority.get("authoritative"):
-            report["first_boundary"] = case_authority.get("failure_boundary") or INVALID_INTERNAL_METADATA_OBSERVABILITY
-            report["smallest_correction_boundary"] = INVALID_INTERNAL_METADATA_OBSERVABILITY
+        if not case_gate_a.get("authoritative"):
+            boundary = (
+                case_gate_a.get("failure_boundary")
+                or INVALID_INTERNAL_METADATA_OBSERVABILITY
+            )
+            report["first_boundary"] = boundary
+            report["smallest_correction_boundary"] = boundary
             report["production_skipped"] = True
+            report["gate"] = "A_failed"
             report["finished_at"] = time.time()
             context.close()
             browser.close()
@@ -222,14 +263,16 @@ def main() -> int:
             print(
                 json.dumps(
                     {
-                        "first_boundary": INVALID_INTERNAL_METADATA_OBSERVABILITY,
+                        "first_boundary": boundary,
                         "artifact": str(OUT),
+                        "gate": "A",
                     },
                     indent=2,
                 )
             )
             return 1
 
+        report["gate_a_passed"] = True
         url = production_url()
         goto_and_wake(page, url, timeout_s=240)
         page.wait_for_timeout(15000)
@@ -294,9 +337,13 @@ def main() -> int:
                     break
         prod_entered = [r for r in rows if r.get("event") == PROD_ENTERED]
         prod_exited = [r for r in rows if r.get("event") == PROD_EXITED]
+        prod_reg_hooks = [r for r in rows if r.get("event") == REG_HOOK_ENTERED]
+        prod_reg_hooks_exit = [r for r in rows if r.get("event") == REG_HOOK_EXITED]
         regs = [r for r in rows if r.get("event") == REGISTRATION]
         entry = prod_entered[-1] if prod_entered else {}
         exit_row = prod_exited[-1] if prod_exited else {}
+        report["production_registration_hook_timeline"] = prod_reg_hooks
+        report["production_registration_hook_exit_timeline"] = prod_reg_hooks_exit
         report["production_callback_registration_timeline"] = regs
         report["production_internal_metadata_timeline"] = [r for r in rows if r.get("event") == INTERNAL_META]
         report["production_backend_state_timeline"] = [r for r in rows if r.get("event") == BACKEND_STATE]
