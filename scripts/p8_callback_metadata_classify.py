@@ -7,6 +7,7 @@ from typing import Any
 INTERNAL_META = "production_stage1_internal_widget_metadata_registered"
 BACKEND_STATE = "production_stage1_backend_widget_state_after_backmsg"
 DISPATCH = "production_stage1_callback_dispatch_evaluated"
+CALLBACK_DISPATCH_EVALUATED = DISPATCH
 REGISTRATION = "production_stage1_callback_registration"
 PROD_ENTERED = "production_stage1_prod_on_change_entered"
 CONTROL_ENTERED = "production_stage1_control_on_change_entered"
