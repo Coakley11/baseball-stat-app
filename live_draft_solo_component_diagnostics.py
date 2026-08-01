@@ -56,6 +56,12 @@ def bootstrap_solo_component_diag(st: Any | None, session: dict[str, Any]) -> No
     timer_raw = _qp_get(st, "solo_diag_timer") if st is not None else ""
     if timer_raw.isdigit():
         session[SOLO_DIAG_TIMER_SESSION_KEY] = max(5, min(60, int(timer_raw)))
+    try:
+        from live_draft_streamlit_widget_metadata_diag import install_streamlit_callback_dispatch_probe
+
+        install_streamlit_callback_dispatch_probe(st, session)
+    except ImportError:
+        pass
 
 
 def solo_diag_timer_seconds(session: dict[str, Any], room: dict[str, Any] | None = None) -> int | None:

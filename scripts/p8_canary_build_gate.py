@@ -374,6 +374,106 @@ def commit_has_callback_observability(sha: str) -> dict[str, Any]:
     return out
 
 
+CALLBACK_METADATA_OBS_ANCHOR_SHA = "pending"
+CALLBACK_METADATA_OBS_GATE_SHA = "pending"
+
+
+def commit_has_callback_metadata_observability(sha: str) -> dict[str, Any]:
+    sha = str(sha or "").strip()[:7]
+    out: dict[str, Any] = {
+        "sha": sha,
+        "file_widget_metadata_diag_py": False,
+        "internal_metadata_registered_event": False,
+        "callback_dispatch_evaluated_event": False,
+        "metadata_callback_present_field": False,
+        "ok": False,
+    }
+    if not sha:
+        return out
+
+    def _cat(path: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "cat-file", "-e", f"{sha}:{path}"],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _grep(pattern: str, *paths: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "grep", "-q", pattern, sha, "--", *paths],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            return True
+        except Exception:
+            return False
+
+    path = "live_draft_streamlit_widget_metadata_diag.py"
+    out["file_widget_metadata_diag_py"] = _cat(path)
+    out["internal_metadata_registered_event"] = _grep(
+        "production_stage1_internal_widget_metadata_registered",
+        path,
+    )
+    out["callback_dispatch_evaluated_event"] = _grep(
+        "production_stage1_callback_dispatch_evaluated",
+        path,
+    )
+    out["metadata_callback_present_field"] = _grep(
+        "callback_registered_in_metadata",
+        "live_draft_prod_on_change_observability.py",
+    )
+    out["ok"] = all(
+        [
+            out["file_widget_metadata_diag_py"],
+            out["internal_metadata_registered_event"],
+            out["callback_dispatch_evaluated_event"],
+            out["metadata_callback_present_field"],
+        ]
+    )
+    return out
+
+
+def evaluate_cloud_callback_metadata_observability_readiness(
+    *,
+    runtime_git_head_short: str,
+    runtime_git_head_full: str,
+    marker_sha: str,
+    marker_build: str,
+    deploy_pin: str | None = None,
+) -> dict[str, Any]:
+    pin = git_short_sha(deploy_pin or local_deploy_pin())
+    runtime = git_short_sha(runtime_git_head_full or runtime_git_head_short)
+    if not runtime or runtime == pin and not runtime_git_head_full:
+        runtime = git_short_sha(runtime_git_head_short)
+    expected_build = expected_build_label_for_pin(pin)
+    impl = commit_has_callback_metadata_observability(runtime) if runtime else {}
+    base = evaluate_cloud_callback_observability_readiness(
+        runtime_git_head_short=runtime_git_head_short,
+        runtime_git_head_full=runtime_git_head_full,
+        marker_sha=marker_sha,
+        marker_build=marker_build,
+        deploy_pin=deploy_pin,
+    )
+    checks = dict(base.get("checks") or {})
+    checks["callback_metadata_observability_at_runtime_git"] = bool(impl.get("ok"))
+    ok = all(checks.values())
+    return {
+        **base,
+        "checks": checks,
+        "callback_metadata_implementation_at_runtime_git": impl,
+        "ok": ok,
+    }
+
+
 def resolve_runtime_git_short_from_probe(probe: dict[str, str]) -> str:
     full = str(probe.get("runtime_git_head") or "").strip().lower()
     if full and not full.startswith("error:"):
@@ -722,6 +822,7 @@ def poll_live_cloud_sha(
     wait_for_deploy_pin: bool = False,
     wait_for_binding_readiness: bool = False,
     wait_for_callback_observability: bool = False,
+    wait_for_callback_metadata_observability: bool = False,
 ) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
     from playwright.sync_api import sync_playwright
@@ -743,11 +844,13 @@ def poll_live_cloud_sha(
         "implementation_at_live_sha": {},
         "binding_readiness": {},
         "callback_observability_readiness": {},
+        "callback_metadata_observability_readiness": {},
         "ok": False,
     }
     pin = local_deploy_pin()
     wait_binding = wait_for_binding_readiness or wait_for_deploy_pin
-    wait_callback_obs = wait_for_callback_observability
+    wait_callback_obs = wait_for_callback_observability or wait_for_callback_metadata_observability
+    wait_metadata_obs = wait_for_callback_metadata_observability
 
     for i in range(max_attempts):
         row: dict[str, Any] = {"attempt": i, "ts": time.time()}
@@ -790,16 +893,31 @@ def poll_live_cloud_sha(
                     marker_build=build,
                     deploy_pin=pin,
                 )
+                meta_obs_readiness = evaluate_cloud_callback_metadata_observability_readiness(
+                    runtime_git_head_short=runtime_short,
+                    runtime_git_head_full=runtime_full,
+                    marker_sha=runtime_dom.get("marker_sha") or "",
+                    marker_build=build,
+                    deploy_pin=pin,
+                )
                 row["callback_observability_readiness"] = obs_readiness
+                row["callback_metadata_observability_readiness"] = meta_obs_readiness
                 report["attempts"].append(row)
                 report["live_sha"] = runtime_short or sha
                 report["live_build"] = build
                 report["binding_readiness"] = readiness
-                report["callback_observability_readiness"] = obs_readiness
-                report["implementation_at_live_sha"] = obs_readiness.get("implementation_at_runtime_git") or readiness.get("implementation_at_runtime_git") or impl
+                report["callback_observability_readiness"] = meta_obs_readiness if wait_metadata_obs else obs_readiness
+                report["callback_metadata_observability_readiness"] = meta_obs_readiness
+                report["implementation_at_live_sha"] = (
+                    meta_obs_readiness.get("callback_metadata_implementation_at_runtime_git")
+                    or obs_readiness.get("implementation_at_runtime_git")
+                    or readiness.get("implementation_at_runtime_git")
+                    or impl
+                )
                 browser.close()
                 if wait_callback_obs:
-                    if not obs_readiness.get("ok"):
+                    ready = meta_obs_readiness if wait_metadata_obs else obs_readiness
+                    if not ready.get("ok"):
                         time.sleep(sleep_s)
                         continue
                     report["ok"] = True

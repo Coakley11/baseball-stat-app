@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
-OUT = ROOT / "data" / "production_callback_binding_diagnostic.json"
+OUT = ROOT / "data" / "production_callback_metadata_diagnostic.json"
+LEGACY_OUT = ROOT / "data" / "production_callback_binding_diagnostic.json"
 LOG = ROOT / "data" / "production_callback_binding_diagnostic_run.out"
 PRODUCTION_WIDGET_KEY = "solo_countdown_wake_solo_persistent"
 INVALID_OBS = "INVALID_OBSERVABILITY_NOT_DEPLOYED"
@@ -37,7 +38,15 @@ def main() -> int:
         REGISTRATION,
         classify_callback_boundary,
     )
+    from p8_callback_metadata_classify import (
+        BACKEND_STATE,
+        CALLBACK_DISPATCH_EVALUATED,
+        INTERNAL_META,
+        classify_callback_metadata_boundary,
+    )
     from p8_canary_build_gate import (
+        CALLBACK_METADATA_OBS_ANCHOR_SHA,
+        CALLBACK_METADATA_OBS_GATE_SHA,
         CALLBACK_OBS_ANCHOR_SHA,
         CALLBACK_OBS_GATE_SHA,
         git_head_short,
@@ -80,14 +89,16 @@ def main() -> int:
     pin = local_deploy_pin()
     report: dict[str, Any] = {
         "started_at": time.time(),
-        "accepted_prior_outcome": "VALID_CORRECTED_BUILD_FAILURE",
+        "accepted_prior_outcome": "CB1 — PRODUCTION_ON_CHANGE_NEVER_INVOKED",
         "prior_abort": INVALID_OBS,
         "deploy_pin": pin,
         "observability_implementation_sha": CALLBACK_OBS_ANCHOR_SHA,
-        "deploy_trigger_sha": CALLBACK_OBS_GATE_SHA,
+        "callback_metadata_observability_sha": CALLBACK_METADATA_OBS_ANCHOR_SHA,
+        "deploy_trigger_sha": CALLBACK_METADATA_OBS_GATE_SHA,
         "git_head": git_head_short(),
-        "mode": "callback_binding_diagnostic",
+        "mode": "callback_metadata_diagnostic",
         "artifact_path": str(OUT),
+        "legacy_artifact_path": str(LEGACY_OUT),
         "log_path": str(LOG),
     }
 
@@ -95,9 +106,9 @@ def main() -> int:
         max_attempts=48,
         sleep_s=20.0,
         require_canary_impl=False,
-        wait_for_callback_observability=True,
+        wait_for_callback_metadata_observability=True,
     )
-    obs = poll.get("callback_observability_readiness") or {}
+    obs = poll.get("callback_metadata_observability_readiness") or poll.get("callback_observability_readiness") or {}
     report["observability_deploy_poll"] = poll
     report["cloud_callback_observability_readiness"] = obs
     report["live_sha"] = obs.get("runtime_git_head_short") or poll.get("live_sha")
@@ -146,6 +157,7 @@ def main() -> int:
             "ok": case_a_ok,
             "scrape": snap,
             "callback_registration_timeline": [r for r in peak if r.get("event") == REGISTRATION],
+            "internal_metadata_timeline": [r for r in peak if r.get("event") == INTERNAL_META],
             "control_callback_entered_timeline": control_entered,
             "control_callback_exited_timeline": control_exited,
             "control_delivery_proven": case_a_ok and bool(control_entered),
@@ -219,6 +231,9 @@ def main() -> int:
         entry = prod_entered[-1] if prod_entered else {}
         exit_row = prod_exited[-1] if prod_exited else {}
         report["production_callback_registration_timeline"] = regs
+        report["production_internal_metadata_timeline"] = [r for r in rows if r.get("event") == INTERNAL_META]
+        report["production_backend_state_timeline"] = [r for r in rows if r.get("event") == BACKEND_STATE]
+        report["production_dispatch_timeline"] = [r for r in rows if r.get("event") == CALLBACK_DISPATCH_EVALUATED]
         report["production_callback_timeline"] = {
             "registrations": regs,
             "prod_entered": prod_entered,
@@ -240,20 +255,30 @@ def main() -> int:
         report["direct_component_return"] = direct_return
         report["exceptions"] = str(exit_row.get("exception_status") or "") or None
 
-        classification = classify_callback_boundary(
+        cb_classification = classify_callback_boundary(
             filtered_rows=rows,
             exact_token=token_sent,
             outbound_widget_id=outbound_id,
         )
-        report["first_boundary"] = classification.get("classification")
-        report["classification_detail"] = classification
-        report["smallest_correction_boundary"] = classification.get("classification")
+        cm_classification = classify_callback_metadata_boundary(
+            filtered_rows=rows,
+            exact_token=token_sent,
+            production_widget_key=PRODUCTION_WIDGET_KEY,
+        )
+        report["cb1_boundary"] = cb_classification.get("classification")
+        report["first_boundary"] = cm_classification.get("classification")
+        report["classification_detail"] = cm_classification
+        report["callback_boundary_detail"] = cb_classification
+        report["internal_comparison"] = cm_classification.get("comparison")
+        report["architectural_options"] = cm_classification.get("architectural_options") or []
+        report["smallest_correction_boundary"] = cm_classification.get("smallest_correction_boundary")
         report["finished_at"] = time.time()
         context.close()
         browser.close()
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    LEGACY_OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     print(json.dumps({"first_boundary": report.get("first_boundary"), "artifact": str(OUT)}, indent=2))
     return 0
 

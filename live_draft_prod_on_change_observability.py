@@ -258,6 +258,34 @@ def emit_callback_registration(
     except Exception:
         on_id = "unknown"
     register_declaration_invocation(session, widget_key, declaration_invocation_id)
+    application_on_change_present = bool(on_change_registered) and on_change_fn is not None
+    metadata_callback_present = False
+    metadata_probe: dict[str, Any] = {}
+    try:
+        from live_draft_streamlit_widget_metadata_diag import (
+            metadata_stores_callback,
+            probe_after_declaration,
+            snapshot_widget_metadata,
+        )
+
+        surface = "case_a" if "minimal_wake" in component_callable_identity else "production"
+        session["_solo_stage1_last_metadata_surface"] = surface
+        metadata_probe = probe_after_declaration(
+            st,
+            session,
+            user_key=widget_key,
+            component_name="solo_countdown_wake"
+            if surface == "production"
+            else "minimal_wake_repro",
+            application_on_change=on_change_fn,
+            declaration_invocation_id=declaration_invocation_id,
+            surface=surface,
+            room=room,
+            mount_guard_result=mount_guard_result,
+        )
+        metadata_callback_present = bool(metadata_probe.get("callback_registered_in_metadata"))
+    except ImportError:
+        metadata_callback_present = application_on_change_present
     return _emit_row(
         session,
         CALLBACK_REGISTRATION,
@@ -268,7 +296,9 @@ def emit_callback_registration(
             "declaration_invocation_id": declaration_invocation_id,
             "declaration_order_in_run": next_declaration_order(session),
             "on_change_callable_identity": on_id,
-            "on_change_registered": bool(on_change_registered),
+            "application_on_change_argument_present": application_on_change_present,
+            "on_change_registered": metadata_callback_present,
+            "metadata_callback_present": metadata_callback_present,
             "component_callable_identity": component_callable_identity[:120],
             "direct_raw_return_repr": repr(direct_raw_return)[:400] if direct_raw_return is not None else "",
             "session_state_before_declaration": session_state_before[:400],
@@ -318,6 +348,9 @@ def emit_prod_on_change_entered(
             ss_repr = "error"
     if not _obs_enabled(st, session):
         return inv, key_exists
+    session["_solo_stage1_prod_on_change_entered_count"] = (
+        int(session.get("_solo_stage1_prod_on_change_entered_count") or 0) + 1
+    )
     _emit_row(
         session,
         PROD_ON_CHANGE_ENTERED,

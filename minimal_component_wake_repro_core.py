@@ -247,6 +247,34 @@ def render_one_cycle(
         on_change=_on_change,
     )
 
+    try:
+        from live_draft_prod_on_change_observability import (
+            emit_callback_registration,
+            new_declaration_invocation_id,
+        )
+
+        decl_inv = new_declaration_invocation_id()
+        ss_before = repr(st.session_state.get(key))[:400] if key in st.session_state else "missing"
+        emit_callback_registration(
+            st,
+            session,
+            room=None,
+            widget_key=key,
+            declaration_invocation_id=decl_inv,
+            on_change_fn=_on_change,
+            on_change_registered=_on_change is not None,
+            direct_raw_return=raw_return,
+            session_state_before=ss_before,
+            session_state_after=repr(st.session_state.get(key))[:400] if key in st.session_state else "missing",
+            first_mount=True,
+            mount_guard_result="mounted",
+            cached_raw_return=None,
+            delivery_only=False,
+            component_callable_identity="minimal_component_wake_repro_core.render_one_cycle",
+        )
+    except ImportError:
+        pass
+
     if raw_return is not None:
         tok = coerce_token(raw_return, token)
         if tok:
