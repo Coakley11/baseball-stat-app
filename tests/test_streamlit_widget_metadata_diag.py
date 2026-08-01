@@ -251,6 +251,7 @@ def test_snapshot_from_widget_metadata_object() -> None:
     assert out["failure_boundary"] == "INVALID_REGISTRATION_BOUNDARY_OBSERVABILITY"
 
     from scripts.p8_callback_metadata_classify import (
+        CM_REGISTRATION_CAUSE_UNRESOLVED,
         METADATA_AT_REGISTRATION,
         classify_callback_metadata_boundary,
     )

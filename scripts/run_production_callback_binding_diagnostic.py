@@ -140,7 +140,7 @@ def main() -> int:
         "metadata_fix_implementation_sha": REGISTRATION_BOUNDARY_OBS_SHA,
         "deploy_trigger_sha": CALLBACK_METADATA_OBS_GATE_SHA,
         "git_head": git_head_short(),
-        "mode": "callback_metadata_diagnostic_v5_ledger_gate_a_only",
+        "mode": "callback_metadata_diagnostic_v6_dispatch_authority_gate_b",
         "local_registration_hook_self_test": hook_self_test,
         "artifact_path": str(OUT),
         "artifact_txt_path": str(OUT_TXT),
@@ -294,7 +294,7 @@ def main() -> int:
             "backend": summarize_internal_lane(case_backend, label="case_a_backend"),
         }
 
-        if not case_gate_a.get("authoritative"):
+        if not case_gate_a.get("case_a_dispatch_authority"):
             boundary = (
                 case_gate_a.get("failure_boundary")
                 or INVALID_INTERNAL_METADATA_OBSERVABILITY
@@ -302,7 +302,7 @@ def main() -> int:
             report["first_boundary"] = boundary
             report["smallest_correction_boundary"] = boundary
             report["production_skipped"] = True
-            report["gate"] = "A_failed"
+            report["gate"] = "A_dispatch_failed"
             report["finished_at"] = time.time()
             context.close()
             browser.close()
@@ -312,30 +312,122 @@ def main() -> int:
                     {
                         "first_boundary": boundary,
                         "artifact": str(OUT),
-                        "gate": "A",
+                        "gate": "A_dispatch",
                     },
                     indent=2,
                 )
             )
             return 1
 
+        report["case_a_dispatch_authority"] = bool(case_gate_a.get("case_a_dispatch_authority"))
+        report["case_a_registration_trace_available"] = bool(
+            case_gate_a.get("case_a_registration_trace_available")
+        )
+        report["registration_trace_boundary"] = case_gate_a.get("registration_trace_boundary") or ""
+        report["gate_a_outcome"] = case_gate_a.get("gate_a_outcome") or ""
         report["gate_a_passed"] = bool(case_gate_a.get("authoritative"))
-        report["production_skipped"] = True
         ledger_ok = str(pipeline_eval.get("classification") or "") in ("", "LEDGER_PIPELINE_OK")
-        report["gate"] = (
-            "LEDGER_PIPELINE_GATE_A_PASS"
-            if report["gate_a_passed"] and ledger_ok
-            else "A_ledger_visibility_only"
+
+        url = production_url()
+        goto_and_wake(page, url, timeout_s=240)
+        cleanup = ensure_fresh_setup_lobby(page)
+        report["production_cleanup"] = cleanup
+        if not cleanup.get("ok"):
+            report["first_boundary"] = "INVALID_PRODUCTION_SETUP"
+            report["production_skipped"] = True
+            report["gate"] = "B_setup_failed"
+            report["finished_at"] = time.time()
+            context.close()
+            browser.close()
+            _persist_report(report)
+            return 1
+
+        draft = execute_solo_draft_start_workflow(page, url, navigate=False)
+        draft = retry_draft_start_if_stalled(page, draft, setup_url=url)
+        start_val = validate_p8_diagnostic_setup(
+            page,
+            draft,
+            prior_room_id=str(cleanup.get("detected_room_id") or ""),
+            auth_preflight=pre,
+            max_wait_s=75.0,
         )
-        report["first_boundary"] = (
-            "LEDGER_PIPELINE_GATE_A_PASS"
-            if report["gate_a_passed"] and ledger_ok
-            else (
-                case_gate_a.get("failure_boundary")
-                or INVALID_CLOUD_DIAGNOSTIC_LEDGER_VISIBILITY
-            )
+        report["production_setup"] = start_val
+        if not start_val.get("valid"):
+            report["first_boundary"] = start_val.get("failure_boundary") or "INVALID_PRODUCTION_SETUP"
+            report["production_skipped"] = True
+            report["gate"] = "B_setup_failed"
+            report["finished_at"] = time.time()
+            context.close()
+            browser.close()
+            _persist_report(report)
+            return 1
+
+        from p8_ledger_observability import enrich_expiration_ledger
+        from run_production_stage1_authenticated import build_return_value_chain_report
+
+        page.wait_for_timeout(8000)
+        exp = wait_one_expiration(page, timeout_s=95.0)
+        enrich_expiration_ledger(page, exp, collector, label="post_expiration")
+        sha = str(report.get("live_sha") or "")
+        exp["cloud_sha"] = sha
+        room_latched = str(start_val.get("latched_room_id") or "")
+        exp["room_id"] = room_latched
+        rv = build_return_value_chain_report(
+            page,
+            exp,
+            start_val=start_val,
+            queue_meta={"queue_independence": "NOT EXERCISED — EMPTY QUEUE"},
+            cloud_sha=sha,
+            cloud_build=str(report.get("live_build") or ""),
         )
-        report["smallest_correction_boundary"] = report["first_boundary"]
+        unfiltered = _ledger_rows(exp)
+        if not unfiltered:
+            meta = exp.get("ledger_meta") or {}
+            unfiltered = list(meta.get("merged_server_ledger") or [])
+        token_for_filter = str(
+            exp.get("token_sent")
+            or rv.get("browser", {}).get("exact_expiration_token")
+            or (start_val.get("authoritative_state") or {}).get("production_token")
+            or ""
+        ).strip()
+        run_id = _infer_run_id(unfiltered, room_latched)
+        filtered_meta = filter_ledger_rows_for_diagnostic_run(
+            unfiltered,
+            run_id=run_id,
+            room_id=room_latched,
+            deployment_sha=sha,
+            exact_token=token_for_filter,
+        )
+        filtered_rows = filtered_meta.get("filtered_rows") or []
+        exp["filtered_ledger_rows"] = filtered_rows
+        exp["ledger_filter"] = filtered_meta
+        report["production_diagnostic_run_id"] = run_id
+        report["production_room_id"] = room_latched
+        report["production_exact_token"] = token_for_filter
+        report["production_expiration"] = exp
+        report["production_return_value_chain"] = rv
+
+        cb_report = classify_callback_boundary(
+            filtered_rows=filtered_rows,
+            exact_token=token_for_filter,
+            outbound_widget_id=str(exp.get("outbound_widget_id") or ""),
+        )
+        cm_report = classify_callback_metadata_boundary(
+            filtered_rows=filtered_rows,
+            exact_token=token_for_filter,
+            production_widget_key=PRODUCTION_WIDGET_KEY,
+        )
+        report["callback_boundary"] = cb_report
+        report["callback_metadata_boundary"] = cm_report
+        report["accepted_cb1"] = cb_report.get("classification") or report.get("accepted_cb1")
+        report["production_skipped"] = False
+        report["gate"] = "B_complete"
+        report["first_boundary"] = cm_report.get("classification") or cb_report.get("classification") or ""
+        report["smallest_correction_boundary"] = (
+            cm_report.get("smallest_correction_boundary")
+            or cb_report.get("classification")
+            or report["first_boundary"]
+        )
         report["finished_at"] = time.time()
         context.close()
         browser.close()
@@ -343,14 +435,16 @@ def main() -> int:
         print(
             json.dumps(
                 {
-                    "first_boundary": report.get("first_boundary"),
-                    "gate_a_passed": report.get("gate_a_passed"),
+                    "gate_a_outcome": report.get("gate_a_outcome"),
+                    "case_a_dispatch_authority": report.get("case_a_dispatch_authority"),
+                    "callback_boundary": cb_report.get("classification"),
+                    "callback_metadata_boundary": cm_report.get("classification"),
                     "artifact": str(OUT),
                 },
                 indent=2,
             )
         )
-        return 0 if report.get("gate_a_passed") else 1
+        return 0
 
 
 if __name__ == "__main__":

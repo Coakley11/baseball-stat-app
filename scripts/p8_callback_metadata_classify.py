@@ -27,6 +27,13 @@ REG_HOOK_ENTERED = "production_stage1_registration_hook_entered"
 REG_HOOK_EXITED = "production_stage1_registration_hook_exited"
 HOOKS_INSTALLED = "production_stage1_registration_hooks_installed"
 
+GATEA1 = "GATEA1 — METADATA_AT_REGISTRATION_EVENT_NOT_EMITTED"
+CASE_A_DISPATCH_AUTHORITY_PASS = "CASE_A_DISPATCH_AUTHORITY_PASS"
+CASE_A_DISPATCH_AUTHORITY_PASS_WITH_REGISTRATION_TRACE_UNAVAILABLE = (
+    "CASE_A_DISPATCH_AUTHORITY_PASS_WITH_REGISTRATION_TRACE_UNAVAILABLE"
+)
+CM_REGISTRATION_CAUSE_UNRESOLVED = "CM_REGISTRATION_CAUSE_UNRESOLVED"
+
 
 def _case_a_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = [r for r in rows if str(r.get("diagnostic_surface") or "") == SURFACE_CASE_A_CONTROL]
@@ -156,11 +163,19 @@ def evaluate_case_a_gate_a(
     gate_checks["registration_callback_present"] = bool(reg_meta_audit.get("ok"))
     out["checks"] = gate_checks
     dispatch_ok = bool(authority.get("dispatch_authoritative"))
-    reg_ok = gate_checks["registration_hook_entered"] and gate_checks["registration_callback_present"]
-    hooks_ok = gate_checks["hooks_installed_event"]
-    out["authoritative"] = dispatch_ok and reg_ok and hooks_ok
-    out["ok"] = out["authoritative"]
-    if not out["authoritative"]:
+    reg_trace_ok = bool(reg_meta_audit.get("ok"))
+    hooks_ok = gate_checks["hooks_installed_event"] and gate_checks["registration_hook_entered"]
+    delivery_ok = bool(gate_checks.get("python_delivery_proven"))
+    out["case_a_dispatch_authority"] = dispatch_ok and hooks_ok and delivery_ok
+    out["case_a_registration_trace_available"] = reg_trace_ok
+    out["registration_trace_boundary"] = "" if reg_trace_ok else GATEA1
+    out["authoritative"] = out["case_a_dispatch_authority"] and reg_trace_ok
+    out["ok"] = out["case_a_dispatch_authority"]
+    if out["case_a_dispatch_authority"] and not reg_trace_ok:
+        out["gate_a_outcome"] = CASE_A_DISPATCH_AUTHORITY_PASS_WITH_REGISTRATION_TRACE_UNAVAILABLE
+    elif out["case_a_dispatch_authority"] and reg_trace_ok:
+        out["gate_a_outcome"] = CASE_A_DISPATCH_AUTHORITY_PASS
+    if not out["case_a_dispatch_authority"]:
         if local_hook_self_test_ok and dispatch_ok and not hook_entered:
             out["failure_boundary"] = INVALID_CLOUD_REGISTRATION_HOOK_INSTALLATION
             out["reason"] = "local_self_test_passed_but_no_cloud_registration_hook_events"
@@ -169,7 +184,16 @@ def evaluate_case_a_gate_a(
             out["reason"] = "no_registration_hook_events"
         else:
             out["failure_boundary"] = authority.get("failure_boundary") or INVALID_INTERNAL_METADATA_OBSERVABILITY
-            failed = [k for k, v in gate_checks.items() if not v]
+            failed = [
+                k
+                for k, v in gate_checks.items()
+                if not v
+                and k
+                not in (
+                    "metadata_at_registration_authoritative",
+                    "registration_callback_present",
+                )
+            ]
             out["reason"] = f"gate_a_failed:{','.join(failed)}"
     out["registration_hook_reference"] = reg_hook_row
     out["registration_metadata_reference"] = reg_meta
@@ -199,24 +223,37 @@ def evaluate_case_a_dispatch_authority(
         _rows(peak_rows, DISPATCH)
     )
     last_enter = control_entered[-1]
+    last_exit = control_exited[-1] if control_exited else {}
     wkey = str(last_enter.get("widget_key") or "")
     expected = str(last_enter.get("expected_token") or "")
+    enter_repr = str(last_enter.get("session_state_value_repr") or "")
+    exit_repr = str(last_exit.get("session_state_value_at_exit_repr") or "")
+    enter_id = str(last_enter.get("callback_function_identity") or "_on_change")
     disp_for = [r for r in dispatch_rows if r.get("widget_key") == wkey] or dispatch_rows
     dispatch = disp_for[-1] if disp_for else {}
+    disp_cb = str(
+        dispatch.get("metadata_callback_identity") or dispatch.get("callback_identity") or ""
+    )
+    enter_mod = str(last_enter.get("callback_source_module") or "")
+    enter_fn = str(last_enter.get("callback_function_identity") or "_on_change")
+    expected_cb = f"{enter_mod}.{enter_fn}" if enter_mod else enter_fn
     checks = {
         "authoritative_control_widget_id": bool(
             str(dispatch.get("authoritative_widget_id") or dispatch.get("widget_id") or "")
         ),
         "exact_new_value": bool(expected)
         and expected
-        in str(dispatch.get("new_value") or dispatch.get("new_value_repr") or last_enter.get("session_state_value_repr") or ""),
+        in str(dispatch.get("new_value") or dispatch.get("new_value_repr") or enter_repr or ""),
         "widget_changed_true": dispatch.get("widget_changed_result") is True,
         "dispatch_callback_present": bool(
             dispatch.get("metadata_callback_present") or dispatch.get("callback_present")
         ),
+        "callback_identity_matches_control": bool(disp_cb) and disp_cb == expected_cb,
         "callback_selected_true": dispatch.get("callback_selected") is True,
         "control_callback_entered": True,
         "control_callback_exited": bool(control_exited),
+        "exact_value_at_callback_entry": bool(expected) and expected in enter_repr,
+        "exact_value_at_callback_exit": bool(expected) and expected in exit_repr,
         "python_delivery_proven": True,
         "surface_case_a_control": str(dispatch.get("diagnostic_surface") or "") == SURFACE_CASE_A_CONTROL,
     }
@@ -405,6 +442,20 @@ def build_internal_comparison(
     }
 
 
+def _production_registration_trace_evidence(
+    filtered_rows: list[dict[str, Any]],
+    production_widget_key: str,
+) -> bool:
+    """Direct registration-time rows (not dispatch-only inference)."""
+    rows = [
+        r
+        for r in _rows(filtered_rows, METADATA_AT_REGISTRATION)
+        if str(r.get("diagnostic_surface") or "") == SURFACE_PRODUCTION
+        and (not production_widget_key or r.get("widget_key") == production_widget_key)
+    ]
+    return bool(rows)
+
+
 def classify_callback_metadata_boundary(
     *,
     filtered_rows: list[dict[str, Any]],
@@ -462,7 +513,7 @@ def classify_callback_metadata_boundary(
     last_backend = _last_token_row(prod_backend, exact_token)
     app_passed = bool(
         last_meta.get("application_on_change_argument_present")
-        or prod_regs[-1].get("application_on_change_argument_present") if prod_regs else False
+        or (prod_regs[-1].get("application_on_change_argument_present") if prod_regs else False)
     )
     meta_has = bool(
         last_meta.get("metadata_callback_present")
@@ -500,7 +551,17 @@ def classify_callback_metadata_boundary(
     if control_entered and prod_meta_rows:
         pass  # Case A authority already validated before production classification.
 
+    reg_trace = _production_registration_trace_evidence(filtered_rows, production_widget_key)
+
     if app_passed and not meta_has and not dispatch_has_callback:
+        if not reg_trace:
+            report["classification"] = CM_REGISTRATION_CAUSE_UNRESOLVED
+            report["rationale"] = (
+                "Application on_change present but no registration-time metadata row; "
+                "cannot distinguish CM1/CM6 from dispatch-only evidence."
+            )
+            report["smallest_correction_boundary"] = report["classification"]
+            return report
         report["classification"] = "CM1 — CALLBACK_ARGUMENT_NOT_STORED_AT_REGISTRATION"
         report["rationale"] = "Application passed on_change but WidgetMetadata has no callback/callbacks."
         report["architectural_options"] = [
@@ -510,7 +571,7 @@ def classify_callback_metadata_boundary(
         report["smallest_correction_boundary"] = report["classification"]
         return report
 
-    if len(hist) >= 2 and any(h.get("callback_registered_in_metadata") for h in hist[:-1]):
+    if reg_trace and len(hist) >= 2 and any(h.get("callback_registered_in_metadata") for h in hist[:-1]):
         if not hist[-1].get("callback_registered_in_metadata"):
             report["classification"] = "CM2 — CALLBACK_METADATA_OVERWRITTEN_BY_LATER_REGISTRATION"
             report["rationale"] = "Earlier registration stored callback; later same-ID registration cleared it."
@@ -540,13 +601,13 @@ def classify_callback_metadata_boundary(
         return report
 
     dup_regs = [r for r in prod_regs if str(r.get("mount_guard_result") or "").startswith("duplicate")]
-    if app_passed and not meta_has and dup_regs:
+    if reg_trace and app_passed and not meta_has and dup_regs:
         report["classification"] = "CM7 — SINGLE-MOUNT GUARD_PREVENTS_CALLBACK_METADATA_REFRESH"
         report["rationale"] = "Duplicate-skipped run avoided register_widget; metadata never refreshed."
         report["smallest_correction_boundary"] = report["classification"]
         return report
 
-    if app_passed and not meta_has and prod_meta_rows:
+    if reg_trace and app_passed and not meta_has and prod_meta_rows:
         report["classification"] = "CM6 — PRODUCTION V1 COMPONENT PATH DOES NOT RETAIN ON_CHANGE CALLBACK"
         report["rationale"] = "Wrapper passed on_change but component registration path did not store it."
         report["architectural_options"] = [
@@ -556,6 +617,18 @@ def classify_callback_metadata_boundary(
         report["smallest_correction_boundary"] = report["classification"]
         return report
 
+    if (
+        last_dispatch.get("widget_changed_result") is True
+        and dispatch_has_callback
+        and last_dispatch.get("callback_selected") is False
+    ):
+        skip = str(last_dispatch.get("skip_reason") or "")
+        if skip and skip not in ("callback_missing_from_metadata", "widget_value_unchanged", "none", ""):
+            report["classification"] = "CM8 — CALLBACK_DISPATCH_SUPPRESSED_BY_CONTEXT"
+            report["rationale"] = f"New state and callback present but dispatch skipped: {skip}."
+            report["smallest_correction_boundary"] = report["classification"]
+            return report
+
     if last_dispatch.get("callback_selected") and not prod_entered:
         report["classification"] = "CM9 — CALLBACK_PRESENT_AND_SELECTED_BUT_INVOCATION_LOST"
         report["rationale"] = "Dispatch selected callback but prod_on_change_entered never fired."
@@ -563,6 +636,14 @@ def classify_callback_metadata_boundary(
         return report
 
     if last_dispatch.get("skip_reason") == "callback_missing_from_metadata":
+        if not reg_trace:
+            report["classification"] = CM_REGISTRATION_CAUSE_UNRESOLVED
+            report["rationale"] = (
+                "Dispatch skip_reason=callback_missing_from_metadata without registration-time row; "
+                "cannot authoritatively classify CM1."
+            )
+            report["smallest_correction_boundary"] = report["classification"]
+            return report
         report["classification"] = "CM1 — CALLBACK_ARGUMENT_NOT_STORED_IN_WIDGET_METADATA"
         report["rationale"] = "Dispatch evaluation: callback_missing_from_metadata."
         report["architectural_options"] = [

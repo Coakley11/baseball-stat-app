@@ -15,9 +15,11 @@ def _control_entered(**extra: object) -> dict:
         "widget_key": "minimal_wake_repro_3",
         "expected_token": "repro|3|1785598916.972",
         "callback_function_identity": "_on_change",
+        "callback_source_module": "minimal_component_wake_repro_core",
         "diagnostic_run_id": "run123",
         "run_id": "run123",
         "diagnostic_surface": "case_a_control",
+        "session_state_value_repr": "'repro|3|1785598916.972'",
     }
     base.update(extra)
     return base
@@ -106,20 +108,25 @@ def test_select_rejects_identity_only_without_metadata_flag() -> None:
 def test_gate_a_authoritative_with_metadata_at_registration() -> None:
     control = _control_entered()
     dispatch = _dispatch_ref()
+    exited = {
+        "event": "production_stage1_control_on_change_exited",
+        "session_state_value_at_exit_repr": "'repro|3|1785598916.972'",
+    }
     peak = [
         control,
         _meta_at_reg(),
         dispatch,
         {"event": "production_stage1_registration_hooks_installed"},
         {"event": "production_stage1_registration_hook_entered", "diagnostic_surface": "case_a_control"},
-        {"event": "production_stage1_control_on_change_exited"},
+        exited,
     ]
     gate = evaluate_case_a_gate_a(
         peak_rows=peak,
         case_a_delivery_proven=True,
         control_entered=[control],
-        control_exited=[{"event": "production_stage1_control_on_change_exited"}],
+        control_exited=[exited],
         local_hook_self_test_ok=True,
     )
     assert gate.get("authoritative") is True
-    assert gate.get("checks", {}).get("registration_callback_present") is True
+    assert gate.get("case_a_dispatch_authority") is True
+    assert gate.get("case_a_registration_trace_available") is True
