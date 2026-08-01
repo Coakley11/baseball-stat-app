@@ -433,7 +433,7 @@ def commit_has_ledger_pipeline_observability(sha: str) -> dict[str, Any]:
     )
     out["finalize_before_stop"] = _grep("finalize_stage1_ledger_for_scrape", delivery)
     out["chunked_ledger_export"] = _grep("data-b64-chunk-count", prod_ledger)
-    out["no_json_truncation_cap"] = _grep("data-payload-json-len", prod_ledger) and not _grep(
+    out["no_json_truncation_cap"] = _grep("data-payload-json-len", prod_ledger) and not _grep_literal(
         "[:48000]", prod_ledger
     )
     out["ok"] = all(
