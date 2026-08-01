@@ -91,11 +91,9 @@ def main() -> int:
         production_url,
         wait_one_expiration,
     )
-    from solo_draft_start_harness import execute_solo_draft_start_workflow
-    from p8_diagnostic_setup import (
-        ensure_p8_ldr_setup_surface,
-        retry_draft_start_if_stalled,
-        validate_p8_diagnostic_setup,
+    from p8_production_start_harness import (
+        INVALID_PRODUCTION_EXPIRATION_TRACE,
+        run_gate_b_production_start,
     )
     from run_production_p8_binding_diagnostic import (
         _infer_run_id,
@@ -344,24 +342,39 @@ def main() -> int:
             _persist_report(report)
             return 1
 
-        draft = execute_solo_draft_start_workflow(page, url, navigate=False)
-        draft = retry_draft_start_if_stalled(page, draft, setup_url=url)
-        start_val = validate_p8_diagnostic_setup(
+        start_val = run_gate_b_production_start(
             page,
-            draft,
+            url,
             prior_room_id=str(cleanup.get("detected_room_id") or ""),
             auth_preflight=pre,
-            max_wait_s=75.0,
         )
+        report["production_start_timeline"] = start_val.get("timeline")
+        report["production_start_boundary"] = start_val.get("start_boundary")
         report["production_setup"] = start_val
         if not start_val.get("valid"):
-            report["first_boundary"] = start_val.get("failure_boundary") or "INVALID_PRODUCTION_SETUP"
+            report["first_boundary"] = (
+                start_val.get("failure_boundary")
+                or f"{INVALID_PRODUCTION_EXPIRATION_TRACE} — PRE_EXPIRATION_SETUP"
+            )
+            report["smallest_correction_boundary"] = start_val.get("start_boundary") or report["first_boundary"]
             report["production_skipped"] = True
-            report["gate"] = "B_setup_failed"
+            report["gate"] = "B_start_proof_failed"
+            report["production_expiration_trace"] = INVALID_PRODUCTION_EXPIRATION_TRACE
             report["finished_at"] = time.time()
             context.close()
             browser.close()
             _persist_report(report)
+            print(
+                json.dumps(
+                    {
+                        "first_boundary": report["first_boundary"],
+                        "start_boundary": start_val.get("start_boundary"),
+                        "artifact": str(OUT),
+                        "gate": "B_start",
+                    },
+                    indent=2,
+                )
+            )
             return 1
 
         from p8_ledger_observability import enrich_expiration_ledger
