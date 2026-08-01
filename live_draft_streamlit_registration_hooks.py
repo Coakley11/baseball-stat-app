@@ -242,6 +242,20 @@ def _wrap_callable(
             widget_key = str(meta_fields.get("user_key") or "")
         if widget_key:
             register_watch_user_key(session, widget_key)
+        if kind in ("session_state_metadata", "register_widget_from_metadata") and args:
+            try:
+                from live_draft_streamlit_widget_metadata_diag import emit_metadata_at_registration
+
+                metadata = args[0]
+                user_key_arg = args[1] if len(args) > 1 else kwargs.get("user_key")
+                emit_metadata_at_registration(
+                    metadata,
+                    user_key=str(user_key_arg or widget_key or ""),
+                    session=session,
+                    st=st,
+                )
+            except Exception:
+                pass
         enter_extra = {
             **ident,
             **meta_fields,
