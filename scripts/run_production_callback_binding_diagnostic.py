@@ -330,7 +330,9 @@ def main() -> int:
 
         url = production_url()
         goto_and_wake(page, url, timeout_s=240)
-        cleanup = ensure_fresh_setup_lobby(page)
+        page.wait_for_timeout(5000)
+        report["production_ldr_surface"] = ensure_p8_ldr_setup_surface(page, setup_url=url)
+        cleanup = ensure_fresh_setup_lobby(page, max_wait_s=180)
         report["production_cleanup"] = cleanup
         if not cleanup.get("ok"):
             report["first_boundary"] = "INVALID_PRODUCTION_SETUP"
