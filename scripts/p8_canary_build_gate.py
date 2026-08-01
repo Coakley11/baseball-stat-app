@@ -376,7 +376,8 @@ def commit_has_callback_observability(sha: str) -> dict[str, Any]:
 
 CALLBACK_METADATA_OBS_ANCHOR_SHA = "f58f473"
 METADATA_READ_FIX_SHA = "39b9ef4"
-REGISTRATION_BOUNDARY_OBS_SHA = "pending"
+REGISTRATION_BOUNDARY_OBS_SHA = "f7ce65c"
+CALLBACK_METADATA_OBS_GATE_SHA = REGISTRATION_BOUNDARY_OBS_SHA
 
 
 def commit_has_registration_boundary_observability(sha: str) -> dict[str, Any]:
