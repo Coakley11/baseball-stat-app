@@ -374,8 +374,8 @@ def commit_has_callback_observability(sha: str) -> dict[str, Any]:
     return out
 
 
-CALLBACK_METADATA_OBS_ANCHOR_SHA = "pending"
-CALLBACK_METADATA_OBS_GATE_SHA = "pending"
+CALLBACK_METADATA_OBS_ANCHOR_SHA = "f58f473"
+CALLBACK_METADATA_OBS_GATE_SHA = "f58f473"
 
 
 def commit_has_callback_metadata_observability(sha: str) -> dict[str, Any]:
