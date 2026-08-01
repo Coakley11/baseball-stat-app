@@ -749,6 +749,55 @@ def commit_has_start_stage1_observability(sha: str) -> dict[str, Any]:
     return out
 
 
+def commit_has_room_latch_observability(sha: str) -> dict[str, Any]:
+    sha = str(sha or "").strip()[:7]
+    out: dict[str, Any] = {
+        "sha": sha,
+        "file_room_latch_obs_py": False,
+        "room_state_write_event": False,
+        "handler_session_proof_event": False,
+        "ok": False,
+    }
+    if not sha:
+        return out
+
+    def _cat(path: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "cat-file", "-e", f"{sha}:{path}"],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _grep(pattern: str, *paths: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "grep", "-q", pattern, sha, "--", *paths],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            return True
+        except Exception:
+            return False
+
+    path = "live_draft_room_state_latch_observability.py"
+    out["file_room_latch_obs_py"] = _cat(path)
+    if out["file_room_latch_obs_py"]:
+        out["room_state_write_event"] = _grep("production_stage1_room_state_write", sha, path)
+        out["handler_session_proof_event"] = _grep(
+            "production_stage1_handler_exit_session_state_proof", sha, path
+        )
+    out["ok"] = all(out[k] for k in ("file_room_latch_obs_py", "room_state_write_event", "handler_session_proof_event"))
+    return out
+
+
 def evaluate_cloud_callback_metadata_observability_readiness(
     *,
     runtime_git_head_short: str,
@@ -1186,6 +1235,7 @@ def poll_live_cloud_sha(
     wait_for_callback_observability: bool = False,
     wait_for_callback_metadata_observability: bool = False,
     wait_for_start_stage1_observability: bool = False,
+    wait_for_room_latch_observability: bool = False,
 ) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
     from playwright.sync_api import sync_playwright
@@ -1215,6 +1265,7 @@ def poll_live_cloud_sha(
     wait_callback_obs = wait_for_callback_observability or wait_for_callback_metadata_observability
     wait_metadata_obs = wait_for_callback_metadata_observability or wait_for_start_stage1_observability
     wait_start_obs = wait_for_start_stage1_observability
+    wait_latch_obs = wait_for_room_latch_observability
 
     for i in range(max_attempts):
         row: dict[str, Any] = {"attempt": i, "ts": time.time()}
@@ -1290,6 +1341,12 @@ def poll_live_cloud_sha(
                         )
                         row["start_stage1_observability"] = start_impl
                         if not start_impl.get("ok"):
+                            time.sleep(sleep_s)
+                            continue
+                    if wait_latch_obs:
+                        latch_impl = commit_has_room_latch_observability(runtime_short or sha)
+                        row["room_latch_observability"] = latch_impl
+                        if not latch_impl.get("ok"):
                             time.sleep(sleep_s)
                             continue
                     report["ok"] = True

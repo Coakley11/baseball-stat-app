@@ -29,6 +29,13 @@ GATE_A_EXPORT_PINNED_EVENTS = frozenset(
         "production_stage1_start_handler_exited",
         "production_stage1_room_creation_entered",
         "production_stage1_room_creation_exited",
+        "production_stage1_room_state_write",
+        "production_stage1_room_state_clear",
+        "production_stage1_room_state_restore",
+        "production_stage1_room_state_read",
+        "production_stage1_surface_decision",
+        "production_stage1_rerun_transition",
+        "production_stage1_handler_exit_session_state_proof",
         "production_live_draft_branch_canary",
         "production_global_script_run_canary",
     }

@@ -565,6 +565,12 @@ try:
             active_page=str(st.session_state.get("active_page") or "ultra_early_bootstrap"),
         )
         try:
+            from live_draft_room_state_latch_observability import emit_ultra_early_latch_snapshot
+
+            emit_ultra_early_latch_snapshot(st.session_state, st=st)
+        except ImportError:
+            pass
+        try:
             from live_draft_cloud_diagnostics import _qp_get
 
             qp_page = str(_qp_get(st, "active_page") or "").strip()
@@ -24080,11 +24086,20 @@ elif active_page == "Live Draft Room":
         finally:
             try:
                 from live_draft_start_stage1_observability import emit_start_handler_exited
+                from live_draft_room_state_latch_observability import emit_handler_exit_session_state_proof
 
                 _live_room = (
                     st.session_state.get("live_draft_room")
                     if isinstance(st.session_state.get("live_draft_room"), dict)
                     else {}
+                )
+                emit_handler_exit_session_state_proof(
+                    st.session_state,
+                    st=st,
+                    local_created_room_id=str(_live_room.get("draft_room_id") or ""),
+                    local_draft_status=str(_live_room.get("status") or ""),
+                    local_pick_index=_live_room.get("current_pick_index"),
+                    handler_success=bool(_start_handler_ok),
                 )
                 emit_start_handler_exited(
                     st.session_state,
@@ -24160,6 +24175,18 @@ elif active_page == "Live Draft Room":
                     )
                 except ImportError:
                     pass
+                try:
+                    from live_draft_room_state_latch_observability import emit_rerun_transition
+
+                    emit_rerun_transition(
+                        st.session_state,
+                        st=st,
+                        requested=True,
+                        rerun_type="st.rerun",
+                        source="start_handler_ok",
+                    )
+                except ImportError:
+                    pass
                 st.rerun()
                 st.stop()
 
@@ -24204,6 +24231,20 @@ elif active_page == "Live Draft Room":
         _live_draft_lifecycle = (
             LIFECYCLE_SETUP if _live_draft_lifecycle_room is None else LIFECYCLE_ACTIVE_DRAFT
         )
+
+    try:
+        from live_draft_room_state_latch_observability import emit_surface_decision
+
+        emit_surface_decision(
+            st.session_state,
+            st=st,
+            surface=str(_live_draft_lifecycle or "")[:64],
+            in_progress=_live_draft_lifecycle == LIFECYCLE_ACTIVE_DRAFT,
+            setup_visible=_live_draft_lifecycle in (LIFECYCLE_SETUP, LIFECYCLE_WAITING_SHARED_LOBBY),
+            source="resolve_live_draft_lifecycle",
+        )
+    except ImportError:
+        pass
 
     if _live_draft_lifecycle == LIFECYCLE_DELETING:
         st.info("Deleting draft for everyone…")

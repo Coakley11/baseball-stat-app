@@ -1088,6 +1088,7 @@ def write_canonical_live_draft_state(
     local_edit: bool = False,
 ) -> dict[str, Any]:
     """Write JSON-safe canonical live_draft_state; mirror runtime room when provided."""
+    _prev_room = session.get(LIVE_DRAFT_ROOM_KEY)
     try:
         from live_draft_room_mutation_audit import audit_before_write_canonical
 
@@ -1100,6 +1101,12 @@ def write_canonical_live_draft_state(
         _sync_page_filter_live_draft_block(session, blob={})
         if local_edit:
             mark_live_draft_local_edit(session)
+        try:
+            from live_draft_room_state_latch_observability import emit_room_state_clear
+
+            emit_room_state_clear(session, reason=reason or "write_canonical", prev_room=_prev_room)
+        except ImportError:
+            pass
         return {}
     blob = room_to_persist_dict(room)
     blob["last_write_reason"] = reason or None
@@ -1115,6 +1122,23 @@ def write_canonical_live_draft_state(
     }
     if local_edit:
         mark_live_draft_local_edit(session)
+    try:
+        from live_draft_room_state_latch_observability import emit_room_state_write
+
+        prev_id = str((_prev_room or {}).get("draft_room_id") or "") if isinstance(_prev_room, dict) else ""
+        new_id = str(room.get("draft_room_id") or "")
+        op = "set" if not prev_id else ("replace" if prev_id != new_id else "update")
+        emit_room_state_write(
+            session,
+            operation=op,
+            reason=reason or "write_canonical",
+            prev_room=_prev_room,
+            new_room=room,
+            module="live_draft_state",
+            function="write_canonical_live_draft_state",
+        )
+    except ImportError:
+        pass
     return blob
 
 
@@ -1146,6 +1170,17 @@ def _finish_prepare(session: dict[str, Any], room: dict[str, Any] | None) -> dic
     result = _apply_derived_draft_status(session, room)
     if is_runtime_room(result):
         _store_live_draft_prepare_fingerprint(session, result)
+    try:
+        from live_draft_room_state_latch_observability import emit_room_state_restore
+
+        emit_room_state_restore(
+            session,
+            reason="prepare_live_draft_state",
+            restored_room=result,
+            source="_finish_prepare",
+        )
+    except ImportError:
+        pass
     return result
 
 
