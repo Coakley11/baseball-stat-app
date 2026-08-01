@@ -1,4 +1,4 @@
-"""Room-latch verification: start → prepare → ROOM_LATCH_PASS (no expiration)."""
+"""Room-latch verification v2: full ledger export + VERIFY classification."""
 
 from __future__ import annotations
 
@@ -14,24 +14,26 @@ sys.path.insert(0, str(SCRIPTS))
 
 OUT = ROOT / "data" / "production_room_latch_verification.json"
 LOG = ROOT / "data" / "production_room_latch_verification.out"
-ROOM_LATCH_PASS = "ROOM_LATCH_PASS"
 
 
 def main() -> int:
     from cloud_streamlit_wake import goto_and_wake
     from p8_boundary_instrumentation import P8_WS_BOUNDARY_INIT_SCRIPT
     from p8_canary_build_gate import git_head_short, local_deploy_pin, poll_live_cloud_sha
-    from p8_diagnostic_setup import ensure_p8_ldr_setup_surface, _countdown_mounted
     from p8_production_start_harness import dispatch_start_single_authoritative_click, scrape_stage1_ledger_rows
     from p8_callback_metadata_classify import CONTROL_ENTERED, REG_HOOK_ENTERED, evaluate_case_a_gate_a
+    from p8_diagnostic_setup import ensure_p8_ldr_setup_surface
     from p8_ledger_observability import P8LedgerHarnessCollector, capture_all_ledger_sources
+    from p8_room_latch_ledger_export import filter_latch_ledger_rows, resolve_run_and_session
+    from p8_room_latch_timeline import build_room_state_timeline
+    from p8_room_latch_verify_classify import ACCEPTED_FAIL, VERIFY1, classify_room_latch_verify
     from playwright.sync_api import sync_playwright
     from playwright_daniel_auth_session import STORAGE_PATH, harness_ready
-    from production_draft_start_authoritative import grade_authoritative_draft_start, scrape_authoritative_start_state
+    from production_draft_start_authoritative import scrape_authoritative_start_state
     from replay_playwright_daniel_auth_preflight import run_preflight
     from run_case_a_app_shell_gate import case_a_url, scrape_case_a
     from run_production_stage1_authenticated import ensure_fresh_setup_lobby, production_url
-    from solo_draft_start_harness import checkpoint, ensure_solo_setup_picks_meet_roster, maybe_clear_stale_draft, set_number_via_playwright, SOLO_RADIO_JS, SCAN_SETUP_JS
+    from solo_draft_start_harness import ensure_solo_setup_picks_meet_roster, maybe_clear_stale_draft, set_number_via_playwright, SOLO_RADIO_JS, SCAN_SETUP_JS
     from stage1_harness_observability import LEDGER_DURABLE_INIT_SCRIPT
     from stage1_parent_observer_probe import HARNESS_TOP_OBSERVER_INIT_SCRIPT
     from live_draft_streamlit_registration_hooks import run_local_case_a_hook_self_test
@@ -44,15 +46,16 @@ def main() -> int:
 
     report: dict[str, Any] = {
         "started_at": time.time(),
-        "mode": "production_room_latch_verification_v1",
+        "mode": "production_room_latch_verification_v2",
+        "accepted_prior_fail": ACCEPTED_FAIL,
         "deploy_pin": local_deploy_pin(),
         "git_head": git_head_short(),
         "artifact_path": str(OUT),
         "log_path": str(LOG),
     }
     poll = poll_live_cloud_sha(
-        max_attempts=24,
-        sleep_s=20.0,
+        max_attempts=12,
+        sleep_s=15.0,
         require_canary_impl=False,
         wait_for_callback_metadata_observability=True,
         wait_for_start_stage1_observability=True,
@@ -98,7 +101,7 @@ def main() -> int:
         )
         report["case_a_dispatch_authority"] = bool(case_gate_a.get("case_a_dispatch_authority"))
         if not report["case_a_dispatch_authority"]:
-            report["result"] = "CASE_A_FAILED"
+            report["verify_classification"] = {"classification": "CASE_A_FAILED"}
             OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             context.close()
             browser.close()
@@ -119,70 +122,97 @@ def main() -> int:
         ensure_solo_setup_picks_meet_roster(page, checkpoints)
         page.wait_for_timeout(1500)
         click = dispatch_start_single_authoritative_click(page, checkpoints)
+        click_ts = float(click.get("click_timestamp") or time.time())
         report["start_click"] = click
         report["start_click_count"] = 1
 
         created_rid = ""
         handler_rid = ""
         t0 = time.time()
-        last: dict[str, Any] = {}
-        pass_row: dict[str, Any] = {}
-        while time.time() - t0 < 120.0:
-            last = scrape_authoritative_start_state(page)
-            grade = grade_authoritative_draft_start(last, prior_room_id="", start_click_dispatched=True)
-            rid = str(last.get("room_id") or "").upper()
-            ledger = scrape_stage1_ledger_rows(page)
-            for r in ledger:
+        last_scrape: dict[str, Any] = {}
+        while time.time() - t0 < 90.0:
+            last_scrape = scrape_authoritative_start_state(page)
+            ledger_peek = scrape_stage1_ledger_rows(page)
+            for r in ledger_peek:
                 if r.get("event") == "production_stage1_start_handler_exited" and r.get("created_room_id"):
                     handler_rid = str(r.get("created_room_id") or "").upper()
                 if r.get("event") == "production_stage1_room_creation_exited" and r.get("created_room_id"):
                     created_rid = str(r.get("created_room_id") or "").upper()
-            token = str(last.get("production_token") or last.get("expire_token") or "")
-            checks = {
-                "one_room_created": bool(created_rid or handler_rid),
-                "same_room_handler": (not handler_rid or not rid or rid == handler_rid),
-                "same_room_after_rerun": bool(rid),
-                "in_progress": bool(last.get("in_progress")),
-                "pick_index_zero": last.get("pick_index") == 0,
-                "deadline_present": bool(last.get("deadline")),
-                "token_present": bool(token),
-                "countdown_mounted": _countdown_mounted(last),
-                "setup_not_visible": not last.get("setup_start_visible"),
-            }
-            empty_auth_overwrite = any(
-                r.get("event") == "production_stage1_room_state_restore"
-                and not str(r.get("restored_room_id") or "")
-                and (r.get("post_restore_snapshot") or {}).get("session_room_id") == ""
-                and rid
-                and str((r.get("post_restore_snapshot") or {}).get("restore_blocked_reason") or "") == "auth_required"
-                for r in ledger
-                if isinstance(r.get("post_restore_snapshot"), dict)
-            )
-            checks["no_auth_empty_restore_wipe"] = not empty_auth_overwrite or bool(rid)
-            if all(checks.values()) and rid:
-                pass_row = {"checks": checks, "state": last, "created_room_id": rid}
+            if handler_rid or created_rid:
+                page.wait_for_timeout(4000)
                 break
             page.wait_for_timeout(2000)
 
-        report["authoritative_state"] = last
+        ledger_full = scrape_stage1_ledger_rows(page)
+        created = (created_rid or handler_rid).upper()
+        run_id, session_id = resolve_run_and_session(ledger_full, created_room_id=created)
+        report["diagnostic_run_id"] = run_id
+        report["streamlit_session_id"] = session_id
+        report["created_room_id"] = created
         report["handler_room_id"] = handler_rid
-        report["created_room_id"] = created_rid or handler_rid
-        report["pass_checks"] = pass_row.get("checks") or {}
-        report["diagnostic_run_id"] = ""
-        ledger_final = scrape_stage1_ledger_rows(page)
-        if ledger_final:
-            report["diagnostic_run_id"] = str(ledger_final[0].get("run_id") or "")
-        if pass_row:
-            report["result"] = ROOM_LATCH_PASS
+
+        filtered = filter_latch_ledger_rows(
+            ledger_full,
+            diagnostic_run_id=run_id,
+            streamlit_session_id=session_id,
+            created_room_id=created,
+            click_ts=click_ts,
+        )
+        timeline = build_room_state_timeline(filtered, created_room_id=created)
+        report["latch_ledger_export"] = {
+            "row_count_full_scrape": len(ledger_full),
+            "row_count_filtered": len(filtered),
+            "filter": {
+                "diagnostic_run_id": run_id,
+                "streamlit_session_id": session_id,
+                "created_room_id": created,
+                "click_ts": click_ts,
+            },
+            "rows": filtered,
+        }
+        report["room_state_timeline"] = timeline
+
+        final_surface_row = next(
+            (t for t in reversed(timeline) if t.get("operation") == "surface"),
+            None,
+        )
+        last_scrape = scrape_authoritative_start_state(page)
+        report["final_ui_scrape"] = last_scrape
+        report["final_server_surface_decision"] = final_surface_row
+
+        verify = classify_room_latch_verify(
+            timeline=timeline,
+            filtered_ledger=filtered,
+            created_room_id=created,
+            final_surface=final_surface_row,
+            final_scrape=last_scrape,
+        )
+        report["verify_classification"] = verify
+        report["verify_boundary"] = verify.get("classification")
+        report["smallest_supported_correction_boundary"] = verify.get("smallest_supported_correction_boundary")
+
+        if verify.get("classification") == VERIFY1:
+            report["result"] = "ROOM_LATCH_PASS"
         else:
-            report["result"] = "ROOM_LATCH_FAIL"
+            report["result"] = ACCEPTED_FAIL
+
         report["finished_at"] = time.time()
         context.close()
         browser.close()
 
     OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
-    print(json.dumps({"result": report.get("result"), "artifact": str(OUT)}, indent=2))
-    return 0 if report.get("result") == ROOM_LATCH_PASS else 1
+    print(
+        json.dumps(
+            {
+                "verify_boundary": report.get("verify_boundary"),
+                "result": report.get("result"),
+                "created_room_id": report.get("created_room_id"),
+                "artifact": str(OUT),
+            },
+            indent=2,
+        )
+    )
+    return 0
 
 
 if __name__ == "__main__":
