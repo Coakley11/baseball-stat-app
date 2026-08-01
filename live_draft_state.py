@@ -189,6 +189,64 @@ def live_draft_restore_allowed(
     return True, f"legacy_allowed:{source or 'unknown'}"
 
 
+_AUTH_BLOCKED_RESTORE_REASONS = frozenset({"auth_required", "auth_required_for_owned_blob"})
+
+
+def should_preserve_in_session_room_on_auth_blocked_restore(
+    session: dict[str, Any],
+    *,
+    block_reason: str,
+) -> bool:
+    """Persisted restore unavailable (auth) must not wipe a valid in-session active room."""
+    if str(block_reason or "").strip() not in _AUTH_BLOCKED_RESTORE_REASONS:
+        return False
+    room = session.get(LIVE_DRAFT_ROOM_KEY)
+    if not is_runtime_room(room):
+        return False
+    rid = str(room.get("draft_room_id") or room.get("draft_id") or "").strip()
+    if not rid:
+        return False
+    if str(room.get("status") or "").strip().lower() != "in_progress":
+        return False
+    if room.get("current_pick_index") is None:
+        return False
+    if _room_blocked_from_auto_restore(session, room, for_persisted_restore=False):
+        return False
+    try:
+        from live_draft_creation_trace import new_room_is_protected
+
+        if new_room_is_protected(session):
+            return True
+    except ImportError:
+        pass
+    receipt = session.get("_live_draft_creation_receipt")
+    if isinstance(receipt, dict) and receipt.get("creation_success"):
+        draft_id = str(receipt.get("draft_id") or receipt.get("room_id") or "").strip()
+        if draft_id and draft_id.upper() == rid.upper():
+            return True
+    if session.get("_live_draft_post_create_open"):
+        return True
+    trace = session.get("_live_draft_creation_trace")
+    if isinstance(trace, dict) and trace.get("success") and str(trace.get("draft_id") or "") == rid:
+        return True
+    return False
+
+
+def _apply_auth_blocked_restore_without_clearing_runtime(
+    session: dict[str, Any],
+    *,
+    block_reason: str,
+    runtime_room: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not should_preserve_in_session_room_on_auth_blocked_restore(session, block_reason=block_reason):
+        return None
+    session["_live_draft_restore_blocked_reason"] = str(block_reason or "")
+    if is_runtime_room(runtime_room):
+        return runtime_room
+    fallback = session.get(LIVE_DRAFT_ROOM_KEY)
+    return fallback if is_runtime_room(fallback) else None
+
+
 def clear_foreign_live_draft_state(session: dict[str, Any], *, reason: str) -> None:
     # Never wipe an active Shared Multiplayer join (cross-workspace guest).
     if _session_is_shared_room_participant(session):
@@ -1404,6 +1462,14 @@ def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | 
                 return None
         allowed, block_reason = live_draft_restore_allowed(session, canonical, source="session_canonical")
         if not allowed:
+            preserved = _apply_auth_blocked_restore_without_clearing_runtime(
+                session,
+                block_reason=block_reason,
+                runtime_room=room if is_runtime_room(room) else None,
+            )
+            if preserved is not None:
+                check_manual_commit_overwrite(session, source="prepare_preserve_runtime_on_auth_block")
+                return _finish_prepare(session, preserved)
             clear_foreign_live_draft_state(session, reason=block_reason)
             return None
         runtime = room if is_runtime_room(room) else None
@@ -1530,6 +1596,13 @@ def apply_cloud_live_draft_state_if_allowed(session: dict[str, Any], state: dict
         return False
     allowed, block_reason = live_draft_restore_allowed(session, blob, source="cloud_or_workspace")
     if not allowed:
+        preserved = _apply_auth_blocked_restore_without_clearing_runtime(
+            session,
+            block_reason=block_reason,
+            runtime_room=session.get(LIVE_DRAFT_ROOM_KEY) if is_runtime_room(session.get(LIVE_DRAFT_ROOM_KEY)) else None,
+        )
+        if preserved is not None:
+            return False
         clear_foreign_live_draft_state(session, reason=block_reason)
         return False
     restored = room_from_persist_dict(blob)
@@ -1589,6 +1662,13 @@ def restore_live_draft_page_filters(session: dict[str, Any], store: dict[str, An
         return settings_restored
     allowed, block_reason = live_draft_restore_allowed(session, blob if isinstance(blob, dict) else None, source="page_filter")
     if not allowed:
+        preserved = _apply_auth_blocked_restore_without_clearing_runtime(
+            session,
+            block_reason=block_reason,
+            runtime_room=session.get(LIVE_DRAFT_ROOM_KEY) if is_runtime_room(session.get(LIVE_DRAFT_ROOM_KEY)) else None,
+        )
+        if preserved is not None:
+            return settings_restored
         clear_foreign_live_draft_state(session, reason=block_reason)
         return settings_restored
     restored = room_from_persist_dict(blob)
