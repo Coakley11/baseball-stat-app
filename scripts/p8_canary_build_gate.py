@@ -429,7 +429,13 @@ def commit_has_ledger_pipeline_observability(sha: str) -> dict[str, Any]:
         "production_stage1_cloud_ledger_pipeline_canary", pipe
     )
     out["finalize_before_stop"] = _grep("finalize_stage1_ledger_for_scrape", delivery)
-    out["ok"] = all(out.values())
+    out["ok"] = all(
+        [
+            out["ledger_pipeline_module"],
+            out["pipeline_canary_event"],
+            out["finalize_before_stop"],
+        ]
+    )
     return out
 
 
@@ -500,7 +506,7 @@ def commit_has_registration_hook_observability(sha: str) -> dict[str, Any]:
     return out
 
 
-CALLBACK_METADATA_OBS_GATE_SHA = REGISTRATION_HOOK_OBS_SHA
+CALLBACK_METADATA_OBS_GATE_SHA = LEDGER_PIPELINE_OBS_SHA
 
 
 def commit_has_registration_boundary_observability(sha: str) -> dict[str, Any]:
