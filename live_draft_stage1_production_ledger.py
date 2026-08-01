@@ -16,6 +16,15 @@ STAGE1_RUN_ID_KEY = "_solo_stage1_run_id"
 STAGE1_PROBE_ID = "solo-stage1-production-ledger"
 MAX_ROWS = 400
 LEDGER_B64_CHUNK_CHARS = 24000
+GATE_A_EXPORT_PINNED_EVENTS = frozenset(
+    {
+        "production_stage1_cloud_ledger_pipeline_canary",
+        "production_stage1_registration_hooks_installed",
+        "production_stage1_registration_hook_entered",
+        "production_stage1_registration_hook_exited",
+        "production_stage1_widget_metadata_at_registration",
+    }
+)
 
 
 def stage1_production_ledger_enabled(st: Any | None, session: dict[str, Any]) -> bool:
@@ -182,9 +191,32 @@ def note_stage1_token_claim(
 
 def ledger_rows_for_export(session: dict[str, Any]) -> list[dict[str, Any]]:
     merged = list(session.get(STAGE1_LEDGER_MERGED_KEY) or [])
-    if merged:
-        return merged[-MAX_ROWS:]
-    return list(session.get(STAGE1_LEDGER_KEY) or [])[-MAX_ROWS:]
+    if not merged:
+        merged = list(session.get(STAGE1_LEDGER_KEY) or [])
+    if not merged:
+        return []
+    pinned = [
+        dict(r)
+        for r in merged
+        if isinstance(r, dict) and str(r.get("event") or "") in GATE_A_EXPORT_PINNED_EVENTS
+    ]
+    seen = {str(r.get("event_id") or "") for r in pinned if r.get("event_id")}
+    tail: list[dict[str, Any]] = []
+    for r in reversed(merged):
+        if not isinstance(r, dict):
+            continue
+        eid = str(r.get("event_id") or "")
+        if eid and eid in seen:
+            continue
+        if str(r.get("event") or "") in GATE_A_EXPORT_PINNED_EVENTS:
+            continue
+        tail.append(dict(r))
+        if eid:
+            seen.add(eid)
+        if len(tail) >= MAX_ROWS:
+            break
+    tail.reverse()
+    return pinned + tail
 
 
 def _ledger_b64_chunks(b64: str) -> list[str]:

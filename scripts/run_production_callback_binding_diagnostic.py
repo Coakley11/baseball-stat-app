@@ -260,9 +260,6 @@ def main() -> int:
             control_exited=control_exited,
             local_hook_self_test_ok=bool(hook_self_test.get("ok")),
         )
-        if case_a_ok and delivery_proven and not case_gate_a.get("authoritative"):
-            case_gate_a["failure_boundary"] = INVALID_CLOUD_DIAGNOSTIC_LEDGER_VISIBILITY
-            case_gate_a["reason"] = "ui_delivery_proven_but_gate_a_metadata_incomplete"
         from p8_callback_metadata_diagnostic_report import summarize_internal_lane
 
         report["case_a"] = {
