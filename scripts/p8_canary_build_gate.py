@@ -432,6 +432,20 @@ def commit_has_ledger_pipeline_observability(sha: str) -> dict[str, Any]:
         "production_stage1_cloud_ledger_pipeline_canary", pipe
     )
     out["finalize_before_stop"] = _grep("finalize_stage1_ledger_for_scrape", delivery)
+
+    def _grep_literal(needle: str, *paths: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "grep", "-Fq", needle, sha, "--", *paths],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            return True
+        except Exception:
+            return False
+
     out["chunked_ledger_export"] = _grep("data-b64-chunk-count", prod_ledger)
     out["no_json_truncation_cap"] = _grep("data-payload-json-len", prod_ledger) and not _grep_literal(
         "[:48000]", prod_ledger
