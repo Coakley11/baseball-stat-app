@@ -7,6 +7,7 @@ gatherUsageStats = false
 # Streamlit Cloud entrypoint MUST be streamlit_app.py (lowercase).
 # Do not use Streamlit_app.py — removed from dev branch; uppercase breaks Linux deploys.
 # App settings: repo Coakley11/baseball-stat-app · branch dev · not pinned to an old commit.
+# deploy_epoch: 2026-08-01T20:20Z — redeploy pin 8f6c3fc (Stage-1 room latch observability).
 # deploy_epoch: 2026-08-01T19:40Z — redeploy pin 8f431e2 (Stage-1 start pipeline observability).
 # deploy_epoch: 2026-08-01T17:45Z — redeploy pin 05d80ae (register_widget metadata-at-registration emit).
 # deploy_epoch: 2026-08-01T17:25Z — redeploy pin fdb045e (metadata-at-registration via registration hooks).
