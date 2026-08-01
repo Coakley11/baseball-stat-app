@@ -459,6 +459,26 @@ def render_micro_isolation_once(
             )
         except ImportError:
             pass
+        try:
+            from live_draft_streamlit_widget_metadata_diag import (
+                SURFACE_PRODUCTION,
+                set_registration_diag_context,
+            )
+
+            set_registration_diag_context(
+                session,
+                diagnostic_surface=SURFACE_PRODUCTION,
+                declaration_invocation_id=decl_invocation_id,
+                widget_key=key,
+                application_on_change_present=mount_on_change is not None,
+                application_on_change_identity=getattr(mount_on_change, "__name__", "_prod_on_change"),
+                component_callable_identity="mount_solo_countdown_wake_with_token",
+                script_run_seq=int(session.get("_solo_stage1_script_run_seq") or 0),
+                active_page=str(session.get("active_page") or "")[:80],
+                room=production_room,
+            )
+        except ImportError:
+            pass
         raw_component_value = mount_solo_countdown_wake_with_token(
             production_room,
             key=key,
@@ -526,6 +546,7 @@ def render_micro_isolation_once(
                     mount_guard_result="mounted",
                     cached_raw_return=session.get(f"_solo_prod_raw_return_{key}"),
                     delivery_only=production_delivery_only,
+                    diagnostic_surface="production",
                 )
         except ImportError:
             pass

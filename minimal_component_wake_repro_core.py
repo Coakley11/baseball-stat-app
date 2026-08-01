@@ -240,6 +240,29 @@ def render_one_cycle(
             except Exception:
                 pass
 
+    decl_inv = ""
+    try:
+        from live_draft_streamlit_widget_metadata_diag import (
+            SURFACE_CASE_A_CONTROL,
+            set_registration_diag_context,
+        )
+        from live_draft_prod_on_change_observability import new_declaration_invocation_id
+
+        decl_inv = new_declaration_invocation_id()
+        set_registration_diag_context(
+            session,
+            diagnostic_surface=SURFACE_CASE_A_CONTROL,
+            declaration_invocation_id=decl_inv,
+            widget_key=key,
+            application_on_change_present=True,
+            application_on_change_identity="_on_change",
+            component_callable_identity="minimal_component_wake_repro_core.render_one_cycle",
+            script_run_seq=int(session.get("_solo_stage1_script_run_seq") or 0),
+            active_page=str(session.get("active_page") or "")[:80],
+        )
+    except ImportError:
+        decl_inv = ""
+
     raw_return = _COMPONENT(
         expire_token=token,
         key=key,
@@ -250,10 +273,12 @@ def render_one_cycle(
     try:
         from live_draft_prod_on_change_observability import (
             emit_callback_registration,
-            new_declaration_invocation_id,
         )
 
-        decl_inv = new_declaration_invocation_id()
+        if not decl_inv:
+            from live_draft_prod_on_change_observability import new_declaration_invocation_id
+
+            decl_inv = new_declaration_invocation_id()
         ss_before = repr(st.session_state.get(key))[:400] if key in st.session_state else "missing"
         emit_callback_registration(
             st,
@@ -271,6 +296,7 @@ def render_one_cycle(
             cached_raw_return=None,
             delivery_only=False,
             component_callable_identity="minimal_component_wake_repro_core.render_one_cycle",
+            diagnostic_surface="case_a_control",
         )
     except ImportError:
         pass

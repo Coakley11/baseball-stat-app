@@ -376,6 +376,55 @@ def commit_has_callback_observability(sha: str) -> dict[str, Any]:
 
 CALLBACK_METADATA_OBS_ANCHOR_SHA = "f58f473"
 METADATA_READ_FIX_SHA = "39b9ef4"
+REGISTRATION_BOUNDARY_OBS_SHA = "pending"
+
+
+def commit_has_registration_boundary_observability(sha: str) -> dict[str, Any]:
+    sha = str(sha or "").strip()[:7]
+    out: dict[str, Any] = {
+        "sha": sha,
+        "metadata_at_registration_event": False,
+        "metadata_at_dispatch_event": False,
+        "register_widget_probe": False,
+        "case_a_control_surface": False,
+        "ok": False,
+    }
+    if not sha:
+        return out
+    path = "live_draft_streamlit_widget_metadata_diag.py"
+    obs = "live_draft_prod_on_change_observability.py"
+
+    def _grep(pattern: str, *paths: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "grep", "-q", pattern, sha, "--", *paths],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            return True
+        except Exception:
+            return False
+
+    out["metadata_at_registration_event"] = _grep(
+        "production_stage1_widget_metadata_at_registration", path
+    )
+    out["metadata_at_dispatch_event"] = _grep(
+        "production_stage1_widget_metadata_at_dispatch", path
+    )
+    out["register_widget_probe"] = _grep("install_streamlit_register_widget_probe", path)
+    out["case_a_control_surface"] = _grep("case_a_control", path, obs)
+    out["ok"] = all(out.values()) if sha else False
+    out["ok"] = all(
+        [
+            out["metadata_at_registration_event"],
+            out["metadata_at_dispatch_event"],
+            out["register_widget_probe"],
+            out["case_a_control_surface"],
+        ]
+    )
+    return out
 CALLBACK_METADATA_OBS_GATE_SHA = METADATA_READ_FIX_SHA
 
 
@@ -498,6 +547,7 @@ def evaluate_cloud_callback_metadata_observability_readiness(
     expected_build = expected_build_label_for_pin(pin)
     impl = commit_has_callback_metadata_observability(runtime) if runtime else {}
     read_fix = commit_has_metadata_read_fix(runtime) if runtime else {}
+    reg_boundary = commit_has_registration_boundary_observability(runtime) if runtime else {}
     base = evaluate_cloud_callback_observability_readiness(
         runtime_git_head_short=runtime_git_head_short,
         runtime_git_head_full=runtime_git_head_full,
@@ -514,13 +564,26 @@ def evaluate_cloud_callback_metadata_observability_readiness(
             or git_sha_is_ancestor(METADATA_READ_FIX_SHA, runtime)
         )
     )
+    checks["registration_boundary_observability_at_runtime_git"] = bool(reg_boundary.get("ok"))
+    if REGISTRATION_BOUNDARY_OBS_SHA != "pending":
+        checks["registration_boundary_observability_at_runtime_git"] = checks[
+            "registration_boundary_observability_at_runtime_git"
+        ] and bool(
+            runtime
+            and (
+                runtime == git_short_sha(REGISTRATION_BOUNDARY_OBS_SHA)
+                or git_sha_is_ancestor(REGISTRATION_BOUNDARY_OBS_SHA, runtime)
+            )
+        )
     ok = all(checks.values())
     return {
         **base,
         "checks": checks,
         "callback_metadata_implementation_at_runtime_git": impl,
         "metadata_read_fix_at_runtime_git": read_fix,
+        "registration_boundary_observability_at_runtime_git": reg_boundary,
         "metadata_read_fix_implementation_sha": git_short_sha(METADATA_READ_FIX_SHA),
+        "registration_boundary_implementation_sha": git_short_sha(REGISTRATION_BOUNDARY_OBS_SHA),
         "ok": ok,
     }
 

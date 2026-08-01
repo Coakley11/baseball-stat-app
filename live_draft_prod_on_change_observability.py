@@ -249,6 +249,7 @@ def emit_callback_registration(
     cached_raw_return: Any,
     delivery_only: bool,
     component_callable_identity: str = "mount_solo_countdown_wake_with_token",
+    diagnostic_surface: str | None = None,
 ) -> dict[str, Any]:
     if not _obs_enabled(st, session):
         return {}
@@ -265,17 +266,36 @@ def emit_callback_registration(
         from live_draft_streamlit_widget_metadata_diag import (
             metadata_stores_callback,
             probe_after_declaration,
-            snapshot_widget_metadata,
+            resolve_diagnostic_surface,
+            set_registration_diag_context,
+            SURFACE_CASE_A_CONTROL,
+            SURFACE_PRODUCTION,
         )
 
-        surface = "case_a" if "minimal_wake_repro" in component_callable_identity else "production"
+        surface = resolve_diagnostic_surface(
+            explicit=diagnostic_surface,
+            component_callable_identity=component_callable_identity,
+            widget_key=widget_key,
+        )
         session["_solo_stage1_last_metadata_surface"] = surface
+        set_registration_diag_context(
+            session,
+            diagnostic_surface=surface,
+            declaration_invocation_id=declaration_invocation_id,
+            widget_key=widget_key,
+            application_on_change_present=application_on_change_present,
+            application_on_change_identity=getattr(on_change_fn, "__name__", "") if on_change_fn else "",
+            component_callable_identity=component_callable_identity,
+            script_run_seq=int(session.get("_solo_stage1_script_run_seq") or 0),
+            active_page=str(session.get("active_page") or "")[:80],
+            room=room,
+        )
         metadata_probe = probe_after_declaration(
             st,
             session,
             user_key=widget_key,
             component_name="solo_countdown_wake"
-            if surface == "production"
+            if surface == SURFACE_PRODUCTION
             else "minimal_wake_repro",
             application_on_change=on_change_fn,
             declaration_invocation_id=declaration_invocation_id,

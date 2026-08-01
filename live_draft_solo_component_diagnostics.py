@@ -62,6 +62,12 @@ def bootstrap_solo_component_diag(st: Any | None, session: dict[str, Any]) -> No
         install_streamlit_callback_dispatch_probe(st, session)
     except ImportError:
         pass
+    try:
+        from live_draft_streamlit_widget_metadata_diag import install_streamlit_register_widget_probe
+
+        install_streamlit_register_widget_probe(st, session)
+    except ImportError:
+        pass
 
 
 def solo_diag_timer_seconds(session: dict[str, Any], room: dict[str, Any] | None = None) -> int | None:

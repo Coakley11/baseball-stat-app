@@ -7,12 +7,205 @@ import time
 from typing import Any
 
 INTERNAL_METADATA_REGISTERED = "production_stage1_internal_widget_metadata_registered"
+METADATA_AT_REGISTRATION = "production_stage1_widget_metadata_at_registration"
+METADATA_AT_DISPATCH = "production_stage1_widget_metadata_at_dispatch"
 BACKEND_WIDGET_STATE = "production_stage1_backend_widget_state_after_backmsg"
 CALLBACK_DISPATCH_EVALUATED = "production_stage1_callback_dispatch_evaluated"
+
+SURFACE_CASE_A_CONTROL = "case_a_control"
+SURFACE_PRODUCTION = "production"
 
 METADATA_HISTORY_KEY = "_solo_stage1_widget_metadata_history"
 WATCH_USER_KEYS_KEY = "_solo_stage1_metadata_watch_user_keys"
 CALLBACKS_PATCHED_KEY = "_solo_stage1_call_callbacks_patched"
+REGISTER_WIDGET_PATCHED_KEY = "_solo_stage1_register_widget_patched"
+REG_DIAG_CTX_KEY = "_solo_stage1_registration_diag_context"
+_REG_CTX_BY_STREAMLIT_SESSION: dict[str, dict[str, Any]] = {}
+
+
+def _streamlit_session_id() -> str:
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        ctx = get_script_run_ctx()
+        if ctx and getattr(ctx, "session_id", None):
+            return str(ctx.session_id)
+    except Exception:
+        pass
+    return ""
+
+
+def resolve_diagnostic_surface(
+    *,
+    explicit: str | None,
+    component_callable_identity: str = "",
+    widget_key: str = "",
+) -> str:
+    if explicit and str(explicit).strip():
+        return str(explicit).strip()
+    ident = str(component_callable_identity or "")
+    wk = str(widget_key or "")
+    if wk.startswith("minimal_wake_repro_"):
+        return SURFACE_CASE_A_CONTROL
+    for needle in (
+        "minimal_component_wake_repro",
+        "minimal_component_wake_repro_core",
+        "render_one_cycle",
+        "case_a_control",
+    ):
+        if needle in ident:
+            return SURFACE_CASE_A_CONTROL
+    return SURFACE_PRODUCTION
+
+
+def set_registration_diag_context(session: dict[str, Any], **fields: Any) -> None:
+    ctx_row = dict(session.get(REG_DIAG_CTX_KEY) or {})
+    ctx_row.update({k: v for k, v in fields.items() if v is not None})
+    session[REG_DIAG_CTX_KEY] = ctx_row
+    sid = _streamlit_session_id()
+    if sid:
+        merged = dict(_REG_CTX_BY_STREAMLIT_SESSION.get(sid) or {})
+        merged.update(ctx_row)
+        _REG_CTX_BY_STREAMLIT_SESSION[sid] = merged
+
+
+def registration_diag_context(session: dict[str, Any] | None = None) -> dict[str, Any]:
+    if session:
+        row = session.get(REG_DIAG_CTX_KEY)
+        if isinstance(row, dict) and row:
+            return dict(row)
+    sid = _streamlit_session_id()
+    if sid and sid in _REG_CTX_BY_STREAMLIT_SESSION:
+        return dict(_REG_CTX_BY_STREAMLIT_SESSION[sid])
+    return {}
+
+
+def snapshot_from_widget_metadata_object(
+    metadata: Any,
+    *,
+    user_key: str = "",
+) -> dict[str, Any]:
+    widget_id = str(getattr(metadata, "id", "") or "")
+    out: dict[str, Any] = {
+        "authoritative_widget_id": widget_id[:200],
+        "user_key": user_key[:160],
+        "metadata_object_type": _metadata_type_name(metadata),
+        "metadata_missing": False,
+        "metadata_callback_present": False,
+        "metadata_callback_identity": "",
+        "metadata_callbacks_present": False,
+        "metadata_callbacks_keys": [],
+        "callback_args_repr": "",
+        "callback_kwargs_repr": "",
+        "value_type": str(getattr(metadata, "value_type", "") or ""),
+        "deserializer_identity": _fn_identity(getattr(metadata, "deserializer", None)),
+        "serializer_identity": _fn_identity(getattr(metadata, "serializer", None)),
+        "fragment_id": str(getattr(metadata, "fragment_id", "") or "")[:80],
+        "callback_registered_in_metadata": False,
+    }
+    cb = getattr(metadata, "callback", None)
+    out["metadata_callback_present"] = cb is not None
+    out["metadata_callback_identity"] = _fn_identity(cb)
+    cbs = getattr(metadata, "callbacks", None)
+    if isinstance(cbs, dict) and cbs:
+        out["metadata_callbacks_present"] = True
+        out["metadata_callbacks_keys"] = sorted(str(k) for k in cbs.keys())[:40]
+    args = getattr(metadata, "callback_args", None)
+    kwargs = getattr(metadata, "callback_kwargs", None)
+    try:
+        out["callback_args_repr"] = repr(args)[:300]
+        out["callback_kwargs_repr"] = repr(kwargs)[:300]
+    except Exception:
+        pass
+    out["callback_registered_in_metadata"] = metadata_stores_callback(out)
+    if not user_key:
+        try:
+            from streamlit.runtime.state.common import user_key_from_element_id
+
+            out["user_key"] = str(user_key_from_element_id(widget_id) or "")[:160]
+        except Exception:
+            pass
+    return out
+
+
+def _ledger_session_from_ctx() -> Any | None:
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        ctx = get_script_run_ctx()
+        if ctx and getattr(ctx, "session_state", None) is not None:
+            return ctx.session_state
+    except Exception:
+        pass
+    return None
+
+
+def emit_metadata_at_registration(
+    metadata: Any,
+    *,
+    user_key: str | None,
+    session: dict[str, Any] | None = None,
+    st: Any | None = None,
+) -> dict[str, Any]:
+    """Emit authoritative metadata from Streamlit register_widget (observability only)."""
+    ss = session if isinstance(session, dict) else {}
+    if not ss:
+        ss = _ledger_session_from_ctx()  # type: ignore[assignment]
+    if not _diag_enabled(st, ss if isinstance(ss, dict) else {}):
+        return {}
+    reg_ctx = registration_diag_context(ss if isinstance(ss, dict) else None)
+    surface = resolve_diagnostic_surface(
+        explicit=str(reg_ctx.get("diagnostic_surface") or ""),
+        component_callable_identity=str(reg_ctx.get("component_callable_identity") or ""),
+        widget_key=str(user_key or reg_ctx.get("widget_key") or ""),
+    )
+    snap = snapshot_from_widget_metadata_object(metadata, user_key=str(user_key or ""))
+    snap["diagnostic_surface"] = surface
+    snap["declaration_invocation_id"] = str(reg_ctx.get("declaration_invocation_id") or "")[:80]
+    snap["registration_script_run_sequence"] = int(reg_ctx.get("script_run_seq") or 0)
+    snap["registration_timestamp"] = time.time()
+    snap["application_on_change_argument_present"] = bool(reg_ctx.get("application_on_change_present"))
+    snap["application_on_change_identity"] = str(reg_ctx.get("application_on_change_identity") or "")[:200]
+    snap["component_callable_identity"] = str(reg_ctx.get("component_callable_identity") or "")[:120]
+    snap["active_page"] = str(reg_ctx.get("active_page") or "")[:80]
+    snap["capture_boundary"] = "streamlit_register_widget"
+    wkey = str(user_key or snap.get("user_key") or reg_ctx.get("widget_key") or "")
+    if wkey:
+        register_watch_user_key(ss if isinstance(ss, dict) else {}, wkey)
+    return _emit(
+        ss if isinstance(ss, dict) else {},
+        METADATA_AT_REGISTRATION,
+        st=st,
+        room=reg_ctx.get("room") if isinstance(reg_ctx.get("room"), dict) else None,
+        widget_key=wkey,
+        extra=snap,
+    )
+
+
+def install_streamlit_register_widget_probe(st: Any | None, session: dict[str, Any]) -> None:
+    if session.get(REGISTER_WIDGET_PATCHED_KEY):
+        return
+    if not _diag_enabled(st, session):
+        return
+    try:
+        from streamlit.runtime.state.session_state import SessionState
+    except ImportError:
+        return
+    if getattr(SessionState.register_widget, "_solo_reg_diag_wrapped", False):
+        session[REGISTER_WIDGET_PATCHED_KEY] = True
+        return
+    original = SessionState.register_widget
+
+    def wrapped_register_widget(self: Any, metadata: Any, user_key: str | None = None) -> Any:
+        try:
+            emit_metadata_at_registration(metadata, user_key=user_key, session=session, st=st)
+        except Exception:
+            pass
+        return original(self, metadata, user_key)
+
+    wrapped_register_widget._solo_reg_diag_wrapped = True  # type: ignore[attr-defined]
+    SessionState.register_widget = wrapped_register_widget  # type: ignore[method-assign]
+    session[REGISTER_WIDGET_PATCHED_KEY] = True
 
 
 def _diag_enabled(st: Any | None, session: dict[str, Any]) -> bool:
@@ -435,7 +628,13 @@ def probe_after_declaration(
     meta_snap["registration_script_run_sequence"] = int(session.get("_solo_stage1_script_run_seq") or 0)
     meta_snap["registration_timestamp"] = time.time()
     meta_snap["declaration_invocation_id"] = str(declaration_invocation_id or "")
-    meta_snap["diagnostic_surface"] = surface
+    meta_snap["diagnostic_surface"] = resolve_diagnostic_surface(
+        explicit=surface,
+        component_callable_identity=component_name,
+        widget_key=user_key,
+    )
+    meta_snap["post_declaration_scan_authoritative"] = False
+    meta_snap["post_declaration_scan_status"] = "not_authoritative_after_registration"
     meta_snap["mount_guard_result"] = str(mount_guard_result or "")[:80]
     meta_snap["callback_registered_in_metadata"] = metadata_stores_callback(meta_snap)
     if widget_id:
@@ -538,12 +737,44 @@ def install_streamlit_callback_dispatch_probe(st: Any | None, session: dict[str,
                 phase="pre_dispatch",
             )
             eval_row = evaluate_callback_dispatch(ss, wid, prod_entered_count=prod_entered)
+            reg_ctx = registration_diag_context(session)
+            surface = resolve_diagnostic_surface(
+                explicit=str(reg_ctx.get("diagnostic_surface") or session.get("_solo_stage1_last_metadata_surface") or ""),
+                widget_key=str(user_key),
+            )
+            dispatch_extra = {
+                **eval_row,
+                "authoritative_widget_id": wid,
+                "diagnostic_surface": surface,
+                "metadata_found": eval_row.get("metadata_callback_present")
+                or bool(ss._get_widget_metadata(wid) if hasattr(ss, "_get_widget_metadata") else False),
+                "metadata_callback_present": eval_row.get("metadata_callback_present"),
+                "metadata_callback_identity": eval_row.get("callback_identity"),
+                "callback_present": eval_row.get("metadata_callback_present"),
+                "callback_identity": eval_row.get("callback_identity"),
+                "new_widget_state_present": eval_row.get("new_state_present"),
+                "old_widget_state_present": eval_row.get("old_state_present"),
+                "new_value": eval_row.get("new_value_repr"),
+                "old_value": eval_row.get("old_value_repr"),
+                "widget_changed_result": eval_row.get("widget_changed_result"),
+                "callback_selected": eval_row.get("callback_selected"),
+                "dispatch_skip_reason": eval_row.get("skip_reason"),
+                "capture_boundary": "streamlit_call_callbacks",
+            }
+            _emit(
+                session,
+                METADATA_AT_DISPATCH,
+                st=st,
+                room=room,
+                widget_key=str(user_key),
+                extra=dispatch_extra,
+            )
             emit_callback_dispatch_evaluated_row(
                 st,
                 session,
                 user_key=str(user_key),
                 widget_id=wid,
-                eval_row=eval_row,
+                eval_row={**eval_row, "diagnostic_surface": surface},
                 room=room,
             )
         return original(self)

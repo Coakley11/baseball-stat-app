@@ -59,6 +59,8 @@ def main() -> int:
         CONTROL_PROBE_INVALID,
         INTERNAL_META,
         INVALID_INTERNAL_METADATA_OBSERVABILITY,
+        METADATA_AT_DISPATCH,
+        METADATA_AT_REGISTRATION,
         classify_callback_metadata_boundary,
         evaluate_case_a_metadata_authority,
     )
@@ -66,6 +68,7 @@ def main() -> int:
         CALLBACK_METADATA_OBS_ANCHOR_SHA,
         CALLBACK_METADATA_OBS_GATE_SHA,
         METADATA_READ_FIX_SHA,
+        REGISTRATION_BOUNDARY_OBS_SHA,
         CALLBACK_OBS_ANCHOR_SHA,
         git_head_short,
         local_deploy_pin,
@@ -109,14 +112,13 @@ def main() -> int:
         "started_at": time.time(),
         "accepted_prior_outcome": "CB1 — PRODUCTION_ON_CHANGE_NEVER_INVOKED",
         "prior_metadata_run_verdict": CONTROL_PROBE_INVALID,
-        "prior_metadata_run_sha": "f58f473",
+        "prior_invalid_internal_observability_sha": "39b9ef4",
         "deploy_pin": pin,
         "observability_implementation_sha": CALLBACK_OBS_ANCHOR_SHA,
-        "callback_metadata_observability_sha": CALLBACK_METADATA_OBS_ANCHOR_SHA,
-        "metadata_fix_implementation_sha": METADATA_READ_FIX_SHA,
+        "metadata_fix_implementation_sha": REGISTRATION_BOUNDARY_OBS_SHA,
         "deploy_trigger_sha": CALLBACK_METADATA_OBS_GATE_SHA,
         "git_head": git_head_short(),
-        "mode": "callback_metadata_diagnostic_v2",
+        "mode": "callback_metadata_diagnostic_v3",
         "artifact_path": str(OUT),
         "artifact_txt_path": str(OUT_TXT),
         "legacy_artifact_path": str(LEGACY_OUT),
@@ -210,7 +212,7 @@ def main() -> int:
         }
 
         if not case_authority.get("authoritative"):
-            report["first_boundary"] = INVALID_INTERNAL_METADATA_OBSERVABILITY
+            report["first_boundary"] = case_authority.get("failure_boundary") or INVALID_INTERNAL_METADATA_OBSERVABILITY
             report["smallest_correction_boundary"] = INVALID_INTERNAL_METADATA_OBSERVABILITY
             report["production_skipped"] = True
             report["finished_at"] = time.time()

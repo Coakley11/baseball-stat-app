@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 INTERNAL_META = "production_stage1_internal_widget_metadata_registered"
+METADATA_AT_REGISTRATION = "production_stage1_widget_metadata_at_registration"
+METADATA_AT_DISPATCH = "production_stage1_widget_metadata_at_dispatch"
 BACKEND_STATE = "production_stage1_backend_widget_state_after_backmsg"
 DISPATCH = "production_stage1_callback_dispatch_evaluated"
 CALLBACK_DISPATCH_EVALUATED = DISPATCH
@@ -12,9 +14,23 @@ REGISTRATION = "production_stage1_callback_registration"
 PROD_ENTERED = "production_stage1_prod_on_change_entered"
 CONTROL_ENTERED = "production_stage1_control_on_change_entered"
 CONTROL_EXITED = "production_stage1_control_on_change_exited"
+SURFACE_CASE_A_CONTROL = "case_a_control"
+SURFACE_PRODUCTION = "production"
 
 INVALID_INTERNAL_METADATA_OBSERVABILITY = "INVALID_INTERNAL_METADATA_OBSERVABILITY"
+INVALID_REGISTRATION_BOUNDARY_OBSERVABILITY = "INVALID_REGISTRATION_BOUNDARY_OBSERVABILITY"
 CONTROL_PROBE_INVALID = "CONTROL_PROBE_INVALID_FOR_METADATA_CLASSIFICATION"
+
+
+def _case_a_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = [r for r in rows if str(r.get("diagnostic_surface") or "") == SURFACE_CASE_A_CONTROL]
+    if out:
+        return out
+    return [
+        r
+        for r in rows
+        if str(r.get("widget_key") or "").startswith("minimal_wake_repro_")
+    ]
 
 
 def evaluate_case_a_metadata_authority(
@@ -24,7 +40,7 @@ def evaluate_case_a_metadata_authority(
     control_entered: list[dict[str, Any]],
     control_exited: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Gate production CM classification on authoritative Case A internal metadata."""
+    """Gate production CM classification on registration + dispatch evidence."""
     out: dict[str, Any] = {
         "ok": False,
         "authoritative": False,
@@ -32,6 +48,12 @@ def evaluate_case_a_metadata_authority(
         "checks": {},
         "reference_widget_key": "",
         "reference_control_token": "",
+        "authority_order": [
+            "registration_time_metadata",
+            "dispatch_time_metadata_state",
+            "callback_entry_exit",
+            "post_declaration_scan",
+        ],
     }
     if not case_a_delivery_proven or not control_entered:
         out["checks"]["case_a_python_delivery_proven"] = False
@@ -39,23 +61,18 @@ def evaluate_case_a_metadata_authority(
         return out
     out["checks"]["case_a_python_delivery_proven"] = True
 
-    meta_rows = _surface(_rows(peak_rows, INTERNAL_META), "case_a")
-    if not meta_rows:
-        meta_rows = [
-            r
-            for r in _rows(peak_rows, INTERNAL_META)
-            if str(r.get("widget_key") or "").startswith("minimal_wake_repro_")
-        ]
-    dispatch_rows = [
-        r
-        for r in _rows(peak_rows, DISPATCH)
-        if str(r.get("widget_key") or "").startswith("minimal_wake_repro_")
-    ]
-    backend_rows = [
-        r
-        for r in _rows(peak_rows, BACKEND_STATE)
-        if str(r.get("widget_key") or "").startswith("minimal_wake_repro_")
-    ]
+    reg_rows = _case_a_rows(_rows(peak_rows, METADATA_AT_REGISTRATION))
+    if not reg_rows:
+        out["failure_boundary"] = INVALID_REGISTRATION_BOUNDARY_OBSERVABILITY
+        out["reason"] = "no_registration_boundary_events_for_case_a"
+        out["checks"]["registration_time_metadata_captured"] = False
+        return out
+
+    dispatch_rows = _case_a_rows(_rows(peak_rows, METADATA_AT_DISPATCH))
+    if not dispatch_rows:
+        dispatch_rows = _case_a_rows(_rows(peak_rows, DISPATCH))
+    backend_rows = _case_a_rows(_rows(peak_rows, BACKEND_STATE))
+    post_scan_rows = _case_a_rows(_rows(peak_rows, INTERNAL_META))
 
     last_enter = control_entered[-1]
     wkey = str(last_enter.get("widget_key") or "")
@@ -63,52 +80,61 @@ def evaluate_case_a_metadata_authority(
     out["reference_widget_key"] = wkey
     out["reference_control_token"] = expected
 
-    meta_for = [r for r in meta_rows if r.get("widget_key") == wkey] or meta_rows
-    meta = meta_for[-1] if meta_for else {}
+    reg_for = [r for r in reg_rows if r.get("widget_key") == wkey] or reg_rows
+    reg = reg_for[-1] if reg_for else {}
     disp_for = [r for r in dispatch_rows if r.get("widget_key") == wkey] or dispatch_rows
     dispatch = disp_for[-1] if disp_for else {}
     backend_for = [r for r in backend_rows if r.get("widget_key") == wkey] or backend_rows
     backend = backend_for[-1] if backend_for else {}
 
-    cb_id = str(meta.get("metadata_callback_identity") or "")
+    reg_cb = str(reg.get("metadata_callback_identity") or "")
     enter_id = str(last_enter.get("callback_function_identity") or "_on_change")
+    disp_cb = str(
+        dispatch.get("metadata_callback_identity")
+        or dispatch.get("callback_identity")
+        or ""
+    )
 
     checks: dict[str, bool] = {
-        "application_callback_argument_present": meta.get("application_on_change_argument_present") is True,
-        "authoritative_control_widget_id": bool(str(meta.get("authoritative_widget_id") or "")),
-        "widget_metadata_found": meta.get("metadata_missing") is False,
-        "metadata_callback_present": bool(
-            meta.get("metadata_callback_present") or meta.get("callback_registered_in_metadata")
+        "surface_case_a_control": str(reg.get("diagnostic_surface") or "") == SURFACE_CASE_A_CONTROL,
+        "authoritative_control_widget_id": bool(str(reg.get("authoritative_widget_id") or "")),
+        "registration_time_metadata_captured": bool(reg),
+        "registration_time_callback_present": bool(
+            reg.get("metadata_callback_present") or reg.get("callback_registered_in_metadata")
         ),
-        "metadata_callback_identity_matches_control": bool(cb_id) and enter_id in cb_id,
-        "case_a_surface_label": str(meta.get("diagnostic_surface") or "") == "case_a",
-        "new_widget_state_present": bool(
-            dispatch.get("new_state_present") or backend.get("in_new_widget_state")
+        "registration_callback_identity_matches_control": bool(reg_cb) and enter_id in reg_cb,
+        "exact_new_state_after_frontend_update": bool(
+            dispatch.get("new_state_present")
+            or dispatch.get("new_widget_state_present")
+            or backend.get("in_new_widget_state")
         ),
-        "exact_control_value_in_new_state": bool(expected)
+        "widget_changed_true": dispatch.get("widget_changed_result") is True,
+        "dispatch_time_callback_present": bool(
+            dispatch.get("metadata_callback_present") or dispatch.get("callback_present")
+        ),
+        "callback_selected_true": dispatch.get("callback_selected") is True,
+        "control_callback_entered": True,
+        "control_callback_exited": bool(control_exited),
+        "exact_control_value_visible": bool(expected)
         and expected
         in str(
-            dispatch.get("new_value_repr")
+            dispatch.get("new_value")
+            or dispatch.get("new_value_repr")
             or backend.get("deserialized_value_repr")
             or last_enter.get("session_state_value_repr")
             or ""
         ),
-        "old_and_new_values_recorded": bool(
-            str(dispatch.get("old_value_repr") or backend.get("old_deserialized_value_repr") or "") != ""
-            or dispatch.get("new_state_present")
-        ),
-        "widget_changed_true": dispatch.get("widget_changed_result") is True,
-        "callback_selected_true": dispatch.get("callback_selected") is True,
-        "control_callback_entered": True,
-        "control_callback_exited": bool(control_exited),
+        "python_delivery_proven": True,
     }
     out["checks"] = checks
     out["case_a_reference"] = {
-        "metadata": meta,
+        "registration": reg,
         "dispatch": dispatch,
         "backend": backend,
+        "post_declaration_scan_supplemental": post_scan_rows[-1] if post_scan_rows else {},
         "control_entered": last_enter,
         "control_exited": control_exited[-1] if control_exited else {},
+        "dispatch_callback_identity": disp_cb,
     }
     out["ok"] = all(checks.values())
     out["authoritative"] = out["ok"]
@@ -201,20 +227,30 @@ def classify_callback_metadata_boundary(
         exact_token=exact_token,
         production_widget_key=production_widget_key,
     )
-    prod_meta_rows = [
+    prod_reg_meta = [
+        r
+        for r in _rows(filtered_rows, METADATA_AT_REGISTRATION)
+        if str(r.get("diagnostic_surface") or "") == SURFACE_PRODUCTION
+        and (not production_widget_key or r.get("widget_key") == production_widget_key)
+    ]
+    prod_meta_rows = prod_reg_meta or [
         r
         for r in _rows(filtered_rows, INTERNAL_META)
-        if r.get("diagnostic_surface") != "case_a"
+        if str(r.get("diagnostic_surface") or "") == SURFACE_PRODUCTION
         and (not production_widget_key or r.get("widget_key") == production_widget_key)
+    ]
+    prod_dispatch = [
+        r
+        for r in _rows(filtered_rows, METADATA_AT_DISPATCH)
+        if (not production_widget_key or r.get("widget_key") == production_widget_key)
+    ] or [
+        r
+        for r in _rows(filtered_rows, DISPATCH)
+        if not production_widget_key or r.get("widget_key") == production_widget_key
     ]
     prod_regs = [
         r
         for r in _rows(filtered_rows, REGISTRATION)
-        if not production_widget_key or r.get("widget_key") == production_widget_key
-    ]
-    prod_dispatch = [
-        r
-        for r in _rows(filtered_rows, DISPATCH)
         if not production_widget_key or r.get("widget_key") == production_widget_key
     ]
     prod_backend = [
@@ -228,8 +264,14 @@ def classify_callback_metadata_boundary(
     last_meta = prod_meta_rows[-1] if prod_meta_rows else {}
     last_dispatch = _last_token_row(prod_dispatch, exact_token)
     last_backend = _last_token_row(prod_backend, exact_token)
-    app_passed = bool(last_meta.get("application_on_change_argument_present"))
-    meta_has = bool(last_meta.get("callback_registered_in_metadata"))
+    app_passed = bool(
+        last_meta.get("application_on_change_argument_present")
+        or prod_regs[-1].get("application_on_change_argument_present") if prod_regs else False
+    )
+    meta_has = bool(
+        last_meta.get("metadata_callback_present")
+        or last_meta.get("callback_registered_in_metadata")
+    )
     hist: list[dict[str, Any]] = []
     wid = str(last_meta.get("authoritative_widget_id") or "")
     for r in prod_meta_rows:
@@ -256,14 +298,10 @@ def classify_callback_metadata_boundary(
     }
 
     if control_entered and prod_meta_rows:
-        case_meta = _surface(_rows(filtered_rows, INTERNAL_META), "case_a")
-        if case_meta and not case_meta[-1].get("callback_registered_in_metadata"):
-            report["classification"] = "CM10 — OTHER"
-            report["rationale"] = "Case A metadata lacks callback despite working control path."
-            return report
+        pass  # Case A authority already validated before production classification.
 
     if app_passed and not meta_has:
-        report["classification"] = "CM1 — CALLBACK_ARGUMENT_NOT_STORED_IN_WIDGET_METADATA"
+        report["classification"] = "CM1 — CALLBACK_ARGUMENT_NOT_STORED_AT_REGISTRATION"
         report["rationale"] = "Application passed on_change but WidgetMetadata has no callback/callbacks."
         report["architectural_options"] = [
             "Option A: Canonical V1 declaration + direct returned value (no unsupported on_change surface).",

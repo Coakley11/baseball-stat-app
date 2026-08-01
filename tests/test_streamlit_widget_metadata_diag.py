@@ -131,29 +131,33 @@ def test_probe_after_declaration_emits_without_mutating_token() -> None:
 
 
 def test_evaluate_case_a_authority_passes_when_metadata_and_dispatch_complete() -> None:
-    from scripts.p8_callback_metadata_classify import evaluate_case_a_metadata_authority
+    from scripts.p8_callback_metadata_classify import (
+        METADATA_AT_DISPATCH,
+        METADATA_AT_REGISTRATION,
+        SURFACE_CASE_A_CONTROL,
+        evaluate_case_a_metadata_authority,
+    )
 
     token = "repro|3|1.0"
     peak = [
         {
-            "event": "production_stage1_internal_widget_metadata_registered",
-            "diagnostic_surface": "case_a",
+            "event": METADATA_AT_REGISTRATION,
+            "diagnostic_surface": SURFACE_CASE_A_CONTROL,
             "widget_key": "minimal_wake_repro_3",
             "authoritative_widget_id": "wid-3",
-            "application_on_change_argument_present": True,
-            "metadata_missing": False,
             "metadata_callback_present": True,
             "metadata_callback_identity": "mod._on_change",
             "callback_registered_in_metadata": True,
         },
         {
-            "event": "production_stage1_callback_dispatch_evaluated",
+            "event": METADATA_AT_DISPATCH,
+            "diagnostic_surface": SURFACE_CASE_A_CONTROL,
             "widget_key": "minimal_wake_repro_3",
-            "new_state_present": True,
-            "new_value_repr": token,
-            "old_value_repr": "old",
+            "new_widget_state_present": True,
+            "new_value": token,
             "widget_changed_result": True,
             "callback_selected": True,
+            "metadata_callback_present": True,
         },
         {
             "event": "production_stage1_control_on_change_entered",
@@ -173,7 +177,50 @@ def test_evaluate_case_a_authority_passes_when_metadata_and_dispatch_complete() 
     assert out["authoritative"] is True
 
 
-def test_evaluate_case_a_authority_fails_when_metadata_missing() -> None:
+def test_resolve_diagnostic_surface_case_a_explicit_and_identifiers() -> None:
+    from live_draft_streamlit_widget_metadata_diag import (
+        SURFACE_CASE_A_CONTROL,
+        SURFACE_PRODUCTION,
+        resolve_diagnostic_surface,
+    )
+
+    assert (
+        resolve_diagnostic_surface(
+            explicit=None,
+            component_callable_identity="minimal_component_wake_repro_core.render_one_cycle",
+            widget_key="minimal_wake_repro_0",
+        )
+        == SURFACE_CASE_A_CONTROL
+    )
+    assert resolve_diagnostic_surface(explicit="case_a_control", widget_key="x") == SURFACE_CASE_A_CONTROL
+    assert (
+        resolve_diagnostic_surface(
+            explicit=None,
+            component_callable_identity="mount_solo_countdown_wake_with_token",
+            widget_key="solo_countdown_wake_solo_persistent",
+        )
+        == SURFACE_PRODUCTION
+    )
+
+
+def test_snapshot_from_widget_metadata_object() -> None:
+    from live_draft_streamlit_widget_metadata_diag import snapshot_from_widget_metadata_object
+
+    class _Meta:
+        id = "$$ID-x-key"
+        callback = lambda: None  # noqa: E731
+        callbacks = None
+        callback_args = ()
+        callback_kwargs = {}
+        value_type = "json_value"
+        deserializer = lambda v: v  # noqa: E731
+        serializer = lambda v: v  # noqa: E731
+        fragment_id = None
+
+    snap = snapshot_from_widget_metadata_object(_Meta(), user_key="key")
+    assert snap["metadata_callback_present"] is True
+    assert snap["callback_registered_in_metadata"] is True
+
     from scripts.p8_callback_metadata_classify import (
         INVALID_INTERNAL_METADATA_OBSERVABILITY,
         evaluate_case_a_metadata_authority,
@@ -201,18 +248,21 @@ def test_evaluate_case_a_authority_fails_when_metadata_missing() -> None:
         control_exited=[],
     )
     assert out["authoritative"] is False
-    assert out["failure_boundary"] == INVALID_INTERNAL_METADATA_OBSERVABILITY
+    assert out["failure_boundary"] == "INVALID_REGISTRATION_BOUNDARY_OBSERVABILITY"
 
-    from scripts.p8_callback_metadata_classify import classify_callback_metadata_boundary
+    from scripts.p8_callback_metadata_classify import (
+        METADATA_AT_REGISTRATION,
+        classify_callback_metadata_boundary,
+    )
 
     rows = [
         {
-            "event": "production_stage1_internal_widget_metadata_registered",
+            "event": METADATA_AT_REGISTRATION,
             "diagnostic_surface": "production",
             "widget_key": "solo_countdown_wake_solo_persistent",
             "application_on_change_argument_present": True,
-            "callback_registered_in_metadata": False,
             "metadata_callback_present": False,
+            "callback_registered_in_metadata": False,
         }
     ]
     out = classify_callback_metadata_boundary(
