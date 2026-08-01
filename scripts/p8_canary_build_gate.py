@@ -381,7 +381,7 @@ REGISTRATION_HOOK_OBS_SHA = "3125f9e"
 
 
 REGISTRATION_HOOK_OBS_SHA = "3125f9e"
-LEDGER_PIPELINE_OBS_SHA = "764cdd2"
+LEDGER_PIPELINE_OBS_SHA = "fdb045e"
 
 
 def commit_has_ledger_pipeline_observability(sha: str) -> dict[str, Any]:
