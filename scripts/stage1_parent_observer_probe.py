@@ -160,6 +160,45 @@ def scrape_stage1_production_ledger(page) -> dict[str, Any]:
         return {"rows": [], "source": "error"}
 
 
+_SCrape_PIPELINE_CANARY_JS = """
+() => {
+  const out = { p1: 0, p2: 0, p3: 0, p4: 0, p5: 0, p1_counter: 0, canary_id: "", run_id: "", json: "" };
+  const roots = [document];
+  try {
+    document.querySelectorAll("iframe").forEach(f => {
+      try { if (f.contentDocument) roots.push(f.contentDocument); } catch (e) {}
+    });
+  } catch (e0) {}
+  for (const root of roots) {
+    try {
+      const el = root.getElementById("solo-stage1-ledger-pipeline-canary");
+      if (!el) continue;
+      out.p1 = parseInt(el.getAttribute("data-p1") || "0", 10) || 0;
+      out.p2 = parseInt(el.getAttribute("data-p2") || "0", 10) || 0;
+      out.p3 = parseInt(el.getAttribute("data-p3") || "0", 10) || 0;
+      out.p4 = parseInt(el.getAttribute("data-p4") || "0", 10) || 0;
+      out.p5 = parseInt(el.getAttribute("data-p5") || "0", 10) || 0;
+      out.p1_counter = parseInt(el.getAttribute("data-p1-counter") || "0", 10) || 0;
+      out.canary_id = el.getAttribute("data-canary-id") || "";
+      out.run_id = el.getAttribute("data-run-id") || "";
+      out.json = el.getAttribute("data-json") || "";
+      out.source = "pipeline_probe_dom";
+      return out;
+    } catch (e) {}
+  }
+  return out;
+}
+"""
+
+
+def scrape_ledger_pipeline_canary(page) -> dict[str, Any]:
+    try:
+        raw = page.evaluate(_SCrape_PIPELINE_CANARY_JS)
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
 def merge_ledger_rows(existing: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen = {str(r.get("event_id") or "") for r in existing if isinstance(r, dict)}
     merged = list(existing)

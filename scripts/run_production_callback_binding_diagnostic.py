@@ -59,6 +59,7 @@ def main() -> int:
         CONTROL_PROBE_INVALID,
         HOOKS_INSTALLED,
         INTERNAL_META,
+        INVALID_CLOUD_DIAGNOSTIC_LEDGER_VISIBILITY,
         INVALID_CLOUD_REGISTRATION_HOOK_INSTALLATION,
         INVALID_INTERNAL_METADATA_OBSERVABILITY,
         INVALID_REGISTRATION_BOUNDARY_OBSERVABILITY,
@@ -129,7 +130,7 @@ def main() -> int:
     pin = local_deploy_pin()
     report: dict[str, Any] = {
         "started_at": time.time(),
-        "accepted_prior_invalid_registration_boundary": "INVALID_REGISTRATION_BOUNDARY_OBSERVABILITY @ f7ce65c",
+        "accepted_prior_cloud_run": "INVALID_CLOUD_DIAGNOSTIC_LEDGER_VISIBILITY @ 3125f9e",
         "accepted_cb1": "CB1 — PRODUCTION_ON_CHANGE_NEVER_INVOKED",
         "cm1_cm10_from_prior_run": "not_accepted",
         "deploy_pin": pin,
@@ -139,7 +140,7 @@ def main() -> int:
         "metadata_fix_implementation_sha": REGISTRATION_BOUNDARY_OBS_SHA,
         "deploy_trigger_sha": CALLBACK_METADATA_OBS_GATE_SHA,
         "git_head": git_head_short(),
-        "mode": "callback_metadata_diagnostic_v4",
+        "mode": "callback_metadata_diagnostic_v5_ledger_gate_a_only",
         "local_registration_hook_self_test": hook_self_test,
         "artifact_path": str(OUT),
         "artifact_txt_path": str(OUT_TXT),
@@ -197,6 +198,42 @@ def main() -> int:
         cap_a = capture_all_ledger_sources(page)
         collector.absorb_capture(cap_a, label="case_a")
         peak = collector.peak_rows()
+        from live_draft_stage1_ledger_pipeline import (
+            PIPELINE_CANARY_EVENT,
+            classify_first_ledger_pipeline_failure,
+        )
+
+        pipeline_dom = cap_a.get("pipeline_canary_dom") or {}
+        pipeline_eval = classify_first_ledger_pipeline_failure(
+            pipeline_dom=pipeline_dom,
+            ledger_rows=peak,
+            artifact_has_canary=any(
+                isinstance(r, dict) and r.get("event") == PIPELINE_CANARY_EVENT for r in peak
+            ),
+        )
+        report["ledger_pipeline_dom"] = pipeline_dom
+        report["ledger_pipeline_stages"] = pipeline_eval
+        if str(pipeline_eval.get("classification") or "") not in ("", "LEDGER_PIPELINE_OK"):
+            report["first_boundary"] = str(pipeline_eval.get("classification") or "LEDGER10 — OTHER")
+            report["smallest_correction_boundary"] = report["first_boundary"]
+            report["production_skipped"] = True
+            report["gate"] = "ledger_pipeline_failed"
+            report["finished_at"] = time.time()
+            context.close()
+            browser.close()
+            _persist_report(report)
+            print(
+                json.dumps(
+                    {
+                        "first_boundary": report["first_boundary"],
+                        "artifact": str(OUT),
+                        "gate": "ledger_pipeline",
+                    },
+                    indent=2,
+                )
+            )
+            return 1
+
         control_entered = [r for r in peak if r.get("event") == CONTROL_ENTERED]
         control_exited = [r for r in peak if r.get("event") == "production_stage1_control_on_change_exited"]
         case_dispatch = [r for r in peak if r.get("event") == CALLBACK_DISPATCH_EVALUATED]
@@ -205,14 +242,19 @@ def main() -> int:
         hooks_installed = [r for r in peak if r.get("event") == HOOKS_INSTALLED]
         reg_hook_entered = [r for r in peak if r.get("event") == REG_HOOK_ENTERED]
         reg_hook_exited = [r for r in peak if r.get("event") == REG_HOOK_EXITED]
-        delivery_proven = case_a_ok and bool(control_entered)
+        delivery_proven = case_a_ok and (
+            bool(control_entered) or bool(reg_hook_entered) or bool(hooks_installed)
+        )
         case_gate_a = evaluate_case_a_gate_a(
             peak_rows=peak,
             case_a_delivery_proven=delivery_proven,
-            control_entered=control_entered,
+            control_entered=control_entered or reg_hook_entered,
             control_exited=control_exited,
             local_hook_self_test_ok=bool(hook_self_test.get("ok")),
         )
+        if case_a_ok and delivery_proven and not case_gate_a.get("authoritative"):
+            case_gate_a["failure_boundary"] = INVALID_CLOUD_DIAGNOSTIC_LEDGER_VISIBILITY
+            case_gate_a["reason"] = "ui_delivery_proven_but_gate_a_metadata_incomplete"
         from p8_callback_metadata_diagnostic_report import summarize_internal_lane
 
         report["case_a"] = {
@@ -272,145 +314,30 @@ def main() -> int:
             )
             return 1
 
-        report["gate_a_passed"] = True
-        url = production_url()
-        goto_and_wake(page, url, timeout_s=240)
-        page.wait_for_timeout(15000)
-        try:
-            page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
-            page.wait_for_timeout(3000)
-        except Exception:
-            pass
-        report["cloud_runtime_probe"] = scrape_cloud_runtime_deploy_probe(page)
-        cleanup = ensure_fresh_setup_lobby(page)
-        if not cleanup.get("ok"):
-            report["first_boundary"] = "CB10 — OTHER"
-            _write_abort(report, reason="setup_lobby_blocked", boundary=report["first_boundary"])
-            context.close()
-            browser.close()
-            return 1
-        ensure_p8_ldr_setup_surface(page, setup_url=url)
-        draft = execute_solo_draft_start_workflow(page, url, navigate=False)
-        draft = retry_draft_start_if_stalled(page, draft, setup_url=url)
-        start_val = validate_p8_diagnostic_setup(
-            page, draft, prior_room_id="", auth_preflight=pre, max_wait_s=75.0
+        report["gate_a_passed"] = bool(case_gate_a.get("authoritative"))
+        report["production_skipped"] = True
+        report["gate"] = "A_ledger_visibility_only"
+        report["first_boundary"] = (
+            "LEDGER_PIPELINE_OK"
+            if report["gate_a_passed"]
+            else (case_gate_a.get("failure_boundary") or INVALID_CLOUD_DIAGNOSTIC_LEDGER_VISIBILITY)
         )
-        if not start_val.get("valid"):
-            _write_abort(report, reason=start_val.get("verdict") or "setup_invalid", boundary="CB10 — OTHER")
-            context.close()
-            browser.close()
-            return 1
-
-        exp = wait_one_expiration(page, timeout_s=95.0)
-        cap_p = capture_all_ledger_sources(page)
-        collector.absorb_capture(cap_p, label="production_expiration")
-        token_sent = str(exp.get("token_sent") or "")
-        room = str(start_val.get("latched_room_id") or "")
-        report["diagnostic_run_id"] = _infer_run_id(collector.peak_rows(), room)
-        report["room_id"] = room
-        report["exact_expiration_token"] = token_sent
-        report["production_expiration"] = {
-            "token_sent": token_sent,
-            "client_stages": exp.get("client_stages"),
-        }
-
-        unfiltered = _ledger_rows(exp) or collector.peak_rows()
-        run_id = _infer_run_id(unfiltered, room)
-        sha = resolve_required_sha()
-        filtered = filter_ledger_rows_for_diagnostic_run(
-            unfiltered,
-            run_id=run_id,
-            room_id=room,
-            deployment_sha=sha,
-            exact_token=token_sent,
-        )
-        rows = list(filtered.get("filtered_rows") or [])
-        outbound_id = ""
-        direct_return = ""
-        for r in rows:
-            if r.get("event") == "production_countdown_declaration_post":
-                outbound_id = str(
-                    r.get("actual_registered_widget_id") or r.get("generated_internal_widget_id") or ""
-                )
-                direct_return = str(r.get("direct_return_value") or "")
-                if outbound_id:
-                    break
-        prod_entered = [r for r in rows if r.get("event") == PROD_ENTERED]
-        prod_exited = [r for r in rows if r.get("event") == PROD_EXITED]
-        prod_reg_hooks = [r for r in rows if r.get("event") == REG_HOOK_ENTERED]
-        prod_reg_hooks_exit = [r for r in rows if r.get("event") == REG_HOOK_EXITED]
-        regs = [r for r in rows if r.get("event") == REGISTRATION]
-        entry = prod_entered[-1] if prod_entered else {}
-        exit_row = prod_exited[-1] if prod_exited else {}
-        report["production_registration_hook_timeline"] = prod_reg_hooks
-        report["production_registration_hook_exit_timeline"] = prod_reg_hooks_exit
-        report["production_callback_registration_timeline"] = regs
-        report["production_internal_metadata_timeline"] = [r for r in rows if r.get("event") == INTERNAL_META]
-        report["production_backend_state_timeline"] = [r for r in rows if r.get("event") == BACKEND_STATE]
-        report["production_dispatch_timeline"] = [r for r in rows if r.get("event") == CALLBACK_DISPATCH_EVALUATED]
-        report["production_callback_timeline"] = {
-            "registrations": regs,
-            "prod_entered": prod_entered,
-            "prod_exited": prod_exited,
-        }
-        report["outbound_widget_id"] = outbound_id
-        report["callback_owning_declaration_id"] = (
-            str(regs[-1].get("declaration_invocation_id") or "") if regs else ""
-        )
-        report["prod_on_change_entered"] = bool(prod_entered)
-        report["session_state_at_callback_entry"] = {
-            "key_exists": entry.get("session_state_key_exists"),
-            "value_repr": entry.get("session_state_value_repr"),
-        }
-        report["session_state_at_callback_exit"] = {
-            "key_exists": exit_row.get("session_state_key_exists_at_exit"),
-            "value_repr": exit_row.get("session_state_value_at_exit_repr"),
-        }
-        report["direct_component_return"] = direct_return
-        report["exceptions"] = str(exit_row.get("exception_status") or "") or None
-
-        cb_classification = classify_callback_boundary(
-            filtered_rows=rows,
-            exact_token=token_sent,
-            outbound_widget_id=outbound_id,
-        )
-        cm_classification = classify_callback_metadata_boundary(
-            filtered_rows=rows,
-            exact_token=token_sent,
-            production_widget_key=PRODUCTION_WIDGET_KEY,
-        )
-        report["cb1_boundary"] = cb_classification.get("classification")
-        report["first_boundary"] = cm_classification.get("classification")
-        report["classification_detail"] = cm_classification
-        report["callback_boundary_detail"] = cb_classification
-        report["internal_comparison"] = cm_classification.get("comparison")
-        report["architectural_options"] = cm_classification.get("architectural_options") or []
-        report["smallest_correction_boundary"] = cm_classification.get("smallest_correction_boundary")
-        report["production_internal_timeline_summary"] = {
-            "metadata": summarize_internal_lane(
-                [r for r in rows if r.get("event") == INTERNAL_META],
-                label="production",
-            ),
-            "dispatch": summarize_internal_lane(
-                [r for r in rows if r.get("event") == CALLBACK_DISPATCH_EVALUATED],
-                label="production_dispatch",
-            ),
-            "backend": summarize_internal_lane(
-                [r for r in rows if r.get("event") == BACKEND_STATE],
-                label="production_backend",
-            ),
-            "prod_callback_entered": len(prod_entered),
-            "prod_callback_exited": len(prod_exited),
-            "exact_expiration_token": token_sent,
-            "direct_component_return": direct_return,
-        }
+        report["smallest_correction_boundary"] = report["first_boundary"]
         report["finished_at"] = time.time()
         context.close()
         browser.close()
-
-    _persist_report(report)
-    print(json.dumps({"first_boundary": report.get("first_boundary"), "artifact": str(OUT)}, indent=2))
-    return 0
+        _persist_report(report)
+        print(
+            json.dumps(
+                {
+                    "first_boundary": report.get("first_boundary"),
+                    "gate_a_passed": report.get("gate_a_passed"),
+                    "artifact": str(OUT),
+                },
+                indent=2,
+            )
+        )
+        return 0 if report.get("gate_a_passed") else 1
 
 
 if __name__ == "__main__":

@@ -64,6 +64,12 @@ def bootstrap_solo_component_diag(st: Any | None, session: dict[str, Any]) -> No
             if timer_raw.isdigit():
                 session[SOLO_DIAG_TIMER_SESSION_KEY] = max(5, min(60, int(timer_raw)))
             _install_stage1_registration_and_dispatch_probes(st, session)
+            try:
+                from live_draft_stage1_ledger_pipeline import emit_cloud_ledger_pipeline_canary
+
+                emit_cloud_ledger_pipeline_canary(st, session)
+            except ImportError:
+                pass
             return
     except ImportError:
         pass
@@ -73,6 +79,12 @@ def bootstrap_solo_component_diag(st: Any | None, session: dict[str, Any]) -> No
     if timer_raw.isdigit():
         session[SOLO_DIAG_TIMER_SESSION_KEY] = max(5, min(60, int(timer_raw)))
     _install_stage1_registration_and_dispatch_probes(st, session)
+    try:
+        from live_draft_stage1_ledger_pipeline import emit_cloud_ledger_pipeline_canary
+
+        emit_cloud_ledger_pipeline_canary(st, session)
+    except ImportError:
+        pass
 
 
 def solo_diag_timer_seconds(session: dict[str, Any], room: dict[str, Any] | None = None) -> int | None:

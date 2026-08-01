@@ -12,13 +12,19 @@ from live_draft_streamlit_widget_metadata_diag import (
     REG_DIAG_CTX_KEY,
     SURFACE_CASE_A_CONTROL,
     SURFACE_PRODUCTION,
-    _emit,
     _fn_identity,
     register_watch_user_key,
     registration_diag_context,
     resolve_diagnostic_surface,
     snapshot_from_widget_metadata_object,
 )
+
+
+def _emit(session: dict[str, Any], event: str, **kwargs: Any) -> dict[str, Any]:
+    """Always delegate to canonical emitter (avoid stale import alias)."""
+    from live_draft_streamlit_widget_metadata_diag import _emit as emit_fn
+
+    return emit_fn(session, event, **kwargs)
 
 REG_HOOK_ENTERED = "production_stage1_registration_hook_entered"
 REG_HOOK_EXITED = "production_stage1_registration_hook_exited"
@@ -445,19 +451,15 @@ def run_local_case_a_hook_self_test() -> dict[str, Any]:
         return row
 
     import live_draft_streamlit_widget_metadata_diag as diag_mod
-    import live_draft_streamlit_registration_hooks as hooks_mod
 
     orig_emit = diag_mod._emit
-    orig_hooks_emit = hooks_mod._emit
 
     def _capture_emit(sess: dict, event: str, **kw: Any) -> dict[str, Any]:
         row = {"event": event, **(kw.get("extra") or {})}
         events.append(row)
         return row
 
-    captured = lambda sess, event, **kw: _capture_emit(sess, event, **kw)  # noqa: E731
-    diag_mod._emit = captured  # type: ignore[assignment]
-    hooks_mod._emit = captured  # type: ignore[assignment]
+    diag_mod._emit = lambda sess, event, **kw: _capture_emit(sess, event, **kw)  # type: ignore[assignment]
 
     def _on_change() -> None:
         pass
@@ -477,7 +479,6 @@ def run_local_case_a_hook_self_test() -> dict[str, Any]:
         pass
     finally:
         diag_mod._emit = orig_emit
-        hooks_mod._emit = orig_hooks_emit
 
     entered = [e for e in events if e.get("event") == REG_HOOK_ENTERED]
     hooks_installed = [e for e in events if e.get("event") == HOOKS_INSTALLED]

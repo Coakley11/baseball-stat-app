@@ -405,6 +405,12 @@ def try_delivery_diag_case_a_app(st: Any, session: dict[str, Any]) -> bool:
         if result.callbacks:
             st.dataframe(result.callbacks, use_container_width=True)
         render_case_a_app_shell_probe(st, session, result=result, passed=True)
+        try:
+            from live_draft_stage1_ledger_pipeline import finalize_stage1_ledger_for_scrape
+
+            finalize_stage1_ledger_for_scrape(st, session)
+        except ImportError:
+            pass
         return True
 
     st.caption(
@@ -414,6 +420,13 @@ def try_delivery_diag_case_a_app(st: Any, session: dict[str, Any]) -> bool:
     render_case_a_app_shell_probe(st, session, result=result, passed=False)
     if result.should_rerun:
         st.rerun()
+        return True
+    try:
+        from live_draft_stage1_ledger_pipeline import finalize_stage1_ledger_for_scrape
+
+        finalize_stage1_ledger_for_scrape(st, session)
+    except ImportError:
+        pass
     return True
 
 

@@ -380,6 +380,59 @@ REGISTRATION_BOUNDARY_OBS_SHA = "f7ce65c"
 REGISTRATION_HOOK_OBS_SHA = "3125f9e"
 
 
+REGISTRATION_HOOK_OBS_SHA = "3125f9e"
+LEDGER_PIPELINE_OBS_SHA = "pending"
+
+
+def commit_has_ledger_pipeline_observability(sha: str) -> dict[str, Any]:
+    sha = str(sha or "").strip()[:7]
+    out: dict[str, Any] = {
+        "sha": sha,
+        "ledger_pipeline_module": False,
+        "pipeline_canary_event": False,
+        "finalize_before_stop": False,
+        "ok": False,
+    }
+    if not sha:
+        return out
+    pipe = "live_draft_stage1_ledger_pipeline.py"
+    delivery = "live_draft_solo_delivery_diag.py"
+
+    def _cat(path: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "cat-file", "-e", f"{sha}:{path}"],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _grep(pattern: str, *paths: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "grep", "-q", pattern, sha, "--", *paths],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            return True
+        except Exception:
+            return False
+
+    out["ledger_pipeline_module"] = _cat(pipe)
+    out["pipeline_canary_event"] = _grep(
+        "production_stage1_cloud_ledger_pipeline_canary", pipe
+    )
+    out["finalize_before_stop"] = _grep("finalize_stage1_ledger_for_scrape", delivery)
+    out["ok"] = all(out.values())
+    return out
+
+
 def commit_has_registration_hook_observability(sha: str) -> dict[str, Any]:
     sha = str(sha or "").strip()[:7]
     out: dict[str, Any] = {
@@ -447,7 +500,7 @@ def commit_has_registration_hook_observability(sha: str) -> dict[str, Any]:
     return out
 
 
-CALLBACK_METADATA_OBS_GATE_SHA = REGISTRATION_BOUNDARY_OBS_SHA
+CALLBACK_METADATA_OBS_GATE_SHA = REGISTRATION_HOOK_OBS_SHA
 
 
 def commit_has_registration_boundary_observability(sha: str) -> dict[str, Any]:
@@ -619,6 +672,7 @@ def evaluate_cloud_callback_metadata_observability_readiness(
     read_fix = commit_has_metadata_read_fix(runtime) if runtime else {}
     reg_boundary = commit_has_registration_boundary_observability(runtime) if runtime else {}
     reg_hooks = commit_has_registration_hook_observability(runtime) if runtime else {}
+    ledger_pipe = commit_has_ledger_pipeline_observability(runtime) if runtime else {}
     base = evaluate_cloud_callback_observability_readiness(
         runtime_git_head_short=runtime_git_head_short,
         runtime_git_head_full=runtime_git_head_full,
@@ -657,6 +711,17 @@ def evaluate_cloud_callback_metadata_observability_readiness(
                 or git_sha_is_ancestor(REGISTRATION_HOOK_OBS_SHA, runtime)
             )
         )
+    checks["ledger_pipeline_observability_at_runtime_git"] = bool(ledger_pipe.get("ok"))
+    if LEDGER_PIPELINE_OBS_SHA != "pending":
+        checks["ledger_pipeline_observability_at_runtime_git"] = checks[
+            "ledger_pipeline_observability_at_runtime_git"
+        ] and bool(
+            runtime
+            and (
+                runtime == git_short_sha(LEDGER_PIPELINE_OBS_SHA)
+                or git_sha_is_ancestor(LEDGER_PIPELINE_OBS_SHA, runtime)
+            )
+        )
     ok = all(checks.values())
     return {
         **base,
@@ -665,9 +730,11 @@ def evaluate_cloud_callback_metadata_observability_readiness(
         "metadata_read_fix_at_runtime_git": read_fix,
         "registration_boundary_observability_at_runtime_git": reg_boundary,
         "registration_hook_observability_at_runtime_git": reg_hooks,
+        "ledger_pipeline_observability_at_runtime_git": ledger_pipe,
         "metadata_read_fix_implementation_sha": git_short_sha(METADATA_READ_FIX_SHA),
         "registration_boundary_implementation_sha": git_short_sha(REGISTRATION_BOUNDARY_OBS_SHA),
         "registration_hook_implementation_sha": git_short_sha(REGISTRATION_HOOK_OBS_SHA),
+        "ledger_pipeline_implementation_sha": git_short_sha(LEDGER_PIPELINE_OBS_SHA),
         "ok": ok,
     }
 

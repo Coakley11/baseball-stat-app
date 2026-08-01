@@ -81,6 +81,13 @@ def capture_all_ledger_sources(page, *, audit: dict[str, Any] | None = None) -> 
     if final_dom_rows:
         raw_dom_rows = merge_ledger_rows(raw_dom_rows, final_dom_rows)
 
+    try:
+        from stage1_parent_observer_probe import scrape_ledger_pipeline_canary
+
+        pipeline_dom = scrape_ledger_pipeline_canary(page)
+    except ImportError:
+        pipeline_dom = {}
+
     durable_store = scrape_durable_ledger_store(page)
     durable_rows = rows_from_b64(str(durable_store.get("best_b64") or ""))
 
@@ -135,6 +142,7 @@ def capture_all_ledger_sources(page, *, audit: dict[str, Any] | None = None) -> 
         "merged_incoming": merged_incoming,
         "dom_hits": hits,
         "durable_store": durable_store,
+        "pipeline_canary_dom": pipeline_dom,
         "application_ledger_run_id": str((dom_all.get("best") or {}).get("run_id") or ""),
     }
 
