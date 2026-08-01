@@ -32,6 +32,125 @@ START_PROOF_KEYS = (
     "countdown_mounted",
 )
 
+START_BUTTON_KEY = "live_draft_start_btn"
+START_BUTTON_LABEL = "Start New Live Draft"
+
+
+def dispatch_start_single_authoritative_click(page, checkpoints: list[dict[str, Any]]) -> dict[str, Any]:
+    """One Playwright locator click only (evaluate used for inspection)."""
+    from solo_draft_start_harness import SCAN_BUTTONS_JS, checkpoint
+
+    if checkpoints and checkpoints[-1].get("_start_click_count", 0) >= 1:
+        raise RuntimeError("duplicate_start_click_blocked")
+    buttons = page.evaluate(SCAN_BUTTONS_JS) or []
+    matches = [b for b in buttons if START_BUTTON_LABEL in str(b.get("text") or "")]
+    enabled = [m for m in matches if m.get("visible") and not m.get("disabled")]
+    inspect: dict[str, Any] = {
+        "selector_found": bool(matches),
+        "start_matches": matches,
+        "disabled_at_click": bool(matches) and not enabled,
+        "selector": f"role=button[name=/{START_BUTTON_LABEL}/i]",
+        "widget_key": START_BUTTON_KEY,
+        "start_click_count": 1,
+    }
+    checkpoint(
+        checkpoints,
+        "start_single_click_inspect",
+        matches=len(matches),
+        enabled=len(enabled),
+    )
+    dom_click_dispatched = False
+    click_ts = time.time()
+    intercept = False
+    bbox: dict[str, Any] = {}
+    if enabled:
+        name_re = re.compile(re.escape(START_BUTTON_LABEL), re.I)
+        for frame in page.frames:
+            try:
+                loc = frame.get_by_role("button", name=name_re)
+                if loc.count() < 1 or loc.first.is_disabled():
+                    continue
+                box = loc.first.bounding_box()
+                if box:
+                    bbox = dict(box)
+                loc.first.click(timeout=15000, force=True)
+                dom_click_dispatched = True
+                checkpoint(checkpoints, "start_single_click_playwright", frame=frame.url[:80])
+                break
+            except Exception as exc:
+                checkpoint(checkpoints, "start_single_click_frame_skip", error=str(exc)[:120])
+        if not dom_click_dispatched:
+            try:
+                loc = page.get_by_role("button", name=name_re)
+                if loc.count() >= 1 and not loc.first.is_disabled():
+                    bbox = loc.first.bounding_box() or {}
+                    loc.first.click(timeout=15000, force=True)
+                    dom_click_dispatched = True
+            except Exception as exc:
+                inspect["click_error"] = str(exc)[:300]
+    inspect.update(
+        {
+            "dom_click_dispatched": dom_click_dispatched,
+            "click_timestamp": click_ts,
+            "bounding_box": bbox,
+            "click_intercepted": intercept,
+        }
+    )
+    checkpoint(checkpoints, "_start_click_count", _start_click_count=1)
+    return inspect
+
+
+def capture_start_click_transport(page, *, click_ts: float) -> dict[str, Any]:
+    """Summarize WebSocket BackMsg evidence after the single click."""
+    from p8_streamlit_backmsg_decode import try_parse_backmsg
+
+    raw_log = page.evaluate("() => (window.__p8WsBoundaryLog || []).slice()") or []
+    outbound = [e for e in raw_log if isinstance(e, dict) and e.get("direction") == "outbound"]
+    after = [
+        e
+        for e in outbound
+        if float(e.get("wall_ts_ms") or 0) >= (click_ts * 1000.0 - 50.0)
+    ]
+    decodes: list[dict[str, Any]] = []
+    backmsg_sent = False
+    rerun_in_msg = False
+    widget_key_in_msg = False
+    for entry in after[:12]:
+        # Harness cannot recover raw bytes from log; use frame hints only unless extended.
+        hint = str(entry.get("frame_type_hint") or "")
+        if "rerun" in hint or "widget" in hint or "backmsg" in hint:
+            backmsg_sent = True
+        if hint:
+            decodes.append({"frame_type_hint": hint, "byte_len": entry.get("byte_len")})
+    try:
+        page_hash = page.evaluate(
+            """() => {
+              const el = document.querySelector('#solo-production-ledger-diag');
+              return el ? (el.getAttribute('data-page-script-hash') || '') : '';
+            }"""
+        )
+    except Exception:
+        page_hash = ""
+    return {
+        "outbound_frames_after_click": len(after),
+        "streamlit_backmsg_sent": backmsg_sent or len(after) > 0,
+        "python_rerun_started": False,
+        "page_script_hash": page_hash,
+        "ws_log_sample": after[:5],
+        "backmsg_decodes": decodes,
+        "widget_key": START_BUTTON_KEY,
+    }
+
+
+def scrape_stage1_ledger_rows(page) -> list[dict[str, Any]]:
+    from stage1_ledger_browser_extract import extract_stage1_ledger_from_page
+
+    try:
+        ext = extract_stage1_ledger_from_page(page)
+        rows = ext.get("rows") if isinstance(ext.get("rows"), list) else []
+        return [r for r in rows if isinstance(r, dict)]
+    except Exception:
+        return []
 
 def _ts() -> float:
     return time.time()
@@ -263,7 +382,6 @@ def run_gate_b_production_start(
         SCAN_SETUP_JS,
         SOLO_RADIO_JS,
         checkpoint,
-        dispatch_start_new_live_draft_click,
         ensure_solo_setup_picks_meet_roster,
         maybe_clear_stale_draft,
         set_number_via_playwright,
@@ -348,57 +466,73 @@ def run_gate_b_production_start(
             out["reused_existing_room"] = True
             return out
 
-    click = dispatch_start_new_live_draft_click(page, checkpoints)
-    evaluate_dispatched = any(
-        c.get("step") == "start_click_evaluate_dispatched" and c.get("evaluate_clicked")
-        for c in checkpoints
-    )
-    click["evaluate_click_dispatched"] = evaluate_dispatched
-    url_changed = any(c.get("url_changed") for c in checkpoints if c.get("step") == "streamlit_rerun_detected")
-    click["url_changed"] = url_changed
-    label = "Start New Live Draft"
+    click = dispatch_start_single_authoritative_click(page, checkpoints)
+    click_ts = float(click.get("click_timestamp") or time.time())
+    transport = capture_start_click_transport(page, click_ts=click_ts)
+    out["start_click_transport"] = transport
+    label = START_BUTTON_LABEL
     _step(
         timeline,
         step="start_action_submitted",
         page=page,
         state=scrape_authoritative_start_state(page),
         action=f"click:{label}",
-        result="submitted" if (click.get("playwright_clicked") or evaluate_dispatched) else "not_registered",
+        result="submitted" if click.get("dom_click_dispatched") else "not_registered",
         extra={
-            "start_selector": "button[role=button]:has-text('Start New Live Draft')",
+            "start_selector": click.get("selector"),
             "start_label": label,
             "start_matches": click.get("start_matches"),
-            "playwright_clicked": click.get("playwright_clicked"),
-            "evaluate_click_dispatched": evaluate_dispatched,
+            "dom_click_dispatched": click.get("dom_click_dispatched"),
+            "start_click_count": 1,
+            "bounding_box": click.get("bounding_box"),
+            "click_transport": transport,
         },
     )
 
     proof_wait = wait_for_start_proof(
         page,
         prior_room_id=prior_room_id,
-        start_click_dispatched=bool(click.get("playwright_clicked") or evaluate_dispatched),
+        start_click_dispatched=bool(click.get("dom_click_dispatched")),
         timeline=timeline,
         max_wait_s=90.0,
     )
+    ledger_rows = scrape_stage1_ledger_rows(page)
+    if any(r.get("event") == "production_global_script_run_canary" for r in ledger_rows):
+        transport["python_rerun_started"] = True
+    out["ledger_rows_after_start"] = ledger_rows
     out.update(proof_wait)
     out["start_click"] = click
-    draft_legacy = {"start_success": False, "first_missing_criterion": ""}
 
     if proof_wait.get("valid"):
+        from p8_start_boundary_classify import START_PIPELINE_PASS, classify_start_boundary
+
+        out["start_classification"] = classify_start_boundary(
+            ldr_surface=ldr,
+            click_transport={**click, **transport},
+            ledger_rows=ledger_rows,
+            authoritative_state=proof_wait.get("authoritative_state") or {},
+            start_proof=proof_wait.get("start_proof") or {},
+            click_ts=click_ts,
+        )
+        out["start_boundary"] = START_PIPELINE_PASS
         out["setup_gate"] = "PASS_POSITIVE_START_PROOF"
         return out
 
     state_f = proof_wait.get("authoritative_state") or {}
     grade_f = proof_wait.get("authoritative_grade") or {}
     proof_f = proof_wait.get("start_proof") or {}
-    boundary = classify_production_start_boundary(
+    from p8_start_boundary_classify import classify_start_boundary
+
+    classified = classify_start_boundary(
         ldr_surface=ldr,
-        click_result=click,
-        state=state_f,
-        grade=grade_f,
-        proof=proof_f,
-        draft_legacy=draft_legacy,
+        click_transport={**click, **transport},
+        ledger_rows=ledger_rows,
+        authoritative_state=state_f,
+        start_proof=proof_f,
+        click_ts=click_ts,
     )
+    out["start_classification"] = classified
+    boundary = str(classified.get("classification") or START10)
     out["start_boundary"] = boundary
     out["valid"] = False
     out["failure_boundary"] = f"{INVALID_PRODUCTION_EXPIRATION_TRACE} — PRE_EXPIRATION_SETUP"

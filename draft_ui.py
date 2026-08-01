@@ -1788,6 +1788,14 @@ def on_start_new_live_draft() -> None:
     import streamlit as st
 
     try:
+        from live_draft_start_stage1_observability import emit_start_handler_entered
+
+        emit_start_handler_entered(st.session_state)
+    except ImportError:
+        pass
+    _handler_ok = False
+    _handler_exc = ""
+    try:
         from live_draft_setup_persist import flush_live_draft_setup_persist
 
         flush_live_draft_setup_persist(st, st.session_state, reason="live_draft_start")
@@ -1802,6 +1810,18 @@ def on_start_new_live_draft() -> None:
         gate = gate_start_new_live_draft_click(st.session_state)
         if gate.get("armed"):
             mark_start_live_draft_clicked(st.session_state)
+            _handler_ok = True
+        try:
+            from live_draft_start_stage1_observability import emit_start_handler_exited
+
+            emit_start_handler_exited(
+                st.session_state,
+                success=_handler_ok and bool(gate.get("armed")),
+                exception="" if gate.get("armed") else str(gate.get("error") or "gate_not_armed"),
+                session_state_writes=["_start_live_draft_pending"] if gate.get("armed") else [],
+            )
+        except ImportError:
+            pass
         return
     except Exception:
         # Fall through to legacy arming only when the gate helper is unavailable.
@@ -1838,6 +1858,17 @@ def on_start_new_live_draft() -> None:
     st.session_state["_start_live_draft_mode"] = "new"
     st.session_state["_start_live_draft_pending"] = True
     st.session_state.pop("_simulator_to_live_show_confirm", None)
+    _handler_ok = True
+    try:
+        from live_draft_start_stage1_observability import emit_start_handler_exited
+
+        emit_start_handler_exited(
+            st.session_state,
+            success=True,
+            session_state_writes=["_start_live_draft_pending", "_start_live_draft_mode"],
+        )
+    except ImportError:
+        pass
 
 
 def on_prepare_shared_draft_room() -> None:

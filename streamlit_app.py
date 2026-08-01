@@ -23250,6 +23250,12 @@ elif active_page == "Live Draft Room":
             if _begin_start is not None:
                 _begin_start(st.session_state, mode=_start_mode)
             try:
+                from live_draft_start_stage1_observability import emit_start_handler_entered
+
+                emit_start_handler_entered(st.session_state, source="pending_start_handler")
+            except ImportError:
+                pass
+            try:
                 from live_draft_creation_trace import init_creation_trace, note_creation_step
                 from live_draft_solo_create import note_timed_step
 
@@ -23693,7 +23699,41 @@ elif active_page == "Live Draft Room":
                     except ImportError:
                         pass
                     _t_room = _time_mod.perf_counter()
-                    new_room = live_draft_init_room(config, pool_live)
+                    try:
+                        from live_draft_start_stage1_observability import (
+                            emit_room_creation_entered,
+                            emit_room_creation_exited,
+                        )
+
+                        emit_room_creation_entered(
+                            st.session_state,
+                            mode=str(_start_mode or "new"),
+                        )
+                    except ImportError:
+                        emit_room_creation_entered = None  # type: ignore[misc, assignment]
+                        emit_room_creation_exited = None  # type: ignore[misc, assignment]
+                    try:
+                        new_room = live_draft_init_room(config, pool_live)
+                    except Exception as _room_exc:
+                        try:
+                            if emit_room_creation_exited is not None:
+                                emit_room_creation_exited(
+                                    st.session_state,
+                                    success=False,
+                                    error=f"{type(_room_exc).__name__}: {_room_exc}",
+                                )
+                        except ImportError:
+                            pass
+                        raise
+                    try:
+                        if emit_room_creation_exited is not None:
+                            emit_room_creation_exited(
+                                st.session_state,
+                                success=True,
+                                room_id=str(new_room.get("draft_room_id") or ""),
+                            )
+                    except ImportError:
+                        pass
                     record_start_live_draft_diagnostics(st.session_state, live_room_created=True)
                     try:
                         from live_draft_fast_solo_start import note_start_stage
@@ -24038,6 +24078,24 @@ elif active_page == "Live Draft Room":
             except Exception:
                 pass
         finally:
+            try:
+                from live_draft_start_stage1_observability import emit_start_handler_exited
+
+                _live_room = (
+                    st.session_state.get("live_draft_room")
+                    if isinstance(st.session_state.get("live_draft_room"), dict)
+                    else {}
+                )
+                emit_start_handler_exited(
+                    st.session_state,
+                    success=bool(_start_handler_ok),
+                    exception=str(_start_handler_err or ""),
+                    created_room_id=str(_live_room.get("draft_room_id") or ""),
+                    draft_status=str(_live_room.get("status") or ""),
+                    pick_index=_live_room.get("current_pick_index"),
+                )
+            except ImportError:
+                pass
             _life_after = ""
             try:
                 from live_draft_completion import resolve_live_draft_lifecycle
@@ -24612,6 +24670,17 @@ elif active_page == "Live Draft Room":
 
             b_start, b_reset, b_restore = st.columns([2, 2, 1])
             with b_start:
+                try:
+                    from live_draft_start_stage1_observability import emit_start_control_rendered
+
+                    emit_start_control_rendered(
+                        st,
+                        st.session_state,
+                        disabled=bool(_start_disabled),
+                        help_text=str(_start_help or ""),
+                    )
+                except ImportError:
+                    pass
                 st.button(
                     "Start New Live Draft",
                     type="primary",
@@ -24620,6 +24689,17 @@ elif active_page == "Live Draft Room":
                     help=_start_help or None,
                     on_click=on_start_new_live_draft,
                 )
+                try:
+                    from live_draft_start_stage1_observability import emit_start_button_value
+
+                    emit_start_button_value(
+                        st,
+                        st.session_state,
+                        live_draft_branch_entered=True,
+                        setup_surface_active=True,
+                    )
+                except ImportError:
+                    pass
                 try:
                     from live_draft_start_setup import peek_setup_validation_error
 

@@ -381,7 +381,7 @@ REGISTRATION_HOOK_OBS_SHA = "3125f9e"
 
 
 REGISTRATION_HOOK_OBS_SHA = "3125f9e"
-LEDGER_PIPELINE_OBS_SHA = "fdb045e"
+LEDGER_PIPELINE_OBS_SHA = "05d80ae"
 
 
 def commit_has_ledger_pipeline_observability(sha: str) -> dict[str, Any]:
@@ -686,6 +686,69 @@ def commit_has_callback_metadata_observability(sha: str) -> dict[str, Any]:
     return out
 
 
+def commit_has_start_stage1_observability(sha: str) -> dict[str, Any]:
+    sha = str(sha or "").strip()[:7]
+    out: dict[str, Any] = {
+        "sha": sha,
+        "file_start_stage1_observability_py": False,
+        "start_control_rendered_event": False,
+        "start_handler_entered_event": False,
+        "room_creation_entered_event": False,
+        "ok": False,
+    }
+    if not sha:
+        return out
+
+    def _cat(path: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "cat-file", "-e", f"{sha}:{path}"],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _grep(pattern: str, *paths: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "grep", "-q", pattern, sha, "--", *paths],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            return True
+        except Exception:
+            return False
+
+    path = "live_draft_start_stage1_observability.py"
+    out["file_start_stage1_observability_py"] = _cat(path)
+    if out["file_start_stage1_observability_py"]:
+        out["start_control_rendered_event"] = _grep(
+            "production_stage1_start_control_rendered", sha, path
+        )
+        out["start_handler_entered_event"] = _grep(
+            "production_stage1_start_handler_entered", sha, path
+        )
+        out["room_creation_entered_event"] = _grep(
+            "production_stage1_room_creation_entered", sha, path
+        )
+    out["ok"] = all(
+        out[k]
+        for k in (
+            "file_start_stage1_observability_py",
+            "start_control_rendered_event",
+            "start_handler_entered_event",
+            "room_creation_entered_event",
+        )
+    )
+    return out
+
+
 def evaluate_cloud_callback_metadata_observability_readiness(
     *,
     runtime_git_head_short: str,
@@ -704,6 +767,7 @@ def evaluate_cloud_callback_metadata_observability_readiness(
     reg_boundary = commit_has_registration_boundary_observability(runtime) if runtime else {}
     reg_hooks = commit_has_registration_hook_observability(runtime) if runtime else {}
     ledger_pipe = commit_has_ledger_pipeline_observability(runtime) if runtime else {}
+    start_stage1 = commit_has_start_stage1_observability(runtime) if runtime else {}
     base = evaluate_cloud_callback_observability_readiness(
         runtime_git_head_short=runtime_git_head_short,
         runtime_git_head_full=runtime_git_head_full,
@@ -753,7 +817,8 @@ def evaluate_cloud_callback_metadata_observability_readiness(
                 or git_sha_is_ancestor(LEDGER_PIPELINE_OBS_SHA, runtime)
             )
         )
-    ok = all(checks.values())
+    checks["start_stage1_observability_at_runtime_git"] = bool(start_stage1.get("ok"))
+    ok = all(v for k, v in checks.items() if k != "start_stage1_observability_at_runtime_git")
     return {
         **base,
         "checks": checks,
@@ -762,6 +827,7 @@ def evaluate_cloud_callback_metadata_observability_readiness(
         "registration_boundary_observability_at_runtime_git": reg_boundary,
         "registration_hook_observability_at_runtime_git": reg_hooks,
         "ledger_pipeline_observability_at_runtime_git": ledger_pipe,
+        "start_stage1_observability_at_runtime_git": start_stage1,
         "metadata_read_fix_implementation_sha": git_short_sha(METADATA_READ_FIX_SHA),
         "registration_boundary_implementation_sha": git_short_sha(REGISTRATION_BOUNDARY_OBS_SHA),
         "registration_hook_implementation_sha": git_short_sha(REGISTRATION_HOOK_OBS_SHA),
@@ -1119,6 +1185,7 @@ def poll_live_cloud_sha(
     wait_for_binding_readiness: bool = False,
     wait_for_callback_observability: bool = False,
     wait_for_callback_metadata_observability: bool = False,
+    wait_for_start_stage1_observability: bool = False,
 ) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
     from playwright.sync_api import sync_playwright
@@ -1146,7 +1213,8 @@ def poll_live_cloud_sha(
     pin = local_deploy_pin()
     wait_binding = wait_for_binding_readiness or wait_for_deploy_pin
     wait_callback_obs = wait_for_callback_observability or wait_for_callback_metadata_observability
-    wait_metadata_obs = wait_for_callback_metadata_observability
+    wait_metadata_obs = wait_for_callback_metadata_observability or wait_for_start_stage1_observability
+    wait_start_obs = wait_for_start_stage1_observability
 
     for i in range(max_attempts):
         row: dict[str, Any] = {"attempt": i, "ts": time.time()}
@@ -1216,6 +1284,14 @@ def poll_live_cloud_sha(
                     if not ready.get("ok"):
                         time.sleep(sleep_s)
                         continue
+                    if wait_start_obs:
+                        start_impl = commit_has_start_stage1_observability(
+                            runtime_short or sha
+                        )
+                        row["start_stage1_observability"] = start_impl
+                        if not start_impl.get("ok"):
+                            time.sleep(sleep_s)
+                            continue
                     report["ok"] = True
                     return report
                 if wait_binding:
