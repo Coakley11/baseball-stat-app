@@ -8,7 +8,8 @@ LATCH1 = "LATCH1 — ROOM_RESULT_NEVER_WRITTEN_TO_SESSION_STATE"
 LATCH2 = "LATCH2 — ROOM_WRITTEN_UNDER_WRONG_KEY"
 LATCH3 = "LATCH3 — ROOM_WRITTEN_TO_WRONG_SESSION"
 LATCH4 = "LATCH4 — ROOM_STATE_CLEARED_AFTER_HANDLER"
-LATCH5 = "LATCH5 — WORKSPACE_RESTORE_OVERWRITES_NEW_ROOM"
+LATCH5 = "LATCH5 — VALID IN-SESSION ROOM OVERWRITTEN BY AUTH-BLOCKED EMPTY RESTORE"
+LATCH5_LEGACY = "LATCH5 — WORKSPACE_RESTORE_OVERWRITES_NEW_ROOM"
 LATCH6 = "LATCH6 — NEXT_RUN_ROOM_LOOKUP_FAILS"
 LATCH7 = "LATCH7 — STATUS_NORMALIZATION_RESETS_TO_SETUP"
 LATCH8 = "LATCH8 — RERUN_OR_NAVIGATION_USES_STALE_PRE_START_STATE"
@@ -53,6 +54,23 @@ def _first_transition_to_empty(
             post = r.get("post_restore_snapshot") if isinstance(r.get("post_restore_snapshot"), dict) else {}
             if rid and str(post.get("session_room_id") or "").upper() not in ("", rid):
                 return r
+    return None
+
+
+def _first_auth_blocked_empty_restore(
+    restores: list[dict[str, Any]],
+    *,
+    created_room_id: str,
+) -> dict[str, Any] | None:
+    for r in sorted(restores, key=lambda x: float(x.get("ts") or 0)):
+        if str(r.get("restored_room_id") or "").strip():
+            continue
+        if "prepare" not in str(r.get("reason") or ""):
+            continue
+        post = r.get("post_restore_snapshot") if isinstance(r.get("post_restore_snapshot"), dict) else {}
+        blocked = str(post.get("restore_blocked_reason") or r.get("restore_blocked_reason") or "")
+        if blocked in ("auth_required", "auth_required_for_owned_blob"):
+            return {**r, "restore_blocked_reason": blocked}
     return None
 
 
@@ -123,12 +141,32 @@ def classify_room_latch(
         if next_sid and handler_sid != next_sid:
             return _out(LATCH3, audit, "streamlit_session_id_changed_after_start", LATCH3)
 
+    had_valid_chain = bool(
+        created
+        and (
+            audit["session_matches_local_at_handler_exit"]
+            or any(str(s.get("session_room_id") or "").upper() == created for s in surfaces)
+            or any(str(u.get("session_room_id") or "").upper() == created for u in ultra)
+        )
+    )
+    empty_auth_restore = _first_auth_blocked_empty_restore(restores, created_room_id=created)
+    if had_valid_chain and empty_auth_restore:
+        audit["underlying_trigger"] = "AUTH_REQUIRED_EMPTY_RESTORE"
+        audit["first_empty_restore_event"] = empty_auth_restore.get("event_id") or empty_auth_restore.get("event")
+        return _out(
+            LATCH5,
+            audit,
+            f"restore:{empty_auth_restore.get('reason')}",
+            LATCH5,
+        )
+
     transition = _first_transition_to_empty(rows, created_room_id=created)
     if transition:
         ev = str(transition.get("event") or "")
         if ev == EV_CLEAR:
             return _out(LATCH4, audit, f"clear:{transition.get('reason')}", LATCH4)
         if ev == EV_RESTORE:
+            audit["underlying_trigger"] = str(transition.get("restore_blocked_reason") or "restore_overwrite")
             return _out(LATCH5, audit, f"restore:{transition.get('reason')}", LATCH5)
         if ev == EV_WRITE:
             return _out(LATCH7, audit, f"write_status_reset:{transition.get('reason')}", LATCH7)
@@ -139,12 +177,14 @@ def classify_room_latch(
         return _out(LATCH1, audit, "no_write_with_created_room_id", LATCH1)
 
     if created and not str(authoritative_state.get("room_id") or ""):
-        if ultra and str(ultra[-1].get("session_room_id") or "").upper() == created:
-            return _out(LATCH9, audit, "session_had_room_scrape_empty", LATCH9)
+        audit["downstream_ui_scrape_empty"] = True
         if ultra and not str(ultra[-1].get("session_room_id") or ""):
             return _out(LATCH6, audit, "next_run_ultra_early_missing_room", LATCH6)
         if reruns and not ultra:
             return _out(LATCH8, audit, "rerun_without_ultra_early_capture", LATCH8)
+        if empty_auth_restore:
+            audit["underlying_trigger"] = "AUTH_REQUIRED_EMPTY_RESTORE"
+            return _out(LATCH5, audit, "auth_empty_restore_then_scrape_empty", LATCH5)
         return _out(LATCH6, audit, "room_id_lost_before_scrape", LATCH6)
 
     if str(authoritative_state.get("room_id") or "").upper() == created and not authoritative_state.get(
