@@ -242,6 +242,24 @@ def _wrap_callable(
             widget_key = str(meta_fields.get("user_key") or "")
         if widget_key:
             register_watch_user_key(session, widget_key)
+        if kind == "register_widget" and meta_fields.get("metadata_callback_present") is True:
+            try:
+                from live_draft_streamlit_widget_metadata_diag import METADATA_AT_REGISTRATION
+
+                surface = str(session.get("_solo_delivery_diag_surface") or "case_a_control")
+                _emit(
+                    session,
+                    METADATA_AT_REGISTRATION,
+                    st=st,
+                    widget_key=widget_key,
+                    extra={
+                        **meta_fields,
+                        "diagnostic_surface": surface,
+                        "capture_boundary": "registration_hook_register_widget",
+                    },
+                )
+            except Exception:
+                pass
         if kind in ("session_state_metadata", "register_widget_from_metadata") and args:
             try:
                 from live_draft_streamlit_widget_metadata_diag import emit_metadata_at_registration
