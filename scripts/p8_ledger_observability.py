@@ -67,7 +67,19 @@ def capture_all_ledger_sources(page, *, audit: dict[str, Any] | None = None) -> 
         rows_from_b64,
         scrape_durable_ledger_store,
     )
+    from stage1_ledger_browser_extract import CASE_A_SURFACE, extract_stage1_ledger_from_page, filter_rows_for_run
     from stage1_parent_observer_probe import merge_ledger_rows, scrape_stage1_production_ledger
+
+    try:
+        from stage1_parent_observer_probe import scrape_ledger_pipeline_canary
+
+        pipeline_dom = scrape_ledger_pipeline_canary(page)
+    except ImportError:
+        pipeline_dom = {}
+
+    preferred_run = str(pipeline_dom.get("run_id") or "")
+    browser_extract = extract_stage1_ledger_from_page(page, preferred_run_id=preferred_run)
+    auth_rows = list(browser_extract.get("rows") or [])
 
     dom_all = scrape_stage1_ledger_all_frames(page)
     hits = list(dom_all.get("hits") or [])
@@ -80,13 +92,6 @@ def capture_all_ledger_sources(page, *, audit: dict[str, Any] | None = None) -> 
     final_dom_rows = list(top_dom.get("rows") or [])
     if final_dom_rows:
         raw_dom_rows = merge_ledger_rows(raw_dom_rows, final_dom_rows)
-
-    try:
-        from stage1_parent_observer_probe import scrape_ledger_pipeline_canary
-
-        pipeline_dom = scrape_ledger_pipeline_canary(page)
-    except ImportError:
-        pipeline_dom = {}
 
     durable_store = scrape_durable_ledger_store(page)
     durable_rows = rows_from_b64(str(durable_store.get("best_b64") or ""))
@@ -117,15 +122,33 @@ def capture_all_ledger_sources(page, *, audit: dict[str, Any] | None = None) -> 
     parent_sink_rows: list[dict[str, Any]] = []
 
     merged_incoming: list[dict[str, Any]] = []
-    merged_incoming = merge_ledger_rows(merged_incoming, raw_dom_rows)
-    merged_incoming = merge_ledger_rows(merged_incoming, durable_rows)
+    if auth_rows:
+        merged_incoming = merge_ledger_rows(merged_incoming, auth_rows)
+    else:
+        merged_incoming = merge_ledger_rows(merged_incoming, raw_dom_rows)
+        merged_incoming = merge_ledger_rows(merged_incoming, durable_rows)
     merged_incoming = merge_ledger_rows(merged_incoming, callback_rows)
+
+    run_filter = (
+        filter_rows_for_run(
+            merged_incoming,
+            run_id=preferred_run,
+            diagnostic_surface=CASE_A_SURFACE,
+        )
+        if preferred_run
+        else {
+            "filtered_rows": merged_incoming,
+            "filtered_p6_capture_pass": browser_extract.get("raw_p6_capture_pass"),
+            "rejected_count": 0,
+        }
+    )
 
     probe_found = any(h.get("probe_found") for h in hits)
     window_b64 = any(h.get("window_b64") for h in hits)
 
     return {
         "source_counts": {
+            "authoritative_browser_row_count": len(auth_rows),
             "raw_dom_rows_before_filter": len(raw_dom_rows),
             "durable_store_rows_before_filter": len(durable_rows),
             "observation_loop_rows_before_filter": 0,
@@ -138,12 +161,21 @@ def capture_all_ledger_sources(page, *, audit: dict[str, Any] | None = None) -> 
             "ledger_probe_found_any_frame": probe_found,
             "window_b64_found_any_frame": window_b64,
             "durable_snapshot_nonempty_count": len(snapshot_rows),
+            "selected_browser_source": browser_extract.get("selected_source"),
         },
+        "browser_ledger_extract": browser_extract,
+        "raw_p6_capture_pass": bool(browser_extract.get("raw_p6_capture_pass")),
+        "filtered_p6_capture_pass": bool(run_filter.get("filtered_p6_capture_pass")),
+        "ledger_run_filter": run_filter,
         "merged_incoming": merged_incoming,
         "dom_hits": hits,
         "durable_store": durable_store,
         "pipeline_canary_dom": pipeline_dom,
-        "application_ledger_run_id": str((dom_all.get("best") or {}).get("run_id") or ""),
+        "application_ledger_run_id": str(
+            browser_extract.get("run_id")
+            or (dom_all.get("best") or {}).get("run_id")
+            or ""
+        ),
     }
 
 

@@ -152,6 +152,17 @@ def scrape_parent_observer_exports(page) -> dict[str, Any]:
 
 def scrape_stage1_production_ledger(page) -> dict[str, Any]:
     try:
+        from stage1_ledger_browser_extract import extract_stage1_ledger_from_page
+
+        ext = extract_stage1_ledger_from_page(page)
+        return {
+            "rows": list(ext.get("rows") or []),
+            "run_id": str(ext.get("run_id") or ""),
+            "source": str(ext.get("selected_source") or "browser_extract"),
+        }
+    except ImportError:
+        pass
+    try:
         raw = page.evaluate(_SCrape_LEDGER_JS)
         if not isinstance(raw, dict):
             return {"rows": [], "source": "none"}

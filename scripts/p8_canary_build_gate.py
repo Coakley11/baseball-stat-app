@@ -391,12 +391,15 @@ def commit_has_ledger_pipeline_observability(sha: str) -> dict[str, Any]:
         "ledger_pipeline_module": False,
         "pipeline_canary_event": False,
         "finalize_before_stop": False,
+        "chunked_ledger_export": False,
+        "no_json_truncation_cap": False,
         "ok": False,
     }
     if not sha:
         return out
     pipe = "live_draft_stage1_ledger_pipeline.py"
     delivery = "live_draft_solo_delivery_diag.py"
+    prod_ledger = "live_draft_stage1_production_ledger.py"
 
     def _cat(path: str) -> bool:
         try:
@@ -429,11 +432,17 @@ def commit_has_ledger_pipeline_observability(sha: str) -> dict[str, Any]:
         "production_stage1_cloud_ledger_pipeline_canary", pipe
     )
     out["finalize_before_stop"] = _grep("finalize_stage1_ledger_for_scrape", delivery)
+    out["chunked_ledger_export"] = _grep("data-b64-chunk-count", prod_ledger)
+    out["no_json_truncation_cap"] = _grep("data-payload-json-len", prod_ledger) and not _grep(
+        "[:48000]", prod_ledger
+    )
     out["ok"] = all(
         [
             out["ledger_pipeline_module"],
             out["pipeline_canary_event"],
             out["finalize_before_stop"],
+            out["chunked_ledger_export"],
+            out["no_json_truncation_cap"],
         ]
     )
     return out

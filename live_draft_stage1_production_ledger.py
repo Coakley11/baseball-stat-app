@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import time
 from typing import Any
@@ -14,6 +15,7 @@ STAGE1_EVENT_SEQ_KEY = "_solo_stage1_event_seq"
 STAGE1_RUN_ID_KEY = "_solo_stage1_run_id"
 STAGE1_PROBE_ID = "solo-stage1-production-ledger"
 MAX_ROWS = 400
+LEDGER_B64_CHUNK_CHARS = 24000
 
 
 def stage1_production_ledger_enabled(st: Any | None, session: dict[str, Any]) -> bool:
@@ -185,23 +187,63 @@ def ledger_rows_for_export(session: dict[str, Any]) -> list[dict[str, Any]]:
     return list(session.get(STAGE1_LEDGER_KEY) or [])[-MAX_ROWS:]
 
 
+def _ledger_b64_chunks(b64: str) -> list[str]:
+    size = LEDGER_B64_CHUNK_CHARS
+    return [b64[i : i + size] for i in range(0, len(b64), size)] if b64 else []
+
+
 def render_stage1_production_ledger_probe(st: Any, session: dict[str, Any]) -> None:
     if not stage1_production_ledger_enabled(st, session):
         return
     rows = ledger_rows_for_export(session)
+    run_id = ensure_stage1_run_id(session)
+    script_run_seq = int(session.get(STAGE1_SCRIPT_SEQ_KEY) or 0)
+    diagnostic_surface = str(session.get("_solo_delivery_diag_surface") or "case_a_control")
     payload = {
-        "run_id": ensure_stage1_run_id(session),
-        "script_run_seq": int(session.get(STAGE1_SCRIPT_SEQ_KEY) or 0),
+        "run_id": run_id,
+        "script_run_seq": script_run_seq,
         "rows": rows,
     }
-    raw = json.dumps(payload, default=str)[:48000]
-    b64 = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+    raw = json.dumps(payload, default=str)
+    raw_bytes = raw.encode("utf-8")
+    json_len = len(raw_bytes)
+    b64 = base64.b64encode(raw_bytes).decode("ascii")
+    payload_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    chunks = _ledger_b64_chunks(b64)
+    chunk_count = len(chunks)
+    chunk_attrs = "".join(f' data-b64-chunk-{i}="{ch}"' for i, ch in enumerate(chunks))
+    legacy_b64 = b64 if len(b64) <= 64000 else (chunks[0] if chunks else "")
     st.markdown(
-        f'<div id="{STAGE1_PROBE_ID}" data-b64="{b64}" data-rows="{len(rows)}" '
-        f'data-run-id="{payload["run_id"]}"></div>',
+        f'<div id="{STAGE1_PROBE_ID}" '
+        f'data-b64="{legacy_b64}" '
+        f'data-rows="{len(rows)}" '
+        f'data-row-count="{len(rows)}" '
+        f'data-run-id="{run_id}" '
+        f'data-diagnostic-run-id="{run_id}" '
+        f'data-script-run-seq="{script_run_seq}" '
+        f'data-b64-chunk-count="{chunk_count}" '
+        f'data-chunk-count="{chunk_count}" '
+        f'data-payload-b64-len="{len(b64)}" '
+        f'data-payload-json-len="{json_len}" '
+        f'data-payload-sha256="{payload_sha256}" '
+        f'data-diagnostic-surface="{diagnostic_surface}"'
+        f"{chunk_attrs}></div>",
         unsafe_allow_html=True,
     )
+    chunk_json = json.dumps(chunks)
     st.markdown(
-        f'<script>try{{window.__soloStage1LedgerB64={json.dumps(b64)};}}catch(e){{}}</script>',
+        f"<script>try{{"
+        f"window.__soloStage1LedgerB64={json.dumps(b64)};"
+        f"window.__soloStage1LedgerB64Chunks={chunk_json};"
+        f"window.__soloStage1LedgerExportMeta={{"
+        f"run_id:{json.dumps(run_id)},"
+        f"script_run_seq:{script_run_seq},"
+        f"row_count:{len(rows)},"
+        f"payload_b64_len:{len(b64)},"
+        f"payload_json_len:{json_len},"
+        f"payload_sha256:{json.dumps(payload_sha256)},"
+        f"diagnostic_surface:{json.dumps(diagnostic_surface)}"
+        f"}};"
+        f"}}catch(e){{}}</script>",
         unsafe_allow_html=True,
     )

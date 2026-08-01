@@ -204,13 +204,21 @@ def main() -> int:
         )
 
         pipeline_dom = cap_a.get("pipeline_canary_dom") or {}
+        browser_extract = cap_a.get("browser_ledger_extract") or {}
         pipeline_eval = classify_first_ledger_pipeline_failure(
             pipeline_dom=pipeline_dom,
             ledger_rows=peak,
             artifact_has_canary=any(
                 isinstance(r, dict) and r.get("event") == PIPELINE_CANARY_EVENT for r in peak
             ),
+            raw_p6_capture_pass=cap_a.get("raw_p6_capture_pass"),
+            filtered_p6_capture_pass=cap_a.get("filtered_p6_capture_pass"),
         )
+        report["browser_ledger_extract"] = browser_extract
+        report["raw_p6_capture_pass"] = cap_a.get("raw_p6_capture_pass")
+        report["filtered_p6_capture_pass"] = cap_a.get("filtered_p6_capture_pass")
+        report["first_scrape_boundary"] = browser_extract.get("first_scrape_boundary")
+        report["ledger_scrape_candidates"] = browser_extract.get("candidates")
         report["ledger_pipeline_dom"] = pipeline_dom
         report["ledger_pipeline_stages"] = pipeline_eval
         if str(pipeline_eval.get("classification") or "") not in ("", "LEDGER_PIPELINE_OK"):
@@ -316,11 +324,19 @@ def main() -> int:
 
         report["gate_a_passed"] = bool(case_gate_a.get("authoritative"))
         report["production_skipped"] = True
-        report["gate"] = "A_ledger_visibility_only"
+        ledger_ok = str(pipeline_eval.get("classification") or "") in ("", "LEDGER_PIPELINE_OK")
+        report["gate"] = (
+            "LEDGER_PIPELINE_GATE_A_PASS"
+            if report["gate_a_passed"] and ledger_ok
+            else "A_ledger_visibility_only"
+        )
         report["first_boundary"] = (
-            "LEDGER_PIPELINE_OK"
-            if report["gate_a_passed"]
-            else (case_gate_a.get("failure_boundary") or INVALID_CLOUD_DIAGNOSTIC_LEDGER_VISIBILITY)
+            "LEDGER_PIPELINE_GATE_A_PASS"
+            if report["gate_a_passed"] and ledger_ok
+            else (
+                case_gate_a.get("failure_boundary")
+                or INVALID_CLOUD_DIAGNOSTIC_LEDGER_VISIBILITY
+            )
         )
         report["smallest_correction_boundary"] = report["first_boundary"]
         report["finished_at"] = time.time()

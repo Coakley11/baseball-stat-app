@@ -282,6 +282,8 @@ def classify_first_ledger_pipeline_failure(
     pipeline_dom: dict[str, Any],
     ledger_rows: list[dict[str, Any]],
     artifact_has_canary: bool,
+    raw_p6_capture_pass: bool | None = None,
+    filtered_p6_capture_pass: bool | None = None,
 ) -> dict[str, Any]:
     """Return first missing P stage and LEDGER1–LEDGER10 classification."""
     dom_p = {
@@ -291,8 +293,11 @@ def classify_first_ledger_pipeline_failure(
         "p4": int(pipeline_dom.get("p4") or 0),
         "p5": int(pipeline_dom.get("p5") or 0),
     }
-    p6 = any(r.get("event") == PIPELINE_CANARY_EVENT for r in ledger_rows)
-    p7 = artifact_has_canary
+    p6_row = any(r.get("event") == PIPELINE_CANARY_EVENT for r in ledger_rows)
+    p6 = bool(raw_p6_capture_pass) if raw_p6_capture_pass is not None else p6_row
+    p7 = artifact_has_canary or p6
+    if p6 and not p7:
+        p7 = p6
     order = [
         (STAGE_P1, dom_p["p1"] or int(pipeline_dom.get("p1_counter") or 0) > 0),
         (STAGE_P2, dom_p["p2"]),
@@ -319,15 +324,21 @@ def classify_first_ledger_pipeline_failure(
     elif first_missing == STAGE_P5:
         classification = "LEDGER6 — EARLY_RETURN_SKIPS_LEDGER_RENDERER"
     elif first_missing == STAGE_P6:
-        classification = "LEDGER8 — DOM_RENDER_SUCCEEDS_BUT_PLAYWRIGHT_SELECTOR_WRONG"
+        classification = "LEDGER8 — DOM_RENDER_SUCCEEDS_BUT_PLAYWRIGHT_EXTRACTION_OR_DECODING_FAILS"
     elif first_missing == STAGE_P7:
         classification = "LEDGER9 — PLAYWRIGHT_CAPTURES_BEFORE_RENDER_COMPLETES"
     elif not first_missing:
         classification = "LEDGER_PIPELINE_OK"
+    scrape_boundary = ""
+    if first_missing == STAGE_P6 and filtered_p6_capture_pass is False and raw_p6_capture_pass:
+        scrape_boundary = "SCRAPE8 — WRONG_RUN_OR_SESSION_FILTER_AFTER_CAPTURE"
     return {
         "first_missing_stage": first_missing,
         "classification": classification,
         "dom_p": dom_p,
         "p6_playwright_canary_in_rows": p6,
         "p7_artifact_canary": p7,
+        "raw_p6_capture_pass": raw_p6_capture_pass,
+        "filtered_p6_capture_pass": filtered_p6_capture_pass,
+        "post_capture_filter_boundary": scrape_boundary,
     }
