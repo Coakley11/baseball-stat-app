@@ -179,3 +179,13 @@ def test_wrong_surface_start1() -> None:
         draft_legacy={},
     )
     assert b == START1
+
+
+def test_duplicate_start_click_blocked() -> None:
+    import pytest
+
+    from scripts.p8_production_start_harness import dispatch_start_single_authoritative_click
+
+    checkpoints: list[dict] = [{"_start_click_count": 1}]
+    with pytest.raises(RuntimeError, match="duplicate_start_click_blocked"):
+        dispatch_start_single_authoritative_click(None, checkpoints)

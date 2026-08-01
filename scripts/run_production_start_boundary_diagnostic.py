@@ -39,7 +39,10 @@ def main() -> int:
     from stage1_parent_observer_probe import HARNESS_TOP_OBSERVER_INIT_SCRIPT
     from live_draft_streamlit_registration_hooks import run_local_case_a_hook_self_test
 
-    if not harness_ready() or not run_preflight().get("authenticated_restored"):
+    if not harness_ready():
+        return 1
+    preflight = run_preflight()
+    if not preflight.get("authenticated_restored"):
         return 1
 
     pin = local_deploy_pin()
@@ -115,7 +118,7 @@ def main() -> int:
             page,
             url,
             prior_room_id=str(cleanup.get("detected_room_id") or ""),
-            auth_preflight=run_preflight(),
+            auth_preflight=preflight,
         )
         report["production_start"] = start_val
         report["diagnostic_run_id"] = (

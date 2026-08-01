@@ -67,6 +67,7 @@ def classify_start_boundary(
     dom_clicked = bool(click_transport.get("dom_click_dispatched"))
     ws_sent = bool(click_transport.get("streamlit_backmsg_sent"))
     rerun_seen = bool(click_transport.get("python_rerun_started")) or audit["global_canary"]
+    server_chain_started = rerun_seen or audit["handler_entered"] > 0 or audit["ldr_branch_canary"]
 
     if not ldr_surface.get("setup_visible") and not ldr_surface.get("live_draft_main_marker"):
         if not authoritative_state.get("in_progress"):
@@ -84,10 +85,11 @@ def classify_start_boundary(
     if not dom_clicked:
         return _out(START4A, audit, "dom_click_not_dispatched")
 
-    if dom_clicked and not ws_sent:
+    if dom_clicked and not ws_sent and not server_chain_started:
+        audit["ws_capture_empty_supplemental_only"] = True
         return _out(START4B, audit, "no_streamlit_backmsg_after_click")
 
-    if ws_sent and not rerun_seen:
+    if ws_sent and not rerun_seen and not server_chain_started:
         return _out(START4C, audit, "no_python_rerun_canary")
 
     if rerun_seen and not audit["ldr_branch_canary"]:

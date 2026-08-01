@@ -8,7 +8,7 @@ from scripts.p8_start_boundary_classify import (
     START4C,
     START6,
     START8,
-    START9E,
+    START9C,
     START_ACTION_DOM_CLICKED_BUT_SERVER_OUTCOME_UNRESOLVED,
     classify_start_boundary,
 )
@@ -91,3 +91,27 @@ def test_no_dom_click_start4a() -> None:
         start_proof={},
     )
     assert out["classification"] == START4A
+
+
+def test_no_ws_but_server_rerun_not_start4b() -> None:
+    """Ledger proof of rerun/handler must override missing WS capture."""
+    out = classify_start_boundary(
+        ldr_surface={"setup_visible": True},
+        click_transport={
+            "selector_found": True,
+            "dom_click_dispatched": True,
+            "streamlit_backmsg_sent": False,
+            "python_rerun_started": True,
+        },
+        ledger_rows=[
+            {"event": "production_global_script_run_canary", "ts": 2.0},
+            {"event": "production_live_draft_branch_canary", "ts": 2.1},
+            {"event": "production_stage1_start_handler_entered", "ts": 2.15},
+            {"event": "production_stage1_room_creation_entered", "ts": 2.18},
+            {"event": "production_stage1_room_creation_exited", "ts": 2.2, "room_creation_success": True, "created_room_id": "ABC"},
+        ],
+        authoritative_state={"room_id": "", "in_progress": False},
+        start_proof={k: False for k in ("nonempty_room_id", "room_in_progress", "pick_index_zero", "deadline_present", "production_token_present", "countdown_mounted")},
+        click_ts=1.0,
+    )
+    assert out["classification"] == START9C

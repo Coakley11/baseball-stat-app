@@ -38,10 +38,10 @@ START_BUTTON_LABEL = "Start New Live Draft"
 
 def dispatch_start_single_authoritative_click(page, checkpoints: list[dict[str, Any]]) -> dict[str, Any]:
     """One Playwright locator click only (evaluate used for inspection)."""
-    from solo_draft_start_harness import SCAN_BUTTONS_JS, checkpoint
-
     if checkpoints and checkpoints[-1].get("_start_click_count", 0) >= 1:
         raise RuntimeError("duplicate_start_click_blocked")
+    from solo_draft_start_harness import SCAN_BUTTONS_JS, checkpoint
+
     buttons = page.evaluate(SCAN_BUTTONS_JS) or []
     matches = [b for b in buttons if START_BUTTON_LABEL in str(b.get("text") or "")]
     enabled = [m for m in matches if m.get("visible") and not m.get("disabled")]
