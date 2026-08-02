@@ -94,8 +94,8 @@ def classify_callback_boundary(
         exited = prod_exited[-1] if prod_exited else {}
         exit_repr = _norm_token(exited.get("session_state_value_at_exit_repr"))
         if exact and exact in ss_repr and exact not in exit_repr:
-            report["classification"] = "CB6 — VALUE_PRESENT_IN_CALLBACK_BUT_CLEARED_AFTERWARD"
-            report["rationale"] = "Token at entry, absent at exit."
+            report["classification"] = "CB6 — VALUE_PRESENT_IN_CALLBACK_BUT_CLEARED_OR_DISPLACED_AFTERWARD"
+            report["rationale"] = "Token at entry, absent or displaced at exit."
             return report
         if exact and exact not in ss_repr and exit_repr and exact in exit_repr:
             report["classification"] = "CB7 — VALUE_BINDS_AFTER_CALLBACK_RETURNS"

@@ -33,6 +33,8 @@ CASE_A_DISPATCH_AUTHORITY_PASS_WITH_REGISTRATION_TRACE_UNAVAILABLE = (
     "CASE_A_DISPATCH_AUTHORITY_PASS_WITH_REGISTRATION_TRACE_UNAVAILABLE"
 )
 CM_REGISTRATION_CAUSE_UNRESOLVED = "CM_REGISTRATION_CAUSE_UNRESOLVED"
+CM_DISPATCH_PASS = "CM_DISPATCH_PASS — PRODUCTION STATE PRESENT, CHANGED, CALLBACK SELECTED AND INVOKED"
+PROD_EXITED = "production_stage1_prod_on_change_exited"
 
 
 def _case_a_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -442,6 +444,50 @@ def build_internal_comparison(
     }
 
 
+def _token_in_repr(exact: str, repr_str: Any) -> bool:
+    exact = str(exact or "").strip()
+    if not exact:
+        return False
+    s = str(repr_str or "")
+    if exact in s:
+        return True
+    return exact.replace("|", "") in s.replace("|", "")
+
+
+def _dispatch_proves_widget_state_present(
+    *,
+    exact_token: str,
+    last_dispatch: dict[str, Any],
+    last_backend: dict[str, Any],
+    prod_entered: list[dict[str, Any]],
+    comparison: dict[str, Any],
+) -> bool:
+    if not prod_entered:
+        return False
+    prod_lane = comparison.get("production") if isinstance(comparison.get("production"), dict) else {}
+    changed = bool(
+        last_dispatch.get("widget_changed_result")
+        or last_backend.get("widget_changed")
+        or prod_lane.get("changed_value_result")
+    )
+    selected = bool(
+        last_dispatch.get("callback_selected")
+        or prod_lane.get("callback_dispatch_selected")
+    )
+    new_repr = str(
+        last_dispatch.get("new_value_repr")
+        or last_dispatch.get("deserialized_value_repr")
+        or prod_lane.get("new_frontend_widget_state_repr")
+        or ""
+    )
+    token_ok = _token_in_repr(exact_token, new_repr)
+    if not token_ok:
+        entry = prod_entered[-1]
+        token_ok = _token_in_repr(exact_token, entry.get("session_state_value_repr"))
+    backend_present = bool(last_backend.get("in_new_widget_state")) or token_ok
+    return bool(changed and selected and token_ok and backend_present)
+
+
 def _production_registration_trace_evidence(
     filtered_rows: list[dict[str, Any]],
     production_widget_key: str,
@@ -578,7 +624,33 @@ def classify_callback_metadata_boundary(
             report["smallest_correction_boundary"] = report["classification"]
             return report
 
+    if (
+        _dispatch_proves_widget_state_present(
+            exact_token=exact_token,
+            last_dispatch=last_dispatch,
+            last_backend=last_backend,
+            prod_entered=prod_entered,
+            comparison=comparison,
+        )
+    ):
+        report["cm_dispatch_outcome"] = CM_DISPATCH_PASS
+        report["classification"] = CM_DISPATCH_PASS
+        report["rationale"] = (
+            "Dispatch deserialized changed production widget state, selected callback, "
+            "and _prod_on_change entered with exact token evidence."
+        )
+        report["smallest_correction_boundary"] = CM_DISPATCH_PASS
+        report["cm3_suppressed"] = bool(last_backend and not last_backend.get("in_new_widget_state"))
+        return report
+
     if last_backend and not last_backend.get("in_new_widget_state"):
+        if prod_entered and last_dispatch.get("callback_selected"):
+            report["cm_dispatch_outcome"] = CM_DISPATCH_PASS
+            report["classification"] = CM_DISPATCH_PASS
+            report["rationale"] = "Callback invocation disproves absent widget state (CM3 suppressed)."
+            report["smallest_correction_boundary"] = CM_DISPATCH_PASS
+            report["cm3_suppressed"] = True
+            return report
         report["classification"] = "CM3 — PRODUCTION_WIDGET_STATE_NOT_PRESENT_ON_BACKEND"
         report["rationale"] = "BackMsg processed but widget id absent from _new_widget_state at dispatch."
         report["smallest_correction_boundary"] = report["classification"]
