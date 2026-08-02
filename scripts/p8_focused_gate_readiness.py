@@ -392,10 +392,10 @@ def poll_bootreg1_focused_readiness(
         )
         if not on_hotfix:
             report["classification"] = "INVALID_BOOTREG1_HOTFIX_NOT_DEPLOYED"
-        report["invalid_poll_supersession"] = (
-            "Earlier poll attempts with empty observed SHA (broken evaluate_cloud_binding_readiness "
-            "kwargs) are invalid; a later successful poll supersedes them."
-        )
+            report["invalid_poll_supersession"] = (
+                "Earlier poll attempts with empty observed SHA (broken evaluate_cloud_binding_readiness "
+                "kwargs) are invalid; a later successful poll supersedes them."
+            )
         elif report["attempts"]:
             last = report["attempts"][-1]
             report["boot_smoke"] = last.get("boot_smoke") or {}
