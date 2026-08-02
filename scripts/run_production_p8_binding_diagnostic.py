@@ -621,14 +621,38 @@ def run_diagnostic() -> dict[str, Any]:
         "implementation_presence_at_required": commit_has_binding_correction(required),
         "accepted_root_cause": "BIND5",
     }
-    from p8_focused_binding_heartbeat import diagnostic_run_id, log_line, write_heartbeat
+    from p8_focused_binding_heartbeat import (
+        configure_diagnostic_log_path,
+        diagnostic_run_id,
+        log_line,
+        write_heartbeat,
+    )
+    from p8_focused_diagnostic_lock import acquire_focused_diagnostic_lock, release_focused_diagnostic_lock
+    from p8_focused_gate_readiness import poll_focused_gate_deploy_readiness
 
     report["diagnostic_run_id"] = diagnostic_run_id()
     report["harness_run_id"] = report["diagnostic_run_id"]
     report["application_diagnostic_run_id"] = ""
+    per_run_log = ROOT / "data" / f"p8_binding_{report['harness_run_id']}.out"
+    report["log_path"] = str(per_run_log)
+    configure_diagnostic_log_path(per_run_log)
+    ok_lock, lock_msg = acquire_focused_diagnostic_lock(
+        harness_run_id=report["harness_run_id"],
+        log_path=per_run_log,
+    )
+    if not ok_lock:
+        report["aborted"] = True
+        report["abort_reason"] = lock_msg
+        report["focused_p8_outcome"] = lock_msg.split(" — ", 1)[0] if " — " in lock_msg else lock_msg
+        log_line(lock_msg)
+        OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        return report
     log_line(f"focused_p8_binding_diagnostic start required_sha={required}")
-    write_heartbeat("deploy_poll_start", required_cloud_sha=required)
+    write_heartbeat("deploy_poll_start", required_cloud_sha=required, extra={"diagnostic_phase": "deploy_readiness"})
+    deploy_wait_cap_s = 900.0
+
     def _on_poll(row: dict[str, Any], poll_report: dict[str, Any]) -> None:
+        readiness = row.get("binding_readiness") or {}
         write_heartbeat(
             "deploy_poll_attempt",
             required_cloud_sha=required,
@@ -636,30 +660,40 @@ def run_diagnostic() -> dict[str, Any]:
             extra={
                 "poll_attempt": row.get("attempt"),
                 "build": row.get("build"),
-                "binding_readiness_ok": (row.get("binding_readiness") or {}).get("ok"),
+                "binding_readiness_ok": readiness.get("ok"),
+                "readiness_result": readiness.get("ok"),
+                "focused_gate_ok": row.get("focused_gate_ok"),
+                "diagnostic_phase": "deploy_readiness",
+                "elapsed_readiness_s": row.get("elapsed_s"),
+                "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             },
         )
 
-    poll = poll_live_cloud_sha(
-        max_attempts=48,
-        sleep_s=25.0,
-        require_symmetric_observability=False,
-        require_canary_impl=False,
-        wait_for_binding_readiness=True,
+    poll = poll_focused_gate_deploy_readiness(
+        required_sha=required,
+        cap_s=deploy_wait_cap_s,
+        poll_s=25.0,
+        nav_timeout_s=90,
         on_poll_attempt=_on_poll,
     )
     report["deploy_poll"] = poll
     readiness = poll.get("binding_readiness") or {}
     report["cloud_binding_readiness"] = readiness
+    report["focused_gate_runtime_presence"] = poll.get("focused_gate_presence") or {}
     live_runtime = str(readiness.get("runtime_git_head_short") or poll.get("live_sha") or "")
     report["implementation_presence_at_live"] = commit_has_binding_correction(live_runtime)
-    if not poll.get("ok") or not readiness.get("ok"):
+    if not poll.get("ok"):
         live = str(poll.get("live_sha") or readiness.get("runtime_git_head_short") or "")
         impl_live = report.get("implementation_presence_at_live") or commit_has_binding_correction(live)
         handoff_missing = not impl_live.get("prod_callback_handoff_module")
         if live.startswith("6d24920") or (live and handoff_missing and required.startswith("22ce3e3")):
             focused = "INVALID_CALLBACK_HANDOFF_NOT_DEPLOYED"
             boundary = "INVALID_CALLBACK_HANDOFF_NOT_DEPLOYED — RUNTIME MISSING 22ce3e3 HANDOFF BYTECODE"
+        elif required.startswith("a5516e4") or required == "a5516e4":
+            focused = "INVALID_FOCUSED_GATE_NOT_DEPLOYED"
+            boundary = (
+                "INVALID_FOCUSED_GATE_NOT_DEPLOYED — AUTHORIZED FOCUSED STOP-BEFORE-CLAIM GATE NOT ON CLOUD"
+            )
         else:
             focused = "INVALID_FIX_NOT_DEPLOYED"
             boundary = "INVALID_FIX_NOT_DEPLOYED — BIND5 BYTECODE NOT ON CLOUD RUNTIME"
@@ -667,15 +701,25 @@ def run_diagnostic() -> dict[str, Any]:
         report["abort_reason"] = "cloud_binding_readiness_not_proven_before_diagnostic"
         report["focused_p8_outcome"] = focused
         report["failure_boundary"] = boundary
+        report["deploy_wait"] = {
+            "cap_s": deploy_wait_cap_s,
+            "elapsed_s": poll.get("elapsed_s"),
+            "poll_count": poll.get("poll_count"),
+            "observed_sha": live,
+            "observed_build": poll.get("live_build"),
+            "required_sha": required,
+            "last_heartbeat_path": str(HEARTBEAT_OUT),
+        }
         write_heartbeat(
             "aborted_deploy_readiness",
             required_cloud_sha=required,
             observed_cloud_sha=live,
-            extra={"focused_p8_outcome": focused},
+            extra={"focused_p8_outcome": focused, "diagnostic_phase": "aborted"},
         )
         log_line(focused)
         OUT.parent.mkdir(parents=True, exist_ok=True)
         OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        release_focused_diagnostic_lock()
         return report
     if not report["implementation_presence_at_live"].get("ok"):
         report["aborted"] = True
@@ -1084,7 +1128,15 @@ def run_diagnostic() -> dict[str, Any]:
 
 def main() -> int:
     os.environ.pop("REQUIRED_CLOUD_SHA", None)
-    report = run_diagnostic()
+    try:
+        report = run_diagnostic()
+    finally:
+        try:
+            from p8_focused_diagnostic_lock import release_focused_diagnostic_lock
+
+            release_focused_diagnostic_lock()
+        except ImportError:
+            pass
     outcome = report.get("focused_p8_outcome") or report.get("abort_reason") or ""
     payload = report.get("p8_ladder") or report
     print(json.dumps(payload, indent=2, default=str))

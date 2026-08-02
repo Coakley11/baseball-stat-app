@@ -30,6 +30,9 @@ def test_focused_binding_uses_establish_single_solo_live_draft() -> None:
     assert "p8_focused_production_url" in names
     assert "solo_p8_focused_binding=1" in src
     assert "solo_p8_harness_run_id" in src
+    assert "p8_binding_" in src and ".out" in src
+    assert "INVALID_FOCUSED_GATE_NOT_DEPLOYED" in src
+    assert "acquire_focused_diagnostic_lock" in src
 
 
 def test_setup_disappearance_alone_not_room_not_created() -> None:
