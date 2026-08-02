@@ -252,6 +252,7 @@ def _python_binding_chain(exp: dict[str, Any], rv: dict[str, Any], token: str) -
     py = rv.get("python_component") or {}
     audit = dict(exp.get("stage1_audit") or exp.get("audit") or {})
     callbacks = list(audit.get("callbacks") or [])
+    ledger = _ledger_rows(exp)
     coalesced = str(py.get("coalesced_component_value") or "")
     ss_val = str(py.get("session_state_widget_value_transport_scrape") or "")
     decl_ret = str(py.get("direct_component_return_declaration") or "")
@@ -279,7 +280,6 @@ def _python_binding_chain(exp: dict[str, Any], rv: dict[str, Any], token: str) -
         if c.get("delivery_claimed") and str(c.get("callback_source") or "") == "return_value_session_bind"
     ]
     observation_zero_claims = len(obs_claims) == 0
-    ledger = _ledger_rows(exp)
     obs_events = [
         r
         for r in ledger
