@@ -739,29 +739,31 @@ def render_micro_isolation_once(
             except ImportError:
                 pass
             try:
-                    from live_draft_solo_heartbeat import _coerce_wake_token
-                    from live_draft_stage1_production_ledger import (
-                        note_stage1_declaration_returned,
-                        note_stage1_event,
-                        stage1_production_ledger_enabled,
-                    )
+                from live_draft_solo_heartbeat import _coerce_wake_token
+                from live_draft_stage1_production_ledger import (
+                    note_stage1_declaration_returned,
+                    note_stage1_event,
+                    stage1_production_ledger_enabled,
+                )
 
-                    if stage1_production_ledger_enabled(st, session):
-                        session["_solo_stage1_last_delivery_only"] = bool(production_delivery_only)
-                        handoff_t = ""
-                        try:
-                            from live_draft_prod_callback_handoff import get_handoff_record
+                handoff_t = ""
+                try:
+                    from live_draft_prod_callback_handoff import get_handoff_record
 
-                            rec = get_handoff_record(session, key)
-                            if isinstance(rec, dict):
-                                handoff_t = str(_coerce_wake_token(rec.get("raw_token")) or "")
-                        except ImportError:
-                            handoff_t = ""
-                        coerced = (
-                            _coerce_wake_token(raw_component_value)
-                            or _coerce_wake_token(st.session_state.get(key))
-                            or handoff_t
-                        )
+                    rec = get_handoff_record(session, key)
+                    if isinstance(rec, dict):
+                        handoff_t = str(_coerce_wake_token(rec.get("raw_token")) or "")
+                except ImportError:
+                    handoff_t = ""
+                raw_value = raw_component_value
+                coerced = (
+                    _coerce_wake_token(raw_value)
+                    or _coerce_wake_token(st.session_state.get(key) if key in st.session_state else None)
+                    or handoff_t
+                )
+
+                if stage1_production_ledger_enabled(st, session):
+                    session["_solo_stage1_last_delivery_only"] = bool(production_delivery_only)
                     try:
                         from live_draft_prod_on_change_value_lifecycle import (
                             emit_post_callback_handoff_boundary,
@@ -823,9 +825,9 @@ def render_micro_isolation_once(
                         room=production_room,
                         widget_key=key,
                         expected_token=token,
-                        direct_return=raw_component_value,
+                        direct_return=raw_value,
                         coalesced=str(coerced or ""),
-                        raw_received=raw_component_value is not None,
+                        raw_received=raw_value is not None,
                         delivered=False,
                     )
             except ImportError:
