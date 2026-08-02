@@ -26,7 +26,7 @@ INVALID_VL_OBS = "INVALID_VALUE_LIFECYCLE_OBSERVABILITY_NOT_DEPLOYED"
 
 
 def _persist_report(report: dict[str, Any]) -> None:
-    targets = [OUT, OUT_LIFECYCLE, LEGACY_OUT]
+    targets = [OUT_LIFECYCLE, LEGACY_OUT]
     OUT.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(report, indent=2, default=str)
     for path in targets:
@@ -35,7 +35,6 @@ def _persist_report(report: dict[str, Any]) -> None:
         from p8_callback_metadata_diagnostic_report import format_metadata_diagnostic_txt
 
         txt = format_metadata_diagnostic_txt(report)
-        OUT_TXT.write_text(txt, encoding="utf-8")
         OUT_LIFECYCLE_TXT.write_text(txt, encoding="utf-8")
     except ImportError:
         pass
@@ -154,7 +153,8 @@ def main() -> int:
         "git_head": git_head_short(),
         "mode": "callback_value_lifecycle_diagnostic_v1",
         "classifier_fix_sha": "ee74d18",
-        "value_lifecycle_observability_sha": VALUE_LIFECYCLE_OBS_ANCHOR_SHA,
+        "lifecycle_implementation_sha": "6d24920",
+        "deploy_nudge_epoch": "2026-08-02T02:08:00Z lifecycle_observability_pin_nudge_v1",
         "deploy_pin_sha": pin,
         "origin_dev_head": git_head_short(),
         "artifact_path": str(OUT_LIFECYCLE),
