@@ -463,6 +463,35 @@ def complete_delivery_only_observation_and_actionable_flush(
         except ImportError:
             pass
 
+    try:
+        from live_draft_solo_p8_focused_binding import (
+            complete_focused_diagnostic_handoff,
+            note_focused_stop_before_claim,
+            solo_p8_focused_binding_effective,
+        )
+
+        if solo_p8_focused_binding_effective(st, session):
+            note_focused_stop_before_claim(
+                st,
+                session,
+                widget_key=widget_key,
+                token=bound_token,
+                stop_reason="observation_complete_stop_before_actionable_flush",
+                processing_source="complete_delivery_only_observation_and_actionable_flush",
+                callback_invocation_id=str(gate.invocation_id or ""),
+            )
+            complete_focused_diagnostic_handoff(
+                st,
+                session,
+                widget_key=widget_key,
+                raw_token=bound_token,
+                callback_invocation_id=str(gate.invocation_id or ""),
+            )
+            mark_post_bind_flush_dispatched(session, bound_token)
+            return True
+    except ImportError:
+        pass
+
     session["_solo_stage1_last_delivery_only"] = False
     try:
         from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled

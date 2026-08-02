@@ -680,6 +680,23 @@ def pre_claim_actionable_eligible(
         )
     except ImportError:
         pass
+    try:
+        from live_draft_solo_p8_focused_binding import (
+            note_focused_preclaim_blocked,
+            solo_p8_focused_binding_effective,
+        )
+
+        if solo_p8_focused_binding_effective(st, session):
+            note_focused_preclaim_blocked(
+                st,
+                session,
+                widget_key=str(deliver_gate_ctx.get("widget_key") or ""),
+                token=str(deliver_gate_ctx.get("normalized_token") or deliver_gate_ctx.get("token") or ""),
+                deliver_gate_ctx=deliver_gate_ctx,
+            )
+            return False, "p8_focused_binding_stop_before_claim"
+    except ImportError:
+        pass
     if bool(deliver_gate_ctx.get("delivery_only")):
         return False, "delivery_only_observation"
     if delivery_via == "return_value_session_bind" and bool(

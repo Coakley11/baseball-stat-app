@@ -271,6 +271,16 @@ def write_callback_handoff_from_on_change(
         "status": STATUS_PENDING,
         "equals_expected": bool(expected_token and raw_token == str(expected_token).strip()),
     }
+    try:
+        from live_draft_solo_p8_focused_binding import solo_p8_focused_binding_effective
+
+        if solo_p8_focused_binding_effective(st, session):
+            record["diagnostic_only"] = True
+            record["focused_binding"] = True
+            record["harness_transaction_id"] = str(session.get("_solo_p8_harness_transaction_id") or "")[:32]
+            record["original_expected_token"] = str(expected_token or "")[:400]
+    except ImportError:
+        pass
     session[storage_key] = record
     session["_solo_stage1_last_callback_handoff_token"] = raw_token
     _note_handoff_event(
@@ -296,6 +306,14 @@ def validate_handoff_for_declaration(
     if not record:
         return None, "handoff_missing"
     _note_handoff_event(session, EVENT_READ, st=st, widget_key=widget_key, record=record)
+    try:
+        from live_draft_solo_p8_focused_binding import handoff_reject_if_diagnostic_only_for_production
+
+        ok, diag_reject = handoff_reject_if_diagnostic_only_for_production(session, record, st=st)
+        if not ok:
+            return None, diag_reject
+    except ImportError:
+        pass
     status = str(record.get("status") or "")
     if status in STATUS_TERMINAL:
         return None, f"handoff_terminal:{status}"
@@ -488,6 +506,9 @@ def clear_handoff_after_successful_processing(
     st: Any | None = None,
     reason: str = "processing_terminal",
 ) -> None:
+    rec = get_handoff_record(session, widget_key)
+    if isinstance(rec, dict) and rec.get("diagnostic_only"):
+        return
     mark_handoff_terminal(
         session,
         widget_key,

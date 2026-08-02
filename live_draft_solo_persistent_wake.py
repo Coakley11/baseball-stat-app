@@ -979,6 +979,29 @@ def _production_deliver_callback(st: Any, session: dict[str, Any], raw: Any, key
             claimed, reject_code = True, ""
         else:
             try:
+                from live_draft_solo_p8_focused_binding import (
+                    note_focused_preclaim_blocked,
+                    solo_p8_focused_binding_effective,
+                )
+
+                if solo_p8_focused_binding_effective(st, session):
+                    note_focused_preclaim_blocked(
+                        st,
+                        session,
+                        widget_key=key,
+                        token=str(token or ""),
+                        deliver_gate_ctx=deliver_gate_ctx,
+                    )
+                    _post_claim_gate_return(
+                        "p8_focused_binding",
+                        "p8_focused_binding_stop_before_claim",
+                        "p8_focused_binding_stop_before_claim",
+                        decision="return_without_claim",
+                    )
+                    return
+            except ImportError:
+                pass
+            try:
                 if note_try_claim_about_to_call is not None:
                     note_try_claim_about_to_call(
                         session,
@@ -1461,6 +1484,25 @@ def flush_persistent_wake_delivery(st: Any, session: dict[str, Any]) -> None:
                     "session_state_value": ss_val,
                 },
             )
+    except ImportError:
+        pass
+    try:
+        from live_draft_solo_p8_focused_binding import (
+            note_focused_flush_blocked,
+            solo_p8_focused_binding_effective,
+        )
+
+        if solo_p8_focused_binding_effective(st, session):
+            key_probe = solo_persistent_wake_widget_key(session)
+            tok = ""
+            try:
+                from live_draft_solo_heartbeat import _coerce_wake_token
+
+                tok = str(_coerce_wake_token(st.session_state.get(key_probe)) or "")
+            except Exception:
+                pass
+            note_focused_flush_blocked(st, session, widget_key=key_probe, token=tok)
+            return
     except ImportError:
         pass
     if production_return_value_delivery_active(session):
