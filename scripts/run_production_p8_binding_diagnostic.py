@@ -21,6 +21,21 @@ SCREENSHOT_DIR = ROOT / "data" / "p8_focused_binding_screenshots"
 BASELINE_PATH = ROOT / "data" / "stage1a_4fa3d42_core_harness11979f5.out"
 PRODUCTION_WIDGET_KEY = "solo_countdown_wake_solo_persistent"
 
+
+def p8_focused_production_url(*, harness_run_id: str = "") -> str:
+    from run_production_stage1_authenticated import production_url
+
+    base = production_url()
+    join = "&" if "?" in base else "?"
+    parts = [base]
+    if "solo_p8_focused_binding=" not in base:
+        parts.append(f"{join}solo_p8_focused_binding=1")
+        join = "&"
+    run = str(harness_run_id or "").strip().lower()
+    if run and "solo_p8_harness_run_id=" not in base:
+        parts.append(f"{join}solo_p8_harness_run_id={run}")
+    return "".join(parts)
+
 P8_ORDER = (
     ("P8-L1", "browser_deadline_crossed"),
     ("P8-L2", "expiration_send_claimed"),
@@ -279,7 +294,6 @@ def _python_binding_chain(exp: dict[str, Any], rv: dict[str, Any], token: str) -
         for c in callbacks
         if c.get("delivery_claimed") and str(c.get("callback_source") or "") == "return_value_session_bind"
     ]
-    observation_zero_claims = len(obs_claims) == 0
     obs_events = [
         r
         for r in ledger
@@ -332,6 +346,29 @@ def _python_binding_chain(exp: dict[str, Any], rv: dict[str, Any], token: str) -
         and not c.get("reject_code")
         and str(c.get("callback_source") or "") == "return_value_session_bind"
     ]
+    ledger_accepted = sum(
+        1
+        for r in ledger
+        if isinstance(r, dict)
+        and str(r.get("event") or "") == "production_stage1_token_claim_result"
+        and r.get("accepted") is True
+    )
+    ledger_try_claim = sum(
+        1
+        for r in ledger
+        if isinstance(r, dict) and str(r.get("event") or "") == "production_stage1_try_claim_about_to_call"
+    )
+    ledger_autopick = sum(
+        1
+        for r in ledger
+        if isinstance(r, dict) and str(r.get("event") or "") == "production_stage1_autopick_about_to_enter"
+    )
+    ledger_commits = sum(
+        1
+        for r in ledger
+        if isinstance(r, dict) and str(r.get("event") or "") == "production_stage1_token_action_complete"
+    )
+    observation_zero_claims = len(obs_claims) == 0 and ledger_accepted == 0 and ledger_autopick == 0
     return {
         "exact_token": token,
         "direct_return": direct,
@@ -341,6 +378,10 @@ def _python_binding_chain(exp: dict[str, Any], rv: dict[str, Any], token: str) -
         "delivery_only_observation_events": len(obs_events),
         "observation_claims_count": len(obs_claims),
         "observation_zero_claims": observation_zero_claims,
+        "ledger_accepted_claims": ledger_accepted,
+        "ledger_try_claim_calls": ledger_try_claim,
+        "ledger_autopick_entries": ledger_autopick,
+        "ledger_committed_picks": ledger_commits,
         "post_bind_flush_events": len(post_bind_flush),
         "flush_or_bind_entry_events": len(flush_events),
         "return_value_session_bind_entry_events": len(rv_bind_entry),
@@ -645,7 +686,7 @@ def run_diagnostic() -> dict[str, Any]:
         OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
         return report
     parent_sink = ParentEventSinkStore()
-    url = production_url()
+    url = p8_focused_production_url(harness_run_id=str(report.get("harness_run_id") or ""))
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
@@ -965,6 +1006,27 @@ def run_diagnostic() -> dict[str, Any]:
             filtered_meta=filtered_meta,
             observability_valid=bool((report.get("observability_validity") or {}).get("valid")),
         )
+        try:
+            from p8_binding_align_classify import replay_artifact
+
+            bindalign = replay_artifact({**report, "p8_ladder": ladder})
+            report["bindalign_replay"] = bindalign
+            report["bindalign_classification"] = bindalign.get("bindalign_classification")
+            rows_for_inv = (filtered_meta.get("filtered_rows") or []) if isinstance(filtered_meta, dict) else []
+            try:
+                from p8_binding_align_classify import build_focused_invariant_report
+
+                report["focused_mode_invariants"] = build_focused_invariant_report(
+                    rows_for_inv,
+                    frozen_pick0_token=str(ladder.get("exact_token") or ""),
+                    room_id=str(ladder.get("room_id") or ""),
+                )
+            except ImportError:
+                pass
+            if str(bindalign.get("bindalign_classification") or "").startswith("BINDALIGN4"):
+                ladder["focused_p8_outcome"] = "BINDALIGN4 — FOCUSED MODE ALLOWED OWNERSHIP CLAIM OR PICK COMMIT"
+        except ImportError:
+            pass
         report["focused_p8_outcome"] = ladder["focused_p8_outcome"]
         report["ledger_integrity"] = {
             "rows_before_filtering": filtered_meta.get("rows_before"),
@@ -992,12 +1054,16 @@ def run_diagnostic() -> dict[str, Any]:
         report["focused_p8_outcome"] = ladder["focused_p8_outcome"]
         baseline = load_baseline_summary()
         ladder["comparison_notes"] = compare_traces(ladder, baseline)
+        py_chain = ladder.get("python_binding_chain") or {}
         report["expiration"] = {
             "token_sent": token_sent,
             "client_stages": exp.get("client_stages"),
             "callback_count": len((exp.get("audit") or {}).get("callbacks") or []),
-            "pick_commits": len((exp.get("audit") or {}).get("pick_commits") or []),
+            "pick_commits": int(py_chain.get("ledger_committed_picks") or 0),
             "commits_delta": exp.get("commits_delta"),
+            "ledger_accepted_claims": int(py_chain.get("ledger_accepted_claims") or 0),
+            "ledger_try_claim_calls": int(py_chain.get("ledger_try_claim_calls") or 0),
+            "ledger_autopick_entries": int(py_chain.get("ledger_autopick_entries") or 0),
         }
         report["return_value_chain_summary"] = {
             "component_value_sent": rv.get("browser", {}).get("component_value_sent"),

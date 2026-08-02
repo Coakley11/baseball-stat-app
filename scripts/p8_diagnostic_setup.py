@@ -295,6 +295,26 @@ def classify_focused_p8_outcome(
     if not setup_valid:
         return "INVALID_DIAGNOSTIC_SETUP_ABORT"
 
+    rows = filtered_meta.get("filtered_rows") or []
+    try:
+        try:
+            from p8_binding_align_classify import count_focused_invariants, first_bindalign_classification
+        except ImportError:
+            from scripts.p8_binding_align_classify import (  # type: ignore[no-redef]
+                count_focused_invariants,
+                first_bindalign_classification,
+            )
+
+        inv = count_focused_invariants(rows)
+        if inv.get("accepted_claims", 0) >= 1 or inv.get("committed_picks", 0) >= 1 or inv.get("auto_pick_entries", 0) >= 1:
+            return "BINDALIGN4 — FOCUSED MODE ALLOWED OWNERSHIP CLAIM OR PICK COMMIT"
+        token_frozen = str(python_chain.get("exact_token") or "")
+        bindalign = first_bindalign_classification(rows=rows, pick0_raw=token_frozen)
+        if bindalign.startswith("BINDALIGN") and not bindalign.startswith("BINDALIGN11"):
+            return bindalign
+    except ImportError:
+        pass
+
     pass_gates = [
         r
         for r in gate_rows
@@ -317,11 +337,38 @@ def classify_focused_p8_outcome(
 
     obs = int(python_chain.get("delivery_only_observation_events") or 0)
     flush = int(python_chain.get("post_bind_flush_events") or 0)
-    if pass_gates and not obs and not flush:
+    if pass_gates and not obs:
         return "P8C5 — POST_BIND_ORCHESTRATION_NOT_DISPATCHED"
 
+    try:
+        try:
+            from p8_binding_align_classify import assert_focused_pass_invariants, build_focused_invariant_report
+        except ImportError:
+            from scripts.p8_binding_align_classify import (  # type: ignore[no-redef]
+                assert_focused_pass_invariants,
+                build_focused_invariant_report,
+            )
+
+        inv_report = build_focused_invariant_report(
+            rows,
+            frozen_pick0_token=str(python_chain.get("exact_token") or ""),
+        )
+        inv_ok, inv_fail = assert_focused_pass_invariants(inv_report)
+        stop_n = int(inv_report.get("focused_stop_before_claim_events") or 0)
+        if pass_gates and obs >= 1 and inv_ok and stop_n >= 1:
+            prov_ok = _provenance_ok(filtered_meta.get("filtered_rows") or [], python_chain.get("exact_token") or "")
+            if prov_ok:
+                return "FOCUSED_P8_BINDING_PASS"
+        if pass_gates and obs >= 1 and not inv_ok:
+            return f"BINDALIGN4 — FOCUSED INVARIANT FAILED ({inv_fail})"
+    except ImportError:
+        pass
+
     if (obs or flush) and not python_chain.get("return_value_session_bind_entry_events"):
-        return "P8BIND6 — BOUND_VALUE_NOT_FORWARDED_TO_PROCESSING"
+        if obs and flush == 0:
+            pass
+        else:
+            return "P8BIND6 — BOUND_VALUE_NOT_FORWARDED_TO_PROCESSING"
 
     if pass_gates and (obs or flush) and python_chain.get("observation_zero_claims"):
         snapshot_pass = any(

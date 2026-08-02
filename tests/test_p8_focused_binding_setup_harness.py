@@ -27,6 +27,9 @@ def test_focused_binding_uses_establish_single_solo_live_draft() -> None:
     names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
     assert "establish_single_solo_live_draft" in names
     assert "execute_solo_draft_start_workflow" not in names
+    assert "p8_focused_production_url" in names
+    assert "solo_p8_focused_binding=1" in src
+    assert "solo_p8_harness_run_id" in src
 
 
 def test_setup_disappearance_alone_not_room_not_created() -> None:
