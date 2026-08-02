@@ -341,11 +341,29 @@ def establish_single_solo_live_draft(
     out["diagnostic_run_id"] = run_id
     out["streamlit_session_id"] = session_id
     out["room_latch_pass"] = verify.get("classification") == VERIFY1
-    out["pre_expiration_ready"] = _pre_expiration_ready(out)
-    out["valid"] = out["pre_expiration_ready"]
-    out["stale_page_proof"] = bool(
-        time.time() - last_scrape_ts > 5.0 and not out["pre_expiration_ready"]
+
+    ledger_for_pre = ledger_full
+    export_rows = (out.get("latch_ledger_export") or {}).get("rows")
+    if isinstance(export_rows, list) and export_rows:
+        ledger_for_pre = export_rows + [r for r in ledger_full if r not in export_rows]
+
+    from p8_pre_expiration_resolve import resolve_authoritative_pre_expiration_state
+
+    pre = resolve_authoritative_pre_expiration_state(
+        ledger_rows=ledger_for_pre,
+        ui_scrape=final_scrape,
+        room_id=created or str(final_scrape.get("room_id") or ""),
+        diagnostic_run_id=run_id,
+        click_count=int(out.get("click_count") or 1),
+        room_latch_pass=out["room_latch_pass"],
     )
+    out["pre_expiration_resolution"] = pre
+    out["pre_expiration_ready"] = bool(pre.get("pre_expiration_ready"))
+    out["expected_token"] = pre.get("expected_token")
+    out["pick_index"] = pre.get("pick_index")
+    out["deadline"] = pre.get("deadline")
+    out["valid"] = out["pre_expiration_ready"]
+    out["stale_page_proof"] = False
 
     if out["valid"]:
         out["start_boundary"] = START_PIPELINE_PASS

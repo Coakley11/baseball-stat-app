@@ -368,18 +368,35 @@ def main() -> int:
         report["production_identity_timeline"] = start_val.get("identity_timeline")
         report["room_latch_pass"] = bool(start_val.get("room_latch_pass"))
         if not start_val.get("valid"):
-            func_label = str((start_val.get("start_classification") or {}).get("classification") or "")
+            from p8_pre_expiration_classify import (
+                ROOM_START_LATCH_PASS_INCOMPLETE,
+                classify_pre_expiration_boundary,
+            )
+
+            preexp = classify_pre_expiration_boundary(
+                resolved=start_val.get("pre_expiration_resolution") or {},
+                room_latch_pass=bool(start_val.get("room_latch_pass")),
+                identity_timeline=start_val.get("identity_timeline"),
+            )
             harness_div = classify_harness_start_divergence(
                 result=start_val,
                 audit_reconcile=start_val.get("start_audit_reconcile"),
-                functional_start_label=func_label,
+                functional_start_label=str((start_val.get("start_classification") or {}).get("classification") or ""),
             )
+            report["pre_expiration_classification"] = preexp
             report["harness_start_classification"] = harness_div
-            report["first_boundary"] = harness_div.get("accepted_fail_label") or GATE_B_START_PATH_DIVERGENCE
-            report["smallest_correction_boundary"] = harness_div.get("classification") or report["first_boundary"]
+            if start_val.get("room_latch_pass"):
+                report["first_boundary"] = preexp.get("accepted_label") or ROOM_START_LATCH_PASS_INCOMPLETE
+                report["smallest_correction_boundary"] = preexp.get("classification") or report["first_boundary"]
+            elif harness_div:
+                report["first_boundary"] = harness_div.get("accepted_fail_label") or GATE_B_START_PATH_DIVERGENCE
+                report["smallest_correction_boundary"] = harness_div.get("classification") or report["first_boundary"]
+            else:
+                report["first_boundary"] = ROOM_START_LATCH_PASS_INCOMPLETE
+                report["smallest_correction_boundary"] = preexp.get("classification") or report["first_boundary"]
             report["production_skipped"] = True
-            report["gate"] = "B_harness_start_failed"
-            report["production_expiration_trace"] = GATE_B_START_PATH_DIVERGENCE
+            report["gate"] = "B_pre_expiration_failed" if start_val.get("room_latch_pass") else "B_harness_start_failed"
+            report["production_expiration_trace"] = report["first_boundary"]
             report["finished_at"] = time.time()
             context.close()
             browser.close()
@@ -420,7 +437,9 @@ def main() -> int:
             meta = exp.get("ledger_meta") or {}
             unfiltered = list(meta.get("merged_server_ledger") or [])
         token_for_filter = str(
-            exp.get("token_sent")
+            (start_val.get("pre_expiration_resolution") or {}).get("expected_token")
+            or start_val.get("expected_token")
+            or exp.get("token_sent")
             or rv.get("browser", {}).get("exact_expiration_token")
             or (start_val.get("authoritative_state") or {}).get("production_token")
             or ""

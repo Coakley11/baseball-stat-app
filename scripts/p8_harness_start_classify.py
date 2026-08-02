@@ -66,7 +66,10 @@ def classify_harness_start_divergence(
     prior_identity: dict[str, Any] | None = None,
     audit_reconcile: dict[str, Any] | None = None,
     functional_start_label: str = "",
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
+    """Return None when ROOM_LATCH_PASS — caller must use PREEXP classifier instead."""
+    if bool(result.get("room_latch_pass")):
+        return None
     audit: dict[str, Any] = {
         "functional_start_label_suppressed": functional_start_label,
         "room_latch_pass": bool(result.get("room_latch_pass")),
