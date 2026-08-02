@@ -1,4 +1,4 @@
-6d24920  # auto-generated; Streamlit Cloud reads this at runtime
-# deploy_epoch: 2026-08-02T02:08:00Z lifecycle_observability_pin_nudge_v1
+22ce3e3  # auto-generated; Streamlit Cloud reads this at runtime
+# deploy_epoch: 2026-08-02T04:15:00Z prod_callback_handoff_pin_nudge_v1
 
 branch: dev
