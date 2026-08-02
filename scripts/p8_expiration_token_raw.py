@@ -53,12 +53,12 @@ def build_expiration_token_raw_report(
     dispatch = _rows(filtered_rows, "production_stage1_callback_dispatch_evaluated")
     backend = _rows(filtered_rows, "production_stage1_backend_widget_state_after_backmsg")
 
+    expected_raw = str(expected_token or exp.get("token_sent") or browser.get("exact_expiration_token") or "").strip()
     last_dispatch = _last_token_row(dispatch, expected_raw)
     last_backend = _last_token_row(backend, expected_raw)
     entry = entered[-1] if entered else {}
     exit_row = exited[-1] if exited else {}
 
-    expected_raw = str(expected_token or exp.get("token_sent") or browser.get("exact_expiration_token") or "").strip()
     browser_raw = str(exp.get("token_sent") or browser.get("exact_expiration_token") or "").strip()
     backend_raw = _unwrap_repr(
         last_dispatch.get("new_value_repr")
