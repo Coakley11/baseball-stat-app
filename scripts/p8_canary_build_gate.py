@@ -1373,6 +1373,7 @@ def poll_live_cloud_sha(
     wait_for_start_stage1_observability: bool = False,
     wait_for_room_latch_observability: bool = False,
     wait_for_value_lifecycle_observability: bool = False,
+    on_poll_attempt: Any | None = None,
 ) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
     from playwright.sync_api import sync_playwright
@@ -1465,6 +1466,11 @@ def poll_live_cloud_sha(
                 )
                 row["value_lifecycle_observability_readiness"] = vl_readiness
                 report["attempts"].append(row)
+                if on_poll_attempt is not None:
+                    try:
+                        on_poll_attempt(row, report)
+                    except Exception:
+                        pass
                 report["live_sha"] = runtime_short or sha
                 report["live_build"] = build
                 report["binding_readiness"] = readiness

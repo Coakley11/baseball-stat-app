@@ -115,7 +115,8 @@ def test_995a829_artifact_replay_passes_after_freeze_and_stale_read_filter() -> 
     assert not preexp.get("classification")
 
 
-def test_995a829_without_freeze_classifies_preexp7() -> None:
+def test_995a829_historical_pre_freeze_preexp7_superseded_by_shared_resolver() -> None:
+    """995a829 latch export now passes without freeze (021cfa9); PREEXP7 is historical only."""
     if not LIFECYCLE_ART.is_file():
         return
     setup = json.loads(LIFECYCLE_ART.read_text(encoding="utf-8")).get("production_setup") or {}
@@ -147,7 +148,9 @@ def test_995a829_without_freeze_classifies_preexp7() -> None:
         now_ts=1785636952.0,
     )
     preexp = classify_pre_expiration_boundary(resolved=resolved, room_latch_pass=True)
-    assert PREEXP7 in str(preexp.get("classification") or "")
+    assert resolved["pre_expiration_ready"] is True
+    assert PREEXP7 not in str(preexp.get("classification") or "")
+    assert str(preexp.get("smallest_correction_boundary") or "") == "PRE_EXPIRATION_PASS"
 
 
 def test_latch_filter_retains_countdown_declaration_events() -> None:

@@ -15,6 +15,8 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 OUT = ROOT / "data" / "production_p8_binding_diagnostic.json"
+HEARTBEAT_OUT = ROOT / "data" / "production_p8_binding_diagnostic_heartbeat.json"
+LOG_OUT = ROOT / "data" / "p8_binding_handoff_run.out"
 BASELINE_PATH = ROOT / "data" / "stage1a_4fa3d42_core_harness11979f5.out"
 PRODUCTION_WIDGET_KEY = "solo_countdown_wake_solo_persistent"
 
@@ -534,18 +536,37 @@ def run_diagnostic() -> dict[str, Any]:
     report: dict[str, Any] = {
         "started_at": time.time(),
         "required_cloud_sha": required,
+        "diagnostic_run_id": "",
         "mode": "p8_binding_diagnostic",
         "git_head": git_head_short(),
         "deploy_pin": local_deploy_pin(),
         "implementation_presence_at_required": commit_has_binding_correction(required),
         "accepted_root_cause": "BIND5",
     }
+    from p8_focused_binding_heartbeat import diagnostic_run_id, log_line, write_heartbeat
+
+    report["diagnostic_run_id"] = diagnostic_run_id()
+    log_line(f"focused_p8_binding_diagnostic start required_sha={required}")
+    write_heartbeat("deploy_poll_start", required_cloud_sha=required)
+    def _on_poll(row: dict[str, Any], poll_report: dict[str, Any]) -> None:
+        write_heartbeat(
+            "deploy_poll_attempt",
+            required_cloud_sha=required,
+            observed_cloud_sha=str(row.get("sha") or poll_report.get("live_sha") or ""),
+            extra={
+                "poll_attempt": row.get("attempt"),
+                "build": row.get("build"),
+                "binding_readiness_ok": (row.get("binding_readiness") or {}).get("ok"),
+            },
+        )
+
     poll = poll_live_cloud_sha(
         max_attempts=48,
         sleep_s=25.0,
         require_symmetric_observability=False,
         require_canary_impl=False,
         wait_for_binding_readiness=True,
+        on_poll_attempt=_on_poll,
     )
     report["deploy_poll"] = poll
     readiness = poll.get("binding_readiness") or {}
@@ -553,10 +574,26 @@ def run_diagnostic() -> dict[str, Any]:
     live_runtime = str(readiness.get("runtime_git_head_short") or poll.get("live_sha") or "")
     report["implementation_presence_at_live"] = commit_has_binding_correction(live_runtime)
     if not poll.get("ok") or not readiness.get("ok"):
+        live = str(poll.get("live_sha") or readiness.get("runtime_git_head_short") or "")
+        impl_live = report.get("implementation_presence_at_live") or commit_has_binding_correction(live)
+        handoff_missing = not impl_live.get("prod_callback_handoff_module")
+        if live.startswith("6d24920") or (live and handoff_missing and required.startswith("22ce3e3")):
+            focused = "INVALID_CALLBACK_HANDOFF_NOT_DEPLOYED"
+            boundary = "INVALID_CALLBACK_HANDOFF_NOT_DEPLOYED — RUNTIME MISSING 22ce3e3 HANDOFF BYTECODE"
+        else:
+            focused = "INVALID_FIX_NOT_DEPLOYED"
+            boundary = "INVALID_FIX_NOT_DEPLOYED — BIND5 BYTECODE NOT ON CLOUD RUNTIME"
         report["aborted"] = True
         report["abort_reason"] = "cloud_binding_readiness_not_proven_before_diagnostic"
-        report["focused_p8_outcome"] = "INVALID_FIX_NOT_DEPLOYED"
-        report["failure_boundary"] = "INVALID_FIX_NOT_DEPLOYED — BIND5 BYTECODE NOT ON CLOUD RUNTIME"
+        report["focused_p8_outcome"] = focused
+        report["failure_boundary"] = boundary
+        write_heartbeat(
+            "aborted_deploy_readiness",
+            required_cloud_sha=required,
+            observed_cloud_sha=live,
+            extra={"focused_p8_outcome": focused},
+        )
+        log_line(focused)
         OUT.parent.mkdir(parents=True, exist_ok=True)
         OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
         return report
