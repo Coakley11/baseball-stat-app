@@ -813,6 +813,8 @@ def commit_has_value_lifecycle_observability(sha: str) -> dict[str, Any]:
         "post_callback_handoff_event": False,
         "micro_core_value_lifecycle_hooks": False,
         "handoff_after_component_return": False,
+        "coalescing_handoff_trace": False,
+        "raw_return_cache_handoff": False,
         "ok": False,
     }
     if not sha:
@@ -853,6 +855,8 @@ def commit_has_value_lifecycle_observability(sha: str) -> dict[str, Any]:
     out["post_callback_handoff_event"] = _grep("production_stage1_post_callback_handoff_boundary", lifecycle)
     out["micro_core_value_lifecycle_hooks"] = _grep("live_draft_prod_on_change_value_lifecycle", micro)
     out["handoff_after_component_return"] = _grep("raw_direct_component_return", micro)
+    out["coalescing_handoff_trace"] = _grep("token_coalescing_normalization", micro)
+    out["raw_return_cache_handoff"] = _grep("raw_return_cache", micro)
     out["ok"] = all(
         [
             out["file_value_lifecycle_py"],
@@ -862,6 +866,8 @@ def commit_has_value_lifecycle_observability(sha: str) -> dict[str, Any]:
             out["post_callback_handoff_event"],
             out["micro_core_value_lifecycle_hooks"],
             out["handoff_after_component_return"],
+            out["coalescing_handoff_trace"],
+            out["raw_return_cache_handoff"],
         ]
     )
     return out
@@ -885,12 +891,28 @@ def evaluate_cloud_value_lifecycle_observability_readiness(
         runtime
         and (runtime == anchor or git_sha_is_ancestor(anchor, runtime))
     )
+    room_latch_anchor = "a2e6eb2"
+    contains_room_latch = bool(
+        runtime
+        and (
+            runtime == git_short_sha(room_latch_anchor)
+            or git_sha_is_ancestor(room_latch_anchor, runtime)
+        )
+    )
+    meta_impl = commit_has_callback_metadata_observability(runtime) if runtime else {}
     checks: dict[str, bool] = {
         "runtime_git_contains_lifecycle_anchor": contains_anchor,
         "value_lifecycle_implementation_at_runtime_git": bool(impl.get("ok")),
         "deploy_pin_marker_matches_local_pin": bool(pin and git_short_sha(marker_sha) == pin),
+        "runtime_git_contains_a2e6eb2_room_latch": contains_room_latch,
+        "callback_metadata_observability_at_runtime_git": bool(meta_impl.get("ok")),
     }
-    ok = checks["runtime_git_contains_lifecycle_anchor"] and checks["value_lifecycle_implementation_at_runtime_git"]
+    ok = (
+        checks["runtime_git_contains_lifecycle_anchor"]
+        and checks["value_lifecycle_implementation_at_runtime_git"]
+        and checks["runtime_git_contains_a2e6eb2_room_latch"]
+        and checks["callback_metadata_observability_at_runtime_git"]
+    )
     return {
         "deploy_pin": pin,
         "lifecycle_observability_anchor_sha": anchor,
@@ -899,6 +921,7 @@ def evaluate_cloud_value_lifecycle_observability_readiness(
         "marker_build": marker_build,
         "checks": checks,
         "implementation_at_runtime_git": impl,
+        "callback_metadata_implementation_at_runtime_git": meta_impl,
         "ok": ok,
     }
 
