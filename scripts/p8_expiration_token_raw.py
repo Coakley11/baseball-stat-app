@@ -28,6 +28,16 @@ def _rows(rows: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
     return [r for r in rows if isinstance(r, dict) and str(r.get("event") or "") == event]
 
 
+def _last_token_row(rows: list[dict[str, Any]], token: str) -> dict[str, Any]:
+    if not token:
+        return rows[-1] if rows else {}
+    for r in reversed(rows):
+        rep = str(r.get("deserialized_value_repr") or r.get("new_value_repr") or "")
+        if token in rep or token.replace("|", "") in rep.replace("|", ""):
+            return r
+    return rows[-1] if rows else {}
+
+
 def build_expiration_token_raw_report(
     *,
     expected_token: str,
@@ -43,8 +53,8 @@ def build_expiration_token_raw_report(
     dispatch = _rows(filtered_rows, "production_stage1_callback_dispatch_evaluated")
     backend = _rows(filtered_rows, "production_stage1_backend_widget_state_after_backmsg")
 
-    last_dispatch = dispatch[-1] if dispatch else {}
-    last_backend = backend[-1] if backend else {}
+    last_dispatch = _last_token_row(dispatch, expected_raw)
+    last_backend = _last_token_row(backend, expected_raw)
     entry = entered[-1] if entered else {}
     exit_row = exited[-1] if exited else {}
 
