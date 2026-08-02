@@ -294,6 +294,20 @@ def establish_single_solo_live_draft(
     server_bundle = server_latch_bundle_proven(
         filtered_ledger=filtered, timeline=timeline, created_room_id=created or str(final_scrape.get("room_id") or "")
     )
+    from p8_room_status_authority import (
+        classify_latch_status_boundary,
+        merge_ui_with_server_status,
+        resolve_authoritative_room_status,
+    )
+
+    status_authority = resolve_authoritative_room_status(
+        ledger_rows=filtered,
+        timeline=timeline,
+        room_id=created or str(final_scrape.get("room_id") or ""),
+        application_diagnostic_run_id=run_id,
+        ui_scrape=final_scrape,
+    )
+    authoritative_for_start = merge_ui_with_server_status(final_scrape, status_authority)
     latch_recon = classify_latch_reconciliation(
         verify_classification=verify,
         server_bundle=server_bundle,
@@ -318,7 +332,7 @@ def establish_single_solo_live_draft(
         ldr_surface=ldr,
         click_transport={**click, **transport},
         ledger_rows=ledger_full,
-        authoritative_state=final_scrape,
+        authoritative_state=authoritative_for_start,
         start_proof=proof,
         click_ts=click_ts,
         reconciled_audit=audit_reconcile,
@@ -369,6 +383,16 @@ def establish_single_solo_live_draft(
     out["application_diagnostic_run_id"] = run_id
     out["streamlit_session_id"] = session_id
     out["room_latch_pass"] = room_latch_pass
+    out["room_status_authority"] = status_authority
+    out["latch_status_classification"] = classify_latch_status_boundary(
+        status_resolution=status_authority,
+        room_latch_pass=room_latch_pass,
+        ledger_rows=filtered,
+        timeline=timeline,
+        room_id=created or str(final_scrape.get("room_id") or ""),
+        application_diagnostic_run_id=run_id,
+        ui_scrape=final_scrape,
+    )
 
     ledger_for_pre = ledger_full
     export_rows = (out.get("latch_ledger_export") or {}).get("rows")

@@ -349,7 +349,13 @@ def resolve_authoritative_pre_expiration_state(
             token_constructed = True
 
     parsed = _parse_token(str(token_val or "")) if token_val else None
-    mount_ok = _countdown_mounted_scrape(ui_scrape)
+    decl_post = [
+        r
+        for r in scoped
+        if str(r.get("event") or "") == "production_countdown_declaration_post"
+        and _norm_room(r.get("room_id")) == rid
+    ]
+    mount_ok = _countdown_mounted_scrape(ui_scrape) or bool(decl_post)
     dom_pick_missing = ui_scrape.get("pick_index") is None and not (mount.get("pick_index") or mount.get("token"))
     dom_deadline_missing = not ui_scrape.get("deadline") and not mount.get("deadline")
     dom_token_missing = not dom_token.strip()

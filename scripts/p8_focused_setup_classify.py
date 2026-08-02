@@ -70,6 +70,14 @@ def classify_focused_setup_boundary(
     if valid and latch_pass:
         return {"classification": "", "focused_p8_outcome": "", "reason": "setup_pass"}
 
+    status_auth = start_result.get("room_status_authority") or {}
+    if latch_pass and status_auth.get("status_in_progress_server"):
+        pre = start_result.get("pre_expiration_resolution") or {}
+        if pre.get("pre_expiration_ready") or (
+            pre.get("status") == "in_progress" and str(start_result.get("expected_token") or "").strip()
+        ):
+            return {"classification": "", "focused_p8_outcome": "", "reason": "setup_pass_server_status"}
+
     latch_recon = start_result.get("latch_reconciliation") or {}
     token_resolved = bool(str(start_result.get("expected_token") or "").strip())
     if created and (token_resolved or start_result.get("deadline")) and handler_entered:
