@@ -17,6 +17,7 @@ if str(SCRIPTS) not in sys.path:
 OUT = ROOT / "data" / "production_p8_binding_diagnostic.json"
 HEARTBEAT_OUT = ROOT / "data" / "production_p8_binding_diagnostic_heartbeat.json"
 LOG_OUT = ROOT / "data" / "p8_binding_handoff_run.out"
+SCREENSHOT_DIR = ROOT / "data" / "p8_focused_binding_screenshots"
 BASELINE_PATH = ROOT / "data" / "stage1a_4fa3d42_core_harness11979f5.out"
 PRODUCTION_WIDGET_KEY = "solo_countdown_wake_solo_persistent"
 
@@ -58,7 +59,44 @@ def resolve_required_sha() -> str:
     return str(os.environ.get("REQUIRED_CLOUD_SHA") or "").strip().lower()[:7]
 
 
+def _persist_partial(report: dict[str, Any], *, phase: str) -> None:
+    report["last_persist_phase"] = phase
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    try:
+        from p8_focused_binding_heartbeat import write_heartbeat
+
+        write_heartbeat(
+            phase,
+            required_cloud_sha=str(report.get("required_cloud_sha") or ""),
+            observed_cloud_sha=str(report.get("cloud_sha") or ""),
+            extra={"diagnostic_run_id": report.get("diagnostic_run_id")},
+        )
+    except Exception:
+        pass
+
+
+def _screenshot(page, name: str, run_id: str) -> str:
+    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    path = SCREENSHOT_DIR / f"{run_id}_{name}.png"
+    try:
+        page.screenshot(path=str(path), full_page=True)
+        return str(path)
+    except Exception:
+        return ""
+
+
 def _ledger_rows(exp: dict[str, Any]) -> list[dict[str, Any]]:
+    filtered = exp.get("filtered_ledger_rows")
+    if isinstance(filtered, list) and filtered:
+        return [r for r in filtered if isinstance(r, dict)]
+    meta = exp.get("ledger_meta") or {}
+    rows = list(meta.get("merged_server_ledger") or [])
+    if not rows:
+        rows = list(exp.get("merged_server_ledger") or [])
+    return [r for r in rows if isinstance(r, dict)]
+
+
     filtered = exp.get("filtered_ledger_rows")
     if isinstance(filtered, list) and filtered:
         return [r for r in filtered if isinstance(r, dict)]
@@ -505,7 +543,8 @@ def run_diagnostic() -> dict[str, Any]:
     from playwright_daniel_auth_session import STORAGE_PATH, harness_ready
     from cloud_streamlit_wake import goto_and_wake
     from playwright.sync_api import sync_playwright
-    from solo_draft_start_harness import execute_solo_draft_start_workflow
+    from p8_canonical_production_start import establish_single_solo_live_draft
+    from p8_focused_setup_classify import FOCUSED_SETUP_TRACE, classify_focused_setup_boundary
     from run_production_stage1_authenticated import (
         build_return_value_chain_report,
         build_parent_boundary_validation,
@@ -519,9 +558,7 @@ def run_diagnostic() -> dict[str, Any]:
         classify_focused_p8_outcome,
         collect_setup_stage_diagnostics,
         ensure_p8_ldr_setup_surface,
-        retry_draft_start_if_stalled,
         score_bound_token_gate_rows,
-        validate_p8_diagnostic_setup,
     )
     from run_production_solo_soak import scrape_deploy_build
     from run_solo_clean_verification import scrape_live_sha
@@ -546,6 +583,8 @@ def run_diagnostic() -> dict[str, Any]:
     from p8_focused_binding_heartbeat import diagnostic_run_id, log_line, write_heartbeat
 
     report["diagnostic_run_id"] = diagnostic_run_id()
+    report["harness_run_id"] = report["diagnostic_run_id"]
+    report["application_diagnostic_run_id"] = ""
     log_line(f"focused_p8_binding_diagnostic start required_sha={required}")
     write_heartbeat("deploy_poll_start", required_cloud_sha=required)
     def _on_poll(row: dict[str, Any], poll_report: dict[str, Any]) -> None:
@@ -678,39 +717,95 @@ def run_diagnostic() -> dict[str, Any]:
             return report
 
         report["p8_ldr_surface"] = ensure_p8_ldr_setup_surface(page, setup_url=url)
-
-        draft = execute_solo_draft_start_workflow(page, url, navigate=False)
-        draft = retry_draft_start_if_stalled(page, draft, setup_url=url)
-        report["draft_start_workflow"] = {
-            "start_success": draft.get("start_success"),
-            "first_missing_criterion": draft.get("first_missing_criterion"),
-            "room_id": draft.get("room_id"),
-            "start_click": draft.get("start_click"),
+        run_id = str(report.get("diagnostic_run_id") or "")
+        report["screenshots"] = {
+            "before_start": _screenshot(page, "before_start", run_id),
         }
-        start_val = validate_p8_diagnostic_setup(
+        _persist_partial(report, phase="before_canonical_start")
+
+        start_val = establish_single_solo_live_draft(
             page,
-            draft,
+            context,
+            setup_url=url,
             prior_room_id=str(cleanup.get("detected_room_id") or ""),
-            auth_preflight=pre,
-            max_wait_s=75.0,
+            fresh_lobby_cleanup=False,
+            max_wait_s=90.0,
         )
-        report["setup_stage_diagnostics"] = start_val.get("setup_stage_final") or collect_setup_stage_diagnostics(
-            page, draft=draft, auth_preflight=pre
+        report["application_diagnostic_run_id"] = str(
+            start_val.get("application_diagnostic_run_id") or start_val.get("diagnostic_run_id") or ""
         )
-        report["setup_stage_timeline"] = start_val.get("setup_stage_timeline") or []
+        from p8_room_latch_reconcile import build_room_timeline_rows, replay_artifact_latch
+
+        report["room_latch_timeline"] = build_room_timeline_rows(
+            full_rows=list((start_val.get("latch_ledger_export") or {}).get("rows") or []),
+            filtered_rows=list((start_val.get("latch_ledger_export") or {}).get("rows") or []),
+            timeline=list(start_val.get("room_state_timeline") or []),
+            harness_run_id=report["harness_run_id"],
+            application_diagnostic_run_id=report["application_diagnostic_run_id"],
+            streamlit_session_id=str(start_val.get("streamlit_session_id") or ""),
+            created_room_id=str(start_val.get("room_id") or ""),
+        )
+        report["screenshots"]["after_start"] = _screenshot(page, "after_start", run_id)
+        report["production_setup"] = start_val
+        report["harness_chain"] = start_val.get("canonical_chain")
+        report["identity_timeline"] = start_val.get("identity_timeline")
+        report["draft_start_workflow"] = {
+            "helper_name": start_val.get("helper_name"),
+            "click_count": start_val.get("click_count"),
+            "room_id": start_val.get("room_id"),
+            "room_latch_pass": start_val.get("room_latch_pass"),
+            "start_click": start_val.get("start_click"),
+            "start_click_transport": start_val.get("start_click_transport"),
+        }
+        report["setup_stage_diagnostics"] = collect_setup_stage_diagnostics(
+            page, draft=report["draft_start_workflow"], auth_preflight=pre
+        )
+        report["setup_stage_timeline"] = start_val.get("room_state_timeline") or []
         report["draft_start_validation"] = start_val
+        _persist_partial(report, phase="after_canonical_start")
+
         if not start_val.get("valid"):
+            setup_cls = classify_focused_setup_boundary(start_result=start_val)
+            report["focused_setup_classification"] = setup_cls
+            report["artifact_latch_replay"] = replay_artifact_latch({**report, "production_setup": start_val})
             report["aborted"] = True
-            report["abort_reason"] = start_val.get("verdict") or "INVALID_DIAGNOSTIC_SETUP_ABORT"
-            report["failure_boundary"] = start_val.get("failure_boundary") or "PRE_EXPIRATION_SETUP"
-            report["setup_abort_reason"] = start_val.get("reason")
+            report["abort_reason"] = setup_cls.get("focused_p8_outcome") or FOCUSED_SETUP_TRACE
+            report["focused_p8_outcome"] = setup_cls.get("focused_p8_outcome") or FOCUSED_SETUP_TRACE
+            report["failure_boundary"] = setup_cls.get("classification") or "LATCHREC8"
+            report["setup_abort_reason"] = setup_cls.get("reason")
+            report["accepted_run_label"] = (
+                "ROOM_CREATED — ROOM_LATCH_RECONCILIATION_REQUIRED"
+                if report["focused_p8_outcome"] == "ROOM_CREATED — ROOM_LATCH_RECONCILIATION_REQUIRED"
+                else ""
+            )
+            report["setup_trace_note"] = (
+                "Start transition not authoritatively observed; "
+                "not classified as callback-handoff or application room-not-created defect."
+            )
+            if report["artifact_latch_replay"].get("room_latch_pass_reconciled"):
+                report["room_latch_pass_reconciled"] = True
+                report["failure_boundary"] = report["artifact_latch_replay"]["latch_reconciliation"].get(
+                    "classification", "LATCHREC1"
+                )
             context.close()
             browser.close()
-            OUT.parent.mkdir(parents=True, exist_ok=True)
-            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            _persist_partial(report, phase="aborted_setup_trace")
             return report
 
         pre_cap = capture_all_ledger_sources(page)
+        latch_export = list((start_val.get("latch_ledger_export") or {}).get("rows") or [])
+        if latch_export:
+            merged_pre = list(pre_cap.get("merged_incoming") or [])
+            seen = {json.dumps(r, sort_keys=True, default=str) for r in merged_pre if isinstance(r, dict)}
+            for row in latch_export:
+                if not isinstance(row, dict):
+                    continue
+                key = json.dumps(row, sort_keys=True, default=str)
+                if key not in seen:
+                    merged_pre.append(row)
+                    seen.add(key)
+            pre_cap["merged_incoming"] = merged_pre
+            pre_cap["latch_ledger_rows_merged"] = len(latch_export)
         collector.absorb_capture(pre_cap, label="pre_expiration_setup")
         write_checkpoint(
             OUT_PRE,
@@ -760,6 +855,9 @@ def run_diagnostic() -> dict[str, Any]:
             or ""
         ).strip()
         run_id = _infer_run_id(unfiltered, room_latched)
+        app_run = str(start_val.get("application_diagnostic_run_id") or run_id or "")
+        if app_run:
+            run_id = app_run
         from stage1_ledger_run_filter import filter_ledger_rows_for_diagnostic_run
 
         filtered_meta = filter_ledger_rows_for_diagnostic_run(

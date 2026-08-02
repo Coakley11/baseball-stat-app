@@ -349,6 +349,20 @@ def classify_room_latch_verify(
     if authoritative:
         return authoritative
 
+    bundle = None
+    try:
+        from p8_room_latch_reconcile import server_latch_bundle_proven
+
+        bundle = server_latch_bundle_proven(
+            filtered_ledger=filtered_ledger, timeline=timeline, created_room_id=created
+        )
+    except ImportError:
+        bundle = {"ok": False}
+    if bundle and bundle.get("ok"):
+        audit["server_latch_bundle_pass"] = True
+        audit["server_latch_without_ui_scrape"] = not _norm_room(final_scrape.get("room_id"))
+        return _out(VERIFY1, audit, "server_authoritative_bundle", VERIFY1)
+
     return _out(
         VERIFY10,
         audit,

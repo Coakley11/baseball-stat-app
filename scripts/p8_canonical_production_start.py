@@ -266,6 +266,20 @@ def establish_single_solo_live_draft(
         created_room_id=created,
         click_ts=click_ts,
     )
+    from p8_room_latch_reconcile import (
+        classify_latch_reconciliation,
+        merge_latch_rows_from_full_ledger,
+        server_latch_bundle_proven,
+    )
+
+    filtered, merge_meta = merge_latch_rows_from_full_ledger(
+        filtered,
+        ledger_full,
+        application_diagnostic_run_id=run_id,
+        created_room_id=created,
+        click_ts=click_ts,
+    )
+    out["latch_ledger_merge"] = merge_meta
     timeline = build_room_state_timeline(filtered, created_room_id=created)
     final_scrape = scrape_authoritative_start_state(page)
     final_surface_row = next((t for t in reversed(timeline) if t.get("operation") == "surface"), None)
@@ -277,6 +291,20 @@ def establish_single_solo_live_draft(
         final_surface=final_surface_row,
         final_scrape=final_scrape,
     )
+    server_bundle = server_latch_bundle_proven(
+        filtered_ledger=filtered, timeline=timeline, created_room_id=created or str(final_scrape.get("room_id") or "")
+    )
+    latch_recon = classify_latch_reconciliation(
+        verify_classification=verify,
+        server_bundle=server_bundle,
+        filtered_meta=merge_meta,
+        final_scrape=final_scrape,
+    )
+    room_latch_pass = verify.get("classification") == VERIFY1 or bool(latch_recon.get("room_latch_pass"))
+    out["verify_classification"] = verify
+    out["server_latch_bundle"] = server_bundle
+    out["latch_reconciliation"] = latch_recon
+    out["application_diagnostic_run_id"] = run_id
 
     grade = grade_authoritative_draft_start(
         final_scrape,
@@ -331,7 +359,6 @@ def establish_single_solo_live_draft(
         "rows": filtered,
     }
     out["room_state_timeline"] = timeline
-    out["verify_classification"] = verify
     out["start_audit_reconcile"] = audit_reconcile
     out["start_classification"] = narrow_classification
     out["authoritative_state"] = final_scrape
@@ -339,8 +366,9 @@ def establish_single_solo_live_draft(
     out["start_proof"] = proof
     out["latched_room_id"] = out.get("room_id")
     out["diagnostic_run_id"] = run_id
+    out["application_diagnostic_run_id"] = run_id
     out["streamlit_session_id"] = session_id
-    out["room_latch_pass"] = verify.get("classification") == VERIFY1
+    out["room_latch_pass"] = room_latch_pass
 
     ledger_for_pre = ledger_full
     export_rows = (out.get("latch_ledger_export") or {}).get("rows")

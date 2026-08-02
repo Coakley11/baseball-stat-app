@@ -44,6 +44,50 @@ def _after_ts(rows: list[dict[str, Any]], click_ts: float) -> list[dict[str, Any
     return [r for r in rows if float(r.get("ts") or 0) >= click_ts - 0.05]
 
 
+def _start_success_proven(
+    audit: dict[str, Any],
+    reconciled_audit: dict[str, Any],
+    authoritative_state: dict[str, Any],
+    click_transport: dict[str, Any],
+) -> bool:
+    created = str(
+        reconciled_audit.get("inferred_created_room_id")
+        or authoritative_state.get("room_id")
+        or ""
+    ).strip()
+    if audit.get("handler_exited") and created:
+        return True
+    if audit.get("room_creation_exited") and created:
+        return True
+    if audit.get("handler_entered") and created and authoritative_state.get("in_progress"):
+        return True
+    if (
+        click_transport.get("dom_click_dispatched")
+        and created
+        and (audit.get("handler_entered") or reconciled_audit.get("handler_entered_count"))
+    ):
+        return True
+    return False
+
+
+def _button_rows_for_click_run(
+    rows: list[dict[str, Any]],
+    *,
+    click_ts: float,
+    handler_entered: bool,
+) -> list[dict[str, Any]]:
+    btn = _rows(rows, EVENT_BTN_VAL)
+    if not btn or not click_ts:
+        return btn
+    if handler_entered:
+        seqs = [int(r.get("script_run_seq") or 0) for r in btn if float(r.get("ts") or 0) <= click_ts + 2.0]
+        click_run = min(seqs) if seqs else 0
+        if click_run:
+            return [r for r in btn if int(r.get("script_run_seq") or 0) <= click_run]
+        return [r for r in btn if float(r.get("ts") or 0) <= click_ts + 1.0]
+    return btn[-3:]
+
+
 def classify_start_boundary(
     *,
     ldr_surface: dict[str, Any],
@@ -101,10 +145,20 @@ def classify_start_boundary(
     if rerun_seen and not audit["ldr_branch_canary"]:
         return _out(START6, audit, "ldr_branch_canary_missing")
 
-    btn_rows = _rows(rows, EVENT_BTN_VAL)
-    if btn_rows and not any(r.get("on_click_callback_armed") for r in btn_rows[-3:]):
-        if not any(r.get("start_pending") for r in btn_rows[-3:]):
-            return _out(START7, audit, "button_value_not_armed")
+    if _start_success_proven(audit, recon, authoritative_state, click_transport):
+        audit["start_success_supersedes_transient_button"] = True
+        if all(start_proof.values()):
+            return _out(START_PIPELINE_PASS, audit, "")
+        if str(authoritative_state.get("room_id") or recon.get("inferred_created_room_id") or ""):
+            return _out(START_PIPELINE_PASS, audit, "start_success_with_partial_ui_proof")
+
+    btn_rows = _button_rows_for_click_run(
+        rows, click_ts=click_ts, handler_entered=audit["handler_entered"] > 0
+    )
+    if btn_rows and not any(r.get("on_click_callback_armed") for r in btn_rows):
+        if not any(r.get("start_pending") for r in btn_rows):
+            if not _start_success_proven(audit, recon, authoritative_state, click_transport):
+                return _out(START7, audit, "button_value_not_armed")
 
     if audit["ldr_branch_canary"] and not audit["handler_entered"]:
         inferred = str(recon.get("inferred_created_room_id") or "").strip()

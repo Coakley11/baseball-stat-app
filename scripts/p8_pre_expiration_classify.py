@@ -36,7 +36,7 @@ def classify_pre_expiration_boundary(
         return _out("", audit, "", "")
 
     if not room_latch_pass:
-        return _out(PREEXP9, audit, "room_latch_not_pass", ROOM_START_LATCH_PASS_INCOMPLETE)
+        return _out(PREEXP10, audit, "room_latch_not_pass", ROOM_START_LATCH_PASS_INCOMPLETE)
 
     timeline = identity_timeline or []
     if len(timeline) >= 2:

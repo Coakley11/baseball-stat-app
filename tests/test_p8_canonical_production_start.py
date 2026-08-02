@@ -146,6 +146,7 @@ def test_diagnostic_scripts_reference_same_symbol() -> None:
     for path in (
         "scripts/run_production_room_latch_verification.py",
         "scripts/run_production_callback_binding_diagnostic.py",
+        "scripts/run_production_p8_binding_diagnostic.py",
     ):
         tree = ast.parse((ROOT / path).read_text(encoding="utf-8"))
         names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
