@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from scripts.p8_harness_start_classify import classify_harness_start_divergence
-from scripts.p8_pre_expiration_classify import PREEXP1, PREEXP4, classify_pre_expiration_boundary
+from scripts.p8_pre_expiration_classify import PREEXP2, PREEXP4, classify_pre_expiration_boundary
 from scripts.p8_pre_expiration_resolve import resolve_authoritative_pre_expiration_state
 
 ROOT = Path(__file__).resolve().parent.parent
