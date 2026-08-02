@@ -1,4 +1,4 @@
-a5516e4  # auto-generated; Streamlit Cloud reads this at runtime
-# deploy_epoch: 2026-08-02T14:35:00Z focused_p8_stop_before_claim_gate_a5516e4
+cff25b8  # auto-generated; Streamlit Cloud reads this at runtime
+# deploy_epoch: 2026-08-02T21:45:00Z bootreg1_coerced_hotfix_cff25b8
 
 branch: dev
