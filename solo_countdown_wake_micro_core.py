@@ -178,6 +178,22 @@ def render_micro_isolation_once(
             except Exception:
                 pass
             try:
+                from live_draft_prod_on_change_value_lifecycle import emit_value_snapshot
+
+                emit_value_snapshot(
+                    st,
+                    session,
+                    widget_key=key,
+                    phase="callback_entry",
+                    expected_token=token,
+                    callback_invocation_id=inv_id,
+                    room=production_room,
+                )
+            except ImportError:
+                pass
+            except Exception:
+                pass
+            try:
                 try:
                     from live_draft_callback_boundary_diag import (
                         boundary_diag_enabled,
@@ -201,10 +217,58 @@ def render_micro_isolation_once(
                 try:
                     from app_page_generation import current_script_run_id
 
-                    session[sk["expire_run"]] = str(current_script_run_id(session) or "")
+                    _expire_run_val = str(current_script_run_id(session) or "")
                 except ImportError:
-                    session[sk["expire_run"]] = str(session.get("_live_draft_script_run_id") or "")
+                    _expire_run_val = str(session.get("_live_draft_script_run_id") or "")
+                try:
+                    from live_draft_prod_on_change_value_lifecycle import (
+                        trace_session_mutation,
+                        trace_value_op,
+                    )
+
+                    trace_session_mutation(
+                        st,
+                        session,
+                        key=sk["expire_run"],
+                        mutation_op="set",
+                        previous=session.get(sk["expire_run"]),
+                        new=_expire_run_val,
+                        reason="callback_expire_run",
+                        callback_invocation_id=inv_id,
+                    )
+                except ImportError:
+                    pass
+                session[sk["expire_run"]] = _expire_run_val
+                _raw_prev = st.session_state.get(key) if key in st.session_state else None
+                try:
+                    from live_draft_prod_on_change_value_lifecycle import trace_value_op
+
+                    trace_value_op(
+                        st,
+                        session,
+                        widget_key=key,
+                        operation_label="read_session_state_widget_key",
+                        previous_raw=_raw_prev,
+                        new_raw=_raw_prev,
+                        callback_invocation_id=inv_id,
+                    )
+                except ImportError:
+                    pass
                 raw = st.session_state.get(key)
+                try:
+                    from live_draft_prod_on_change_value_lifecycle import trace_value_op
+
+                    trace_value_op(
+                        st,
+                        session,
+                        widget_key=key,
+                        operation_label="after_read_session_state_widget_key",
+                        previous_raw=_raw_prev,
+                        new_raw=raw,
+                        callback_invocation_id=inv_id,
+                    )
+                except ImportError:
+                    pass
                 _rec(
                     "on_change_callback_entry",
                     {"widget_key": key, "raw_session_state": repr(raw)[:800]},
@@ -224,7 +288,25 @@ def render_micro_isolation_once(
                         if boundary_diag_enabled(session):
 
                             def _run_deliver() -> None:
+                                _src_prev = session.get("_solo_pending_callback_source")
                                 if "_solo_pending_callback_source" not in session:
+                                    try:
+                                        from live_draft_prod_on_change_value_lifecycle import (
+                                            trace_session_mutation,
+                                        )
+
+                                        trace_session_mutation(
+                                            st,
+                                            session,
+                                            key="_solo_pending_callback_source",
+                                            mutation_op="set",
+                                            previous=_src_prev,
+                                            new="native_component_on_change",
+                                            reason="deliver_callback_pending_source",
+                                            callback_invocation_id=inv_id,
+                                        )
+                                    except ImportError:
+                                        pass
                                     session["_solo_pending_callback_source"] = "native_component_on_change"
                                 deliver_callback(st, session, raw, key)
 
@@ -264,6 +346,22 @@ def render_micro_isolation_once(
                 exc_status = f"{type(exc).__name__}:{exc}"[:300]
                 raise
             finally:
+                try:
+                    from live_draft_prod_on_change_value_lifecycle import emit_value_snapshot
+
+                    emit_value_snapshot(
+                        st,
+                        session,
+                        widget_key=key,
+                        phase="callback_exit",
+                        expected_token=token,
+                        callback_invocation_id=inv_id,
+                        room=production_room,
+                    )
+                except ImportError:
+                    pass
+                except Exception:
+                    pass
                 try:
                     from live_draft_prod_on_change_observability import emit_prod_on_change_exited
 
@@ -490,6 +588,36 @@ def render_micro_isolation_once(
         )
         session[f"_solo_prod_raw_return_{key}"] = raw_component_value
         try:
+            from live_draft_prod_on_change_value_lifecycle import emit_post_callback_handoff_boundary
+
+            inv_active = str(session.get("_solo_stage1_active_callback_invocation_id") or "")
+            emit_post_callback_handoff_boundary(
+                st,
+                session,
+                widget_key=key,
+                boundary="raw_direct_component_return",
+                value_raw=raw_component_value,
+                callback_invocation_id=inv_active,
+            )
+            emit_post_callback_handoff_boundary(
+                st,
+                session,
+                widget_key=key,
+                boundary="raw_return_cache",
+                value_raw=session.get(f"_solo_prod_raw_return_{key}"),
+                callback_invocation_id=inv_active,
+            )
+            emit_post_callback_handoff_boundary(
+                st,
+                session,
+                widget_key=key,
+                boundary="post_callback_session_state",
+                value_raw=st.session_state.get(key) if key in st.session_state else None,
+                callback_invocation_id=inv_active,
+            )
+        except ImportError:
+            pass
+        try:
             from live_draft_component_binding_trace import arguments_hash, record_binding_boundary
 
             record_binding_boundary(
@@ -608,6 +736,39 @@ def render_micro_isolation_once(
                     coerced = _coerce_wake_token(raw_component_value) or _coerce_wake_token(
                         st.session_state.get(key)
                     )
+                    try:
+                        from live_draft_prod_on_change_value_lifecycle import (
+                            emit_post_callback_handoff_boundary,
+                        )
+
+                        inv_active = str(session.get("_solo_stage1_active_callback_invocation_id") or "")
+                        emit_post_callback_handoff_boundary(
+                            st,
+                            session,
+                            widget_key=key,
+                            boundary="same_key_session_state_read",
+                            value_raw=st.session_state.get(key) if key in st.session_state else None,
+                            callback_invocation_id=inv_active,
+                        )
+                        emit_post_callback_handoff_boundary(
+                            st,
+                            session,
+                            widget_key=key,
+                            boundary="token_coalescing_normalization",
+                            value_raw=coerced,
+                            callback_invocation_id=inv_active,
+                        )
+                        emit_post_callback_handoff_boundary(
+                            st,
+                            session,
+                            widget_key=key,
+                            boundary="p8c7_declaration_input",
+                            value_raw=coerced,
+                            callback_invocation_id=inv_active,
+                            extra={"delivery_only": production_delivery_only},
+                        )
+                    except ImportError:
+                        pass
                     note_stage1_event(
                         session,
                         "production_stage1_declaration_attempt",

@@ -471,17 +471,54 @@ def main() -> int:
             exact_token=token_for_filter,
             production_widget_key=PRODUCTION_WIDGET_KEY,
         )
+        from p8_expiration_token_raw import build_expiration_token_raw_report
+        from p8_callback_value_loss_classify import classify_value_loss_boundary
+
+        token_raw = build_expiration_token_raw_report(
+            expected_token=token_for_filter,
+            filtered_rows=filtered_rows,
+            expiration=exp,
+            return_value_chain=rv,
+        )
+        value_loss = classify_value_loss_boundary(
+            exact_token=token_for_filter,
+            filtered_rows=filtered_rows,
+            callback_boundary=cb_report,
+            token_raw=token_raw,
+            return_value_chain=rv,
+        )
+        report["expiration_token_raw"] = token_raw
+        report["value_loss_boundary"] = value_loss
         report["callback_boundary"] = cb_report
         report["callback_metadata_boundary"] = cm_report
         report["accepted_cb1"] = cb_report.get("classification") or report.get("accepted_cb1")
         report["production_skipped"] = False
         report["gate"] = "B_complete"
-        report["first_boundary"] = cm_report.get("classification") or cb_report.get("classification") or ""
-        report["smallest_correction_boundary"] = (
-            cm_report.get("smallest_correction_boundary")
-            or cb_report.get("classification")
-            or report["first_boundary"]
-        )
+        cm_class = str(cm_report.get("classification") or "")
+        cb_class = str(cb_report.get("classification") or "")
+        vl_class = str(value_loss.get("classification") or "")
+        if cm_class.startswith("CM_DISPATCH_PASS"):
+            report["cm_dispatch_outcome"] = cm_class
+            report["callback_boundary_label"] = cb_class
+            if cb_class.startswith("CB6") and vl_class:
+                report["first_boundary"] = vl_class
+                report["smallest_correction_boundary"] = (
+                    value_loss.get("smallest_correction_boundary") or vl_class
+                )
+            else:
+                report["first_boundary"] = cb_class or cm_class
+                report["smallest_correction_boundary"] = (
+                    cm_report.get("smallest_correction_boundary")
+                    or cb_report.get("classification")
+                    or report["first_boundary"]
+                )
+        else:
+            report["first_boundary"] = cm_class or cb_class or ""
+            report["smallest_correction_boundary"] = (
+                cm_report.get("smallest_correction_boundary")
+                or cb_report.get("classification")
+                or report["first_boundary"]
+            )
         report["finished_at"] = time.time()
         context.close()
         browser.close()
@@ -493,6 +530,8 @@ def main() -> int:
                     "case_a_dispatch_authority": report.get("case_a_dispatch_authority"),
                     "callback_boundary": cb_report.get("classification"),
                     "callback_metadata_boundary": cm_report.get("classification"),
+                    "value_loss_boundary": value_loss.get("classification"),
+                    "expiration_token_raw": token_raw,
                     "artifact": str(OUT),
                 },
                 indent=2,

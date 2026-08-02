@@ -19,6 +19,19 @@ def format_metadata_diagnostic_txt(report: dict[str, Any]) -> str:
     lines.append(f"live_build: {report.get('live_build')}")
     lines.append(f"first_boundary: {report.get('first_boundary')}")
     lines.append(f"smallest_correction_boundary: {report.get('smallest_correction_boundary')}")
+    lines.append(f"cm_dispatch_outcome: {report.get('cm_dispatch_outcome')}")
+    lines.append(f"callback_boundary_label: {report.get('callback_boundary_label')}")
+    raw = report.get("expiration_token_raw")
+    if isinstance(raw, dict) and raw:
+        lines.append("")
+        lines.append("expiration_token_raw (exact fields)")
+        lines.append("-" * 32)
+        lines.append(json.dumps(raw, indent=2, ensure_ascii=True))
+    vl = report.get("value_loss_boundary")
+    if isinstance(vl, dict) and vl:
+        lines.append("")
+        lines.append("value_loss_boundary")
+        lines.append(json.dumps(vl, indent=2, default=str, ensure_ascii=True))
     lines.append("")
 
     ca = report.get("case_a_metadata_authority") or {}
