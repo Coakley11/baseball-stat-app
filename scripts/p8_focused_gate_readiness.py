@@ -94,7 +94,7 @@ def commit_has_focused_p8_gate(sha: str) -> dict[str, Any]:
             short and (short == ROOM_LATCH_SHA[:7] or git_sha_is_ancestor(ROOM_LATCH_SHA[:7], short))
         ),
         "p8c7_durable_handoff_gate": _grep_at(
-            short, "pass_durable_callback_handoff", "live_draft_stage1_post_bind_flush.py"
+            short, 'source == "durable_callback_handoff"', "live_draft_stage1_post_bind_flush.py"
         ),
         "p8b_return_value_bind": _grep_at(
             short, "return_value_session_bind", "live_draft_solo_persistent_wake.py"
