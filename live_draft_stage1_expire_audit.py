@@ -341,6 +341,18 @@ def try_claim_token_delivery(session: dict[str, Any], token: str, source: str) -
             return False, "already_consumed"
         return False, "callback_source_not_allowed"
     owners[tok] = src
+    try:
+        from live_draft_solo_persistent_wake import solo_persistent_wake_widget_key
+        from live_draft_prod_callback_handoff import clear_handoff_after_successful_processing
+
+        clear_handoff_after_successful_processing(
+            session,
+            widget_key=solo_persistent_wake_widget_key(session),
+            raw_token=tok,
+            reason="try_claim_accepted",
+        )
+    except ImportError:
+        pass
     return True, ""
 
 

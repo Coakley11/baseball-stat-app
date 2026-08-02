@@ -217,7 +217,22 @@ def _python_binding_chain(exp: dict[str, Any], rv: dict[str, Any], token: str) -
     decl_ret = str(py.get("direct_component_return_declaration") or "")
     mount_ret = str(py.get("direct_component_return_mount_diag") or "")
     direct = coalesced or decl_ret or mount_ret
-    bound_in_python = bool(token and (token in direct or token in ss_val))
+    handoff_rows = [
+        r
+        for r in ledger
+        if str(r.get("event") or "") == "production_stage1_callback_handoff_written"
+        and (not token or str(r.get("raw_token") or "") == token)
+    ]
+    handoff_token = str((handoff_rows[-1] if handoff_rows else {}).get("raw_token") or "")
+    bound_in_python = bool(
+        token
+        and (
+            token in direct
+            or token in ss_val
+            or token == handoff_token
+            or any(str(r.get("equals_expected")) == "True" for r in handoff_rows if str(r.get("raw_token") or "") == token)
+        )
+    )
     obs_claims = [
         c
         for c in callbacks
@@ -230,7 +245,11 @@ def _python_binding_chain(exp: dict[str, Any], rv: dict[str, Any], token: str) -
         for r in ledger
         if str(r.get("event") or "") == "production_stage1_delivery_only_observation_completed"
         and (not token or str(r.get("bound_token") or r.get("token") or "") == token)
-        and str(r.get("bound_token_source") or "") in ("direct_component_return", "same_key_session_state")
+        and str(r.get("bound_token_source") or "") in (
+            "direct_component_return",
+            "same_key_session_state",
+            "durable_callback_handoff",
+        )
         and r.get("exact_match") is True
     ]
     post_bind = [
@@ -238,7 +257,11 @@ def _python_binding_chain(exp: dict[str, Any], rv: dict[str, Any], token: str) -
         for r in ledger
         if str(r.get("event") or "") == "production_stage1_post_bind_actionable_flush"
         and (not token or str(r.get("bound_token") or "") == token)
-        and str(r.get("bound_token_source") or "") in ("direct_component_return", "same_key_session_state")
+        and str(r.get("bound_token_source") or "") in (
+            "direct_component_return",
+            "same_key_session_state",
+            "durable_callback_handoff",
+        )
     ]
     flush_events = [
         r

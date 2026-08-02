@@ -277,7 +277,22 @@ def render_micro_isolation_once(
                     "session_state_raw_received",
                     {"key": key, "raw_type": type(raw).__name__ if raw is not None else "NoneType"},
                 )
-                if deliver_callback is not None:
+                if production_use_return_value_delivery:
+                    try:
+                        from live_draft_prod_callback_handoff import write_callback_handoff_from_on_change
+
+                        write_callback_handoff_from_on_change(
+                            st,
+                            session,
+                            widget_key=key,
+                            raw_value=raw,
+                            expected_token=token,
+                            callback_invocation_id=inv_id,
+                            production_room=production_room if isinstance(production_room, dict) else None,
+                        )
+                    except ImportError:
+                        pass
+                elif deliver_callback is not None:
                     try:
                         from live_draft_callback_boundary_diag import (
                             boundary_diag_enabled,
@@ -724,18 +739,29 @@ def render_micro_isolation_once(
             except ImportError:
                 pass
             try:
-                from live_draft_solo_heartbeat import _coerce_wake_token
-                from live_draft_stage1_production_ledger import (
-                    note_stage1_declaration_returned,
-                    note_stage1_event,
-                    stage1_production_ledger_enabled,
-                )
-
-                if stage1_production_ledger_enabled(st, session):
-                    session["_solo_stage1_last_delivery_only"] = bool(production_delivery_only)
-                    coerced = _coerce_wake_token(raw_component_value) or _coerce_wake_token(
-                        st.session_state.get(key)
+                    from live_draft_solo_heartbeat import _coerce_wake_token
+                    from live_draft_stage1_production_ledger import (
+                        note_stage1_declaration_returned,
+                        note_stage1_event,
+                        stage1_production_ledger_enabled,
                     )
+
+                    if stage1_production_ledger_enabled(st, session):
+                        session["_solo_stage1_last_delivery_only"] = bool(production_delivery_only)
+                        handoff_t = ""
+                        try:
+                            from live_draft_prod_callback_handoff import get_handoff_record
+
+                            rec = get_handoff_record(session, key)
+                            if isinstance(rec, dict):
+                                handoff_t = str(_coerce_wake_token(rec.get("raw_token")) or "")
+                        except ImportError:
+                            handoff_t = ""
+                        coerced = (
+                            _coerce_wake_token(raw_component_value)
+                            or _coerce_wake_token(st.session_state.get(key))
+                            or handoff_t
+                        )
                     try:
                         from live_draft_prod_on_change_value_lifecycle import (
                             emit_post_callback_handoff_boundary,
@@ -758,6 +784,20 @@ def render_micro_isolation_once(
                             value_raw=coerced,
                             callback_invocation_id=inv_active,
                         )
+                        try:
+                            from live_draft_prod_callback_handoff import get_handoff_record
+
+                            rec = get_handoff_record(session, key)
+                            emit_post_callback_handoff_boundary(
+                                st,
+                                session,
+                                widget_key=key,
+                                boundary="durable_callback_handoff",
+                                value_raw=rec.get("raw_token") if isinstance(rec, dict) else None,
+                                callback_invocation_id=inv_active,
+                            )
+                        except ImportError:
+                            pass
                         emit_post_callback_handoff_boundary(
                             st,
                             session,
@@ -837,9 +877,7 @@ def render_micro_isolation_once(
                         process_production_expire_token(
                             st,
                             session,
-                            raw_token=raw_component_value
-                            if raw_component_value is not None
-                            else gate.selected_bound_token,
+                            raw_token=gate.selected_bound_token,
                             widget_key=key,
                             source="return_value_session_bind",
                             declaration_room=get_registered_declaration_room(session),

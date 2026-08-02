@@ -298,7 +298,11 @@ def classify_focused_p8_outcome(
     pass_gates = [
         r
         for r in gate_rows
-        if str(r.get("decision") or "") in ("pass_direct_component_return", "pass_same_key_session_state")
+        if str(r.get("decision") or "") in (
+            "pass_direct_component_return",
+            "pass_same_key_session_state",
+            "pass_durable_callback_handoff",
+        )
     ]
     if not browser_send.get("postmessage_attempted"):
         return "INVALID_DIAGNOSTIC_SETUP_ABORT"
@@ -318,6 +322,16 @@ def classify_focused_p8_outcome(
 
     if (obs or flush) and not python_chain.get("return_value_session_bind_entry_events"):
         return "P8BIND6 — BOUND_VALUE_NOT_FORWARDED_TO_PROCESSING"
+
+    if pass_gates and (obs or flush) and python_chain.get("observation_zero_claims"):
+        snapshot_pass = any(
+            str(g.get("expected_token_source") or "") == "validated_declaration_snapshot"
+            for g in pass_gates
+        ) or any(str(g.get("decision") or "") == "pass_durable_callback_handoff" for g in pass_gates)
+        if snapshot_pass or any(str(g.get("decision") or "") == "pass_durable_callback_handoff" for g in pass_gates):
+            prov_ok = _provenance_ok(filtered_meta.get("filtered_rows") or [], python_chain.get("exact_token") or "")
+            if prov_ok:
+                return "FOCUSED_P8_BINDING_PASS"
 
     if python_chain.get("reaches_process_with_exact_token") and pass_gates:
         snapshot_pass = any(
@@ -351,7 +365,11 @@ def _provenance_ok(rows: list[dict[str, Any]], token: str) -> bool:
         src = str(row.get("bound_token_source") or row.get("candidate_source") or "")
         if bt != token:
             return False
-        if src not in ("direct_component_return", "same_key_session_state"):
+        if src not in (
+            "direct_component_return",
+            "same_key_session_state",
+            "durable_callback_handoff",
+        ):
             if row.get("exact_match") is not True:
                 return False
     return bool(obs or flush)

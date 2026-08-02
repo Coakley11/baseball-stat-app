@@ -230,6 +230,7 @@ def commit_has_binding_correction(sha: str) -> dict[str, Any]:
         "micro_core_on_change_not_cleared_for_return_value": False,
         "micro_core_single_mount_guard": False,
         "micro_core_raw_return_cache": False,
+        "prod_callback_handoff_module": False,
         "persistent_wake_ldr_entry_guard": False,
         "ok": False,
     }
@@ -278,6 +279,12 @@ def commit_has_binding_correction(sha: str) -> dict[str, Any]:
         sha,
         "solo_countdown_wake_micro_core.py",
     )
+    out["prod_callback_handoff_module"] = _grep(
+        "write_callback_handoff_from_on_change",
+        sha,
+        "live_draft_prod_callback_handoff.py",
+        "solo_countdown_wake_micro_core.py",
+    )
     out["persistent_wake_ldr_entry_guard"] = _grep(
         "_solo_persistent_ldr_entry_run",
         sha,
@@ -289,6 +296,7 @@ def commit_has_binding_correction(sha: str) -> dict[str, Any]:
             out["micro_core_on_change_not_cleared_for_return_value"],
             out["micro_core_single_mount_guard"],
             out["micro_core_raw_return_cache"],
+            out["prod_callback_handoff_module"],
             out["persistent_wake_ldr_entry_guard"],
         ]
     )

@@ -165,14 +165,32 @@ def evaluate_bound_token_gate(
     widget_key: str,
     call_site: str = "",
 ) -> BoundTokenGateResult:
-    """Only direct component return or same-key Session State may pass."""
+    """Exact-token gate across direct return, session state, cache, and durable callback handoff."""
     invocation_id = uuid.uuid4().hex[:12]
+    expected_call = _coerce(expected_expiration_token or mount_expire_token)
     direct = _coerce(raw_component_return) if raw_component_return is not None else ""
     ss_present = bool(widget_key and hasattr(st, "session_state") and widget_key in st.session_state)
     ss_val = st.session_state.get(widget_key) if ss_present else session_state_value
     ss = _coerce(ss_val) if ss_val is not None else ""
 
-    expected_call = _coerce(expected_expiration_token or mount_expire_token)
+    cache_raw = ""
+    try:
+        cached = session.get(f"_solo_prod_raw_return_{widget_key}")
+        cache_raw = _coerce(cached) if cached is not None else ""
+    except Exception:
+        cache_raw = ""
+
+    handoff_raw = ""
+    handoff_reject = ""
+    try:
+        from live_draft_prod_callback_handoff import get_handoff_record
+        from live_draft_solo_heartbeat import _coerce_wake_token
+
+        rec = get_handoff_record(session, widget_key)
+        if isinstance(rec, dict):
+            handoff_raw = str(_coerce_wake_token(rec.get("raw_token")) or "").strip()
+    except ImportError:
+        handoff_raw = ""
     call_site_expected = str(expected_expiration_token or "")[:400]
     expected_source = "call_site" if expected_call else ""
     declaration_context_token = ""
@@ -212,7 +230,7 @@ def evaluate_bound_token_gate(
     mount_t = _coerce(mount_expire_token)
     pending_t = _coerce(pending_token)
 
-    coalesced = direct or ss
+    coalesced = direct or ss or cache_raw or handoff_raw
     room_id = ""
     pick_index = None
     deadline = None
@@ -237,22 +255,73 @@ def evaluate_bound_token_gate(
     passed = False
     exact_match = False
 
-    if direct and expected and direct == expected:
-        selected, source = direct, "direct_component_return"
-        passed = True
-        exact_match = True
-        decision = "pass_direct_component_return"
-    elif ss_present and ss and expected and ss == expected:
-        selected, source = ss, "same_key_session_state"
-        passed = True
-        exact_match = True
-        decision = "pass_same_key_session_state"
-    elif expected and mount_t == expected and not direct and not ss:
-        decision = "reject_mount_token_not_bound"
-    elif pending_t and pending_t == expected and not direct and not ss:
-        decision = "reject_pending_token_not_bound"
-    elif (direct or ss) and expected and (direct or ss) != expected:
-        decision = "reject_token_mismatch"
+    try:
+        from live_draft_prod_callback_handoff import coalesce_expiration_token_candidates
+
+        selected, source, decision = coalesce_expiration_token_candidates(
+            expected_token=expected,
+            direct_raw=direct,
+            session_state_raw=ss,
+            cache_raw=cache_raw,
+            handoff_raw=handoff_raw,
+        )
+        passed = decision.startswith("pass_") and bool(selected)
+        exact_match = passed and selected == expected
+        if decision == "pass_exact_token" and source:
+            decision = f"pass_{source}"
+    except ImportError:
+        if direct and expected and direct == expected:
+            selected, source = direct, "direct_component_return"
+            passed = True
+            exact_match = True
+            decision = "pass_direct_component_return"
+        elif ss_present and ss and expected and ss == expected:
+            selected, source = ss, "same_key_session_state"
+            passed = True
+            exact_match = True
+            decision = "pass_same_key_session_state"
+        elif expected and mount_t == expected and not direct and not ss:
+            decision = "reject_mount_token_not_bound"
+        elif pending_t and pending_t == expected and not direct and not ss:
+            decision = "reject_pending_token_not_bound"
+        elif (direct or ss) and expected and (direct or ss) != expected:
+            decision = "reject_token_mismatch"
+
+    if passed and source == "durable_callback_handoff" and expected:
+        _rec, reject = "", handoff_reject
+        try:
+            from live_draft_prod_callback_handoff import validate_handoff_for_declaration
+
+            _rec, reject = validate_handoff_for_declaration(
+                session,
+                widget_key=widget_key,
+                expected_token=expected,
+                st=st,
+            )
+        except ImportError:
+            reject = ""
+        if not _rec:
+            passed = False
+            exact_match = False
+            selected = ""
+            source = ""
+            decision = f"reject_handoff_validation:{reject or handoff_reject or 'failed'}"
+        else:
+            try:
+                from live_draft_prod_callback_handoff import emit_callback_handoff_selected
+
+                emit_callback_handoff_selected(session, st=st, widget_key=widget_key, record=_rec)
+            except ImportError:
+                pass
+
+    if not passed:
+        if decision in ("reject_no_authoritative_surface", "reject_no_exact_candidate"):
+            if expected and mount_t == expected and not direct and not ss and not handoff_raw and not cache_raw:
+                decision = "reject_mount_token_not_bound"
+            elif pending_t and pending_t == expected and not direct and not ss and not handoff_raw:
+                decision = "reject_pending_token_not_bound"
+            elif (direct or ss) and expected and (direct or ss) != expected:
+                decision = "reject_token_mismatch"
 
     gate = BoundTokenGateResult(
         passed=passed,
@@ -302,7 +371,12 @@ def evaluate_bound_token_gate(
         call_site_expected_token=call_site_expected,
         snapshot_validation_ok=snapshot_validation_ok,
         snapshot_rejection_reason=snapshot_rejection_reason,
-        extra_instrumentation=snap_fields,
+        extra_instrumentation={
+            **snap_fields,
+            "handoff_candidate": str(handoff_raw or "")[:400],
+            "raw_return_cache": str(cache_raw or "")[:400],
+            "handoff_reject": str(handoff_reject or "")[:120],
+        },
     )
     return gate
 
