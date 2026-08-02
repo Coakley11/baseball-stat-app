@@ -1,0 +1,26 @@
+{
+  "source_run_id": "aa04920d7a244dd9",
+  "room_id": "12E729A7",
+  "authoritative": {
+    "cm_dispatch_outcome": "CM_DISPATCH_PASS — PRODUCTION STATE PRESENT, CHANGED, CALLBACK SELECTED AND INVOKED",
+    "callback_boundary": "CB6 — VALUE_PRESENT_IN_CALLBACK_BUT_CLEARED_OR_DISPLACED_AFTERWARD",
+    "withdrawn": ["CM3 — PRODUCTION_WIDGET_STATE_NOT_PRESENT_ON_BACKEND"]
+  },
+  "provisional_only": {
+    "value_inference": "VALUE4 — STREAMLIT_FRAMEWORK_CLEARS_TRIGGER_STATE_AFTER_CALLBACK",
+    "authoritative": false,
+    "reason": "Legacy ledger lacks value_op, mutation, and handoff rows from lifecycle instrumentation."
+  },
+  "expected_token_raw": "12E729A7|0|1785630315.461",
+  "browser_token_raw": "12E729A7|0|1785630315.461",
+  "backend_new_value_raw": "12E729A7|0|1785630315.461",
+  "callback_entry_value_raw": "12E729A7|0|1785630315.461",
+  "callback_exit_value_raw": "",
+  "post_callback_session_value_raw": "",
+  "wrapper_read_value_raw": "",
+  "browser_equals_expected": true,
+  "backend_equals_expected": true,
+  "callback_entry_equals_expected": true,
+  "callback_exit_equals_expected": false,
+  "wrapper_read_equals_expected": false
+}

@@ -798,6 +798,111 @@ def commit_has_room_latch_observability(sha: str) -> dict[str, Any]:
     return out
 
 
+VALUE_LIFECYCLE_OBS_ANCHOR_SHA = "94661ca"
+
+
+def commit_has_value_lifecycle_observability(sha: str) -> dict[str, Any]:
+    """App-side callback value lifecycle tracing (Cloud bytecode probe target)."""
+    sha = str(sha or "").strip()[:7]
+    out: dict[str, Any] = {
+        "sha": sha,
+        "file_value_lifecycle_py": False,
+        "value_snapshot_event": False,
+        "value_op_event": False,
+        "session_state_mutation_event": False,
+        "post_callback_handoff_event": False,
+        "micro_core_value_lifecycle_hooks": False,
+        "handoff_after_component_return": False,
+        "ok": False,
+    }
+    if not sha:
+        return out
+    lifecycle = "live_draft_prod_on_change_value_lifecycle.py"
+    micro = "solo_countdown_wake_micro_core.py"
+
+    def _cat(path: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "cat-file", "-e", f"{sha}:{path}"],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _grep(pattern: str, *paths: str) -> bool:
+        try:
+            subprocess.check_call(
+                ["git", "grep", "-q", pattern, sha, "--", *paths],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            return True
+        except Exception:
+            return False
+
+    out["file_value_lifecycle_py"] = _cat(lifecycle)
+    out["value_snapshot_event"] = _grep("production_stage1_prod_on_change_value_snapshot", lifecycle)
+    out["value_op_event"] = _grep("production_stage1_prod_on_change_value_op", lifecycle)
+    out["session_state_mutation_event"] = _grep("production_stage1_session_state_mutation", lifecycle)
+    out["post_callback_handoff_event"] = _grep("production_stage1_post_callback_handoff_boundary", lifecycle)
+    out["micro_core_value_lifecycle_hooks"] = _grep("live_draft_prod_on_change_value_lifecycle", micro)
+    out["handoff_after_component_return"] = _grep("raw_direct_component_return", micro)
+    out["ok"] = all(
+        [
+            out["file_value_lifecycle_py"],
+            out["value_snapshot_event"],
+            out["value_op_event"],
+            out["session_state_mutation_event"],
+            out["post_callback_handoff_event"],
+            out["micro_core_value_lifecycle_hooks"],
+            out["handoff_after_component_return"],
+        ]
+    )
+    return out
+
+
+def evaluate_cloud_value_lifecycle_observability_readiness(
+    *,
+    runtime_git_head_short: str,
+    runtime_git_head_full: str = "",
+    marker_sha: str = "",
+    marker_build: str = "",
+    deploy_pin: str | None = None,
+) -> dict[str, Any]:
+    pin = git_short_sha(deploy_pin or local_deploy_pin())
+    runtime = git_short_sha(runtime_git_head_full or runtime_git_head_short)
+    if not runtime:
+        runtime = git_short_sha(marker_sha)
+    anchor = git_short_sha(VALUE_LIFECYCLE_OBS_ANCHOR_SHA)
+    impl = commit_has_value_lifecycle_observability(runtime) if runtime else {}
+    contains_anchor = bool(
+        runtime
+        and (runtime == anchor or git_sha_is_ancestor(anchor, runtime))
+    )
+    checks: dict[str, bool] = {
+        "runtime_git_contains_lifecycle_anchor": contains_anchor,
+        "value_lifecycle_implementation_at_runtime_git": bool(impl.get("ok")),
+        "deploy_pin_marker_matches_local_pin": bool(pin and git_short_sha(marker_sha) == pin),
+    }
+    ok = checks["runtime_git_contains_lifecycle_anchor"] and checks["value_lifecycle_implementation_at_runtime_git"]
+    return {
+        "deploy_pin": pin,
+        "lifecycle_observability_anchor_sha": anchor,
+        "runtime_git_head_short": runtime,
+        "marker_sha": git_short_sha(marker_sha),
+        "marker_build": marker_build,
+        "checks": checks,
+        "implementation_at_runtime_git": impl,
+        "ok": ok,
+    }
+
+
 def evaluate_cloud_callback_metadata_observability_readiness(
     *,
     runtime_git_head_short: str,
@@ -1236,6 +1341,7 @@ def poll_live_cloud_sha(
     wait_for_callback_metadata_observability: bool = False,
     wait_for_start_stage1_observability: bool = False,
     wait_for_room_latch_observability: bool = False,
+    wait_for_value_lifecycle_observability: bool = False,
 ) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
     from playwright.sync_api import sync_playwright
@@ -1258,6 +1364,7 @@ def poll_live_cloud_sha(
         "binding_readiness": {},
         "callback_observability_readiness": {},
         "callback_metadata_observability_readiness": {},
+        "value_lifecycle_observability_readiness": {},
         "ok": False,
     }
     pin = local_deploy_pin()
@@ -1266,6 +1373,7 @@ def poll_live_cloud_sha(
     wait_metadata_obs = wait_for_callback_metadata_observability or wait_for_start_stage1_observability
     wait_start_obs = wait_for_start_stage1_observability
     wait_latch_obs = wait_for_room_latch_observability
+    wait_vl_obs = wait_for_value_lifecycle_observability
 
     for i in range(max_attempts):
         row: dict[str, Any] = {"attempt": i, "ts": time.time()}
@@ -1317,12 +1425,21 @@ def poll_live_cloud_sha(
                 )
                 row["callback_observability_readiness"] = obs_readiness
                 row["callback_metadata_observability_readiness"] = meta_obs_readiness
+                vl_readiness = evaluate_cloud_value_lifecycle_observability_readiness(
+                    runtime_git_head_short=runtime_short,
+                    runtime_git_head_full=runtime_full,
+                    marker_sha=runtime_dom.get("marker_sha") or "",
+                    marker_build=build,
+                    deploy_pin=pin,
+                )
+                row["value_lifecycle_observability_readiness"] = vl_readiness
                 report["attempts"].append(row)
                 report["live_sha"] = runtime_short or sha
                 report["live_build"] = build
                 report["binding_readiness"] = readiness
                 report["callback_observability_readiness"] = meta_obs_readiness if wait_metadata_obs else obs_readiness
                 report["callback_metadata_observability_readiness"] = meta_obs_readiness
+                report["value_lifecycle_observability_readiness"] = vl_readiness
                 report["implementation_at_live_sha"] = (
                     meta_obs_readiness.get("callback_metadata_implementation_at_runtime_git")
                     or obs_readiness.get("implementation_at_runtime_git")
@@ -1330,9 +1447,18 @@ def poll_live_cloud_sha(
                     or impl
                 )
                 browser.close()
+                if wait_vl_obs:
+                    if vl_readiness.get("ok"):
+                        report["ok"] = True
+                        return report
+                    time.sleep(sleep_s)
+                    continue
                 if wait_callback_obs:
                     ready = meta_obs_readiness if wait_metadata_obs else obs_readiness
                     if not ready.get("ok"):
+                        time.sleep(sleep_s)
+                        continue
+                    if wait_vl_obs and not vl_readiness.get("ok"):
                         time.sleep(sleep_s)
                         continue
                     if wait_start_obs:

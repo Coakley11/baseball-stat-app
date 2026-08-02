@@ -14,21 +14,29 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
 OUT = ROOT / "data" / "production_callback_metadata_diagnostic.json"
+OUT_LIFECYCLE = ROOT / "data" / "production_callback_value_lifecycle_diagnostic.json"
 OUT_TXT = ROOT / "data" / "production_callback_metadata_diagnostic.txt"
+OUT_LIFECYCLE_TXT = ROOT / "data" / "production_callback_value_lifecycle_diagnostic.txt"
 LEGACY_OUT = ROOT / "data" / "production_callback_binding_diagnostic.json"
 LOG = ROOT / "data" / "production_callback_binding_diagnostic_run.out"
+LOG_LIFECYCLE = ROOT / "data" / "production_callback_value_lifecycle_run.out"
 PRODUCTION_WIDGET_KEY = "solo_countdown_wake_solo_persistent"
 INVALID_OBS = "INVALID_OBSERVABILITY_NOT_DEPLOYED"
+INVALID_VL_OBS = "INVALID_VALUE_LIFECYCLE_OBSERVABILITY_NOT_DEPLOYED"
 
 
 def _persist_report(report: dict[str, Any]) -> None:
+    targets = [OUT, OUT_LIFECYCLE, LEGACY_OUT]
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
-    LEGACY_OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    payload = json.dumps(report, indent=2, default=str)
+    for path in targets:
+        path.write_text(payload, encoding="utf-8")
     try:
         from p8_callback_metadata_diagnostic_report import format_metadata_diagnostic_txt
 
-        OUT_TXT.write_text(format_metadata_diagnostic_txt(report), encoding="utf-8")
+        txt = format_metadata_diagnostic_txt(report)
+        OUT_TXT.write_text(txt, encoding="utf-8")
+        OUT_LIFECYCLE_TXT.write_text(txt, encoding="utf-8")
     except ImportError:
         pass
 
@@ -38,8 +46,8 @@ def _write_abort(report: dict[str, Any], *, reason: str, boundary: str = INVALID
     report["abort_reason"] = reason
     report["first_boundary"] = boundary
     report["smallest_correction_boundary"] = boundary
-    report["artifact_path"] = str(OUT)
-    report["artifact_txt_path"] = str(OUT_TXT)
+    report["artifact_path"] = str(OUT_LIFECYCLE)
+    report["artifact_txt_path"] = str(OUT_LIFECYCLE_TXT)
     report["finished_at"] = time.time()
     _persist_report(report)
 
@@ -76,10 +84,13 @@ def main() -> int:
         REGISTRATION_HOOK_OBS_SHA,
         REGISTRATION_BOUNDARY_OBS_SHA,
         CALLBACK_OBS_ANCHOR_SHA,
+        VALUE_LIFECYCLE_OBS_ANCHOR_SHA,
         git_head_short,
         local_deploy_pin,
         poll_live_cloud_sha,
         scrape_cloud_runtime_deploy_probe,
+        evaluate_cloud_value_lifecycle_observability_readiness,
+        commit_has_value_lifecycle_observability,
     )
     from replay_playwright_daniel_auth_preflight import run_preflight
     from playwright_daniel_auth_session import STORAGE_PATH, harness_ready
@@ -141,34 +152,68 @@ def main() -> int:
         "metadata_fix_implementation_sha": REGISTRATION_BOUNDARY_OBS_SHA,
         "deploy_trigger_sha": CALLBACK_METADATA_OBS_GATE_SHA,
         "git_head": git_head_short(),
-        "mode": "callback_metadata_diagnostic_v6_dispatch_authority_gate_b",
-        "local_registration_hook_self_test": hook_self_test,
-        "artifact_path": str(OUT),
-        "artifact_txt_path": str(OUT_TXT),
+        "mode": "callback_value_lifecycle_diagnostic_v1",
+        "classifier_fix_sha": "ee74d18",
+        "value_lifecycle_observability_sha": VALUE_LIFECYCLE_OBS_ANCHOR_SHA,
+        "deploy_pin_sha": pin,
+        "origin_dev_head": git_head_short(),
+        "artifact_path": str(OUT_LIFECYCLE),
+        "artifact_txt_path": str(OUT_LIFECYCLE_TXT),
         "legacy_artifact_path": str(LEGACY_OUT),
-        "log_path": str(LOG),
+        "log_path": str(LOG_LIFECYCLE),
+        "aa04920d_authoritative_relabel_path": str(
+            ROOT / "data" / "production_callback_aa04920d_relabeled.json"
+        ),
+        "local_registration_hook_self_test": hook_self_test,
     }
 
     poll = poll_live_cloud_sha(
-        max_attempts=48,
-        sleep_s=20.0,
+        max_attempts=1,
+        sleep_s=0.0,
         require_canary_impl=False,
-        wait_for_callback_metadata_observability=True,
+        wait_for_callback_metadata_observability=False,
+        wait_for_value_lifecycle_observability=True,
     )
     obs = poll.get("callback_metadata_observability_readiness") or poll.get("callback_observability_readiness") or {}
+    vl_obs = poll.get("value_lifecycle_observability_readiness") or {}
     report["observability_deploy_poll"] = poll
     report["cloud_callback_observability_readiness"] = obs
+    report["cloud_value_lifecycle_observability_readiness"] = vl_obs
     report["metadata_read_fix_readiness"] = obs.get("metadata_read_fix_at_runtime_git")
     report["live_sha"] = obs.get("runtime_git_head_short") or poll.get("live_sha")
     report["live_build"] = obs.get("marker_build") or poll.get("live_build")
+    report["lifecycle_implementation_at_live_sha"] = vl_obs.get("implementation_at_runtime_git") or {}
 
-    if not poll.get("ok") or not obs.get("ok"):
+    if str(report.get("live_sha") or "").lower() == "a2e6eb2" or not vl_obs.get("ok"):
         _write_abort(
             report,
-            reason="callback_observability_bytecode_not_proven_on_cloud",
-            boundary=INVALID_OBS,
+            reason="value_lifecycle_observability_not_on_cloud",
+            boundary=INVALID_VL_OBS,
         )
-        print(json.dumps({"first_boundary": INVALID_OBS, "artifact": str(OUT)}, indent=2))
+        report["value_lifecycle_readiness_checks"] = vl_obs.get("checks") or {}
+        print(
+            json.dumps(
+                {
+                    "first_boundary": INVALID_VL_OBS,
+                    "live_sha": report.get("live_sha"),
+                    "live_build": report.get("live_build"),
+                    "deploy_pin": pin,
+                    "origin_dev_head": report.get("origin_dev_head"),
+                    "value_lifecycle_checks": vl_obs.get("checks"),
+                    "artifact": str(OUT_LIFECYCLE),
+                },
+                indent=2,
+            )
+        )
+        return 1
+
+    if not poll.get("ok"):
+        _write_abort(
+            report,
+            reason="value_lifecycle_cloud_readiness_poll_failed",
+            boundary=INVALID_VL_OBS,
+        )
+        print(json.dumps({"first_boundary": INVALID_VL_OBS, "artifact": str(OUT_LIFECYCLE)}, indent=2))
         return 1
 
     with sync_playwright() as p:
@@ -500,7 +545,12 @@ def main() -> int:
         if cm_class.startswith("CM_DISPATCH_PASS"):
             report["cm_dispatch_outcome"] = cm_class
             report["callback_boundary_label"] = cb_class
-            if cb_class.startswith("CB6") and vl_class:
+            vl_class = str(value_loss.get("classification") or "")
+            if vl_class == "VALUE_CLASSIFICATION_PENDING — INSUFFICIENT_LIFECYCLE_LEDGER_EVIDENCE":
+                report["first_boundary"] = vl_class
+                report["provisional_value_inference"] = value_loss.get("provisional_inference") or ""
+                report["smallest_correction_boundary"] = vl_class
+            elif cb_class.startswith("CB6") and vl_class and "VALUE" in vl_class:
                 report["first_boundary"] = vl_class
                 report["smallest_correction_boundary"] = (
                     value_loss.get("smallest_correction_boundary") or vl_class

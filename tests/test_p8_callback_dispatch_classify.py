@@ -118,7 +118,7 @@ def test_value1_explicit_pop_on_widget_key() -> None:
     assert out["classification"] == VALUE1
 
 
-def test_value4_when_cb6_and_token_lost_after_entry() -> None:
+def test_value4_legacy_cb6_is_pending_not_authoritative() -> None:
     rows = [_prod_entered(), _prod_exited()]
     cb = classify_callback_boundary(filtered_rows=rows, exact_token=EXACT)
     raw = build_expiration_token_raw_report(expected_token=EXACT, filtered_rows=rows)
@@ -129,6 +129,31 @@ def test_value4_when_cb6_and_token_lost_after_entry() -> None:
         token_raw=raw,
     )
     assert cb["classification"].startswith("CB6")
+    assert out["classification"].startswith("VALUE_CLASSIFICATION_PENDING")
+    assert VALUE4 in str(out.get("provisional_inference") or "")
+
+
+def test_value4_with_lifecycle_handoffs_and_no_app_mutation() -> None:
+    rows = [
+        _prod_entered(),
+        _prod_exited(),
+        {
+            "event": "production_stage1_prod_on_change_value_snapshot",
+            "phase": "callback_entry",
+            "raw_value_repr": f"'{EXACT}'",
+        },
+        {
+            "event": "production_stage1_post_callback_handoff_boundary",
+            "boundary": "post_callback_session_state",
+            "value_raw": "None",
+        },
+    ]
+    cb = classify_callback_boundary(filtered_rows=rows, exact_token=EXACT)
+    out = classify_value_loss_boundary(
+        exact_token=EXACT,
+        filtered_rows=rows,
+        callback_boundary=cb,
+    )
     assert out["classification"] == VALUE4
 
 
