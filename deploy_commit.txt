@@ -1,4 +1,4 @@
-22ce3e3  # auto-generated; Streamlit Cloud reads this at runtime
-# deploy_epoch: 2026-08-02T05:35:00Z prod_callback_handoff_pin_nudge_v2_harness_9ef8d9d
-
-branch: dev
+a5516e4  # auto-generated; Streamlit Cloud reads this at runtime
+# deploy_epoch: 2026-08-02T14:35:00Z focused_p8_stop_before_claim_gate_a5516e4
+
+branch: dev
