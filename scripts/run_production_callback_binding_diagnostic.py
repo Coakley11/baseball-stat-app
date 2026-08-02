@@ -446,13 +446,14 @@ def main() -> int:
             context.close()
             browser.close()
             _persist_report(report)
+            harness_label = (harness_div or {}).get("classification")
             print(
                 json.dumps(
                     {
                         "first_boundary": report["first_boundary"],
-                        "harness_start": harness_div.get("classification"),
-                        "artifact": str(OUT),
-                        "gate": "B_harness_start",
+                        "harness_start": harness_label,
+                        "artifact": str(OUT_LIFECYCLE),
+                        "gate": report.get("gate"),
                     },
                     indent=2,
                 )
