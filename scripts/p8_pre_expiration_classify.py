@@ -46,8 +46,6 @@ def classify_pre_expiration_boundary(
             return _out(PREEXP8, audit, "session_or_run_diverged", ROOM_START_LATCH_PASS_INCOMPLETE)
 
     cons = resolved.get("consistency") or {}
-    if cons.get("countdown_mounted") and cons.get("deadline_not_expired") is False:
-        return _out(PREEXP7, audit, "deadline_already_expired", ROOM_START_LATCH_PASS_INCOMPLETE)
 
     pick = resolved.get("pick_index")
     if pick is None:
@@ -56,6 +54,9 @@ def classify_pre_expiration_boundary(
     deadline = resolved.get("deadline")
     if deadline is None:
         return _out(PREEXP3, audit, "deadline_missing", ROOM_START_LATCH_PASS_INCOMPLETE)
+
+    if cons.get("countdown_mounted") and not cons.get("deadline_not_expired"):
+        return _out(PREEXP7, audit, "deadline_already_expired", ROOM_START_LATCH_PASS_INCOMPLETE)
 
     token = str(resolved.get("expected_token") or "")
     dom = resolved.get("dom_diagnostics_missing") or {}

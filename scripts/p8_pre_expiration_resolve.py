@@ -149,6 +149,40 @@ def _countdown_mounted_scrape(scrape: dict[str, Any]) -> bool:
     return bool(scrape.get("in_progress")) and "Time remaining:" in text
 
 
+def _latest_pick0_declaration_ts(scoped: list[dict[str, Any]]) -> float:
+    best = 0.0
+    for r in scoped:
+        if not str(r.get("event") or "").startswith("production_countdown_declaration"):
+            continue
+        if _pick_from_row(r) != 0:
+            continue
+        best = max(best, float(r.get("ts") or 0))
+    return best
+
+
+def pre_expiration_evidence_freeze_ts(
+    ledger_rows: list[dict[str, Any]],
+    *,
+    room_id: str,
+    diagnostic_run_id: str = "",
+) -> float:
+    """Wall-clock anchor for deadline_not_expired — latch/declaration, not post-poll now."""
+    rid = _norm_room(room_id)
+    scoped = _rows_for_room(ledger_rows, room_id=rid, run_id=diagnostic_run_id)
+    decl_ts = _latest_pick0_declaration_ts(scoped)
+    proof_ts = 0.0
+    for r in scoped:
+        if r.get("event") != "production_stage1_handler_exit_session_state_proof":
+            continue
+        if _pick_from_row(r) != 0:
+            continue
+        proof_ts = max(proof_ts, float(r.get("ts") or 0))
+    freeze = max(decl_ts, proof_ts)
+    if freeze > 0:
+        return freeze + 0.05
+    return time.time()
+
+
 def resolve_authoritative_pre_expiration_state(
     *,
     ledger_rows: list[dict[str, Any]],
@@ -164,6 +198,7 @@ def resolve_authoritative_pre_expiration_state(
     rid = _norm_room(room_id) or _norm_room(ui_scrape.get("room_id"))
     run_id = str(diagnostic_run_id or "").strip()
     scoped = _rows_for_room(ledger_rows, room_id=rid, run_id=run_id)
+    pick0_decl_ts = _latest_pick0_declaration_ts(scoped)
 
     candidates: dict[str, list[dict[str, Any]]] = {
         "room_id": [],
@@ -182,6 +217,15 @@ def resolve_authoritative_pre_expiration_state(
     reads = [r for r in scoped if r.get("event") == "production_stage1_room_state_read"]
     ultra = [r for r in reads if "ultra_early" in str(r.get("read_label") or "")]
     for r in reversed(ultra or reads):
+        row_ts = float(r.get("ts") or 0)
+        row_pick = _pick_from_row(r)
+        if (
+            pick0_decl_ts > 0
+            and row_ts > pick0_decl_ts
+            and row_pick is not None
+            and int(row_pick) != 0
+        ):
+            continue
         _add("room_id", _norm_room(r.get("session_room_id") or r.get("room_id")), "room_state_read", r)
         if str(r.get("session_draft_status") or r.get("room_status") or "").lower() == "in_progress":
             _add("status", "in_progress", "room_state_read", r)

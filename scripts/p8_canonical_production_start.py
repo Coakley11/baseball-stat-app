@@ -345,9 +345,24 @@ def establish_single_solo_live_draft(
     ledger_for_pre = ledger_full
     export_rows = (out.get("latch_ledger_export") or {}).get("rows")
     if isinstance(export_rows, list) and export_rows:
-        ledger_for_pre = export_rows + [r for r in ledger_full if r not in export_rows]
+        decl_full = [
+            r
+            for r in ledger_full
+            if str(r.get("event") or "").startswith("production_countdown_declaration")
+        ]
+        ledger_for_pre = export_rows + decl_full + [r for r in ledger_full if r not in export_rows]
 
-    from p8_pre_expiration_resolve import resolve_authoritative_pre_expiration_state
+    from p8_pre_expiration_resolve import (
+        pre_expiration_evidence_freeze_ts,
+        resolve_authoritative_pre_expiration_state,
+    )
+    from p8_pre_expiration_classify import classify_pre_expiration_boundary
+
+    freeze_ts = pre_expiration_evidence_freeze_ts(
+        ledger_for_pre,
+        room_id=created or str(final_scrape.get("room_id") or ""),
+        diagnostic_run_id=run_id,
+    )
 
     pre = resolve_authoritative_pre_expiration_state(
         ledger_rows=ledger_for_pre,
@@ -356,7 +371,14 @@ def establish_single_solo_live_draft(
         diagnostic_run_id=run_id,
         click_count=int(out.get("click_count") or 1),
         room_latch_pass=out["room_latch_pass"],
+        now_ts=freeze_ts,
     )
+    preexp_cls = classify_pre_expiration_boundary(
+        resolved=pre,
+        room_latch_pass=out["room_latch_pass"],
+        identity_timeline=identity_timeline,
+    )
+    out["pre_expiration_classification"] = preexp_cls
     out["pre_expiration_resolution"] = pre
     out["pre_expiration_ready"] = bool(pre.get("pre_expiration_ready"))
     out["expected_token"] = pre.get("expected_token")
@@ -369,7 +391,8 @@ def establish_single_solo_live_draft(
         out["start_boundary"] = START_PIPELINE_PASS
         out["setup_gate"] = "PASS_POSITIVE_START_PROOF"
     else:
-        out["first_missing_pre_expiration"] = _first_missing_pre_expiration(out)
+        out["first_missing_pre_expiration"] = str(preexp_cls.get("first_missing") or _first_missing_pre_expiration(out))
+        out["pre_expiration_boundary"] = str(preexp_cls.get("classification") or "")
         func_label = str(narrow_classification.get("classification") or "")
         if func_label.startswith("START8") and created and audit_reconcile.get("audit_filter_mismatch"):
             out["start_boundary"] = "HARNESS_AUDIT_RECONCILE_NOT_START8"

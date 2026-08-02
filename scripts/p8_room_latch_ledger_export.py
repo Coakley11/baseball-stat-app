@@ -20,6 +20,8 @@ LATCH_EVENT_NAMES = frozenset(
         "production_global_script_run_canary",
         "production_live_draft_branch_canary",
         "production_stage1_script_begin",
+        "production_countdown_declaration_pre",
+        "production_countdown_declaration_post",
     }
 )
 
@@ -54,7 +56,11 @@ def filter_latch_ledger_rows(
         if not isinstance(r, dict):
             continue
         ev = str(r.get("event") or "")
-        if ev not in LATCH_EVENT_NAMES and not ev.startswith("production_stage1_"):
+        if (
+            ev not in LATCH_EVENT_NAMES
+            and not ev.startswith("production_stage1_")
+            and not ev.startswith("production_countdown_declaration")
+        ):
             continue
         if click_ts and float(r.get("ts") or 0) < click_ts - 0.25:
             continue

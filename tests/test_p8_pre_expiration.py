@@ -88,7 +88,7 @@ def test_missing_token_everywhere_blocks() -> None:
         room_id="ABC",
         click_count=1,
         room_latch_pass=True,
-        now_ts=9999999999.0,
+        now_ts=100.0,
     )
     assert not resolved["pre_expiration_ready"]
     preexp = classify_pre_expiration_boundary(resolved=resolved, room_latch_pass=True)

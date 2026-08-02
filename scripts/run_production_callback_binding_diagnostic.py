@@ -430,9 +430,18 @@ def main() -> int:
             )
             report["pre_expiration_classification"] = preexp
             report["harness_start_classification"] = harness_div
+            preexp_code = str(preexp.get("classification") or "")
             if start_val.get("room_latch_pass"):
-                report["first_boundary"] = preexp.get("accepted_label") or ROOM_START_LATCH_PASS_INCOMPLETE
-                report["smallest_correction_boundary"] = preexp.get("classification") or report["first_boundary"]
+                report["first_boundary"] = (
+                    preexp_code
+                    or preexp.get("accepted_label")
+                    or ROOM_START_LATCH_PASS_INCOMPLETE
+                )
+                report["smallest_correction_boundary"] = (
+                    preexp.get("smallest_correction_boundary")
+                    or preexp_code
+                    or report["first_boundary"]
+                )
             elif harness_div:
                 report["first_boundary"] = harness_div.get("accepted_fail_label") or GATE_B_START_PATH_DIVERGENCE
                 report["smallest_correction_boundary"] = harness_div.get("classification") or report["first_boundary"]
