@@ -18,6 +18,9 @@ VALUE_PENDING = (
     "VALUE_CLASSIFICATION_PENDING — INSUFFICIENT_LIFECYCLE_LEDGER_EVIDENCE"
 )
 
+PRODUCTION_WIDGET_KEY = "solo_countdown_wake_solo_persistent"
+CLASSIFIER_FIX_SHA = "a20d281-replay-v1"
+
 MUTATION_EVENT = "production_stage1_session_state_mutation"
 VALUE_OP_EVENT = "production_stage1_prod_on_change_value_op"
 HANDOFF_EVENT = "production_stage1_post_callback_handoff_boundary"
@@ -37,6 +40,105 @@ def _unwrap(repr_str: Any) -> str:
     return s
 
 
+def _raw_matches_exact(raw_repr: Any, exact: str) -> bool:
+    if not exact:
+        return False
+    return _unwrap(str(raw_repr or "")) == exact
+
+
+def _mutation_clears_widget_key(
+    mutation: dict[str, Any], *, widget_key: str, exact: str
+) -> bool:
+    key = str(mutation.get("key") or mutation.get("widget_key") or "")
+    if key != widget_key:
+        return False
+    op = str(mutation.get("mutation_op") or "")
+    if op in ("pop", "delete", "clear"):
+        return True
+    if op in ("set", "update"):
+        prev = str(mutation.get("previous_value_repr") or "")
+        new = _unwrap(mutation.get("new_value_repr"))
+        if exact in prev and new != exact:
+            return True
+    return False
+
+
+def _timeline_widget_value_rows(
+    filtered_rows: list[dict[str, Any]],
+    *,
+    widget_key: str,
+) -> list[dict[str, Any]]:
+    """Chronological rows that carry widget-key raw values for transition replay."""
+    out: list[dict[str, Any]] = []
+    for r in filtered_rows:
+        if not isinstance(r, dict):
+            continue
+        ev = str(r.get("event") or "")
+        ts = float(r.get("ts") or 0)
+        eid = str(r.get("event_id") or ev)
+        if ev == SNAPSHOT_EVENT and str(r.get("widget_key") or "") == widget_key:
+            out.append(
+                {
+                    "ts": ts,
+                    "event_id": eid,
+                    "event": ev,
+                    "phase": str(r.get("phase") or ""),
+                    "raw_repr": r.get("raw_value_repr"),
+                    "key_exists": r.get("session_state_key_exists"),
+                }
+            )
+        elif ev == VALUE_OP_EVENT and str(r.get("widget_key") or "") == widget_key:
+            out.append(
+                {
+                    "ts": ts,
+                    "event_id": eid,
+                    "event": ev,
+                    "phase": str(r.get("operation_label") or ""),
+                    "raw_repr": r.get("new_raw_value"),
+                    "key_exists": None,
+                }
+            )
+        elif ev == "production_stage1_prod_on_change_entered" and str(r.get("widget_key") or "") == widget_key:
+            out.append(
+                {
+                    "ts": ts,
+                    "event_id": eid,
+                    "event": ev,
+                    "phase": "callback_entered",
+                    "raw_repr": r.get("session_state_value_repr"),
+                    "key_exists": r.get("session_state_key_exists"),
+                }
+            )
+        elif ev == "production_stage1_prod_on_change_exited" and str(r.get("widget_key") or "") == widget_key:
+            out.append(
+                {
+                    "ts": ts,
+                    "event_id": eid,
+                    "event": ev,
+                    "phase": "callback_exited",
+                    "raw_repr": r.get("session_state_value_at_exit_repr"),
+                    "key_exists": r.get("session_state_key_exists_at_exit"),
+                }
+            )
+    out.sort(key=lambda x: (float(x["ts"]), str(x["event_id"])))
+    return out
+
+
+def _first_proven_loss_transition(
+    timeline: list[dict[str, Any]], exact: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    last_true: dict[str, Any] | None = None
+    first_false: dict[str, Any] | None = None
+    for row in timeline:
+        if _raw_matches_exact(row.get("raw_repr"), exact):
+            last_true = row
+            first_false = None
+        elif last_true is not None and not _raw_matches_exact(row.get("raw_repr"), exact):
+            first_false = row
+            break
+    return last_true, first_false
+
+
 def _lifecycle_evidence_sufficient(
     mutations: list[dict[str, Any]],
     ops: list[dict[str, Any]],
@@ -54,8 +156,10 @@ def classify_value_loss_boundary(
     token_raw: dict[str, Any] | None = None,
     return_value_chain: dict[str, Any] | None = None,
     require_lifecycle_evidence: bool = True,
+    production_widget_key: str = PRODUCTION_WIDGET_KEY,
 ) -> dict[str, Any]:
     exact = str(exact_token or "").strip()
+    widget_key = str(production_widget_key or PRODUCTION_WIDGET_KEY)
     cb = callback_boundary or {}
     raw = token_raw or {}
     rv = return_value_chain or {}
@@ -83,13 +187,10 @@ def classify_value_loss_boundary(
     }
 
     for m in mutations:
-        op = str(m.get("mutation_op") or "")
-        key = str(m.get("key") or "")
-        if op in ("pop", "delete", "clear") and exact and "solo_persistent" in key:
+        if _mutation_clears_widget_key(m, widget_key=widget_key, exact=exact):
+            op = str(m.get("mutation_op") or "")
+            key = str(m.get("key") or "")
             return _out(VALUE1, audit, f"mutation:{op}:{key}", VALUE1)
-        if op in ("set", "update") and str(m.get("new_value_repr") or "") in ("None", "''", '""', ""):
-            if exact in str(m.get("previous_value_repr") or ""):
-                return _out(VALUE1, audit, f"explicit_clear:{key}", VALUE1)
 
     for op in ops:
         label = str(op.get("operation_label") or "")
@@ -149,25 +250,96 @@ def classify_value_loss_boundary(
     if entry_seq is not None and wrapper_seq is not None and int(entry_seq) != int(wrapper_seq):
         return _out(VALUE7, audit, "script_run_seq_mismatch", VALUE7)
 
-    widget_mutations = [m for m in mutations if "solo_persistent" in str(m.get("key") or "")]
-    app_cleared = bool(widget_mutations)
+    widget_clear_mutations = [
+        m for m in mutations if _mutation_clears_widget_key(m, widget_key=widget_key, exact=exact)
+    ]
+    app_cleared_widget_key = bool(widget_clear_mutations)
 
-    if exact and exact in entry_repr and exact not in exit_repr and not app_cleared:
+    timeline = _timeline_widget_value_rows(filtered_rows, widget_key=widget_key)
+    last_true, first_false = _first_proven_loss_transition(timeline, exact)
+    audit["value_transition_timeline_count"] = len(timeline)
+    if last_true:
+        audit["last_equals_expected_event_id"] = last_true.get("event_id")
+        audit["last_equals_expected_phase"] = last_true.get("phase")
+    if first_false:
+        audit["first_loss_event_id"] = first_false.get("event_id")
+        audit["first_loss_phase"] = first_false.get("phase")
+
+    exit_phase_loss = (
+        first_false is not None
+        and str(first_false.get("phase") or "") == "callback_exit"
+        and last_true is not None
+        and str(last_true.get("phase") or "") in (
+            "callback_entry",
+            "read_session_state_widget_key",
+            "after_read_session_state_widget_key",
+            "callback_entered",
+        )
+    )
+
+    if exit_phase_loss and not app_cleared_widget_key:
+        loss_ref = (
+            f"{last_true.get('event_id')}->{first_false.get('event_id')}"
+            if last_true and first_false
+            else "framework_clear_after_callback_no_app_mutation"
+        )
         post_cb = _unwrap(raw.get("post_callback_session_value_raw"))
-        wrapper = raw.get("wrapper_read_value_raw") or ""
+        wrapper = _unwrap(raw.get("wrapper_read_value_raw"))
+        same_key_unavailable = not post_cb and not wrapper
+        if same_key_unavailable:
+            return _out(
+                VALUE4,
+                audit,
+                loss_ref,
+                VALUE9,
+                mechanism=VALUE4,
+                correction_boundary=VALUE9,
+            )
+        return _out(VALUE4, audit, loss_ref, VALUE4, mechanism=VALUE4)
+
+    if exact and exact in entry_repr and exact not in exit_repr and not app_cleared_widget_key:
+        post_cb = _unwrap(raw.get("post_callback_session_value_raw"))
+        wrapper = _unwrap(raw.get("wrapper_read_value_raw") or "")
         if not post_cb and not wrapper and handoffs:
             return _out(VALUE4, audit, "framework_clear_after_callback_no_app_mutation", VALUE4)
         if not post_cb and not wrapper:
             return _out(VALUE9, audit, "transient_trigger_handoff_required", VALUE9)
 
+    if last_true and first_false:
+        pending = (
+            f"VALUE_CLASSIFICATION_PENDING — FIRST LOSS OCCURS BETWEEN "
+            f"{last_true.get('event_id')} AND {first_false.get('event_id')}"
+        )
+        return {
+            "classification": pending,
+            "first_value_loss": f"{last_true.get('event_id')}->{first_false.get('event_id')}",
+            "smallest_correction_boundary": pending,
+            "audit": audit,
+            "provisional_inference_authoritative": False,
+        }
+
     return _out(VALUE10, audit, "unmapped_value_loss", VALUE10)
 
 
-def _out(code: str, audit: dict[str, Any], missing: str, boundary: str) -> dict[str, Any]:
-    return {
+def _out(
+    code: str,
+    audit: dict[str, Any],
+    missing: str,
+    boundary: str,
+    *,
+    mechanism: str = "",
+    correction_boundary: str = "",
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
         "classification": code,
         "first_value_loss": missing,
         "smallest_correction_boundary": boundary,
         "audit": audit,
         "provisional_inference_authoritative": True,
+        "classifier_fix_sha": CLASSIFIER_FIX_SHA,
     }
+    if mechanism:
+        result["mechanism"] = mechanism
+    if correction_boundary:
+        result["correction_boundary"] = correction_boundary
+    return result

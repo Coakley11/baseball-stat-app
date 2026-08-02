@@ -152,7 +152,7 @@ def main() -> int:
         "deploy_trigger_sha": CALLBACK_METADATA_OBS_GATE_SHA,
         "git_head": git_head_short(),
         "mode": "callback_value_lifecycle_diagnostic_v1",
-        "classifier_fix_sha": "ee74d18",
+        "classifier_fix_sha": "a20d281-replay-v1",
         "lifecycle_implementation_sha": "6d24920",
         "deploy_nudge_epoch": "2026-08-02T02:08:00Z lifecycle_observability_pin_nudge_v1",
         "deploy_pin_sha": pin,
