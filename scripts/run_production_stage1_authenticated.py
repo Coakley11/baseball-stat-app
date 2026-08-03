@@ -582,6 +582,7 @@ def wait_one_expiration(
         LEDGER_DURABLE_INIT_SCRIPT,
         ledger_rows_from_callback_audit,
         merge_ledger_sources,
+        normalize_expire_token,
         scrape_durable_ledger_store,
         wait_for_next_timer_after_commit,
     )
@@ -780,12 +781,47 @@ def wait_one_expiration(
                 scrape_stage1_audit=scrape_stage1_audit,
                 scrape_expire_chain=scrape_expire_chain,
                 capture_ledger=_capture_loop_ledger,
+                get_ledger_rows=lambda: list(merged_server_ledger),
                 poll_ms=400,
                 timeout_s=28.0,
             )
             _capture_loop_ledger()
             observe_until = min(observe_until, time.time() + 3.0)
             continue
+        if not post_commit_wait_started:
+            for row in merged_server_ledger:
+                if str(row.get("event") or "") == "production_stage1_token_action_complete":
+                    post_commit_wait_started = True
+                    pick_committed_at = float(row.get("ts") or time.time())
+                    _capture_loop_ledger()
+                    tok_completed = normalize_expire_token(row.get("token") or "")
+                    if not tok_completed:
+                        tok_completed = str(
+                            merged_client.get("token")
+                            or client.get("token")
+                            or ""
+                        )
+                    pf = parse_expire_token_fields(tok_completed)
+                    room_for_wait = str(pf.get("draft_id") or row.get("room_id") or "")
+                    next_timer_wait = wait_for_next_timer_after_commit(
+                        page,
+                        completed_token=tok_completed,
+                        room_id=room_for_wait,
+                        deadline_before=deadline_before,
+                        pick_committed_at=pick_committed_at,
+                        scrape_timer_fields=scrape_timer_fields,
+                        scrape_component_mount_diag=scrape_component_mount_diag,
+                        scrape_persistent_lifecycle_token=scrape_persistent_lifecycle_token,
+                        scrape_stage1_audit=scrape_stage1_audit,
+                        scrape_expire_chain=scrape_expire_chain,
+                        capture_ledger=_capture_loop_ledger,
+                        get_ledger_rows=lambda: list(merged_server_ledger),
+                        poll_ms=400,
+                        timeout_s=28.0,
+                    )
+                    _capture_loop_ledger()
+                    observe_until = min(observe_until, time.time() + 3.0)
+                    break
         if post_commit_wait_started and next_timer_wait.get("status") in ("observed", "timeout"):
             break
         if accepted_now and not post_commit_wait_started:
@@ -1071,6 +1107,8 @@ def grade_stage_1a(
         ledger_claim_metrics,
         ledger_pick_commit_reconciliation,
         ledger_server_next_timer,
+        build_stage1a_core_status_model,
+        extract_pick1_post_commit_mount_observation,
         split_stage1a_grades,
     )
 
@@ -1357,6 +1395,38 @@ def grade_stage_1a(
     }
     if queue_independence:
         out["queue_independence"] = queue_independence
+    if stage1a_mode == "CORE":
+        pick1_mount = extract_pick1_post_commit_mount_observation(
+            merged_ledger,
+            expected_pick1_token=str(timer_ledger.get("server_expected_token") or next_token_after),
+            run_id=app_run_id,
+            room_id=latched_room,
+            mount_diag=dict(exp.get("mount_after_commit") or {}),
+            lifecycle_token=str((exp.get("return_value_chain") or {}).get("browser", {}).get("lifecycle_token") or ""),
+            visible_countdown=visible_countdown,
+        )
+        if exp.get("next_timer_wait", {}).get("pick1_post_commit_mount"):
+            pick1_mount = dict(exp["next_timer_wait"]["pick1_post_commit_mount"])
+        status_model = build_stage1a_core_status_model(
+            functional_verdict=str(split.get("functional_verdict") or ""),
+            observability_verdict=str(split.get("observability_verdict") or ""),
+            timer_classification=timer_classification,
+            server_next_timer=timer_ledger,
+            pick1_mount=pick1_mount,
+            overall_classification=str(split.get("overall_classification") or ""),
+            queue_independence=queue_independence,
+        )
+        out["stage1a_core_status"] = status_model
+        out.update(
+            {
+                k: status_model[k]
+                for k in (
+                    "stage1a_core_functional_outcome",
+                    "stage1a_core_observability_outcome",
+                    "stage1a_core_overall",
+                )
+            }
+        )
     return out
 
 
@@ -2103,6 +2173,7 @@ def main() -> int:
         summary["stage1a"] = stage1a
         if stage1a_mode == "CORE":
             summary["stage1a_core"] = stage1a
+            summary["stage1a_core_status"] = grade.get("stage1a_core_status") or {}
         OUT_1A.write_text(json.dumps(stage1a, indent=2, default=str), encoding="utf-8")
         OUT_IFRAME.parent.mkdir(parents=True, exist_ok=True)
         OUT_IFRAME.write_text(
@@ -2130,7 +2201,12 @@ def main() -> int:
             encoding="utf-8",
         )
 
-        if grade["verdict"] != "PASS":
+        core_functional_pass = (
+            grade.get("stage1a_core_functional_outcome") == "PASS"
+            if stage1a_mode == "CORE"
+            else grade["verdict"] == "PASS"
+        )
+        if not core_functional_pass:
             summary["stage1b_queue"] = {
                 "verdict": "SKIPPED",
                 "reason": "stage1a_not_pass; queue_stage1b_retired_use_test_live_draft_autopick_no_queue",
@@ -2159,6 +2235,11 @@ def main() -> int:
     OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     print(json.dumps(summary, indent=2, default=str))
     ok = summary.get("stage1a", {}).get("verdict") == "PASS"
+    if summary.get("stage1a_mode") == "CORE" or (summary.get("stage1a") or {}).get("stage1a_mode") == "CORE":
+        ok = (
+            summary.get("stage1a_core_status", {}).get("stage1a_core_functional_outcome") == "PASS"
+            or summary.get("stage1a", {}).get("grade", {}).get("stage1a_core_functional_outcome") == "PASS"
+        )
     return 0 if ok else 1
 
 

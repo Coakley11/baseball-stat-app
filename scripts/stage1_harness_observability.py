@@ -315,6 +315,7 @@ def wait_for_next_timer_after_commit(
     scrape_stage1_audit: Callable[[Any], dict[str, Any]],
     scrape_expire_chain: Callable[[Any], dict[str, Any]],
     capture_ledger: Callable[[], None] | None = None,
+    get_ledger_rows: Callable[[], list[dict[str, Any]]] | None = None,
     poll_ms: int = 400,
     timeout_s: float = 28.0,
 ) -> dict[str, Any]:
@@ -397,6 +398,28 @@ def wait_for_next_timer_after_commit(
             "mount_pick_index": mount_pick_index,
             "server_chain_tail": str(chain.get("chain") or "")[-120:],
         }
+        if get_ledger_rows is not None:
+            ledger_rows = list(get_ledger_rows() or [])
+            timer_hint = ledger_server_next_timer(
+                ledger_rows,
+                room_id=rid,
+                completed_token=completed,
+            )
+            hint_tok = str(timer_hint.get("server_expected_token") or "")
+            if not new_token and hint_tok:
+                new_token = hint_tok
+            if not new_deadline:
+                new_deadline = str(timer_hint.get("server_deadline") or "")
+            pick1_mount = extract_pick1_post_commit_mount_observation(
+                ledger_rows,
+                expected_pick1_token=new_token or hint_tok,
+                room_id=rid,
+                mount_diag=mount,
+                lifecycle_token=str(lifecycle or ""),
+                visible_countdown=visible_countdown,
+            )
+            obs["pick1_post_commit_mount"] = pick1_mount
+            result["pick1_post_commit_mount"] = pick1_mount
         result["observations"].append(obs)
         if len(result["observations"]) > 80:
             result["observations"] = result["observations"][-60:]
@@ -434,6 +457,151 @@ def wait_for_next_timer_after_commit(
         last = result["observations"][-1] if result.get("observations") else {}
         result["last_observation"] = last
     return result
+
+
+def extract_pick1_post_commit_mount_observation(
+    merged_ledger: list[dict[str, Any]],
+    *,
+    expected_pick1_token: str = "",
+    run_id: str = "",
+    room_id: str = "",
+    mount_diag: dict[str, Any] | None = None,
+    lifecycle_token: str = "",
+    visible_countdown: Any = None,
+) -> dict[str, Any]:
+    """Harness-only: pick-1 mount evidence after token_action_complete (ledger + optional UI)."""
+    rows = filter_ledger_for_run(merged_ledger, run_id=run_id, room_id=room_id)
+    expected = normalize_expire_token(expected_pick1_token)
+    decl_pre: list[dict[str, Any]] = []
+    decl_post: list[dict[str, Any]] = []
+    registration_snapshots: list[dict[str, Any]] = []
+    server_reads: list[dict[str, Any]] = []
+    commit_ts: float | None = None
+    for row in rows:
+        ev = str(row.get("event") or "")
+        if ev == "production_stage1_token_action_complete":
+            commit_ts = float(row.get("ts") or 0) or commit_ts
+        if ev == "production_countdown_declaration_pre" and int(row.get("pick_index") or -1) == 1:
+            decl_pre.append(row)
+        if ev == "production_countdown_declaration_post" and int(row.get("pick_index") or -1) == 1:
+            decl_post.append(row)
+        if ev in (
+            "production_stage1_internal_widget_metadata_registered",
+            "production_stage1_callback_registration",
+        ):
+            if int(row.get("pick_index") or -1) == 1 or expected in normalize_expire_token(
+                row.get("expected_token") or ""
+            ):
+                registration_snapshots.append(row)
+        if ev in (
+            "production_stage1_room_state_read",
+            "production_stage1_next_room_state_persisted",
+            "production_stage1_cloud_ledger_pipeline_canary",
+        ):
+            tok = normalize_expire_token(row.get("expected_token") or row.get("canonical_token") or "")
+            if int(row.get("pick_index") or -1) == 1 or (expected and tok == expected):
+                server_reads.append(row)
+    mount = dict(mount_diag or {})
+    browser_mount_token = normalize_expire_token(
+        mount.get("expire_token") or mount.get("returned_token") or lifecycle_token or ""
+    )
+    md = mount.get("mount_diag") if isinstance(mount.get("mount_diag"), dict) else {}
+    widget_id = str(mount.get("widget_id") or mount.get("authoritative_widget_id") or md.get("widget_id") or "")
+    iframe_connected = mount.get("iframe_connected")
+    if iframe_connected is None:
+        iframe_connected = mount.get("document_connected")
+    visible = visible_countdown if visible_countdown not in (None, "") else md.get("diag_remaining")
+    declaration_proven = bool(decl_post) or bool(decl_pre)
+    component_token_match = bool(expected) and browser_mount_token == expected
+    server_token_proven = bool(expected) and any(
+        normalize_expire_token(r.get("expected_token") or r.get("canonical_token") or "") == expected
+        for r in server_reads
+    )
+    pick1_component_mount_proven = (
+        (declaration_proven and server_token_proven)
+        or component_token_match
+        or (
+            server_token_proven
+            and bool(browser_mount_token)
+            and browser_mount_token == expected
+        )
+    )
+    return {
+        "expected_pick1_token": expected,
+        "commit_observed_ts": commit_ts,
+        "countdown_declaration_pre_pick1": decl_pre[-1] if decl_pre else {},
+        "countdown_declaration_post_pick1": decl_post[-1] if decl_post else {},
+        "registration_snapshots_pick1": registration_snapshots[-3:],
+        "server_corroboration_rows": server_reads[-3:],
+        "component_widget_id": widget_id,
+        "iframe_connected": iframe_connected,
+        "browser_mount_token": browser_mount_token,
+        "visible_countdown_text": visible,
+        "declaration_pick1_proven": declaration_proven,
+        "server_pick1_token_proven": server_token_proven,
+        "component_mount_token_match": component_token_match,
+        "pick1_component_mount_proven": pick1_component_mount_proven,
+        "remaining_boundary": (
+            ""
+            if pick1_component_mount_proven
+            else "COREN7-4 — PICK-1 SERVER TOKEN/DEADLINE EXISTS, BUT COUNTDOWN COMPONENT MOUNT WAS NOT PROVEN IN THE SAVED ARTIFACT"
+        ),
+    }
+
+
+def build_stage1a_core_status_model(
+    *,
+    functional_verdict: str,
+    observability_verdict: str,
+    timer_classification: str,
+    server_next_timer: dict[str, Any] | None,
+    pick1_mount: dict[str, Any] | None,
+    overall_classification: str,
+    queue_independence: str = "",
+) -> dict[str, Any]:
+    """Separate functional vs observability outcomes for accepted CORE runs."""
+    functional_outcome = "PASS" if functional_verdict == "PASS" else "FAIL"
+    server_timer = dict(server_next_timer or {})
+    mount = dict(pick1_mount or {})
+    server_timer_ok = bool(server_timer.get("server_expected_token")) and bool(
+        server_timer.get("server_deadline")
+    )
+    if functional_outcome != "PASS":
+        obs_outcome = "FAIL"
+        overall = "FAIL"
+    elif mount.get("pick1_component_mount_proven"):
+        obs_outcome = "PASS"
+        overall = "PASS"
+    elif server_timer_ok:
+        obs_outcome = "PICK1_COMPONENT_MOUNT_NOT_PROVEN"
+        overall = "PASS_WITH_OBSERVABILITY_GAP"
+    elif observability_verdict == "PASS":
+        obs_outcome = "PASS"
+        overall = "PASS"
+    else:
+        obs_outcome = "PARTIAL"
+        overall = "PASS_WITH_OBSERVABILITY_GAP"
+    pick1_server_timer = "PASS" if server_timer_ok else "NOT_PROVEN"
+    pick1_mount_status = "PASS" if mount.get("pick1_component_mount_proven") else "NOT_PROVEN"
+    return {
+        "stage1a_core_functional_outcome": functional_outcome,
+        "stage1a_core_observability_outcome": obs_outcome,
+        "stage1a_core_overall": overall,
+        "stage1a_core_overall_classification": overall_classification,
+        "stage1a_core_pick1_server_timer": pick1_server_timer,
+        "stage1a_core_pick1_component_mount": pick1_mount_status,
+        "stage1a_core_timer_continuity": timer_classification,
+        "queue_independence": queue_independence or "NOT EXERCISED — EMPTY QUEUE",
+        "phase_status": {
+            "stage1a_core_functional": functional_outcome,
+            "pick1_server_timer": pick1_server_timer,
+            "pick1_component_ui_mount": pick1_mount_status,
+            "stage1a_queue": "NOT RUN",
+            "stage1b": "NOT RUN",
+            "soak": "NOT RUN",
+        },
+        "ui_scrape_must_not_override_functional_pass": True,
+    }
 
 
 def normalize_expire_token(raw: Any) -> str:

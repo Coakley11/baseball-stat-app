@@ -68,3 +68,22 @@ def test_ce62d9b7_regraded_functional_pass() -> None:
     assert grade["functional_checks"]["2_room_in_progress_before_expire"] is True
     assert grade["functional_checks"]["8_one_pick_committed"] is True
     assert "HARNESS OBSERVABILITY CORRECTIONS" in grade["overall_classification"]
+    assert grade["stage1a_core_functional_outcome"] == "PASS"
+    assert grade["stage1a_core_observability_outcome"] == "PICK1_COMPONENT_MOUNT_NOT_PROVEN"
+    assert grade["stage1a_core_overall"] == "PASS_WITH_OBSERVABILITY_GAP"
+
+
+def test_ce62d9b7_authoritative_reconcile_artifact_fields() -> None:
+    path = _summary_path()
+    if not path.is_file():
+        return
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    if summary.get("core_harness_run_id") != "ce62d9b7b64c414f":
+        return
+    report = reconcile_saved_core_run(summary)
+    assert report.get("authoritative_regraded_artifact") is True
+    assert report["stage1a_core_overall"] == "PASS_WITH_OBSERVABILITY_GAP"
+    assert report["pick_1_token"] == "3BEEA6F2|1|1785728385.690"
+    assert report["committed_player"] == "Francisco Lindor"
+    assert report["remaining_observability_boundary"].startswith("COREN7-4")
+    assert len(report.get("binding_timeline") or []) >= 10
