@@ -24101,6 +24101,19 @@ elif active_page == "Live Draft Room":
                     local_pick_index=_live_room.get("current_pick_index"),
                     handler_success=bool(_start_handler_ok),
                 )
+                try:
+                    from live_draft_queueui_predicate_audit import emit_queueui_predicate_audit
+
+                    emit_queueui_predicate_audit(
+                        st.session_state,
+                        st=st,
+                        checkpoint="start_handler_finally_before_finish",
+                        room=_live_room if isinstance(_live_room, dict) else None,
+                        lifecycle="",
+                        extra={"handler_success": bool(_start_handler_ok)},
+                    )
+                except ImportError:
+                    pass
                 emit_start_handler_exited(
                     st.session_state,
                     success=bool(_start_handler_ok),
@@ -24145,6 +24158,21 @@ elif active_page == "Live Draft Room":
                 pass
             if _finish_start is not None:
                 _finish_start(st.session_state, ok=_start_handler_ok, error=_start_handler_err)
+            try:
+                from live_draft_queueui_predicate_audit import emit_queueui_predicate_audit
+
+                emit_queueui_predicate_audit(
+                    st.session_state,
+                    st=st,
+                    checkpoint="start_handler_after_finish_start",
+                    room=st.session_state.get("live_draft_room")
+                    if isinstance(st.session_state.get("live_draft_room"), dict)
+                    else None,
+                    lifecycle=str(_life_after or ""),
+                    extra={"handler_success": bool(_start_handler_ok)},
+                )
+            except ImportError:
+                pass
             # Critical: after Draft ready, do not continue this script pass (it already
             # painted setup/progress chrome). Rerun so the next full run enters active_draft
             # from the top without a stuck "Still working" banner.
@@ -24879,6 +24907,18 @@ elif active_page == "Live Draft Room":
         _live_draft_lifecycle_room, dict
     ):
         try:
+            from live_draft_queueui_predicate_audit import emit_queueui_predicate_audit
+
+            emit_queueui_predicate_audit(
+                st.session_state,
+                st=st,
+                checkpoint="active_lifecycle_branch_entered",
+                room=_live_draft_lifecycle_room,
+                lifecycle=str(_live_draft_lifecycle or ""),
+            )
+        except ImportError:
+            pass
+        try:
             from live_draft_room_mutation_audit import room_mutation_checkpoint
 
             room_mutation_checkpoint(st.session_state, "before_active_draft_rendering", st=st)
@@ -24973,6 +25013,19 @@ elif active_page == "Live Draft Room":
             ):
                 _may_render, _gate_reason = assert_or_repair_before_shared_render(st.session_state)
                 if not _may_render:
+                    try:
+                        from live_draft_queueui_predicate_audit import emit_queueui_predicate_audit
+
+                        emit_queueui_predicate_audit(
+                            st.session_state,
+                            st=st,
+                            checkpoint="membership_gate_block",
+                            room=room if isinstance(room, dict) else None,
+                            lifecycle=str(_live_draft_lifecycle or ""),
+                            early_return_reason=str(_gate_reason or "membership_gate"),
+                        )
+                    except ImportError:
+                        pass
                     try:
                         from live_draft_render_checkpoints import mark_live_draft_render_abort
 
@@ -25133,6 +25186,18 @@ elif active_page == "Live Draft Room":
                 team=str((room.get("config") or {}).get("user_team") or ""),
                 lifecycle=_live_draft_lifecycle,
             )
+            try:
+                from live_draft_queueui_predicate_audit import emit_queueui_predicate_audit
+
+                emit_queueui_predicate_audit(
+                    st.session_state,
+                    st=st,
+                    checkpoint="room_body_entered",
+                    room=room,
+                    lifecycle=str(_live_draft_lifecycle or ""),
+                )
+            except ImportError:
+                pass
             try:
                 from live_draft_ux_latency import begin_script_run_mark
 
@@ -25454,6 +25519,20 @@ elif active_page == "Live Draft Room":
             _draft_in_progress = live_draft_is_in_progress(room)
             _derived_status, _ = compute_draft_status(room)
             _pending_manual_pick = bool(st.session_state.get(PENDING_MANUAL_PICK_KEY))
+            try:
+                from live_draft_queueui_predicate_audit import emit_queueui_predicate_audit
+
+                emit_queueui_predicate_audit(
+                    st.session_state,
+                    st=st,
+                    checkpoint="draft_progress_computed",
+                    room=room,
+                    lifecycle=str(_live_draft_lifecycle or ""),
+                    slot=slot if isinstance(slot, dict) else None,
+                    draft_in_progress=bool(_draft_in_progress),
+                )
+            except ImportError:
+                pass
         except ImportError:
             total_picks = len(room.get("pick_order", []))
             picks_done = len(room.get("draft_board", []))
@@ -26009,6 +26088,22 @@ elif active_page == "Live Draft Room":
 
         # Control Center (left) + Live Chat (right) above On-the-Clock timer card.
         with ldr_step(st.session_state, "timer_render_controls", st=st):
+            try:
+                from live_draft_queueui_predicate_audit import emit_queueui_predicate_audit
+
+                emit_queueui_predicate_audit(
+                    st.session_state,
+                    st=st,
+                    checkpoint="timer_render_controls_entered",
+                    room=room,
+                    lifecycle=str(_live_draft_lifecycle or ""),
+                    slot=slot if isinstance(slot, dict) else None,
+                    draft_in_progress=bool(_draft_in_progress),
+                    timer_ok=bool(_timer_ok),
+                    extra={"process_expired_or_timer": bool(_process_expired_or_timer)},
+                )
+            except ImportError:
+                pass
             try:
                 from live_draft_control_center_ui import render_control_center_with_live_chat
 
@@ -26863,6 +26958,21 @@ elif active_page == "Live Draft Room":
                 try:
                     from live_draft_heavy_paint_ui import render_deferred_heavy_paint_fragment
 
+                    try:
+                        from live_draft_queueui_predicate_audit import emit_queueui_predicate_audit
+
+                        emit_queueui_predicate_audit(
+                            st.session_state,
+                            st=st,
+                            checkpoint="heavy_paint_before_defer",
+                            room=room,
+                            lifecycle=str(_live_draft_lifecycle or ""),
+                            slot=slot if isinstance(slot, dict) else None,
+                            draft_in_progress=bool(_draft_in_progress),
+                            extra={"defer_heavy_paint": bool(_defer_heavy_paint)},
+                        )
+                    except ImportError:
+                        pass
                     render_deferred_heavy_paint_fragment(
                         st,
                         st.session_state,

@@ -22,6 +22,7 @@ LATCH_EVENT_NAMES = frozenset(
         "production_stage1_script_begin",
         "production_countdown_declaration_pre",
         "production_countdown_declaration_post",
+        "production_stage1_queueui_predicate_audit",
     }
 )
 
