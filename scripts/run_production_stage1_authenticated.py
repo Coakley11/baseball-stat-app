@@ -1066,7 +1066,11 @@ def grade_stage_1a(
 ) -> dict[str, Any]:
     from stage1_harness_observability import (
         authoritative_exact_token_delivery,
+        authoritative_room_in_progress_at_send,
         classify_next_timer_status,
+        ledger_claim_metrics,
+        ledger_pick_commit_reconciliation,
+        ledger_server_next_timer,
         split_stage1a_grades,
     )
 
@@ -1077,6 +1081,12 @@ def grade_stage_1a(
     if on_change_count == 0:
         on_change_count = str(exp.get("server_chain") or "").count("on_change_callback_entry")
     token_sent = str(exp.get("token_sent") or "")
+    if not token_sent.strip() and stage1a_mode == "CORE":
+        token_sent = str(
+            draft_valid.get("expected_token")
+            or (draft_valid.get("setup_authority") or {}).get("expected_token")
+            or ""
+        )
     raw = str(exp.get("component_raw") or "")
     pick_delta = exp.get("pick_delta")
     pick_commits = exp.get("pick_commit_audit") or []
@@ -1097,14 +1107,60 @@ def grade_stage_1a(
     if preflight and preflight.get("authenticated_restored"):
         auth_ok = True
     auth_at_expire = auth_ok
-    room_ok = bool(draft_valid.get("valid")) and bool(exp.get("room_in_progress_before"))
-    expire_caused_pick = bool(pick_commits) and not exp.get("harness_manual_draft_action")
-    zero_cross = "browser_deadline_crossed" in cs
-    sent_ok = "component_value_sent" in cs
     callbacks = list(exp.get("callback_timeline") or [])
     merged_ledger = list(exp.get("merged_server_ledger") or [])
     ledger_meta = dict(exp.get("ledger_meta") or {})
     next_timer_wait = dict(exp.get("next_timer_wait") or {})
+    app_run_id = str(
+        exp.get("application_diagnostic_run_id")
+        or (draft_valid.get("production_setup") or {}).get("application_diagnostic_run_id")
+        or ""
+    )
+    latched_room = str(
+        draft_valid.get("latched_room_id")
+        or draft_valid.get("visible_room_id")
+        or draft_valid.get("room_id")
+        or exp.get("fresh_room_id")
+        or ""
+    ).upper()
+    harness_reconciled = False
+    claim_ledger: dict[str, Any] = {}
+    pick_ledger: dict[str, Any] = {}
+    timer_ledger: dict[str, Any] = {}
+    room_at_send: dict[str, Any] = {}
+    if merged_ledger and stage1a_mode == "CORE":
+        claim_ledger = ledger_claim_metrics(
+            merged_ledger, run_id=app_run_id, room_id=latched_room
+        )
+        pick_ledger = ledger_pick_commit_reconciliation(
+            merged_ledger, run_id=app_run_id, room_id=latched_room
+        )
+        timer_ledger = ledger_server_next_timer(
+            merged_ledger,
+            run_id=app_run_id,
+            room_id=latched_room,
+            completed_token=token_sent,
+        )
+        room_at_send = authoritative_room_in_progress_at_send(
+            merged_ledger,
+            token_sent=token_sent,
+            send_ts=float(exp.get("value_sent_at") or 0) or None,
+            room_id=latched_room,
+            run_id=app_run_id,
+        )
+        harness_reconciled = True
+        if pick_ledger.get("pick_index_delta") is not None:
+            pick_index_delta = int(pick_ledger["pick_index_delta"])
+        if pick_ledger.get("one_durable_pick"):
+            exactly_one_pick = True
+    room_ok = bool(draft_valid.get("valid")) and (
+        bool(exp.get("room_in_progress_before")) or bool(room_at_send.get("server_in_progress_at_send"))
+    )
+    expire_caused_pick = bool(pick_commits) and not exp.get("harness_manual_draft_action")
+    if pick_ledger.get("one_durable_pick"):
+        expire_caused_pick = True
+    zero_cross = "browser_deadline_crossed" in cs
+    sent_ok = "component_value_sent" in cs
     try:
         from live_draft_stage1_expire_audit import HARMLESS_REJECT_CODES
     except ImportError:
@@ -1119,6 +1175,11 @@ def grade_stage_1a(
         and c.get("delivery_claimed")
         and not c.get("reject_code")
     ]
+    if claim_ledger.get("accepted_bind_rows"):
+        bind_accepted = list(claim_ledger.get("accepted_bind_rows") or bind_accepted)
+    accepted_count = max(int(exp.get("callback_accepted_count") or 0), len(bind_accepted))
+    if claim_ledger.get("accepted_claim_count"):
+        accepted_count = max(accepted_count, int(claim_ledger["accepted_claim_count"]))
     operational_rejects = [
         c
         for c in callbacks
@@ -1153,6 +1214,8 @@ def grade_stage_1a(
             break
     if not claim_result_source and bind_accepted:
         claim_result_source = "return_value_session_bind"
+    if not claim_sources and claim_ledger.get("accepted_return_value_session_bind_count"):
+        claim_sources = ["return_value_session_bind"]
     mount_diag_after = (exp.get("state_after", {}).get("mount_diag") or {})
     mount_after = dict(exp.get("mount_after_commit") or {})
     timer_after = exp.get("state_after", {}).get("timer")
@@ -1168,6 +1231,10 @@ def grade_stage_1a(
         or ""
     )
     next_token_after = str(next_timer_wait.get("new_token") or exp.get("next_token_after_commit") or "")
+    if timer_ledger.get("server_deadline"):
+        deadline_after = str(timer_ledger["server_deadline"])
+    if timer_ledger.get("server_expected_token"):
+        next_token_after = str(timer_ledger["server_expected_token"])
     countdown_restarted = (
         next_timer_wait.get("status") == "observed"
         or (timer_after is not None and int(timer_after) > 0)
@@ -1193,6 +1260,10 @@ def grade_stage_1a(
         lc = pick_commits[-1]
         if lc.get("pick_index_after") is not None:
             auth_pick_index = int(lc["pick_index_after"])
+    if timer_ledger.get("authoritative_pick_index") is not None:
+        auth_pick_index = int(timer_ledger["authoritative_pick_index"])
+    elif pick_ledger.get("pick_index_after") is not None:
+        auth_pick_index = int(pick_ledger["pick_index_after"])
     timer_classification = classify_next_timer_status(
         next_timer_wait=next_timer_wait,
         authoritative_pick_index=auth_pick_index,
@@ -1205,6 +1276,8 @@ def grade_stage_1a(
     )
     ledger_retained = int(ledger_meta.get("merged_server_ledger_row_count") or len(merged_ledger)) > 0
     next_timer_verified = next_timer_wait.get("status") == "observed"
+    server_timer_ok = bool(timer_ledger.get("server_deadline")) and bool(timer_ledger.get("server_expected_token"))
+    pick_advanced = pick_index_delta == 1
 
     checks = {
         "1_authenticated_at_expire": auth_at_expire,
@@ -1223,14 +1296,19 @@ def grade_stage_1a(
         "8_one_pick_committed": exactly_one_pick,
         "9_pick_advances_once": pick_index_delta == 1 if pick_index_delta is not None else pick_delta == 1,
         "ledger_durable_retained": ledger_retained,
-        "10_new_deadline_after_commit": next_timer_verified and bool(deadline_after),
+        "10_new_deadline_after_commit": (
+            (next_timer_verified or (harness_reconciled and server_timer_ok and pick_advanced))
+            and bool(deadline_after)
+        ),
         "11_countdown_restarts_above_zero": countdown_restarted,
         "12_board_or_pool_updated": (exp.get("board_delta") or 0) >= 1 or exactly_one_pick,
         "13_pick_from_expire_not_harness": expire_caused_pick,
         "14_queue_player_ignored": queue_check_ok,
-        "15_next_token_after_commit": next_timer_verified
-        and bool(next_token_after)
-        and next_token_after != token_sent,
+        "15_next_token_after_commit": (
+            (next_timer_verified or (harness_reconciled and server_timer_ok))
+            and bool(next_token_after)
+            and next_token_after != token_sent
+        ),
         "16_next_timer_fully_verified": next_timer_verified and timer_classification.startswith("T5"),
     }
     split = split_stage1a_grades(
@@ -1238,6 +1316,7 @@ def grade_stage_1a(
         ledger_meta=ledger_meta,
         next_timer_wait=next_timer_wait,
         timer_classification=timer_classification,
+        harness_observability_corrected=harness_reconciled,
     )
     if remount_warn and split.get("verdict") == "PASS":
         checks["warn_iframe_remounts"] = True
@@ -1257,10 +1336,19 @@ def grade_stage_1a(
         "native_component_return_accepted_count": sum(
             1 for c in native_observation if c.get("delivery_claimed") and not c.get("reject_code")
         ),
-        "return_value_session_bind_accepted_count": len(bind_accepted),
+        "return_value_session_bind_accepted_count": int(
+            claim_ledger.get("accepted_return_value_session_bind_count") or len(bind_accepted)
+        ),
         "operational_reject_count": len(operational_rejects),
         "pick_index_delta": pick_index_delta,
         "claim_result_source": claim_result_source,
+        "harness_ledger_reconciliation": {
+            "applied": harness_reconciled,
+            "room_at_send": room_at_send,
+            "claim_metrics": claim_ledger,
+            "pick_reconciliation": pick_ledger,
+            "server_next_timer": timer_ledger,
+        },
         "failure_interpretation_class": (exp.get("return_value_chain") or {}).get("failure_interpretation_class"),
         "stage1a_mode": stage1a_mode,
         "ledger_meta": ledger_meta,

@@ -436,6 +436,407 @@ def wait_for_next_timer_after_commit(
     return result
 
 
+def normalize_expire_token(raw: Any) -> str:
+    s = str(raw or "").strip()
+    if len(s) >= 2 and s[0] == s[-1] == "'":
+        s = s[1:-1].strip()
+    if len(s) >= 2 and s[0] == s[-1] == '"':
+        s = s[1:-1].strip()
+    return s
+
+
+def filter_ledger_for_run(
+    rows: list[dict[str, Any]],
+    *,
+    run_id: str = "",
+    room_id: str = "",
+) -> list[dict[str, Any]]:
+    rid = str(room_id or "").strip().upper()
+    app_run = str(run_id or "").strip()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if app_run:
+            row_run = str(row.get("run_id") or row.get("diagnostic_run_id") or "")
+            if row_run and row_run != app_run:
+                continue
+        if rid:
+            row_room = str(row.get("room_id") or row.get("token_room_id") or "").upper()
+            if row_room and row_room != rid:
+                continue
+        out.append(row)
+    return out
+
+
+def ledger_claim_metrics(
+    merged_ledger: list[dict[str, Any]],
+    *,
+    run_id: str = "",
+    room_id: str = "",
+) -> dict[str, Any]:
+    rows = filter_ledger_for_run(merged_ledger, run_id=run_id, room_id=room_id)
+    try_claim = 0
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    bind_accepted: list[dict[str, Any]] = []
+    for row in rows:
+        ev = str(row.get("event") or "")
+        if ev == "production_stage1_try_claim_about_to_call":
+            try_claim += 1
+        if ev != "production_stage1_token_claim_result":
+            continue
+        src = str(row.get("source") or row.get("delivery_via") or "")
+        acc = row.get("accepted") is True or str(row.get("accepted") or "").lower() == "true"
+        if acc:
+            accepted.append(row)
+            if src == "return_value_session_bind":
+                bind_accepted.append(row)
+        else:
+            rejected.append(row)
+    return {
+        "try_claim_call_count": try_claim,
+        "accepted_claim_count": len(accepted),
+        "accepted_return_value_session_bind_count": len(bind_accepted),
+        "rejected_claim_count": len(rejected),
+        "duplicate_claim_count": max(0, len(accepted) - 1),
+        "accepted_bind_rows": bind_accepted,
+    }
+
+
+def ledger_pick_commit_reconciliation(
+    merged_ledger: list[dict[str, Any]],
+    *,
+    run_id: str = "",
+    room_id: str = "",
+) -> dict[str, Any]:
+    rows = filter_ledger_for_run(merged_ledger, run_id=run_id, room_id=room_id)
+    commit_row: dict[str, Any] | None = None
+    post_commit: dict[str, Any] | None = None
+    next_persisted: dict[str, Any] | None = None
+    for row in rows:
+        ev = str(row.get("event") or "")
+        if ev == "production_stage1_token_action_complete":
+            commit_row = row
+        if ev == "production_stage1_post_commit_state_entered":
+            post_commit = row
+        if ev == "production_stage1_next_room_state_persisted":
+            next_persisted = row
+    pick_index_before = None
+    pick_index_after = None
+    player = ""
+    if commit_row:
+        pick_index_before = commit_row.get("pick_index_before")
+        pick_index_after = commit_row.get("pick_index_after")
+        player = str(commit_row.get("committed_player") or "")
+    if post_commit and pick_index_after is None:
+        pick_index_after = post_commit.get("pick_index")
+    if pick_index_before is None and post_commit:
+        pick_index_before = 0 if int(post_commit.get("pick_index") or 0) == 1 else None
+    delta = None
+    if pick_index_before is not None and pick_index_after is not None:
+        delta = int(pick_index_after) - int(pick_index_before)
+    one_commit = delta == 1 or (
+        commit_row is not None and int(commit_row.get("pick_index_after") or -1) == 1
+    )
+    return {
+        "pick_index_before": pick_index_before,
+        "pick_index_after": pick_index_after,
+        "pick_index_delta": delta,
+        "one_durable_pick": one_commit,
+        "committed_player": player,
+        "commit_row": commit_row,
+        "post_commit_row": post_commit,
+        "next_persisted_row": next_persisted,
+    }
+
+
+def ledger_server_next_timer(
+    merged_ledger: list[dict[str, Any]],
+    *,
+    run_id: str = "",
+    room_id: str = "",
+    completed_token: str = "",
+) -> dict[str, Any]:
+    rows = filter_ledger_for_run(merged_ledger, run_id=run_id, room_id=room_id)
+    completed = normalize_expire_token(completed_token)
+    best_token = ""
+    best_deadline = ""
+    pick_index: int | None = None
+    declaration_post_pick1 = False
+    for row in rows:
+        ev = str(row.get("event") or "")
+        if ev == "production_stage1_next_room_state_persisted":
+            tok = normalize_expire_token(row.get("expected_token") or row.get("canonical_token") or "")
+            if is_valid_next_token(tok, completed_token=completed, room_id=room_id, expected_pick_index=1):
+                best_token = tok
+                pick_index = 1
+                best_deadline = str(row.get("deadline") or row.get("canonical_deadline") or "")
+        if ev == "production_stage1_cloud_ledger_pipeline_canary" and int(row.get("pick_index") or -1) == 1:
+            if not best_deadline:
+                best_deadline = str(row.get("deadline") or "")
+            tok = normalize_expire_token(row.get("expected_token") or "")
+            if tok and is_valid_next_token(tok, completed_token=completed, room_id=room_id, expected_pick_index=1):
+                best_token = tok
+            pick_index = 1
+        if ev == "production_countdown_declaration_post" and int(row.get("pick_index") or -1) == 1:
+            declaration_post_pick1 = True
+    return {
+        "authoritative_pick_index": pick_index,
+        "server_expected_token": best_token,
+        "server_deadline": best_deadline,
+        "pick1_countdown_declaration_post": declaration_post_pick1,
+    }
+
+
+def authoritative_room_in_progress_at_send(
+    merged_ledger: list[dict[str, Any]],
+    *,
+    token_sent: str,
+    send_ts: float | None,
+    room_id: str,
+    run_id: str = "",
+) -> dict[str, Any]:
+    rows = filter_ledger_for_run(merged_ledger, run_id=run_id, room_id=room_id)
+    tok = normalize_expire_token(token_sent)
+    rid = str(room_id or "").strip().upper()
+    best: dict[str, Any] | None = None
+    for row in rows:
+        ev = str(row.get("event") or "")
+        if ev not in (
+            "production_stage1_room_state_read",
+            "production_stage1_cloud_ledger_pipeline_canary",
+            "production_countdown_declaration_post",
+        ):
+            continue
+        row_room = str(row.get("room_id") or "").upper()
+        if rid and row_room and row_room != rid:
+            continue
+        row_ts = float(row.get("ts") or 0)
+        if send_ts and row_ts > float(send_ts) + 2.0:
+            continue
+        status = str(row.get("room_status") or "")
+        pick_idx = row.get("pick_index")
+        row_tok = normalize_expire_token(row.get("expected_token") or row.get("token") or "")
+        if status == "in_progress" and (pick_idx == 0 or pick_idx == "0"):
+            if not best or row_ts >= float(best.get("ts") or 0):
+                best = {
+                    "ts": row_ts,
+                    "event": ev,
+                    "room_id": row_room or rid,
+                    "room_status": status,
+                    "pick_index": pick_idx,
+                    "deadline": row.get("deadline"),
+                    "expected_token": row_tok or tok,
+                    "source_priority": ev,
+                }
+    in_progress = best is not None and str(best.get("room_status") or "") == "in_progress"
+    token_match = bool(tok) and normalize_expire_token(best.get("expected_token") if best else "") == tok
+    return {
+        "server_in_progress_at_send": in_progress,
+        "server_room_snapshot": best,
+        "expected_token_match_at_send": token_match,
+    }
+
+
+def token_boundary_report(
+    merged_ledger: list[dict[str, Any]],
+    frozen_token: str,
+    *,
+    run_id: str = "",
+) -> dict[str, Any]:
+    rows = filter_ledger_for_run(merged_ledger, run_id=run_id)
+    frozen = normalize_expire_token(frozen_token)
+    fields = parse_expire_token_fields(frozen)
+
+    def _row_token(row: dict[str, Any], *keys: str) -> str:
+        for key in keys:
+            if key in row and row.get(key) not in (None, ""):
+                return normalize_expire_token(row.get(key))
+        return ""
+
+    mapping = {
+        "backend_widget_token_raw": ("production_stage1_backend_widget_state_after_backmsg", "coalesced_value", "value"),
+        "callback_handoff_written_token_raw": ("production_stage1_callback_handoff_written", "token", "raw_token"),
+        "handoff_selected_token_raw": ("production_stage1_callback_handoff_selected", "token", "raw_token"),
+        "p8c7_input_token_raw": ("production_stage1_declaration_returned", "coalesced_value", "direct_component_return"),
+        "actionable_flush_token_raw": ("production_stage1_post_bind_actionable_flush", "token", "normalized_token"),
+        "try_claim_token_raw": ("production_stage1_try_claim_about_to_call", "normalized_token", "token"),
+    }
+    report: dict[str, Any] = {"frozen_expected_token_raw": frozen}
+    for label, (event, *keys) in mapping.items():
+        val = ""
+        for row in rows:
+            if str(row.get("event") or "") != event:
+                continue
+            val = _row_token(row, *keys)
+            if val:
+                break
+        parsed = parse_expire_token_fields(val) if val else {}
+        report[label] = {
+            "raw": val,
+            "equals_frozen": val == frozen if val else False,
+            "parsed": parsed,
+        }
+    # browser send from iframe is not always in merged ledger; caller may inject
+    return report
+
+
+def build_core_binding_timeline(
+    merged_ledger: list[dict[str, Any]],
+    *,
+    frozen_token: str,
+    run_id: str = "",
+    room_id: str = "",
+) -> list[dict[str, Any]]:
+    rows = filter_ledger_for_run(merged_ledger, run_id=run_id, room_id=room_id)
+    watch = {
+        "production_stage1_declaration_returned",
+        "production_stage1_callback_handoff_written",
+        "production_stage1_callback_handoff_read",
+        "production_stage1_callback_handoff_selected",
+        "production_stage1_delivery_only_observation_completed",
+        "production_stage1_post_bind_actionable_flush",
+        "production_stage1_try_claim_about_to_call",
+        "production_stage1_token_claim_result",
+        "production_stage1_autopick_about_to_enter",
+        "production_stage1_token_action_complete",
+        "production_stage1_post_commit_state_entered",
+        "production_stage1_next_pick_state_computed",
+        "production_stage1_next_room_state_persisted",
+        "production_stage1_callback_handoff_terminal",
+        "production_stage1_room_state_read",
+        "production_stage1_room_state_write",
+        "production_countdown_declaration_post",
+        "production_countdown_declaration_pre",
+    }
+    timeline: list[dict[str, Any]] = []
+    frozen = normalize_expire_token(frozen_token)
+    for row in sorted(rows, key=lambda r: float(r.get("ts") or 0)):
+        ev = str(row.get("event") or "")
+        if ev not in watch:
+            continue
+        tok = normalize_expire_token(
+            row.get("token")
+            or row.get("normalized_token")
+            or row.get("coalesced_value")
+            or row.get("raw_token")
+            or row.get("expected_token")
+            or ""
+        )
+        timeline.append(
+            {
+                "ts": row.get("ts"),
+                "script_run_seq": row.get("script_run_seq"),
+                "callback_invocation_id": row.get("callback_invocation_id") or "",
+                "event": ev,
+                "room_id": row.get("room_id") or row.get("token_room_id") or "",
+                "pick_index": row.get("pick_index"),
+                "deadline": row.get("deadline") or row.get("token_deadline"),
+                "raw_token": tok,
+                "processing_source": row.get("source") or row.get("delivery_via") or row.get("canonical_source") or "",
+                "claim_result": row.get("accepted") if ev == "production_stage1_token_claim_result" else "",
+                "player": row.get("committed_player") or "",
+                "handoff_status": row.get("status") or row.get("clear_reason") or "",
+                "equals_frozen": tok == frozen if tok else None,
+            }
+        )
+    return timeline
+
+
+def classify_core_reconciliation(
+    *,
+    exp: dict[str, Any],
+    draft_valid: dict[str, Any],
+    merged_ledger: list[dict[str, Any]],
+    frozen_token: str,
+    run_id: str = "",
+    room_id: str = "",
+    legacy_grade: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    legacy = legacy_grade or {}
+    claims = ledger_claim_metrics(merged_ledger, run_id=run_id, room_id=room_id)
+    pick = ledger_pick_commit_reconciliation(merged_ledger, run_id=run_id, room_id=room_id)
+    timer = ledger_server_next_timer(
+        merged_ledger, run_id=run_id, room_id=room_id, completed_token=frozen_token
+    )
+    send_ts = exp.get("value_sent_at")
+    room_auth = authoritative_room_in_progress_at_send(
+        merged_ledger,
+        token_sent=frozen_token,
+        send_ts=float(send_ts) if send_ts else None,
+        room_id=room_id,
+        run_id=run_id,
+    )
+    token_report = token_boundary_report(merged_ledger, frozen_token, run_id=run_id)
+    obs: list[str] = []
+    if legacy.get("functional_checks", {}).get("2_room_in_progress_before_expire") is False and room_auth.get(
+        "server_in_progress_at_send"
+    ):
+        obs.append("COREOBS1 — SERVER STATUS PASSED; UI SCRAPE STALE")
+    if legacy.get("token_match") is False or legacy.get("functional_checks", {}).get("5_exact_token_delivery") is False:
+        if claims.get("accepted_return_value_session_bind_count", 0) >= 1:
+            obs.append("COREOBS2 — TOKEN DELIVERY PASSED; GRADER MISCOUNTED")
+    if int(legacy.get("return_value_session_bind_accepted_count") or 0) == 0 and claims.get(
+        "accepted_return_value_session_bind_count", 0
+    ) >= 1:
+        obs.append("COREOBS3 — ACCEPTED CLAIM PRESENT; GRADER COUNTED ZERO")
+    if pick.get("pick_index_delta") == 1 and legacy.get("functional_checks", {}).get("9_pick_advances_once") is False:
+        obs.append("COREOBS4 — PICK ADVANCE PRESENT; GRADER MISSED IT")
+    if legacy.get("functional_checks", {}).get("8_one_pick_committed") is False and pick.get("one_durable_pick"):
+        obs.append("CORECOMMIT2 — PICK COMMITTED BUT SUMMARY EXTRACTOR COUNTED ZERO")
+    n7 = ""
+    if timer.get("server_expected_token") and timer.get("server_deadline"):
+        if not timer.get("pick1_countdown_declaration_post"):
+            n7 = "COREN7-4 — PICK-1 TOKEN/DEADLINE ON SERVER BUT COUNTDOWN MOUNT NOT PROVEN"
+        elif legacy.get("timer_continuity_classification", "").startswith("T1"):
+            n7 = "COREN7-2 — N7 RAN AND CREATED TIMER; SUMMARY EXTRACTOR MISGRADED IT"
+    elif pick.get("one_durable_pick"):
+        n7 = "COREN7-5 — NO AUTHORITATIVE FRESH PICK-1 TIMER STATE"
+    exactly_once = {
+        "callback_handoff_writes": sum(
+            1 for r in merged_ledger if str(r.get("event") or "") == "production_stage1_callback_handoff_written"
+        ),
+        "handoff_selections": sum(
+            1 for r in merged_ledger if str(r.get("event") or "") == "production_stage1_callback_handoff_selected"
+        ),
+        "actionable_flush_entries": sum(
+            1 for r in merged_ledger if str(r.get("event") or "") == "production_stage1_post_bind_actionable_flush"
+        ),
+        "try_claim_calls": claims.get("try_claim_call_count", 0),
+        "accepted_claims": claims.get("accepted_claim_count", 0),
+        "auto_pick_entries": sum(
+            1 for r in merged_ledger if str(r.get("event") or "") == "production_stage1_autopick_about_to_enter"
+        ),
+        "durable_commits": 1 if pick.get("one_durable_pick") else 0,
+        "handoff_terminal": sum(
+            1 for r in merged_ledger if str(r.get("event") or "") == "production_stage1_callback_handoff_terminal"
+        ),
+    }
+    return {
+        "coreobs_classifications": obs,
+        "corecommit_classification": (
+            "CORECOMMIT2 — PICK COMMITTED BUT SUMMARY EXTRACTOR COUNTED ZERO"
+            if pick.get("one_durable_pick") and legacy.get("functional_checks", {}).get("8_one_pick_committed") is False
+            else (
+                "CORECOMMIT5 — COMMIT EVIDENCE MISSING FROM AVAILABLE ARTIFACT"
+                if not pick.get("one_durable_pick")
+                else ""
+            )
+        ),
+        "coren7_classification": n7,
+        "claim_metrics": claims,
+        "pick_reconciliation": pick,
+        "room_at_send": room_auth,
+        "server_next_timer": timer,
+        "token_boundary_report": token_report,
+        "binding_timeline": build_core_binding_timeline(
+            merged_ledger, frozen_token=frozen_token, run_id=run_id, room_id=room_id
+        ),
+        "exactly_once_counts": exactly_once,
+    }
+
+
 def classify_next_timer_status(
     *,
     next_timer_wait: dict[str, Any],
@@ -498,10 +899,21 @@ def authoritative_exact_token_delivery(
     for row in merged_ledger:
         if not isinstance(row, dict):
             continue
-        if str(row.get("event") or "") != "production_stage1_declaration_returned":
+        ev = str(row.get("event") or "")
+        if ev == "production_stage1_declaration_returned":
+            if row.get("raw_received") and normalize_expire_token(row.get("coalesced_value")) == tok:
+                return True
             continue
-        if row.get("raw_received") and str(row.get("coalesced_value") or "").strip() == tok:
-            return True
+        if ev == "production_stage1_token_claim_result" and row.get("accepted"):
+            if normalize_expire_token(row.get("token")) == tok:
+                return True
+        if ev in (
+            "production_stage1_try_claim_about_to_call",
+            "production_stage1_callback_handoff_selected",
+            "production_stage1_callback_handoff_written",
+        ):
+            if normalize_expire_token(row.get("token") or row.get("normalized_token")) == tok:
+                return True
     return False
 
 
@@ -511,6 +923,7 @@ def split_stage1a_grades(
     ledger_meta: dict[str, Any],
     next_timer_wait: dict[str, Any],
     timer_classification: str,
+    harness_observability_corrected: bool = False,
 ) -> dict[str, Any]:
     functional_keys = [
         "1_authenticated_at_expire",
@@ -543,21 +956,22 @@ def split_stage1a_grades(
     functional_pass = all(functional.values())
     observability_pass = all(observability.values())
     overall = functional_pass and observability_pass
+    harness_observability_corrected = bool(harness_observability_corrected)
+    if overall:
+        overall_label = "STAGE1A_CORE_PASS"
+    elif functional_pass and harness_observability_corrected:
+        overall_label = "STAGE1A_CORE_PASS — WITH HARNESS OBSERVABILITY CORRECTIONS"
+    elif functional_pass:
+        overall_label = "STAGE1A_CORE_FUNCTIONAL_AUTOPICK_PASS_WITH_TIMER_AND_LEDGER_OBSERVABILITY_GAPS"
+    else:
+        overall_label = "STAGE1A_CORE_FAIL"
     return {
         "functional_checks": functional,
         "observability_checks": observability,
         "functional_verdict": "PASS" if functional_pass else "FAIL",
         "observability_verdict": "PASS" if observability_pass else "FAIL",
         "verdict": "PASS" if overall else "FAIL",
-        "overall_classification": (
-            "STAGE1A_CORE_PASS"
-            if overall
-            else (
-                "STAGE1A_CORE_FUNCTIONAL_AUTOPICK_PASS_WITH_TIMER_AND_LEDGER_OBSERVABILITY_GAPS"
-                if functional_pass
-                else "STAGE1A_CORE_FAIL"
-            )
-        ),
+        "overall_classification": overall_label,
         "timer_continuity_classification": timer_classification,
         "ledger_meta": ledger_meta,
         "next_timer_wait_status": next_timer_wait.get("status"),
