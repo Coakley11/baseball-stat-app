@@ -95,8 +95,8 @@ def classify_queueui_root(
 
     if not audit_rows(ledger_rows):
         return {
-            "classification": QUEUEUIROOT8,
-            "reason": "no_predicate_audit_events_in_ledger",
+            "classification": None,
+            "reason": "insufficient_predicate_audit_events_for_root_classification",
             "timeline": timeline,
             "proven": False,
         }
