@@ -9,6 +9,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 FOCUSED_GATE_SHA = "a5516e4"
 BOOTREG1_HOTFIX_SHA = "cff25b8"
+FOCUSED_CONTEXT_FIX_SHA = "007c39a"
 HANDOFF_BASE_SHA = "22ce3e3"
 ROOM_LATCH_SHA = "a2e6eb2"
 
@@ -132,6 +133,81 @@ def commit_has_focused_p8_gate(sha: str) -> dict[str, Any]:
         "checks": checks,
         "binding_implementation": binding,
         "ok": all(checks.values()),
+    }
+
+
+def commit_has_focused_context_fix(sha: str) -> dict[str, Any]:
+    """Git-at-SHA presence for 007c39a focused transaction + guard stack."""
+    from p8_canary_build_gate import git_sha_is_ancestor, git_short_sha
+
+    short = git_short_sha(sha)
+    gate = commit_has_focused_p8_gate(short)
+    boot = commit_has_bootreg1_hotfix(short)
+    focused_checks = {
+        "runtime_is_007c39a_or_descendant": bool(
+            short
+            and (
+                short == FOCUSED_CONTEXT_FIX_SHA[:7]
+                or git_sha_is_ancestor(FOCUSED_CONTEXT_FIX_SHA[:7], short)
+            )
+        ),
+        "get_effective_focused_binding_context": _grep_at(
+            short, "def get_effective_focused_binding_context", "live_draft_solo_p8_focused_binding.py"
+        ),
+        "focused_binding_transaction_key": _grep_at(
+            short, "SOLO_P8_FOCUSED_TXN_KEY", "live_draft_solo_p8_focused_binding.py"
+        )
+        and _grep_at(short, "_solo_p8_focused_binding_transaction", "live_draft_solo_p8_focused_binding.py"),
+        "focused_transaction_ttl_and_terminal": _grep_at(
+            short, "FOCUSED_TXN_TTL_S", "live_draft_solo_p8_focused_binding.py"
+        )
+        and _grep_at(short, "mark_focused_transaction_terminal", "live_draft_solo_p8_focused_binding.py"),
+        "bootstrap_on_every_effectiveness_check": _grep_at(
+            short,
+            "bootstrap_solo_p8_focused_binding(st, session)",
+            "live_draft_solo_p8_focused_binding.py",
+        ),
+        "scalar_safe_qp_get": _grep_at(
+            short,
+            "isinstance(raw, (str, int, float, bool))",
+            "live_draft_cloud_diagnostics.py",
+        ),
+        "harness_run_id_validation": _grep_at(
+            short, "HARNESS_RUN_ID_RE", "live_draft_solo_p8_focused_binding.py"
+        ),
+        "streamlit_session_binding": _grep_at(
+            short, "streamlit_session_mismatch", "live_draft_solo_p8_focused_binding.py"
+        ),
+        "build_support_validation": _grep_at(
+            short, "_build_supports_focused_gate", "live_draft_solo_p8_focused_binding.py"
+        ),
+        "developer_diagnostic_authorization": _grep_at(
+            short, "_diagnostic_developer_authorized", "live_draft_solo_p8_focused_binding.py"
+        ),
+        "primary_stop_after_delivery_only_observation": gate["checks"].get(
+            "focused_stop_after_observation"
+        ),
+        "flush_entry_defense": gate["checks"].get("blocked_actionable_flush"),
+        "centralized_pre_claim_defense": _grep_at(
+            short,
+            "solo_p8_focused_binding_effective(st, session)",
+            "live_draft_stage1_expire_audit.py",
+        ),
+        "focused_diagnostic_handoff_terminal": gate["checks"].get("focused_handoff_terminal_event"),
+        "durable_callback_handoff_22ce3e3_ancestry": gate["checks"].get(
+            "durable_callback_handoff_22ce3e3_ancestry"
+        ),
+        "bootreg1_correction_cff25b8": boot["checks"].get("runtime_is_cff25b8_or_descendant"),
+        "p8c7_durable_handoff_gate": gate["checks"].get("p8c7_durable_handoff_gate"),
+        "p8b_return_value_bind": gate["checks"].get("p8b_return_value_bind"),
+        "n7_timer_reset_ancestry": gate["checks"].get("n7_timer_reset_ancestry"),
+    }
+    return {
+        "sha": short,
+        "checks": focused_checks,
+        "focused_p8_gate": gate,
+        "bootreg1_presence": boot,
+        "ok": all(bool(v) for v in focused_checks.values()),
     }
 
 
@@ -410,3 +486,154 @@ def poll_bootreg1_focused_readiness(
         )
     root_out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     return report
+
+
+FOCUSED_CONTEXT_POLL_OUT = ROOT / "data" / "p8_focused_context_fix_readiness_poll.json"
+
+
+def poll_focused_context_fix_readiness(
+    *,
+    required_sha: str = FOCUSED_CONTEXT_FIX_SHA,
+    cap_s: float = 900.0,
+    poll_s: float = 25.0,
+    nav_timeout_s: int = 90,
+    out_path: Path | None = None,
+) -> dict[str, Any]:
+    """Bounded poll until live runtime is 007c39a+ with full focused-context fix presence."""
+    import json
+    import time
+
+    from p8_canary_build_gate import evaluate_cloud_binding_readiness, local_deploy_pin
+    from p8_focused_binding_heartbeat import diagnostic_run_id, log_line, write_heartbeat
+
+    root_out = out_path or FOCUSED_CONTEXT_POLL_OUT
+    pin = local_deploy_pin()
+    req = str(required_sha or pin or FOCUSED_CONTEXT_FIX_SHA)[:7].lower()
+    report: dict[str, Any] = {
+        "mode": "focused_context_fix_lightweight_poll",
+        "diagnostic_run_id": diagnostic_run_id(),
+        "required_sha": req,
+        "local_deploy_pin": pin,
+        "cap_s": cap_s,
+        "nav_timeout_s": nav_timeout_s,
+        "attempts": [],
+        "live_sha": "",
+        "live_build": "",
+        "ok": False,
+        "implementation_presence": {},
+        "elapsed_s": 0.0,
+    }
+    write_heartbeat("focused_context_fix_readiness_start", required_cloud_sha=req)
+    log_line(f"focused_context_fix_readiness_poll start required={req}")
+
+    def on_attempt(row: dict[str, Any], _full: dict[str, Any]) -> None:
+        obs = str(row.get("sha") or "")
+        write_heartbeat(
+            "focused_context_fix_readiness_poll",
+            required_cloud_sha=req,
+            observed_cloud_sha=obs,
+            extra={
+                "attempt": row.get("attempt"),
+                "build": row.get("build"),
+                "readiness_ok": row.get("readiness_ok"),
+                "focused_context_fix_ok": row.get("focused_context_fix_ok"),
+            },
+        )
+
+    t0 = time.time()
+
+    from cloud_streamlit_wake import goto_and_wake
+    from p8_canary_build_gate import scrape_cloud_runtime_deploy_probe
+    from playwright.sync_api import sync_playwright
+    from run_production_solo_soak import scrape_deploy_build
+    from run_solo_clean_verification import scrape_live_sha
+    from verify_cloud_deploy_playwright import scrape_deploy
+
+    base = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/"
+    url = f"{base}?active_page=Live%20Draft%20Room&solo_component_diag=1&solo_diag_timer=10"
+    attempt = 0
+    while time.time() - t0 < cap_s:
+        attempt += 1
+        row: dict[str, Any] = {"attempt": attempt, "ts": time.time(), "elapsed_s": round(time.time() - t0, 1)}
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page(viewport={"width": 1280, "height": 900})
+                goto_and_wake(page, url, timeout_s=nav_timeout_s)
+                page.wait_for_timeout(5000)
+                probe = scrape_deploy(page)
+                runtime_dom = scrape_cloud_runtime_deploy_probe(page)
+                sha = (
+                    runtime_dom.get("runtime_git_head_short")
+                    or runtime_dom.get("marker_sha")
+                    or (scrape_live_sha(page) or scrape_deploy_build(page) or probe.get("sha") or "")
+                )[:7].lower()
+                build = str(runtime_dom.get("marker_build") or probe.get("build") or "")
+                row["sha"] = sha
+                row["build"] = build
+                row["runtime_probe"] = runtime_dom
+                readiness = evaluate_cloud_binding_readiness(
+                    runtime_git_head_short=str(runtime_dom.get("runtime_git_head_short") or sha),
+                    marker_sha=str(runtime_dom.get("marker_sha") or sha),
+                    marker_build=build,
+                    deploy_pin=pin,
+                    runtime_deploy_raw=str(runtime_dom.get("runtime_deploy_commit_raw") or ""),
+                )
+                presence = commit_has_focused_context_fix(sha)
+                row["binding_readiness"] = readiness
+                row["implementation_presence"] = presence
+                row["readiness_ok"] = bool(readiness.get("ok"))
+                row["focused_context_fix_ok"] = bool(presence.get("ok"))
+                browser.close()
+        except Exception as exc:
+            row["error"] = f"{type(exc).__name__}: {exc}"[:300]
+        report["attempts"].append(row)
+        report["live_sha"] = str(row.get("sha") or report.get("live_sha") or "")
+        report["live_build"] = str(row.get("build") or report.get("live_build") or "")
+        on_attempt(row, report)
+        log_line(
+            f"focused_context poll attempt={attempt} sha={row.get('sha')} "
+            f"ready={row.get('readiness_ok')} fix_ok={row.get('focused_context_fix_ok')}"
+        )
+        if row.get("readiness_ok") and row.get("focused_context_fix_ok"):
+            report["ok"] = True
+            report["implementation_presence"] = row.get("implementation_presence") or {}
+            report["binding_readiness"] = row.get("binding_readiness") or {}
+            write_heartbeat("focused_context_fix_readiness_pass", required_cloud_sha=req, observed_cloud_sha=sha)
+            break
+        time.sleep(poll_s)
+
+    report["elapsed_s"] = round(time.time() - t0, 1)
+    report["poll_count"] = len(report["attempts"])
+    if not report["ok"]:
+        live = str(report.get("live_sha") or "").lower()
+        if live == BOOTREG1_HOTFIX_SHA[:7] or live == "cff25b8":
+            report["classification"] = "INVALID_FOCUSED_CONTEXT_FIX_NOT_DEPLOYED"
+        elif report["attempts"]:
+            last = report["attempts"][-1]
+            report["implementation_presence"] = last.get("implementation_presence") or {}
+            report["binding_readiness"] = last.get("binding_readiness") or {}
+        write_heartbeat(
+            "focused_context_fix_readiness_fail",
+            required_cloud_sha=req,
+            observed_cloud_sha=live,
+            extra={"classification": report.get("classification")},
+        )
+    root_out.parent.mkdir(parents=True, exist_ok=True)
+    root_out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    return report
+
+
+def main() -> int:
+    import json
+
+    report = poll_focused_context_fix_readiness()
+    print(json.dumps({"ok": report.get("ok"), "live_sha": report.get("live_sha"), "classification": report.get("classification")}, indent=2))
+    print(f"artifact={FOCUSED_CONTEXT_POLL_OUT}")
+    return 0 if report.get("ok") else 1
+
+
+if __name__ == "__main__":
+    import json
+
+    raise SystemExit(main())

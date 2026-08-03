@@ -1126,8 +1126,18 @@ def run_diagnostic() -> dict[str, Any]:
     return report
 
 
-def main() -> int:
+def focused_only_mode_enabled(argv: list[str] | None = None) -> bool:
+    import sys
+
+    args = list(argv if argv is not None else sys.argv[1:])
+    if "--focused-only" in args:
+        return True
+    return str(os.environ.get("P8_FOCUSED_ONLY") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def main(argv: list[str] | None = None) -> int:
     os.environ.pop("REQUIRED_CLOUD_SHA", None)
+    focused_only = focused_only_mode_enabled(argv)
     try:
         report = run_diagnostic()
     finally:
@@ -1148,6 +1158,9 @@ def main() -> int:
         return 1
     if report.get("focused_p8_outcome") != "FOCUSED_P8_BINDING_PASS":
         return 1
+    if focused_only:
+        print("FOCUSED_P8_BINDING_PASS — focused-only mode; Stage 1A-CORE not chained")
+        return 0
     required = report.get("required_cloud_sha") or resolve_required_sha()
     os.environ["REQUIRED_CLOUD_SHA"] = str(required)[:7]
     os.environ["STAGE1A_MODE"] = "CORE"
