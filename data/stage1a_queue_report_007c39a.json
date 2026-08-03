@@ -1,0 +1,29 @@
+{
+  "evidence_type": "precondition_block_not_completed_stage1a_queue",
+  "stage1a_queue_functional_outcome": "NOT_RUN",
+  "stage1a_queue_execution_status": "BLOCKED_BEFORE_EXPIRATION",
+  "first_boundary": "QUEUE1 — QUEUE COULD NOT BE POPULATED",
+  "secondary_boundary_ui_hydration": "QUEUEUI1 — ACTIVE LIVE DRAFT PAGE NOT HYDRATED",
+  "queue_independence": "NOT_EXERCISED",
+  "live_cloud_sha": "007c39a",
+  "live_cloud_build": "baseball-dev-007c39a",
+  "harness_sha_at_campaign": "ffcc209",
+  "not_evidence_of": [
+    "auto-pick consulted the queue",
+    "auto-pick ignored the queue",
+    "queue ordering failure",
+    "queue mutation by auto-pick",
+    "claim or commit logic failure",
+    "Live Draft application regression"
+  ],
+  "secondary_observation": "Active Live Draft Room UI did not hydrate in automated Cloud browser sessions (Pause Draft, board rows, Add to Queue, countdown iframe, browser mount token absent) while canonical server setup and room latch passed.",
+  "expiration_claim_autopick_commit": "NOT RUN",
+  "artifact_paths": [
+    "data/stage1a_queue_report_007c39a.json",
+    "data/stage1a_queue_run_007c39a_attempt4.out",
+    "data/stage1a_queue_run_007c39a_attempt5.out",
+    "data/stage1a_queue_run_007c39a_attempt6_headed.out"
+  ],
+  "application_code_changed": false,
+  "deploy_commit_pin": "007c39a"
+}

@@ -1331,3 +1331,240 @@ def split_stage1a_grades(
         "ledger_meta": ledger_meta,
         "next_timer_wait_status": next_timer_wait.get("status"),
     }
+
+
+QUEUE1 = "QUEUE1 — QUEUE COULD NOT BE POPULATED"
+QUEUEUI1 = "QUEUEUI1 — ACTIVE LIVE DRAFT PAGE NOT HYDRATED"
+QUEUE2 = "QUEUE2 — QUEUE ORDER OR PLAYER IDS NOT PRESERVED"
+QUEUE3 = "QUEUE3 — AUTO-PICK CONSULTED THE MANUAL QUEUE"
+QUEUE4 = "QUEUE4 — TOP QUEUED PLAYER WAS SELECTED THROUGH QUEUE-FIRST LOGIC"
+QUEUE5 = "QUEUE5 — QUEUE WAS MUTATED OR CONSUMED BY AUTO-PICK"
+QUEUE6 = "QUEUE6 — SELECTED PLAYER SOURCE COULD NOT BE DISTINGUISHED"
+QUEUE7 = "QUEUE7 — NORMAL AUTO-PICK CANDIDATE WAS NOT LEGAL OR AVAILABLE"
+QUEUE8 = "QUEUE8 — CLAIM/AUTO-PICK/COMMIT EXACTLY-ONCE FAILURE"
+QUEUE9 = "QUEUE9 — PICK DID NOT ADVANCE 0→1"
+QUEUE10 = "QUEUE10 — OTHER"
+STAGE1A_QUEUE_PASS = "STAGE1A_QUEUE_PASS — QUEUE INDEPENDENCE PROVEN"
+
+MANUAL_ASSIST_QUEUE_INSTRUCTION = (
+    "Add exactly three legal players to the queue, preserve their order, then return here and press Enter."
+)
+
+
+def build_stage1a_queue_precondition_block(
+    *,
+    first_boundary: str,
+    reason: str,
+    active_live_page_gate: dict[str, Any] | None = None,
+    queue_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Harness abort before expiration — not an application functional queue failure."""
+    return {
+        "verdict": "BLOCKED",
+        "stage1a_queue_functional_outcome": "NOT_RUN",
+        "stage1a_queue_execution_status": "BLOCKED_BEFORE_EXPIRATION",
+        "first_boundary": first_boundary,
+        "reason": reason,
+        "queue_independence": "NOT_EXERCISED",
+        "active_live_page_gate": active_live_page_gate or {},
+        "queue_seed": queue_meta or {},
+    }
+
+
+def evaluate_active_live_page_gate(
+    observation: dict[str, Any],
+    *,
+    start_val: dict[str, Any],
+) -> dict[str, Any]:
+    """All checks must pass; server latch alone is insufficient."""
+    start_val = dict(start_val or {})
+    obs = dict(observation or {})
+    latched = str(start_val.get("latched_room_id") or start_val.get("visible_room_id") or "").upper()
+    visible = str(obs.get("visible_room_id") or "").upper()
+    try:
+        pick_i = int(obs.get("pick_index")) if obs.get("pick_index") not in (None, "") else None
+    except (TypeError, ValueError):
+        pick_i = None
+    pick0_tok_ui = str(obs.get("pick0_token_ui") or "").strip()
+    pick0_deadline_ui = str(obs.get("pick0_deadline_ui") or "").strip()
+    pause = int(obs.get("pause_draft_count") or 0)
+    try:
+        board_rows = int(obs.get("board_rows") or 0)
+    except (TypeError, ValueError):
+        board_rows = 0
+    add_btns = int(obs.get("add_to_queue_button_count") or 0)
+    countdown = bool(obs.get("countdown_or_timer_present"))
+    in_progress = bool(start_val.get("in_progress"))
+    if not in_progress and start_val.get("room_latch_pass"):
+        in_progress = True
+    token_room_ok = False
+    if latched and pick0_tok_ui:
+        token_room_ok = latched in pick0_tok_ui.upper()
+    checks = {
+        "latched_room_visible_agrees": bool(latched) and visible == latched,
+        "room_in_progress": in_progress,
+        "pick_index_zero": pick_i == 0,
+        "pick0_token_ui_present": bool(pick0_tok_ui) and token_room_ok,
+        "pick0_deadline_ui_present": bool(pick0_deadline_ui),
+        "pause_draft_or_live_control": pause >= 1,
+        "board_or_recommendation_surface": board_rows >= 1 or add_btns >= 1,
+        "add_to_queue_control_present": add_btns >= 1,
+        "countdown_or_timer_declaration": countdown,
+    }
+    passed = all(checks.values())
+    return {
+        "passed": passed,
+        "checks": checks,
+        "latched_room_id": latched,
+        "visible_room_id": visible,
+        "observation": obs,
+    }
+
+
+def verify_manual_queue_capture(
+    queue_meta: dict[str, Any],
+    *,
+    min_players: int = 3,
+) -> dict[str, Any]:
+    order = list(queue_meta.get("queue_order") or [])
+    players = list(queue_meta.get("queue_players_before") or [])
+    top = dict(queue_meta.get("top_queued_player") or {})
+    expected = dict(queue_meta.get("expected_autopick_candidate") or {})
+    if len(order) < min_players and len(players) < min_players:
+        return {
+            "ok": False,
+            "first_boundary": QUEUE1,
+            "reason": "manual_queue_fewer_than_three_players",
+        }
+    exp_name = str(expected.get("name") or "")
+    top_name = str(top.get("name") or order[0] if order else "")
+    differs = _player_name_prefix(exp_name) != _player_name_prefix(top_name) if exp_name and top_name else False
+    queue_meta["autopick_differs_from_top_queue"] = differs
+    if not differs:
+        return {
+            "ok": False,
+            "first_boundary": QUEUE6,
+            "reason": "top_queued_player_not_distinct_from_expected_autopick",
+            "expected_autopick_candidate": expected,
+            "top_queued_player": top,
+        }
+    return {
+        "ok": True,
+        "queue_order": order,
+        "top_queued_player": top,
+        "expected_autopick_candidate": expected,
+        "autopick_differs_from_top_queue": True,
+    }
+
+
+def _player_name_prefix(name: str) -> str:
+    return str(name or "").strip().split()[0][:6].lower() if str(name or "").strip() else ""
+
+
+def ledger_queue_consultation_count(merged_ledger: list[dict[str, Any]]) -> int:
+    n = 0
+    for row in merged_ledger:
+        ev = str(row.get("event") or "").lower()
+        blob = json.dumps(row, default=str).lower()
+        if "queue_consult" in ev or "queue_read" in ev:
+            n += 1
+        elif "auto_pick_from_queue" in blob and row.get("auto_pick_from_queue") is True:
+            n += 1
+        elif ev in ("production_stage1_queue_pop", "production_stage1_queue_consume", "queue_first_autopick"):
+            n += 1
+    return n
+
+
+def classify_stage1a_queue(
+    *,
+    queue_meta: dict[str, Any],
+    exp: dict[str, Any],
+    claim_metrics: dict[str, Any],
+    pick_reconciliation: dict[str, Any],
+    exactly_once: dict[str, Any] | None = None,
+    merged_ledger: list[dict[str, Any]] | None = None,
+    functional_checks: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Stage 1A-QUEUE outcome (harness only)."""
+    merged_ledger = list(merged_ledger or [])
+    fc = dict(functional_checks or {})
+    order_before = list(queue_meta.get("queue_order") or [])
+    players_before = list(queue_meta.get("queue_players_before") or [])
+    container_after = queue_meta.get("queue_container_after") if isinstance(queue_meta.get("queue_container_after"), dict) else {}
+    order_after = [str(p.get("name") or "") for p in list(container_after.get("players") or [])]
+    top_queued = dict(queue_meta.get("top_queued_player") or {})
+    expected_auto = dict(queue_meta.get("expected_autopick_candidate") or {})
+    pick_commits = list((exp.get("stage1_audit") or {}).get("pick_commits") or [])
+    last_commit = pick_commits[-1] if pick_commits else {}
+    selected = str(
+        pick_reconciliation.get("committed_player")
+        or last_commit.get("player")
+        or ""
+    )
+    selection_source = str(last_commit.get("selection_source") or "")
+    eo = dict(exactly_once or {})
+    consult_count = ledger_queue_consultation_count(merged_ledger)
+    queue_meta["queue_consultation_count"] = consult_count
+
+    def fail(cls: str, reason: str, **extra: Any) -> dict[str, Any]:
+        return {
+            "stage1a_queue_functional_outcome": "FAIL",
+            "stage1a_queue_execution_status": "FAILED_AFTER_EXPIRATION",
+            "queue_classification": cls,
+            "first_queue_boundary": cls,
+            "queue_independence_label": "FAIL",
+            "reason": reason,
+            **extra,
+        }
+
+    if len(order_before) < 3 and len(players_before) < 3:
+        return fail(QUEUE1, "fewer_than_three_queue_players_before_expiration")
+    if not queue_meta.get("queue_contains_player"):
+        return fail(QUEUE1, "queue_not_proven_before_expiration")
+    if not queue_meta.get("autopick_differs_from_top_queue"):
+        return fail(QUEUE6, "expected_autopick_and_top_queue_not_proven_different")
+    if consult_count > 0:
+        return fail(QUEUE3, "queue_consultation_instrumentation", queue_consultation_count=consult_count)
+    if "queue" in selection_source.lower() and selection_source.lower() not in ("", "expired_advanced"):
+        return fail(QUEUE3, f"selection_source={selection_source}")
+    top_name = str(top_queued.get("name") or order_before[0] if order_before else "")
+    if top_name and selected and _player_name_prefix(top_name) == _player_name_prefix(selected):
+        return fail(QUEUE4, "selected_player_matches_top_queued_player", selected=selected, top_queued=top_name)
+    exp_auto_name = str(expected_auto.get("name") or "")
+    if not selected:
+        return fail(QUEUE6, "no_committed_player_in_artifact")
+    if order_before and order_after:
+        if len(order_after) < len(order_before) - 1:
+            return fail(QUEUE5, "queue_shrank_beyond_stale_cleanup", order_before=order_before, order_after=order_after)
+        preserved = order_after[: len(order_before)] == order_before[: len(order_after)]
+        if not preserved and order_after != order_before:
+            return fail(QUEUE2, "queue_order_not_preserved", order_before=order_before, order_after=order_after)
+    try_claim = int(claim_metrics.get("try_claim_call_count") or 0)
+    accepted = int(claim_metrics.get("accepted_claim_count") or 0)
+    if try_claim != 1 or accepted != 1:
+        return fail(QUEUE8, "claim_exactly_once", try_claim=try_claim, accepted=accepted)
+    commits_delta = int(exp.get("commits_delta") or 0)
+    if commits_delta != 1 and not pick_reconciliation.get("one_durable_pick"):
+        return fail(QUEUE8, "commit_exactly_once", commits_delta=commits_delta)
+    delta = pick_reconciliation.get("pick_index_delta")
+    if delta != 1:
+        return fail(QUEUE9, "pick_index_did_not_advance", pick_index_delta=delta)
+    if not fc.get("14_queue_player_ignored", True):
+        return fail(QUEUE4, "harness_queue_player_not_ignored_check")
+    return {
+        "stage1a_queue_functional_outcome": "PASS",
+        "stage1a_queue_execution_status": "COMPLETED",
+        "stage1a_queue_overall": STAGE1A_QUEUE_PASS,
+        "queue_classification": STAGE1A_QUEUE_PASS,
+        "first_queue_boundary": "",
+        "queue_independence_label": "PASS — AUTO-PICK DID NOT CONSULT MANUAL QUEUE",
+        "selected_player": selected,
+        "selection_source": selection_source,
+        "expected_autopick_candidate": expected_auto,
+        "top_queued_player": top_queued,
+        "queue_order_before": order_before,
+        "queue_order_after": order_after,
+        "queue_consultation_count": consult_count,
+        "exactly_once": eo,
+        "expected_autopick_name": exp_auto_name,
+    }

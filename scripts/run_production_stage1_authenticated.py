@@ -22,6 +22,7 @@ BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
 PERSISTENT_KEY = "solo_countdown_wake_solo_persistent"
 OUT_SUMMARY = ROOT / "data" / "production_stage1_authenticated_summary.json"
 OUT_1A = ROOT / "data" / "production_stage1a_one_expire_auth.json"
+OUT_QUEUE = ROOT / "data" / "production_stage1a_queue_auth.json"
 OUT_1B = ROOT / "data" / "production_stage1b_queue_auth.json"
 OUT_1B_FB = ROOT / "data" / "production_stage1b_queue_fallback_auth.json"
 OUT_IFRAME = ROOT / "data" / "production_stage1a_iframe_lifecycle.json"
@@ -41,6 +42,20 @@ def resolve_stage1a_mode() -> str:
     if mode in ("CORE", "QUEUE", "FULL"):
         return mode
     return "FULL"
+
+
+def resolve_queue_manual_assist() -> bool:
+    return str(os.environ.get("STAGE1A_QUEUE_MANUAL_ASSIST") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def resolve_headless_launch(*, stage1a_mode: str) -> bool:
+    if resolve_queue_manual_assist() and stage1a_mode == "QUEUE":
+        return False
+    return os.environ.get("STAGE1A_HEADED", "").strip().lower() not in ("1", "true", "yes")
 
 
 def resolve_required_cloud_sha() -> str:
@@ -1140,6 +1155,7 @@ def grade_stage_1a(
         ledger_pick_commit_reconciliation,
         ledger_server_next_timer,
         build_stage1a_core_status_model,
+        classify_stage1a_queue,
         extract_pick1_post_commit_mount_observation,
         split_stage1a_grades,
     )
@@ -1315,6 +1331,8 @@ def grade_stage_1a(
     if stage1a_mode == "CORE":
         queue_independence = "NOT EXERCISED — EMPTY QUEUE"
         queue_check_ok = True
+    elif stage1a_mode == "QUEUE":
+        queue_check_ok = True
     else:
         queue_check_ok = bool(
             (exp.get("return_value_chain") or {}).get("draft_result", {}).get("queue_player_ignored", True)
@@ -1427,7 +1445,7 @@ def grade_stage_1a(
     }
     if queue_independence:
         out["queue_independence"] = queue_independence
-    if stage1a_mode == "CORE":
+    if stage1a_mode in ("CORE", "QUEUE"):
         pick1_mount = extract_pick1_post_commit_mount_observation(
             merged_ledger,
             expected_pick1_token=str(timer_ledger.get("server_expected_token") or next_token_after),
@@ -1439,6 +1457,13 @@ def grade_stage_1a(
         )
         if exp.get("next_timer_wait", {}).get("pick1_post_commit_mount"):
             pick1_mount = dict(exp["next_timer_wait"]["pick1_post_commit_mount"])
+        if exp.get("pick1_same_session_mount"):
+            pick1_mount = dict(exp.get("pick1_same_session_mount") or {}).get("pick1_post_commit_mount") or pick1_mount
+        pick1_mount_bundle = dict(exp.get("pick1_same_session_mount") or {})
+        if pick1_mount_bundle:
+            out["pick1_same_session_mount"] = pick1_mount_bundle
+            out["pick1_mount_classification"] = pick1_mount_bundle.get("pick1mount_classification") or ""
+    if stage1a_mode == "CORE":
         status_model = build_stage1a_core_status_model(
             functional_verdict=str(split.get("functional_verdict") or ""),
             observability_verdict=str(split.get("observability_verdict") or ""),
@@ -1459,6 +1484,42 @@ def grade_stage_1a(
                 )
             }
         )
+    if stage1a_mode == "QUEUE":
+        from stage1_harness_observability import classify_core_reconciliation
+
+        queue_meta = dict((exp.get("return_value_chain") or {}).get("draft_result", {}).get("queue_add") or {})
+        if not queue_meta.get("queue_order"):
+            queue_meta = dict(exp.get("queue_seed") or {})
+        recon = classify_core_reconciliation(
+            merged_ledger,
+            run_id=app_run_id,
+            room_id=latched_room,
+            token_sent=token_sent,
+        )
+        eo = recon.get("exactly_once_counts") or {}
+        qcls = classify_stage1a_queue(
+            queue_meta=queue_meta,
+            exp=exp,
+            claim_metrics=claim_ledger,
+            pick_reconciliation=pick_ledger,
+            exactly_once=eo,
+            merged_ledger=merged_ledger,
+            functional_checks=checks,
+        )
+        queue_independence = str(qcls.get("queue_independence_label") or "")
+        out["queue_independence"] = queue_independence
+        out["stage1a_queue_classification"] = qcls
+        out["stage1a_queue_functional_outcome"] = qcls.get("stage1a_queue_functional_outcome")
+        out["stage1a_queue_overall"] = qcls.get("stage1a_queue_overall")
+        if qcls.get("stage1a_queue_functional_outcome") == "PASS" and split.get("functional_verdict") == "PASS":
+            out["verdict"] = "PASS"
+            out["functional_verdict"] = "PASS"
+            out["overall_classification"] = str(qcls.get("stage1a_queue_overall") or "STAGE1A_QUEUE_PASS")
+        elif qcls.get("stage1a_queue_functional_outcome") != "PASS":
+            out["verdict"] = "FAIL"
+            out["functional_verdict"] = "FAIL"
+            out["overall_classification"] = str(qcls.get("queue_classification") or "STAGE1A_QUEUE_FAIL")
+        out["pick1_post_commit_mount"] = pick1_mount if stage1a_mode == "QUEUE" else out.get("pick1_post_commit_mount")
     return out
 
 
@@ -1541,6 +1602,266 @@ def queue_add_first_player(page) -> dict[str, Any]:
     return {"clicked": False, "button_text": "", "player_hint": ""}
 
 
+def _queue_button_player_hint(page, button_index: int) -> dict[str, Any]:
+    try:
+        meta = page.evaluate(
+            """(buttonIndex) => {
+              function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { if (f.contentDocument) r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+              const buttons = [];
+              for (const root of roots()) {
+                for (const b of root.querySelectorAll('button')) {
+                  const t = String(b.innerText||'').replace(/\\s+/g,' ').trim();
+                  if (/Add to Queue/i.test(t)) buttons.push(b);
+                }
+              }
+              if (buttonIndex >= buttons.length) return {found: false, button_index: buttonIndex, total: buttons.length};
+              const b = buttons[buttonIndex];
+              b.scrollIntoView({block: 'center'});
+              const card = b.closest('[data-testid=\"stVerticalBlock\"]') || b.parentElement;
+              let name = '';
+              if (card) {
+                const lines = String(card.innerText||'').split('\\n').map(x=>x.trim()).filter(Boolean);
+                name = lines.find(l => l.length > 3 && !/Add to Queue|Draft|Queue|Clear|Watchlist|⭐|Recommendations/i.test(l)) || '';
+              }
+              return {found: true, button_index: buttonIndex, total: buttons.length, player_hint: name.slice(0,80), player_name: name.slice(0,80)};
+            }""",
+            button_index,
+        )
+        return meta if isinstance(meta, dict) else {}
+    except Exception:
+        return {}
+
+
+def queue_add_by_button_index(page, button_index: int) -> dict[str, Any]:
+    from run_production_solo_soak import click_btn
+
+    hint = _queue_button_player_hint(page, button_index)
+    frame = _streamlit_app_frame(page)
+    for nav in ("Draft from lists", "On Clock: Team A", "Recommendations"):
+        try:
+            frame.get_by_text(re.compile(re.escape(nav.split(":")[0]), re.I)).first.click(timeout=3000)
+            page.wait_for_timeout(1500)
+        except Exception:
+            pass
+    try:
+        buttons = frame.get_by_role("button", name=re.compile(r"Add to Queue", re.I))
+        if button_index < buttons.count():
+            loc = buttons.nth(button_index)
+            loc.scroll_into_view_if_needed(timeout=5000)
+            loc.click(timeout=6000)
+            page.wait_for_timeout(2200)
+            hint2 = _queue_button_player_hint(page, button_index)
+            return {
+                "clicked": True,
+                "button_index": button_index,
+                "player_hint": str(hint2.get("player_hint") or hint.get("player_hint") or ""),
+                "via": "playwright_role_nth",
+            }
+    except Exception:
+        pass
+    clicked = click_btn(page, "Add to Queue", wait_ms=1500)
+    if clicked:
+        return {
+            "clicked": True,
+            "button_index": button_index,
+            "player_hint": str(hint.get("player_hint") or ""),
+            "via": "click_btn_fallback",
+        }
+    return {"clicked": False, "button_index": button_index, "player_hint": ""}
+
+
+def scrape_expected_autopick_candidate(page) -> dict[str, Any]:
+    """Top list row (index 0) — expected ranking-based auto-pick before queue seeding."""
+    meta = _queue_button_player_hint(page, 0)
+    return {
+        "name": str(meta.get("player_name") or meta.get("player_hint") or ""),
+        "source": "recommendations_row_index_0",
+        "button_index": 0,
+        "scrape_meta": meta,
+    }
+
+
+def _names_differ(a: str, b: str) -> bool:
+    pa = a.strip().split()[0][:4].lower() if a.strip() else ""
+    pb = b.strip().split()[0][:4].lower() if b.strip() else ""
+    return bool(pa and pb and pa != pb)
+
+
+def scrape_active_live_page_observation(page, *, start_val: dict[str, Any] | None = None) -> dict[str, Any]:
+    from run_production_solo_soak import all_frames_text, dom_counts
+
+    start_val = dict(start_val or {})
+    state = scrape_timer_fields(page)
+    mount = scrape_component_mount_diag(page)
+    md = state.get("mount_diag") or {}
+    lifecycle = scrape_persistent_lifecycle_token(page)
+    iframe = {}
+    try:
+        from stage1_harness_observability import scrape_countdown_iframe_connectivity
+
+        iframe = scrape_countdown_iframe_connectivity(page)
+    except Exception:
+        iframe = {}
+    text = all_frames_text(page)
+    visible_room = room_id_from_text(text)
+    pick0_tok = str(mount.get("expire_token") or lifecycle or md.get("diag_token") or "")
+    pick0_deadline = str(md.get("diag_deadline") or mount.get("diag_deadline") or state.get("timer") or "")
+    countdown_present = bool(
+        pick0_tok
+        or pick0_deadline
+        or mount.get("key")
+        or (iframe.get("countdown_iframe") or {}).get("href")
+    )
+    hint = _queue_button_player_hint(page, 0)
+    return {
+        "visible_room_id": visible_room,
+        "pick_index": state.get("pick"),
+        "pick0_token_ui": pick0_tok,
+        "pick0_deadline_ui": pick0_deadline,
+        "pause_draft_count": int(dom_counts(page).get("Pause Draft") or 0),
+        "board_rows": state.get("boardRows"),
+        "add_to_queue_button_count": int(hint.get("total") or 0),
+        "countdown_or_timer_present": countdown_present,
+        "mount_key": mount.get("key"),
+        "server_latched_room_id": str(start_val.get("latched_room_id") or "").upper(),
+    }
+
+
+def wait_for_active_live_page_gate(
+    page,
+    *,
+    start_val: dict[str, Any],
+    timeout_s: float = 120.0,
+) -> dict[str, Any]:
+    from stage1_harness_observability import evaluate_active_live_page_gate
+
+    t_end = time.time() + timeout_s
+    last_eval: dict[str, Any] = {"passed": False, "checks": {}}
+    while time.time() < t_end:
+        obs = scrape_active_live_page_observation(page, start_val=start_val)
+        last_eval = evaluate_active_live_page_gate(obs, start_val=start_val)
+        if last_eval.get("passed"):
+            last_eval["observation"] = obs
+            return last_eval
+        page.wait_for_timeout(2000)
+    if "observation" not in last_eval:
+        last_eval["observation"] = scrape_active_live_page_observation(page, start_val=start_val)
+    return last_eval
+
+
+def capture_queue_snapshot(page, *, expected_autopick: dict[str, Any] | None = None) -> dict[str, Any]:
+    container = scrape_queue_container_state(page)
+    players = list(container.get("players") or [])
+    order = [str(p.get("name") or "") for p in players]
+    top = players[0] if players else {}
+    expected = dict(expected_autopick or scrape_expected_autopick_candidate(page))
+    differs = _names_differ(str(expected.get("name") or ""), str(top.get("name") or ""))
+    return {
+        "expected_autopick_candidate": expected,
+        "queue_players_before": players,
+        "queue_order": order,
+        "top_queued_player": top,
+        "autopick_differs_from_top_queue": differs,
+        "queue_container": container,
+        "queue_excerpt_before": queue_text(page),
+        "queue_contains_player": len(players) >= 1,
+    }
+
+
+def _abort_queue_precondition(
+    summary: dict[str, Any],
+    *,
+    first_boundary: str,
+    reason: str,
+    active_live_page_gate: dict[str, Any] | None = None,
+    queue_meta: dict[str, Any] | None = None,
+    stage1a_mode: str = "QUEUE",
+) -> int:
+    from stage1_harness_observability import build_stage1a_queue_precondition_block
+
+    block = build_stage1a_queue_precondition_block(
+        first_boundary=first_boundary,
+        reason=reason,
+        active_live_page_gate=active_live_page_gate,
+        queue_meta=queue_meta,
+    )
+    summary["stage1a"] = {**block, "stage1a_mode": stage1a_mode}
+    summary["stage1a_queue"] = summary["stage1a"]
+    summary["aborted"] = True
+    summary["abort_reason"] = reason
+    summary["stage1a_queue_functional_outcome"] = "NOT_RUN"
+    summary["stage1a_queue_execution_status"] = "BLOCKED_BEFORE_EXPIRATION"
+    summary["first_boundary"] = first_boundary
+    summary["queue_independence"] = "NOT_EXERCISED"
+    OUT_QUEUE.parent.mkdir(parents=True, exist_ok=True)
+    OUT_QUEUE.write_text(json.dumps(summary["stage1a"], indent=2, default=str), encoding="utf-8")
+    print(json.dumps(summary["stage1a"], indent=2, default=str))
+    return 2
+
+
+def queue_populate_deliberate(page, *, min_players: int = 3) -> dict[str, Any]:
+    expected_autopick = scrape_expected_autopick_candidate(page)
+    add_actions: list[dict[str, Any]] = []
+    for bi in (2, 3, 4, 5, 6, 7):
+        if len(add_actions) >= min_players:
+            break
+        meta = queue_add_by_button_index(page, bi)
+        if meta.get("clicked"):
+            add_actions.append(meta)
+        page.wait_for_timeout(1800)
+    page.wait_for_timeout(3000)
+    container = scrape_queue_container_state(page)
+    players = list(container.get("players") or [])
+    order = [str(p.get("name") or "") for p in players]
+    top_queued = players[0] if players else {}
+    differs = _names_differ(str(expected_autopick.get("name") or ""), str(top_queued.get("name") or ""))
+    if not differs and len(add_actions) < min_players + 2:
+        for bi in (8, 9, 10):
+            meta = queue_add_by_button_index(page, bi)
+            if meta.get("clicked"):
+                add_actions.append(meta)
+            page.wait_for_timeout(1800)
+        page.wait_for_timeout(2500)
+        container = scrape_queue_container_state(page)
+        players = list(container.get("players") or [])
+        order = [str(p.get("name") or "") for p in players]
+        top_queued = players[0] if players else {}
+        differs = _names_differ(str(expected_autopick.get("name") or ""), str(top_queued.get("name") or ""))
+    return {
+        "clicked": len(add_actions) >= min_players,
+        "expected_autopick_candidate": expected_autopick,
+        "queue_players_before": players,
+        "queue_order": order,
+        "top_queued_player": top_queued,
+        "autopick_differs_from_top_queue": differs,
+        "add_actions": add_actions,
+        "queue_container": container,
+        "queue_contains_player": len(players) >= min_players,
+        "seed_source": "deliberate_multi_add",
+        "min_players_required": min_players,
+    }
+
+
+def freeze_pick0_transaction(page, *, room_id: str) -> dict[str, Any]:
+    state = scrape_timer_fields(page)
+    mount = scrape_component_mount_diag(page)
+    md = state.get("mount_diag") or {}
+    tok = str(
+        mount.get("expire_token")
+        or md.get("diag_token")
+        or scrape_persistent_lifecycle_token(page)
+        or ""
+    )
+    return {
+        "room_id": str(room_id or "").upper(),
+        "pick_index": state.get("pick"),
+        "deadline": str(md.get("diag_deadline") or state.get("timer") or mount.get("diag_deadline") or ""),
+        "expected_expiration_token": tok,
+        "mount_key": str(mount.get("key") or ""),
+        "board_rows": state.get("boardRows"),
+    }
+
+
 def scrape_queue_container_state(page) -> dict[str, Any]:
     try:
         data = page.evaluate(
@@ -1578,7 +1899,12 @@ def queue_seed_satisfied(queue_meta: dict[str, Any]) -> bool:
     if players:
         queue_meta["player_hint"] = str(players[0].get("name") or "")
         queue_meta["queued_slot"] = str(players[0].get("slot") or "")
-        queue_meta["seed_source"] = "queue_container_player"
+        queue_meta["seed_source"] = queue_meta.get("seed_source") or "queue_container_player"
+        return True
+    if len(queue_meta.get("queue_order") or []) >= int(queue_meta.get("min_players_required") or 1):
+        queue_meta["queue_contains_player"] = True
+        if queue_meta.get("queue_order"):
+            queue_meta["player_hint"] = str(queue_meta["queue_order"][0])
         return True
     if queue_meta.get("clicked") and players:
         return True
@@ -1752,6 +2078,7 @@ def run_stage_1b_fallback(page) -> dict[str, Any]:
 def main() -> int:
     required_sha = resolve_required_cloud_sha()
     stage1a_mode = resolve_stage1a_mode()
+    queue_manual_assist = resolve_queue_manual_assist() and stage1a_mode == "QUEUE"
     if not required_sha:
         print(json.dumps({"aborted": True, "reason": "required_cloud_sha_unset"}))
         return 1
@@ -1782,19 +2109,31 @@ def main() -> int:
         "cloud_sha": str(pre.get("cloud_sha") or ""),
         "required_cloud_sha": required_sha,
         "stage1a_mode": stage1a_mode,
+        "stage1a_queue_manual_assist": queue_manual_assist,
         "authenticated_restored": True,
         "auth_preflight": {
             "signed_in_display": pre.get("signed_in_display"),
             "authenticated_app": pre.get("authenticated_app"),
         },
     }
+    try:
+        import subprocess
+
+        summary["harness_sha"] = (
+            subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=str(ROOT), text=True).strip()
+        )
+    except Exception:
+        summary["harness_sha"] = ""
 
     url = production_url()
     from stage1_parent_event_sink import ParentEventSinkStore, install_parent_event_sink
 
     parent_sink_store = ParentEventSinkStore()
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+        browser = p.chromium.launch(
+            headless=resolve_headless_launch(stage1a_mode=stage1a_mode),
+            args=["--disable-blink-features=AutomationControlled"],
+        )
         context = browser.new_context(
             storage_state=str(STORAGE_PATH),
             viewport={"width": 1440, "height": 1400},
@@ -1926,7 +2265,7 @@ def main() -> int:
             return 1
 
         prior_room = str(cleanup.get("detected_room_id") or "").strip().upper()
-        if stage1a_mode == "CORE":
+        if stage1a_mode in ("CORE", "QUEUE"):
             import uuid
 
             from p8_canonical_production_start import establish_single_solo_live_draft
@@ -1967,7 +2306,8 @@ def main() -> int:
             if not summary["focused_mode_absence"].get("absent_ok"):
                 summary["aborted"] = True
                 summary["abort_reason"] = "focused_mode_active_during_core"
-                summary["stage1a"] = {"verdict": "INVALID", "reason": "CORE16_focused_mode_active"}
+                invalid_reason = "CORE16_focused_mode_active" if stage1a_mode == "CORE" else "QUEUE16_focused_mode_active"
+                summary["stage1a"] = {"verdict": "INVALID", "reason": invalid_reason}
                 context.close()
                 browser.close()
                 summary["finished_at"] = time.time()
@@ -2050,6 +2390,113 @@ def main() -> int:
                 "queue_independence": "NOT EXERCISED — EMPTY QUEUE",
             }
             summary["queue_seed"] = queue_meta
+        elif stage1a_mode == "QUEUE":
+            from stage1_harness_observability import (
+                MANUAL_ASSIST_QUEUE_INSTRUCTION,
+                QUEUE1,
+                QUEUE6,
+                QUEUEUI1,
+                verify_manual_queue_capture,
+            )
+
+            gate_timeout = 300.0 if queue_manual_assist else 120.0
+            active_gate = wait_for_active_live_page_gate(page, start_val=start_val, timeout_s=gate_timeout)
+            summary["active_live_page_gate"] = active_gate
+            if not active_gate.get("passed"):
+                context.close()
+                browser.close()
+                summary["finished_at"] = time.time()
+                OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                print(json.dumps({"aborted": True, "active_live_page_gate": active_gate}, indent=2))
+                return _abort_queue_precondition(
+                    summary,
+                    first_boundary=QUEUEUI1,
+                    reason="active_live_draft_page_not_hydrated",
+                    active_live_page_gate=active_gate,
+                    stage1a_mode=stage1a_mode,
+                )
+
+            expected_autopick = scrape_expected_autopick_candidate(page)
+            summary["expected_autopick_candidate"] = expected_autopick
+
+            if queue_manual_assist:
+                print("\n=== Stage 1A-QUEUE manual assist ===")
+                print(MANUAL_ASSIST_QUEUE_INSTRUCTION)
+                print("Do not trigger expiration until queue verification passes.\n")
+                try:
+                    input()
+                except EOFError:
+                    context.close()
+                    browser.close()
+                    summary["finished_at"] = time.time()
+                    OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                    return _abort_queue_precondition(
+                        summary,
+                        first_boundary=QUEUE1,
+                        reason="manual_assist_eof_before_queue_verification",
+                        active_live_page_gate=active_gate,
+                        stage1a_mode=stage1a_mode,
+                    )
+                queue_meta = capture_queue_snapshot(page, expected_autopick=expected_autopick)
+                queue_meta["stage1a_mode"] = "QUEUE"
+                queue_meta["seed_source"] = "manual_assist"
+                queue_meta["min_players_required"] = 3
+                manual_verify = verify_manual_queue_capture(queue_meta, min_players=3)
+                queue_meta["manual_assist_verification"] = manual_verify
+                if not manual_verify.get("ok"):
+                    context.close()
+                    browser.close()
+                    summary["finished_at"] = time.time()
+                    OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                    return _abort_queue_precondition(
+                        summary,
+                        first_boundary=str(manual_verify.get("first_boundary") or QUEUE1),
+                        reason=str(manual_verify.get("reason") or "manual_queue_verification_failed"),
+                        active_live_page_gate=active_gate,
+                        queue_meta=queue_meta,
+                        stage1a_mode=stage1a_mode,
+                    )
+            else:
+                queue_meta = queue_populate_deliberate(page, min_players=3)
+                queue_meta["stage1a_mode"] = "QUEUE"
+                queue_meta["queue_excerpt_before"] = queue_text(page)
+                queue_meta["queue_contains_player"] = queue_seed_satisfied(queue_meta)
+                queue_meta["grading"] = "QUEUE_DELIBERATE" if queue_meta.get("queue_contains_player") else "QUEUE_NOT_PROVEN"
+                if not queue_meta.get("queue_contains_player") or len(queue_meta.get("queue_order") or []) < 3:
+                    context.close()
+                    browser.close()
+                    summary["finished_at"] = time.time()
+                    OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                    return _abort_queue_precondition(
+                        summary,
+                        first_boundary=QUEUE1,
+                        reason="queue_not_populated_before_expiration",
+                        active_live_page_gate=active_gate,
+                        queue_meta=queue_meta,
+                        stage1a_mode=stage1a_mode,
+                    )
+                if not queue_meta.get("autopick_differs_from_top_queue"):
+                    context.close()
+                    browser.close()
+                    summary["finished_at"] = time.time()
+                    OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                    return _abort_queue_precondition(
+                        summary,
+                        first_boundary=QUEUE6,
+                        reason="autopick_candidate_not_distinct_from_top_queue",
+                        active_live_page_gate=active_gate,
+                        queue_meta=queue_meta,
+                        stage1a_mode=stage1a_mode,
+                    )
+
+            queue_meta["pick0_freeze"] = freeze_pick0_transaction(
+                page, room_id=str(start_val.get("latched_room_id") or "")
+            )
+            page.wait_for_timeout(2000)
+            refreshed = freeze_pick0_transaction(page, room_id=str(start_val.get("latched_room_id") or ""))
+            if refreshed.get("expected_expiration_token"):
+                queue_meta["pick0_freeze"] = refreshed
+            summary["queue_seed"] = queue_meta
         else:
             page.wait_for_timeout(12000)
             queue_meta: dict[str, Any] = {"clicked": False}
@@ -2093,6 +2540,13 @@ def main() -> int:
             summary["queue_seed"] = queue_meta
 
         exp = wait_one_expiration(page, timeout_s=95.0, parent_sink=parent_sink_store)
+        if stage1a_mode == "QUEUE":
+            queue_meta["queue_container_after"] = scrape_queue_container_state(page)
+            queue_meta["queue_excerpt_after"] = queue_text(page)
+            queue_meta["queue_order_after"] = [
+                str(p.get("name") or "") for p in list((queue_meta["queue_container_after"] or {}).get("players") or [])
+            ]
+            summary["queue_seed"] = queue_meta
         exp["parent_boundary_validation"] = build_parent_boundary_validation(
             exp, token_sent=str(exp.get("token_sent") or "")
         )
@@ -2193,6 +2647,7 @@ def main() -> int:
         summary["instrumented_diag"] = instrumented
 
         grade = grade_stage_1a(page, start_val, exp, preflight=pre, stage1a_mode=stage1a_mode)
+        exp["queue_seed"] = queue_meta
         stage1a = {
             "draft_start_validation": start_val,
             "expiration": exp,
@@ -2206,6 +2661,9 @@ def main() -> int:
         if stage1a_mode == "CORE":
             summary["stage1a_core"] = stage1a
             summary["stage1a_core_status"] = grade.get("stage1a_core_status") or {}
+        if stage1a_mode == "QUEUE":
+            summary["stage1a_queue"] = stage1a
+            OUT_QUEUE.write_text(json.dumps(stage1a, indent=2, default=str), encoding="utf-8")
         OUT_1A.write_text(json.dumps(stage1a, indent=2, default=str), encoding="utf-8")
         OUT_IFRAME.parent.mkdir(parents=True, exist_ok=True)
         OUT_IFRAME.write_text(
@@ -2236,6 +2694,8 @@ def main() -> int:
         core_functional_pass = (
             grade.get("stage1a_core_functional_outcome") == "PASS"
             if stage1a_mode == "CORE"
+            else grade.get("stage1a_queue_functional_outcome") == "PASS" and grade.get("functional_verdict") == "PASS"
+            if stage1a_mode == "QUEUE"
             else grade["verdict"] == "PASS"
         )
         if not core_functional_pass:
@@ -2271,6 +2731,13 @@ def main() -> int:
         ok = (
             summary.get("stage1a_core_status", {}).get("stage1a_core_functional_outcome") == "PASS"
             or summary.get("stage1a", {}).get("grade", {}).get("stage1a_core_functional_outcome") == "PASS"
+        )
+    if summary.get("stage1a_queue_execution_status") == "BLOCKED_BEFORE_EXPIRATION":
+        return 2
+    if summary.get("stage1a_mode") == "QUEUE" or (summary.get("stage1a") or {}).get("stage1a_mode") == "QUEUE":
+        ok = (
+            summary.get("stage1a", {}).get("grade", {}).get("stage1a_queue_functional_outcome") == "PASS"
+            and summary.get("stage1a", {}).get("grade", {}).get("functional_verdict") == "PASS"
         )
     return 0 if ok else 1
 
