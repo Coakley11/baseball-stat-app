@@ -1736,12 +1736,92 @@ def main() -> int:
             return 1
 
         prior_room = str(cleanup.get("detected_room_id") or "").strip().upper()
-        draft = execute_solo_draft_start_workflow(page, url, navigate=False)
-        summary["draft_start_success"] = bool(draft.get("start_success"))
-        summary["draft_start_room_id"] = draft.get("room_id")
-        summary["fresh_room_id"] = draft.get("room_id")
-        start_val = validate_production_draft_start(page, draft, prior_room_id=prior_room)
-        summary["draft_start_validation"] = start_val
+        if stage1a_mode == "CORE":
+            import uuid
+
+            from p8_canonical_production_start import establish_single_solo_live_draft
+            from p8_core_setup_classify import (
+                INVALID_STAGE1A_CORE_TRACE,
+                classify_core_setup_outcome,
+                focused_mode_absent_proof,
+                normalize_core_start_validation,
+            )
+            from p8_focused_setup_classify import evaluate_canonical_setup_pass
+            from p8_room_latch_reconcile import replay_artifact_latch
+
+            core_harness_id = uuid.uuid4().hex[:16]
+            summary["core_harness_run_id"] = core_harness_id
+            canonical = establish_single_solo_live_draft(
+                page,
+                context,
+                setup_url=url,
+                prior_room_id=prior_room,
+                fresh_lobby_cleanup=False,
+                max_wait_s=90.0,
+            )
+            summary["production_setup"] = canonical
+            summary["application_diagnostic_run_id"] = str(
+                canonical.get("application_diagnostic_run_id")
+                or canonical.get("diagnostic_run_id")
+                or ""
+            )
+            latch_replay = replay_artifact_latch(
+                {
+                    "harness_run_id": core_harness_id,
+                    "application_diagnostic_run_id": summary["application_diagnostic_run_id"],
+                    "production_setup": canonical,
+                }
+            )
+            summary["artifact_latch_replay"] = latch_replay
+            summary["focused_mode_absence"] = focused_mode_absent_proof(page, url, canonical)
+            if not summary["focused_mode_absence"].get("absent_ok"):
+                summary["aborted"] = True
+                summary["abort_reason"] = "focused_mode_active_during_core"
+                summary["stage1a"] = {"verdict": "INVALID", "reason": "CORE16_focused_mode_active"}
+                context.close()
+                browser.close()
+                summary["finished_at"] = time.time()
+                OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                return 1
+            setup_auth = evaluate_canonical_setup_pass(canonical, artifact_latch_replay=latch_replay)
+            summary["setup_authority"] = setup_auth
+            core_setup_cls = classify_core_setup_outcome(
+                canonical, setup_auth=setup_auth, latch_replay=latch_replay
+            )
+            summary["core_setup_classification"] = core_setup_cls
+            if not setup_auth.get("canonical_setup_pass"):
+                summary["draft_start_success"] = False
+                summary["draft_start_validation"] = {
+                    "valid": False,
+                    "reason": core_setup_cls.get("coresetup_classification") or core_setup_cls.get("reason"),
+                    "production_setup": canonical,
+                }
+                summary["stage1a"] = {
+                    "verdict": "INVALID",
+                    "reason": core_setup_cls.get("coresetup_classification"),
+                    "core_setup_classification": core_setup_cls,
+                }
+                summary["stage1b_queue"] = {"verdict": "SKIPPED", "reason": "core_setup_failed"}
+                summary["stage1b_fallback"] = {"verdict": "SKIPPED", "reason": "core_setup_failed"}
+                context.close()
+                browser.close()
+                summary["finished_at"] = time.time()
+                OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                print(json.dumps({"aborted": True, "core_setup": core_setup_cls}, indent=2))
+                return 1
+            start_val = normalize_core_start_validation(canonical, setup_auth, latch_replay)
+            summary["draft_start_success"] = True
+            summary["draft_start_room_id"] = start_val.get("latched_room_id")
+            summary["fresh_room_id"] = start_val.get("latched_room_id")
+            summary["draft_start_validation"] = start_val
+            summary["canonical_start_used"] = True
+        else:
+            draft = execute_solo_draft_start_workflow(page, url, navigate=False)
+            summary["draft_start_success"] = bool(draft.get("start_success"))
+            summary["draft_start_room_id"] = draft.get("room_id")
+            summary["fresh_room_id"] = draft.get("room_id")
+            start_val = validate_production_draft_start(page, draft, prior_room_id=prior_room)
+            summary["draft_start_validation"] = start_val
 
         if not start_val.get("valid"):
             summary["stage1a"] = {"verdict": "INVALID", "reason": start_val.get("reason")}
