@@ -318,8 +318,15 @@ def map_legacy_reject_reason(reason: str) -> str:
     return r or "other"
 
 
-def try_claim_token_delivery(session: dict[str, Any], token: str, source: str) -> tuple[bool, str]:
+def try_claim_token_delivery(session: dict[str, Any], token: str, source: str, *, st: Any | None = None) -> tuple[bool, str]:
     """First delivery owner wins for this token; later invocations are rejected."""
+    try:
+        from live_draft_solo_p8_focused_binding import solo_p8_focused_binding_effective
+
+        if solo_p8_focused_binding_effective(st, session):
+            return False, "p8_focused_binding_stop_before_claim"
+    except ImportError:
+        pass
     tok = str(token or "").strip()
     _authorized, src, auth_reason = authorize_production_callback_source(source)
     if auth_reason:

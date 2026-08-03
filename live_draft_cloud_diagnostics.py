@@ -30,7 +30,9 @@ def _qp_get(st: Any, name: str) -> str:
             if val is not None:
                 if isinstance(val, list):
                     return str(val[0] or "").strip()
-                return str(val).strip()
+                if isinstance(val, (str, int, float, bool)):
+                    return str(val).strip()
+                return ""
     except Exception:
         pass
     try:
@@ -42,7 +44,9 @@ def _qp_get(st: Any, name: str) -> str:
         return ""
     if isinstance(raw, list):
         return str(raw[0] or "").strip()
-    return str(raw).strip()
+    if isinstance(raw, (str, int, float, bool)):
+        return str(raw).strip()
+    return ""
 
 
 def _qp_flag(st: Any, name: str) -> bool:

@@ -14,7 +14,9 @@ from live_draft_prod_callback_handoff import (
     write_callback_handoff_from_on_change,
 )
 from live_draft_solo_p8_focused_binding import (
+    SOLO_P8_AUTH_STATE_KEY,
     SOLO_P8_FOCUSED_EFFECTIVE_KEY,
+    SOLO_P8_FOCUSED_TXN_KEY,
     SOLO_P8_HARNESS_TXN_KEY,
     bootstrap_solo_p8_focused_binding,
     solo_p8_focused_binding_effective,
@@ -35,10 +37,29 @@ def _room(*, pick: int = 0) -> dict:
 
 
 def _diag_session(**extra: object) -> dict:
+    harness = str(extra.get(SOLO_P8_HARNESS_TXN_KEY) or "a1b2c3d4e5f67890")
     base = {
         "_solo_component_diag_enabled": True,
         "_solo_stage1_production_ledger_enabled": True,
-        SOLO_P8_HARNESS_TXN_KEY: "a1b2c3d4e5f67890",
+        SOLO_P8_HARNESS_TXN_KEY: harness,
+        SOLO_P8_AUTH_STATE_KEY: {
+            "focused_param_requested": True,
+            "focused_authorized": True,
+            "focused_effective": True,
+            "authorization_result": "authorized",
+            "denial_reason": "",
+            "harness_transaction_id": harness,
+        },
+        SOLO_P8_FOCUSED_TXN_KEY: {
+            "harness_run_id": harness,
+            "streamlit_session_id": "test-session",
+            "build_sha": "cff25b8",
+            "created_ts": 1.0,
+            "expires_ts": 9999999999.0,
+            "terminal": False,
+            "component_diag_armed": True,
+            "focused_param_seen": True,
+        },
         **extra,
     }
     return base
@@ -63,6 +84,8 @@ def test_authorized_diagnostic_query_activates_focused_mode() -> None:
     with mock.patch("live_draft_cloud_diagnostics._admin_ok", return_value=True):
         bootstrap_solo_p8_focused_binding(st, session)
     assert session.get(SOLO_P8_FOCUSED_EFFECTIVE_KEY) is True
+    st.query_params = {}
+    assert solo_p8_focused_binding_effective(st, session)
 
 
 def test_focused_post_bind_stops_without_flush() -> None:
@@ -147,6 +170,9 @@ def test_diagnostic_handoff_marked_and_rejected_in_normal_mode() -> None:
     )
     rec = get_handoff_record(session, "solo_countdown_wake_solo_persistent")
     assert rec and rec.get("diagnostic_only") is True
+    from live_draft_solo_p8_focused_binding import mark_focused_transaction_terminal
+
+    mark_focused_transaction_terminal(session, reason="focused_diagnostic_complete_no_claim")
     session[SOLO_P8_FOCUSED_EFFECTIVE_KEY] = False
     _, reject = validate_handoff_for_declaration(
         session,

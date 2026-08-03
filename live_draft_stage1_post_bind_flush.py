@@ -466,6 +466,7 @@ def complete_delivery_only_observation_and_actionable_flush(
     try:
         from live_draft_solo_p8_focused_binding import (
             complete_focused_diagnostic_handoff,
+            mark_focused_transaction_terminal,
             note_focused_stop_before_claim,
             solo_p8_focused_binding_effective,
         )
@@ -487,6 +488,7 @@ def complete_delivery_only_observation_and_actionable_flush(
                 raw_token=bound_token,
                 callback_invocation_id=str(gate.invocation_id or ""),
             )
+            mark_focused_transaction_terminal(session, reason="focused_diagnostic_complete_no_claim")
             mark_post_bind_flush_dispatched(session, bound_token)
             return True
     except ImportError:
