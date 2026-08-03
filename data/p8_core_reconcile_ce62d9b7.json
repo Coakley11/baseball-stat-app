@@ -735,5 +735,45 @@
     "auto_pick_entries": 1,
     "durable_commits": 1,
     "handoff_terminal": 1
+  },
+  "targeted_pick1_mount_check": {
+    "harness_sha": "8df8295",
+    "authoritative_core_room": "3BEEA6F2",
+    "pick_1_server_token": "3BEEA6F2|1|1785728385.690",
+    "pick_1_deadline": "1785728385.6902428",
+    "final_mount_classification": "PICK1MOUNT1",
+    "pick1mount1_label": "PICK1MOUNT1 — SERVER PICK-1 TOKEN EXISTS, BUT DECLARATION WAS NOT CAPTURED",
+    "reason_could_not_close_gap": [
+      "original room was no longer active in the new Streamlit session",
+      "Continue Saved Draft was unavailable",
+      "current page was the setup lobby",
+      "no live room, pick, or deadline was rehydrated",
+      "no countdown declaration or countdown iframe could therefore be observed"
+    ],
+    "not_reinterpreted_as": [
+      "N7 server-timer failure",
+      "Live Draft functional regression",
+      "failed auto-pick",
+      "failed pick advancement",
+      "failed Stage 1A-CORE"
+    ],
+    "artifacts": {
+      "pick1_mount_targeted_check_json": "data/pick1_mount_targeted_check.json",
+      "pick1_mount_targeted_screenshot_png": "data/pick1_mount_targeted_screenshot.png",
+      "p8_core_reconcile": "data/p8_core_reconcile_ce62d9b7.json"
+    },
+    "future_same_session_capture_required": [
+      "token_action_complete",
+      "room pick_index=1",
+      "fresh server deadline/token",
+      "countdown declaration pre/post for pick 1",
+      "registered declaration snapshot",
+      "countdown iframe connected",
+      "widget/internal ID",
+      "browser mount token equals server pick-1 token",
+      "visible countdown corroboration when available"
+    ],
+    "future_pass_label": "PICK1MOUNT_PASS — PICK-1 COUNTDOWN DECLARED AND MOUNTED",
+    "persist_artifact_on_future_core": "data/pick1_same_session_mount_capture.json"
   }
 }

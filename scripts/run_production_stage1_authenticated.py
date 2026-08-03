@@ -927,6 +927,7 @@ def wait_one_expiration(
         merge_fn=merge_ledger_rows,
     )
     merged_server_ledger = list(ledger_meta.get("merged_server_ledger") or [])
+    pick1_same_session_mount: dict[str, Any] = {}
     callbacks = list(audit_final.get("callbacks") or [])
     accepted = [c for c in callbacks if c.get("delivery_claimed") and not c.get("reject_code")]
     rejected = [c for c in callbacks if c.get("reject_code")]
@@ -950,6 +951,36 @@ def wait_one_expiration(
             if c.get("token"):
                 token_sent = str(c.get("token"))
                 break
+
+    if post_commit_wait_started:
+        from stage1_harness_observability import (
+            build_pick1_same_session_mount_bundle,
+            persist_pick1_same_session_mount_capture,
+            scrape_countdown_iframe_connectivity,
+        )
+
+        iframe_probe_final = scrape_countdown_iframe_connectivity(page)
+        tok_for_room = str(
+            next_timer_wait.get("new_token")
+            or token_sent
+            or mount_after.get("expire_token")
+            or ""
+        )
+        pf_wait = parse_expire_token_fields(tok_for_room)
+        room_for_mount = str(pf_wait.get("draft_id") or "")
+        pick1_same_session_mount = build_pick1_same_session_mount_bundle(
+            next_timer_wait=next_timer_wait,
+            merged_ledger=merged_server_ledger,
+            room_id=room_for_mount,
+            iframe_probe=iframe_probe_final,
+            mount_diag=mount_after,
+            timer_fields=state_after,
+        )
+        persist_pick1_same_session_mount_capture(
+            ROOT / "data" / "pick1_same_session_mount_capture.json",
+            pick1_same_session_mount,
+        )
+        next_timer_wait = {**next_timer_wait, "pick1_same_session_mount": pick1_same_session_mount}
 
     iframe_entries: list[dict[str, Any]] = []
     for fr in (iframe_final.get("frames") or []):
@@ -1076,6 +1107,7 @@ def wait_one_expiration(
         "merged_server_ledger_probe_hits": ledger_final.get("hits") or [],
         "ledger_meta": ledger_meta,
         "next_timer_wait": next_timer_wait,
+        "pick1_same_session_mount": pick1_same_session_mount,
         "pick_committed_at": pick_committed_at,
         "mount_after_commit": mount_after,
         "frame2_parent_messages": list(frame2_final.get("messages") or []),
