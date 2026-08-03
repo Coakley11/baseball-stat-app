@@ -18,6 +18,18 @@ SETUP11 = "SETUP11 — OTHER"
 
 FOCUSED_SETUP_TRACE = "INVALID_FOCUSED_P8_SETUP_TRACE — START TRANSITION NOT AUTHORITATIVELY OBSERVED"
 
+SETUPTRACE1 = "SETUPTRACE1 — CANONICAL LATCH PASSED BUT LEGACY ABORT FLAG FIRED"
+SETUPTRACE2 = "SETUPTRACE2 — SERVER SETUP PASSED BUT UI TRANSITION EVIDENCE MISSING"
+SETUPTRACE3 = "SETUPTRACE3 — RECONCILED RESULT NOT PROPAGATED TO FINAL ABORT DECISION"
+SETUPTRACE4 = "SETUPTRACE4 — PRE-RECONCILIATION CLASSIFICATION REUSED AFTER PASS"
+SETUPTRACE5 = "SETUPTRACE5 — HARNESS/APPLICATION RUN-ID RESULT MIXED"
+SETUPTRACE6 = "SETUPTRACE6 — CANONICAL SETUP TRULY INCOMPLETE"
+SETUPTRACE7 = "SETUPTRACE7 — OTHER"
+
+CANONICAL_SETUP_PASS = "CANONICAL_SETUP_PASS"
+OBSERVABILITY_WARNING = "OBSERVABILITY_WARNING"
+CANONICAL_SETUP_FAILURE = "CANONICAL_SETUP_FAILURE"
+
 try:
     from p8_room_latch_reconcile import ACCEPTED_ROOM_CREATED
 except ImportError:
@@ -74,19 +86,27 @@ def classify_focused_setup_boundary(
     if latch_pass and status_auth.get("status_in_progress_server"):
         pre = start_result.get("pre_expiration_resolution") or {}
         if pre.get("pre_expiration_ready") or (
-            pre.get("status") == "in_progress" and str(start_result.get("expected_token") or "").strip()
+            pre.get("status") == "in_progress" and str(start_result.get("expected_token") or pre.get("expected_token") or "").strip()
         ):
             return {"classification": "", "focused_p8_outcome": "", "reason": "setup_pass_server_status"}
 
     latch_recon = start_result.get("latch_reconciliation") or {}
-    token_resolved = bool(str(start_result.get("expected_token") or "").strip())
+    token_resolved = bool(str(start_result.get("expected_token") or (start_result.get("pre_expiration_resolution") or {}).get("expected_token") or "").strip())
     if created and (token_resolved or start_result.get("deadline")) and handler_entered:
         if latch_pass or latch_recon.get("room_latch_pass"):
+            if status_auth.get("status_in_progress_server") and token_resolved:
+                return {
+                    "classification": str(latch_recon.get("classification") or "LATCHREC1"),
+                    "focused_p8_outcome": "",
+                    "reason": "setup_pass_server_status",
+                    "room_hint": created,
+                    "observability_warning": "legacy_valid_false_with_authoritative_server_pre_exp",
+                }
             if not valid:
                 return {
                     "classification": str(latch_recon.get("classification") or "LATCHREC1"),
-                    "focused_p8_outcome": FOCUSED_SETUP_TRACE,
-                    "reason": "room_latch_pass_preexp_incomplete",
+                    "focused_p8_outcome": "",
+                    "reason": "setup_pass_latch_reconciled_observability_gap",
                     "room_hint": created,
                 }
         return {
@@ -162,3 +182,130 @@ def setup_disappearance_is_not_room_not_created(*, legacy_first_missing: str, ro
     if legacy_first_missing != "setup_page_disappeared":
         return False
     return bool(str(room_hint or "").strip())
+
+
+def _authoritative_pre_exp(start_result: dict[str, Any]) -> dict[str, Any]:
+    pre = start_result.get("pre_expiration_resolution") or {}
+    if isinstance(pre, dict) and pre.get("expected_token"):
+        return pre
+    return {}
+
+
+def evaluate_canonical_setup_pass(
+    start_result: dict[str, Any],
+    *,
+    artifact_latch_replay: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Authoritative setup pass for focused P8 (harness only).
+    Observability gaps must not override canonical server proof.
+    """
+    latch = artifact_latch_replay or {}
+    click_count = int(start_result.get("click_count") or 0)
+    room_id = str(start_result.get("room_id") or latch.get("room_id") or "").upper()
+    pre = _authoritative_pre_exp(start_result)
+    status_auth = start_result.get("room_status_authority") or {}
+    server_in_progress = bool(
+        status_auth.get("status_in_progress_server")
+        or str(pre.get("status") or start_result.get("status") or "").lower() == "in_progress"
+    )
+    pick = pre.get("pick_index") if pre.get("pick_index") is not None else start_result.get("pick_index")
+    deadline = pre.get("deadline") if pre.get("deadline") is not None else start_result.get("deadline")
+    token = str(pre.get("expected_token") or start_result.get("expected_token") or "").strip()
+    latch_pass = bool(
+        start_result.get("room_latch_pass")
+        or latch.get("room_latch_pass_reconciled")
+        or (latch.get("latch_reconciliation") or {}).get("room_latch_pass")
+    )
+    handler_entered = bool(start_result.get("handler_entered") or _audit_counts(start_result.get("start_audit_reconcile") or {})["handler_entered"])
+    later_clear = bool((latch.get("server_latch_bundle") or {}).get("checks", {}).get("later_clear"))
+    warnings: list[str] = []
+
+    failures: list[str] = []
+    if click_count != 1:
+        failures.append("click_count_not_one")
+    if not room_id:
+        failures.append("room_id_missing")
+    if not handler_entered:
+        failures.append("handler_not_proven")
+    if not server_in_progress:
+        failures.append("server_status_not_in_progress")
+    if pick is not None and int(pick) != 0:
+        failures.append("pick_index_not_zero")
+    if not deadline and not token:
+        failures.append("deadline_and_token_missing")
+    if not latch_pass:
+        failures.append("room_latch_not_proven")
+    if later_clear:
+        failures.append("room_later_cleared")
+
+    harness_rid = str(start_result.get("harness_run_id") or "")
+    app_rid = str(start_result.get("application_diagnostic_run_id") or start_result.get("diagnostic_run_id") or "")
+    if latch.get("harness_run_id") and harness_rid and str(latch.get("harness_run_id")) != harness_rid:
+        failures.append("harness_run_id_mismatch")
+
+    legacy_valid = bool(start_result.get("valid") or start_result.get("pre_expiration_ready"))
+    if not legacy_valid:
+        if str(start_result.get("first_missing_pre_expiration") or "") == "deadline_already_expired":
+            warnings.append("pre_expiration_ready_false_deadline_already_expired_at_freeze")
+        elif not start_result.get("pre_expiration_ready"):
+            warnings.append("legacy_pre_expiration_ready_false")
+    if str(start_result.get("start_boundary") or "").startswith("START"):
+        warnings.append(f"legacy_start_boundary:{start_result.get('start_boundary')}")
+    pre_cons = (pre.get("consistency") or {}) if isinstance(pre.get("consistency"), dict) else {}
+    if pre_cons.get("deadline_not_expired") is False and token:
+        warnings.append("deadline_not_expired_false_at_setup_freeze_authoritative_token_present")
+
+    setup_cls = classify_focused_setup_boundary(start_result=start_result)
+    if setup_cls.get("reason") in ("setup_pass", "setup_pass_server_status") and not setup_cls.get("focused_p8_outcome"):
+        canonical_ok = not failures
+    else:
+        canonical_ok = not failures
+
+    if failures:
+        return {
+            "setup_authority": CANONICAL_SETUP_FAILURE,
+            "canonical_setup_pass": False,
+            "failures": failures,
+            "warnings": warnings,
+            "setuptrace_classification": SETUPTRACE6,
+            "room_id": room_id,
+            "server_in_progress": server_in_progress,
+            "room_latch_pass_reconciled": bool(latch.get("room_latch_pass_reconciled")),
+        }
+
+    setuptrace = ""
+    if not legacy_valid and canonical_ok:
+        if latch.get("room_latch_pass_reconciled"):
+            setuptrace = SETUPTRACE1
+        elif warnings:
+            setuptrace = SETUPTRACE2
+        else:
+            setuptrace = SETUPTRACE3
+
+    return {
+        "setup_authority": CANONICAL_SETUP_PASS,
+        "canonical_setup_pass": True,
+        "failures": [],
+        "warnings": warnings,
+        "setuptrace_classification": setuptrace,
+        "room_id": room_id,
+        "expected_token": token,
+        "pick_index": pick,
+        "deadline": deadline,
+        "server_in_progress": server_in_progress,
+        "room_latch_pass_reconciled": bool(latch.get("room_latch_pass_reconciled")),
+        "legacy_valid": legacy_valid,
+        "classifier_reason": setup_cls.get("reason"),
+    }
+
+
+def legacy_abort_would_fire(*, start_valid: bool, setup_cls: dict[str, Any]) -> bool:
+    """True when pre-fix harness aborted despite classifier pass."""
+    if start_valid:
+        return False
+    if setup_cls.get("focused_p8_outcome"):
+        return True
+    if setup_cls.get("reason") in ("setup_pass", "setup_pass_server_status"):
+        return True
+    return not start_valid

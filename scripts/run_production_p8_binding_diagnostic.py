@@ -849,29 +849,58 @@ def run_diagnostic() -> dict[str, Any]:
         report["draft_start_validation"] = start_val
         _persist_partial(report, phase="after_canonical_start")
 
-        if not start_val.get("valid"):
-            setup_cls = classify_focused_setup_boundary(start_result=start_val)
-            report["focused_setup_classification"] = setup_cls
-            report["artifact_latch_replay"] = replay_artifact_latch({**report, "production_setup": start_val})
+        artifact_latch = replay_artifact_latch({**report, "production_setup": start_val})
+        report["artifact_latch_replay"] = artifact_latch
+        if artifact_latch.get("room_latch_pass_reconciled"):
+            report["room_latch_pass_reconciled"] = True
+            start_val["room_latch_pass_reconciled"] = True
+            if artifact_latch.get("latch_reconciliation"):
+                start_val["latch_reconciliation"] = artifact_latch["latch_reconciliation"]
+
+        from p8_focused_setup_classify import (
+            SETUPTRACE1,
+            evaluate_canonical_setup_pass,
+            classify_focused_setup_boundary,
+            FOCUSED_SETUP_TRACE,
+            legacy_abort_would_fire,
+        )
+
+        setup_cls = classify_focused_setup_boundary(start_result=start_val)
+        setup_auth = evaluate_canonical_setup_pass(start_val, artifact_latch_replay=artifact_latch)
+        report["focused_setup_classification"] = setup_cls
+        report["setup_authority"] = setup_auth
+        report["setuptrace_classification"] = setup_auth.get("setuptrace_classification") or ""
+        report["setup_observability_warnings"] = list(setup_auth.get("warnings") or [])
+
+        if setup_auth.get("canonical_setup_pass"):
+            start_val["canonical_setup_pass"] = True
+            if setup_auth.get("expected_token"):
+                start_val["expected_token"] = setup_auth["expected_token"]
+            report["production_setup"] = start_val
+            report["setup_abort_reason"] = setup_cls.get("reason") or "canonical_setup_pass"
+            if legacy_abort_would_fire(start_valid=bool(start_val.get("valid")), setup_cls=setup_cls):
+                report["setuptrace_classification"] = (
+                    report.get("setuptrace_classification") or SETUPTRACE1
+                )
+                report["legacy_setup_abort_suppressed"] = True
+        else:
             report["aborted"] = True
-            report["abort_reason"] = setup_cls.get("focused_p8_outcome") or FOCUSED_SETUP_TRACE
-            report["focused_p8_outcome"] = setup_cls.get("focused_p8_outcome") or FOCUSED_SETUP_TRACE
-            report["failure_boundary"] = setup_cls.get("classification") or "LATCHREC8"
-            report["setup_abort_reason"] = setup_cls.get("reason")
+            outcome = (setup_cls.get("focused_p8_outcome") or "").strip()
+            report["abort_reason"] = outcome or FOCUSED_SETUP_TRACE
+            report["focused_p8_outcome"] = report["abort_reason"]
+            report["failure_boundary"] = setup_cls.get("classification") or setup_auth.get("setuptrace_classification") or "SETUPTRACE6"
+            report["setup_abort_reason"] = setup_cls.get("reason") or setup_auth.get("failures")
             report["accepted_run_label"] = (
                 "ROOM_CREATED — ROOM_LATCH_RECONCILIATION_REQUIRED"
                 if report["focused_p8_outcome"] == "ROOM_CREATED — ROOM_LATCH_RECONCILIATION_REQUIRED"
                 else ""
             )
             report["setup_trace_note"] = (
-                "Start transition not authoritatively observed; "
+                "Canonical setup authority failed; "
                 "not classified as callback-handoff or application room-not-created defect."
             )
-            if report["artifact_latch_replay"].get("room_latch_pass_reconciled"):
+            if artifact_latch.get("room_latch_pass_reconciled"):
                 report["room_latch_pass_reconciled"] = True
-                report["failure_boundary"] = report["artifact_latch_replay"]["latch_reconciliation"].get(
-                    "classification", "LATCHREC1"
-                )
             context.close()
             browser.close()
             _persist_partial(report, phase="aborted_setup_trace")
