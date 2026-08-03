@@ -1,0 +1,200 @@
+{
+  "harness_sha": "3cc4404",
+  "expected_room_id": "3BEEA6F2",
+  "expected_pick1_token": "3BEEA6F2|1|1785728385.690",
+  "expected_pick1_deadline": "1785728385.6902428",
+  "authoritative_core_harness_run": "ce62d9b7b64c414f",
+  "mode": "targeted_mount_observe_only",
+  "no_claim_pick_commit": true,
+  "cloud_sha": "007c39a",
+  "cloud_build": "007c39a",
+  "continue_saved_attempt": {
+    "continue_clicked": false
+  },
+  "ledger_source": "artifact_ce62d9b7",
+  "screenshot_path": "C:\\Users\\danie\\Documents\\GitHub\\baseball-stat-app\\data\\pick1_mount_targeted_screenshot.png",
+  "declaration_token": "3BEEA6F2|1|1785728385.690",
+  "component_widget_id": null,
+  "iframe_connection": true,
+  "iframe_probe": {
+    "iframes": [
+      {
+        "href": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/~/+/?active_page=Live+Draft+Room&solo_component_diag=1&solo_diag_timer=10&solo_stage1_parent_boundary=1&suite_sid=a38d0369-9c8f-48ed-b2be-e10237e9349b",
+        "connected": true
+      },
+      {
+        "href": "https://qjmnz4vd2y07.statuspage.io/embed/frame",
+        "connected": false
+      }
+    ],
+    "any_connected": true,
+    "countdown_iframe": null
+  },
+  "browser_mount_token": null,
+  "visible_countdown_result": null,
+  "live_context": {
+    "room_id": "",
+    "pick_index": null,
+    "room_status": "",
+    "deadline": ""
+  },
+  "mount_diag": {
+    "iframe_connected": true
+  },
+  "timer_fields": {
+    "timer": null,
+    "pick": null,
+    "round": null,
+    "team": null,
+    "boardRows": 0,
+    "ccTimer": null,
+    "sidebarTeam": null,
+    "mount_diag": {}
+  },
+  "pick1_post_commit_mount_observation": {
+    "expected_pick1_token": "3BEEA6F2|1|1785728385.690",
+    "commit_observed_ts": 1785728375.693168,
+    "countdown_declaration_pre_pick1": {},
+    "countdown_declaration_post_pick1": {},
+    "registration_snapshots_pick1": [],
+    "server_corroboration_rows": [
+      {
+        "event_id": "4d05bdc18dcf4e5b:1908:production_stage1_cloud_ledger_pipeline_canary",
+        "ts": 1785728383.6879296,
+        "event": "production_stage1_cloud_ledger_pipeline_canary",
+        "script_run_seq": 16,
+        "run_id": "4d05bdc18dcf4e5b",
+        "widget_key": "ledger_pipeline_canary",
+        "room_id": "",
+        "pick_index": null,
+        "deadline": null,
+        "expected_token": "3BEEA6F2|1|1785728385.690",
+        "room_status": "",
+        "deployment_sha": "007c39a",
+        "diagnostic_run_id": "4d05bdc18dcf4e5b",
+        "active_page": "Live Draft Room",
+        "canary_id": "solo-stage1-ledger-pipeline-canary-v1",
+        "session_object_id": "139705886306336",
+        "session_dict_id": "139705886306336",
+        "ledger_namespace_primary": "_solo_stage1_production_ledger",
+        "ledger_namespace_merged": "_solo_stage1_production_ledger_merged",
+        "ledger_row_count": 400,
+        "ledger_merged_count": 400,
+        "query_params": {
+          "solo_component_diag": "1",
+          "solo_delivery_diag": "",
+          "solo_delivery_case": "",
+          "active_page": "Live Draft Room"
+        },
+        "solo_component_diag": "1",
+        "solo_delivery_case": "",
+        "diagnostic_surface": "",
+        "p1_counter": 71,
+        "emitter_module": "live_draft_stage1_ledger_pipeline",
+        "emitter_callable": "emit_cloud_ledger_pipeline_canary",
+        "emitter_identities": {
+          "canonical_emit_row": "live_draft_prod_on_change_observability._emit_row",
+          "registration_hooks_emit": "live_draft_streamlit_registration_hooks._emit",
+          "widget_metadata_diag_emit": "live_draft_streamlit_widget_metadata_diag._emit",
+          "note_stage1_event": "live_draft_stage1_production_ledger.note_stage1_event",
+          "hooks_and_metadata_emit_same_object": false
+        }
+      },
+      {
+        "event_id": "4d05bdc18dcf4e5b:1909:production_stage1_cloud_ledger_pipeline_canary",
+        "ts": 1785728383.6897078,
+        "event": "production_stage1_cloud_ledger_pipeline_canary",
+        "script_run_seq": 16,
+        "run_id": "4d05bdc18dcf4e5b",
+        "widget_key": "ledger_pipeline_canary",
+        "room_id": "",
+        "pick_index": null,
+        "deadline": null,
+        "expected_token": "3BEEA6F2|1|1785728385.690",
+        "room_status": "",
+        "deployment_sha": "007c39a",
+        "diagnostic_run_id": "4d05bdc18dcf4e5b",
+        "active_page": "Live Draft Room",
+        "canary_id": "solo-stage1-ledger-pipeline-canary-v1",
+        "session_object_id": "139705886306336",
+        "session_dict_id": "139705886306336",
+        "ledger_namespace_primary": "_solo_stage1_production_ledger",
+        "ledger_namespace_merged": "_solo_stage1_production_ledger_merged",
+        "ledger_row_count": 400,
+        "ledger_merged_count": 400,
+        "query_params": {
+          "solo_component_diag": "1",
+          "solo_delivery_diag": "",
+          "solo_delivery_case": "",
+          "active_page": "Live Draft Room"
+        },
+        "solo_component_diag": "1",
+        "solo_delivery_case": "",
+        "diagnostic_surface": "",
+        "p1_counter": 72,
+        "emitter_module": "live_draft_stage1_ledger_pipeline",
+        "emitter_callable": "emit_cloud_ledger_pipeline_canary",
+        "emitter_identities": {
+          "canonical_emit_row": "live_draft_prod_on_change_observability._emit_row",
+          "registration_hooks_emit": "live_draft_streamlit_registration_hooks._emit",
+          "widget_metadata_diag_emit": "live_draft_streamlit_widget_metadata_diag._emit",
+          "note_stage1_event": "live_draft_stage1_production_ledger.note_stage1_event",
+          "hooks_and_metadata_emit_same_object": false
+        }
+      },
+      {
+        "event_id": "4d05bdc18dcf4e5b:1910:production_stage1_cloud_ledger_pipeline_canary",
+        "ts": 1785728383.6914365,
+        "event": "production_stage1_cloud_ledger_pipeline_canary",
+        "script_run_seq": 16,
+        "run_id": "4d05bdc18dcf4e5b",
+        "widget_key": "ledger_pipeline_canary",
+        "room_id": "",
+        "pick_index": null,
+        "deadline": null,
+        "expected_token": "3BEEA6F2|1|1785728385.690",
+        "room_status": "",
+        "deployment_sha": "007c39a",
+        "diagnostic_run_id": "4d05bdc18dcf4e5b",
+        "active_page": "Live Draft Room",
+        "canary_id": "solo-stage1-ledger-pipeline-canary-v1",
+        "session_object_id": "139705886306336",
+        "session_dict_id": "139705886306336",
+        "ledger_namespace_primary": "_solo_stage1_production_ledger",
+        "ledger_namespace_merged": "_solo_stage1_production_ledger_merged",
+        "ledger_row_count": 400,
+        "ledger_merged_count": 400,
+        "query_params": {
+          "solo_component_diag": "1",
+          "solo_delivery_diag": "",
+          "solo_delivery_case": "",
+          "active_page": "Live Draft Room"
+        },
+        "solo_component_diag": "1",
+        "solo_delivery_case": "",
+        "diagnostic_surface": "",
+        "p1_counter": 73,
+        "emitter_module": "live_draft_stage1_ledger_pipeline",
+        "emitter_callable": "emit_cloud_ledger_pipeline_canary",
+        "emitter_identities": {
+          "canonical_emit_row": "live_draft_prod_on_change_observability._emit_row",
+          "registration_hooks_emit": "live_draft_streamlit_registration_hooks._emit",
+          "widget_metadata_diag_emit": "live_draft_streamlit_widget_metadata_diag._emit",
+          "note_stage1_event": "live_draft_stage1_production_ledger.note_stage1_event",
+          "hooks_and_metadata_emit_same_object": false
+        }
+      }
+    ],
+    "component_widget_id": "",
+    "iframe_connected": true,
+    "browser_mount_token": "",
+    "visible_countdown_text": null,
+    "declaration_pick1_proven": false,
+    "server_pick1_token_proven": true,
+    "component_mount_token_match": false,
+    "pick1_component_mount_proven": false,
+    "remaining_boundary": "COREN7-4 \u2014 PICK-1 SERVER TOKEN/DEADLINE EXISTS, BUT COUNTDOWN COMPONENT MOUNT WAS NOT PROVEN IN THE SAVED ARTIFACT"
+  },
+  "pick1mount_classification": "PICK1MOUNT1 \u2014 SERVER TOKEN EXISTS BUT DECLARATION NOT CAPTURED",
+  "server_token_proven": true
+}

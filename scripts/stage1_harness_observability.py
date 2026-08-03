@@ -549,6 +549,72 @@ def extract_pick1_post_commit_mount_observation(
     }
 
 
+PICK1MOUNT_PASS = "PICK1MOUNT_PASS — PICK-1 COUNTDOWN DECLARED AND MOUNTED"
+PICK1MOUNT1 = "PICK1MOUNT1 — SERVER TOKEN EXISTS BUT DECLARATION NOT CAPTURED"
+PICK1MOUNT2 = "PICK1MOUNT2 — DECLARATION EXISTS BUT COMPONENT NOT CONNECTED"
+PICK1MOUNT3 = "PICK1MOUNT3 — COMPONENT CONNECTED BUT TOKEN MISMATCHED"
+PICK1MOUNT4 = "PICK1MOUNT4 — MOUNT PRESENT BUT UI TEXT NOT CAPTURED"
+PICK1MOUNT5 = "PICK1MOUNT5 — ROOM/PICK/DEADLINE CONTEXT MISMATCH"
+PICK1MOUNT6 = "PICK1MOUNT6 — OTHER"
+
+
+def classify_pick1_mount(
+    *,
+    expected_pick1_token: str,
+    expected_room_id: str,
+    observation: dict[str, Any],
+    live_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Targeted pick-1 mount classification (harness only)."""
+    expected = normalize_expire_token(expected_pick1_token)
+    exp_fields = parse_expire_token_fields(expected)
+    obs = dict(observation or {})
+    ctx = dict(live_context or {})
+    live_room = str(ctx.get("room_id") or obs.get("live_room_id") or "").upper()
+    live_pick = ctx.get("pick_index")
+    decl_pre = obs.get("countdown_declaration_pre_pick1") or {}
+    decl_post = obs.get("countdown_declaration_post_pick1") or {}
+    has_decl = bool(decl_pre) or bool(decl_post)
+    server_ok = bool(obs.get("server_pick1_token_proven"))
+    iframe_connected = obs.get("iframe_connected")
+    browser_tok = normalize_expire_token(obs.get("browser_mount_token") or "")
+    visible = obs.get("visible_countdown_text")
+    mount_proven = bool(obs.get("pick1_component_mount_proven"))
+    rid = str(expected_room_id or "").upper()
+    try:
+        live_pick_i = int(live_pick) if live_pick not in (None, "") else None
+    except (TypeError, ValueError):
+        live_pick_i = None
+    room_mismatch = bool(rid and live_room and live_room != rid)
+    pick_mismatch = (
+        live_pick_i is not None
+        and exp_fields.get("pick_index") is not None
+        and live_pick_i != int(exp_fields["pick_index"])
+    )
+    if room_mismatch or pick_mismatch:
+        return {
+            "pick1mount_classification": PICK1MOUNT5,
+            "reason": "room_or_pick_mismatch",
+            "live_room_id": live_room,
+            "live_pick_index": live_pick_i,
+        }
+    if mount_proven or (has_decl and iframe_connected is not False and browser_tok == expected and server_ok):
+        if has_decl and browser_tok == expected and not str(visible or "").strip():
+            return {"pick1mount_classification": PICK1MOUNT4, "mount_proven_with_missing_ui_text": True}
+        return {"pick1mount_classification": PICK1MOUNT_PASS, "mount_proven": True}
+    if server_ok and not has_decl:
+        return {"pick1mount_classification": PICK1MOUNT1, "server_token_proven": True}
+    if has_decl and iframe_connected is False:
+        return {"pick1mount_classification": PICK1MOUNT2, "declaration_captured": True}
+    if iframe_connected and browser_tok and expected and browser_tok != expected:
+        return {"pick1mount_classification": PICK1MOUNT3, "browser_mount_token": browser_tok}
+    if browser_tok == expected and has_decl and not str(visible or "").strip():
+        return {"pick1mount_classification": PICK1MOUNT4, "visible_countdown_missing": True}
+    if not live_room and not server_ok:
+        return {"pick1mount_classification": PICK1MOUNT5, "reason": "no_live_pick1_context"}
+    return {"pick1mount_classification": PICK1MOUNT6, "reason": obs.get("remaining_boundary") or "unclassified"}
+
+
 def build_stage1a_core_status_model(
     *,
     functional_verdict: str,
