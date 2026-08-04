@@ -343,7 +343,7 @@ def main() -> int:
                 break
             page.wait_for_timeout(2500)
 
-        _, pre_rows, post_rows = partition_ledger_by_baseline(last_ledger, baseline)
+        pre_rows, post_rows = partition_ledger_by_baseline(last_ledger, baseline)
         post_summary = _summarize(post_rows)
         room_id = str(
             server_latch.get("server_room_id")
