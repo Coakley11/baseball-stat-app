@@ -23353,6 +23353,18 @@ elif active_page == "Live Draft Room":
         )
     except ImportError:
         pass
+    try:
+        from live_draft_stage1_production_ledger import (
+            render_stage1_production_ledger_probe,
+            stage1_production_ledger_enabled,
+        )
+
+        if stage1_production_ledger_enabled(st, st.session_state):
+            render_stage1_production_ledger_probe(
+                st, st.session_state, probe_checkpoint="post_pending_boundary"
+            )
+    except ImportError:
+        pass
     if _pending_consumed:
         try:
             from live_draft_queueui_instrumentation_build import emit_raw_canary

@@ -14,6 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 from stage1_ledger_browser_extract import (  # noqa: E402
     PIPELINE_CANARY_EVENT,
     _candidate_score,
+    _probe_checkpoint_rank,
     classify_scrape_boundary,
     decode_ledger_payload,
     filter_rows_for_run,
@@ -203,6 +204,83 @@ def test_stale_early_dom_would_lose_without_checkpoint_rank() -> None:
         "authority_rank": 4,
     }
     assert _candidate_score(fresh_late) > _candidate_score(stale_early)
+
+
+def test_probe_checkpoint_rank_order() -> None:
+    assert _probe_checkpoint_rank("late_start_handler_success") > _probe_checkpoint_rank(
+        "post_pending_boundary"
+    )
+    assert _probe_checkpoint_rank("post_pending_boundary") > _probe_checkpoint_rank("early_script")
+
+
+def test_candidate_score_post_pending_beats_early() -> None:
+    early = {
+        "source": "dom#solo-stage1-production-ledger[1]",
+        "parse_ok": True,
+        "row_count": 200,
+        "max_script_run_seq": 3,
+        "data_script_run_seq": 3,
+        "data_probe_checkpoint": "early_script",
+        "pipeline_canary_present": True,
+        "integrity_ok": True,
+        "authority_rank": 4,
+    }
+    post = {
+        "source": "dom#solo-stage1-production-ledger[2]",
+        "parse_ok": True,
+        "row_count": 180,
+        "max_script_run_seq": 3,
+        "data_script_run_seq": 3,
+        "data_probe_checkpoint": "post_pending_boundary",
+        "pipeline_canary_present": True,
+        "integrity_ok": True,
+        "authority_rank": 4,
+    }
+    assert _candidate_score(post) > _candidate_score(early)
+
+
+def test_candidate_score_late_beats_post_pending() -> None:
+    post = {
+        "source": "dom#solo-stage1-production-ledger[1]",
+        "parse_ok": True,
+        "row_count": 200,
+        "data_probe_checkpoint": "post_pending_boundary",
+        "pipeline_canary_present": True,
+        "integrity_ok": True,
+        "authority_rank": 4,
+    }
+    late = {
+        "source": "dom#solo-stage1-production-ledger[2]",
+        "parse_ok": True,
+        "row_count": 190,
+        "data_probe_checkpoint": "late_start_handler_success",
+        "pipeline_canary_present": True,
+        "integrity_ok": True,
+        "authority_rank": 4,
+    }
+    assert _candidate_score(late) > _candidate_score(post)
+
+
+def test_candidate_score_ignores_stale_empty_duplicate() -> None:
+    stale = {
+        "source": "dom#solo-stage1-production-ledger[3]",
+        "parse_ok": False,
+        "row_count": 0,
+        "data_probe_checkpoint": "",
+        "pipeline_canary_present": False,
+        "integrity_ok": False,
+        "authority_rank": 4,
+    }
+    post = {
+        "source": "dom#solo-stage1-production-ledger[2]",
+        "parse_ok": True,
+        "row_count": 170,
+        "data_probe_checkpoint": "post_pending_boundary",
+        "pipeline_canary_present": True,
+        "integrity_ok": True,
+        "authority_rank": 4,
+    }
+    assert _candidate_score(post) > _candidate_score(stale)
 
 
 def test_classify_scrape2_canary_on_unselected_candidate() -> None:

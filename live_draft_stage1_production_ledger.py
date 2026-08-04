@@ -245,6 +245,16 @@ def _ledger_b64_chunks(b64: str) -> list[str]:
     return [b64[i : i + size] for i in range(0, len(b64), size)] if b64 else []
 
 
+def _streamlit_session_id_for_probe() -> str:
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        ctx = get_script_run_ctx()
+        return str(getattr(ctx, "session_id", "") or "")[:64]
+    except Exception:
+        return ""
+
+
 def render_stage1_production_ledger_probe(
     st: Any,
     session: dict[str, Any],
@@ -259,6 +269,7 @@ def render_stage1_production_ledger_probe(
     diagnostic_surface = str(session.get("_solo_delivery_diag_surface") or "case_a_control")
     probe_ts = time.time()
     checkpoint = str(probe_checkpoint or "early_script")[:64]
+    streamlit_session_id = _streamlit_session_id_for_probe()
     payload = {
         "run_id": run_id,
         "script_run_seq": script_run_seq,
@@ -288,7 +299,8 @@ def render_stage1_production_ledger_probe(
         f'data-payload-sha256="{payload_sha256}" '
         f'data-diagnostic-surface="{diagnostic_surface}" '
         f'data-probe-checkpoint="{checkpoint}" '
-        f'data-probe-ts="{probe_ts}"'
+        f'data-probe-ts="{probe_ts}" '
+        f'data-streamlit-session-id="{streamlit_session_id}"'
         f"{chunk_attrs}></div>",
         unsafe_allow_html=True,
     )

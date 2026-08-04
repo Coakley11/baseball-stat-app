@@ -250,5 +250,67 @@ class InstrumentationBuildTests(unittest.TestCase):
         self.assertNotIn("_solo_stage1_run_id", session)
 
 
+class PostPendingBoundaryProbeTests(unittest.TestCase):
+    def test_idle_post_probe_exports_pending_absent_same_run(self) -> None:
+        from live_draft_stage1_production_ledger import render_stage1_production_ledger_probe
+
+        session = _enabled_session(_solo_stage1_script_run_seq=3)
+        st = mock.Mock()
+        with mock.patch(
+            "live_draft_solo_component_diagnostics.solo_component_diag_enabled",
+            return_value=True,
+        ):
+            record_pending_start_boundary_before_pop(None, session)
+            session.pop("_start_live_draft_pending", None)
+            record_pending_start_boundary_after_pop(
+                None, session, was_present=False, will_execute=False
+            )
+            render_stage1_production_ledger_probe(
+                st, session, probe_checkpoint="post_pending_boundary"
+            )
+        exported = ledger_rows_for_export(session)
+        run_id = session["_solo_stage1_run_id"]
+        absent = [r for r in exported if r.get("event") == EVENT_PENDING_ABSENT]
+        self.assertTrue(absent, msg="expected pending_start_absent in export")
+        self.assertEqual(absent[0].get("run_id"), run_id)
+        self.assertEqual(int(absent[0].get("script_run_seq") or 0), 3)
+
+    def test_pending_run_exports_observed_and_consumed(self) -> None:
+        session = _enabled_session(_solo_stage1_script_run_seq=4, _start_live_draft_pending=True)
+        with mock.patch(
+            "live_draft_solo_component_diagnostics.solo_component_diag_enabled",
+            return_value=True,
+        ):
+            was_present, _ = record_pending_start_boundary_before_pop(None, session)
+            self.assertTrue(was_present)
+            consumed = session.pop("_start_live_draft_pending", False)
+            record_pending_start_boundary_after_pop(
+                None, session, was_present=True, will_execute=bool(consumed)
+            )
+        exported = ledger_rows_for_export(session)
+        names = {r.get("event") for r in exported}
+        self.assertIn(EVENT_PENDING_OBSERVED, names)
+        self.assertIn(EVENT_PENDING_CONSUMED, names)
+
+    def test_post_probe_render_does_not_mutate_pending_key(self) -> None:
+        from live_draft_stage1_production_ledger import render_stage1_production_ledger_probe
+
+        session = _enabled_session(_start_live_draft_pending=True)
+        st = mock.Mock()
+        before = session.get("_start_live_draft_pending")
+        with mock.patch(
+            "live_draft_solo_component_diagnostics.solo_component_diag_enabled",
+            return_value=True,
+        ):
+            render_stage1_production_ledger_probe(
+                st, session, probe_checkpoint="post_pending_boundary"
+            )
+            render_stage1_production_ledger_probe(
+                st, session, probe_checkpoint="post_pending_boundary"
+            )
+        self.assertEqual(session.get("_start_live_draft_pending"), before)
+        self.assertTrue(session.get("_start_live_draft_pending"))
+
+
 if __name__ == "__main__":
     unittest.main()

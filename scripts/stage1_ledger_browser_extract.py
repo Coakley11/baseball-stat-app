@@ -165,6 +165,7 @@ _COLLECT_CANDIDATES_JS = """
       data_script_run_seq: parseInt(el.getAttribute("data-script-run-seq") || "0", 10) || 0,
       data_probe_checkpoint: el.getAttribute("data-probe-checkpoint") || "",
       data_probe_ts: parseFloat(el.getAttribute("data-probe-ts") || "0") || 0,
+      data_streamlit_session_id: el.getAttribute("data-streamlit-session-id") || "",
       data_diagnostic_surface: el.getAttribute("data-diagnostic-surface") || "",
       payload_json_len_expected: parseInt(el.getAttribute("data-payload-json-len") || "0", 10) || 0,
       payload_sha256_expected: el.getAttribute("data-payload-sha256") || "",
@@ -302,10 +303,12 @@ def _probe_checkpoint_rank(checkpoint: str) -> int:
     cp = str(checkpoint or "").strip().lower()
     if cp == "late_start_handler_success":
         return 3
-    if cp.startswith("late_"):
+    if cp == "post_pending_boundary":
         return 2
     if cp == "early_script":
         return 1
+    if cp.startswith("late_"):
+        return 2
     return 0
 
 
