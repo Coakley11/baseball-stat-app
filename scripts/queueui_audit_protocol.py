@@ -18,6 +18,11 @@ INVALID_PROTOCOL_RUN = "INVALID_PROTOCOL_RUN"
 QUEUEUIAUDIT_UNEXPECTED_EXPIRATION_ACTIVITY = (
     "QUEUEUIAUDIT_UNEXPECTED_EXPIRATION_ACTIVITY"
 )
+QUEUEUIAUDIT_PRESTART_STATE_NOT_CLEAN = (
+    "QUEUEUIAUDIT_PRESTART_STATE_NOT_CLEAN"
+)
+QUEUEUIAUDIT_ROOM_CREATION_NOT_PROVEN = "QUEUEUIAUDIT_ROOM_CREATION_NOT_PROVEN"
+QUEUEUIAUDIT_ROOM_LATCH_NOT_PROVEN = "QUEUEUIAUDIT_ROOM_LATCH_NOT_PROVEN"
 OPERATOR_VERIFIED_DEPLOY_ENV = "QUEUEUI_AUDIT_OPERATOR_VERIFIED_DEPLOY"
 MIN_PREDICATE_SCRIPT_RUN_SEQ = 3
 PREDICATE_EVENT = "production_stage1_queueui_predicate_audit"
@@ -31,6 +36,239 @@ _FORBIDDEN_EVENT_EXACT = frozenset(
 )
 
 _FORBIDDEN_EVENT_PREFIXES = ("production_stage1_token_claim_",)
+
+_START_HANDLER_ENTERED = "production_stage1_start_handler_entered"
+_START_HANDLER_EXITED = "production_stage1_start_handler_exited"
+
+
+def _ledger_extrema(ledger: list[dict[str, Any]]) -> dict[str, Any]:
+    max_seq = 0
+    max_ts = 0.0
+    event_ids: list[str] = []
+    for i, row in enumerate(ledger):
+        if not isinstance(row, dict):
+            continue
+        seq = int(row.get("script_run_seq") or 0)
+        if seq > max_seq:
+            max_seq = seq
+        ts = float(row.get("ts") or 0)
+        if ts > max_ts:
+            max_ts = ts
+        eid = str(row.get("event_id") or "")
+        if eid:
+            event_ids.append(eid)
+    return {
+        "highest_script_run_seq": max_seq,
+        "latest_ledger_ts": max_ts,
+        "ledger_row_count": len(ledger),
+        "baseline_ledger_index_max": len(ledger) - 1 if ledger else -1,
+        "baseline_event_ids": event_ids,
+    }
+
+
+def capture_audit_baseline(
+    ledger: list[dict[str, Any]],
+    identity: dict[str, Any],
+    lobby: dict[str, Any],
+    *,
+    click_ts: float | None = None,
+) -> dict[str, Any]:
+    ext = _ledger_extrema(ledger)
+    wake = lobby.get("wake") if isinstance(lobby.get("wake"), dict) else {}
+    return {
+        "streamlit_session_id": str(identity.get("streamlit_session_id") or ""),
+        "diagnostic_run_id": str(identity.get("diagnostic_run_id") or ""),
+        **ext,
+        "ledger_row_count_at_click": ext["ledger_row_count"],
+        "click_ts": float(click_ts or 0),
+        "room_id_at_baseline": str(
+            lobby.get("visible_room_id") or lobby.get("python_room_id") or ""
+        ).strip(),
+        "lifecycle_at_baseline": str(lobby.get("inferred_status") or lobby.get("lifecycle") or ""),
+        "persistent_wake_token": str(wake.get("token") or "").strip(),
+        "persistent_wake_phase": str(wake.get("phase") or "").strip(),
+        "persistent_wake_actionable": str(wake.get("actionable") or "").strip(),
+        "first_post_click_script_run_seq_min": ext["highest_script_run_seq"],
+    }
+
+
+def update_first_post_click_script_run_seq(
+    baseline: dict[str, Any], post_start_rows: list[dict[str, Any]]
+) -> None:
+    click_ts = float(baseline.get("click_ts") or 0)
+    candidates: list[int] = []
+    for row in post_start_rows:
+        ts = float(row.get("ts") or 0)
+        seq = int(row.get("script_run_seq") or 0)
+        if seq and (not click_ts or ts > click_ts):
+            candidates.append(seq)
+    if candidates:
+        baseline["first_post_click_script_run_seq_min"] = min(candidates)
+
+
+def row_is_post_start(row: dict[str, Any], baseline: dict[str, Any], row_index: int) -> bool:
+    """Identity + ordering gate for post–Start Draft ledger rows."""
+    if not isinstance(row, dict):
+        return False
+    count_at_click = int(baseline.get("ledger_row_count_at_click") or 0)
+    if row_index < count_at_click:
+        return False
+    eid = str(row.get("event_id") or "")
+    if eid and eid in set(baseline.get("baseline_event_ids") or []):
+        return False
+    click_ts = float(baseline.get("click_ts") or 0)
+    ts = float(row.get("ts") or 0)
+    if click_ts and ts <= click_ts:
+        return False
+    base_sid = str(baseline.get("streamlit_session_id") or "")
+    row_sid = str(row.get("streamlit_session_id") or "")
+    if base_sid and row_sid and row_sid != base_sid:
+        return False
+    base_run = str(baseline.get("diagnostic_run_id") or "")
+    row_run = str(row.get("run_id") or "")
+    if base_run and row_run and row_run != base_run:
+        return False
+    return True
+
+
+def refine_post_start_rows(
+    post: list[dict[str, Any]], baseline: dict[str, Any]
+) -> list[dict[str, Any]]:
+    update_first_post_click_script_run_seq(baseline, post)
+    floor = int(baseline.get("first_post_click_script_run_seq_min") or 0)
+    if not floor:
+        return list(post)
+    refined: list[dict[str, Any]] = []
+    for row in post:
+        seq = int(row.get("script_run_seq") or 0)
+        if seq and seq < floor:
+            continue
+        refined.append(row)
+    return refined
+
+
+def partition_ledger_by_baseline(
+    ledger: list[dict[str, Any]], baseline: dict[str, Any]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    pre: list[dict[str, Any]] = []
+    post: list[dict[str, Any]] = []
+    for i, row in enumerate(ledger):
+        if row_is_post_start(row, baseline, i):
+            post.append(row)
+        else:
+            pre.append(row)
+    post = refine_post_start_rows(post, baseline)
+    return pre, post
+
+
+def first_forbidden_in_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for row in rows:
+        hit = forbidden_protocol_event(row)
+        if hit:
+            return {"event": hit, "row": row}
+    return None
+
+
+def first_forbidden_after_baseline(
+    ledger: list[dict[str, Any]], baseline: dict[str, Any]
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]]]:
+    pre, post = partition_ledger_by_baseline(ledger, baseline)
+    stale = first_forbidden_in_rows(pre)
+    violation = first_forbidden_in_rows(post)
+    return violation, pre, post
+
+
+def first_forbidden_protocol_violation(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Legacy: entire ledger scan (prefer first_forbidden_after_baseline)."""
+    return first_forbidden_in_rows(rows)
+
+
+def prestart_ledger_signals(ledger: list[dict[str, Any]]) -> dict[str, Any]:
+    start_in_flight = False
+    restore_blocked = ""
+    for row in ledger:
+        preds = row.get("predicates")
+        if isinstance(preds, dict) and preds.get("start_in_flight") is True:
+            start_in_flight = True
+        restore = row.get("restore")
+        if isinstance(restore, dict):
+            reason = str(restore.get("restore_blocked_reason") or "").strip()
+            if reason:
+                restore_blocked = reason
+    return {
+        "start_in_flight": start_in_flight,
+        "restore_blocked_reason": restore_blocked,
+    }
+
+
+def evaluate_prestart_isolation(
+    lobby: dict[str, Any],
+    ledger: list[dict[str, Any]],
+    *,
+    setup_stable: dict[str, Any],
+) -> dict[str, Any]:
+    """Return passed=False when authoritative Start Draft must not be clicked."""
+    reasons: list[str] = []
+    wake = lobby.get("wake") if isinstance(lobby.get("wake"), dict) else {}
+    wake_token = str(wake.get("token") or "").strip()
+    if lobby.get("visible_room_id") or lobby.get("python_room_id"):
+        reasons.append("stale_room_id_visible")
+    if str(lobby.get("python_room_present") or "") == "1":
+        reasons.append("python_room_present")
+    if int(lobby.get("pause_draft_count") or 0) >= 1 or lobby.get("has_pause"):
+        reasons.append("active_draft_controls_visible")
+    if wake_token and "|" in wake_token:
+        reasons.append("stale_persistent_wake_token")
+    if str(wake.get("actionable") or "") in ("1", "true"):
+        reasons.append("persistent_wake_actionable")
+    sig = prestart_ledger_signals(ledger)
+    if sig.get("start_in_flight"):
+        reasons.append("start_in_flight_flag")
+    if sig.get("restore_blocked_reason"):
+        reasons.append(f"restore_blocked:{sig['restore_blocked_reason']}")
+    if not setup_stable.get("ok"):
+        reasons.append("setup_page_not_stable_two_script_runs")
+    try:
+        from stage1_preflight_cleanup import is_clean_setup_lobby
+
+        if not is_clean_setup_lobby(lobby):
+            reasons.append("not_clean_setup_lobby")
+    except ImportError:
+        if not lobby.get("has_start_new"):
+            reasons.append("start_new_not_visible")
+    return {
+        "passed": not reasons,
+        "reasons": reasons,
+        "lobby_snapshot": lobby,
+        "setup_stable": setup_stable,
+        "ledger_signals": sig,
+    }
+
+
+def prestart_not_clean_report_fields(prestart: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "audit_execution_status": "NOT_RUN",
+        "first_boundary": QUEUEUIAUDIT_PRESTART_STATE_NOT_CLEAN,
+        "root_classification": None,
+        "queueuiroot_classification": None,
+        "root_audit_status": "NOT RUN — PRESTART STATE NOT CLEAN (NO QUEUEUIROOT)",
+        "prestart_isolation": prestart,
+        "stage1a_core": "PASS",
+        "stage1a_queue": "NOT_RUN — BLOCKED_BEFORE_EXPIRATION",
+        "queue_campaign_ran": False,
+        "expiration_wait": False,
+    }
+
+
+def distinct_global_script_run_seqs(ledger: list[dict[str, Any]]) -> list[int]:
+    seen: set[int] = set()
+    for row in ledger:
+        if str(row.get("event") or "") != "production_global_script_run_canary":
+            continue
+        seq = int(row.get("script_run_seq") or 0)
+        if seq:
+            seen.add(seq)
+    return sorted(seen)
 
 
 def queueui_root_predicate_audit_url_base() -> str:
@@ -205,13 +443,7 @@ def forbidden_protocol_event(row: dict[str, Any]) -> str | None:
 
 
 def first_forbidden_protocol_violation(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        hit = forbidden_protocol_event(row)
-        if hit:
-            return {"event": hit, "row": row}
-    return None
+    return first_forbidden_in_rows(rows)
 
 
 def distinct_predicate_script_run_seq(rows: list[dict[str, Any]]) -> list[int]:
@@ -231,6 +463,8 @@ def evaluate_audit_completion(
     server_latch: dict[str, Any],
     room_id: str,
     protocol_violation: dict[str, Any] | None,
+    start_click_observed: bool = False,
+    ledger_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if protocol_violation:
         return {
@@ -241,16 +475,42 @@ def evaluate_audit_completion(
             "forbidden_event": protocol_violation.get("event"),
         }
 
+    summary = dict(ledger_summary or {})
     seqs = distinct_predicate_script_run_seq(ledger_rows)
     rid = str(room_id or "").strip()
     latch_ok = bool(server_latch.get("ok"))
+    status = str(server_latch.get("server_status") or "").lower()
 
+    if not start_click_observed:
+        return {
+            "audit_execution_status": "INCOMPLETE",
+            "first_boundary": QUEUEUIAUDIT_ROOM_CREATION_NOT_PROVEN,
+            "completed": False,
+            "reason": "start_draft_click_not_observed",
+            "distinct_predicate_script_run_seq": seqs,
+        }
+    if not summary.get("handler_entered") or not summary.get("handler_exited"):
+        return {
+            "audit_execution_status": "INCOMPLETE",
+            "first_boundary": QUEUEUIAUDIT_ROOM_CREATION_NOT_PROVEN,
+            "completed": False,
+            "reason": "start_handler_enter_or_exit_not_proven",
+            "distinct_predicate_script_run_seq": seqs,
+        }
     if not latch_ok or not rid:
         return {
             "audit_execution_status": "INCOMPLETE",
-            "first_boundary": "QUEUEUIAUDIT_ROOM_LATCH_NOT_PROVEN",
+            "first_boundary": QUEUEUIAUDIT_ROOM_LATCH_NOT_PROVEN,
             "completed": False,
             "reason": "server_latch_or_room_id_missing",
+            "distinct_predicate_script_run_seq": seqs,
+        }
+    if status and status not in ("in_progress", "paused"):
+        return {
+            "audit_execution_status": "INCOMPLETE",
+            "first_boundary": QUEUEUIAUDIT_ROOM_CREATION_NOT_PROVEN,
+            "completed": False,
+            "reason": f"room_lifecycle_not_active:{status}",
             "distinct_predicate_script_run_seq": seqs,
         }
     if len(seqs) < MIN_PREDICATE_SCRIPT_RUN_SEQ:

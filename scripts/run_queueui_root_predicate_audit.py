@@ -29,18 +29,50 @@ def _write_report(report: dict[str, Any]) -> None:
     OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
 
 
+def _summarize(last_ledger: list[dict[str, Any]]) -> dict[str, Any]:
+    from queueui_transition_diagnostic import summarize_ledger_events
+
+    return summarize_ledger_events(last_ledger)
+
+
+def _wait_setup_stable(page, scrape_ledger, *, timeout_s: float = 90) -> dict[str, Any]:
+    from queueui_audit_protocol import distinct_global_script_run_seqs
+
+    t0 = time.time()
+    last_seen: list[int] = []
+    while time.time() - t0 < timeout_s:
+        rows = scrape_ledger(page)
+        seen = distinct_global_script_run_seqs(rows)
+        last_seen = seen
+        if len(seen) >= 2:
+            return {"ok": True, "script_run_seqs": seen, "wait_s": time.time() - t0}
+        page.wait_for_timeout(2500)
+    return {"ok": False, "script_run_seqs": last_seen, "wait_s": time.time() - t0}
+
+
 def _finish_invalid_protocol(
     report: dict[str, Any],
     *,
     violation: dict[str, Any],
+    baseline: dict[str, Any],
+    pre_rows: list[dict[str, Any]],
+    post_rows: list[dict[str, Any]],
     last_ledger: list[dict[str, Any]],
     browser,
 ) -> int:
-    from queueui_audit_protocol import invalid_protocol_report_fields
+    from queueui_audit_protocol import first_forbidden_in_rows, invalid_protocol_report_fields
 
+    stale = first_forbidden_in_rows(pre_rows)
     report.update(invalid_protocol_report_fields(violation))
-    report["protocol_violation"] = violation
+    report["audit_baseline"] = baseline
+    report["post_baseline_forbidden_checks"] = {
+        "violation": violation,
+        "stale_historical_forbidden": stale,
+        "post_start_row_count": len(post_rows),
+        "pre_start_row_count": len(pre_rows),
+    }
     report["ledger_summary_at_stop"] = _summarize(last_ledger)
+    report["post_start_ledger_summary"] = _summarize(post_rows)
     report["finished_at"] = time.time()
     browser.close()
     _write_report(report)
@@ -57,12 +89,6 @@ def _finish_invalid_protocol(
     return 4
 
 
-def _summarize(last_ledger: list[dict[str, Any]]) -> dict[str, Any]:
-    from queueui_transition_diagnostic import summarize_ledger_events
-
-    return summarize_ledger_events(last_ledger)
-
-
 def main() -> int:
     from queueui_audit_deploy_preflight import (
         APPLICATION_DIAGNOSTIC_SHA,
@@ -71,8 +97,12 @@ def main() -> int:
     )
     from queueui_audit_protocol import (
         INVALID_PROTOCOL_RUN,
+        capture_audit_baseline,
         evaluate_audit_completion,
-        first_forbidden_protocol_violation,
+        evaluate_prestart_isolation,
+        first_forbidden_after_baseline,
+        partition_ledger_by_baseline,
+        prestart_not_clean_report_fields,
         queueui_root_predicate_audit_url_base,
         resolve_deployment_verification,
     )
@@ -104,7 +134,7 @@ def main() -> int:
         set_number_via_playwright,
     )
     from stage1_harness_observability import LEDGER_DURABLE_INIT_SCRIPT
-    from stage1_preflight_cleanup import run_stage1_preflight_cleanup
+    from stage1_preflight_cleanup import _infer_status, _scrape_lobby, run_stage1_preflight_cleanup
 
     required = resolve_required_cloud_sha() or os.environ.get("REQUIRED_CLOUD_SHA") or DEFAULT_REQUIRED_DIAGNOSTIC_SHA
     required = required.strip().lower()[:7]
@@ -142,6 +172,7 @@ def main() -> int:
     report["setup_url_redacted"] = redact_url(url)
 
     root: dict[str, Any] = {"classification": None, "proven": False}
+    predicate_timeline: list[dict[str, Any]] = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
@@ -196,9 +227,19 @@ def main() -> int:
         from p8_diagnostic_setup import ensure_p8_ldr_setup_surface
 
         ensure_p8_ldr_setup_surface(page, setup_url=url)
-        if not run_stage1_preflight_cleanup(page, max_wait_s=180).get("ok"):
+        cleanup = run_stage1_preflight_cleanup(page, max_wait_s=180)
+        report["preflight_cleanup"] = cleanup
+        if not cleanup.get("ok"):
             browser.close()
+            report["audit_execution_status"] = "NOT_RUN"
+            report["first_boundary"] = "QUEUEUIAUDIT_PRESTART_STATE_NOT_CLEAN"
+            report["finished_at"] = time.time()
+            _write_report(report)
             return 1
+
+        setup_stable = _wait_setup_stable(page, scrape_stage1_ledger_rows)
+        report["setup_stability"] = setup_stable
+
         setup_scan = page.evaluate(SCAN_SETUP_JS) or {}
         if not setup_scan.get("soloSelected"):
             page.evaluate(SOLO_RADIO_JS)
@@ -208,35 +249,78 @@ def main() -> int:
         set_number_via_playwright(page, "Number of Teams", "2")
         ensure_solo_setup_picks_meet_roster(page, cps)
         page.wait_for_timeout(1500)
-        _screenshot(page, "01_before_start")
+
+        lobby = _scrape_lobby(page)
+        lobby["inferred_status"] = _infer_status(lobby)
         ledger_pre = scrape_stage1_ledger_rows(page)
+        prestart = evaluate_prestart_isolation(
+            lobby,
+            ledger_pre,
+            setup_stable=setup_stable,
+        )
+        report["prestart_isolation"] = prestart
+        if not prestart.get("passed"):
+            browser.close()
+            report.update(prestart_not_clean_report_fields(prestart))
+            report["finished_at"] = time.time()
+            _write_report(report)
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "audit_execution_status": "NOT_RUN",
+                        "first_boundary": report.get("first_boundary"),
+                        "reasons": prestart.get("reasons"),
+                    }
+                )
+            )
+            return 5
+
+        _screenshot(page, "01_before_start")
         identity = capture_harness_page_identity(page, context, label="before", ledger_rows=ledger_pre)
         report["streamlit_session_id"] = identity.get("streamlit_session_id")
         report["application_diagnostic_run_id"] = identity.get("diagnostic_run_id")
 
+        click_ts = time.time()
+        baseline = capture_audit_baseline(ledger_pre, identity, lobby, click_ts=click_ts)
+        report["audit_baseline"] = baseline
+
         click = dispatch_start_single_authoritative_click(page, cps)
-        capture_start_click_transport(page, click_ts=float(click.get("click_timestamp") or time.time()))
+        start_observed = bool(click.get("clicked") or click.get("dispatch_ok"))
+        report["start_draft_click"] = click
+        capture_start_click_transport(page, click_ts=float(click.get("click_timestamp") or click_ts))
         page.wait_for_timeout(1000)
 
         server_latch: dict[str, Any] = {"ok": False}
         seen_seq: set[int] = set()
         t0 = time.time()
         last_ledger: list[dict[str, Any]] = []
+        post_rows: list[dict[str, Any]] = []
+        pre_rows: list[dict[str, Any]] = []
         protocol_violation: dict[str, Any] | None = None
 
         while time.time() - t0 < 90:
             ledger = scrape_stage1_ledger_rows(page)
             last_ledger = ledger
-            protocol_violation = first_forbidden_protocol_violation(ledger)
-            if protocol_violation:
+            violation, pre_rows, post_rows = first_forbidden_after_baseline(ledger, baseline)
+            if violation:
                 return _finish_invalid_protocol(
                     report,
-                    violation=protocol_violation,
-                    last_ledger=last_ledger,
+                    violation=violation,
+                    baseline=baseline,
+                    pre_rows=pre_rows,
+                    post_rows=post_rows,
+                    last_ledger=ledger,
                     browser=browser,
                 )
-            server_latch = _server_latch_from_ledger(ledger)
-            for r in ledger:
+            server_latch = _server_latch_from_ledger(last_ledger)
+            post_summary_loop = _summarize(post_rows)
+            if post_summary_loop.get("created_room_id_from_ledger"):
+                server_latch = _server_latch_from_ledger(
+                    last_ledger,
+                    created_hint=str(post_summary_loop.get("created_room_id_from_ledger") or ""),
+                )
+            for r in post_rows:
                 if r.get("event") != "production_stage1_queueui_predicate_audit":
                     continue
                 seq = int(r.get("script_run_seq") or 0)
@@ -245,23 +329,40 @@ def main() -> int:
             if server_latch.get("ok") and len(seen_seq) >= 3:
                 page.wait_for_timeout(2500)
                 last_ledger = scrape_stage1_ledger_rows(page)
-                protocol_violation = first_forbidden_protocol_violation(last_ledger)
-                if protocol_violation:
+                violation, pre_rows, post_rows = first_forbidden_after_baseline(last_ledger, baseline)
+                if violation:
                     return _finish_invalid_protocol(
                         report,
-                        violation=protocol_violation,
+                        violation=violation,
+                        baseline=baseline,
+                        pre_rows=pre_rows,
+                        post_rows=post_rows,
                         last_ledger=last_ledger,
                         browser=browser,
                     )
                 break
             page.wait_for_timeout(2500)
 
-        room_id = str(server_latch.get("server_room_id") or "").strip()
+        _, pre_rows, post_rows = partition_ledger_by_baseline(last_ledger, baseline)
+        post_summary = _summarize(post_rows)
+        room_id = str(
+            server_latch.get("server_room_id")
+            or post_summary.get("created_room_id_from_ledger")
+            or ""
+        ).strip()
+        server_latch = _server_latch_from_ledger(
+            last_ledger,
+            created_hint=room_id,
+        )
+        room_id = str(server_latch.get("server_room_id") or room_id).strip()
+
         completion = evaluate_audit_completion(
-            ledger_rows=last_ledger,
+            ledger_rows=post_rows,
             server_latch=server_latch,
             room_id=room_id,
             protocol_violation=protocol_violation,
+            start_click_observed=start_observed,
+            ledger_summary=post_summary,
         )
         report["audit_completion"] = completion
         report["audit_execution_status"] = completion.get("audit_execution_status")
@@ -269,8 +370,14 @@ def main() -> int:
         report["distinct_script_run_seq_with_audit"] = completion.get(
             "distinct_predicate_script_run_seq", []
         )
+        report["post_baseline_forbidden_checks"] = {
+            "violation": None,
+            "stale_historical_forbidden": None,
+            "post_start_row_count": len(post_rows),
+            "pre_start_row_count": len(pre_rows),
+        }
 
-        predicate_timeline = predicate_timeline_from_ledger(last_ledger)
+        predicate_timeline = predicate_timeline_from_ledger(post_rows)
         report["predicate_timeline"] = predicate_timeline
         by_seq: dict[int, list[dict[str, Any]]] = {}
         for row in predicate_timeline:
@@ -291,18 +398,19 @@ def main() -> int:
         report["server_latch"] = server_latch
         report["room_id"] = room_id
         report["ledger_summary"] = _summarize(last_ledger)
+        report["post_start_ledger_summary"] = post_summary
         report["dom_after_latch"] = dom
         report["audit_events_present"] = bool(predicate_timeline)
 
         if completion.get("completed"):
-            root = classify_queueui_root(ledger_rows=last_ledger, dom_observation=dom)
+            root = classify_queueui_root(ledger_rows=post_rows, dom_observation=dom)
             report["root_classification"] = root
             report["queueuiroot_classification"] = root.get("classification")
         else:
             report["root_classification"] = None
             report["queueuiroot_classification"] = None
             report["root_audit_status"] = (
-                "INCOMPLETE — INSUFFICIENT PREDICATE OR LATCH EVIDENCE (NO QUEUEUIROOT)"
+                "INCOMPLETE — INSUFFICIENT EVIDENCE (NO QUEUEUIROOT)"
                 if completion.get("audit_execution_status") != INVALID_PROTOCOL_RUN
                 else report.get("root_audit_status")
             )
@@ -325,6 +433,8 @@ def main() -> int:
     )
     if report.get("audit_execution_status") == INVALID_PROTOCOL_RUN:
         return 4
+    if report.get("audit_execution_status") == "NOT_RUN":
+        return 5
     if not ok_completed:
         return 3
     return 0 if root.get("proven") or predicate_timeline else 3
