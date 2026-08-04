@@ -1,13 +1,8 @@
-7a75a1a  # auto-generated; Streamlit Cloud reads this at runtime
+b2386f3  # auto-generated; Streamlit Cloud reads this at runtime
 
 
 
-# deploy_epoch: 2026-08-04T02:45:00Z queueui_start_instrumentation
-
-
-
-
-
+# deploy_epoch: 2026-08-04T04:15:00Z queueui_raw_instrumentation_canaries
 
 branch: dev
 
