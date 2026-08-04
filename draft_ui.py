@@ -1791,6 +1791,16 @@ def on_start_new_live_draft() -> None:
     _pending_armed = False
     _exit_reason = "callback_completed"
     _gate_error = ""
+
+    def _raw(event: str, **extra: Any) -> None:
+        try:
+            from live_draft_queueui_instrumentation_build import emit_raw_canary
+
+            emit_raw_canary(event, session=session, extra=extra or None)
+        except ImportError:
+            pass
+
+    _raw("SOLO_QUEUEUI_RAW_CALLBACK_ENTER")
     try:
         try:
             from live_draft_start_stage1_observability import emit_start_callback_entered
@@ -1841,6 +1851,7 @@ def on_start_new_live_draft() -> None:
                 )
             except ImportError:
                 pass
+            _raw("SOLO_QUEUEUI_RAW_CALLBACK_EXIT", exit_reason=_exit_reason, pending_armed=_pending_armed)
             return
         except Exception:
             # Fall through to legacy arming only when the gate helper is unavailable.
@@ -1859,6 +1870,7 @@ def on_start_new_live_draft() -> None:
                     )
                     _exit_reason = "legacy_setup_validation_failed"
                     _gate_error = str(check.get("error") or LIVE_DRAFT_SETUP_ERROR)
+                    _raw("SOLO_QUEUEUI_RAW_CALLBACK_EXIT", exit_reason=_exit_reason, pending_armed=False)
                     return
             except Exception:
                 pass
@@ -1870,6 +1882,7 @@ def on_start_new_live_draft() -> None:
                 session["_live_draft_start_replace_resumable_pending"] = True
                 session["_live_draft_start_replace_resumable_message"] = warn.get("message")
                 _exit_reason = "replace_resumable_confirmation"
+                _raw("SOLO_QUEUEUI_RAW_CALLBACK_EXIT", exit_reason=_exit_reason, pending_armed=False)
                 return
             session.pop("_live_draft_start_replace_resumable_ok", None)
             session.pop("_live_draft_start_replace_resumable_pending", None)
@@ -1894,6 +1907,13 @@ def on_start_new_live_draft() -> None:
         except ImportError:
             pass
     finally:
+        _raw(
+            "SOLO_QUEUEUI_RAW_CALLBACK_EXIT",
+            exit_reason=_exit_reason,
+            pending_armed=_pending_armed,
+            gate_error=str(_gate_error or "")[:200],
+            finally_block=True,
+        )
         try:
             from live_draft_start_stage1_observability import emit_start_callback_exited
 

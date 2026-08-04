@@ -245,13 +245,20 @@ def _ledger_b64_chunks(b64: str) -> list[str]:
     return [b64[i : i + size] for i in range(0, len(b64), size)] if b64 else []
 
 
-def render_stage1_production_ledger_probe(st: Any, session: dict[str, Any]) -> None:
+def render_stage1_production_ledger_probe(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    probe_checkpoint: str = "early_script",
+) -> None:
     if not stage1_production_ledger_enabled(st, session):
         return
     rows = ledger_rows_for_export(session)
     run_id = ensure_stage1_run_id(session)
     script_run_seq = int(session.get(STAGE1_SCRIPT_SEQ_KEY) or 0)
     diagnostic_surface = str(session.get("_solo_delivery_diag_surface") or "case_a_control")
+    probe_ts = time.time()
+    checkpoint = str(probe_checkpoint or "early_script")[:64]
     payload = {
         "run_id": run_id,
         "script_run_seq": script_run_seq,
@@ -279,7 +286,9 @@ def render_stage1_production_ledger_probe(st: Any, session: dict[str, Any]) -> N
         f'data-payload-b64-len="{len(b64)}" '
         f'data-payload-json-len="{json_len}" '
         f'data-payload-sha256="{payload_sha256}" '
-        f'data-diagnostic-surface="{diagnostic_surface}"'
+        f'data-diagnostic-surface="{diagnostic_surface}" '
+        f'data-probe-checkpoint="{checkpoint}" '
+        f'data-probe-ts="{probe_ts}"'
         f"{chunk_attrs}></div>",
         unsafe_allow_html=True,
     )

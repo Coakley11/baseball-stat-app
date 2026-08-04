@@ -7,7 +7,11 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-from live_draft_stage1_production_ledger import GATE_A_EXPORT_PINNED_EVENTS, ledger_rows_for_export
+from live_draft_stage1_production_ledger import (
+    GATE_A_EXPORT_PINNED_EVENTS,
+    ledger_rows_for_export,
+    note_stage1_event,
+)
 from live_draft_start_stage1_observability import (
     EVENT_CALLBACK_ENTERED,
     EVENT_CALLBACK_EXITED,
@@ -16,6 +20,8 @@ from live_draft_start_stage1_observability import (
     EVENT_PENDING_ABSENT,
     EVENT_PENDING_CONSUMED,
     EVENT_PENDING_OBSERVED,
+    EVENT_ROOM_CREATION_ENTERED,
+    EVENT_ROOM_CREATION_EXITED,
     emit_start_callback_entered,
     emit_start_callback_exited,
     record_pending_start_boundary_after_pop,
@@ -178,6 +184,70 @@ class EarlyPredicateInstrumentationTests(unittest.TestCase):
         self.assertEqual(row.get("checkpoint"), "ldr_early_room_present")
         self.assertEqual(row.get("next_controlling_branch"), "ldr_main_continue")
         self.assertNotIn("_start_live_draft_pending", session)
+
+
+class GateAExportPlumbingTests(unittest.TestCase):
+    """Each 7a75a1a ledger event must survive export (harness exact-name match)."""
+
+    _QUEUEUI_WAVE1_EVENTS = (
+        EVENT_CALLBACK_ENTERED,
+        EVENT_CALLBACK_EXITED,
+        EVENT_PENDING_OBSERVED,
+        EVENT_PENDING_CONSUMED,
+        EVENT_PENDING_ABSENT,
+        EVENT_HANDLER_ENTERED,
+        EVENT_HANDLER_EXITED,
+        EVENT_ROOM_CREATION_ENTERED,
+        EVENT_ROOM_CREATION_EXITED,
+        "production_stage1_queueui_predicate_audit",
+    )
+
+    def test_each_wave1_event_exported_after_note_stage1_event(self) -> None:
+        st = mock.Mock()
+        for event_name in self._QUEUEUI_WAVE1_EVENTS:
+            with self.subTest(event=event_name):
+                session = _enabled_session()
+                with mock.patch(
+                    "live_draft_solo_component_diagnostics.solo_component_diag_enabled",
+                    return_value=True,
+                ):
+                    note_stage1_event(session, event_name, st=st, extra={"probe": "export_test"})
+                exported = ledger_rows_for_export(session)
+                names = {r.get("event") for r in exported}
+                self.assertIn(
+                    event_name,
+                    names,
+                    msg=f"{event_name} missing from ledger_rows_for_export",
+                )
+
+    def test_callback_before_main_script_retains_diagnostic_run_id(self) -> None:
+        session = _enabled_session(_solo_stage1_run_id="prebootstrap_run01")
+        st = mock.Mock()
+        with mock.patch(
+            "live_draft_solo_component_diagnostics.solo_component_diag_enabled",
+            return_value=True,
+        ):
+            row = emit_start_callback_entered(session)
+        self.assertEqual(row.get("run_id"), "prebootstrap_run01")
+        exported = ledger_rows_for_export(session)
+        cb_rows = [r for r in exported if r.get("event") == EVENT_CALLBACK_ENTERED]
+        self.assertTrue(cb_rows)
+        self.assertEqual(cb_rows[0].get("run_id"), "prebootstrap_run01")
+
+
+class InstrumentationBuildTests(unittest.TestCase):
+    def test_build_loaded_stdout_once_per_module(self) -> None:
+        import live_draft_queueui_instrumentation_build as mod
+
+        mod._BUILD_LOADED_MODULES.clear()
+        buf = io.StringIO()
+        session: dict = {}
+        with redirect_stdout(buf):
+            mod.emit_instrumentation_build_loaded("test_mod_a", "/tmp/a.py", session=session)
+            mod.emit_instrumentation_build_loaded("test_mod_a", "/tmp/a.py", session=session)
+        lines = [ln for ln in buf.getvalue().splitlines() if "SOLO_QUEUEUI_INSTRUMENTATION_BUILD_LOADED" in ln]
+        self.assertEqual(len(lines), 1)
+        self.assertNotIn("_solo_stage1_run_id", session)
 
 
 if __name__ == "__main__":

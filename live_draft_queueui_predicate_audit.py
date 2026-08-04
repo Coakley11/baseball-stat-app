@@ -194,9 +194,29 @@ def emit_queueui_predicate_audit(
     if not checkpoint:
         return {}
     try:
+        from live_draft_queueui_instrumentation_build import emit_raw_canary
+
+        emit_raw_canary(
+            "SOLO_QUEUEUI_RAW_PREDICATE_CALL_ENTER",
+            session=session,
+            extra={"checkpoint": str(checkpoint)[:120], "lifecycle": str(lifecycle or "")[:64]},
+        )
+    except ImportError:
+        pass
+    try:
         from live_draft_stage1_production_ledger import note_stage1_event, stage1_production_ledger_enabled
 
         if not stage1_production_ledger_enabled(st, session):
+            try:
+                from live_draft_queueui_instrumentation_build import emit_raw_canary
+
+                emit_raw_canary(
+                    "SOLO_QUEUEUI_RAW_PREDICATE_CALL_EXIT",
+                    session=session,
+                    extra={"checkpoint": str(checkpoint)[:120], "ledger_enabled": False},
+                )
+            except ImportError:
+                pass
             return {}
     except ImportError:
         return {}
@@ -225,7 +245,7 @@ def emit_queueui_predicate_audit(
     try:
         from live_draft_stage1_production_ledger import note_stage1_event
 
-        return note_stage1_event(
+        row = note_stage1_event(
             session,
             EVENT_QUEUEUI_PREDICATE,
             st=st,
@@ -233,5 +253,28 @@ def emit_queueui_predicate_audit(
             widget_key=str(checkpoint)[:64],
             extra=row_extra,
         )
+        try:
+            from live_draft_queueui_instrumentation_build import emit_raw_canary
+
+            emit_raw_canary(
+                "SOLO_QUEUEUI_RAW_PREDICATE_CALL_EXIT",
+                session=session,
+                extra={
+                    "checkpoint": str(checkpoint)[:120],
+                    "ledger_enabled": True,
+                    "row_emitted": bool(row),
+                },
+            )
+        except ImportError:
+            pass
+        return row
     except ImportError:
         return {}
+
+
+try:
+    from live_draft_queueui_instrumentation_build import emit_instrumentation_build_loaded
+
+    emit_instrumentation_build_loaded(__name__, __file__)
+except ImportError:
+    pass

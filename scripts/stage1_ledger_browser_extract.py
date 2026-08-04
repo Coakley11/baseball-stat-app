@@ -163,6 +163,8 @@ _COLLECT_CANDIDATES_JS = """
       data_rows_attr: parseInt(el.getAttribute("data-row-count") || el.getAttribute("data-rows") || "0", 10) || 0,
       data_run_id: el.getAttribute("data-diagnostic-run-id") || el.getAttribute("data-run-id") || "",
       data_script_run_seq: parseInt(el.getAttribute("data-script-run-seq") || "0", 10) || 0,
+      data_probe_checkpoint: el.getAttribute("data-probe-checkpoint") || "",
+      data_probe_ts: parseFloat(el.getAttribute("data-probe-ts") || "0") || 0,
       data_diagnostic_surface: el.getAttribute("data-diagnostic-surface") || "",
       payload_json_len_expected: parseInt(el.getAttribute("data-payload-json-len") || "0", 10) || 0,
       payload_sha256_expected: el.getAttribute("data-payload-sha256") || "",
@@ -296,13 +298,27 @@ def _row_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _probe_checkpoint_rank(checkpoint: str) -> int:
+    cp = str(checkpoint or "").strip().lower()
+    if cp == "late_start_handler_success":
+        return 3
+    if cp.startswith("late_"):
+        return 2
+    if cp == "early_script":
+        return 1
+    return 0
+
+
 def _candidate_score(c: dict[str, Any], *, preferred_run_id: str = "") -> tuple[int, ...]:
     """Higher is better."""
     integrity = 1 if c.get("integrity_ok") else 0
     parse_ok = 1 if c.get("parse_ok") or c.get("ok") else 0
     canary = 1 if c.get("pipeline_canary_present") else 0
     rows = int(c.get("row_count") or 0)
-    max_seq = int(c.get("max_script_run_seq") or 0)
+    dom_seq = int(c.get("data_script_run_seq") or 0)
+    max_seq = max(int(c.get("max_script_run_seq") or 0), dom_seq)
+    probe_ts_micro = int(float(c.get("data_probe_ts") or 0) * 1_000_000)
+    cp_rank = _probe_checkpoint_rank(str(c.get("data_probe_checkpoint") or ""))
     run_match = 1 if preferred_run_id and str(c.get("run_id") or "") == preferred_run_id[:32] else 0
     surface_match = 1 if str(c.get("data_diagnostic_surface") or CASE_A_SURFACE) == CASE_A_SURFACE else 0
     if not c.get("data_diagnostic_surface"):
@@ -310,7 +326,20 @@ def _candidate_score(c: dict[str, Any], *, preferred_run_id: str = "") -> tuple[
     connected = 1 if c.get("connected", c.get("element_connected", True)) else 0
     harness_penalty = 1 if "HarnessLedgerStore" in str(c.get("source") or "") else 0
     auth_rank = 100 - int(c.get("authority_rank") or 50)
-    return (integrity, parse_ok, canary, run_match, surface_match, rows, max_seq, auth_rank, connected, -harness_penalty)
+    return (
+        integrity,
+        parse_ok,
+        canary,
+        run_match,
+        surface_match,
+        cp_rank,
+        rows,
+        max_seq,
+        probe_ts_micro,
+        auth_rank,
+        connected,
+        -harness_penalty,
+    )
 
 
 def classify_scrape_boundary(
@@ -431,10 +460,23 @@ def extract_stage1_ledger_from_page(page, *, preferred_run_id: str = "") -> dict
         selected=selected or None,
         raw_canary=raw_canary,
     )
+    dom_probes = [c for c in all_candidates if str(c.get("source") or "").startswith("dom#")]
     return {
         "frame_reports": frame_reports,
         "candidates": all_candidates,
         "selected_source": str(selected.get("source") or ""),
+        "selected_probe_checkpoint": str(selected.get("data_probe_checkpoint") or ""),
+        "selected_dom_script_run_seq": int(selected.get("data_script_run_seq") or 0),
+        "duplicate_dom_probe_count": len(dom_probes),
+        "dom_probe_checkpoints": [
+            {
+                "source": str(c.get("source") or ""),
+                "checkpoint": str(c.get("data_probe_checkpoint") or ""),
+                "row_count": int(c.get("row_count") or 0),
+                "data_script_run_seq": int(c.get("data_script_run_seq") or 0),
+            }
+            for c in dom_probes[:12]
+        ],
         "selected_frame_index": selected.get("frame_index"),
         "selected_frame_url": str(selected.get("frame_url") or "")[:400],
         "raw_length": int(selected.get("b64_length") or 0),

@@ -332,3 +332,11 @@ def emit_room_creation_exited(
         elapsed_ms=elapsed_ms,
         diagnostic_run_id=_diagnostic_run_id(session),
     )
+
+
+try:
+    from live_draft_queueui_instrumentation_build import emit_instrumentation_build_loaded
+
+    emit_instrumentation_build_loaded(__name__, __file__)
+except ImportError:
+    pass

@@ -15,6 +15,12 @@ except Exception as _solo_identity_boot_exc:
         flush=True,
     )
 try:
+    from live_draft_queueui_instrumentation_build import emit_instrumentation_build_loaded
+
+    emit_instrumentation_build_loaded("streamlit_app", __file__)
+except ImportError:
+    pass
+try:
     import solo_p6_v1_template_component  # noqa: F401 — P6 R5 V1 template probe
 except ImportError:
     pass
@@ -591,7 +597,7 @@ try:
             )
 
             if stage1_production_ledger_enabled(st, st.session_state):
-                render_stage1_production_ledger_probe(st, st.session_state)
+                render_stage1_production_ledger_probe(st, st.session_state, probe_checkpoint="early_script")
         except ImportError:
             pass
     except ImportError:
@@ -22802,6 +22808,19 @@ elif active_page == "Live Draft Room":
     _early_room = st.session_state.get("live_draft_room")
     if isinstance(_early_room, dict):
         try:
+            from live_draft_queueui_instrumentation_build import emit_raw_canary
+
+            emit_raw_canary(
+                "SOLO_QUEUEUI_RAW_ROOM_DICT_PRESENT",
+                session=st.session_state,
+                extra={
+                    "site": "ldr_early_room",
+                    "room_id": str(_early_room.get("draft_room_id") or _early_room.get("draft_id") or "").upper(),
+                },
+            )
+        except ImportError:
+            pass
+        try:
             from live_draft_queueui_predicate_audit import (
                 auth_evidence,
                 compute_render_predicates,
@@ -23233,7 +23252,7 @@ elif active_page == "Live Draft Room":
                 else None,
                 extra={"active_page": str(st.session_state.get("active_page") or ""), "script_run_seq": seq},
             )
-            render_stage1_production_ledger_probe(st, st.session_state)
+            render_stage1_production_ledger_probe(st, st.session_state, probe_checkpoint="early_script")
     except ImportError:
         pass
 
@@ -23285,6 +23304,20 @@ elif active_page == "Live Draft Room":
     _start_handler_err = ""
     _pending_was_present = False
     try:
+        from live_draft_queueui_instrumentation_build import emit_raw_canary
+
+        emit_raw_canary(
+            "SOLO_QUEUEUI_RAW_PENDING_CHECK",
+            session=st.session_state,
+            extra={
+                "phase": "before_pop",
+                "pending_key_present": "_start_live_draft_pending" in st.session_state,
+                "pending_value": bool(st.session_state.get("_start_live_draft_pending")),
+            },
+        )
+    except ImportError:
+        pass
+    try:
         from live_draft_start_stage1_observability import (
             record_pending_start_boundary_after_pop,
             record_pending_start_boundary_before_pop,
@@ -23294,6 +23327,21 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
     _pending_consumed = st.session_state.pop("_start_live_draft_pending", False)
+    try:
+        from live_draft_queueui_instrumentation_build import emit_raw_canary
+
+        emit_raw_canary(
+            "SOLO_QUEUEUI_RAW_PENDING_CHECK",
+            session=st.session_state,
+            extra={
+                "phase": "after_pop",
+                "was_present_before_pop": bool(_pending_was_present),
+                "pending_consumed": bool(_pending_consumed),
+                "will_execute_pending_handler": bool(_pending_consumed),
+            },
+        )
+    except ImportError:
+        pass
     try:
         from live_draft_start_stage1_observability import record_pending_start_boundary_after_pop
 
@@ -23306,6 +23354,12 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
     if _pending_consumed:
+        try:
+            from live_draft_queueui_instrumentation_build import emit_raw_canary
+
+            emit_raw_canary("SOLO_QUEUEUI_RAW_PENDING_HANDLER_ENTER", session=st.session_state)
+        except ImportError:
+            pass
         mark_start_step = None
         _finish_start = None
         _begin_start = None
@@ -23800,6 +23854,16 @@ elif active_page == "Live Draft Room":
                         emit_room_creation_entered = None  # type: ignore[misc, assignment]
                         emit_room_creation_exited = None  # type: ignore[misc, assignment]
                     try:
+                        from live_draft_queueui_instrumentation_build import emit_raw_canary
+
+                        emit_raw_canary(
+                            "SOLO_QUEUEUI_RAW_ROOM_CREATE_ENTER",
+                            session=st.session_state,
+                            extra={"start_mode": str(_start_mode or "new")},
+                        )
+                    except ImportError:
+                        pass
+                    try:
                         new_room = live_draft_init_room(config, pool_live)
                     except Exception as _room_exc:
                         try:
@@ -23811,6 +23875,19 @@ elif active_page == "Live Draft Room":
                                 )
                         except ImportError:
                             pass
+                        try:
+                            from live_draft_queueui_instrumentation_build import emit_raw_canary
+
+                            emit_raw_canary(
+                                "SOLO_QUEUEUI_RAW_ROOM_CREATE_EXIT",
+                                session=st.session_state,
+                                extra={
+                                    "success": False,
+                                    "error": f"{type(_room_exc).__name__}: {_room_exc}",
+                                },
+                            )
+                        except ImportError:
+                            pass
                         raise
                     try:
                         if emit_room_creation_exited is not None:
@@ -23819,6 +23896,19 @@ elif active_page == "Live Draft Room":
                                 success=True,
                                 room_id=str(new_room.get("draft_room_id") or ""),
                             )
+                    except ImportError:
+                        pass
+                    try:
+                        from live_draft_queueui_instrumentation_build import emit_raw_canary
+
+                        emit_raw_canary(
+                            "SOLO_QUEUEUI_RAW_ROOM_CREATE_EXIT",
+                            session=st.session_state,
+                            extra={
+                                "success": True,
+                                "room_id": str(new_room.get("draft_room_id") or ""),
+                            },
+                        )
                     except ImportError:
                         pass
                     record_start_live_draft_diagnostics(st.session_state, live_room_created=True)
@@ -24303,7 +24393,9 @@ elif active_page == "Live Draft Room":
                     )
 
                     if stage1_production_ledger_enabled(st, st.session_state):
-                        render_stage1_production_ledger_probe(st, st.session_state)
+                        render_stage1_production_ledger_probe(
+                            st, st.session_state, probe_checkpoint="late_start_handler_success"
+                        )
                 except ImportError:
                     pass
                 st.rerun()

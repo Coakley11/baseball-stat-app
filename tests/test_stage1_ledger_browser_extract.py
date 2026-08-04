@@ -150,6 +150,61 @@ def test_decode_missing_padding() -> None:
     assert dec["ok"] is True
 
 
+def test_candidate_score_prefers_late_dom_probe_over_early_duplicate() -> None:
+    early = {
+        "source": "dom#solo-stage1-production-ledger[1]",
+        "parse_ok": True,
+        "row_count": 80,
+        "max_script_run_seq": 5,
+        "data_script_run_seq": 5,
+        "data_probe_checkpoint": "early_script",
+        "data_probe_ts": 100.0,
+        "pipeline_canary_present": True,
+        "integrity_ok": True,
+        "authority_rank": 4,
+    }
+    late = {
+        "source": "dom#solo-stage1-production-ledger[2]",
+        "parse_ok": True,
+        "row_count": 95,
+        "max_script_run_seq": 5,
+        "data_script_run_seq": 5,
+        "data_probe_checkpoint": "late_start_handler_success",
+        "data_probe_ts": 100.5,
+        "pipeline_canary_present": True,
+        "integrity_ok": True,
+        "authority_rank": 4,
+    }
+    assert _candidate_score(late) > _candidate_score(early)
+
+
+def test_stale_early_dom_would_lose_without_checkpoint_rank() -> None:
+    """Documents prior failure mode: more rows on window beat early dom; late checkpoint fixes dom-vs-dom."""
+    stale_early = {
+        "source": "dom#solo-stage1-production-ledger[1]",
+        "parse_ok": True,
+        "row_count": 240,
+        "max_script_run_seq": 4,
+        "data_script_run_seq": 4,
+        "data_probe_checkpoint": "early_script",
+        "pipeline_canary_present": True,
+        "integrity_ok": True,
+        "authority_rank": 4,
+    }
+    fresh_late = {
+        "source": "dom#solo-stage1-production-ledger[2]",
+        "parse_ok": True,
+        "row_count": 260,
+        "max_script_run_seq": 5,
+        "data_script_run_seq": 5,
+        "data_probe_checkpoint": "late_start_handler_success",
+        "pipeline_canary_present": True,
+        "integrity_ok": True,
+        "authority_rank": 4,
+    }
+    assert _candidate_score(fresh_late) > _candidate_score(stale_early)
+
+
 def test_classify_scrape2_canary_on_unselected_candidate() -> None:
     cands = [
         {"source": "dom#solo-stage1-production-ledger[1]", "parse_ok": True, "row_count": 50, "pipeline_canary_present": True},
