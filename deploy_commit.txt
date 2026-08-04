@@ -1,8 +1,8 @@
-b2386f3  # auto-generated; Streamlit Cloud reads this at runtime
+7228dd8  # auto-generated; Streamlit Cloud reads this at runtime
 
 
 
-# deploy_epoch: 2026-08-04T04:15:00Z queueui_raw_instrumentation_canaries
+# deploy_epoch: 2026-08-04T15:05:00Z post_pending_boundary_probe
 
 branch: dev
 
