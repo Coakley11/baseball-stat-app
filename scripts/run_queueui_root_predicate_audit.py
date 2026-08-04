@@ -286,7 +286,12 @@ def main() -> int:
         report["audit_baseline"] = baseline
 
         click = dispatch_start_single_authoritative_click(page, cps)
-        start_observed = bool(click.get("clicked") or click.get("dispatch_ok"))
+        start_observed = bool(
+            click.get("clicked")
+            or click.get("dispatch_ok")
+            or click.get("dom_click_dispatched")
+            or int(click.get("start_click_count") or 0) >= 1
+        )
         report["start_draft_click"] = click
         capture_start_click_transport(page, click_ts=float(click.get("click_timestamp") or click_ts))
         page.wait_for_timeout(1000)

@@ -134,17 +134,9 @@ def row_is_post_start(row: dict[str, Any], baseline: dict[str, Any], row_index: 
 def refine_post_start_rows(
     post: list[dict[str, Any]], baseline: dict[str, Any]
 ) -> list[dict[str, Any]]:
+    """Identity/index/ts gating only; do not drop same-run handler rows by seq alone."""
     update_first_post_click_script_run_seq(baseline, post)
-    floor = int(baseline.get("first_post_click_script_run_seq_min") or 0)
-    if not floor:
-        return list(post)
-    refined: list[dict[str, Any]] = []
-    for row in post:
-        seq = int(row.get("script_run_seq") or 0)
-        if seq and seq < floor:
-            continue
-        refined.append(row)
-    return refined
+    return list(post)
 
 
 def partition_ledger_by_baseline(
