@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 EVENT_QUEUEUI_PREDICATE = "production_stage1_queueui_predicate_audit"
+POST_START_SCRIPT_ENTRY_CHECKPOINT = "ldr_post_start_script_entry"
+_POST_START_ENTRY_EMITTED_SEQ_KEY = "_solo_queueui_ldr_post_start_entry_emitted_seq"
 
 
 def _streamlit_session_id() -> str:
@@ -67,6 +69,52 @@ def restore_evidence(session: dict[str, Any]) -> dict[str, Any]:
         "restore_allowed": allowed,
         "restore_gate_reason": restore_reason,
     }
+
+
+def ownership_access_result(session: dict[str, Any], room: dict[str, Any] | None) -> str:
+    if not isinstance(room, dict) and not isinstance(session.get("live_draft_room"), dict):
+        return "not_evaluated"
+    live = room if isinstance(room, dict) else session.get("live_draft_room")
+    if not isinstance(live, dict):
+        return "not_evaluated"
+    access = room_access_evidence(session, live)
+    if access.get("membership_gate_would_run"):
+        return "membership_gate_would_run"
+    if access.get("solo_room"):
+        return "solo_room_ok"
+    return "room_present_non_solo_or_unknown"
+
+
+def infer_ldr_next_controlling_branch(session: dict[str, Any], *, st: Any | None = None) -> str:
+    """Read-only: next early Live Draft Room branch before prepare/auth restore paint."""
+    if str(session.get("active_page") or "") != "Live Draft Room":
+        return "active_page_not_live_draft_room"
+    if session.get("_solo_rv_ladder_step"):
+        return "rv_ladder_step_active"
+    try:
+        from live_draft_cloud_diagnostics import cloud_canary_requested
+
+        if st is not None and cloud_canary_requested(st, session):
+            return "live_draft_cloud_canary_may_stop"
+    except ImportError:
+        pass
+    if session.get("_live_draft_start_in_flight") or session.get("_start_live_draft_pending"):
+        return "pending_or_start_in_flight"
+    blocked = str(session.get("_live_draft_restore_blocked_reason") or "").strip()
+    if blocked:
+        return f"restore_blocked:{blocked}"
+    try:
+        from live_draft_fast_solo_start import should_defer_heavy_first_paint
+
+        if should_defer_heavy_first_paint(session):
+            return "defer_heavy_first_paint"
+    except ImportError:
+        if session.get("_live_draft_defer_heavy_first_paint"):
+            return "defer_heavy_first_paint"
+    live = session.get("live_draft_room")
+    if not isinstance(live, dict):
+        return "no_room_dict_prepare_and_setup_path"
+    return "room_dict_present_prepare_live_draft_state"
 
 
 def room_access_evidence(session: dict[str, Any], room: dict[str, Any] | None) -> dict[str, Any]:
@@ -175,6 +223,47 @@ def compute_render_predicates(
         "draft_in_progress": bool(draft_in_progress),
         "timer_ok": bool(timer_ok),
     }
+
+
+def emit_ldr_post_start_script_entry(
+    session: dict[str, Any],
+    *,
+    st: Any | None = None,
+    active_page: str = "Live Draft Room",
+) -> dict[str, Any]:
+    """Unconditional LDR entry predicate — once per script_run_seq; no session mutation."""
+    seq = int(session.get("_solo_stage1_script_run_seq") or 0)
+    if seq <= 0:
+        return {}
+    if int(session.get(_POST_START_ENTRY_EMITTED_SEQ_KEY) or 0) == seq:
+        return {}
+    room_raw = session.get("live_draft_room")
+    room = room_raw if isinstance(room_raw, dict) else None
+    lifecycle = ""
+    if room is not None:
+        try:
+            from live_draft_completion import resolve_live_draft_lifecycle
+
+            lifecycle = str(resolve_live_draft_lifecycle(session, room=room) or "")
+        except ImportError:
+            pass
+    next_branch = infer_ldr_next_controlling_branch(session, st=st)
+    ownership = ownership_access_result(session, room)
+    row = emit_queueui_predicate_audit(
+        session,
+        st=st,
+        checkpoint=POST_START_SCRIPT_ENTRY_CHECKPOINT,
+        room=room,
+        lifecycle=lifecycle,
+        extra={
+            "active_page": str(active_page or session.get("active_page") or ""),
+            "next_controlling_branch": next_branch,
+            "ownership_access_result": ownership,
+        },
+    )
+    if row:
+        session[_POST_START_ENTRY_EMITTED_SEQ_KEY] = seq
+    return row
 
 
 def emit_queueui_predicate_audit(

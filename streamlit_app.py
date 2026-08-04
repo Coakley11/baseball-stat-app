@@ -22260,6 +22260,16 @@ elif active_page == DRAFT_LAB_PAGE:
 
 elif active_page == "Live Draft Room":
     try:
+        from live_draft_queueui_predicate_audit import emit_ldr_post_start_script_entry
+
+        emit_ldr_post_start_script_entry(
+            st.session_state,
+            st=st,
+            active_page=str(active_page or "Live Draft Room"),
+        )
+    except ImportError:
+        pass
+    try:
         from live_draft_stage1_boundary_canaries import emit_production_live_draft_branch_canary
 
         emit_production_live_draft_branch_canary(st, st.session_state, active_page=active_page)

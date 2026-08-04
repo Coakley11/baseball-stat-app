@@ -44,6 +44,8 @@ def predicate_timeline_from_ledger(rows: list[dict[str, Any]]) -> list[dict[str,
                 "countdown_declaration_predicate": preds.get("countdown_declaration_predicate"),
                 "early_return_reason": str(r.get("early_return_reason") or ""),
                 "defer_heavy_first_paint": preds.get("defer_heavy_first_paint"),
+                "next_controlling_branch": str(r.get("next_controlling_branch") or ""),
+                "ownership_access_result": str(r.get("ownership_access_result") or ""),
             }
         )
     return out
