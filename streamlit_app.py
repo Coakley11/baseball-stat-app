@@ -22800,6 +22800,65 @@ elif active_page == "Live Draft Room":
     except Exception:
         pass
     _early_room = st.session_state.get("live_draft_room")
+    if isinstance(_early_room, dict):
+        try:
+            from live_draft_queueui_predicate_audit import (
+                auth_evidence,
+                compute_render_predicates,
+                emit_queueui_predicate_audit,
+                restore_evidence,
+            )
+
+            _early_lifecycle = ""
+            try:
+                from live_draft_completion import resolve_live_draft_lifecycle
+
+                _early_lifecycle = str(
+                    resolve_live_draft_lifecycle(st.session_state, room=_early_room) or ""
+                )
+            except ImportError:
+                pass
+            _next_branch = "ldr_main_continue"
+            if st.session_state.get("_start_live_draft_pending") or st.session_state.get(
+                "_live_draft_start_in_flight"
+            ):
+                _next_branch = "pending_or_start_in_flight_before_lifecycle_branch"
+            elif str(st.session_state.get("_live_draft_deleting") or "").strip().lower() in (
+                "in_progress",
+                "done",
+            ):
+                _next_branch = "deleting_lifecycle_branch"
+            else:
+                try:
+                    from live_draft_solo_p2a_path_diag import p2a_hook_ready_reason
+
+                    _p2a_reason = p2a_hook_ready_reason(st, st.session_state, _early_room)
+                    if _p2a_reason == "":
+                        _next_branch = "micro_p2a_before_early_reconcile_may_run"
+                    elif _p2a_reason != "placement_not_p2a":
+                        _next_branch = f"micro_p2a_deferred:{_p2a_reason}"
+                except ImportError:
+                    pass
+            _preds = compute_render_predicates(
+                st.session_state,
+                room=_early_room,
+                lifecycle=_early_lifecycle,
+            )
+            emit_queueui_predicate_audit(
+                st.session_state,
+                st=st,
+                checkpoint="ldr_early_room_present",
+                room=_early_room,
+                lifecycle=_early_lifecycle,
+                extra={
+                    "next_controlling_branch": _next_branch,
+                    "auth": auth_evidence(st.session_state),
+                    "restore": restore_evidence(st.session_state),
+                    "predicates_snapshot": _preds,
+                },
+            )
+        except ImportError:
+            pass
     try:
         from live_draft_solo_p2a_path_diag import render_p2a_branch_breadcrumb, render_p2a_callsite_breadcrumb
 
@@ -23224,7 +23283,29 @@ elif active_page == "Live Draft Room":
 
     _start_handler_ok = False
     _start_handler_err = ""
-    if st.session_state.pop("_start_live_draft_pending", False):
+    _pending_was_present = False
+    try:
+        from live_draft_start_stage1_observability import (
+            record_pending_start_boundary_after_pop,
+            record_pending_start_boundary_before_pop,
+        )
+
+        _pending_was_present, _ = record_pending_start_boundary_before_pop(st, st.session_state)
+    except ImportError:
+        pass
+    _pending_consumed = st.session_state.pop("_start_live_draft_pending", False)
+    try:
+        from live_draft_start_stage1_observability import record_pending_start_boundary_after_pop
+
+        record_pending_start_boundary_after_pop(
+            st,
+            st.session_state,
+            was_present=_pending_was_present,
+            will_execute=bool(_pending_consumed),
+        )
+    except ImportError:
+        pass
+    if _pending_consumed:
         mark_start_step = None
         _finish_start = None
         _begin_start = None
@@ -24213,6 +24294,16 @@ elif active_page == "Live Draft Room":
                         rerun_type="st.rerun",
                         source="start_handler_ok",
                     )
+                except ImportError:
+                    pass
+                try:
+                    from live_draft_stage1_production_ledger import (
+                        render_stage1_production_ledger_probe,
+                        stage1_production_ledger_enabled,
+                    )
+
+                    if stage1_production_ledger_enabled(st, st.session_state):
+                        render_stage1_production_ledger_probe(st, st.session_state)
                 except ImportError:
                     pass
                 st.rerun()

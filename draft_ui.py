@@ -1787,88 +1787,124 @@ def on_confirm_convert_simulator_to_live() -> None:
 def on_start_new_live_draft() -> None:
     import streamlit as st
 
+    session = st.session_state
+    _pending_armed = False
+    _exit_reason = "callback_completed"
+    _gate_error = ""
     try:
-        from live_draft_start_stage1_observability import emit_start_handler_entered
+        try:
+            from live_draft_start_stage1_observability import emit_start_callback_entered
 
-        emit_start_handler_entered(st.session_state)
-    except ImportError:
-        pass
-    _handler_ok = False
-    _handler_exc = ""
-    try:
-        from live_draft_setup_persist import flush_live_draft_setup_persist
+            emit_start_callback_entered(session)
+        except ImportError:
+            pass
+        try:
+            from live_draft_start_stage1_observability import emit_start_handler_entered
 
-        flush_live_draft_setup_persist(st, st.session_state, reason="live_draft_start")
-    except Exception:
-        pass
-    # Validate in the button callback so invalid setups always persist the exact
-    # error beside Start Draft — even when a resumable-slot gate would otherwise
-    # return early without arming ``_start_live_draft_pending``.
-    try:
-        from live_draft_start_setup import gate_start_new_live_draft_click
+            emit_start_handler_entered(session)
+        except ImportError:
+            pass
+        _handler_ok = False
+        _handler_exc = ""
+        try:
+            from live_draft_setup_persist import flush_live_draft_setup_persist
 
-        gate = gate_start_new_live_draft_click(st.session_state)
-        if gate.get("armed"):
-            mark_start_live_draft_clicked(st.session_state)
-            _handler_ok = True
+            flush_live_draft_setup_persist(st, session, reason="live_draft_start")
+        except Exception:
+            pass
+        # Validate in the button callback so invalid setups always persist the exact
+        # error beside Start Draft — even when a resumable-slot gate would otherwise
+        # return early without arming ``_start_live_draft_pending``.
+        try:
+            from live_draft_start_setup import gate_start_new_live_draft_click
+
+            gate = gate_start_new_live_draft_click(session)
+            if gate.get("armed"):
+                mark_start_live_draft_clicked(session)
+                _handler_ok = True
+                _pending_armed = True
+                _exit_reason = "gate_armed_pending"
+            elif gate.get("replace_pending"):
+                _exit_reason = "replace_confirmation_required"
+                _gate_error = str(gate.get("error") or "")
+            else:
+                _exit_reason = "gate_not_armed"
+                _gate_error = str(gate.get("error") or "gate_not_armed")
+            try:
+                from live_draft_start_stage1_observability import emit_start_handler_exited
+
+                emit_start_handler_exited(
+                    session,
+                    success=_handler_ok and bool(gate.get("armed")),
+                    exception="" if gate.get("armed") else str(gate.get("error") or "gate_not_armed"),
+                    session_state_writes=["_start_live_draft_pending"] if gate.get("armed") else [],
+                )
+            except ImportError:
+                pass
+            return
+        except Exception:
+            # Fall through to legacy arming only when the gate helper is unavailable.
+            # Prefer fail-closed validation over silent start when possible.
+            try:
+                from live_draft_start_setup import (
+                    LIVE_DRAFT_SETUP_ERROR,
+                    fail_closed_setup_check,
+                    store_setup_validation_error,
+                )
+
+                check = fail_closed_setup_check(session, solo_mode=True)
+                if not check.get("ok"):
+                    store_setup_validation_error(
+                        session, str(check.get("error") or LIVE_DRAFT_SETUP_ERROR)
+                    )
+                    _exit_reason = "legacy_setup_validation_failed"
+                    _gate_error = str(check.get("error") or LIVE_DRAFT_SETUP_ERROR)
+                    return
+            except Exception:
+                pass
+        try:
+            from live_draft_resumable_slot import warn_if_starting_replaces_resumable
+
+            warn = warn_if_starting_replaces_resumable(session)
+            if warn and not session.get("_live_draft_start_replace_resumable_ok"):
+                session["_live_draft_start_replace_resumable_pending"] = True
+                session["_live_draft_start_replace_resumable_message"] = warn.get("message")
+                _exit_reason = "replace_resumable_confirmation"
+                return
+            session.pop("_live_draft_start_replace_resumable_ok", None)
+            session.pop("_live_draft_start_replace_resumable_pending", None)
+            session.pop("_live_draft_start_replace_resumable_message", None)
+        except Exception:
+            pass
+        mark_start_live_draft_clicked(session)
+        session["_start_live_draft_mode"] = "new"
+        session["_start_live_draft_pending"] = True
+        session.pop("_simulator_to_live_show_confirm", None)
+        _handler_ok = True
+        _pending_armed = True
+        _exit_reason = "legacy_path_pending_armed"
         try:
             from live_draft_start_stage1_observability import emit_start_handler_exited
 
             emit_start_handler_exited(
-                st.session_state,
-                success=_handler_ok and bool(gate.get("armed")),
-                exception="" if gate.get("armed") else str(gate.get("error") or "gate_not_armed"),
-                session_state_writes=["_start_live_draft_pending"] if gate.get("armed") else [],
+                session,
+                success=True,
+                session_state_writes=["_start_live_draft_pending", "_start_live_draft_mode"],
             )
         except ImportError:
             pass
-        return
-    except Exception:
-        # Fall through to legacy arming only when the gate helper is unavailable.
-        # Prefer fail-closed validation over silent start when possible.
+    finally:
         try:
-            from live_draft_start_setup import (
-                LIVE_DRAFT_SETUP_ERROR,
-                fail_closed_setup_check,
-                store_setup_validation_error,
+            from live_draft_start_stage1_observability import emit_start_callback_exited
+
+            emit_start_callback_exited(
+                session,
+                pending_armed=_pending_armed,
+                exit_reason=_exit_reason,
+                gate_error=_gate_error,
             )
-
-            check = fail_closed_setup_check(st.session_state, solo_mode=True)
-            if not check.get("ok"):
-                store_setup_validation_error(
-                    st.session_state, str(check.get("error") or LIVE_DRAFT_SETUP_ERROR)
-                )
-                return
-        except Exception:
+        except ImportError:
             pass
-    try:
-        from live_draft_resumable_slot import warn_if_starting_replaces_resumable
-
-        warn = warn_if_starting_replaces_resumable(st.session_state)
-        if warn and not st.session_state.get("_live_draft_start_replace_resumable_ok"):
-            st.session_state["_live_draft_start_replace_resumable_pending"] = True
-            st.session_state["_live_draft_start_replace_resumable_message"] = warn.get("message")
-            return
-        st.session_state.pop("_live_draft_start_replace_resumable_ok", None)
-        st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
-        st.session_state.pop("_live_draft_start_replace_resumable_message", None)
-    except Exception:
-        pass
-    mark_start_live_draft_clicked(st.session_state)
-    st.session_state["_start_live_draft_mode"] = "new"
-    st.session_state["_start_live_draft_pending"] = True
-    st.session_state.pop("_simulator_to_live_show_confirm", None)
-    _handler_ok = True
-    try:
-        from live_draft_start_stage1_observability import emit_start_handler_exited
-
-        emit_start_handler_exited(
-            st.session_state,
-            success=True,
-            session_state_writes=["_start_live_draft_pending", "_start_live_draft_mode"],
-        )
-    except ImportError:
-        pass
 
 
 def on_prepare_shared_draft_room() -> None:
