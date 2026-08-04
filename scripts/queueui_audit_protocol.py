@@ -353,6 +353,8 @@ def resolve_deployment_verification(
         except Exception:
             pass
 
+    app_diag = normalize_sha(deploy_pin) or normalize_sha(required)
+
     out: dict[str, Any] = {
         "required_cloud_sha": normalize_sha(required),
         "deploy_commit_txt_pin": normalize_sha(deploy_pin),
@@ -367,7 +369,7 @@ def resolve_deployment_verification(
         preflight = verify_cloud_build_for_audit(
             live_sha=live,
             required_sha=required,
-            application_diagnostic_sha=APPLICATION_DIAGNOSTIC_SHA,
+            application_diagnostic_sha=app_diag,
         )
         out["verification_method"] = "dom_or_caption_scrape"
         out["preflight"] = preflight
@@ -385,7 +387,7 @@ def resolve_deployment_verification(
         preflight = verify_cloud_build_for_audit(
             live_sha=live,
             required_sha=required,
-            application_diagnostic_sha=APPLICATION_DIAGNOSTIC_SHA,
+            application_diagnostic_sha=app_diag,
         )
         out["preflight"] = preflight
         return out
@@ -393,7 +395,7 @@ def resolve_deployment_verification(
     preflight = verify_cloud_build_for_audit(
         live_sha="",
         required_sha=required,
-        application_diagnostic_sha=APPLICATION_DIAGNOSTIC_SHA,
+        application_diagnostic_sha=app_diag,
     )
     out["verification_method"] = "failed_dom_scrape_no_operator_authorization"
     out["preflight"] = preflight

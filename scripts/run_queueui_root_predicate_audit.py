@@ -153,7 +153,7 @@ def main() -> int:
     report: dict[str, Any] = {
         "audit": "queueui_root_predicate",
         "required_cloud_sha": required,
-        "application_diagnostic_sha": APPLICATION_DIAGNOSTIC_SHA,
+        "application_diagnostic_sha": required,
         "deploy_commit_txt_pin": deploy_pin[:7] if deploy_pin else "",
         "harness_sha": _harness_sha(),
         "harness_sha_short": _harness_short(),
