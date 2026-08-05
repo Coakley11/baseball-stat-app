@@ -1,7 +1,7 @@
-6b1a605  # auto-generated; Streamlit Cloud reads this at runtime
+760c982  # auto-generated; Streamlit Cloud reads this at runtime
 
 
 
-# deploy_epoch: 2026-08-05T16:00:00Z auth_prestart_hydration_diag
+# deploy_epoch: 2026-08-05T20:40:00Z browser_auth_bridge_hydration_fix
 
 branch: dev
