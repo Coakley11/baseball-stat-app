@@ -1,7 +1,7 @@
-0c9028a  # auto-generated; Streamlit Cloud reads this at runtime
+6b1a605  # auto-generated; Streamlit Cloud reads this at runtime
 
 
 
-# deploy_epoch: 2026-08-05T14:10:00Z starlette_0521_streamlit_gzip_compat
+# deploy_epoch: 2026-08-05T16:00:00Z auth_prestart_hydration_diag
 
 branch: dev
