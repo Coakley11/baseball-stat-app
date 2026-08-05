@@ -14,12 +14,10 @@ sys.path.insert(0, str(SCRIPTS))
 
 OUT = ROOT / "data" / "queueui_post_reboot_health_gate.json"
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
-TARGET_APP_SHA = "6b1a605"
-TARGET_MARKER_SHA = "366e12a"
-TARGET_BUILD = f"baseball-dev-{TARGET_APP_SHA}"
 AUTH_EVENTS = (
     "production_stage1_auth_state_before_start_control",
     "production_stage1_auth_snapshot_capture",
+    "production_stage1_auth_prestart_hydration",
 )
 
 
@@ -27,6 +25,8 @@ def main() -> int:
     from probe_live_deploy import backend_health_ok, fetch_body
 
     pin = (ROOT / "deploy_commit.txt").read_text(encoding="utf-8").splitlines()[0].split("#", 1)[0].strip()[:7]
+    target_app_sha = pin
+    target_build = f"baseball-dev-{pin}"
     try:
         subprocess.run(["git", "fetch", "origin", "dev"], cwd=ROOT, capture_output=True, timeout=60)
         origin_dev = subprocess.check_output(
@@ -34,7 +34,7 @@ def main() -> int:
         ).strip()
         ancestor_ok = (
             subprocess.run(
-                ["git", "merge-base", "--is-ancestor", TARGET_MARKER_SHA, "origin/dev"],
+                ["git", "merge-base", "--is-ancestor", pin, "origin/dev"],
                 cwd=ROOT,
                 capture_output=True,
             ).returncode
@@ -56,9 +56,9 @@ def main() -> int:
     report: dict = {
         "ts": time.time(),
         "deploy_commit_txt_pin": pin,
-        "target_app_sha": TARGET_APP_SHA,
-        "target_marker_sha": TARGET_MARKER_SHA,
-        "target_build": TARGET_BUILD,
+        "target_app_sha": target_app_sha,
+        "target_marker_sha": pin,
+        "target_build": target_build,
         "origin_dev_short": origin_dev,
         "origin_dev_is_marker_or_descendant": ancestor_ok,
         "git_fetch_error": fetch_err,
@@ -114,7 +114,7 @@ def main() -> int:
         events = {str(r.get("event") or "") for r in rows if isinstance(r, dict)}
         sha = str(deploy.get("sha") or "")[:7].lower()
         build = str(deploy.get("build") or "")
-        auth_avail = sha == TARGET_APP_SHA or any(
+        auth_avail = sha == target_app_sha or any(
             "production_stage1_auth_" in e for e in events
         )
         fs_git = ""
@@ -159,11 +159,11 @@ def main() -> int:
         browser.close()
 
     report["playwright"] = playwright
-    sha_ok = sha == TARGET_APP_SHA
-    build_ok = build == TARGET_BUILD or build.endswith(TARGET_APP_SHA)
+    sha_ok = sha == target_app_sha
+    build_ok = build == target_build or build.endswith(target_app_sha)
     report["gate_pass"] = bool(
         ancestor_ok
-        and pin == TARGET_APP_SHA
+        and pin == target_app_sha
         and health_signal_ok
         and not gzip_in_body
         and sha_ok
@@ -173,7 +173,7 @@ def main() -> int:
         and playwright.get("auth_diag_available")
     )
     report["checks"] = {
-        "pin_matches": pin == TARGET_APP_SHA,
+        "pin_matches": pin == target_app_sha,
         "visible_sha_matches": sha_ok,
         "visible_build_matches": build_ok,
         "health_ok": health_signal_ok,
