@@ -98,6 +98,21 @@ def load_browser_auth_tokens(st: Any) -> dict[str, Any] | None:
     return tokens
 
 
+def _emit_save_browser_auth_checkpoint(st: Any, *, extra: dict[str, Any]) -> None:
+    try:
+        from live_draft_auth_prestart_stage1_diag import emit_prestart_hydration_checkpoint
+
+        emit_prestart_hydration_checkpoint(
+            st.session_state,
+            "save_browser_auth_tokens",
+            st=st,
+            skip_or_failure_reason=str(extra.get("failure_reason") or "")[:120],
+            extra=extra,
+        )
+    except Exception:
+        pass
+
+
 def save_browser_auth_tokens(
     st: Any,
     tokens: dict[str, Any],
@@ -107,7 +122,21 @@ def save_browser_auth_tokens(
     """Write tokens to Supabase and mirror opaque id in URL query params."""
     access = str((tokens or {}).get("access_token") or "").strip()
     refresh = str((tokens or {}).get("refresh_token") or "").strip()
+    sid = sync_suite_sid_from_query(st) or str(uuid.uuid4())
+    base_extra: dict[str, Any] = {
+        "persistence_attempted": True,
+        "persistence_succeeded": False,
+        "failure_reason": "",
+        "suite_sid_prefix": sid[:8] if sid else "",
+        "access_token_present": bool(access),
+        "refresh_token_present": bool(refresh),
+        "auth_user_id_present": False,
+        "bridge_record_complete": False,
+    }
     if not access or not refresh:
+        base_extra["failure_reason"] = "tokens_incomplete"
+        base_extra["persistence_attempted"] = False
+        _emit_save_browser_auth_checkpoint(st, extra=base_extra)
         return
     uid = str(auth_user_id or "").strip()
     if not uid:
@@ -115,16 +144,39 @@ def save_browser_auth_tokens(
             uid = str(st.session_state.get(AUTH_USER_ID_SESSION_KEY) or "").strip()
         except Exception:
             uid = ""
+    base_extra["auth_user_id_present"] = bool(uid)
     if not uid:
+        base_extra["failure_reason"] = "auth_user_id_missing"
+        _emit_save_browser_auth_checkpoint(st, extra=base_extra)
         return
-    sid = sync_suite_sid_from_query(st) or str(uuid.uuid4())
+    if not sid:
+        sid = str(uuid.uuid4())
     try:
-        from suite_storage_supabase import save_browser_auth_session
+        from suite_storage_supabase import load_browser_auth_session, save_browser_auth_session
 
         save_browser_auth_session(sid, user_id=uid, tokens=tokens)
-    except Exception:
+    except Exception as exc:
+        base_extra["failure_reason"] = f"save_error:{type(exc).__name__}"
+        _emit_save_browser_auth_checkpoint(st, extra=base_extra)
         return
     _set_session_id(st, sid)
+    try:
+        from suite_storage_supabase import load_browser_auth_session
+
+        row = load_browser_auth_session(sid)
+        complete = bool(
+            row
+            and str(row.get("access_token") or "").strip()
+            and str(row.get("refresh_token") or "").strip()
+        )
+        base_extra["bridge_record_complete"] = complete
+        base_extra["persistence_succeeded"] = complete
+        base_extra["failure_reason"] = "ok" if complete else "post_save_record_incomplete"
+    except Exception as exc:
+        base_extra["failure_reason"] = f"verify_error:{type(exc).__name__}"
+        base_extra["persistence_succeeded"] = True
+        base_extra["bridge_record_complete"] = False
+    _emit_save_browser_auth_checkpoint(st, extra=base_extra)
 
 
 def clear_browser_auth_tokens(st: Any) -> None:

@@ -59,11 +59,35 @@ class SuiteAuthBrowserBridgeTests(unittest.TestCase):
         self.assertEqual(out, _tokens())
         self.assertEqual(st.session_state[BROWSER_LOAD_REASON_KEY], "ok")
 
+    def test_save_emits_bridge_persist_checkpoint(self) -> None:
+        st = mock.Mock()
+        st.query_params = {"suite_sid": "sid-save"}
+        st.session_state = {AUTH_USER_ID_KEY: "uuid-1"}
+        with mock.patch("suite_storage_supabase.save_browser_auth_session"), mock.patch(
+            "suite_storage_supabase.load_browser_auth_session",
+            return_value=_tokens(),
+        ), mock.patch(
+            "live_draft_auth_prestart_stage1_diag.emit_prestart_hydration_checkpoint"
+        ) as emit:
+            save_browser_auth_tokens(st, _tokens(), auth_user_id="uuid-1")
+            self.assertTrue(emit.called)
+            _args, kwargs = emit.call_args
+            checkpoint = kwargs.get("checkpoint") if kwargs else None
+            if checkpoint is None and len(_args) > 1:
+                checkpoint = _args[1]
+            self.assertEqual(checkpoint, "save_browser_auth_tokens")
+            extra = kwargs.get("extra") or {}
+            self.assertTrue(extra.get("persistence_succeeded"))
+            self.assertTrue(extra.get("bridge_record_complete"))
+
     def test_save_uses_session_user_id_when_param_empty(self) -> None:
         st = mock.Mock()
         st.query_params = {"suite_sid": "sid-save"}
         st.session_state = {SESSION_STATE_SID_KEY: "sid-save", AUTH_USER_ID_KEY: "uuid-1"}
-        with mock.patch("suite_storage_supabase.save_browser_auth_session") as save:
+        with mock.patch("suite_storage_supabase.save_browser_auth_session") as save, mock.patch(
+            "suite_storage_supabase.load_browser_auth_session",
+            return_value=_tokens(),
+        ), mock.patch("live_draft_auth_prestart_stage1_diag.emit_prestart_hydration_checkpoint"):
             save_browser_auth_tokens(st, _tokens(), auth_user_id="")
             save.assert_called_once()
             self.assertEqual(save.call_args.kwargs["user_id"], "uuid-1")
