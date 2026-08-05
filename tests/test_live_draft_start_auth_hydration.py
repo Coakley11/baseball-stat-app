@@ -126,7 +126,19 @@ class LiveDraftStartAuthHydrationTests(unittest.TestCase):
             self.assertFalse(restore_auth_session(session, st=st))
         self.assertFalse(session.get(AUTH_SESSION_KEY))
 
-    def test_ownership_check_still_runs_when_authenticated(self) -> None:
+    def test_start_rerun_snapshot_restores_session_before_restore_gate(self) -> None:
+        session = _auth_session()
+        from suite_auth import AUTH_START_RERUN_SNAPSHOT_KEY, snapshot_auth_for_start_draft_rerun
+
+        with mock.patch("suite_auth.is_auth_enabled", return_value=True):
+            snapshot_auth_for_start_draft_rerun(session)
+            for key in (AUTH_SESSION_KEY, AUTH_TOKENS_KEY, AUTH_USER_ID_KEY):
+                session.pop(key, None)
+            self.assertFalse(is_authenticated(session))
+            self.assertTrue(ensure_authenticated_session_hydrated(session))
+            self.assertTrue(is_authenticated(session))
+        self.assertIn(AUTH_START_RERUN_SNAPSHOT_KEY, session)
+
         session = _auth_session(user_id="uuid-coakley")
         blob = {
             "draft_room_id": "room-1",

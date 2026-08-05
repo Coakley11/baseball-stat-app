@@ -45,6 +45,8 @@ AUTH_LAST_LOGIN_OK_KEY = "_suite_auth_last_login_ok"
 AUTH_LAST_RESTORE_ERROR_KEY = "_suite_auth_last_restore_error"
 AUTH_JUST_LOGGED_IN_KEY = "_suite_auth_just_logged_in"
 AUTH_PENDING_LOGIN_KEY = "_suite_pending_login"
+# Snapshot taken when Start Draft arms — restored on post-start reruns before live draft gates.
+AUTH_START_RERUN_SNAPSHOT_KEY = "_suite_auth_start_rerun_snapshot"
 # Set only when the user explicitly picks a workspace (sidebar selector / URL after choose).
 # Unsigned Guest stickiness must not survive authentication without this flag.
 WORKSPACE_USER_SELECTED_KEY = "_suite_workspace_user_selected"
@@ -631,6 +633,7 @@ def _clear_auth_session(session_state: dict[str, Any], *, st: Any | None = None)
         AUTH_LAST_LOGIN_OK_KEY,
     ):
         session_state.pop(key, None)
+    session_state.pop(AUTH_START_RERUN_SNAPSHOT_KEY, None)
     if st is not None:
         try:
             from suite_auth_browser import clear_browser_auth_tokens
@@ -856,7 +859,21 @@ def ensure_authenticated_session_hydrated(session_state: dict[str, Any], *, st: 
         return True
     if auth_session_complete(session_state):
         return True
+    snap = session_state.get(AUTH_START_RERUN_SNAPSHOT_KEY)
+    if isinstance(snap, dict) and snap:
+        restore_auth_session_snapshot(session_state, snap)
+        if auth_session_complete(session_state):
+            return True
     return restore_auth_session(session_state, st=st)
+
+
+def snapshot_auth_for_start_draft_rerun(session_state: dict[str, Any]) -> None:
+    """Preserve validated session auth when arming Start Draft (same Streamlit session)."""
+    if not is_auth_enabled():
+        return
+    if not auth_session_complete(session_state):
+        return
+    session_state[AUTH_START_RERUN_SNAPSHOT_KEY] = snapshot_auth_session(session_state)
 
 
 def logout(session_state: dict[str, Any], *, st: Any | None = None) -> None:

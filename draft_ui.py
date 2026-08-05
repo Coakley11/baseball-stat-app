@@ -1831,6 +1831,12 @@ def on_start_new_live_draft() -> None:
             gate = gate_start_new_live_draft_click(session)
             if gate.get("armed"):
                 mark_start_live_draft_clicked(session)
+                try:
+                    from suite_auth import snapshot_auth_for_start_draft_rerun
+
+                    snapshot_auth_for_start_draft_rerun(session)
+                except ImportError:
+                    pass
                 _handler_ok = True
                 _pending_armed = True
                 _exit_reason = "gate_armed_pending"
