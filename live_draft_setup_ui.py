@@ -813,6 +813,20 @@ def render_active_draft_mode_banner(st: Any, session: dict[str, Any], *, room: d
 
 
 def start_button_disabled(session: dict[str, Any]) -> tuple[bool, str]:
+    try:
+        from suite_auth import auth_session_complete, is_auth_enabled
+
+        if is_auth_enabled() and not auth_session_complete(session):
+            if session.get("_suite_auth_last_restore_attempted") and not session.get("_suite_auth_last_restore_ok"):
+                return True, "Sign in to start a live draft."
+            load_reason = str(session.get("_suite_browser_auth_load_reason") or "").strip()
+            if load_reason == "token_record_missing":
+                return True, "Sign in to start a live draft (no saved credentials for this browser link)."
+            if load_reason in ("token_record_incomplete", "suite_sid_missing"):
+                return True, "Sign in to start a live draft."
+            return True, "Restoring your sign-in before you can start…"
+    except ImportError:
+        pass
     # Resumable slot present: allow Start so Replace confirmation can arm a fresh create
     # even when Shared mode has no active room code after Save & Continue Later.
     try:

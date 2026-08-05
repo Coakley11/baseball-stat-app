@@ -836,6 +836,13 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             authenticated_before=auth_before,
             hydration_attempted=True,
         )
+        if st is not None:
+            try:
+                from suite_auth_browser import sync_suite_sid_from_query
+
+                sync_suite_sid_from_query(st)
+            except ImportError:
+                pass
         emit_prestart_hydration_checkpoint(session_state, "suite_sid_detection", st=st)
     except ImportError:
         pass
@@ -899,7 +906,17 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             pass
 
     if not tokens.get("access_token") or not tokens.get("refresh_token"):
-        return _finish(False, "tokens_missing")
+        fail_reason = "tokens_missing"
+        if st is not None:
+            try:
+                from suite_auth_browser import BROWSER_LOAD_REASON_KEY
+
+                br = str(st.session_state.get(BROWSER_LOAD_REASON_KEY) or "").strip()
+                if br and br not in ("ok", ""):
+                    fail_reason = br
+            except ImportError:
+                pass
+        return _finish(False, fail_reason)
 
     try:
         auth = _auth_api(session_state)
@@ -938,6 +955,17 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
         sanitize_workflow_library_for_account(session_state, st=st, persist_cleanup=True)
     except ImportError:
         pass
+    if st is not None and auth_session_complete(session_state):
+        try:
+            from suite_auth_browser import save_browser_auth_tokens
+
+            save_browser_auth_tokens(
+                st,
+                dict(session_state.get(AUTH_TOKENS_KEY) or {}),
+                auth_user_id=str(session_state.get(AUTH_USER_ID_KEY) or ""),
+            )
+        except ImportError:
+            pass
     return _finish(True, "ok")
 
 

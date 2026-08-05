@@ -891,7 +891,7 @@ def load_browser_auth_session(session_id: str) -> dict[str, Any] | None:
             "GET",
             _TABLE_SAVED,
             params={
-                "select": "payload,updated_at",
+                "select": "payload,updated_at,user_id",
                 "app": f"eq.{_AUTH_BROWSER_APP}",
                 "item_type": f"eq.{_AUTH_SESSION_ITEM_TYPE}",
                 "item_key": f"eq.{sid}",
@@ -899,6 +899,7 @@ def load_browser_auth_session(session_id: str) -> dict[str, Any] | None:
                 "limit": "1",
             },
             prefer="return=representation",
+            use_cache=False,
         )
     if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
         return None

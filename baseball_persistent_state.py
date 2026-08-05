@@ -1496,9 +1496,31 @@ def warm_startup_fingerprint(session: dict[str, Any]) -> str:
     )
 
 
+def _ensure_trusted_auth_before_workspace(st: Any, ss: dict[str, Any]) -> None:
+    """Hydrate validated auth from the browser token bridge before disk/cloud apply."""
+    try:
+        from suite_auth import (
+            auth_session_complete,
+            ensure_authenticated_session_hydrated,
+            is_auth_enabled,
+            restore_auth_session,
+        )
+        from suite_auth_browser import sync_suite_sid_from_query
+    except ImportError:
+        return
+    if not is_auth_enabled():
+        return
+    sync_suite_sid_from_query(st)
+    if auth_session_complete(ss):
+        return
+    restore_auth_session(ss, st=st)
+    ensure_authenticated_session_hydrated(ss, st=st)
+
+
 def prepare_baseball_workspace(st: Any) -> bool:
     """Single authoritative cloud/disk workspace sync before sidebar widgets."""
     ss = st.session_state
+    _ensure_trusted_auth_before_workspace(st, ss)
     try:
         from live_draft_key_ownership_diag import diag_enabled, record_key_ownership
 
@@ -1736,9 +1758,9 @@ def prepare_baseball_workspace(st: Any) -> bool:
         ss.pop("_suite_auth_just_logged_in", None)
         ss.pop("_suite_auth_just_signed_in", None)
     try:
-        from suite_auth import ensure_authenticated_session_hydrated, is_auth_enabled
+        from suite_auth import auth_session_complete, ensure_authenticated_session_hydrated, is_auth_enabled
 
-        if is_auth_enabled():
+        if is_auth_enabled() and not auth_session_complete(ss):
             ensure_authenticated_session_hydrated(ss, st=st)
     except ImportError:
         pass
