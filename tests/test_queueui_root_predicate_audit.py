@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from live_draft_queueui_predicate_audit import compute_render_predicates  # noqa: E402
 from queueui_audit_protocol import prestart_ledger_signals  # noqa: E402
-from queueui_root_classify import QUEUEUIROOT1, QUEUEUIROOT3, classify_queueui_root  # noqa: E402
+from queueui_root_classify import QUEUEUIROOT1, QUEUEUIROOT2, QUEUEUIROOT3, classify_queueui_root  # noqa: E402
 
 
 def test_prestart_ledger_signals_uses_latest_script_run_seq_only() -> None:
@@ -94,3 +94,21 @@ def test_classify_root3_stale_auth_required() -> None:
     ]
     out = classify_queueui_root(ledger_rows=rows)
     assert out["classification"] == QUEUEUIROOT3
+
+
+def test_classify_root2_post_start_ldr_entry_unauth_with_preflight() -> None:
+    rows = []
+    for seq in (8, 9, 11):
+        rows.append(
+            {
+                "event": "production_stage1_queueui_predicate_audit",
+                "script_run_seq": seq,
+                "checkpoint": "ldr_post_start_script_entry",
+                "predicates": {"start_in_flight": seq == 8, "full_body_predicate": False},
+                "auth": {"authenticated": False},
+                "restore": {"restore_blocked_reason": "auth_required"},
+            }
+        )
+    out = classify_queueui_root(ledger_rows=rows, auth_preflight_authenticated=True)
+    assert out["classification"] == QUEUEUIROOT2
+    assert out["proven"] is True

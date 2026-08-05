@@ -454,7 +454,11 @@ def main() -> int:
         report["audit_events_present"] = bool(predicate_timeline)
 
         if completion.get("completed"):
-            root = classify_queueui_root(ledger_rows=post_rows, dom_observation=dom)
+            root = classify_queueui_root(
+                ledger_rows=post_rows,
+                dom_observation=dom,
+                auth_preflight_authenticated=bool(pre.get("authenticated_restored")),
+            )
             report["root_classification"] = root
             report["queueuiroot_classification"] = root.get("classification")
         else:

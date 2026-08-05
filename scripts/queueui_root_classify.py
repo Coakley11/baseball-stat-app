@@ -58,11 +58,13 @@ def classify_queueui_root(
     *,
     ledger_rows: list[dict[str, Any]],
     dom_observation: dict[str, Any] | None = None,
+    auth_preflight_authenticated: bool | None = None,
 ) -> dict[str, Any]:
     """Return classification from merged stage-1 ledger after room latch."""
     dom = dict(dom_observation or {})
     by_seq = rows_by_script_seq(ledger_rows)
     post_start_seqs = sorted(k for k in by_seq if k >= 1)
+    distinct_post_start = len(post_start_seqs)
     timeline: list[dict[str, Any]] = []
     for seq in post_start_seqs[-6:]:
         seq_rows = by_seq[seq]
@@ -92,6 +94,14 @@ def classify_queueui_root(
         or str(r.get("widget_key") or "").startswith("start_handler")
     ]
     post_latch = [t for t in timeline if "active_lifecycle_branch_entered" in t["checkpoints"]]
+    post_start_predicate_rows = [
+        r
+        for r in audit_rows(ledger_rows)
+        if str(r.get("checkpoint") or "") == "ldr_post_start_script_entry"
+        or "start_handler" in str(r.get("checkpoint") or "")
+        or "ldr_early_room" in str(r.get("checkpoint") or "")
+    ]
+    post_start_distinct_seq = len({int(r.get("script_run_seq") or 0) for r in post_start_predicate_rows if int(r.get("script_run_seq") or 0) > 0})
 
     if not audit_rows(ledger_rows):
         return {
@@ -115,6 +125,28 @@ def classify_queueui_root(
                     "timeline": timeline,
                     "proven": True,
                 }
+
+    unauth_post_start = [
+        r
+        for r in post_start_predicate_rows
+        if row_auth(r).get("authenticated") is False
+        and str(row_restore(r).get("restore_blocked_reason") or "") in ("auth_required", "auth_required_for_owned_blob")
+    ]
+    unauth_distinct = len({int(r.get("script_run_seq") or 0) for r in unauth_post_start if int(r.get("script_run_seq") or 0) > 0})
+    preflight_ok = auth_preflight_authenticated is not False
+    if (
+        preflight_ok
+        and unauth_distinct >= 3
+        and post_start_distinct_seq >= 3
+        and len(unauth_post_start) >= 2
+    ):
+        return {
+            "classification": QUEUEUIROOT2,
+            "reason": "preflight_auth_ok_post_start_authenticated_false_auth_required",
+            "timeline": timeline,
+            "proven": True,
+            "distinct_post_start_script_run_seq": post_start_distinct_seq,
+        }
 
     unauth = [t for t in post_latch if t.get("authenticated") is False]
     if unauth:
@@ -209,4 +241,5 @@ def classify_queueui_root(
         "reason": "root_predicate_not_isolated_from_audit_rows",
         "timeline": timeline,
         "proven": False,
+        "distinct_post_start_script_run_seq": distinct_post_start,
     }
