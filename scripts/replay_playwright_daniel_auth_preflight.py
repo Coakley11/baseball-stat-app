@@ -23,7 +23,7 @@ from playwright_daniel_auth_session import (  # noqa: E402
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
 START_URL = (
     f"{BASE}/?active_page=Live%20Draft%20Room"
-    f"&solo_delivery_diag=1&solo_bridge_transition=A0&solo_component_diag=1"
+    f"&solo_component_diag=1&solo_diag_timer=10"
 )
 
 
@@ -39,39 +39,12 @@ def _body_text(page) -> str:
     )
 
 
-def _authenticated_probe(page) -> bool | None:
-    try:
-        import base64
-
-        b64 = page.evaluate(
-            """() => {
-          function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) {
-            try { if (f.contentDocument) r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
-          for (const root of roots()) {
-            const el = root.querySelector('#solo-paired-transition-diag');
-            if (el) return el.getAttribute('data-paired-transition-b64') || '';
-          }
-          return '';
-        }"""
-        )
-        if not b64:
-            return None
-        raw = base64.b64decode(b64 + "==="[: (4 - len(b64) % 4) % 4])
-        payload = json.loads(raw.decode("utf-8"))
-        rows = payload.get("rows") or []
-        if isinstance(rows, list) and rows:
-            for row in reversed(rows):
-                if isinstance(row, dict) and "authenticated" in row:
-                    return bool(row.get("authenticated"))
-    except Exception:
-        return None
-    return None
-
-
 def run_preflight() -> dict:
     from playwright.sync_api import sync_playwright
 
     from cloud_streamlit_wake import goto_and_wake
+    from p8_production_start_harness import scrape_stage1_ledger_rows
+    from playwright_auth_preflight_strict import strict_preflight_from_page
     from run_solo_clean_verification import scrape_live_sha
     from verify_cloud_deploy_playwright import scrape_deploy
 
@@ -84,11 +57,13 @@ def run_preflight() -> dict:
         "authenticated_app": False,
         "authenticated_restored": False,
         "failure": "",
+        "strict": {},
     }
     if not result["harness_ready"]:
         result["failure"] = "harness_files_incomplete"
         return result
 
+    harness_sid = load_suite_sid()
     url = append_suite_sid_to_url(START_URL)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -108,27 +83,14 @@ def run_preflight() -> dict:
         result["cloud_sha"] = scrape_live_sha(page) or probe.get("sha") or ""
         text = _body_text(page)
         result["signed_in_display"] = "Signed in as" in text
-        auth_probe = _authenticated_probe(page)
-        if auth_probe is True:
-            result["authenticated_app"] = True
-        elif auth_probe is False:
-            result["authenticated_app"] = False
-        else:
-            result["authenticated_app"] = result["signed_in_display"] and "Not signed in" not in text
-        result["authenticated_restored"] = bool(
-            result["authenticated_app"]
-            and "suite_sid=" in (page.url or "")
-        )
-        if not result["authenticated_restored"]:
-            if not result["authenticated_app"]:
-                result["failure"] = "authenticated_app_false"
-            elif "suite_sid=" not in (page.url or ""):
-                result["failure"] = "suite_sid_not_retained_in_url"
-            else:
-                result["failure"] = "auth_replay_incomplete"
-        elif not result["signed_in_display"]:
-            result["failure"] = ""
-            result["signed_in_display_note"] = "probe_authenticated_true_ui_caption_not_in_scrape"
+        ledger = scrape_stage1_ledger_rows(page) or []
+        strict = strict_preflight_from_page(page, harness_sid=harness_sid, ledger_rows=ledger)
+        result["strict"] = strict
+        result["authenticated_app"] = bool(strict.get("streamlit_auth_complete"))
+        result["authenticated_restored"] = bool(strict.get("authenticated_restored"))
+        result["failure"] = str(strict.get("failure") or "")
+        if result["authenticated_restored"] and not result["signed_in_display"]:
+            result["signed_in_display_note"] = "strict_preflight_ok_ui_caption_not_in_scrape"
         context.close()
         browser.close()
     return result

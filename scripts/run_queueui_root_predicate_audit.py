@@ -289,6 +289,45 @@ def main() -> int:
         report["streamlit_session_id"] = identity.get("streamlit_session_id")
         report["application_diagnostic_run_id"] = identity.get("diagnostic_run_id")
 
+        from playwright_auth_preflight_strict import inspect_start_control, strict_preflight_from_page
+        from playwright_daniel_auth_session import load_suite_sid
+
+        ledger_pre_click = scrape_stage1_ledger_rows(page) or []
+        strict_live = strict_preflight_from_page(
+            page, harness_sid=load_suite_sid(), ledger_rows=ledger_pre_click
+        )
+        report["strict_prestart_auth"] = strict_live
+        start_inspect = inspect_start_control(page)
+        if not strict_live.get("authenticated_restored") or not start_inspect.get("enabled"):
+            browser.close()
+            report["audit_execution_status"] = "NOT_RUN"
+            report["first_boundary"] = "AUTH_PREFLIGHT_OR_START_GATE"
+            report["audit_completion"] = {
+                "audit_execution_status": "NOT_RUN",
+                "first_boundary": report["first_boundary"],
+                "completed": False,
+                "reason": strict_live.get("failure") or "start_control_disabled",
+            }
+            report["start_draft_click"] = {
+                **start_inspect,
+                "disabled_at_click": True,
+                "dom_click_dispatched": False,
+                "selector_found": start_inspect.get("visible"),
+            }
+            report["finished_at"] = time.time()
+            _write_report(report)
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "audit_execution_status": "NOT_RUN",
+                        "first_boundary": report["first_boundary"],
+                        "strict_failure": strict_live.get("failure"),
+                    }
+                )
+            )
+            return 6
+
         preclick_at = time.time()
         baseline = capture_audit_baseline(
             ledger_pre,
