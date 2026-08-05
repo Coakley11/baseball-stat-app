@@ -232,6 +232,29 @@ def should_preserve_in_session_room_on_auth_blocked_restore(
     return False
 
 
+def reconcile_live_draft_auth_restore_block(session: dict[str, Any]) -> bool:
+    """Drop stale auth_required restore latch after genuine authentication is present."""
+    blocked = str(session.get("_live_draft_restore_blocked_reason") or "").strip()
+    if blocked not in _AUTH_BLOCKED_RESTORE_REASONS:
+        return False
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated
+    except ImportError:
+        return False
+    if not is_auth_enabled() or not is_authenticated(session):
+        return False
+    blob = canonical_live_draft(session)
+    allowed, _reason = live_draft_restore_allowed(
+        session,
+        blob if isinstance(blob, dict) else None,
+        source="auth_restore_reconcile",
+    )
+    if not allowed:
+        return False
+    session.pop("_live_draft_restore_blocked_reason", None)
+    return True
+
+
 def _apply_auth_blocked_restore_without_clearing_runtime(
     session: dict[str, Any],
     *,
@@ -1365,6 +1388,18 @@ def _clear_blocked_completed_runtime(session: dict[str, Any], *, reason: str) ->
 
 
 def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        import streamlit as st_mod  # noqa: WPS433
+
+        from suite_auth import ensure_authenticated_session_hydrated, is_auth_enabled
+
+        if is_auth_enabled():
+            ensure_authenticated_session_hydrated(session, st=st_mod)
+        reconcile_live_draft_auth_restore_block(session)
+    except ImportError:
+        pass
+    except Exception:
+        pass
     try:
         from live_draft_room_mutation_audit import room_mutation_checkpoint
 

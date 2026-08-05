@@ -1323,8 +1323,20 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         pass
 
     try:
-        from live_draft_state import apply_cloud_live_draft_state_if_allowed, prepare_live_draft_state
+        from suite_auth import ensure_authenticated_session_hydrated, is_auth_enabled
 
+        if is_auth_enabled():
+            ensure_authenticated_session_hydrated(ss, st=st)
+    except ImportError:
+        pass
+    try:
+        from live_draft_state import (
+            apply_cloud_live_draft_state_if_allowed,
+            prepare_live_draft_state,
+            reconcile_live_draft_auth_restore_block,
+        )
+
+        reconcile_live_draft_auth_restore_block(ss)
         apply_cloud_live_draft_state_if_allowed(ss, state)
         prepare_live_draft_state(ss)
     except ImportError:
@@ -1697,6 +1709,19 @@ def prepare_baseball_workspace(st: Any) -> bool:
         ss.pop("_suite_workspace_force_sync", None)
         ss.pop("_suite_auth_just_logged_in", None)
         ss.pop("_suite_auth_just_signed_in", None)
+    try:
+        from suite_auth import ensure_authenticated_session_hydrated, is_auth_enabled
+
+        if is_auth_enabled():
+            ensure_authenticated_session_hydrated(ss, st=st)
+    except ImportError:
+        pass
+    try:
+        from live_draft_state import reconcile_live_draft_auth_restore_block
+
+        reconcile_live_draft_auth_restore_block(ss)
+    except ImportError:
+        pass
     try:
         from live_draft_key_ownership_diag import diag_enabled, record_key_ownership
 

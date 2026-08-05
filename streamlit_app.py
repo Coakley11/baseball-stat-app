@@ -22260,6 +22260,18 @@ elif active_page == DRAFT_LAB_PAGE:
 
 elif active_page == "Live Draft Room":
     try:
+        from suite_auth import ensure_authenticated_session_hydrated, is_auth_enabled
+
+        if is_auth_enabled():
+            ensure_authenticated_session_hydrated(st.session_state, st=st)
+        from live_draft_state import reconcile_live_draft_auth_restore_block
+
+        reconcile_live_draft_auth_restore_block(st.session_state)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    try:
         from live_draft_queueui_predicate_audit import emit_ldr_post_start_script_entry
 
         emit_ldr_post_start_script_entry(

@@ -845,6 +845,20 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
     return True
 
 
+def ensure_authenticated_session_hydrated(session_state: dict[str, Any], *, st: Any | None = None) -> bool:
+    """
+    Ensure ``is_authenticated`` reflects a validated Supabase session.
+
+    Uses existing tokens in session_state or browser ``suite_sid`` storage — never
+    query-param shortcuts. Safe to call on warm workspace skips and before draft restore.
+    """
+    if not is_auth_enabled():
+        return True
+    if auth_session_complete(session_state):
+        return True
+    return restore_auth_session(session_state, st=st)
+
+
 def logout(session_state: dict[str, Any], *, st: Any | None = None) -> None:
     if st is None:
         try:
