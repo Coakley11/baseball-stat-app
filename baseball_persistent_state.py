@@ -552,6 +552,12 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     """Apply one authoritative workspace blob atomically (page + all page_filter_state)."""
     ss = st.session_state
     try:
+        from live_draft_auth_prestart_stage1_diag import emit_prestart_hydration_checkpoint
+
+        emit_prestart_hydration_checkpoint(ss, "before_apply_baseball_disk_state", st=st)
+    except ImportError:
+        pass
+    try:
         from live_draft_key_ownership_diag import diag_enabled, record_key_ownership
 
         if diag_enabled(ss):
@@ -1432,6 +1438,12 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             record_key_ownership(ss, "after_apply_baseball_disk_state", st=st)
     except ImportError:
         pass
+    try:
+        from live_draft_auth_prestart_stage1_diag import emit_prestart_hydration_checkpoint
+
+        emit_prestart_hydration_checkpoint(ss, "after_apply_baseball_disk_state", st=st)
+    except ImportError:
+        pass
 
 
 def apply_baseball_session_defaults(st: Any) -> None:
@@ -1528,6 +1540,20 @@ def prepare_baseball_workspace(st: Any) -> bool:
             ss["_baseball_warm_startup_skipped"] = False
     except Exception:
         warm_skip = False
+
+    try:
+        from live_draft_auth_prestart_stage1_diag import emit_prestart_hydration_checkpoint
+
+        emit_prestart_hydration_checkpoint(
+            ss,
+            "prepare_workspace_warm_skip",
+            st=st,
+            hydration_skipped=bool(warm_skip),
+            skip_or_failure_reason="warm_skip" if warm_skip else "",
+            extra={"warm_skip": bool(warm_skip), "baseball_warm_startup_skipped": bool(ss.get("_baseball_warm_startup_skipped"))},
+        )
+    except ImportError:
+        pass
 
     result = False
     if warm_skip:

@@ -48,6 +48,8 @@ GATE_A_EXPORT_PINNED_EVENTS = frozenset(
         "production_stage1_auth_snapshot_restore_attempt",
         "production_stage1_auth_snapshot_post_restore",
         "production_stage1_auth_state_mutation",
+        "production_stage1_auth_prestart_hydration",
+        "production_stage1_auth_prestart_mutation",
         "production_live_draft_branch_canary",
         "production_global_script_run_canary",
     }

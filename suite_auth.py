@@ -608,6 +608,16 @@ def _apply_authenticated_user(
     tokens: dict[str, Any] | None = None,
     email_fallback: str = "",
 ) -> None:
+    try:
+        from live_draft_auth_prestart_stage1_diag import emit_prestart_hydration_checkpoint
+
+        emit_prestart_hydration_checkpoint(
+            session_state,
+            "apply_authenticated_user_entry",
+            authenticated_before=bool(is_authenticated(session_state)) if is_auth_enabled() else True,
+        )
+    except ImportError:
+        pass
     session_state[AUTH_SESSION_KEY] = True
     email = str(getattr(user, "email", None) or (user.get("email") if isinstance(user, dict) else None) or email_fallback).strip()
     session_state[AUTH_USER_EMAIL_KEY] = email
@@ -617,6 +627,17 @@ def _apply_authenticated_user(
         session_state[AUTH_USER_ID_KEY] = uid
     if tokens:
         session_state[AUTH_TOKENS_KEY] = dict(tokens)
+    try:
+        from live_draft_auth_prestart_stage1_diag import arm_prestart_mutation_trace, emit_prestart_hydration_checkpoint
+
+        arm_prestart_mutation_trace(session_state, reason="apply_authenticated_user")
+        emit_prestart_hydration_checkpoint(
+            session_state,
+            "apply_authenticated_user_exit",
+            authenticated_after=bool(is_authenticated(session_state)) if is_auth_enabled() else True,
+        )
+    except ImportError:
+        pass
 
 
 def _clear_auth_session(session_state: dict[str, Any], *, st: Any | None = None) -> None:
@@ -785,8 +806,42 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
 
     Call before ``render_auth_gate`` once browser cookies are loaded.
     """
+    auth_before = bool(is_authenticated(session_state)) if is_auth_enabled() else True
+    session_state["_suite_auth_last_restore_attempted"] = True
+
+    def _finish(ok: bool, reason: str = "") -> bool:
+        session_state["_suite_auth_last_restore_ok"] = bool(ok)
+        try:
+            from live_draft_auth_prestart_stage1_diag import emit_prestart_hydration_checkpoint
+
+            emit_prestart_hydration_checkpoint(
+                session_state,
+                "restore_auth_session_exit",
+                st=st,
+                authenticated_before=auth_before,
+                authenticated_after=bool(is_authenticated(session_state)) if is_auth_enabled() else True,
+                skip_or_failure_reason=reason,
+            )
+        except ImportError:
+            pass
+        return ok
+
+    try:
+        from live_draft_auth_prestart_stage1_diag import emit_prestart_hydration_checkpoint
+
+        emit_prestart_hydration_checkpoint(
+            session_state,
+            "restore_auth_session_entry",
+            st=st,
+            authenticated_before=auth_before,
+            hydration_attempted=True,
+        )
+        emit_prestart_hydration_checkpoint(session_state, "suite_sid_detection", st=st)
+    except ImportError:
+        pass
+
     if not is_auth_enabled():
-        return True
+        return _finish(True, "auth_disabled")
     if is_authenticated(session_state):
         if auth_session_complete(session_state):
             try:
@@ -805,7 +860,7 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
                 pass
             session_state.pop(AUTH_JUST_LOGGED_IN_KEY, None)
             session_state.pop(AUTH_LAST_RESTORE_ERROR_KEY, None)
-            return True
+            return _finish(True, "already_complete")
         # Stale/partial session flag without tokens — fall through to token restore.
         try:
             from live_draft_auth_snapshot_stage1_diag import trace_auth_key_pop
@@ -820,6 +875,23 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             from suite_auth_browser import load_browser_auth_tokens
 
             browser_tokens = load_browser_auth_tokens(st)
+            try:
+                from live_draft_auth_prestart_stage1_diag import arm_prestart_mutation_trace, emit_prestart_hydration_checkpoint
+
+                emit_prestart_hydration_checkpoint(
+                    session_state,
+                    "load_browser_auth_tokens",
+                    st=st,
+                    extra={
+                        "browser_tokens_loaded": bool(browser_tokens),
+                        "access_token_present": bool(str((browser_tokens or {}).get("access_token") or "").strip()),
+                        "refresh_token_present": bool(str((browser_tokens or {}).get("refresh_token") or "").strip()),
+                    },
+                )
+                if browser_tokens:
+                    arm_prestart_mutation_trace(session_state, reason="browser_tokens_loaded")
+            except ImportError:
+                pass
             if browser_tokens:
                 tokens = browser_tokens
                 session_state[AUTH_TOKENS_KEY] = dict(tokens)
@@ -827,7 +899,7 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             pass
 
     if not tokens.get("access_token") or not tokens.get("refresh_token"):
-        return False
+        return _finish(False, "tokens_missing")
 
     try:
         auth = _auth_api(session_state)
@@ -838,7 +910,7 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             user = _user_from_obj(getattr(user_resp, "user", None))
         if user is None:
             _clear_auth_session(session_state, st=st)
-            return False
+            return _finish(False, "user_missing")
         refreshed = _tokens_from_auth_response(resp)
         if refreshed:
             tokens = refreshed
@@ -851,9 +923,9 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
         session_state[AUTH_LAST_RESTORE_ERROR_KEY] = str(exc)
         if session_state.get(AUTH_JUST_LOGGED_IN_KEY):
             # Workspace sync must not undo a login that just succeeded this session.
-            return bool(auth_session_complete(session_state))
+            return _finish(bool(auth_session_complete(session_state)), "exception_just_logged_in")
         _clear_auth_session(session_state, st=st)
-        return False
+        return _finish(False, f"exception:{type(exc).__name__}")
     # Clamp workspace outside the session-clearing try: a workspace resolution
     # failure must never invalidate an otherwise-valid authenticated session.
     try:
@@ -866,7 +938,7 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
         sanitize_workflow_library_for_account(session_state, st=st, persist_cleanup=True)
     except ImportError:
         pass
-    return True
+    return _finish(True, "ok")
 
 
 def ensure_authenticated_session_hydrated(session_state: dict[str, Any], *, st: Any | None = None) -> bool:

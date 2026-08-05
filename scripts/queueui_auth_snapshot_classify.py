@@ -11,11 +11,13 @@ AUTH_EVENTS = (
     "production_stage1_auth_snapshot_restore_attempt",
     "production_stage1_auth_snapshot_post_restore",
     "production_stage1_auth_state_mutation",
+    "production_stage1_auth_prestart_hydration",
+    "production_stage1_auth_prestart_mutation",
     "production_stage1_queueui_predicate_audit",
     "production_stage1_start_handler_exited",
 )
 
-AUTH_SNAPSHOT1 = "AUTH_SNAPSHOT1 — source Streamlit session was not authenticated before Start"
+AUTH_SNAPSHOT1 = "AUTH_SNAPSHOT1 — SOURCE STREAMLIT SESSION NOT AUTHENTICATED AT START ARM"
 AUTH_SNAPSHOT2 = "AUTH_SNAPSHOT2 — valid auth existed but snapshot capture was rejected"
 AUTH_SNAPSHOT3 = "AUTH_SNAPSHOT3 — snapshot was captured but lost before rerun"
 AUTH_SNAPSHOT4 = "AUTH_SNAPSHOT4 — snapshot existed but was not restored"
@@ -112,8 +114,12 @@ def classify_auth_snapshot_root(
         classification = AUTH_SNAPSHOT1
         detail = "pre_start_control_not_authenticated"
     elif capture and capture.get("capture_attempted") and not capture.get("capture_accepted"):
-        classification = AUTH_SNAPSHOT2
-        detail = str(capture.get("rejection_reason") or "capture_rejected")
+        if not bool(capture.get("is_authenticated")) or not bool(capture.get("auth_session_complete")):
+            classification = AUTH_SNAPSHOT1
+            detail = str(capture.get("rejection_reason") or "source_session_not_authenticated_at_start_arm")
+        else:
+            classification = AUTH_SNAPSHOT2
+            detail = str(capture.get("rejection_reason") or "capture_rejected")
     elif capture.get("capture_accepted") and before_rerun and not before_rerun.get("snapshot_key_present"):
         classification = AUTH_SNAPSHOT3
         detail = "snapshot_missing_at_callback_exit"

@@ -129,16 +129,13 @@ def _note(session: dict[str, Any], event: str, *, st: Any | None = None, extra: 
 
 
 def emit_auth_state_before_start_control(session: dict[str, Any], *, st: Any | None = None) -> None:
-    _note(
-        session,
-        EVENT_AUTH_BEFORE_START,
-        st=st,
-        extra={
-            "suite_sid_present": _suite_sid_present(st),
-            "auth_hydration_source": str(session.get("_suite_auth_last_hydration_source") or ""),
-            "auth_session_validation_ok": bool(auth_session_complete(session)) if is_auth_enabled() else True,
-        },
-    )
+    """Deprecated wrapper — use live_draft_auth_prestart_stage1_diag.emit_auth_state_before_start_control."""
+    try:
+        from live_draft_auth_prestart_stage1_diag import emit_auth_state_before_start_control as _emit
+
+        _emit(session, st=st, start_button_enabled=None)
+    except ImportError:
+        pass
 
 
 def record_auth_snapshot_capture(session_state: dict[str, Any], *, st: Any | None = None) -> None:
@@ -322,6 +319,21 @@ def trace_auth_key_pop(session: dict[str, Any], key: str, *, st: Any | None = No
         source_function=fn,
         source_line=ln,
     )
+    try:
+        from live_draft_auth_prestart_stage1_diag import note_prestart_mutation
+
+        note_prestart_mutation(
+            session,
+            operation="pop",
+            key=key,
+            before_present=before,
+            after_present=after,
+            st=st,
+            source_function=fn,
+            source_line=ln,
+        )
+    except ImportError:
+        pass
 
 
 def trace_auth_key_set(session: dict[str, Any], key: str, *, st: Any | None = None) -> None:

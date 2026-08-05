@@ -473,6 +473,9 @@ def main() -> int:
                     auth_preflight_authenticated=bool(pre.get("authenticated_restored")),
                     browser_suite_sid_present=bool(pre.get("suite_sid_present")),
                 )
+                from queueui_auth_prestart_classify import classify_auth_prestart_root
+
+                report["auth_prestart_classification"] = classify_auth_prestart_root(ledger_rows=last_ledger)
             except ImportError:
                 pass
         else:

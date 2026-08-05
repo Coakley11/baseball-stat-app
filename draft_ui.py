@@ -1832,6 +1832,12 @@ def on_start_new_live_draft() -> None:
             if gate.get("armed"):
                 mark_start_live_draft_clicked(session)
                 try:
+                    from live_draft_auth_prestart_stage1_diag import emit_start_callback_before_snapshot
+
+                    emit_start_callback_before_snapshot(session, st=st)
+                except ImportError:
+                    pass
+                try:
                     from suite_auth import snapshot_auth_for_start_draft_rerun
 
                     snapshot_auth_for_start_draft_rerun(session, st=st)

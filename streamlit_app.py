@@ -24986,10 +24986,22 @@ elif active_page == "Live Draft Room":
             b_start, b_reset, b_restore = st.columns([2, 2, 1])
             with b_start:
                 try:
-                    from live_draft_auth_snapshot_stage1_diag import emit_auth_state_before_start_control
+                    from live_draft_auth_prestart_stage1_diag import (
+                        emit_auth_state_before_start_control,
+                        emit_prestart_hydration_checkpoint,
+                    )
 
-                    if not _start_disabled:
-                        emit_auth_state_before_start_control(st.session_state, st=st)
+                    emit_prestart_hydration_checkpoint(
+                        st.session_state,
+                        "before_start_control_render",
+                        st=st,
+                        extra={"start_button_enabled": not bool(_start_disabled)},
+                    )
+                    emit_auth_state_before_start_control(
+                        st.session_state,
+                        st=st,
+                        start_button_enabled=not bool(_start_disabled),
+                    )
                 except ImportError:
                     pass
                 try:
