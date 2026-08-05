@@ -145,6 +145,19 @@ def live_draft_restore_allowed(
     source: str = "",
 ) -> tuple[bool, str]:
     """Return (allowed, reason) for applying a persisted live draft blob."""
+    try:
+        from live_draft_auth_snapshot_stage1_diag import emit_auth_snapshot_post_restore
+        from live_draft_stage1_production_ledger import STAGE1_SCRIPT_SEQ_KEY
+
+        seq = int(session.get(STAGE1_SCRIPT_SEQ_KEY) or 0)
+        if session.get("_solo_auth_diag_before_restore_allowed_seq") != seq:
+            session["_solo_auth_diag_before_restore_allowed_seq"] = seq
+            emit_auth_snapshot_post_restore(
+                session,
+                context=f"live_draft_restore_allowed:{source or 'unknown'}",
+            )
+    except ImportError:
+        pass
     if not isinstance(blob, dict) or not blob.get("draft_room_id"):
         return False, "empty_blob"
     try:
@@ -263,7 +276,12 @@ def _apply_auth_blocked_restore_without_clearing_runtime(
 ) -> dict[str, Any] | None:
     if not should_preserve_in_session_room_on_auth_blocked_restore(session, block_reason=block_reason):
         return None
-    session["_live_draft_restore_blocked_reason"] = str(block_reason or "")
+    try:
+        from live_draft_auth_snapshot_stage1_diag import trace_restore_blocked_reason
+
+        trace_restore_blocked_reason(session, str(block_reason or ""))
+    except ImportError:
+        session["_live_draft_restore_blocked_reason"] = str(block_reason or "")
     if is_runtime_room(runtime_room):
         return runtime_room
     fallback = session.get(LIVE_DRAFT_ROOM_KEY)

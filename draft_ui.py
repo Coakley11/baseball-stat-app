@@ -1834,12 +1834,18 @@ def on_start_new_live_draft() -> None:
                 try:
                     from suite_auth import snapshot_auth_for_start_draft_rerun
 
-                    snapshot_auth_for_start_draft_rerun(session)
+                    snapshot_auth_for_start_draft_rerun(session, st=st)
                 except ImportError:
                     pass
                 _handler_ok = True
                 _pending_armed = True
                 _exit_reason = "gate_armed_pending"
+                try:
+                    from live_draft_auth_snapshot_stage1_diag import emit_auth_snapshot_before_rerun
+
+                    emit_auth_snapshot_before_rerun(session, st=st)
+                except ImportError:
+                    pass
             elif gate.get("replace_pending"):
                 _exit_reason = "replace_confirmation_required"
                 _gate_error = str(gate.get("error") or "")

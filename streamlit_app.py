@@ -22263,7 +22263,36 @@ elif active_page == "Live Draft Room":
         from suite_auth import ensure_authenticated_session_hydrated, is_auth_enabled
 
         if is_auth_enabled():
+            _post_start_auth_diag = False
+            try:
+                from live_draft_auth_snapshot_stage1_diag import (
+                    TRACE_MUTATIONS_KEY,
+                    emit_auth_snapshot_post_restore,
+                    emit_auth_snapshot_restore_attempt,
+                )
+                from suite_auth import AUTH_START_RERUN_SNAPSHOT_KEY
+
+                _post_start_auth_diag = bool(
+                    st.session_state.get("_start_live_draft_pending")
+                    or st.session_state.get(AUTH_START_RERUN_SNAPSHOT_KEY)
+                    or st.session_state.get(TRACE_MUTATIONS_KEY)
+                )
+                if _post_start_auth_diag:
+                    emit_auth_snapshot_restore_attempt(st.session_state, st=st)
+            except ImportError:
+                pass
             ensure_authenticated_session_hydrated(st.session_state, st=st)
+            try:
+                from live_draft_auth_snapshot_stage1_diag import emit_auth_snapshot_post_restore
+
+                if _post_start_auth_diag:
+                    emit_auth_snapshot_post_restore(
+                        st.session_state,
+                        st=st,
+                        context="before_reconcile_live_draft_auth_restore_block",
+                    )
+            except ImportError:
+                pass
         from live_draft_state import reconcile_live_draft_auth_restore_block
 
         reconcile_live_draft_auth_restore_block(st.session_state)
@@ -24956,6 +24985,13 @@ elif active_page == "Live Draft Room":
 
             b_start, b_reset, b_restore = st.columns([2, 2, 1])
             with b_start:
+                try:
+                    from live_draft_auth_snapshot_stage1_diag import emit_auth_state_before_start_control
+
+                    if not _start_disabled:
+                        emit_auth_state_before_start_control(st.session_state, st=st)
+                except ImportError:
+                    pass
                 try:
                     from live_draft_start_stage1_observability import emit_start_control_rendered
 

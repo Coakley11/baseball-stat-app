@@ -461,6 +461,20 @@ def main() -> int:
             )
             report["root_classification"] = root
             report["queueuiroot_classification"] = root.get("classification")
+            try:
+                from queueui_auth_snapshot_classify import (
+                    auth_snapshot_timeline_from_ledger,
+                    classify_auth_snapshot_root,
+                )
+
+                report["auth_snapshot_timeline"] = auth_snapshot_timeline_from_ledger(last_ledger)
+                report["auth_snapshot_classification"] = classify_auth_snapshot_root(
+                    ledger_rows=last_ledger,
+                    auth_preflight_authenticated=bool(pre.get("authenticated_restored")),
+                    browser_suite_sid_present=bool(pre.get("suite_sid_present")),
+                )
+            except ImportError:
+                pass
         else:
             report["root_classification"] = None
             report["queueuiroot_classification"] = None

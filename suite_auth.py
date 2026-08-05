@@ -159,6 +159,12 @@ def restore_auth_session_snapshot(session_state: dict[str, Any], snapshot: dict[
             session_state[key] = dict(val)
         else:
             session_state[key] = val
+        try:
+            from live_draft_auth_snapshot_stage1_diag import trace_auth_key_set
+
+            trace_auth_key_set(session_state, str(key))
+        except ImportError:
+            pass
 
 
 def build_auth_session_diagnostics(session_state: dict[str, Any], *, st: Any | None = None) -> dict[str, Any]:
@@ -632,8 +638,18 @@ def _clear_auth_session(session_state: dict[str, Any], *, st: Any | None = None)
         AUTH_JUST_LOGGED_IN_KEY,
         AUTH_LAST_LOGIN_OK_KEY,
     ):
-        session_state.pop(key, None)
-    session_state.pop(AUTH_START_RERUN_SNAPSHOT_KEY, None)
+        try:
+            from live_draft_auth_snapshot_stage1_diag import trace_auth_key_pop
+
+            trace_auth_key_pop(session_state, key, st=st)
+        except ImportError:
+            session_state.pop(key, None)
+    try:
+        from live_draft_auth_snapshot_stage1_diag import trace_auth_key_pop
+
+        trace_auth_key_pop(session_state, AUTH_START_RERUN_SNAPSHOT_KEY, st=st)
+    except ImportError:
+        session_state.pop(AUTH_START_RERUN_SNAPSHOT_KEY, None)
     if st is not None:
         try:
             from suite_auth_browser import clear_browser_auth_tokens
@@ -791,7 +807,12 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             session_state.pop(AUTH_LAST_RESTORE_ERROR_KEY, None)
             return True
         # Stale/partial session flag without tokens — fall through to token restore.
-        session_state.pop(AUTH_SESSION_KEY, None)
+        try:
+            from live_draft_auth_snapshot_stage1_diag import trace_auth_key_pop
+
+            trace_auth_key_pop(session_state, AUTH_SESSION_KEY, st=st)
+        except ImportError:
+            session_state.pop(AUTH_SESSION_KEY, None)
 
     tokens = dict(session_state.get(AUTH_TOKENS_KEY) or {})
     if not tokens.get("access_token") and st is not None:
@@ -858,17 +879,28 @@ def ensure_authenticated_session_hydrated(session_state: dict[str, Any], *, st: 
     if not is_auth_enabled():
         return True
     if auth_session_complete(session_state):
+        session_state["_suite_auth_last_hydration_source"] = "already_complete"
         return True
     snap = session_state.get(AUTH_START_RERUN_SNAPSHOT_KEY)
     if isinstance(snap, dict) and snap:
         restore_auth_session_snapshot(session_state, snap)
         if auth_session_complete(session_state):
+            session_state["_suite_auth_last_hydration_source"] = "start_rerun_snapshot"
             return True
-    return restore_auth_session(session_state, st=st)
+    ok = restore_auth_session(session_state, st=st)
+    session_state["_suite_auth_last_hydration_source"] = "browser_restore" if ok else "restore_failed"
+    return ok
 
 
-def snapshot_auth_for_start_draft_rerun(session_state: dict[str, Any]) -> None:
+def snapshot_auth_for_start_draft_rerun(session_state: dict[str, Any], *, st: Any | None = None) -> None:
     """Preserve validated session auth when arming Start Draft (same Streamlit session)."""
+    try:
+        from live_draft_auth_snapshot_stage1_diag import record_auth_snapshot_capture
+
+        record_auth_snapshot_capture(session_state, st=st)
+        return
+    except ImportError:
+        pass
     if not is_auth_enabled():
         return
     if not auth_session_complete(session_state):
