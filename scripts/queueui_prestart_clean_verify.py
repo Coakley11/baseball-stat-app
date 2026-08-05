@@ -13,7 +13,20 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
 OUT = ROOT / "data" / "queueui_prestart_clean_verify.json"
-TARGET_SHA = "e8d8156"
+
+
+def _deploy_pin() -> str:
+    pin = ROOT / "deploy_commit.txt"
+    if not pin.is_file():
+        return ""
+    for line in pin.read_text(encoding="utf-8").splitlines():
+        tok = line.split("#", 1)[0].strip()
+        if tok:
+            return tok.lower()[:7]
+    return ""
+
+
+TARGET_SHA = _deploy_pin()
 
 
 def main() -> int:
@@ -115,7 +128,7 @@ def main() -> int:
                 pass
 
         checks = {
-            "deploy_sha_e8d8156": str(deploy.get("sha") or "").lower()[:7] == TARGET_SHA,
+            f"deploy_sha_{TARGET_SHA or 'pin'}": str(deploy.get("sha") or "").lower()[:7] == TARGET_SHA,
             "authenticated": report["authenticated"],
             "setup_lobby": is_clean_setup_lobby(lobby) if lobby else False,
             "room_id_empty": not (lobby.get("visible_room_id") or lobby.get("python_room_id")),
