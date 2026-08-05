@@ -1,7 +1,7 @@
-fc946da  # auto-generated; Streamlit Cloud reads this at runtime
+ad6bf4b  # auto-generated; Streamlit Cloud reads this at runtime
 
 
 
-# deploy_epoch: 2026-08-05T03:50:00Z queueuiroot2_auth_hydration_post_start_rerun
+# deploy_epoch: 2026-08-05T04:15:00Z queueuiroot2_start_draft_auth_snapshot
 
 branch: dev
