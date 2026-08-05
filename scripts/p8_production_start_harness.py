@@ -60,7 +60,7 @@ def dispatch_start_single_authoritative_click(page, checkpoints: list[dict[str, 
         enabled=len(enabled),
     )
     dom_click_dispatched = False
-    click_ts = time.time()
+    click_dispatch_started_at = time.time()
     intercept = False
     bbox: dict[str, Any] = {}
     if enabled:
@@ -88,10 +88,13 @@ def dispatch_start_single_authoritative_click(page, checkpoints: list[dict[str, 
                     dom_click_dispatched = True
             except Exception as exc:
                 inspect["click_error"] = str(exc)[:300]
+    click_dispatch_completed_at = time.time()
     inspect.update(
         {
             "dom_click_dispatched": dom_click_dispatched,
-            "click_timestamp": click_ts,
+            "click_timestamp": click_dispatch_completed_at,
+            "click_dispatch_started_at": click_dispatch_started_at,
+            "click_dispatch_completed_at": click_dispatch_completed_at,
             "bounding_box": bbox,
             "click_intercepted": intercept,
         }

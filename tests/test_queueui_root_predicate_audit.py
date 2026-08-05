@@ -10,7 +10,35 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from live_draft_queueui_predicate_audit import compute_render_predicates  # noqa: E402
+from queueui_audit_protocol import prestart_ledger_signals  # noqa: E402
 from queueui_root_classify import QUEUEUIROOT1, QUEUEUIROOT3, classify_queueui_root  # noqa: E402
+
+
+def test_prestart_ledger_signals_uses_latest_script_run_seq_only() -> None:
+    ledger = [
+        {
+            "script_run_seq": 2,
+            "run_id": "run-a",
+            "streamlit_session_id": "sid-a",
+            "restore": {"restore_blocked_reason": "auth_required"},
+            "predicates": {"start_in_flight": True},
+        },
+        {
+            "script_run_seq": 3,
+            "run_id": "run-a",
+            "streamlit_session_id": "sid-a",
+            "restore": {"restore_blocked_reason": ""},
+            "predicates": {"start_in_flight": False},
+        },
+    ]
+    sig = prestart_ledger_signals(
+        ledger,
+        streamlit_session_id="sid-a",
+        diagnostic_run_id="run-a",
+    )
+    assert sig["latest_script_run_seq"] == 3
+    assert sig["restore_blocked_reason"] == ""
+    assert sig["start_in_flight"] is False
 
 
 def test_compute_render_predicates_room_picking_clears_rec_skip() -> None:

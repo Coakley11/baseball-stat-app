@@ -40,10 +40,51 @@ _FORBIDDEN_EVENT_PREFIXES = ("production_stage1_token_claim_",)
 _START_HANDLER_ENTERED = "production_stage1_start_handler_entered"
 _START_HANDLER_EXITED = "production_stage1_start_handler_exited"
 
+_EVENT_ID_INDEX_RE = re.compile(r"^[^:]+:(\d+):")
+
+_POST_CLICK_LEDGER_EVENTS = frozenset(
+    {
+        "production_stage1_start_callback_entered",
+        "production_stage1_start_callback_exited",
+        "production_stage1_pending_start_observed",
+        "production_stage1_pending_start_consumed",
+        "production_stage1_start_handler_entered",
+        "production_stage1_start_handler_exited",
+        "production_stage1_room_creation_entered",
+        "production_stage1_room_creation_exited",
+        "production_stage1_room_state_write",
+        PREDICATE_EVENT,
+    }
+)
+
+
+def ledger_event_index(row: dict[str, Any]) -> int:
+    eid = str(row.get("event_id") or "")
+    m = _EVENT_ID_INDEX_RE.match(eid)
+    if not m:
+        return -1
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return -1
+
+
+def _row_matches_baseline_identity(row: dict[str, Any], baseline: dict[str, Any]) -> bool:
+    base_sid = str(baseline.get("streamlit_session_id") or "")
+    row_sid = str(row.get("streamlit_session_id") or "")
+    if base_sid and row_sid and row_sid != base_sid:
+        return False
+    base_run = str(baseline.get("diagnostic_run_id") or "")
+    row_run = str(row.get("run_id") or "")
+    if base_run and row_run and row_run != base_run:
+        return False
+    return True
+
 
 def _ledger_extrema(ledger: list[dict[str, Any]]) -> dict[str, Any]:
     max_seq = 0
     max_ts = 0.0
+    max_event_index = -1
     event_ids: list[str] = []
     for i, row in enumerate(ledger):
         if not isinstance(row, dict):
@@ -57,11 +98,15 @@ def _ledger_extrema(ledger: list[dict[str, Any]]) -> dict[str, Any]:
         eid = str(row.get("event_id") or "")
         if eid:
             event_ids.append(eid)
+        idx = ledger_event_index(row)
+        if idx > max_event_index:
+            max_event_index = idx
     return {
         "highest_script_run_seq": max_seq,
         "latest_ledger_ts": max_ts,
         "ledger_row_count": len(ledger),
         "baseline_ledger_index_max": len(ledger) - 1 if ledger else -1,
+        "baseline_event_index_max": max_event_index,
         "baseline_event_ids": event_ids,
     }
 
@@ -71,16 +116,21 @@ def capture_audit_baseline(
     identity: dict[str, Any],
     lobby: dict[str, Any],
     *,
+    preclick_captured_at: float | None = None,
     click_ts: float | None = None,
 ) -> dict[str, Any]:
     ext = _ledger_extrema(ledger)
     wake = lobby.get("wake") if isinstance(lobby.get("wake"), dict) else {}
+    captured = float(preclick_captured_at if preclick_captured_at is not None else (click_ts or 0))
     return {
         "streamlit_session_id": str(identity.get("streamlit_session_id") or ""),
         "diagnostic_run_id": str(identity.get("diagnostic_run_id") or ""),
         **ext,
         "ledger_row_count_at_click": ext["ledger_row_count"],
-        "click_ts": float(click_ts or 0),
+        "preclick_baseline_captured_at": captured,
+        "click_ts": captured,
+        "click_dispatch_started_at": 0.0,
+        "click_dispatch_completed_at": 0.0,
         "room_id_at_baseline": str(
             lobby.get("visible_room_id") or lobby.get("python_room_id") or ""
         ).strip(),
@@ -92,43 +142,70 @@ def capture_audit_baseline(
     }
 
 
+def record_click_dispatch_times(
+    baseline: dict[str, Any],
+    *,
+    dispatch_started_at: float,
+    dispatch_completed_at: float,
+) -> dict[str, Any]:
+    """Attach dispatch timestamps without mutating frozen pre-click index fields."""
+    baseline["click_dispatch_started_at"] = float(dispatch_started_at)
+    baseline["click_dispatch_completed_at"] = float(dispatch_completed_at)
+    return baseline
+
+
 def update_first_post_click_script_run_seq(
     baseline: dict[str, Any], post_start_rows: list[dict[str, Any]]
 ) -> None:
-    click_ts = float(baseline.get("click_ts") or 0)
+    dispatch_started = float(baseline.get("click_dispatch_started_at") or 0)
     candidates: list[int] = []
+    max_idx = int(baseline.get("baseline_event_index_max") or -1)
     for row in post_start_rows:
-        ts = float(row.get("ts") or 0)
         seq = int(row.get("script_run_seq") or 0)
-        if seq and (not click_ts or ts > click_ts):
+        if not seq:
+            continue
+        idx = ledger_event_index(row)
+        if idx > max_idx:
+            candidates.append(seq)
+            continue
+        ts = float(row.get("ts") or 0)
+        if dispatch_started and ts >= dispatch_started:
             candidates.append(seq)
     if candidates:
         baseline["first_post_click_script_run_seq_min"] = min(candidates)
 
 
 def row_is_post_start(row: dict[str, Any], baseline: dict[str, Any], row_index: int) -> bool:
-    """Identity + ordering gate for post–Start Draft ledger rows."""
+    """Identity + monotonic ledger index gate for post–Start Draft rows."""
     if not isinstance(row, dict):
         return False
+    if not _row_matches_baseline_identity(row, baseline):
+        return False
+
+    max_event_index = int(baseline.get("baseline_event_index_max") or -1)
+    row_event_index = ledger_event_index(row)
+    if row_event_index >= 0:
+        if row_event_index > max_event_index:
+            return True
+        if row_event_index <= max_event_index:
+            return False
+
+    ledger_index_max = int(baseline.get("baseline_ledger_index_max") or -1)
+    if row_index > ledger_index_max:
+        dispatch_started = float(baseline.get("click_dispatch_started_at") or 0)
+        ts = float(row.get("ts") or 0)
+        if dispatch_started and ts and ts < dispatch_started:
+            return False
+        return True
+
     count_at_click = int(baseline.get("ledger_row_count_at_click") or 0)
-    if row_index < count_at_click:
-        return False
-    eid = str(row.get("event_id") or "")
-    if eid and eid in set(baseline.get("baseline_event_ids") or []):
-        return False
-    click_ts = float(baseline.get("click_ts") or 0)
-    ts = float(row.get("ts") or 0)
-    if click_ts and ts <= click_ts:
-        return False
-    base_sid = str(baseline.get("streamlit_session_id") or "")
-    row_sid = str(row.get("streamlit_session_id") or "")
-    if base_sid and row_sid and row_sid != base_sid:
-        return False
-    base_run = str(baseline.get("diagnostic_run_id") or "")
-    row_run = str(row.get("run_id") or "")
-    if base_run and row_run and row_run != base_run:
-        return False
-    return True
+    if row_index >= count_at_click:
+        dispatch_started = float(baseline.get("click_dispatch_started_at") or 0)
+        ts = float(row.get("ts") or 0)
+        if dispatch_started and ts and ts < dispatch_started:
+            return False
+        return True
+    return False
 
 
 def refine_post_start_rows(
@@ -175,10 +252,35 @@ def first_forbidden_protocol_violation(rows: list[dict[str, Any]]) -> dict[str, 
     return first_forbidden_in_rows(rows)
 
 
-def prestart_ledger_signals(ledger: list[dict[str, Any]]) -> dict[str, Any]:
+def prestart_ledger_signals(
+    ledger: list[dict[str, Any]],
+    *,
+    streamlit_session_id: str = "",
+    diagnostic_run_id: str = "",
+) -> dict[str, Any]:
+    scoped: list[dict[str, Any]] = []
+    for row in ledger:
+        if not isinstance(row, dict):
+            continue
+        if streamlit_session_id:
+            sid = str(row.get("streamlit_session_id") or "")
+            if sid and sid != streamlit_session_id:
+                continue
+        if diagnostic_run_id:
+            rid = str(row.get("run_id") or "")
+            if rid and rid != diagnostic_run_id:
+                continue
+        scoped.append(row)
+    if not scoped:
+        scoped = list(ledger)
+    max_seq = 0
+    for row in scoped:
+        max_seq = max(max_seq, int(row.get("script_run_seq") or 0))
     start_in_flight = False
     restore_blocked = ""
-    for row in ledger:
+    for row in scoped:
+        if max_seq and int(row.get("script_run_seq") or 0) != max_seq:
+            continue
         preds = row.get("predicates")
         if isinstance(preds, dict) and preds.get("start_in_flight") is True:
             start_in_flight = True
@@ -190,6 +292,7 @@ def prestart_ledger_signals(ledger: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "start_in_flight": start_in_flight,
         "restore_blocked_reason": restore_blocked,
+        "latest_script_run_seq": max_seq,
     }
 
 
@@ -198,9 +301,14 @@ def evaluate_prestart_isolation(
     ledger: list[dict[str, Any]],
     *,
     setup_stable: dict[str, Any],
+    streamlit_session_id: str = "",
+    diagnostic_run_id: str = "",
+    auth_preflight_passed: bool | None = None,
 ) -> dict[str, Any]:
     """Return passed=False when authoritative Start Draft must not be clicked."""
     reasons: list[str] = []
+    if auth_preflight_passed is False:
+        reasons.append("auth_preflight_failed")
     wake = lobby.get("wake") if isinstance(lobby.get("wake"), dict) else {}
     wake_token = str(wake.get("token") or "").strip()
     if lobby.get("visible_room_id") or lobby.get("python_room_id"):
@@ -213,7 +321,11 @@ def evaluate_prestart_isolation(
         reasons.append("stale_persistent_wake_token")
     if str(wake.get("actionable") or "") in ("1", "true"):
         reasons.append("persistent_wake_actionable")
-    sig = prestart_ledger_signals(ledger)
+    sig = prestart_ledger_signals(
+        ledger,
+        streamlit_session_id=streamlit_session_id,
+        diagnostic_run_id=diagnostic_run_id,
+    )
     if sig.get("start_in_flight"):
         reasons.append("start_in_flight_flag")
     if sig.get("restore_blocked_reason"):

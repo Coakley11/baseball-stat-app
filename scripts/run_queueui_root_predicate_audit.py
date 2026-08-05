@@ -104,6 +104,7 @@ def main() -> int:
         partition_ledger_by_baseline,
         prestart_not_clean_report_fields,
         queueui_root_predicate_audit_url_base,
+        record_click_dispatch_times,
         resolve_deployment_verification,
     )
     from run_queueui_active_page_transition_diagnostic import (
@@ -163,6 +164,7 @@ def main() -> int:
         "stage1a_queue": "NOT_RUN — BLOCKED_BEFORE_EXPIRATION",
         "queue_campaign_ran": False,
         "expiration_wait": False,
+        "auth_preflight": pre,
     }
 
     from cloud_streamlit_wake import goto_and_wake
@@ -253,10 +255,16 @@ def main() -> int:
         lobby = _scrape_lobby(page)
         lobby["inferred_status"] = _infer_status(lobby)
         ledger_pre = scrape_stage1_ledger_rows(page)
+        identity_pre = capture_harness_page_identity(
+            page, context, label="prestart", ledger_rows=ledger_pre
+        )
         prestart = evaluate_prestart_isolation(
             lobby,
             ledger_pre,
             setup_stable=setup_stable,
+            streamlit_session_id=str(identity_pre.get("streamlit_session_id") or ""),
+            diagnostic_run_id=str(identity_pre.get("diagnostic_run_id") or ""),
+            auth_preflight_passed=bool(pre.get("authenticated_restored")),
         )
         report["prestart_isolation"] = prestart
         if not prestart.get("passed"):
@@ -277,15 +285,26 @@ def main() -> int:
             return 5
 
         _screenshot(page, "01_before_start")
-        identity = capture_harness_page_identity(page, context, label="before", ledger_rows=ledger_pre)
+        identity = identity_pre
         report["streamlit_session_id"] = identity.get("streamlit_session_id")
         report["application_diagnostic_run_id"] = identity.get("diagnostic_run_id")
 
-        click_ts = time.time()
-        baseline = capture_audit_baseline(ledger_pre, identity, lobby, click_ts=click_ts)
+        preclick_at = time.time()
+        baseline = capture_audit_baseline(
+            ledger_pre,
+            identity,
+            lobby,
+            preclick_captured_at=preclick_at,
+        )
         report["audit_baseline"] = baseline
 
         click = dispatch_start_single_authoritative_click(page, cps)
+        record_click_dispatch_times(
+            baseline,
+            dispatch_started_at=float(click.get("click_dispatch_started_at") or preclick_at),
+            dispatch_completed_at=float(click.get("click_dispatch_completed_at") or time.time()),
+        )
+        report["audit_baseline"] = dict(baseline)
         start_observed = bool(
             click.get("clicked")
             or click.get("dispatch_ok")
@@ -293,7 +312,10 @@ def main() -> int:
             or int(click.get("start_click_count") or 0) >= 1
         )
         report["start_draft_click"] = click
-        capture_start_click_transport(page, click_ts=float(click.get("click_timestamp") or click_ts))
+        capture_start_click_transport(
+            page,
+            click_ts=float(click.get("click_dispatch_started_at") or click.get("click_timestamp") or preclick_at),
+        )
         page.wait_for_timeout(1000)
 
         server_latch: dict[str, Any] = {"ok": False}
@@ -350,6 +372,30 @@ def main() -> int:
 
         pre_rows, post_rows = partition_ledger_by_baseline(last_ledger, baseline)
         post_summary = _summarize(post_rows)
+        _proof_events = (
+            "production_stage1_start_callback_entered",
+            "production_stage1_start_callback_exited",
+            "production_stage1_start_handler_entered",
+            "production_stage1_start_handler_exited",
+            "production_stage1_queueui_predicate_audit",
+        )
+        report["click_partition_proof"] = {
+            "preclick_baseline_captured_at": baseline.get("preclick_baseline_captured_at"),
+            "click_dispatch_started_at": baseline.get("click_dispatch_started_at"),
+            "click_dispatch_completed_at": baseline.get("click_dispatch_completed_at"),
+            "baseline_event_index_max": baseline.get("baseline_event_index_max"),
+            "baseline_ledger_index_max": baseline.get("baseline_ledger_index_max"),
+            "post_start_events": [
+                {
+                    "event": r.get("event"),
+                    "event_id": r.get("event_id"),
+                    "script_run_seq": r.get("script_run_seq"),
+                    "ts": r.get("ts"),
+                }
+                for r in post_rows
+                if str(r.get("event") or "") in _proof_events
+            ],
+        }
         room_id = str(
             server_latch.get("server_room_id")
             or post_summary.get("created_room_id_from_ledger")
