@@ -62,6 +62,7 @@ class CaptureDiagTests(unittest.TestCase):
             signed_in_display=True,
             ledger_rows=[],
             strict_failure=r["failure"],
+            sign_in_initiated=True,
         )
         self.assertEqual(classify_auth_login(state), AUTH_LOGIN4)
 

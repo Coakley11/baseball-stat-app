@@ -253,6 +253,18 @@ def ledger_login_timeline(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return timeline
 
 
+def auth_prestart_hydration_seen(rows: list[dict[str, Any]]) -> bool:
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("event") or "") != "production_stage1_auth_prestart_hydration":
+            continue
+        cp = str(r.get("checkpoint") or "")
+        if cp in LOGIN_CHECKPOINTS or cp.startswith("apply_authenticated_user"):
+            return True
+    return False
+
+
 def login_transition_state(
     *,
     target_sid: str,
@@ -264,6 +276,7 @@ def login_transition_state(
     signed_in_display: bool,
     ledger_rows: list[dict[str, Any]],
     strict_failure: str,
+    sign_in_initiated: bool = False,
 ) -> dict[str, Any]:
     """Ten-step callback boundary booleans (harness + ledger derived)."""
     save_row = _last_cp(ledger_rows, "save_browser_auth_tokens")
@@ -284,18 +297,34 @@ def login_transition_state(
     load_invoked = load_row is not None or load_lookup is not None
     apply_ok = bool(apply_row.get("authenticated_after")) if apply_row else False
     auth_complete = bool(before and before.get("auth_session_complete") is True)
+    hydration_ledger = auth_prestart_hydration_seen(ledger_rows)
 
     steps = {
-        "1_provider_sign_in_initiated": bool(provider_seen),
-        "2_oauth_callback_url_reached": bool(oauth_callback_seen or returned_to_app),
+        "1_sign_in_initiated": bool(sign_in_initiated or provider_seen),
+        "2_provider_surface_observed": bool(provider_seen),
         "3_tokens_present_in_browser_storage": tokens_in_storage,
-        "4_authenticated_user_visible_or_provider_state": bool(signed_in_display or tokens_in_storage),
+        "4_authenticated_user_visible_or_provider_state": bool(
+            signed_in_display and (provider_seen or tokens_in_storage)
+        ),
         "5_suite_sid_matches_target": bool(target_sid and url_sid and target_sid == url_sid),
-        "6_token_bridge_save_invoked": save_invoked,
+        "6_auth_hydration_ledger_started": hydration_ledger,
         "7_bridge_save_committed_or_readback_ok": save_ok or readback_ok,
         "8_load_browser_auth_tokens_invoked": load_invoked,
         "9_apply_authenticated_user_invoked": apply_row is not None,
         "10_streamlit_auth_complete": auth_complete,
+    }
+    # Legacy step keys for older tests / artifacts
+    steps_legacy = {
+        "1_provider_sign_in_initiated": steps["1_sign_in_initiated"],
+        "2_oauth_callback_url_reached": bool(oauth_callback_seen or (returned_to_app and provider_seen)),
+        "3_tokens_present_in_browser_storage": steps["3_tokens_present_in_browser_storage"],
+        "4_authenticated_user_visible_or_provider_state": steps["4_authenticated_user_visible_or_provider_state"],
+        "5_suite_sid_matches_target": steps["5_suite_sid_matches_target"],
+        "6_token_bridge_save_invoked": save_invoked,
+        "7_bridge_save_committed_or_readback_ok": steps["7_bridge_save_committed_or_readback_ok"],
+        "8_load_browser_auth_tokens_invoked": steps["8_load_browser_auth_tokens_invoked"],
+        "9_apply_authenticated_user_invoked": steps["9_apply_authenticated_user_invoked"],
+        "10_streamlit_auth_complete": steps["10_streamlit_auth_complete"],
     }
     order = list(steps.keys())
     first_missing = ""
@@ -305,11 +334,54 @@ def login_transition_state(
             break
     return {
         "steps": steps,
+        "steps_legacy": steps_legacy,
         "first_missing_transition": first_missing,
         "bridge_save_attempted": bool(save_row and save_row.get("persistence_attempted")),
         "bridge_readback_attempted": readback_row is not None,
         "strict_failure": strict_failure,
+        "misleading_signed_in_only": bool(
+            signed_in_display and not provider_seen and not hydration_ledger and not save_invoked
+        ),
     }
+
+
+def infer_timeout_failure_phase(
+    login_state: dict[str, Any],
+    *,
+    strict_failure: str = "",
+) -> str:
+    """Map first missing ordered step to a deterministic harness failure code."""
+    if strict_failure in ("start_control_disabled", "auth_session_finalization_incomplete"):
+        return "session_finalization_after_apply"
+    if strict_failure == "streamlit_auth_incomplete":
+        steps = login_state.get("steps") or {}
+        if login_state.get("misleading_signed_in_only"):
+            return "timeout_signed_in_ui_without_provider_or_ledger"
+        if steps.get("9_apply_authenticated_user_invoked"):
+            return "session_finalization_after_apply"
+        if steps.get("7_bridge_save_committed_or_readback_ok") and not steps.get("9_apply_authenticated_user_invoked"):
+            return "timeout_apply_auth_never_invoked"
+        if steps.get("6_auth_hydration_ledger_started") and not steps.get("7_bridge_save_committed_or_readback_ok"):
+            return "timeout_bridge_save_never_invoked"
+        if steps.get("5_suite_sid_matches_target") and not steps.get("6_auth_hydration_ledger_started"):
+            return "timeout_ledger_hydration_unavailable"
+    steps = login_state.get("steps") or {}
+    missing = str(login_state.get("first_missing_transition") or "")
+    if missing == "1_sign_in_initiated":
+        return "timeout_login_never_initiated"
+    if missing == "2_provider_surface_observed":
+        return "timeout_provider_surface_never_observed"
+    if missing in ("3_tokens_present_in_browser_storage", "4_authenticated_user_visible_or_provider_state"):
+        return "timeout_callback_never_completed"
+    if missing == "6_auth_hydration_ledger_started":
+        return "timeout_ledger_hydration_unavailable"
+    if missing == "7_bridge_save_committed_or_readback_ok":
+        return "timeout_bridge_save_never_invoked"
+    if missing == "9_apply_authenticated_user_invoked":
+        return "timeout_apply_auth_never_invoked"
+    if missing == "10_streamlit_auth_complete":
+        return "session_finalization_after_apply"
+    return strict_failure or "timeout_strict_capture"
 
 
 def classify_auth_login(
@@ -320,19 +392,28 @@ def classify_auth_login(
 ) -> str:
     if sid_drift:
         return AUTH_LOGIN7
-    steps = state.get("steps") or {}
+    steps = state.get("steps") or state.get("steps_legacy") or {}
     missing = str(state.get("first_missing_transition") or "")
-    if timeout_before_sign_in and not steps.get("1_provider_sign_in_initiated"):
+    if state.get("misleading_signed_in_only"):
         return AUTH_LOGIN1
-    if not steps.get("1_provider_sign_in_initiated"):
-        if not steps.get("2_oauth_callback_url_reached"):
+    if timeout_before_sign_in and not steps.get("1_sign_in_initiated") and not steps.get(
+        "1_provider_sign_in_initiated"
+    ):
+        return AUTH_LOGIN1
+    if not steps.get("1_sign_in_initiated") and not steps.get("1_provider_sign_in_initiated"):
+        if not steps.get("2_provider_surface_observed") and not steps.get("2_oauth_callback_url_reached"):
             return AUTH_LOGIN1
-    if steps.get("1_provider_sign_in_initiated") and not steps.get("2_oauth_callback_url_reached"):
+    if (steps.get("1_sign_in_initiated") or steps.get("1_provider_sign_in_initiated")) and not steps.get(
+        "2_provider_surface_observed"
+    ) and not steps.get("2_oauth_callback_url_reached"):
         return AUTH_LOGIN2
-    if steps.get("2_oauth_callback_url_reached") and not steps.get("3_tokens_present_in_browser_storage"):
-        if not steps.get("4_authenticated_user_visible_or_provider_state"):
-            return AUTH_LOGIN3
+    if steps.get("2_oauth_callback_url_reached") or steps.get("2_provider_surface_observed"):
+        if not steps.get("3_tokens_present_in_browser_storage"):
+            if not steps.get("4_authenticated_user_visible_or_provider_state"):
+                return AUTH_LOGIN3
     if steps.get("3_tokens_present_in_browser_storage") and not steps.get("6_token_bridge_save_invoked"):
+        if not steps.get("6_auth_hydration_ledger_started"):
+            return AUTH_LOGIN4
         return AUTH_LOGIN4
     if steps.get("6_token_bridge_save_invoked") and not steps.get("7_bridge_save_committed_or_readback_ok"):
         return AUTH_LOGIN5
@@ -340,6 +421,8 @@ def classify_auth_login(
         return AUTH_LOGIN6
     if missing == "10_streamlit_auth_complete" or str(state.get("strict_failure") or "") == "streamlit_auth_incomplete":
         if steps.get("4_authenticated_user_visible_or_provider_state") and not steps.get("6_token_bridge_save_invoked"):
+            if not steps.get("6_auth_hydration_ledger_started"):
+                return AUTH_LOGIN1 if state.get("misleading_signed_in_only") else AUTH_LOGIN4
             return AUTH_LOGIN4
         if steps.get("6_token_bridge_save_invoked") and not steps.get("7_bridge_save_committed_or_readback_ok"):
             return AUTH_LOGIN5
@@ -419,6 +502,7 @@ def save_trace_bundle(
     collector: CaptureTraceCollector,
     ledger_rows: list[dict[str, Any]],
     screenshot_labels: list[tuple[str, Callable[[], None] | None]],
+    browser_surfaces: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     trace_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[str, str] = {}
@@ -461,6 +545,8 @@ def save_trace_bundle(
         "screenshots": paths,
         "ledger_summary": ledger_summary,
     }
+    if browser_surfaces:
+        bundle["browser_surfaces"] = browser_surfaces
     bundle_path = trace_dir / "trace_bundle.json"
     blob = json.dumps(bundle, indent=2, default=str)
     if not trace_has_no_secrets(blob):
@@ -516,6 +602,8 @@ def build_failure_payload(
         "login_boundary": login_state,
         "trace": trace_meta,
     }
+    if login_state.get("failure_phase"):
+        payload["failure_phase"] = login_state["failure_phase"]
     return payload
 
 

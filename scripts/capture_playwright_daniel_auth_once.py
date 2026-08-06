@@ -22,9 +22,8 @@ from playwright_auth_capture_diag import (  # noqa: E402
     build_failure_payload,
     classify_auth_login,
     extract_identity_from_ledger,
+    infer_timeout_failure_phase,
     is_cloud_app_url,
-    is_oauth_callback_url,
-    is_provider_url,
     ledger_login_timeline,
     login_transition_state,
     new_run_identity,
@@ -33,6 +32,7 @@ from playwright_auth_capture_diag import (  # noqa: E402
     verify_capture_url,
     write_result_artifact,
 )
+from playwright_auth_surface_monitor import BrowserSurfaceMonitor  # noqa: E402
 from playwright_auth_capture_strict import evaluate_strict_capture  # noqa: E402
 from playwright_auth_preflight_strict import inspect_start_control, paired_transition_authenticated, suite_sid_from_url  # noqa: E402
 from playwright_daniel_auth_session import (  # noqa: E402
@@ -131,6 +131,9 @@ def _finalize_exit(
     screenshot_phase: str = "timeout",
     extra_stdout: dict[str, Any] | None = None,
     skip_trace: bool = False,
+    browser_surfaces: dict[str, Any] | None = None,
+    sign_in_initiated: bool = False,
+    failure_phase: str = "",
 ) -> int:
     url = page.url or ""
     identity["final_browser_url"] = url[:512]
@@ -147,7 +150,12 @@ def _finalize_exit(
         signed_in_display=bool(identity.get("signed_in_display")),
         ledger_rows=ledger_rows,
         strict_failure=failure,
+        sign_in_initiated=sign_in_initiated or bool(identity.get("sign_in_initiated")),
     )
+    if failure_phase:
+        login_state["failure_phase"] = failure_phase
+    elif code != 0:
+        login_state["failure_phase"] = infer_timeout_failure_phase(login_state, strict_failure=failure)
     auth_class = classify_auth_login(
         login_state,
         sid_drift=sid_drift,
@@ -178,6 +186,7 @@ def _finalize_exit(
             collector=collector,
             ledger_rows=ledger_rows,
             screenshot_labels=[(screenshot_phase, None)],
+            browser_surfaces=browser_surfaces,
         )
     payload = build_failure_payload(
         identity=identity,
@@ -209,6 +218,8 @@ def _finalize_exit(
         "first_missing_login_transition": login_state.get("first_missing_transition"),
         "bridge_save_attempted": login_state.get("bridge_save_attempted"),
         "bridge_readback_attempted": login_state.get("bridge_readback_attempted"),
+        "failure_phase": login_state.get("failure_phase") or "",
+        "selected_app_page_id": (browser_surfaces or {}).get("selected_app_page_id") or "",
         "artifact": str(artifact),
         "trace_dir": trace_meta.get("trace_dir"),
     }
@@ -240,12 +251,14 @@ def main() -> int:
 
     collector = CaptureTraceCollector()
     last_eval: dict[str, Any] = {}
+    surface_monitor: BrowserSurfaceMonitor | None = None
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
         context = browser.new_context(viewport={"width": 1440, "height": 1400})
         page = context.new_page()
-        collector.attach(page)
+        surface_monitor = BrowserSurfaceMonitor(context=context, target_sid=target_sid, collector=collector)
+        surface_monitor.wire(page)
         goto_and_wake(page, start_url, timeout_s=240)
         collector.note_url(page.url or "", label="initial_load")
         TRACE_ROOT.mkdir(parents=True, exist_ok=True)
@@ -255,144 +268,117 @@ def main() -> int:
             pass
 
         deadline = time.time() + WAIT_S
+        _status("complete Daniel sign-in in the headed window (all tabs/popups are traced)")
+        hydration_announced = False
+
         while time.time() < deadline:
-            url = page.url or ""
-            collector.note_url(url)
-            if is_provider_url(url):
-                if not identity["provider_login_seen"]:
-                    _status("provider login detected")
-                    identity["provider_login_seen"] = True
-                    try:
-                        page.screenshot(path=str(TRACE_ROOT / f"{target_sid[:8]}_provider_login.png"))
-                    except Exception:
-                        pass
-            if is_oauth_callback_url(url):
-                identity["oauth_callback_seen"] = True
-                try:
-                    page.screenshot(path=str(TRACE_ROOT / f"{target_sid[:8]}_callback_return.png"))
-                except Exception:
-                    pass
-            elif identity["provider_login_seen"] and is_cloud_app_url(url):
-                identity["returned_to_app_after_provider"] = True
-            signed_in_display = "Signed in as" in _body_text(page)
-            identity["signed_in_display"] = signed_in_display
+            surface_monitor.poll()
+            surface_monitor.sync_identity(identity)
+            app_page = surface_monitor.app_page(page)
+            url = app_page.url or ""
+            collector.note_url(url, label="app_page_poll")
             url_sid = suite_sid_from_url(url)
             if url_sid and url_sid != target_sid:
-                ledger = scrape_stage1_ledger_rows(page) or []
+                ledger = scrape_stage1_ledger_rows(app_page) or []
+                surfaces = surface_monitor.diagnostic_blob()
                 code = _finalize_exit(
                     code=1,
                     identity=identity,
                     failure="suite_sid_changed",
-                    page=page,
-                    collector=collector,
-                    ledger_rows=ledger,
-                    strict_capture=None,
-                    files_updated=False,
-                    sid_drift=True,
-                    screenshot_phase="sid_drift",
-                    extra_stdout={"url_sid": url_sid},
-                )
-                context.close()
-                browser.close()
-                return code
-            if signed_in_display and url_sid == target_sid:
-                _status("waiting for Streamlit hydration")
-                try:
-                    page.screenshot(path=str(TRACE_ROOT / f"{target_sid[:8]}_hydration_wait.png"))
-                except Exception:
-                    pass
-                break
-            page.wait_for_timeout(1200)
-        else:
-            ledger = scrape_stage1_ledger_rows(page) or []
-            identity["cloud_runtime_sha"] = (scrape_deploy_marker_from_page(page)[0] or "")
-            code = _finalize_exit(
-                code=1,
-                identity=identity,
-                failure="timeout_before_signed_in_and_stable_sid",
-                page=page,
-                collector=collector,
-                ledger_rows=ledger,
-                strict_capture=None,
-                files_updated=False,
-                timeout_before_sign_in=True,
-                screenshot_phase="timeout_sign_in",
-            )
-            context.close()
-            browser.close()
-            return code
-
-        try:
-            page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
-            page.wait_for_timeout(3000)
-        except Exception:
-            pass
-
-        _status("waiting for bridge persistence / strict auth")
-        while time.time() < deadline:
-            url_sid = suite_sid_from_url(page.url or "")
-            collector.note_url(page.url or "")
-            if url_sid and url_sid != target_sid:
-                ledger = scrape_stage1_ledger_rows(page) or []
-                code = _finalize_exit(
-                    code=1,
-                    identity=identity,
-                    failure="suite_sid_changed",
-                    page=page,
+                    page=app_page,
                     collector=collector,
                     ledger_rows=ledger,
                     strict_capture=last_eval or None,
                     files_updated=False,
                     sid_drift=True,
-                    screenshot_phase="sid_drift_hydration",
+                    screenshot_phase="sid_drift",
+                    extra_stdout={"url_sid": url_sid},
+                    browser_surfaces=surfaces,
+                    sign_in_initiated=surface_monitor.sign_in_initiated,
                 )
                 context.close()
                 browser.close()
                 return code
-            last_eval = _strict_poll(page, target_sid=target_sid, scrape_ledger=scrape_stage1_ledger_rows)
+
+            last_eval = _strict_poll(app_page, target_sid=target_sid, scrape_ledger=scrape_stage1_ledger_rows)
             if last_eval.get("strict_auth_passed"):
+                page = app_page
                 break
+
+            if identity.get("signed_in_display") and not hydration_announced:
+                hydration_announced = True
+                _status("signed-in UI visible — waiting for ledger bridge/apply (not treating as success)")
+                try:
+                    app_page.screenshot(path=str(TRACE_ROOT / f"{target_sid[:8]}_signed_in_waiting_ledger.png"))
+                except Exception:
+                    pass
+
             page.wait_for_timeout(POLL_MS)
             try:
-                goto_and_wake(page, _capture_url(target_sid), timeout_s=120)
+                goto_and_wake(app_page, _capture_url(target_sid), timeout_s=120)
             except Exception:
                 pass
         else:
-            ledger = scrape_stage1_ledger_rows(page) or []
-            identity["cloud_runtime_sha"] = (scrape_deploy_marker_from_page(page)[0] or "")
+            app_page = surface_monitor.app_page(page)
+            ledger = scrape_stage1_ledger_rows(app_page) or []
+            identity["cloud_runtime_sha"] = (scrape_deploy_marker_from_page(app_page)[0] or "")
+            surfaces = surface_monitor.diagnostic_blob()
+            fail = str(last_eval.get("failure") or "timeout_strict_capture")
+            login_state_preview = login_transition_state(
+                target_sid=target_sid,
+                url_sid=suite_sid_from_url(app_page.url or ""),
+                provider_seen=surface_monitor.provider_surface_seen,
+                oauth_callback_seen=surface_monitor.oauth_callback_seen,
+                returned_to_app=surface_monitor.returned_to_cloud_after_provider,
+                storage=probe_storage_booleans(app_page),
+                signed_in_display=surface_monitor.signed_in_display_any_surface,
+                ledger_rows=ledger,
+                strict_failure=fail,
+                sign_in_initiated=surface_monitor.sign_in_initiated,
+            )
+            phase = infer_timeout_failure_phase(login_state_preview, strict_failure=fail)
             code = _finalize_exit(
                 code=1,
                 identity=identity,
-                failure=str(last_eval.get("failure") or "timeout_strict_capture"),
-                page=page,
+                failure=fail,
+                page=app_page,
                 collector=collector,
                 ledger_rows=ledger,
                 strict_capture=last_eval,
                 files_updated=False,
                 screenshot_phase="timeout_hydration",
+                browser_surfaces=surfaces,
+                sign_in_initiated=surface_monitor.sign_in_initiated,
+                failure_phase=phase,
             )
             context.close()
             browser.close()
             return code
 
         if not last_eval.get("strict_auth_passed"):
-            ledger = scrape_stage1_ledger_rows(page) or []
-            identity["cloud_runtime_sha"] = (scrape_deploy_marker_from_page(page)[0] or "")
+            app_page = surface_monitor.app_page(page)
+            ledger = scrape_stage1_ledger_rows(app_page) or []
+            identity["cloud_runtime_sha"] = (scrape_deploy_marker_from_page(app_page)[0] or "")
+            surfaces = surface_monitor.diagnostic_blob()
+            fail = str(last_eval.get("failure") or "strict_capture_incomplete")
             code = _finalize_exit(
                 code=1,
                 identity=identity,
-                failure=str(last_eval.get("failure") or "strict_capture_incomplete"),
-                page=page,
+                failure=fail,
+                page=app_page,
                 collector=collector,
                 ledger_rows=ledger,
                 strict_capture=last_eval,
                 files_updated=False,
                 screenshot_phase="strict_incomplete",
+                browser_surfaces=surfaces,
+                sign_in_initiated=surface_monitor.sign_in_initiated,
             )
             context.close()
             browser.close()
             return code
 
+        page = surface_monitor.app_page(page)
         live_sha, _src = scrape_deploy_marker_from_page(page)
         identity["cloud_runtime_sha"] = live_sha or ""
         _status("strict capture passed — saving files")
@@ -433,6 +419,7 @@ def main() -> int:
             signed_in_display=True,
             ledger_rows=ledger,
             strict_failure="",
+            sign_in_initiated=bool(identity.get("sign_in_initiated")),
         )
         trace_dir = TRACE_ROOT / f"{target_sid[:8]}_{int(time.time())}_success"
         trace_meta = save_trace_bundle(
@@ -443,6 +430,7 @@ def main() -> int:
             collector=collector,
             ledger_rows=ledger,
             screenshot_labels=[("success", None)],
+            browser_surfaces=surface_monitor.diagnostic_blob() if surface_monitor else None,
         )
         success_payload = {
             **identity,
