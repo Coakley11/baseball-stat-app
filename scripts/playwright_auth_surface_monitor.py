@@ -187,7 +187,7 @@ class BrowserSurfaceMonitor:
                 except Exception:
                     continue
 
-    def app_page(self, fallback: Any) -> Any:
+    def app_page(self, fallback: Any) -> Any | None:
         pid = self._selected_app_page_id
         if pid and pid in self._pages:
             pg = self._pages[pid]
@@ -201,7 +201,12 @@ class BrowserSurfaceMonitor:
                     return pg
             except Exception:
                 continue
-        return fallback
+        for pg in self._context.pages:
+            if not pg.is_closed():
+                return pg
+        if fallback is not None and not fallback.is_closed():
+            return fallback
+        return None
 
     def sync_identity(self, identity: dict[str, Any]) -> None:
         identity["sign_in_click_attempted"] = self.sign_in_click_attempted

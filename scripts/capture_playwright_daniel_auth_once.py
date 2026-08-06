@@ -72,14 +72,26 @@ def _capture_url(target_sid: str) -> str:
 def _strict_poll(page, *, target_sid: str, scrape_ledger) -> dict[str, Any]:
     from stage1_preflight_cleanup import _scrape_lobby
 
-    ledger = scrape_ledger(page) or []
+    if page is None or page.is_closed():
+        return {"strict_auth_passed": False, "failure": "browser_page_closed"}
+    try:
+        ledger = scrape_ledger(page) or []
+    except Exception as exc:
+        if "TargetClosedError" in type(exc).__name__ or "closed" in str(exc).lower():
+            return {"strict_auth_passed": False, "failure": "browser_page_closed"}
+        raise
     url_sid = suite_sid_from_url(page.url or "")
-    start = inspect_start_control(page)
-    lobby = _scrape_lobby(page)
-    if not start.get("visible") and lobby.get("has_start_new"):
-        start["visible"] = True
-    paired = paired_transition_authenticated(page)
-    signed_in = "Signed in as" in _body_text(page)
+    try:
+        start = inspect_start_control(page)
+        lobby = _scrape_lobby(page)
+        if not start.get("visible") and lobby.get("has_start_new"):
+            start["visible"] = True
+        paired = paired_transition_authenticated(page)
+        signed_in = "Signed in as" in _body_text(page)
+    except Exception as exc:
+        if "TargetClosedError" in type(exc).__name__ or "closed" in str(exc).lower():
+            return {"strict_auth_passed": False, "failure": "browser_page_closed"}
+        raise
     return evaluate_strict_capture(
         target_sid=target_sid,
         url_sid=url_sid,
@@ -272,9 +284,38 @@ def main() -> int:
         hydration_announced = False
 
         while time.time() < deadline:
-            surface_monitor.poll()
+            try:
+                surface_monitor.poll()
+            except Exception:
+                pass
             surface_monitor.sync_identity(identity)
             app_page = surface_monitor.app_page(page)
+            if app_page is None:
+                stub = page
+                if stub.is_closed():
+                    live = [pg for pg in context.pages if not pg.is_closed()]
+                    stub = live[0] if live else page
+                surfaces = surface_monitor.diagnostic_blob()
+                code = _finalize_exit(
+                    code=1,
+                    identity=identity,
+                    failure="browser_closed_before_capture_complete",
+                    page=stub,
+                    collector=collector,
+                    ledger_rows=[],
+                    strict_capture=last_eval or None,
+                    files_updated=False,
+                    screenshot_phase="browser_closed",
+                    browser_surfaces=surfaces,
+                    sign_in_initiated=surface_monitor.sign_in_initiated,
+                    failure_phase="browser_closed_before_capture_complete",
+                )
+                try:
+                    context.close()
+                    browser.close()
+                except Exception:
+                    pass
+                return code
             url = app_page.url or ""
             collector.note_url(url, label="app_page_poll")
             url_sid = suite_sid_from_url(url)
@@ -301,6 +342,9 @@ def main() -> int:
                 return code
 
             last_eval = _strict_poll(app_page, target_sid=target_sid, scrape_ledger=scrape_stage1_ledger_rows)
+            if last_eval.get("failure") == "browser_page_closed":
+                page = app_page
+                continue
             if last_eval.get("strict_auth_passed"):
                 page = app_page
                 break
