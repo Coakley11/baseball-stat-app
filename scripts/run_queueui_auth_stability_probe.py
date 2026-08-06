@@ -58,6 +58,7 @@ def main() -> int:
             page.wait_for_timeout(3000)
         except Exception:
             pass
+        page.wait_for_timeout(35000)
 
         live_sha, _ = scrape_deploy_marker_from_page(page)
         report["live_sha"] = live_sha
@@ -67,14 +68,44 @@ def main() -> int:
             OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             return 2
 
-        deadline = time.time() + 240
-        seen_seqs: set[int] = set()
+        from p8_canonical_production_start import capture_harness_page_identity
+
         run_id = ""
         st_sid = ""
+        warmup_deadline = time.time() + 120
+        while time.time() < warmup_deadline:
+            ledger = scrape_ledger(page) or []
+            ident = capture_harness_page_identity(page, context, label="stability_warmup", ledger_rows=ledger)
+            run_id = str(ident.get("diagnostic_run_id") or run_id)
+            st_sid = str(ident.get("streamlit_session_id") or st_sid)
+            strict = strict_preflight_from_page_scoped(
+                page,
+                harness_sid=harness_sid,
+                ledger_rows=ledger,
+                diagnostic_run_id=run_id,
+                streamlit_session_id=st_sid,
+            )
+            if strict.get("authenticated_restored"):
+                break
+            page.wait_for_timeout(5000)
+        else:
+            report["failure"] = "warmup_auth_never_stabilized"
+            report["classification"] = "AUTH_STABILITY4"
+            browser.close()
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            return 3
+
+        deadline = time.time() + 240
+        seen_seqs: set[int] = set()
         last_ledger: list[dict[str, Any]] = []
         while time.time() < deadline and len(seen_seqs) < MIN_SCRIPT_SEQ_OBSERVATIONS:
             ledger = scrape_ledger(page) or []
             last_ledger = ledger
+            ident = capture_harness_page_identity(
+                page, context, label=f"stability_seq_{len(seen_seqs)}", ledger_rows=ledger
+            )
+            run_id = str(ident.get("diagnostic_run_id") or run_id)
+            st_sid = str(ident.get("streamlit_session_id") or st_sid)
             seqs = distinct_global_script_run_seqs(ledger)
             for s in seqs:
                 if s in seen_seqs:
