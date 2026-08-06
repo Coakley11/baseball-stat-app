@@ -245,7 +245,7 @@ def _finalize_exit(
 
 
 def main() -> int:
-    from cloud_streamlit_wake import goto_and_wake
+    from cloud_streamlit_wake import gentle_wake_if_asleep, goto_and_wake
     from p8_production_start_harness import scrape_stage1_ledger_rows
     from playwright.sync_api import sync_playwright
     from queueui_audit_protocol import scrape_deploy_marker_from_page
@@ -282,31 +282,29 @@ def main() -> int:
             pass
 
         deadline = time.time() + WAIT_S
-        _status("complete Daniel sign-in in the headed window (all tabs/popups are traced)")
+        _status("complete Daniel sign-in — harness will not reload the page while you type")
         hydration_announced = False
-
-        provider_wait_announced = False
+        hands_off_announced = False
+        poll_interval_s = max(POLL_MS / 1000.0, 5.0)
 
         while time.time() < deadline:
-            provider_active = surface_monitor.provider_login_in_progress()
             try:
-                surface_monitor.poll(passive_only=provider_active)
+                surface_monitor.poll()
             except Exception:
                 pass
             surface_monitor.sync_identity(identity)
 
-            if provider_active:
-                if not provider_wait_announced:
-                    provider_wait_announced = True
-                    _status("provider login in progress — harness will not reload or switch tabs")
-                wait_ms = max(POLL_MS, 8000)
-                page.wait_for_timeout(wait_ms)
+            if surface_monitor.hands_off_user_login():
+                if not hands_off_announced:
+                    hands_off_announced = True
+                    _status("login in progress — no reloads, tab switches, or wake navigation")
+                time.sleep(poll_interval_s)
                 continue
 
-            app_page = surface_monitor.app_page(page)
+            app_page = surface_monitor.cloud_app_page()
             if app_page is None:
                 if context.pages and any(not pg.is_closed() for pg in context.pages):
-                    page.wait_for_timeout(POLL_MS)
+                    time.sleep(poll_interval_s)
                     continue
                 stub = page
                 if stub.is_closed():
@@ -336,7 +334,7 @@ def main() -> int:
             url = app_page.url or ""
             if is_provider_url(url):
                 surface_monitor.record_harness_event("script_navigation_suppressed", detail="app_page_is_provider")
-                page.wait_for_timeout(POLL_MS)
+                time.sleep(poll_interval_s)
                 continue
             collector.note_url(url, label="app_page_poll")
             url_sid = suite_sid_from_url(url)
@@ -378,19 +376,14 @@ def main() -> int:
                 except Exception:
                     pass
 
-            page.wait_for_timeout(POLL_MS)
-            if not surface_monitor.provider_login_in_progress():
+            time.sleep(poll_interval_s)
+            if not surface_monitor.hands_off_user_login():
                 try:
-                    surface_monitor.record_harness_event(
-                        "script_navigation_goto_wake",
-                        url_host=urlparse(_capture_url(target_sid)).netloc[:80],
-                    )
-                    goto_and_wake(app_page, _capture_url(target_sid), timeout_s=120)
+                    wake = gentle_wake_if_asleep(app_page)
+                    if wake.get("action") == "wake_click":
+                        surface_monitor.record_harness_event("script_wake_click_only", detail="asleep")
                 except Exception as exc:
-                    surface_monitor.record_harness_event(
-                        "script_navigation_failed",
-                        detail=type(exc).__name__,
-                    )
+                    surface_monitor.record_harness_event("script_wake_failed", detail=type(exc).__name__)
         else:
             app_page = surface_monitor.app_page(page)
             ledger = scrape_stage1_ledger_rows(app_page) or []

@@ -12,6 +12,7 @@ from playwright_auth_capture_diag import (
     is_cloud_app_url,
     is_oauth_callback_url,
     is_provider_url,
+    probe_in_page_login_ui_active,
 )
 from playwright_auth_preflight_strict import suite_sid_from_url
 
@@ -48,8 +49,32 @@ class BrowserSurfaceMonitor:
         self.signed_in_display_any_surface = False
         self._provider_before_cloud = False
         self._provider_login_active = False
+        self._in_page_login_ui_active = False
+        self._hands_off_login = False
         self._harness_control_events: list[dict[str, Any]] = []
         self._last_monitored_cloud_page_id = ""
+
+    def hands_off_user_login(self) -> bool:
+        """Harness must not navigate, reload, or focus-steal while user is signing in."""
+        return bool(self._hands_off_login)
+
+    def _detect_hands_off(self) -> None:
+        in_page = False
+        extra_tabs = 0
+        for pg in self._context.pages:
+            if pg.is_closed():
+                continue
+            extra_tabs += 1
+            try:
+                if probe_in_page_login_ui_active(pg):
+                    in_page = True
+            except Exception:
+                pass
+        self._in_page_login_ui_active = in_page
+        provider = self.provider_login_in_progress()
+        multi_non_cloud = extra_tabs > 1
+        self._hands_off_login = bool(provider or in_page or multi_non_cloud)
+        self._provider_login_active = provider
 
     def record_harness_event(
         self,
@@ -230,13 +255,31 @@ class BrowserSurfaceMonitor:
         if prev_provider and not self._provider_login_active:
             self.record_harness_event("provider_login_ended_natural")
 
+        prev_hands = getattr(self, "_prev_hands_off", False)
+        self._detect_hands_off()
+        if self._hands_off_login and not prev_hands:
+            detail = "provider" if self._provider_login_active else ""
+            if self._in_page_login_ui_active:
+                detail = (detail + "+in_page_login_ui").strip("+")
+            self.record_harness_event("user_login_hands_off_active", detail=detail or "multi_tab")
+        if prev_hands and not self._hands_off_login:
+            self.record_harness_event("user_login_hands_off_ended")
+        self._prev_hands_off = self._hands_off_login
+
+        passive = passive_only or self._hands_off_login
         self.signed_in_display_any_surface = False
         for pid, pg in list(self._pages.items()):
             if pg.is_closed():
                 continue
-            if passive_only and is_provider_url(pg.url or ""):
+            if passive and is_provider_url(pg.url or ""):
                 try:
                     self._note_page_url(pid, pg.url or "", label="poll_passive")
+                except Exception:
+                    pass
+                continue
+            if passive and self._in_page_login_ui_active and probe_in_page_login_ui_active(pg):
+                try:
+                    self._note_page_url(pid, pg.url or "", label="poll_passive_login_ui")
                 except Exception:
                     pass
                 continue
@@ -323,5 +366,7 @@ class BrowserSurfaceMonitor:
             "oauth_callback_seen": self.oauth_callback_seen,
             "signed_in_display_any_surface": self.signed_in_display_any_surface,
             "provider_login_active": self._provider_login_active,
+            "in_page_login_ui_active": self._in_page_login_ui_active,
+            "hands_off_user_login": self._hands_off_login,
             "harness_control_events": self._harness_control_events[-80:],
         }

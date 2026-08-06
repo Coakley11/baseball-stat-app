@@ -109,6 +109,18 @@ def goto_and_wake(page, url: str, *, timeout_s: int = 240) -> dict[str, Any]:
     return ensure_app_awake(page, timeout_s=timeout_s)
 
 
+def gentle_wake_if_asleep(page) -> dict[str, Any]:
+    """Wake sleep screen only — never page.goto (safe during manual login)."""
+    try:
+        text = all_frames_text(page)
+        if is_app_asleep(text) or is_app_waking(text):
+            clicked = wake_streamlit_app(page)
+            return {"action": "wake_click" if clicked else "wake_wait", "asleep": True}
+    except Exception as exc:
+        return {"action": "error", "detail": type(exc).__name__}
+    return {"action": "none", "asleep": False}
+
+
 def scrape_deploy_sha_from_page(page) -> str:
     try:
         raw = page.evaluate(

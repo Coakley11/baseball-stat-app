@@ -120,28 +120,24 @@ class SurfaceLoginObservationTests(unittest.TestCase):
         blob = mon.diagnostic_blob()
         self.assertTrue(blob["selected_app_page_id"] or mon.cloud_app_page() is good)
 
-    def test_provider_active_suppresses_app_page_selection(self) -> None:
+    def test_hands_off_when_in_page_login_ui(self) -> None:
         collector = mock.Mock()
         collector.attach = mock.Mock()
         collector.note_url = mock.Mock()
         ctx = mock.Mock()
-        cloud = mock.Mock()
-        cloud.is_closed = mock.Mock(return_value=False)
-        cloud.url = (
-            "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/"
-            "?suite_sid=aaaa-1111-2222-3333-444444444444"
-        )
-        cloud.frames = []
-        provider = mock.Mock()
-        provider.is_closed = mock.Mock(return_value=False)
-        provider.url = "https://accounts.google.com/o/oauth2/v2/auth"
-        provider.frames = []
-        ctx.pages = [cloud, provider]
+        pg = mock.Mock()
+        pg.is_closed = mock.Mock(return_value=False)
+        pg.url = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/?suite_sid=aaaa-1111-2222-3333-444444444444"
+        pg.frames = []
+        pg.evaluate = mock.Mock(return_value=True)
+        ctx.pages = [pg]
         mon = BrowserSurfaceMonitor(context=ctx, target_sid="aaaa-1111-2222-3333-444444444444", collector=collector)
-        mon.wire(cloud)
-        self.assertTrue(mon.provider_login_in_progress())
-        self.assertEqual(mon.cloud_app_page(), cloud)
-        self.assertEqual(mon.app_page(cloud), cloud)
+        mon.wire(pg)
+        with mock.patch("playwright_auth_surface_monitor.probe_in_page_login_ui_active", return_value=True):
+            mon.poll()
+        self.assertTrue(mon.hands_off_user_login())
+
+    def test_provider_active_suppresses_app_page_selection(self) -> None:
 
 
 if __name__ == "__main__":

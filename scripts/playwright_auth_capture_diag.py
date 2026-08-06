@@ -57,11 +57,36 @@ def is_provider_url(url: str) -> bool:
         x in u
         for x in (
             "accounts.google",
+            "google.com/signin",
             "login.microsoftonline",
             "auth0.com",
             "supabase.co/auth",
+            "appleid.apple.com",
         )
     )
+
+
+def probe_in_page_login_ui_active(page: Any) -> bool:
+    """True when email/password sign-in controls are visible (same-tab Supabase/Streamlit UI)."""
+    try:
+        return bool(
+            page.evaluate(
+                """() => {
+              function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+              for (const root of roots) {
+                const text = (root.body && root.body.innerText) || '';
+                if (text.includes('Signed in as')) continue;
+                const inputs = root.querySelectorAll('input[type=email], input[type=password], input[name=email], input[autocomplete=username]');
+                for (const el of inputs) {
+                  if (el && el.offsetParent !== null) return true;
+                }
+              }
+              return false;
+            }"""
+            )
+        )
+    except Exception:
+        return False
 
 
 def is_cloud_app_url(url: str) -> bool:
