@@ -9,6 +9,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = Path(__file__).resolve().parent
@@ -24,6 +25,7 @@ from playwright_auth_capture_diag import (  # noqa: E402
     extract_identity_from_ledger,
     infer_timeout_failure_phase,
     is_cloud_app_url,
+    is_provider_url,
     ledger_login_timeline,
     login_transition_state,
     new_run_identity,
@@ -283,14 +285,29 @@ def main() -> int:
         _status("complete Daniel sign-in in the headed window (all tabs/popups are traced)")
         hydration_announced = False
 
+        provider_wait_announced = False
+
         while time.time() < deadline:
+            provider_active = surface_monitor.provider_login_in_progress()
             try:
-                surface_monitor.poll()
+                surface_monitor.poll(passive_only=provider_active)
             except Exception:
                 pass
             surface_monitor.sync_identity(identity)
+
+            if provider_active:
+                if not provider_wait_announced:
+                    provider_wait_announced = True
+                    _status("provider login in progress — harness will not reload or switch tabs")
+                wait_ms = max(POLL_MS, 8000)
+                page.wait_for_timeout(wait_ms)
+                continue
+
             app_page = surface_monitor.app_page(page)
             if app_page is None:
+                if context.pages and any(not pg.is_closed() for pg in context.pages):
+                    page.wait_for_timeout(POLL_MS)
+                    continue
                 stub = page
                 if stub.is_closed():
                     live = [pg for pg in context.pages if not pg.is_closed()]
@@ -317,6 +334,10 @@ def main() -> int:
                     pass
                 return code
             url = app_page.url or ""
+            if is_provider_url(url):
+                surface_monitor.record_harness_event("script_navigation_suppressed", detail="app_page_is_provider")
+                page.wait_for_timeout(POLL_MS)
+                continue
             collector.note_url(url, label="app_page_poll")
             url_sid = suite_sid_from_url(url)
             if url_sid and url_sid != target_sid:
@@ -358,10 +379,18 @@ def main() -> int:
                     pass
 
             page.wait_for_timeout(POLL_MS)
-            try:
-                goto_and_wake(app_page, _capture_url(target_sid), timeout_s=120)
-            except Exception:
-                pass
+            if not surface_monitor.provider_login_in_progress():
+                try:
+                    surface_monitor.record_harness_event(
+                        "script_navigation_goto_wake",
+                        url_host=urlparse(_capture_url(target_sid)).netloc[:80],
+                    )
+                    goto_and_wake(app_page, _capture_url(target_sid), timeout_s=120)
+                except Exception as exc:
+                    surface_monitor.record_harness_event(
+                        "script_navigation_failed",
+                        detail=type(exc).__name__,
+                    )
         else:
             app_page = surface_monitor.app_page(page)
             ledger = scrape_stage1_ledger_rows(app_page) or []

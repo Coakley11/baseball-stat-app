@@ -47,6 +47,76 @@ class BrowserSurfaceMonitor:
         self.returned_to_cloud_after_provider = False
         self.signed_in_display_any_surface = False
         self._provider_before_cloud = False
+        self._provider_login_active = False
+        self._harness_control_events: list[dict[str, Any]] = []
+        self._last_monitored_cloud_page_id = ""
+
+    def record_harness_event(
+        self,
+        cause: str,
+        *,
+        page_id: str = "",
+        detail: str = "",
+        url_host: str = "",
+    ) -> None:
+        self._harness_control_events.append(
+            {
+                "ts": time.time(),
+                "cause": cause[:80],
+                "page_id": page_id[:12],
+                "detail": detail[:200],
+                "url_host": url_host[:80],
+            }
+        )
+
+    def provider_login_in_progress(self) -> bool:
+        """True while any live page or iframe is on a provider OAuth host."""
+        for pg in self._context.pages:
+            if pg.is_closed():
+                continue
+            try:
+                if is_provider_url(pg.url or ""):
+                    return True
+                for frame in pg.frames:
+                    if is_provider_url(frame.url or ""):
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def cloud_app_page(self) -> Any | None:
+        """Baseball Cloud tab with target suite_sid (never a provider URL)."""
+        for pg in self._context.pages:
+            if pg.is_closed():
+                continue
+            try:
+                u = pg.url or ""
+                if is_cloud_app_url(u) and suite_sid_from_url(u) == self._target_sid:
+                    return pg
+            except Exception:
+                continue
+        return None
+
+    def provider_pages(self) -> list[tuple[str, Any]]:
+        out: list[tuple[str, Any]] = []
+        for pid, pg in self._pages.items():
+            if pg.is_closed():
+                continue
+            try:
+                if is_provider_url(pg.url or ""):
+                    out.append((pid, pg))
+            except Exception:
+                pass
+        for pg in self._context.pages:
+            if pg.is_closed():
+                continue
+            try:
+                if is_provider_url(pg.url or ""):
+                    pid = next((k for k, v in self._pages.items() if v is pg), "")
+                    out.append((pid or "unknown", pg))
+            except Exception:
+                pass
+        return out
 
     def wire(self, initial_page: Any) -> None:
         self._context.on("page", self._on_context_page)
@@ -57,6 +127,7 @@ class BrowserSurfaceMonitor:
         self.sign_in_initiated = True
 
     def _on_context_page(self, page: Any) -> None:
+        self.record_harness_event("popup_or_new_page_opened")
         self._register_page(page, role="popup")
 
     def _register_page(self, page: Any, *, role: str) -> None:
@@ -73,6 +144,13 @@ class BrowserSurfaceMonitor:
 
         def on_close() -> None:
             rec["closed_at"] = time.time()
+            host = urlparse(rec["urls"][-1]).netloc[:80] if rec.get("urls") else ""
+            was_provider = any(is_provider_url(u) for u in rec.get("urls") or [])
+            self.record_harness_event(
+                "provider_page_closed" if was_provider else "page_closed",
+                page_id=pid,
+                url_host=host,
+            )
 
         try:
             page.on("close", on_close)
@@ -143,11 +221,24 @@ class BrowserSurfaceMonitor:
         if is_cloud_app_url(url) and suite_sid_from_url(url) == self._target_sid:
             self._selected_app_page_id = page_id
 
-    def poll(self) -> None:
+    def poll(self, *, passive_only: bool = False) -> None:
         """Refresh URL/sign-in state from every live page and iframe."""
+        prev_provider = self._provider_login_active
+        self._provider_login_active = self.provider_login_in_progress()
+        if self._provider_login_active and not prev_provider:
+            self.record_harness_event("provider_login_became_active")
+        if prev_provider and not self._provider_login_active:
+            self.record_harness_event("provider_login_ended_natural")
+
         self.signed_in_display_any_surface = False
         for pid, pg in list(self._pages.items()):
             if pg.is_closed():
+                continue
+            if passive_only and is_provider_url(pg.url or ""):
+                try:
+                    self._note_page_url(pid, pg.url or "", label="poll_passive")
+                except Exception:
+                    pass
                 continue
             try:
                 self._note_page_url(pid, pg.url or "", label="poll")
@@ -188,24 +279,19 @@ class BrowserSurfaceMonitor:
                     continue
 
     def app_page(self, fallback: Any) -> Any | None:
-        pid = self._selected_app_page_id
-        if pid and pid in self._pages:
-            pg = self._pages[pid]
-            if not pg.is_closed():
-                return pg
-        for pg in self._context.pages:
-            if pg.is_closed():
-                continue
-            try:
-                if is_cloud_app_url(pg.url or "") and suite_sid_from_url(pg.url or "") == self._target_sid:
-                    return pg
-            except Exception:
-                continue
-        for pg in self._context.pages:
-            if not pg.is_closed():
-                return pg
+        """Cloud app page for ledger scrape; does not prefer provider tabs."""
+        cloud = self.cloud_app_page()
+        if cloud is not None:
+            pid = next((k for k, v in self._pages.items() if v is cloud), "")
+            if pid and pid != self._last_monitored_cloud_page_id:
+                self._last_monitored_cloud_page_id = pid
+                self.record_harness_event("context_page_selection_change", page_id=pid, detail="cloud_app_page")
+            return cloud
+        if self.provider_login_in_progress():
+            return None
         if fallback is not None and not fallback.is_closed():
-            return fallback
+            if not is_provider_url(fallback.url or ""):
+                return fallback
         return None
 
     def sync_identity(self, identity: dict[str, Any]) -> None:
@@ -236,4 +322,6 @@ class BrowserSurfaceMonitor:
             "provider_surface_seen": self.provider_surface_seen,
             "oauth_callback_seen": self.oauth_callback_seen,
             "signed_in_display_any_surface": self.signed_in_display_any_surface,
+            "provider_login_active": self._provider_login_active,
+            "harness_control_events": self._harness_control_events[-80:],
         }
