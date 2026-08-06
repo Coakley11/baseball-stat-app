@@ -131,6 +131,90 @@ class StrictPreflightTests(unittest.TestCase):
         )
         self.assertIn(r["failure"], (PREFLIGHT_FAIL_STREAMLIT_INCOMPLETE, "paired_transition_authenticated_false"))
 
+    def test_already_complete_without_apply_transition_passes(self) -> None:
+        rows = [
+            {
+                "event": "production_stage1_auth_state_before_start_control",
+                "streamlit_session_id": "sess-a",
+                "run_id": "run-a",
+                "script_run_seq": 3,
+                "is_authenticated": True,
+                "auth_session_complete": True,
+                "auth_hydration_source": "already_complete",
+                "session_flag_present": True,
+                "restore_blocked_reason": "",
+            }
+        ]
+        r = evaluate_strict_preflight(
+            harness_sid="same",
+            url_sid="same",
+            ledger_rows=rows,
+            start_enabled=True,
+            start_visible=True,
+            paired_authenticated=False,
+            streamlit_session_id="sess-a",
+            diagnostic_run_id="run-a",
+        )
+        self.assertTrue(r["authenticated_restored"])
+        self.assertTrue(r["paired_transition_ignored"])
+
+    def test_paired_false_without_current_state_fails(self) -> None:
+        r = evaluate_strict_preflight(
+            harness_sid="same",
+            url_sid="same",
+            ledger_rows=[],
+            start_enabled=True,
+            start_visible=True,
+            paired_authenticated=False,
+        )
+        self.assertFalse(r["authenticated_restored"])
+
+    def test_before_start_explicit_false_fails(self) -> None:
+        rows = [
+            {
+                "event": "production_stage1_auth_state_before_start_control",
+                "is_authenticated": False,
+                "auth_session_complete": False,
+            }
+        ]
+        r = evaluate_strict_preflight(
+            harness_sid="same",
+            url_sid="same",
+            ledger_rows=rows,
+            start_enabled=True,
+            start_visible=True,
+            paired_authenticated=None,
+        )
+        self.assertEqual(r["failure"], PREFLIGHT_FAIL_STREAMLIT_INCOMPLETE)
+
+    def test_stale_session_rows_excluded(self) -> None:
+        rows = [
+            {
+                "event": "production_stage1_auth_state_before_start_control",
+                "streamlit_session_id": "old",
+                "is_authenticated": False,
+                "auth_session_complete": False,
+            },
+            {
+                "event": "production_stage1_auth_state_before_start_control",
+                "streamlit_session_id": "new",
+                "is_authenticated": True,
+                "auth_session_complete": True,
+                "auth_hydration_source": "already_complete",
+                "session_flag_present": True,
+            },
+        ]
+        r = evaluate_strict_preflight(
+            harness_sid="same",
+            url_sid="same",
+            ledger_rows=rows,
+            start_enabled=True,
+            start_visible=True,
+            paired_authenticated=False,
+            streamlit_session_id="new",
+        )
+        self.assertTrue(r["authenticated_restored"])
+
 
 if __name__ == "__main__":
     unittest.main()

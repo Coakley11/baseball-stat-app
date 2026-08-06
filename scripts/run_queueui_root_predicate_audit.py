@@ -289,14 +289,48 @@ def main() -> int:
         report["streamlit_session_id"] = identity.get("streamlit_session_id")
         report["application_diagnostic_run_id"] = identity.get("diagnostic_run_id")
 
-        from playwright_auth_preflight_strict import inspect_start_control, strict_preflight_from_page
+        from playwright_auth_preflight_strict import inspect_start_control
+        from playwright_auth_strict_evidence import (
+            build_strict_auth_evidence,
+            strict_preflight_from_page_scoped,
+        )
+        from playwright_auth_ledger_export import export_pre_click_auth_payloads
         from playwright_daniel_auth_session import load_suite_sid
 
+        run_id = str(identity.get("diagnostic_run_id") or "")
+        st_sid = str(identity.get("streamlit_session_id") or "")
+        harness_sid = load_suite_sid()
+        start_inspect_pre = inspect_start_control(page)
+
+        strict_initial = strict_preflight_from_page_scoped(
+            page,
+            harness_sid=harness_sid,
+            ledger_rows=ledger_pre,
+            diagnostic_run_id=run_id,
+            streamlit_session_id=st_sid,
+        )
+        report["strict_auth_initial_in_session"] = strict_initial
+        report["strict_auth_initial_evidence"] = strict_initial.get("evidence")
+
         ledger_pre_click = scrape_stage1_ledger_rows(page) or []
-        strict_live = strict_preflight_from_page(
-            page, harness_sid=load_suite_sid(), ledger_rows=ledger_pre_click
+        strict_live = strict_preflight_from_page_scoped(
+            page,
+            harness_sid=harness_sid,
+            ledger_rows=ledger_pre_click,
+            diagnostic_run_id=run_id,
+            streamlit_session_id=st_sid,
         )
         report["strict_prestart_auth"] = strict_live
+        report["strict_preclick_evidence"] = strict_live.get("evidence")
+        report["strict_auth_comparison"] = {
+            "initial_in_session": strict_initial.get("evidence"),
+            "immediate_pre_click": strict_live.get("evidence"),
+        }
+        report["pre_click_auth_payloads"] = export_pre_click_auth_payloads(
+            ledger_pre_click,
+            diagnostic_run_id=run_id,
+            streamlit_session_id=st_sid,
+        )
         start_inspect = inspect_start_control(page)
         if not strict_live.get("authenticated_restored") or not start_inspect.get("enabled"):
             browser.close()
@@ -306,7 +340,7 @@ def main() -> int:
                 "audit_execution_status": "NOT_RUN",
                 "first_boundary": report["first_boundary"],
                 "completed": False,
-                "reason": strict_live.get("failure") or "start_control_disabled",
+                "reason": strict_live.get("failure") or strict_live.get("incomplete_reason") or "start_control_disabled",
             }
             report["start_draft_click"] = {
                 **start_inspect,
@@ -323,6 +357,7 @@ def main() -> int:
                         "audit_execution_status": "NOT_RUN",
                         "first_boundary": report["first_boundary"],
                         "strict_failure": strict_live.get("failure"),
+                        "incomplete_reason": strict_live.get("incomplete_reason"),
                     }
                 )
             )
