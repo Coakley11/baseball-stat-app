@@ -18,6 +18,7 @@ CAPTURE_FAIL_BRIDGE_PERSIST_SID = "bridge_persistence_sid_mismatch"
 CAPTURE_FAIL_RESTORE_AUTH_REQUIRED = "restore_blocked_auth_required"
 CAPTURE_FAIL_SIGNED_IN_ONLY = "signed_in_display_without_streamlit_auth"
 CAPTURE_FAIL_SESSION_FLAG = "suite_auth_session_missing"
+CAPTURE_FAIL_SESSION_FINALIZE = "auth_session_finalization_incomplete"
 
 
 def _restore_blocked_from_ledger(ledger_rows: list[dict[str, Any]]) -> str:
@@ -28,6 +29,22 @@ def _restore_blocked_from_ledger(ledger_rows: list[dict[str, Any]]) -> str:
         if rb:
             return rb
     return ""
+
+
+def _before_start_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    matches = [r for r in rows if str(r.get("event") or "") == "production_stage1_auth_state_before_start_control"]
+    return matches[-1] if matches else None
+
+
+def _flag_from_row(row: dict[str, Any] | None, key: str) -> bool:
+    if not row:
+        return False
+    if key in row:
+        return bool(row.get(key))
+    prot = row.get("protected_keys")
+    if isinstance(prot, dict) and key in prot:
+        return bool(prot.get(key))
+    return False
 
 
 def _bridge_persist_row(ledger_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -44,20 +61,27 @@ def bridge_persistence_proof(
 ) -> dict[str, Any]:
     """Non-secret summary of save_browser_auth_tokens ledger checkpoint."""
     row = _bridge_persist_row(ledger_rows) or {}
-    prefix = str(row.get("suite_sid_prefix") or "").strip()
+    save_row = _last_hydration(ledger_rows, "save_browser_auth_tokens") or {}
+    prefix = str(row.get("suite_sid_prefix") or save_row.get("suite_sid_prefix") or "").strip()
     target_prefix = str(target_sid or "")[:8]
+    readback_ok = bool(row.get("readback_record_complete"))
+    save_ok = bool(save_row.get("persistence_succeeded") or save_row.get("bridge_record_complete"))
     out: dict[str, Any] = {
-        "persistence_attempted": bool(row.get("persistence_attempted") or row.get("save_reported_success")),
-        "persistence_succeeded": bool(
-            row.get("readback_record_complete") or row.get("persistence_succeeded")
+        "persistence_attempted": bool(
+            row.get("persistence_attempted")
+            or row.get("save_reported_success")
+            or save_row.get("persistence_attempted")
         ),
-        "readback_succeeded": bool(row.get("readback_record_complete")),
+        "persistence_succeeded": bool(readback_ok or row.get("persistence_succeeded") or save_ok),
+        "readback_succeeded": readback_ok,
         "failure_reason": str(row.get("failure_reason") or row.get("skip_or_failure_reason") or "")[:120],
         "suite_sid_prefix_match": bool(prefix and target_prefix and prefix == target_prefix),
-        "access_token_present": bool(row.get("access_token_present")),
-        "refresh_token_present": bool(row.get("refresh_token_present")),
-        "auth_user_id_present": bool(row.get("auth_user_id_present")),
-        "bridge_record_complete": bool(row.get("bridge_record_complete")),
+        "access_token_present": bool(row.get("access_token_present") or save_row.get("access_token_present")),
+        "refresh_token_present": bool(row.get("refresh_token_present") or save_row.get("refresh_token_present")),
+        "auth_user_id_present": bool(row.get("auth_user_id_present") or save_row.get("auth_user_id_present")),
+        "bridge_record_complete": bool(
+            save_row.get("bridge_record_complete") or row.get("bridge_record_complete") or readback_ok
+        ),
     }
     return out
 
@@ -118,31 +142,39 @@ def evaluate_strict_capture(
         }
     )
 
+    persist = bridge_persistence_proof(ledger_rows, target_sid=target_sid)
+    out["bridge_persistence"] = persist
+    if persist.get("persistence_succeeded") and persist.get("bridge_record_complete"):
+        out["bridge_persisted"] = True
+
+    apply_row = _last_hydration(ledger_rows, "apply_authenticated_user_exit")
+    before_start = _before_start_row(ledger_rows)
+    session_flag = _flag_from_row(apply_row, "session_flag_present") or _flag_from_row(
+        before_start, "session_flag_present"
+    )
+    auth_complete = _flag_from_row(before_start, "auth_session_complete") or bool(
+        base.get("streamlit_auth_complete")
+    )
+    out["session_flag_present"] = session_flag
+    out["is_authenticated"] = _flag_from_row(before_start, "is_authenticated") or session_flag
+    out["auth_session_complete"] = auth_complete
+
     if signed_in_display and not base.get("streamlit_auth_complete") and not load_row:
         out["failure"] = CAPTURE_FAIL_SIGNED_IN_ONLY
         return out
 
     if base.get("failure"):
         out["failure"] = str(base["failure"])
+        if out["failure"] == PREFLIGHT_FAIL_START_DISABLED and persist.get("persistence_succeeded"):
+            out["failure"] = CAPTURE_FAIL_SESSION_FINALIZE
+        elif out["failure"] == PREFLIGHT_FAIL_STREAMLIT_INCOMPLETE and persist.get("persistence_succeeded"):
+            out["failure"] = CAPTURE_FAIL_SESSION_FINALIZE
         return out
-
-    apply_row = _last_hydration(ledger_rows, "apply_authenticated_user_exit")
-    protected = {}
-    if apply_row and isinstance(apply_row.get("protected_keys"), dict):
-        protected = apply_row["protected_keys"]
-    elif apply_row:
-        protected = apply_row
-    session_flag = bool(protected.get("session_flag_present"))
-    out["session_flag_present"] = session_flag
-    out["is_authenticated"] = bool(base.get("streamlit_auth_complete"))
-    out["auth_session_complete"] = bool(base.get("streamlit_auth_complete"))
 
     if not session_flag:
         out["failure"] = CAPTURE_FAIL_SESSION_FLAG
         return out
 
-    persist = bridge_persistence_proof(ledger_rows, target_sid=target_sid)
-    out["bridge_persistence"] = persist
     if not persist.get("persistence_succeeded") or not persist.get("suite_sid_prefix_match"):
         if persist.get("persistence_attempted") and not persist.get("suite_sid_prefix_match"):
             out["failure"] = CAPTURE_FAIL_BRIDGE_PERSIST_SID

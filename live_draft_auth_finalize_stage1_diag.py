@@ -107,7 +107,15 @@ def classify_auth_finalize_from_ledger(rows: list[dict[str, Any]]) -> tuple[str,
             continue
         if m.get("value_present_before") and not m.get("value_present_after"):
             src = str(m.get("source_function") or "")
+            if "apply_baseball_disk_state" in src or "enforce_identity" in src:
+                return AUTH_FINALIZE5, f"disk_or_identity_apply:{src or 'mutation'}", evidence
             return AUTH_FINALIZE4, f"session_flag_cleared_by_{src or 'mutation'}", evidence
+
+    after_disk = by_cp.get("after_apply_baseball_disk_state") or {}
+    if after_disk and _flag(after_disk, "session_flag_present") is False and _flag(
+        by_cp.get("apply_authenticated_user_exit"), "session_flag_present"
+    ):
+        return AUTH_FINALIZE5, "after_apply_baseball_disk_state", evidence
 
     if before_start and exit_row:
         if exit_row.get("session_object_id") and before_start.get("session_object_id"):

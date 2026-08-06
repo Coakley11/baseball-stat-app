@@ -11,7 +11,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from live_draft_auth_finalize_stage1_diag import AUTH_FINALIZE4, AUTH_FINALIZE6, classify_auth_finalize_from_ledger
+from live_draft_auth_finalize_stage1_diag import AUTH_FINALIZE5, AUTH_FINALIZE6, classify_auth_finalize_from_ledger
 from live_draft_setup_ui import start_button_disabled
 from suite_auth import (
     AUTH_SESSION_KEY,
@@ -42,8 +42,8 @@ class AuthFinalizeTests(unittest.TestCase):
         session: dict = {}
         with mock.patch("suite_auth.is_auth_enabled", return_value=True):
             ok = _apply_authenticated_user(session, {"email": "a@b.com", "id": "u1"}, tokens=None)
-        self.assertFalse(ok)
-        self.assertFalse(auth_session_complete(session))
+            self.assertFalse(ok)
+            self.assertFalse(auth_session_complete(session))
 
     def test_writes_on_actual_st_session_state(self) -> None:
         session: dict = {}
@@ -134,7 +134,7 @@ class AuthFinalizeTests(unittest.TestCase):
             },
         ]
         cls, _, _ = classify_auth_finalize_from_ledger(rows)
-        self.assertEqual(cls, AUTH_FINALIZE4)
+        self.assertEqual(cls, AUTH_FINALIZE5)
 
 
 if __name__ == "__main__":

@@ -155,7 +155,12 @@ def _finalize_exit(
     )
     auth_finalize_class = ""
     auth_finalize_detail = ""
-    if failure in ("start_control_disabled", "streamlit_auth_incomplete", "strict_capture_incomplete"):
+    if failure in (
+        "start_control_disabled",
+        "streamlit_auth_incomplete",
+        "strict_capture_incomplete",
+        "auth_session_finalization_incomplete",
+    ):
         try:
             from live_draft_auth_finalize_stage1_diag import classify_auth_finalize_from_ledger
 
