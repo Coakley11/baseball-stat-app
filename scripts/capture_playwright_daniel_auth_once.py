@@ -71,6 +71,54 @@ def _capture_url(target_sid: str) -> str:
     return append_suite_sid_to_url(queueui_root_predicate_audit_url_base(), target_sid)
 
 
+def _observability_package(
+    page,
+    *,
+    harness_sid: str,
+    ledger_rows: list[dict[str, Any]],
+    strict_failure: str,
+) -> dict[str, Any]:
+    from playwright_auth_observability import gather_page_observability
+    from playwright_auth_preflight_strict import paired_transition_authenticated
+    from playwright_auth_strict_evidence import build_strict_auth_evidence
+
+    obs = gather_page_observability(page, harness_sid=harness_sid, strict_failure=strict_failure)
+    cp = obs.get("checkpoint") or {}
+    ss = obs.get("start_surface") or {}
+    rows = obs.get("ledger_rows_for_eval") or ledger_rows
+    paired = paired_transition_authenticated(page)
+    auth_evidence = build_strict_auth_evidence(
+        harness_sid=harness_sid,
+        url=str(page.url or ""),
+        ledger_rows=rows,
+        start_inspect={
+            "visible": ss.get("visible"),
+            "enabled": ss.get("enabled"),
+        },
+        paired_authenticated=paired,
+        diagnostic_run_id=str(cp.get("diagnostic_run_id") or ""),
+        streamlit_session_id=str(cp.get("streamlit_session_id") or ""),
+    )
+    binding = {
+        "checkpoint": cp,
+        "binding": obs.get("binding"),
+        "ledger_bind": obs.get("ledger_bind"),
+        "start_surface": ss,
+        "session_binding_failure": obs.get("session_binding_failure"),
+        "playwright_page_id": hex(id(page))[:14],
+        "page_url": str(page.url or "")[:512],
+        "auth_evidence": auth_evidence,
+        "login_timeline": ledger_login_timeline(rows),
+    }
+    return {
+        "observability_binding": binding,
+        "auth_observability_classification": obs.get("auth_observability_classification") or "",
+        "auth_observability_detail": obs.get("auth_observability_detail") or "",
+        "override_failure": obs.get("override_failure") or "",
+        "ledger_rows": rows,
+    }
+
+
 def _strict_poll(page, *, target_sid: str, scrape_ledger) -> dict[str, Any]:
     from stage1_preflight_cleanup import _scrape_lobby
 
@@ -199,35 +247,29 @@ def _finalize_exit(
     observability_binding: dict[str, Any] = {}
     if page is not None and not page.is_closed():
         try:
-            from playwright_auth_observability import gather_page_observability
-
-            obs = gather_page_observability(
+            pkg = _observability_package(
                 page,
                 harness_sid=str(identity.get("suite_sid") or ""),
+                ledger_rows=ledger_rows,
                 strict_failure=failure,
             )
-            observability_binding = {
-                "checkpoint": obs.get("checkpoint"),
-                "binding": obs.get("binding"),
-                "ledger_bind": obs.get("ledger_bind"),
-                "start_surface": obs.get("start_surface"),
-                "session_binding_failure": obs.get("session_binding_failure"),
-            }
-            if obs.get("override_failure"):
-                failure = str(obs["override_failure"])
-            auth_obs_class = str(obs.get("auth_observability_classification") or "")
-            auth_obs_detail = str(obs.get("auth_observability_detail") or "")
+            observability_binding = pkg["observability_binding"]
+            ledger_rows = pkg.get("ledger_rows") or ledger_rows
+            if pkg.get("override_failure"):
+                failure = str(pkg["override_failure"])
+            auth_obs_class = str(pkg.get("auth_observability_classification") or "")
+            auth_obs_detail = str(pkg.get("auth_observability_detail") or "")
             if auth_obs_class and bool((strict_capture or {}).get("start_enabled")):
                 auth_class = ""
+                cp = observability_binding.get("checkpoint") or {}
                 identity.update(
                     {
                         k: v
-                        for k, v in (obs.get("checkpoint") or {}).items()
+                        for k, v in cp.items()
                         if k in ("streamlit_session_id", "diagnostic_run_id", "deploy_sha")
                         and v
                     }
                 )
-                ledger_rows = obs.get("ledger_rows_for_eval") or ledger_rows
         except Exception:
             pass
     auth_finalize_class = ""
@@ -534,6 +576,14 @@ def main() -> int:
             and SESSION_PATH.stat().st_mtime > session_mtime_before
         )
         ledger = scrape_stage1_ledger_rows(page) or []
+        obs_pkg = _observability_package(
+            page,
+            harness_sid=target_sid,
+            ledger_rows=ledger,
+            strict_failure="",
+        )
+        observability_binding = obs_pkg["observability_binding"]
+        ledger = obs_pkg.get("ledger_rows") or ledger
         identity["files_updated"] = files_updated
         identity["ok"] = True
         storage = probe_storage_booleans(page)
@@ -567,6 +617,8 @@ def main() -> int:
             "strict_capture": _public_summary(last_eval),
             "login_boundary": login_state,
             "login_timeline": ledger_login_timeline(ledger),
+            "observability_binding": observability_binding,
+            "auth_capture_pass": True,
             "trace": trace_meta,
             "ok": True,
             "files_updated": files_updated,
@@ -580,6 +632,8 @@ def main() -> int:
             "artifact": str(RESULT_PATH),
             "trace_dir": trace_meta.get("trace_dir"),
             "strict_capture": _public_summary(last_eval),
+            "observability_binding": observability_binding,
+            "auth_capture_pass": True,
         }
         print(json.dumps(stdout, default=str))
         context.close()

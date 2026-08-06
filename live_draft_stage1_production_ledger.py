@@ -16,6 +16,29 @@ STAGE1_RUN_ID_KEY = "_solo_stage1_run_id"
 STAGE1_PROBE_ID = "solo-stage1-production-ledger"
 MAX_ROWS = 400
 LEDGER_B64_CHUNK_CHARS = 24000
+STAGE1_AUTH_SNAPSHOT_KEY = "_solo_stage1_auth_transition_snapshot"
+AUTH_SNAPSHOT_MAX_ROWS = 32
+AUTH_EVENTS_FOR_SNAPSHOT = frozenset(
+    {
+        "production_stage1_auth_state_before_start_control",
+        "production_stage1_auth_prestart_hydration",
+        "production_stage1_auth_prestart_mutation",
+        "production_stage1_auth_state_mutation",
+    }
+)
+HYDRATION_CHECKPOINTS_FOR_SNAPSHOT = frozenset(
+    {
+        "load_browser_auth_tokens",
+        "load_browser_auth_tokens_lookup",
+        "save_browser_auth_tokens",
+        "save_browser_auth_tokens_readback",
+        "restore_auth_session_exit",
+        "apply_authenticated_user_exit",
+        "apply_authenticated_user_entered",
+        "before_start_control_render",
+        "auth_session_complete_before_start_control",
+    }
+)
 GATE_A_EXPORT_PINNED_EVENTS = frozenset(
     {
         "production_stage1_cloud_ledger_pipeline_canary",
@@ -54,6 +77,58 @@ GATE_A_EXPORT_PINNED_EVENTS = frozenset(
         "production_global_script_run_canary",
     }
 )
+
+
+def _auth_snapshot_key(row: dict[str, Any]) -> str:
+    ev = str(row.get("event") or "")
+    if ev == "production_stage1_auth_prestart_hydration":
+        cp = str(row.get("checkpoint") or "")
+        return f"{ev}:{cp}"
+    return ev
+
+
+def update_stage1_auth_snapshot(session: dict[str, Any], row: dict[str, Any]) -> None:
+    ev = str(row.get("event") or "")
+    if ev == "production_stage1_auth_prestart_hydration":
+        cp = str(row.get("checkpoint") or "")
+        if cp not in HYDRATION_CHECKPOINTS_FOR_SNAPSHOT and not cp.startswith("apply_authenticated"):
+            if cp not in ("before_start_control_render", "auth_session_complete_before_start_control"):
+                return
+    elif ev not in AUTH_EVENTS_FOR_SNAPSHOT:
+        return
+    snap: dict[str, Any] = dict(session.get(STAGE1_AUTH_SNAPSHOT_KEY) or {})
+    snap[_auth_snapshot_key(row)] = dict(row)
+    if len(snap) > AUTH_SNAPSHOT_MAX_ROWS:
+        ordered = sorted(snap.values(), key=lambda r: float(r.get("ts") or 0))
+        snap = {_auth_snapshot_key(r): r for r in ordered[-AUTH_SNAPSHOT_MAX_ROWS:]}
+    session[STAGE1_AUTH_SNAPSHOT_KEY] = snap
+
+
+def auth_snapshot_rows(session: dict[str, Any]) -> list[dict[str, Any]]:
+    snap = session.get(STAGE1_AUTH_SNAPSHOT_KEY) or {}
+    if not isinstance(snap, dict):
+        return []
+    rows = [dict(r) for r in snap.values() if isinstance(r, dict)]
+    rows.sort(key=lambda r: float(r.get("ts") or 0))
+    return rows
+
+
+def render_stage1_auth_transition_probe(st: Any, session: dict[str, Any]) -> None:
+    rows = auth_snapshot_rows(session)
+    if not rows:
+        return
+    from live_draft_stage1_current_auth_state import AUTH_TRANSITION_PROBE_ID
+
+    raw = json.dumps({"rows": rows}, default=str).encode("utf-8")
+    b64 = base64.b64encode(raw).decode("ascii")
+    run_id = ensure_stage1_run_id(session)
+    st.markdown(
+        f'<div id="{AUTH_TRANSITION_PROBE_ID}" '
+        f'data-row-count="{len(rows)}" '
+        f'data-run-id="{run_id}" '
+        f'data-b64="{b64[:64000]}"></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def stage1_production_ledger_enabled(st: Any | None, session: dict[str, Any]) -> bool:
@@ -140,6 +215,8 @@ def note_stage1_event(
     sha = str(session.get("_solo_stage1_deployment_sha") or "").strip()
     if sha:
         row["deployment_sha"] = sha[:7]
+    if str(event) in AUTH_EVENTS_FOR_SNAPSHOT or str(event) == "production_stage1_auth_prestart_hydration":
+        update_stage1_auth_snapshot(session, row)
     log = list(session.get(STAGE1_LEDGER_KEY) or [])
     log.append(row)
     session[STAGE1_LEDGER_KEY] = log[-MAX_ROWS:]
@@ -222,14 +299,23 @@ def ledger_rows_for_export(session: dict[str, Any]) -> list[dict[str, Any]]:
     merged = list(session.get(STAGE1_LEDGER_MERGED_KEY) or [])
     if not merged:
         merged = list(session.get(STAGE1_LEDGER_KEY) or [])
-    if not merged:
+    auth_snap = auth_snapshot_rows(session)
+    if not merged and not auth_snap:
         return []
     pinned = [
         dict(r)
         for r in merged
         if isinstance(r, dict) and str(r.get("event") or "") in GATE_A_EXPORT_PINNED_EVENTS
     ]
-    seen = {str(r.get("event_id") or "") for r in pinned if r.get("event_id")}
+    snap_ids = {str(r.get("event_id") or "") for r in pinned if r.get("event_id")}
+    for r in auth_snap:
+        eid = str(r.get("event_id") or "")
+        if eid and eid in snap_ids:
+            continue
+        pinned.append(dict(r))
+        if eid:
+            snap_ids.add(eid)
+    seen = snap_ids.copy()
     tail: list[dict[str, Any]] = []
     for r in reversed(merged):
         if not isinstance(r, dict):

@@ -83,6 +83,9 @@ def run_verify(*, headed: bool | None = None) -> dict:
                 "session_flag_present_observed": cp.get("session_flag_present"),
                 "auth_observability_classification": obs.get("auth_observability_classification"),
                 "auth_observability_detail": obs.get("auth_observability_detail"),
+                "auth_hydration_source": cp.get("auth_hydration_source"),
+                "bridge_lookup_status": cp.get("bridge_lookup_status"),
+                "current_auth_dom": cp.get("current_auth_dom"),
                 "session_binding_failure": obs.get("session_binding_failure"),
             }
         )
@@ -93,9 +96,10 @@ def run_verify(*, headed: bool | None = None) -> dict:
         result.get("start_enabled")
         and result.get("url_suite_sid_match")
         and not result.get("session_binding_failure")
-        and result.get("auth_hydration_row_count", 0) > 0
         and cp.get("is_authenticated") is True
         and cp.get("auth_session_complete") is True
+        and cp.get("session_flag_present") is True
+        and not str(cp.get("restore_blocked_reason") or "").strip()
     )
     if ok:
         result["pass"] = True

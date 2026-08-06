@@ -1,0 +1,11 @@
+{
+  "export_row_count": 400,
+  "export_event_id_count": 60,
+  "min_event_seq_in_export": 4157,
+  "max_event_seq_in_export": 4216,
+  "auth_markers_in_export": [],
+  "auth_markers_in_export_count": 0,
+  "ledger_auth_diagnosis": "AUTH_OBSERVABILITY7 \u2014 authentication evidence rolled out of bounded ledger (merged/export window retains high-sequence canary/UI rows only)",
+  "exact_condition": 1,
+  "exact_condition_detail": "events likely existed earlier in run but evicted from merged MAX_ROWS=400 before DOM export; repeated registration/canary rows displaced auth from retained window"
+}

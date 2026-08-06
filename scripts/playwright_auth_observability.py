@@ -11,6 +11,7 @@ AUTH_OBSERVABILITY3 = "AUTH_OBSERVABILITY3"
 AUTH_OBSERVABILITY4 = "AUTH_OBSERVABILITY4"
 AUTH_OBSERVABILITY5 = "AUTH_OBSERVABILITY5"
 AUTH_OBSERVABILITY6 = "AUTH_OBSERVABILITY6"
+AUTH_OBSERVABILITY7 = "AUTH_OBSERVABILITY7"
 AUTH_OBSERVABILITY8 = "AUTH_OBSERVABILITY8"
 
 CAPTURE_FAIL_OBSERVABILITY = "auth_observability_ledger_binding_failed"
@@ -89,6 +90,63 @@ def diagnostic_query_flags(url: str) -> dict[str, Any]:
     }
 
 
+_PROBE_CURRENT_AUTH_JS = """
+() => {
+  const ID = "solo-stage1-current-auth-state";
+  function readFrom(root) {
+    const el = root.getElementById(ID);
+    if (!el) return null;
+    function b(k) {
+      const v = el.getAttribute(k);
+      if (v === "true") return true;
+      if (v === "false") return false;
+      return v || "";
+    }
+    return {
+      deployment_sha: b("data-deployment-sha"),
+      streamlit_session_id: b("data-streamlit-session-id"),
+      diagnostic_run_id: b("data-diagnostic-run-id"),
+      script_run_seq: parseInt(el.getAttribute("data-script-run-seq") || "0", 10) || 0,
+      suite_sid_prefix: b("data-suite-sid-prefix"),
+      session_flag_present: b("data-session-flag-present"),
+      auth_user_id_present: b("data-auth-user-id-present"),
+      auth_email_present: b("data-auth-email-present"),
+      access_token_present: b("data-access-token-present"),
+      refresh_token_present: b("data-refresh-token-present"),
+      is_authenticated: b("data-is-authenticated"),
+      auth_session_complete: b("data-auth-session-complete"),
+      auth_hydration_source: b("data-auth-hydration-source"),
+      bridge_lookup_status: b("data-bridge-lookup-status"),
+      restore_blocked_reason: b("data-restore-blocked-reason"),
+      start_visible: b("data-start-visible"),
+      start_enabled: b("data-start-enabled"),
+    };
+  }
+  for (const fr of [document, ...Array.from(document.querySelectorAll("iframe")).map(f => {
+    try { return f.contentDocument; } catch (e) { return null; }
+  }).filter(Boolean)]) {
+    const m = readFrom(fr);
+    if (m) return m;
+  }
+  return null;
+}
+"""
+
+
+def probe_dom_current_auth_state(page, *, frame_index: int | None = None) -> dict[str, Any]:
+    try:
+        if frame_index is not None:
+            frames = page.frames
+            if 0 <= frame_index < len(frames):
+                raw = frames[frame_index].evaluate(_PROBE_CURRENT_AUTH_JS)
+                if isinstance(raw, dict):
+                    return raw
+        raw = page.evaluate(_PROBE_CURRENT_AUTH_JS)
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
 def find_start_control_surface(page) -> dict[str, Any]:
     """Start button surface including Playwright frame index."""
     out: dict[str, Any] = {
@@ -149,23 +207,38 @@ def probe_dom_current_state_checkpoint(page, *, start_surface: dict[str, Any] | 
     except Exception:
         pass
     flags = diagnostic_query_flags(str(page.url or ""))
+    current_auth = probe_dom_current_auth_state(page, frame_index=int(ss.get("frame_index") or 0))
+    is_auth = current_auth.get("is_authenticated") if isinstance(current_auth.get("is_authenticated"), bool) else None
+    auth_complete = (
+        current_auth.get("auth_session_complete")
+        if isinstance(current_auth.get("auth_session_complete"), bool)
+        else None
+    )
+    session_flag = (
+        current_auth.get("session_flag_present")
+        if isinstance(current_auth.get("session_flag_present"), bool)
+        else None
+    )
     return {
-        "streamlit_session_id": str(dom.get("streamlit_session_id") or "")[:36],
-        "diagnostic_run_id": str(dom.get("diagnostic_run_id") or "")[:64],
-        "script_run_seq": int(dom.get("script_run_seq") or 0),
+        "streamlit_session_id": str(dom.get("streamlit_session_id") or current_auth.get("streamlit_session_id") or "")[:36],
+        "diagnostic_run_id": str(dom.get("diagnostic_run_id") or current_auth.get("diagnostic_run_id") or "")[:64],
+        "script_run_seq": int(dom.get("script_run_seq") or current_auth.get("script_run_seq") or 0),
         "suite_sid_prefix": str(ss.get("suite_sid") or "")[:8],
         "start_visible": bool(ss.get("visible")),
         "start_enabled": bool(ss.get("enabled")),
         "start_frame_index": fi,
         "start_frame_url_host": urlparse(str(ss.get("frame_url") or "")).netloc[:80],
-        "deploy_sha": str(dom.get("deploy_sha") or "")[:7],
+        "deploy_sha": str(dom.get("deploy_sha") or current_auth.get("deployment_sha") or "")[:7],
         "ledger_row_count_attr": int(dom.get("row_count_attr") or 0),
         "probe_checkpoint": str(dom.get("probe_checkpoint") or "")[:40],
         "diagnostic_query_flags": flags,
-        "restore_blocked_reason": "",
-        "is_authenticated": None,
-        "auth_session_complete": None,
-        "session_flag_present": None,
+        "restore_blocked_reason": str(current_auth.get("restore_blocked_reason") or "")[:80],
+        "is_authenticated": is_auth,
+        "auth_session_complete": auth_complete,
+        "session_flag_present": session_flag,
+        "current_auth_dom": current_auth,
+        "auth_hydration_source": str(current_auth.get("auth_hydration_source") or "")[:64],
+        "bridge_lookup_status": str(current_auth.get("bridge_lookup_status") or "")[:40],
     }
 
 
@@ -199,6 +272,14 @@ def scrape_ledger_with_surface_binding(page, *, start_surface: dict[str, Any] | 
         (r for r in reversed(rows) if str(r.get("event") or "") == "production_stage1_auth_state_before_start_control"),
         None,
     )
+    max_event_index = 0
+    for r in rows:
+        eid = str(r.get("event_id") or "")
+        if ":" in eid:
+            try:
+                max_event_index = max(max_event_index, int(eid.split(":")[1]))
+            except ValueError:
+                pass
     return {
         "rows": rows,
         "row_count": len(rows),
@@ -210,6 +291,7 @@ def scrape_ledger_with_surface_binding(page, *, start_surface: dict[str, Any] | 
             "first_scrape_boundary": str(ext.get("first_scrape_boundary") or ""),
             "pipeline_canary_present": bool(ext.get("pipeline_canary_present")),
             "diagnostic_run_ids": ext.get("diagnostic_run_ids") or [],
+            "max_event_index": max_event_index,
         },
         "start_surface": ss,
         "ledger_same_frame_as_start": same_frame_as_start,
@@ -296,6 +378,11 @@ def classify_auth_observability(
             return AUTH_OBSERVABILITY5, "ledger_and_dom_identity_payload_missing", evidence
         return AUTH_OBSERVABILITY1, "start_enabled_ledger_empty_or_unscoped", evidence
     if start_on and auth_rows == 0 and row_count > 0:
+        max_idx = int((ledger_bind.get("extract_meta") or {}).get("max_event_index") or 0)
+        if max_idx > 400:
+            return AUTH_OBSERVABILITY7, "authentication_evidence_rolled_out_of_bounded_ledger", evidence
+        if checkpoint.get("is_authenticated") is True and checkpoint.get("auth_session_complete") is True:
+            return AUTH_OBSERVABILITY8, "start_enabled_current_auth_dom_complete_ledger_missing_transitions", evidence
         if not binding.get("ui_ledger_run_match") or not binding.get("ui_ledger_streamlit_session_match"):
             return AUTH_OBSERVABILITY4, "ledger_rows_present_session_filter_excluded_auth", evidence
         return AUTH_OBSERVABILITY5, "ledger_without_auth_prestart_events", evidence

@@ -25002,6 +25002,14 @@ elif active_page == "Live Draft Room":
                         st=st,
                         start_button_enabled=not bool(_start_disabled),
                     )
+                    from live_draft_stage1_current_auth_state import render_stage1_current_auth_state_probe
+
+                    render_stage1_current_auth_state_probe(
+                        st,
+                        st.session_state,
+                        start_visible=True,
+                        start_enabled=not bool(_start_disabled),
+                    )
                 except ImportError:
                     pass
                 try:
