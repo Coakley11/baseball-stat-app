@@ -31,6 +31,9 @@ def _restore_blocked_from_ledger(ledger_rows: list[dict[str, Any]]) -> str:
 
 
 def _bridge_persist_row(ledger_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    readback = _last_hydration(ledger_rows, "save_browser_auth_tokens_readback")
+    if readback:
+        return readback
     return _last_hydration(ledger_rows, "save_browser_auth_tokens")
 
 
@@ -44,8 +47,11 @@ def bridge_persistence_proof(
     prefix = str(row.get("suite_sid_prefix") or "").strip()
     target_prefix = str(target_sid or "")[:8]
     out: dict[str, Any] = {
-        "persistence_attempted": bool(row.get("persistence_attempted")),
-        "persistence_succeeded": bool(row.get("persistence_succeeded")),
+        "persistence_attempted": bool(row.get("persistence_attempted") or row.get("save_reported_success")),
+        "persistence_succeeded": bool(
+            row.get("readback_record_complete") or row.get("persistence_succeeded")
+        ),
+        "readback_succeeded": bool(row.get("readback_record_complete")),
         "failure_reason": str(row.get("failure_reason") or row.get("skip_or_failure_reason") or "")[:120],
         "suite_sid_prefix_match": bool(prefix and target_prefix and prefix == target_prefix),
         "access_token_present": bool(row.get("access_token_present")),
