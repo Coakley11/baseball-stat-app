@@ -51,6 +51,12 @@ def main() -> int:
         )
         context = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
         page = context.new_page()
+        try:
+            from stage1_harness_observability import LEDGER_DURABLE_INIT_SCRIPT
+
+            page.add_init_script(LEDGER_DURABLE_INIT_SCRIPT)
+        except ImportError:
+            pass
         goto_and_wake(page, url, timeout_s=240)
         page.wait_for_timeout(15000)
         try:
@@ -72,7 +78,7 @@ def main() -> int:
 
         run_id = ""
         st_sid = ""
-        warmup_deadline = time.time() + 120
+        warmup_deadline = time.time() + 180
         while time.time() < warmup_deadline:
             ledger = scrape_ledger(page) or []
             ident = capture_harness_page_identity(page, context, label="stability_warmup", ledger_rows=ledger)
