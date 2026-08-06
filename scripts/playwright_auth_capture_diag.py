@@ -77,7 +77,16 @@ def is_oauth_callback_url(url: str) -> bool:
     low = u.lower()
     if not is_cloud_app_url(u):
         return False
-    return any(x in low for x in ("code=", "access_token=", "#access_token", "error=", "suite_sid="))
+    return any(
+        x in low
+        for x in (
+            "code=",
+            "access_token=",
+            "#access_token",
+            "error=",
+            "type=recovery",
+        )
+    )
 
 
 def new_run_identity(*, suite_sid: str, target_url: str) -> dict[str, Any]:
@@ -313,7 +322,9 @@ def classify_auth_login(
         return AUTH_LOGIN7
     steps = state.get("steps") or {}
     missing = str(state.get("first_missing_transition") or "")
-    if timeout_before_sign_in or not steps.get("1_provider_sign_in_initiated"):
+    if timeout_before_sign_in and not steps.get("1_provider_sign_in_initiated"):
+        return AUTH_LOGIN1
+    if not steps.get("1_provider_sign_in_initiated"):
         if not steps.get("2_oauth_callback_url_reached"):
             return AUTH_LOGIN1
     if steps.get("1_provider_sign_in_initiated") and not steps.get("2_oauth_callback_url_reached"):

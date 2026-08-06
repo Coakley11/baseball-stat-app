@@ -246,12 +246,14 @@ def main() -> int:
                         page.screenshot(path=str(TRACE_ROOT / f"{target_sid[:8]}_provider_login.png"))
                     except Exception:
                         pass
-            if is_oauth_callback_url(url) or (identity["provider_login_seen"] and is_cloud_app_url(url)):
+            if is_oauth_callback_url(url):
                 identity["oauth_callback_seen"] = True
                 try:
                     page.screenshot(path=str(TRACE_ROOT / f"{target_sid[:8]}_callback_return.png"))
                 except Exception:
                     pass
+            elif identity["provider_login_seen"] and is_cloud_app_url(url):
+                identity["returned_to_app_after_provider"] = True
             signed_in_display = "Signed in as" in _body_text(page)
             identity["signed_in_display"] = signed_in_display
             url_sid = suite_sid_from_url(url)
