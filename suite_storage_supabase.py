@@ -826,14 +826,25 @@ def save_browser_auth_session(
     *,
     user_id: str,
     tokens: dict[str, Any],
-) -> None:
+) -> dict[str, Any]:
     """Persist refreshable auth tokens server-side; URL holds opaque session id only."""
     sid = str(session_id or "").strip()
     uid = str(user_id or "").strip()
     access = str((tokens or {}).get("access_token") or "").strip()
     refresh = str((tokens or {}).get("refresh_token") or "").strip()
+    meta: dict[str, Any] = {
+        "write_attempted": bool(sid and uid and access and refresh),
+        "write_committed": False,
+        "write_mode": "",
+        "duplicate_handled": False,
+        "conflict_key": _SAVED_ITEM_CONFLICT_COLS,
+        "app": _AUTH_BROWSER_APP,
+        "item_type": _AUTH_SESSION_ITEM_TYPE,
+        "item_key_prefix": sid[:8] if sid else "",
+        "owner_id_prefix": uid[:8] if uid else "",
+    }
     if not sid or not uid or not access or not refresh:
-        return
+        return meta
     payload = {
         "access_token": access,
         "refresh_token": refresh,
@@ -869,6 +880,8 @@ def save_browser_auth_session(
             json_body=row_body,
             prefer="resolution=merge-duplicates,return=minimal",
         )
+        meta["write_committed"] = True
+        meta["write_mode"] = "upsert"
     except RuntimeError as exc:
         if not _is_duplicate_key_error(exc):
             raise
@@ -879,6 +892,10 @@ def save_browser_auth_session(
             json_body=patch_body,
             prefer="return=minimal",
         )
+        meta["write_committed"] = True
+        meta["write_mode"] = "update"
+        meta["duplicate_handled"] = True
+    return meta
 
 
 def load_browser_auth_session(session_id: str) -> dict[str, Any] | None:
@@ -917,10 +934,19 @@ def load_browser_auth_session(session_id: str) -> dict[str, Any] | None:
     }
 
 
-def invalidate_browser_auth_session(session_id: str) -> None:
+def invalidate_browser_auth_session(session_id: str) -> dict[str, Any]:
     sid = str(session_id or "").strip()
+    out: dict[str, Any] = {"invalidated": False, "suite_sid_prefix": sid[:8] if sid else ""}
     if not sid:
-        return
+        return out
+    prior_id = ""
+    try:
+        from suite_auth_browser_bridge_diag import probe_browser_auth_storage
+
+        probe = probe_browser_auth_storage(sid, use_cache=False)
+        prior_id = str(probe.get("row_id") or "")
+    except Exception:
+        pass
     _request(
         "PATCH",
         _TABLE_SAVED,
@@ -932,6 +958,9 @@ def invalidate_browser_auth_session(session_id: str) -> None:
         json_body={"valid": False, "updated_at": _now_iso()},
         prefer="return=minimal",
     )
+    out["invalidated"] = True
+    out["prior_row_id"] = prior_id[:64]
+    return out
 
 
 def invalidate_saved_item(app: str, item_type: str, item_key: str) -> None:

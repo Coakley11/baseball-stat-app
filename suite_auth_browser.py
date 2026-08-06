@@ -78,6 +78,29 @@ def load_browser_auth_tokens(st: Any) -> dict[str, Any] | None:
     if not sid:
         _note_browser_load_reason(st, "suite_sid_missing")
         return None
+    lookup_diag: dict[str, Any] = {}
+    try:
+        from suite_auth_browser_bridge_diag import emit_bridge_storage_checkpoint, probe_browser_auth_storage
+
+        lookup_diag = probe_browser_auth_storage(sid, use_cache=False)
+        emit_bridge_storage_checkpoint(
+            st.session_state,
+            "load_browser_auth_tokens_lookup",
+            st=st,
+            extra={
+                "browser_tokens_loaded": bool(lookup_diag.get("production_record_complete")),
+                "access_token_present": bool(lookup_diag.get("access_token_present")),
+                "refresh_token_present": bool(lookup_diag.get("refresh_token_present")),
+                "suite_sid_prefix": sid[:8],
+                "row_id_prefix": str(lookup_diag.get("row_id") or "")[:8],
+                "rejection_reason": str(lookup_diag.get("rejection_reason") or "")[:80],
+                "cache_enabled": False,
+                "environment_fingerprint": (lookup_diag.get("environment") or {}).get("url_fingerprint", ""),
+                "invalid_rows_for_key": int(lookup_diag.get("invalid_rows_for_key") or 0),
+            },
+        )
+    except Exception:
+        pass
     try:
         from suite_storage_supabase import load_browser_auth_session
 
@@ -152,40 +175,52 @@ def save_browser_auth_tokens(
     if not sid:
         sid = str(uuid.uuid4())
     try:
-        from suite_storage_supabase import load_browser_auth_session, save_browser_auth_session
+        from suite_auth_browser_bridge_diag import emit_bridge_storage_checkpoint, readback_after_browser_auth_save
+        from suite_storage_supabase import save_browser_auth_session
 
-        save_browser_auth_session(sid, user_id=uid, tokens=tokens)
+        write_meta = save_browser_auth_session(sid, user_id=uid, tokens=tokens)
+        base_extra["write_committed"] = bool(write_meta.get("write_committed"))
+        base_extra["write_mode"] = str(write_meta.get("write_mode") or "")
     except Exception as exc:
         base_extra["failure_reason"] = f"save_error:{type(exc).__name__}"
         _emit_save_browser_auth_checkpoint(st, extra=base_extra)
         return
     _set_session_id(st, sid)
-    try:
-        from suite_storage_supabase import load_browser_auth_session
-
-        row = load_browser_auth_session(sid)
-        complete = bool(
-            row
-            and str(row.get("access_token") or "").strip()
-            and str(row.get("refresh_token") or "").strip()
-        )
-        base_extra["bridge_record_complete"] = complete
-        base_extra["persistence_succeeded"] = complete
-        base_extra["failure_reason"] = "ok" if complete else "post_save_record_incomplete"
-    except Exception as exc:
-        base_extra["failure_reason"] = f"verify_error:{type(exc).__name__}"
-        base_extra["persistence_succeeded"] = True
-        base_extra["bridge_record_complete"] = False
+    readback = readback_after_browser_auth_save(
+        sid,
+        expected_user_id=uid,
+        save_reported_success=bool(base_extra.get("write_committed")),
+    )
+    complete = bool(readback.get("readback_record_complete"))
+    base_extra["bridge_record_complete"] = complete
+    base_extra["persistence_succeeded"] = complete and bool(readback.get("readback_row_found"))
+    base_extra["failure_reason"] = str(readback.get("failure_reason") or ("ok" if complete else "readback_failed"))
+    base_extra["readback_row_id_prefix"] = str(readback.get("matching_row_id") or "")[:8]
     _emit_save_browser_auth_checkpoint(st, extra=base_extra)
+    emit_bridge_storage_checkpoint(
+        st.session_state,
+        "save_browser_auth_tokens_readback",
+        st=st,
+        extra=readback,
+    )
 
 
 def clear_browser_auth_tokens(st: Any) -> None:
     sid = _session_id_from_st(st)
     if sid:
         try:
+            from suite_auth_browser_bridge_diag import emit_bridge_mutation
             from suite_storage_supabase import invalidate_browser_auth_session
 
-            invalidate_browser_auth_session(sid)
+            inv = invalidate_browser_auth_session(sid)
+            emit_bridge_mutation(
+                st.session_state,
+                operation="invalidate",
+                sid=sid,
+                reason="clear_browser_auth_tokens",
+                prior_row_id=str(inv.get("prior_row_id") or ""),
+                st=st,
+            )
         except Exception:
             pass
     _clear_session_id(st)
