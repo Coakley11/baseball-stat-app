@@ -138,6 +138,27 @@ class SurfaceLoginObservationTests(unittest.TestCase):
         self.assertTrue(mon.hands_off_user_login())
 
     def test_provider_active_suppresses_app_page_selection(self) -> None:
+        collector = mock.Mock()
+        collector.attach = mock.Mock()
+        collector.note_url = mock.Mock()
+        ctx = mock.Mock()
+        cloud = mock.Mock()
+        cloud.is_closed = mock.Mock(return_value=False)
+        cloud.url = (
+            "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/"
+            "?suite_sid=aaaa-1111-2222-3333-444444444444"
+        )
+        cloud.frames = []
+        provider = mock.Mock()
+        provider.is_closed = mock.Mock(return_value=False)
+        provider.url = "https://accounts.google.com/o/oauth2/v2/auth"
+        provider.frames = []
+        ctx.pages = [cloud, provider]
+        mon = BrowserSurfaceMonitor(context=ctx, target_sid="aaaa-1111-2222-3333-444444444444", collector=collector)
+        mon.wire(cloud)
+        self.assertTrue(mon.provider_login_in_progress())
+        self.assertEqual(mon.cloud_app_page(), cloud)
+        self.assertEqual(mon.app_page(cloud), cloud)
 
 
 if __name__ == "__main__":
