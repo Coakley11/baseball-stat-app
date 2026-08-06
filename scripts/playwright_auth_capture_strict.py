@@ -155,9 +155,15 @@ def evaluate_strict_capture(
     auth_complete = _flag_from_row(before_start, "auth_session_complete") or bool(
         base.get("streamlit_auth_complete")
     )
-    out["session_flag_present"] = session_flag
-    out["is_authenticated"] = _flag_from_row(before_start, "is_authenticated") or session_flag
-    out["auth_session_complete"] = auth_complete
+    if before_start:
+        out["session_flag_present"] = session_flag
+        out["is_authenticated"] = _flag_from_row(before_start, "is_authenticated") or session_flag
+        out["auth_session_complete"] = auth_complete
+    else:
+        out["session_flag_present"] = None
+        out["is_authenticated"] = None
+        out["auth_session_complete"] = None
+        out["auth_state_observability"] = "not_observed"
 
     if signed_in_display and not base.get("streamlit_auth_complete") and not load_row:
         out["failure"] = CAPTURE_FAIL_SIGNED_IN_ONLY

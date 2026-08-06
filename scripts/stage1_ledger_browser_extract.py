@@ -312,11 +312,22 @@ def _probe_checkpoint_rank(checkpoint: str) -> int:
     return 0
 
 
-def _candidate_score(c: dict[str, Any], *, preferred_run_id: str = "") -> tuple[int, ...]:
+def _candidate_score(
+    c: dict[str, Any],
+    *,
+    preferred_run_id: str = "",
+    preferred_frame_index: int | None = None,
+) -> tuple[int, ...]:
     """Higher is better."""
     integrity = 1 if c.get("integrity_ok") else 0
     parse_ok = 1 if c.get("parse_ok") or c.get("ok") else 0
     canary = 1 if c.get("pipeline_canary_present") else 0
+    frame_match = (
+        1
+        if preferred_frame_index is not None
+        and int(c.get("frame_index") or -1) == int(preferred_frame_index)
+        else 0
+    )
     rows = int(c.get("row_count") or 0)
     dom_seq = int(c.get("data_script_run_seq") or 0)
     max_seq = max(int(c.get("max_script_run_seq") or 0), dom_seq)
@@ -333,6 +344,7 @@ def _candidate_score(c: dict[str, Any], *, preferred_run_id: str = "") -> tuple[
         integrity,
         parse_ok,
         canary,
+        frame_match,
         run_match,
         surface_match,
         cp_rank,
@@ -388,7 +400,12 @@ def classify_scrape_boundary(
     return "SCRAPE10 — OTHER"
 
 
-def extract_stage1_ledger_from_page(page, *, preferred_run_id: str = "") -> dict[str, Any]:
+def extract_stage1_ledger_from_page(
+    page,
+    *,
+    preferred_run_id: str = "",
+    preferred_frame_index: int | None = None,
+) -> dict[str, Any]:
     """Evaluate all frames; pick newest authoritative ledger payload."""
     all_candidates: list[dict[str, Any]] = []
     frame_reports: list[dict[str, Any]] = []
@@ -442,7 +459,11 @@ def extract_stage1_ledger_from_page(page, *, preferred_run_id: str = "") -> dict
     if all_candidates:
         ranked = sorted(
             all_candidates,
-            key=lambda c: _candidate_score(c, preferred_run_id=preferred_run_id),
+            key=lambda c: _candidate_score(
+                c,
+                preferred_run_id=preferred_run_id,
+                preferred_frame_index=preferred_frame_index,
+            ),
             reverse=True,
         )
         selected = ranked[0]

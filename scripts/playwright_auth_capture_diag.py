@@ -414,20 +414,25 @@ def classify_auth_login(
     *,
     sid_drift: bool = False,
     timeout_before_sign_in: bool = False,
+    start_enabled: bool = False,
 ) -> str:
     if sid_drift:
         return AUTH_LOGIN7
     steps = state.get("steps") or state.get("steps_legacy") or {}
     missing = str(state.get("first_missing_transition") or "")
+
+    def _login1() -> str:
+        return "" if start_enabled else AUTH_LOGIN1
+
     if state.get("misleading_signed_in_only"):
-        return AUTH_LOGIN1
+        return _login1()
     if timeout_before_sign_in and not steps.get("1_sign_in_initiated") and not steps.get(
         "1_provider_sign_in_initiated"
     ):
-        return AUTH_LOGIN1
+        return _login1()
     if not steps.get("1_sign_in_initiated") and not steps.get("1_provider_sign_in_initiated"):
         if not steps.get("2_provider_surface_observed") and not steps.get("2_oauth_callback_url_reached"):
-            return AUTH_LOGIN1
+            return _login1()
     if (steps.get("1_sign_in_initiated") or steps.get("1_provider_sign_in_initiated")) and not steps.get(
         "2_provider_surface_observed"
     ) and not steps.get("2_oauth_callback_url_reached"):
@@ -447,7 +452,7 @@ def classify_auth_login(
     if missing == "10_streamlit_auth_complete" or str(state.get("strict_failure") or "") == "streamlit_auth_incomplete":
         if steps.get("4_authenticated_user_visible_or_provider_state") and not steps.get("6_token_bridge_save_invoked"):
             if not steps.get("6_auth_hydration_ledger_started"):
-                return AUTH_LOGIN1 if state.get("misleading_signed_in_only") else AUTH_LOGIN4
+                return _login1() if state.get("misleading_signed_in_only") else AUTH_LOGIN4
             return AUTH_LOGIN4
         if steps.get("6_token_bridge_save_invoked") and not steps.get("7_bridge_save_committed_or_readback_ok"):
             return AUTH_LOGIN5
@@ -455,6 +460,8 @@ def classify_auth_login(
             return AUTH_LOGIN6
         if steps.get("8_load_browser_auth_tokens_invoked") and not steps.get("9_apply_authenticated_user_invoked"):
             return AUTH_LOGIN6
+        if start_enabled:
+            return ""
         return AUTH_LOGIN6
     return AUTH_LOGIN8
 

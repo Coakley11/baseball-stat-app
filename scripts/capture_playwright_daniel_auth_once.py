@@ -77,11 +77,15 @@ def _strict_poll(page, *, target_sid: str, scrape_ledger) -> dict[str, Any]:
     if page is None or page.is_closed():
         return {"strict_auth_passed": False, "failure": "browser_page_closed"}
     try:
-        ledger = scrape_ledger(page) or []
+        from playwright_auth_observability import gather_page_observability
+
+        obs = gather_page_observability(page, harness_sid=target_sid, strict_failure="")
+        ledger = obs.get("ledger_rows_for_eval") or scrape_ledger(page) or []
     except Exception as exc:
         if "TargetClosedError" in type(exc).__name__ or "closed" in str(exc).lower():
             return {"strict_auth_passed": False, "failure": "browser_page_closed"}
-        raise
+        ledger = scrape_ledger(page) or []
+        obs = {}
     url_sid = suite_sid_from_url(page.url or "")
     try:
         start = inspect_start_control(page)
@@ -94,7 +98,7 @@ def _strict_poll(page, *, target_sid: str, scrape_ledger) -> dict[str, Any]:
         if "TargetClosedError" in type(exc).__name__ or "closed" in str(exc).lower():
             return {"strict_auth_passed": False, "failure": "browser_page_closed"}
         raise
-    return evaluate_strict_capture(
+    ev = evaluate_strict_capture(
         target_sid=target_sid,
         url_sid=url_sid,
         ledger_rows=ledger,
@@ -103,17 +107,28 @@ def _strict_poll(page, *, target_sid: str, scrape_ledger) -> dict[str, Any]:
         paired_authenticated=paired,
         signed_in_display=signed_in,
     )
+    if obs:
+        from playwright_auth_observability import apply_observability_to_strict_summary
+
+        ev = apply_observability_to_strict_summary(ev, obs)
+        ev["_observability"] = {
+            "binding": obs.get("binding"),
+            "checkpoint": obs.get("checkpoint"),
+            "start_surface": obs.get("start_surface"),
+        }
+    return ev
 
 
 def _public_summary(ev: dict[str, Any]) -> dict[str, Any]:
     bp = ev.get("bridge_persistence") if isinstance(ev.get("bridge_persistence"), dict) else {}
-    return {
+
+    summary: dict[str, Any] = {
         "sid_stable": bool(ev.get("sid_stable")),
         "bridge_lookup": ev.get("bridge_lookup"),
         "apply_authenticated_user_ok": bool(ev.get("apply_authenticated_user_ok")),
-        "session_flag_present": bool(ev.get("session_flag_present")),
-        "is_authenticated": bool(ev.get("is_authenticated")),
-        "auth_session_complete": bool(ev.get("auth_session_complete")),
+        "session_flag_present": ev.get("session_flag_present"),
+        "is_authenticated": ev.get("is_authenticated"),
+        "auth_session_complete": ev.get("auth_session_complete"),
         "start_enabled": bool(ev.get("start_enabled")),
         "restore_blocked_reason": str(ev.get("restore_blocked_reason") or "")[:80],
         "bridge_persistence": {
@@ -128,6 +143,9 @@ def _public_summary(ev: dict[str, Any]) -> dict[str, Any]:
             "failure_reason": str(bp.get("failure_reason") or "")[:80],
         },
     }
+    if ev.get("auth_state_observability"):
+        summary["auth_state_observability"] = ev.get("auth_state_observability")
+    return summary
 
 
 def _finalize_exit(
@@ -174,7 +192,44 @@ def _finalize_exit(
         login_state,
         sid_drift=sid_drift,
         timeout_before_sign_in=timeout_before_sign_in,
+        start_enabled=bool((strict_capture or {}).get("start_enabled")),
     )
+    auth_obs_class = ""
+    auth_obs_detail = ""
+    observability_binding: dict[str, Any] = {}
+    if page is not None and not page.is_closed():
+        try:
+            from playwright_auth_observability import gather_page_observability
+
+            obs = gather_page_observability(
+                page,
+                harness_sid=str(identity.get("suite_sid") or ""),
+                strict_failure=failure,
+            )
+            observability_binding = {
+                "checkpoint": obs.get("checkpoint"),
+                "binding": obs.get("binding"),
+                "ledger_bind": obs.get("ledger_bind"),
+                "start_surface": obs.get("start_surface"),
+                "session_binding_failure": obs.get("session_binding_failure"),
+            }
+            if obs.get("override_failure"):
+                failure = str(obs["override_failure"])
+            auth_obs_class = str(obs.get("auth_observability_classification") or "")
+            auth_obs_detail = str(obs.get("auth_observability_detail") or "")
+            if auth_obs_class and bool((strict_capture or {}).get("start_enabled")):
+                auth_class = ""
+                identity.update(
+                    {
+                        k: v
+                        for k, v in (obs.get("checkpoint") or {}).items()
+                        if k in ("streamlit_session_id", "diagnostic_run_id", "deploy_sha")
+                        and v
+                    }
+                )
+                ledger_rows = obs.get("ledger_rows_for_eval") or ledger_rows
+        except Exception:
+            pass
     auth_finalize_class = ""
     auth_finalize_detail = ""
     if failure in (
@@ -211,6 +266,11 @@ def _finalize_exit(
         trace_meta=trace_meta,
         files_updated=files_updated,
     )
+    if auth_obs_class:
+        payload["auth_observability_classification"] = auth_obs_class
+        payload["auth_observability_detail"] = auth_obs_detail
+        payload["auth_login_classification"] = ""
+        payload["observability_binding"] = observability_binding
     payload["login_timeline"] = ledger_login_timeline(ledger_rows)
     payload["capture_url_check"] = verify_capture_url(
         str(identity.get("target_url") or ""), expected_sid=str(identity.get("suite_sid") or "")
@@ -226,7 +286,9 @@ def _finalize_exit(
         "suite_sid": identity.get("suite_sid"),
         "suite_sid_prefix": identity.get("suite_sid_prefix"),
         "files_updated": files_updated,
-        "auth_login_classification": auth_class if code != 0 and not auth_finalize_class else "",
+        "auth_login_classification": auth_class if code != 0 and not auth_finalize_class and not auth_obs_class else "",
+        "auth_observability_classification": auth_obs_class if code != 0 else "",
+        "auth_observability_detail": auth_obs_detail if code != 0 else "",
         "auth_session_finalization": auth_finalize_class if auth_finalize_class else "",
         "auth_finalize_detail": auth_finalize_detail,
         "first_missing_login_transition": login_state.get("first_missing_transition"),
