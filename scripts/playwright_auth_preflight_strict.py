@@ -155,9 +155,18 @@ def evaluate_strict_preflight(
     else:
         out["hydration_source"] = hydration_src
 
-    if apply_row and apply_row.get("authenticated_after") is True:
-        out["apply_authenticated_user_ok"] = True
-        out["streamlit_auth_complete"] = True
+    if apply_row:
+        apply_complete = apply_row.get("auth_session_complete")
+        if apply_complete is True:
+            out["apply_authenticated_user_ok"] = True
+        elif apply_complete is False:
+            out["apply_authenticated_user_ok"] = False
+        elif apply_row.get("apply_return_ok") is True and apply_row.get("auth_session_complete") is not False:
+            out["apply_authenticated_user_ok"] = bool(apply_row.get("session_flag_present"))
+        elif apply_row.get("authenticated_after") is True and _session_flag_present(apply_row) is True:
+            out["apply_authenticated_user_ok"] = True
+        if out["apply_authenticated_user_ok"] and apply_row.get("auth_session_complete") is True:
+            out["streamlit_auth_complete"] = True
 
     if before_start:
         if before_start.get("is_authenticated") is True and before_start.get("auth_session_complete") is True:

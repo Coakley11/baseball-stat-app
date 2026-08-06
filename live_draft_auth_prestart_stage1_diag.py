@@ -218,6 +218,18 @@ def emit_auth_state_before_start_control(
     keys = _protected_key_presence(session)
     restore_attempted = bool(session.get("_suite_auth_last_restore_attempted"))
     restore_ok = bool(session.get("_suite_auth_last_restore_ok"))
+    try:
+        emit_prestart_hydration_checkpoint(
+            session,
+            "auth_session_complete_before_start_control",
+            st=st,
+            extra={
+                "start_button_enabled": start_button_enabled,
+                **keys,
+            },
+        )
+    except Exception:
+        pass
     _note(
         session,
         EVENT_AUTH_BEFORE_START,

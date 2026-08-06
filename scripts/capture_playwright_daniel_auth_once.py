@@ -153,6 +153,15 @@ def _finalize_exit(
         sid_drift=sid_drift,
         timeout_before_sign_in=timeout_before_sign_in,
     )
+    auth_finalize_class = ""
+    auth_finalize_detail = ""
+    if failure in ("start_control_disabled", "streamlit_auth_incomplete", "strict_capture_incomplete"):
+        try:
+            from live_draft_auth_finalize_stage1_diag import classify_auth_finalize_from_ledger
+
+            auth_finalize_class, auth_finalize_detail, _ev = classify_auth_finalize_from_ledger(ledger_rows)
+        except ImportError:
+            pass
     trace_meta: dict[str, Any] = {}
     if not skip_trace:
         trace_dir = TRACE_ROOT / f"{identity.get('suite_sid_prefix') or 'unknown'}_{int(time.time())}"
@@ -178,6 +187,10 @@ def _finalize_exit(
     payload["capture_url_check"] = verify_capture_url(
         str(identity.get("target_url") or ""), expected_sid=str(identity.get("suite_sid") or "")
     )
+    if auth_finalize_class:
+        payload["auth_session_finalization"] = auth_finalize_class
+        payload["auth_finalize_detail"] = auth_finalize_detail
+        identity["auth_login_classification"] = ""
     artifact = write_result_artifact(payload if code != 0 else {**payload, "ok": True, "failure": ""})
     stdout: dict[str, Any] = {
         "ok": code == 0,
@@ -185,7 +198,9 @@ def _finalize_exit(
         "suite_sid": identity.get("suite_sid"),
         "suite_sid_prefix": identity.get("suite_sid_prefix"),
         "files_updated": files_updated,
-        "auth_login_classification": auth_class if code != 0 else "",
+        "auth_login_classification": auth_class if code != 0 and not auth_finalize_class else "",
+        "auth_session_finalization": auth_finalize_class if auth_finalize_class else "",
+        "auth_finalize_detail": auth_finalize_detail,
         "first_missing_login_transition": login_state.get("first_missing_transition"),
         "bridge_save_attempted": login_state.get("bridge_save_attempted"),
         "bridge_readback_attempted": login_state.get("bridge_readback_attempted"),

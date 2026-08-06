@@ -607,37 +607,132 @@ def _apply_authenticated_user(
     *,
     tokens: dict[str, Any] | None = None,
     email_fallback: str = "",
-) -> None:
+    st: Any | None = None,
+) -> bool:
     try:
-        from live_draft_auth_prestart_stage1_diag import emit_prestart_hydration_checkpoint
+        from live_draft_auth_finalize_stage1_diag import emit_apply_write_checkpoint
 
-        emit_prestart_hydration_checkpoint(
-            session_state,
-            "apply_authenticated_user_entry",
-            authenticated_before=bool(is_authenticated(session_state)) if is_auth_enabled() else True,
+        emit_apply_write_checkpoint(session_state, "apply_authenticated_user_entry", st=st)
+    except ImportError:
+        try:
+            from live_draft_auth_prestart_stage1_diag import emit_prestart_hydration_checkpoint
+
+            emit_prestart_hydration_checkpoint(
+                session_state,
+                "apply_authenticated_user_entry",
+                authenticated_before=bool(is_authenticated(session_state)) if is_auth_enabled() else True,
+                st=st,
+            )
+        except ImportError:
+            pass
+    try:
+        from live_draft_auth_finalize_stage1_diag import emit_apply_write_checkpoint
+
+        emit_apply_write_checkpoint(
+            session_state, "apply_authenticated_user_before_session_flag", st=st, write_key=AUTH_SESSION_KEY
         )
     except ImportError:
         pass
     session_state[AUTH_SESSION_KEY] = True
-    email = str(getattr(user, "email", None) or (user.get("email") if isinstance(user, dict) else None) or email_fallback).strip()
-    session_state[AUTH_USER_EMAIL_KEY] = email
-    session_state[AUTH_EXTERNAL_ID_KEY] = normalize_account_external_id(_infer_external_id_from_email(email))
-    uid = str(getattr(user, "id", None) or (user.get("id") if isinstance(user, dict) else None) or "").strip()
-    if uid:
-        session_state[AUTH_USER_ID_KEY] = uid
-    if tokens:
-        session_state[AUTH_TOKENS_KEY] = dict(tokens)
     try:
-        from live_draft_auth_prestart_stage1_diag import arm_prestart_mutation_trace, emit_prestart_hydration_checkpoint
+        from live_draft_auth_prestart_stage1_diag import trace_prestart_key_set
 
-        arm_prestart_mutation_trace(session_state, reason="apply_authenticated_user")
-        emit_prestart_hydration_checkpoint(
-            session_state,
-            "apply_authenticated_user_exit",
-            authenticated_after=bool(is_authenticated(session_state)) if is_auth_enabled() else True,
+        trace_prestart_key_set(session_state, AUTH_SESSION_KEY, st=st)
+    except ImportError:
+        pass
+    try:
+        from live_draft_auth_finalize_stage1_diag import emit_apply_write_checkpoint
+
+        emit_apply_write_checkpoint(
+            session_state, "apply_authenticated_user_after_session_flag", st=st, write_key=AUTH_SESSION_KEY
         )
     except ImportError:
         pass
+    email = str(getattr(user, "email", None) or (user.get("email") if isinstance(user, dict) else None) or email_fallback).strip()
+    session_state[AUTH_USER_EMAIL_KEY] = email
+    session_state[AUTH_EXTERNAL_ID_KEY] = normalize_account_external_id(_infer_external_id_from_email(email))
+    try:
+        from live_draft_auth_prestart_stage1_diag import trace_prestart_key_set
+
+        trace_prestart_key_set(session_state, AUTH_USER_EMAIL_KEY, st=st)
+    except ImportError:
+        pass
+    uid = str(getattr(user, "id", None) or (user.get("id") if isinstance(user, dict) else None) or "").strip()
+    if uid:
+        try:
+            from live_draft_auth_finalize_stage1_diag import emit_apply_write_checkpoint
+
+            emit_apply_write_checkpoint(
+                session_state, "apply_authenticated_user_before_user_id", st=st, write_key=AUTH_USER_ID_KEY
+            )
+        except ImportError:
+            pass
+        session_state[AUTH_USER_ID_KEY] = uid
+        try:
+            from live_draft_auth_prestart_stage1_diag import trace_prestart_key_set
+
+            trace_prestart_key_set(session_state, AUTH_USER_ID_KEY, st=st)
+        except ImportError:
+            pass
+        try:
+            from live_draft_auth_finalize_stage1_diag import emit_apply_write_checkpoint
+
+            emit_apply_write_checkpoint(
+                session_state, "apply_authenticated_user_after_user_id", st=st, write_key=AUTH_USER_ID_KEY
+            )
+        except ImportError:
+            pass
+    if tokens:
+        try:
+            from live_draft_auth_finalize_stage1_diag import emit_apply_write_checkpoint
+
+            emit_apply_write_checkpoint(
+                session_state, "apply_authenticated_user_before_tokens", st=st, write_key=AUTH_TOKENS_KEY
+            )
+        except ImportError:
+            pass
+        session_state[AUTH_TOKENS_KEY] = dict(tokens)
+        try:
+            from live_draft_auth_prestart_stage1_diag import trace_prestart_key_set
+
+            trace_prestart_key_set(session_state, AUTH_TOKENS_KEY, st=st)
+        except ImportError:
+            pass
+        try:
+            from live_draft_auth_finalize_stage1_diag import emit_apply_write_checkpoint
+
+            emit_apply_write_checkpoint(
+                session_state, "apply_authenticated_user_after_tokens", st=st, write_key=AUTH_TOKENS_KEY
+            )
+        except ImportError:
+            pass
+    apply_ok = bool(auth_session_complete(session_state)) if is_auth_enabled() else True
+    try:
+        from live_draft_auth_prestart_stage1_diag import arm_prestart_mutation_trace, emit_prestart_hydration_checkpoint
+        from live_draft_auth_finalize_stage1_diag import emit_apply_write_checkpoint
+
+        arm_prestart_mutation_trace(session_state, reason="apply_authenticated_user")
+        emit_apply_write_checkpoint(
+            session_state,
+            "apply_authenticated_user_exit",
+            st=st,
+            apply_return_ok=apply_ok,
+        )
+    except ImportError:
+        try:
+            from live_draft_auth_prestart_stage1_diag import arm_prestart_mutation_trace, emit_prestart_hydration_checkpoint
+
+            arm_prestart_mutation_trace(session_state, reason="apply_authenticated_user")
+            emit_prestart_hydration_checkpoint(
+                session_state,
+                "apply_authenticated_user_exit",
+                st=st,
+                authenticated_after=bool(is_authenticated(session_state)) if is_auth_enabled() else True,
+                extra={"apply_return_ok": apply_ok},
+            )
+        except ImportError:
+            pass
+    return apply_ok
 
 
 def _clear_auth_session(session_state: dict[str, Any], *, st: Any | None = None) -> None:
@@ -726,7 +821,7 @@ def _persist_auth_session(
     old_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
     old_ext = str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip()
     old_cloud = str(session_state.get("_suite_cloud_user_id") or "").strip()
-    _apply_authenticated_user(session_state, user, tokens=tokens, email_fallback=email_fallback)
+    _apply_authenticated_user(session_state, user, tokens=tokens, email_fallback=email_fallback, st=st)
     new_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
     session_state[AUTH_JUST_LOGGED_IN_KEY] = True
     session_state[AUTH_LAST_LOGIN_OK_KEY] = True
@@ -931,7 +1026,18 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
         refreshed = _tokens_from_auth_response(resp)
         if refreshed:
             tokens = refreshed
-        _apply_authenticated_user(session_state, user, tokens=tokens)
+        _apply_authenticated_user(session_state, user, tokens=tokens, st=st)
+        try:
+            from live_draft_auth_finalize_stage1_diag import emit_apply_write_checkpoint
+
+            emit_apply_write_checkpoint(
+                session_state,
+                "restore_auth_session_after_apply",
+                st=st,
+                apply_return_ok=bool(auth_session_complete(session_state)),
+            )
+        except ImportError:
+            pass
         try:
             _sync_auth_account_identity(session_state, st=st)
         except Exception:
