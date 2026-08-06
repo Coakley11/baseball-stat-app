@@ -1,7 +1,7 @@
-f7af932  # auto-generated; Streamlit Cloud reads this at runtime
+c3b2749  # auto-generated; Streamlit Cloud reads this at runtime
 
 
 
-# deploy_epoch: 2026-08-06T01:20:00Z browser_auth_bridge_durability_diagnostics
+# deploy_epoch: 2026-08-06T04:30:00Z auth_session_finalization_diagnostics
 
 branch: dev
