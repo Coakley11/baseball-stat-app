@@ -68,13 +68,14 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
   function extractNames(lines) {
     const names = [];
     const seen = new Set();
-    const skip = /Add to Queue|Draft Player|Draft Queue|Clear Draft|Watchlist|Available Players|Recommendations|keyboard_arrow|⭐|^\\s*$/i;
+    const rejectName = /^(Why Recommended|Draft Player|Available Players|Watchlist|Recommendations|On Clock|keyboard_arrow|Clear Draft Queue|Draft Queue|Empty|Tracked players)/i;
     const posRe = /^([A-Za-z][A-Za-z .\\'-]{2,60})\\s+[—\\-–]\\s+(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)\\b/;
     const twoRe = /^([A-Z][a-z]+(?: [A-Z][a-z'.\\-]+){1,3})$/;
     const oneRe = /^[A-Z][A-Za-z .\\'-]{2,48}$/;
+    const skipLine = /Add to Queue|Draft Queue|Clear Draft|keyboard_arrow|⭐|^\\s*$/i;
     for (const raw of lines) {
       let ln = String(raw||'').trim().replace(/^\\*+|\\*+$/g,'').replace(/^\\d+\\.\\s*/, '');
-      if (!ln || skip.test(ln)) continue;
+      if (!ln || skipLine.test(ln)) continue;
       if (/^(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)$/i.test(ln)) continue;
       let name = '';
       const pos = ln.match(posRe);
@@ -82,6 +83,7 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
       else if (twoRe.test(ln)) name = ln;
       else if (oneRe.test(ln)) name = ln;
       if (!name) continue;
+      if (rejectName.test(name)) continue;
       const k = name.toLowerCase();
       if (seen.has(k)) continue;
       seen.add(k);
@@ -91,6 +93,24 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
   }
   function bindPlayerName(btn) {
     let best = { confidence: 'missing', player_name: '', names: [], container_depth: -1, container_sample: '' };
+    const horiz = btn.closest('[data-testid="stHorizontalBlock"]');
+    if (horiz) {
+      for (const col of horiz.querySelectorAll('[data-testid="stVerticalBlock"]')) {
+        const t = String(col.innerText||'');
+        if (/Add to Queue/i.test(t)) continue;
+        const names = extractNames(t.split('\\n').map(x => x.trim()).filter(Boolean));
+        if (names.length === 1) {
+          return {
+            confidence: 'unique',
+            player_name: names[0],
+            names,
+            container_depth: -1,
+            container_sample: t.slice(0, 280),
+            binding_via: 'horizontal_column',
+          };
+        }
+      }
+    }
     const card = btn.closest('[data-testid="stVerticalBlock"]');
     if (card && card.previousElementSibling) {
       const prevLines = String(card.previousElementSibling.innerText||'').split('\\n').map(x => x.trim()).filter(Boolean);
@@ -211,13 +231,14 @@ _DELIVER_BOUND_CLICK_JS = """({ frameIndex, playerName }) => {
   function extractNames(lines) {
     const names = [];
     const seen = new Set();
-    const skip = /Add to Queue|Draft Player|Draft Queue|Clear Draft|Watchlist|Available Players|Recommendations|keyboard_arrow|⭐|^\\s*$/i;
+    const rejectName = /^(Why Recommended|Draft Player|Available Players|Watchlist|Recommendations|On Clock|keyboard_arrow|Clear Draft Queue|Draft Queue|Empty|Tracked players)/i;
     const posRe = /^([A-Za-z][A-Za-z .\\'-]{2,60})\\s+[—\\-–]\\s+(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)\\b/;
     const twoRe = /^([A-Z][a-z]+(?: [A-Z][a-z'.\\-]+){1,3})$/;
     const oneRe = /^[A-Z][A-Za-z .\\'-]{2,48}$/;
+    const skipLine = /Add to Queue|Draft Queue|Clear Draft|keyboard_arrow|⭐|^\\s*$/i;
     for (const raw of lines) {
       let ln = String(raw||'').trim().replace(/^\\*+|\\*+$/g,'').replace(/^\\d+\\.\\s*/, '');
-      if (!ln || skip.test(ln)) continue;
+      if (!ln || skipLine.test(ln)) continue;
       if (/^(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)$/i.test(ln)) continue;
       let name = '';
       const pos = ln.match(posRe);
@@ -225,6 +246,7 @@ _DELIVER_BOUND_CLICK_JS = """({ frameIndex, playerName }) => {
       else if (twoRe.test(ln)) name = ln;
       else if (oneRe.test(ln)) name = ln;
       if (!name) continue;
+      if (rejectName.test(name)) continue;
       const k = name.toLowerCase();
       if (seen.has(k)) continue;
       seen.add(k);
@@ -277,6 +299,20 @@ def discover_bound_add_to_queue_controls(page) -> list[dict[str, Any]]:
         return [{"error": str(exc)[:200]}]
 
 
+_REJECT_PLAYER_NAME = re.compile(
+    r"^(Why Recommended|Draft Player|Available Players|Watchlist|Recommendations|On Clock|"
+    r"keyboard_arrow|Clear Draft Queue|Draft Queue|Empty|Tracked players)",
+    re.I,
+)
+
+
+def is_valid_seed_player_name(name: str) -> bool:
+    n = str(name or "").strip()
+    if not n or _REJECT_PLAYER_NAME.match(n):
+        return False
+    return bool(_NAME_TWO.match(n) or _NAME_ONLY.match(n))
+
+
 def select_next_seed_candidate(
     candidates: list[dict[str, Any]],
     *,
@@ -296,7 +332,7 @@ def select_next_seed_candidate(
             continue
         if conf == BINDING_AMBIGUOUS:
             continue
-        if conf != BINDING_UNIQUE or not name:
+        if conf != BINDING_UNIQUE or not name or not is_valid_seed_player_name(name):
             continue
         if name.lower() in {n.lower() for n in exclude_player_names}:
             continue

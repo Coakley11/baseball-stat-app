@@ -113,6 +113,19 @@ def test_ambiguous_binding_classified_queue1b() -> None:
     assert classify_queue_seed_boundary(meta) == QUEUE1B
 
 
+def test_rejects_why_recommended_as_player() -> None:
+    from stage1_add_to_queue_delivery import is_valid_seed_player_name, select_next_seed_candidate
+
+    assert is_valid_seed_player_name("Why Recommended") is False
+    assert is_valid_seed_player_name("Francisco Lindor") is True
+    candidates = [
+        {"global_index": 0, "player_name": "Why Recommended", "binding_confidence": "unique"},
+        {"global_index": 1, "player_name": "Pete Alonso", "binding_confidence": "unique"},
+    ]
+    pick, _ = select_next_seed_candidate(candidates, exclude_player_names=set())
+    assert pick and pick["player_name"] == "Pete Alonso"
+
+
 def test_name_only_queue_rows_still_parse() -> None:
     text = "Draft queue\nFrancisco Lindor\nPete Alonso\nClear Draft Queue\n"
     names = [p["name"] for p in parse_queue_players_from_block(text)]
