@@ -431,140 +431,60 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
 }"""
 
 
-_DELIVER_BOUND_CLICK_JS = """({ frameIndex, playerName }) => {
-  function roots() {
-    const r = [document];
-    for (const f of document.querySelectorAll('iframe')) {
-      try { if (f.contentDocument) r.push(f.contentDocument); } catch (e) {}
+def _compile_deliver_bound_click_js() -> str:
+    start = _DISCOVER_BOUND_CONTROLS_JS.index("  function roots()")
+    end = _DISCOVER_BOUND_CONTROLS_JS.index("  function domPath")
+    helpers = _DISCOVER_BOUND_CONTROLS_JS[start:end]
+    return (
+        "({ frameIndex, playerName, indexInFrame }) => {\n"
+        + helpers
+        + """
+  function addQueueButtons(root) {
+    const out = [];
+    for (const btn of root.querySelectorAll('button')) {
+      const t = String(btn.innerText||'').replace(/\\s+/g,' ').trim();
+      if (/Add to Queue/i.test(t)) out.push(btn);
     }
-    return r.filter(Boolean);
-  }
-  function extractNames(lines) {
-    const names = [];
-    const seen = new Set();
-    const rejectName = /^(Why Recommended|Draft Player|Draft|Queued|Available Players|Watchlist|Recommendations|On Clock|keyboard_arrow|Clear Draft Queue|Draft Queue|Empty|Tracked players)/i;
-    const posRe = /^([A-Za-z][A-Za-z .\\'-]{2,60})\\s+[—\\-–]\\s+(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)\\b/;
-    const twoRe = /^([A-Z][a-z]+(?: [A-Z][a-z'.\\-]+){1,3})$/;
-    const oneRe = /^[A-Z][A-Za-z .\\'-]{2,48}$/;
-    const skipLine = /Add to Queue|Draft Queue|Clear Draft|keyboard_arrow|⭐|^\\s*$/i;
-    for (const raw of lines) {
-      let ln = String(raw||'').trim().replace(/^\\*+|\\*+$/g,'').replace(/^\\d+\\.\\s*/, '');
-      if (!ln || skipLine.test(ln)) continue;
-      if (/^(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)$/i.test(ln)) continue;
-      let name = '';
-      const pos = ln.match(posRe);
-      if (pos) name = pos[1].trim();
-      else if (twoRe.test(ln)) name = ln;
-      else if (oneRe.test(ln)) name = ln;
-      if (!name) continue;
-      if (rejectName.test(name)) continue;
-      const k = name.toLowerCase();
-      if (seen.has(k)) continue;
-      seen.add(k);
-      names.push(name);
-    }
-    return names;
-  }
-  function isVisibleButton(btn) {
-    const r = btn.getBoundingClientRect();
-    return r.width >= 10 && r.height >= 10;
-  }
-  function countVisibleAddQueueIn(el) {
-    let n = 0;
-    for (const b of el.querySelectorAll('button')) {
-      if (!/Add to Queue/i.test(String(b.innerText || ''))) continue;
-      if (isVisibleButton(b)) n += 1;
-    }
-    return n;
-  }
-  function uniqueBind(btn) {
-    let el = btn;
-    for (let i = 0; i < 8 && el; i++) {
-      const title = String(el.getAttribute('title') || el.getAttribute('aria-label') || '');
-      const m = title.match(/Add\\s+(.+?)\\s+to\\s+your\\s+draft\\s+queue/i);
-      if (m) {
-        const names = extractNames([m[1].trim()]);
-        if (names.length === 1) return names[0];
-      }
-      el = el.parentElement;
-    }
-    let walk = btn;
-    for (let depth = 0; depth < 18 && walk; depth++) {
-      walk = walk.parentElement;
-      if (!walk) break;
-      if (countVisibleAddQueueIn(walk) !== 1) continue;
-      const meta = walk.querySelector('.ld-rec-card-meta');
-      if (meta) {
-        const nameEl = meta.querySelector('div');
-        const raw = nameEl ? String(nameEl.innerText || '').trim() : '';
-        const names = extractNames([raw]);
-        if (names.length === 1) return names[0];
-      }
-      const header = walk.querySelector('.ld-rec-card-header');
-      if (header) {
-        const names = extractNames(String(header.innerText || '').split('\\n').map((x) => x.trim()).filter(Boolean));
-        if (names.length === 1) return names[0];
-      }
-      const t = String(walk.innerText || '');
-      if (!/Add to Queue/i.test(t)) continue;
-      const names = extractNames(t.split('\\n').map((x) => x.trim()).filter(Boolean));
-      if (names.length === 1) return names[0];
-    }
-    const col = btn.closest('[data-testid="stColumn"]');
-    if (col && col.parentElement) {
-      const cols = Array.from(col.parentElement.children).filter(
-        (c) => c.getAttribute && c.getAttribute('data-testid') === 'stColumn'
-      );
-      const idx = cols.indexOf(col);
-      if (idx > 0) {
-        for (let i = idx - 1; i >= 0; i--) {
-          const names = extractNames(
-            String(cols[i].innerText || '')
-              .split('\\n')
-              .map((x) => x.trim())
-              .filter(Boolean)
-          );
-          if (names.length === 1) return names[0];
-          if (names.length > 1) break;
-        }
-      }
-    }
-    const row = btn.closest('[data-testid="stHorizontalBlock"]');
-    if (row) {
-      const cols = Array.from(row.querySelectorAll('[data-testid="stVerticalBlock"]'));
-      const btnCol = btn.closest('[data-testid="stVerticalBlock"]');
-      const idx = cols.indexOf(btnCol);
-      if (idx > 0) {
-        const names = extractNames(String(cols[idx - 1].innerText || '').split('\\n').map(x => x.trim()).filter(Boolean));
-        if (names.length === 1) return names[0];
-      }
-    }
-    const card = btn.closest('[data-testid="stVerticalBlock"]');
-    if (card && card.previousElementSibling) {
-      const prevNames = extractNames(String(card.previousElementSibling.innerText||'').split('\\n').map(x => x.trim()).filter(Boolean));
-      if (prevNames.length === 1) return prevNames[0];
-    }
-    return '';
+    return out;
   }
   const root = roots()[frameIndex];
   if (!root) return { ok: false, reason: 'frame_missing' };
   const want = String(playerName||'').trim().toLowerCase();
   if (!want) return { ok: false, reason: 'missing_player_name' };
-  for (const btn of root.querySelectorAll('button')) {
-    const t = String(btn.innerText||'').replace(/\\s+/g,' ').trim();
-    if (!/Add to Queue/i.test(t)) continue;
-    const r = btn.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) continue;
-    if (!isVisibleButton(btn)) continue;
-    const bound = uniqueBind(btn);
-    if (bound && bound.toLowerCase() === want) {
-      btn.scrollIntoView({ block: 'center', inline: 'nearest' });
-      btn.click();
-      return { ok: true, method: 'js_bound_exact_element', bound_name: bound };
+  const buttons = addQueueButtons(root);
+  let target = null;
+  const idx = Number(indexInFrame);
+  if (Number.isFinite(idx) && idx >= 0 && idx < buttons.length) {
+    const bindAt = bindPlayerName(buttons[idx]);
+    if (bindAt.confidence === 'unique' && String(bindAt.player_name||'').toLowerCase() === want) {
+      target = buttons[idx];
     }
   }
-  return { ok: false, reason: 'no_matching_bound_button' };
+  if (!target) {
+    for (const btn of buttons) {
+      if (!isVisibleButton(btn)) continue;
+      const bind = bindPlayerName(btn);
+      if (bind.confidence === 'unique' && String(bind.player_name||'').toLowerCase() === want) {
+        target = btn;
+        break;
+      }
+    }
+  }
+  if (!target) return { ok: false, reason: 'no_matching_bound_button' };
+  target.scrollIntoView({ block: 'center', inline: 'nearest' });
+  target.click();
+  const bound = bindPlayerName(target);
+  return {
+    ok: true,
+    method: 'js_bind_player_name_exact',
+    bound_name: bound.player_name || '',
+    binding_via: bound.binding_via || '',
+  };
 }"""
+    )
+
+
+_DELIVER_BOUND_CLICK_JS = _compile_deliver_bound_click_js()
 
 
 def discover_bound_add_to_queue_controls(page) -> list[dict[str, Any]]:
@@ -741,7 +661,14 @@ def deliver_add_to_queue_click(page, candidate: dict[str, Any]) -> dict[str, Any
         pw_error = str(exc)[:240]
 
     try:
-        js = page.evaluate(_DELIVER_BOUND_CLICK_JS, {"frameIndex": frame_index, "playerName": name})
+        js = page.evaluate(
+            _DELIVER_BOUND_CLICK_JS,
+            {
+                "frameIndex": frame_index,
+                "playerName": name,
+                "indexInFrame": int(candidate.get("index_in_frame") if candidate.get("index_in_frame") is not None else -1),
+            },
+        )
         if isinstance(js, dict) and js.get("ok"):
             out["click_dispatched"] = True
             out["delivery_method"] = str(js.get("method") or "js_bound_exact_element")
