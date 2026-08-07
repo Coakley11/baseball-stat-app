@@ -76,7 +76,7 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
   function extractNames(lines) {
     const names = [];
     const seen = new Set();
-    const rejectName = /^(Why Recommended|Draft Player|Available Players|Watchlist|Recommendations|On Clock|keyboard_arrow|Clear Draft Queue|Draft Queue|Empty|Tracked players)/i;
+    const rejectName = /^(Why Recommended|Draft Player|Draft|Queued|Available Players|Watchlist|Recommendations|On Clock|keyboard_arrow|Clear Draft Queue|Draft Queue|Empty|Tracked players)/i;
     const posRe = /^([A-Za-z][A-Za-z .\\'-]{2,60})\\s+[—\\-–]\\s+(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)\\b/;
     const twoRe = /^([A-Z][a-z]+(?: [A-Z][a-z'.\\-]+){1,3})$/;
     const oneRe = /^[A-Z][A-Za-z .\\'-]{2,48}$/;
@@ -101,7 +101,7 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
   }
   function isVisibleButton(btn) {
     const r = btn.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
+    return r.width >= 10 && r.height >= 10;
   }
   function countVisibleAddQueueIn(el) {
     let n = 0;
@@ -442,7 +442,7 @@ _DELIVER_BOUND_CLICK_JS = """({ frameIndex, playerName }) => {
   function extractNames(lines) {
     const names = [];
     const seen = new Set();
-    const rejectName = /^(Why Recommended|Draft Player|Available Players|Watchlist|Recommendations|On Clock|keyboard_arrow|Clear Draft Queue|Draft Queue|Empty|Tracked players)/i;
+    const rejectName = /^(Why Recommended|Draft Player|Draft|Queued|Available Players|Watchlist|Recommendations|On Clock|keyboard_arrow|Clear Draft Queue|Draft Queue|Empty|Tracked players)/i;
     const posRe = /^([A-Za-z][A-Za-z .\\'-]{2,60})\\s+[—\\-–]\\s+(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)\\b/;
     const twoRe = /^([A-Z][a-z]+(?: [A-Z][a-z'.\\-]+){1,3})$/;
     const oneRe = /^[A-Z][A-Za-z .\\'-]{2,48}$/;
@@ -467,7 +467,7 @@ _DELIVER_BOUND_CLICK_JS = """({ frameIndex, playerName }) => {
   }
   function isVisibleButton(btn) {
     const r = btn.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
+    return r.width >= 10 && r.height >= 10;
   }
   function countVisibleAddQueueIn(el) {
     let n = 0;
@@ -585,7 +585,7 @@ def discover_bound_add_to_queue_controls(page) -> list[dict[str, Any]]:
 
 
 _REJECT_PLAYER_NAME = re.compile(
-    r"^(Why Recommended|Draft Player|Available Players|Watchlist|Recommendations|On Clock|"
+    r"^(Why Recommended|Draft Player|Draft|Queued|Available Players|Watchlist|Recommendations|On Clock|"
     r"keyboard_arrow|Clear Draft Queue|Draft Queue|Empty|Tracked players)",
     re.I,
 )
