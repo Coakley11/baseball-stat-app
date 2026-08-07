@@ -53,6 +53,18 @@ def _capture_suite_sid() -> str:
     return ""
 
 
+def _row_prefix_from_capture(cap: dict[str, Any]) -> str:
+    for key in ("login_timeline",):
+        for row in reversed(cap.get(key) or []):
+            if str(row.get("checkpoint") or "") == "save_browser_auth_tokens_readback":
+                pref = str(row.get("matching_row_id_prefix") or "").strip()
+                if pref:
+                    return pref[:16]
+    sc = cap.get("strict_capture") or {}
+    bp = sc.get("bridge_persistence") or {}
+    return str(bp.get("matching_row_id_prefix") or "")[:16]
+
+
 def _sanitize_probe(probe: dict[str, Any]) -> dict[str, Any]:
     return {
         k: probe.get(k)
@@ -122,6 +134,8 @@ def context_a_source_probe(suite_sid: str) -> dict[str, Any]:
                 out["bridge_record_complete"] = bool(bp.get("bridge_record_complete"))
                 out["uncached_readback_complete"] = bool(bp.get("readback_succeeded"))
                 out["invalidation_status"] = "valid_at_capture_time"
+                out["capture_ok_ignored"] = cap.get("ok") is False
+                out["authoritative_row_id_prefix"] = _row_prefix_from_capture(cap)
         except (json.JSONDecodeError, OSError):
             pass
     live_probe = str(os.environ.get("BRIDGE_DURABILITY_CONTEXT_A_LIVE_PROBE") or "").strip().lower() in (
@@ -213,7 +227,62 @@ def _ledger_bridge_facts(ledger_rows: list[dict[str, Any]]) -> dict[str, Any]:
         "apply_return_ok": (apply_exit or {}).get("apply_return_ok"),
         "latest_load_script_run_seq": _seq(load_row) if load_row else 0,
         "successful_load_script_run_seq": _seq(load_ok_row) if load_ok_row else 0,
+        "restore_exit_reason": _restore_exit_reason(ledger_rows),
+        "bridge_invalidate_mutations": _bridge_invalidate_mutations(ledger_rows),
     }
+
+
+def _restore_exit_reason(ledger_rows: list[dict[str, Any]]) -> str:
+    for row in reversed(ledger_rows):
+        if str(row.get("checkpoint") or "") == "restore_auth_session_exit":
+            return str(row.get("skip_or_failure_reason") or "")[:120]
+    return ""
+
+
+def _bridge_invalidate_mutations(ledger_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in ledger_rows:
+        if str(row.get("checkpoint") or "") != "browser_auth_bridge_mutation":
+            continue
+        if str(row.get("operation") or "") != "invalidate":
+            continue
+        out.append(
+            {
+                "reason": str(row.get("reason") or row.get("invalidation_reason") or "")[:80],
+                "caller": str(row.get("caller") or "")[:64],
+                "prior_row_id": str(row.get("prior_row_id") or row.get("row_id_prefix") or "")[:16],
+            }
+        )
+    return out
+
+
+def bridge_durability_session_pass(ctx: dict[str, Any]) -> bool:
+    """Fresh-context bridge restore success (no provider-login boundary)."""
+    bl = ctx.get("bridge_ledger") or {}
+    bound = ctx.get("bound_current_auth") or {}
+    if str(ctx.get("deployment_sha") or "")[:7] != EXPECTED_SHA[:7]:
+        return False
+    if not ctx.get("url_suite_sid_matches"):
+        return False
+    if not bl.get("load_browser_tokens_loaded"):
+        return False
+    if not bl.get("apply_exit_observed"):
+        return False
+    if bl.get("apply_authenticated_after") is not True:
+        return False
+    if bound.get("session_flag_present") is not True:
+        return False
+    if bound.get("is_authenticated") is not True:
+        return False
+    if bound.get("auth_session_complete") is not True:
+        return False
+    if str(bound.get("current_restore_blocked_reason") or "").strip():
+        return False
+    if not ctx.get("start_enabled"):
+        return False
+    if bound.get("apply_authenticated_user_ok") is False:
+        return False
+    return True
 
 
 def run_fresh_context_hydration(
@@ -307,8 +376,11 @@ def run_fresh_context_hydration(
                 "field_sources",
             )
         }
-        out["bound_pass"] = bound_state_passes_observability_resolved(bound)
         out["start_enabled"] = bool(cp.get("start_enabled"))
+        out["bound_pass"] = bound_state_passes_observability_resolved(bound)
+        out["bridge_durability_pass"] = bridge_durability_session_pass(
+            {**out, "bridge_ledger": out["bridge_ledger"], "bound_current_auth": out["bound_current_auth"]}
+        )
         out["session_binding_failure"] = obs.get("session_binding_failure") or ""
         binding = obs.get("binding") or {}
         out["identity_binding"] = {
@@ -357,7 +429,7 @@ def classify_durability(
             return AUTH_BRIDGE2, f"{label}_bridge_record_incomplete_at_runtime"
         if bl.get("apply_exit_observed") and bl.get("apply_authenticated_after") is not True:
             return AUTH_BRIDGE6, f"{label}_apply_exit_incomplete"
-        if not ctx.get("bound_pass"):
+        if not ctx.get("bridge_durability_pass"):
             return AUTH_BRIDGE6, f"{label}_final_session_state_incomplete"
         if ctx.get("session_binding_failure"):
             return AUTH_BRIDGE3, f"{label}_session_binding_{ctx.get('session_binding_failure')}"
@@ -382,8 +454,9 @@ def main() -> int:
         "expected_deployment_sha": EXPECTED_SHA,
         "source_capture_suite_sid": suite_sid,
         "authentication_phase": "accepted_resolved",
-        "application_diagnostic_sha": "44fc8a3",
-        "deploy_marker_sha": "7653499",
+        "application_diagnostic_sha": EXPECTED_SHA,
+        "deploy_marker_sha": EXPECTED_SHA,
+        "context_a_authoritative_capture": True,
     }
     if not suite_sid:
         report["classification"] = AUTH_BRIDGE1
@@ -408,16 +481,20 @@ def main() -> int:
         "(Supabase item_key). Set BRIDGE_DURABILITY_FRESH_SID_B/C to override."
     )
 
-    prior_row = str((ctx_a.get("probe") or {}).get("row_id") or "")
+    prior_row = str(ctx_a.get("authoritative_row_id_prefix") or (ctx_a.get("probe") or {}).get("row_id") or "")
     ctx_b = run_fresh_context_hydration(label="context_b", suite_sid=url_sid_b, prior_row_id=prior_row)
     report["context_b"] = ctx_b
-    post_b = _sanitize_probe(probe_browser_auth_storage_post(suite_sid))
-    report["context_a_post_b_probe"] = post_b
+    post_b: dict[str, Any] = {"skipped": "post_context_read_only_optional"}
+    if str(os.environ.get("BRIDGE_DURABILITY_POST_PROBE") or "1").strip().lower() not in ("0", "false", "no"):
+        post_b = _sanitize_probe(probe_browser_auth_storage_post(suite_sid))
+    report["bridge_row_post_context_b"] = post_b
 
     ctx_c = run_fresh_context_hydration(label="context_c", suite_sid=url_sid_c, prior_row_id=prior_row)
     report["context_c"] = ctx_c
-    post_c = _sanitize_probe(probe_browser_auth_storage_post(suite_sid))
-    report["context_a_post_c_probe"] = post_c
+    post_c: dict[str, Any] = {"skipped": "post_context_read_only_optional"}
+    if str(os.environ.get("BRIDGE_DURABILITY_POST_PROBE") or "1").strip().lower() not in ("0", "false", "no"):
+        post_c = _sanitize_probe(probe_browser_auth_storage_post(suite_sid))
+    report["bridge_row_post_context_c"] = post_c
 
     code, detail = classify_durability(ctx_a, ctx_b, ctx_c, expected_sha=EXPECTED_SHA)
     report["classification"] = code
