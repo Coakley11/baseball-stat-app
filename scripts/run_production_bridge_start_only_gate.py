@@ -81,12 +81,33 @@ def main() -> int:
         browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = browser.new_context(viewport={"width": 1440, "height": 1400})
         report["proven_start_context_scripts"] = install_proven_start_context_scripts(context)
+        from stage1_parent_event_sink import ParentEventSinkStore, install_parent_event_sink
+
+        parent_sink_store = ParentEventSinkStore()
         page = context.new_page()
+        report["parent_event_sink_install"] = install_parent_event_sink(page, parent_sink_store)
         goto_and_wake(page, url, timeout_s=240)
         page.wait_for_timeout(15000)
         from p8_production_start_harness import scrape_stage1_ledger_rows
+        from playwright_auth_bridge_restore_harness import resolve_real_accounts_wake
 
-        bridge_pre = wait_bridge_auth_hydrated(page, bridge_sid, scrape_stage1_ledger_rows)
+        if resolve_real_accounts_wake(bridge_restore_mode=True):
+            try:
+                page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
+                page.wait_for_timeout(3000)
+                report["real_accounts_wake_clicked"] = True
+            except Exception:
+                report["real_accounts_wake_clicked"] = False
+        hydrate_timeout = float(os.environ.get("BRIDGE_HYDRATION_TIMEOUT_S", "240"))
+        bridge_pre = wait_bridge_auth_hydrated(
+            page,
+            bridge_sid,
+            scrape_stage1_ledger_rows,
+            timeout_s=hydrate_timeout,
+            poll_interval_s=float(os.environ.get("BRIDGE_HYDRATION_POLL_S", "2")),
+            initial_settle_ms=0,
+            preamble_mode="stage1",
+        )
         report["bridge_hydration"] = {
             k: bridge_pre.get(k)
             for k in (
@@ -102,7 +123,7 @@ def main() -> int:
             report["finished_at"] = time.time()
             artifact.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             browser.close()
-            print(json.dumps({"ok": False, "classification": report["classification"]}))
+            print(json.dumps({"ok": False, "classification": report["classification"], "failure": bridge_pre.get("failure")}))
             return 1
         live_sha = str(bridge_pre.get("deployment_sha") or "")[:7].lower()
         report["live_cloud_sha"] = live_sha
@@ -113,12 +134,7 @@ def main() -> int:
             browser.close()
             print(json.dumps({"ok": False, "classification": report["classification"], "live": live_sha}))
             return 1
-        try:
-            page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
-            page.wait_for_timeout(3000)
-        except Exception:
-            pass
-        page.wait_for_timeout(8000)
+        page.wait_for_timeout(5000)
         report["pre_start_authority"] = inspect_start_click_authority(page)
         cleanup = run_stage1_preflight_cleanup(page, max_wait_s=180)
         report["preflight_cleanup"] = {k: cleanup.get(k) for k in ("ok", "skipped", "detected_room_id")}
