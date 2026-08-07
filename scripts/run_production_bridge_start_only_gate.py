@@ -185,9 +185,20 @@ def main() -> int:
         )
         if classification == START_DELIVERY_RESOLVED:
             report["ok"] = True
+            if url_policy.startswith("stage1a_queue"):
+                classification = "START_DELIVERY_RESOLVED_QUEUE120"
         else:
             report["ok"] = False
         report["classification"] = classification
+        if report.get("ok") and proof.get("room_id"):
+            from stage1_application_phase import harness_end_live_draft_room
+
+            cleanup = harness_end_live_draft_room(page, room_id=str(proof.get("room_id") or ""))
+            report["post_start_harness_cleanup"] = cleanup
+            report["setup_state_consumed"] = True
+            report["standalone_start_only_warning"] = (
+                "Do not launch a setup-lobby-dependent runner in a new browser context without cleanup or continuous session."
+            )
         report["finished_at"] = time.time()
         context.close()
         browser.close()

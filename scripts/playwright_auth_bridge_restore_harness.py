@@ -62,15 +62,24 @@ def wait_bridge_auth_hydrated(
     poll_interval_s: float = 2.0,
     initial_settle_ms: int = 0,
     preamble_mode: str = "stage1",
+    expected_application_phase: str = "setup_lobby",
+    standalone_start_consumed: bool = False,
 ) -> dict[str, Any]:
     from bridge_hydration_waiter import (
         AUTH_HYDRATE_FAIL_AUTH_API,
+        bound_bridge_auth_only_passes,
         bound_bridge_hydration_passes,
         bridge_load_succeeded,
         detect_restore_rerun_anomaly,
         hydration_fail_fast_from_restore_exit,
         latest_hydration_checkpoint,
         summarize_hydration_sequence,
+    )
+    from stage1_application_phase import (
+        EXPECTED_PHASE_AUTH_ONLY,
+        EXPECTED_PHASE_SETUP_LOBBY,
+        classify_hydration_timeout,
+        classify_ldr_phase_from_page,
     )
     from playwright_auth_current_state_eval import evaluate_bound_current_auth_state
     from playwright_auth_observability import gather_page_observability, probe_dom_current_auth_state
@@ -88,9 +97,11 @@ def wait_bridge_auth_hydrated(
         "streamlit_session_id": "",
         "diagnostic_run_id": "",
         "preamble_mode": preamble_mode,
+        "expected_application_phase": expected_application_phase,
         "hydration_polls": [],
         "first_divergence_from_isolated": "",
     }
+    require_start = expected_application_phase == EXPECTED_PHASE_SETUP_LOBBY
     deadline = time.time() + timeout_s
     if initial_settle_ms > 0:
         page.wait_for_timeout(initial_settle_ms)
@@ -169,6 +180,39 @@ def wait_bridge_auth_hydrated(
         }
         out["hydration_polls"].append(poll_record)
 
+        auth_only_ok = bound_bridge_auth_only_passes(
+            bound,
+            suite_sid=suite_sid,
+            url_sid=url_sid or suite_sid,
+            bridge_load_ok=load_ok,
+        )
+        if expected_application_phase == EXPECTED_PHASE_AUTH_ONLY and auth_only_ok:
+            reject = bridge_preflight_rejects_stale_session(
+                bridge_sid=suite_sid, url_sid=url_sid or suite_sid, authenticated=True
+            )
+            if reject:
+                out["failure"] = reject
+                return out
+            out["authenticated_restored"] = True
+            out["hydration_pass_mode"] = "auth_only"
+            out["bound_current_auth"] = {
+                k: bound.get(k)
+                for k in (
+                    "session_flag_present",
+                    "is_authenticated",
+                    "auth_session_complete",
+                    "current_restore_blocked_reason",
+                    "apply_authenticated_user_ok",
+                    "field_sources",
+                )
+            }
+            out["hydration_sequence"] = summarize_hydration_sequence(
+                ledger, streamlit_session_id=st_sid, diagnostic_run_id=run_id
+            )
+            out["rerun_anomaly"] = detect_restore_rerun_anomaly(ledger, streamlit_session_id=st_sid)
+            out["hydration_pass_poll"] = poll_n
+            return out
+
         if bound_bridge_hydration_passes(
             bound,
             suite_sid=suite_sid,
@@ -176,6 +220,7 @@ def wait_bridge_auth_hydrated(
             bridge_load_ok=load_ok,
             start_enabled=start_enabled,
             start_visible=start_visible,
+            require_start=require_start,
         ):
             reject = bridge_preflight_rejects_stale_session(
                 bridge_sid=suite_sid, url_sid=url_sid or suite_sid, authenticated=True
@@ -184,6 +229,7 @@ def wait_bridge_auth_hydrated(
                 out["failure"] = reject
                 return out
             out["authenticated_restored"] = True
+            out["hydration_pass_mode"] = "setup_lobby"
             out["bound_current_auth"] = {
                 k: bound.get(k)
                 for k in (
@@ -203,8 +249,20 @@ def wait_bridge_auth_hydrated(
             return out
 
     out["failure"] = "bridge_hydration_timeout"
-    out["failure_classification"] = "AUTH_HYDRATE7"
-    if out["hydration_polls"]:
+    phase_info = classify_ldr_phase_from_page(page)
+    out["application_phase_at_timeout"] = phase_info.get("application_phase")
+    timeout_cls = classify_hydration_timeout(
+        expected_application_phase=expected_application_phase,
+        hydration_polls=out["hydration_polls"],
+        application_phase=str(phase_info.get("application_phase") or ""),
+        standalone_start_consumed=standalone_start_consumed,
+    )
+    out["failure_classification"] = timeout_cls.get("failure_classification") or "AUTH_HYDRATE7"
+    out["hydration_timeout_root_cause"] = timeout_cls.get("root_cause")
+    out["auth_complete_at_timeout"] = timeout_cls.get("auth_complete_at_timeout")
+    if timeout_cls.get("mislabeled_as_auth_hydrate7"):
+        out["first_divergence_from_isolated"] = timeout_cls.get("root_cause")
+    elif out["hydration_polls"]:
         last = out["hydration_polls"][-1]
         if last.get("load_ok") and last.get("is_authenticated") and last.get("auth_session_complete"):
             out["first_divergence_from_isolated"] = (

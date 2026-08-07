@@ -83,20 +83,17 @@ def hydration_fail_fast_from_restore_exit(restore_exit: dict[str, Any] | None) -
     return ""
 
 
-def bound_bridge_hydration_passes(
+def bound_bridge_auth_only_passes(
     bound: dict[str, Any],
     *,
     suite_sid: str,
     url_sid: str,
     bridge_load_ok: bool,
-    start_enabled: bool,
-    start_visible: bool = True,
 ) -> bool:
+    """Authentication hydration without requiring Start (post-start / auth-only phase)."""
     if not suite_sid or url_sid != suite_sid:
         return False
     if not bridge_load_ok:
-        return False
-    if not start_visible or not start_enabled:
         return False
     if bound.get("session_flag_present") is not True:
         return False
@@ -107,6 +104,25 @@ def bound_bridge_hydration_passes(
     if str(bound.get("current_restore_blocked_reason") or "").strip():
         return False
     if bound.get("apply_authenticated_user_ok") is False:
+        return False
+    return True
+
+
+def bound_bridge_hydration_passes(
+    bound: dict[str, Any],
+    *,
+    suite_sid: str,
+    url_sid: str,
+    bridge_load_ok: bool,
+    start_enabled: bool,
+    start_visible: bool = True,
+    require_start: bool = True,
+) -> bool:
+    if not bound_bridge_auth_only_passes(
+        bound, suite_sid=suite_sid, url_sid=url_sid, bridge_load_ok=bridge_load_ok
+    ):
+        return False
+    if require_start and (not start_visible or not start_enabled):
         return False
     return True
 

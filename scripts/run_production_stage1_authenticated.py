@@ -2262,6 +2262,11 @@ def main() -> int:
                 poll_interval_s=float(os.environ.get("BRIDGE_HYDRATION_POLL_S", "2")),
                 initial_settle_ms=0,
                 preamble_mode="stage1",
+                expected_application_phase="setup_lobby",
+                standalone_start_consumed=str(
+                    os.environ.get("STANDALONE_START_CONSUMED") or ""
+                ).strip().lower()
+                in ("1", "true", "yes"),
             )
             summary["bridge_hydration"] = bridge_pre
             if bridge_pre.get("authenticated_restored"):
@@ -2275,10 +2280,25 @@ def main() -> int:
                 context.close()
                 browser.close()
                 summary["finished_at"] = time.time()
+                fc = str(bridge_pre.get("failure_classification") or "AUTH_HYDRATE7")
+                summary["bridge_hydration_verdict"] = fc
+                summary["application_phase_at_hydration_fail"] = bridge_pre.get("application_phase_at_timeout")
                 if stage1a_mode == "QUEUE":
-                    summary["stage1a_queue"] = "FAILED — BRIDGE_HYDRATION"
+                    if "QUEUE_HARNESS_SEQUENCE1" in fc or "APP_PHASE_ACTIVE_DRAFT" in fc:
+                        summary["stage1a_queue"] = f"BLOCKED — {fc.split(' — ')[0]}"
+                        summary["preflight_root_cause"] = fc
+                    else:
+                        summary["stage1a_queue"] = "FAILED — BRIDGE_HYDRATION"
                 OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
-                print(json.dumps({"aborted": True, "reason": bridge_pre.get("failure") or "bridge_hydration_failed"}))
+                print(
+                    json.dumps(
+                        {
+                            "aborted": True,
+                            "reason": bridge_pre.get("failure") or "bridge_hydration_failed",
+                            "failure_classification": fc,
+                        }
+                    )
+                )
                 return 1
         page.wait_for_timeout(5000 if use_bridge_restore else 15000)
         from run_solo_clean_verification import scrape_live_sha
@@ -2514,6 +2534,9 @@ def main() -> int:
             }
             summary["queue_seed"] = queue_meta
         elif stage1a_mode == "QUEUE":
+            summary["queue_workflow_note"] = (
+                "Continuous session: proven_start via establish_single_solo_live_draft; no separate Start-only pre-proof."
+            )
             from stage1_harness_observability import (
                 MANUAL_ASSIST_QUEUE_INSTRUCTION,
                 QUEUE1,
