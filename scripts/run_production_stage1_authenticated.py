@@ -2174,10 +2174,19 @@ def main() -> int:
             pass
 
         goto_and_wake(page, url, timeout_s=240)
+        page.wait_for_timeout(15000)
+        try:
+            page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
+            page.wait_for_timeout(3000)
+        except Exception:
+            pass
         if use_bridge_restore:
             from p8_production_start_harness import scrape_stage1_ledger_rows
 
-            bridge_pre = wait_bridge_auth_hydrated(page, bridge_sid, scrape_stage1_ledger_rows)
+            hydrate_timeout = float(os.environ.get("BRIDGE_HYDRATION_TIMEOUT_S", "240"))
+            bridge_pre = wait_bridge_auth_hydrated(
+                page, bridge_sid, scrape_stage1_ledger_rows, timeout_s=hydrate_timeout
+            )
             pre.update(bridge_pre)
             summary["auth_preflight"] = pre
             summary["authenticated_restored"] = bool(bridge_pre.get("authenticated_restored"))
@@ -2192,13 +2201,7 @@ def main() -> int:
                 OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
                 print(json.dumps({"aborted": True, "reason": bridge_pre.get("failure") or "bridge_hydration_failed"}))
                 return 1
-        page.wait_for_timeout(15000)
-        try:
-            page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
-            page.wait_for_timeout(3000)
-        except Exception:
-            pass
-        page.wait_for_timeout(20000)
+        page.wait_for_timeout(5000 if use_bridge_restore else 15000)
         from run_solo_clean_verification import scrape_live_sha
 
         sha = scrape_live_sha(page) or scrape_deploy_build(page)
