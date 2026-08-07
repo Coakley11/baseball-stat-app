@@ -606,59 +606,7 @@ def deliver_add_to_queue_click(page, candidate: dict[str, Any]) -> dict[str, Any
     frame = _frame_for_index(page, frame_index)
     escaped = re.escape(name)
     pw_error = ""
-    try:
-        card_scope = frame.locator('[data-testid="stVerticalBlock"]').filter(
-            has=frame.locator(".ld-rec-card-meta").filter(has_text=re.compile(escaped, re.I))
-        )
-        btn = card_scope.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I)).first
-        btn.wait_for(state="attached", timeout=8000)
-        btn.wait_for(state="visible", timeout=8000)
-        if not btn.is_enabled():
-            out["error"] = "button_not_enabled"
-            out["classification"] = "QUEUE1C"
-            return out
-        btn.scroll_into_view_if_needed(timeout=8000)
-        page.wait_for_timeout(350)
-        btn.click(timeout=10000)
-        out["click_dispatched"] = True
-        out["delivery_method"] = "playwright_ld_rec_card_meta_scope"
-        return out
-    except Exception as exc:
-        pw_error = str(exc)[:240]
-    try:
-        row = frame.locator('[data-testid="stHorizontalBlock"]').filter(has_text=re.compile(escaped, re.I))
-        btn = row.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I)).first
-        btn.wait_for(state="attached", timeout=8000)
-        btn.wait_for(state="visible", timeout=8000)
-        if not btn.is_enabled():
-            out["error"] = "button_not_enabled"
-            out["classification"] = "QUEUE1C"
-            return out
-        btn.scroll_into_view_if_needed(timeout=8000)
-        page.wait_for_timeout(350)
-        btn.click(timeout=10000)
-        out["click_dispatched"] = True
-        out["delivery_method"] = "playwright_stHorizontalBlock_player_row"
-        return out
-    except Exception as exc:
-        pw_error = str(exc)[:240]
-    try:
-        block = frame.locator('[data-testid="stVerticalBlock"]').filter(has_text=re.compile(escaped, re.I))
-        btn = block.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I)).first
-        btn.wait_for(state="attached", timeout=8000)
-        btn.wait_for(state="visible", timeout=8000)
-        if not btn.is_enabled():
-            out["error"] = "button_not_enabled"
-            out["classification"] = "QUEUE1C"
-            return out
-        btn.scroll_into_view_if_needed(timeout=8000)
-        page.wait_for_timeout(350)
-        btn.click(timeout=10000)
-        out["click_dispatched"] = True
-        out["delivery_method"] = "playwright_player_bound_click"
-        return out
-    except Exception as exc:
-        pw_error = str(exc)[:240]
+    index_in_frame = int(candidate.get("index_in_frame") if candidate.get("index_in_frame") is not None else -1)
 
     try:
         js = page.evaluate(
@@ -666,7 +614,7 @@ def deliver_add_to_queue_click(page, candidate: dict[str, Any]) -> dict[str, Any
             {
                 "frameIndex": frame_index,
                 "playerName": name,
-                "indexInFrame": int(candidate.get("index_in_frame") if candidate.get("index_in_frame") is not None else -1),
+                "indexInFrame": index_in_frame,
             },
         )
         if isinstance(js, dict) and js.get("ok"):
@@ -677,6 +625,88 @@ def deliver_add_to_queue_click(page, candidate: dict[str, Any]) -> dict[str, Any
         out["js_delivery"] = js
     except Exception as exc:
         out["js_error"] = str(exc)[:200]
+
+    pw_timeout = 4000
+    try:
+        meta = frame.locator(".ld-rec-card-meta").filter(has_text=re.compile(escaped, re.I)).first
+        card_scope = meta.locator("xpath=ancestor::div[@data-testid='stVerticalBlock'][1]")
+        btn = card_scope.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I)).first
+        btn.wait_for(state="attached", timeout=pw_timeout)
+        btn.wait_for(state="visible", timeout=pw_timeout)
+        if not btn.is_enabled():
+            out["error"] = "button_not_enabled"
+            out["classification"] = "QUEUE1C"
+            return out
+        btn.scroll_into_view_if_needed(timeout=pw_timeout)
+        page.wait_for_timeout(350)
+        btn.click(timeout=pw_timeout)
+        out["click_dispatched"] = True
+        out["delivery_method"] = "playwright_ld_rec_card_meta_scope"
+        return out
+    except Exception as exc:
+        pw_error = str(exc)[:240]
+    try:
+        row = frame.locator('[data-testid="stHorizontalBlock"]').filter(has_text=re.compile(escaped, re.I))
+        btn = row.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I)).first
+        btn.wait_for(state="attached", timeout=pw_timeout)
+        btn.wait_for(state="visible", timeout=pw_timeout)
+        if not btn.is_enabled():
+            out["error"] = "button_not_enabled"
+            out["classification"] = "QUEUE1C"
+            return out
+        btn.scroll_into_view_if_needed(timeout=pw_timeout)
+        page.wait_for_timeout(350)
+        btn.click(timeout=pw_timeout)
+        out["click_dispatched"] = True
+        out["delivery_method"] = "playwright_stHorizontalBlock_player_row"
+        return out
+    except Exception as exc:
+        pw_error = str(exc)[:240]
+    try:
+        buttons = frame.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I))
+        if 0 <= index_in_frame < buttons.count():
+            btn = buttons.nth(index_in_frame)
+            btn.wait_for(state="attached", timeout=pw_timeout)
+            btn.wait_for(state="visible", timeout=pw_timeout)
+            if not btn.is_enabled():
+                out["error"] = "button_not_enabled"
+                out["classification"] = "QUEUE1C"
+                return out
+            btn.scroll_into_view_if_needed(timeout=pw_timeout)
+            page.wait_for_timeout(350)
+            btn.click(timeout=pw_timeout)
+            out["click_dispatched"] = True
+            out["delivery_method"] = "playwright_index_in_frame_after_bind"
+            return out
+    except Exception as exc:
+        pw_error = str(exc)[:240]
+
+    bbox = candidate.get("bounding_box") or {}
+    try:
+        if float(bbox.get("width") or 0) >= 10 and float(bbox.get("height") or 0) >= 10:
+            hit = frame.evaluate(
+                """({ x, y, w, h }) => {
+                  const cx = x + w / 2;
+                  const cy = y + h / 2;
+                  const el = document.elementFromPoint(cx, cy);
+                  const btn = el && el.closest ? el.closest('button') : null;
+                  if (btn && /Add to Queue/i.test(String(btn.innerText || ''))) {
+                    btn.scrollIntoView({ block: 'center', inline: 'nearest' });
+                    btn.click();
+                    return { ok: true, method: 'bbox_center_exact_button' };
+                  }
+                  return { ok: false, reason: 'bbox_center_miss' };
+                }""",
+                bbox,
+            )
+            if isinstance(hit, dict) and hit.get("ok"):
+                out["click_dispatched"] = True
+                out["delivery_method"] = str(hit.get("method") or "bbox_center_exact_button")
+                out["bbox_delivery"] = hit
+                return out
+            out["bbox_delivery"] = hit
+    except Exception as exc:
+        out["bbox_error"] = str(exc)[:200]
 
     out["error"] = pw_error or "delivery_failed"
     out["classification"] = "QUEUE1C"
