@@ -1,7 +1,7 @@
-44fc8a3  # auto-generated; Streamlit Cloud reads this at runtime
-
-
-
-# deploy_epoch: 2026-08-07T01:12:00Z auth_finalize_diag1_restore_block_and_bound_eval
-
-branch: dev
+5b9ba13  # auto-generated; Streamlit Cloud reads this at runtime
+
+
+
+# deploy_epoch: 2026-08-07T01:49:00Z auth_bridge4_restore_failure_no_bridge_invalidate
+
+branch: dev
