@@ -91,8 +91,35 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
     }
     return names;
   }
+  function countAddQueueIn(el) {
+    let n = 0;
+    for (const b of el.querySelectorAll('button')) {
+      if (/Add to Queue/i.test(String(b.innerText || ''))) n += 1;
+    }
+    return n;
+  }
   function bindPlayerName(btn) {
     let best = { confidence: 'missing', player_name: '', names: [], container_depth: -1, container_sample: '' };
+    const row = btn.closest('[data-testid="stHorizontalBlock"]');
+    if (row) {
+      const cols = Array.from(row.querySelectorAll('[data-testid="stVerticalBlock"]'));
+      const btnCol = btn.closest('[data-testid="stVerticalBlock"]');
+      const idx = cols.indexOf(btnCol);
+      if (idx > 0) {
+        const t = String(cols[idx - 1].innerText || '');
+        const names = extractNames(t.split('\\n').map(x => x.trim()).filter(Boolean));
+        if (names.length === 1) {
+          return {
+            confidence: 'unique',
+            player_name: names[0],
+            names,
+            container_depth: -1,
+            container_sample: t.slice(0, 280),
+            binding_via: 'horizontal_previous_column',
+          };
+        }
+      }
+    }
     const horiz = btn.closest('[data-testid="stHorizontalBlock"]');
     if (horiz) {
       for (const col of horiz.querySelectorAll('[data-testid="stVerticalBlock"]')) {
@@ -132,6 +159,7 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
       if (!walk) break;
       const t = String(walk.innerText||'');
       if (!/Add to Queue/i.test(t)) continue;
+      if (countAddQueueIn(walk) > 1) continue;
       const lines = t.split('\\n').map(x => x.trim()).filter(Boolean);
       const names = extractNames(lines);
       if (names.length === 1) {
@@ -254,7 +282,24 @@ _DELIVER_BOUND_CLICK_JS = """({ frameIndex, playerName }) => {
     }
     return names;
   }
+  function countAddQueueIn(el) {
+    let n = 0;
+    for (const b of el.querySelectorAll('button')) {
+      if (/Add to Queue/i.test(String(b.innerText || ''))) n += 1;
+    }
+    return n;
+  }
   function uniqueBind(btn) {
+    const row = btn.closest('[data-testid="stHorizontalBlock"]');
+    if (row) {
+      const cols = Array.from(row.querySelectorAll('[data-testid="stVerticalBlock"]'));
+      const btnCol = btn.closest('[data-testid="stVerticalBlock"]');
+      const idx = cols.indexOf(btnCol);
+      if (idx > 0) {
+        const names = extractNames(String(cols[idx - 1].innerText || '').split('\\n').map(x => x.trim()).filter(Boolean));
+        if (names.length === 1) return names[0];
+      }
+    }
     const card = btn.closest('[data-testid="stVerticalBlock"]');
     if (card && card.previousElementSibling) {
       const prevNames = extractNames(String(card.previousElementSibling.innerText||'').split('\\n').map(x => x.trim()).filter(Boolean));
@@ -266,6 +311,7 @@ _DELIVER_BOUND_CLICK_JS = """({ frameIndex, playerName }) => {
       if (!walk) break;
       const t = String(walk.innerText||'');
       if (!/Add to Queue/i.test(t)) continue;
+      if (countAddQueueIn(walk) > 1) continue;
       const names = extractNames(t.split('\\n').map(x => x.trim()).filter(Boolean));
       if (names.length === 1) return names[0];
     }
