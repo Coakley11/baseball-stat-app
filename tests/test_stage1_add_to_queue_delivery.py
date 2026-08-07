@@ -13,6 +13,7 @@ from stage1_add_to_queue_delivery import (  # noqa: E402
     BINDING_UNIQUE,
     classify_name_binding,
     extract_player_names_from_lines,
+    parse_player_from_queue_help,
     select_next_seed_candidate,
 )
 from stage1_queue_seed_harness import (  # noqa: E402
@@ -124,6 +125,21 @@ def test_rejects_why_recommended_as_player() -> None:
     ]
     pick, _ = select_next_seed_candidate(candidates, exclude_player_names=set())
     assert pick and pick["player_name"] == "Pete Alonso"
+
+
+def test_parse_player_from_queue_help_title() -> None:
+    assert parse_player_from_queue_help("Add Francisco Lindor to your draft queue.") == "Francisco Lindor"
+    assert parse_player_from_queue_help("") == ""
+
+
+def test_select_next_skips_invisible_duplicate_controls() -> None:
+    candidates = [
+        {"global_index": 0, "player_name": "Francisco Lindor", "binding_confidence": "unique", "visible": False},
+        {"global_index": 1, "player_name": "Francisco Lindor", "binding_confidence": "unique", "visible": True},
+        {"global_index": 2, "player_name": "Pete Alonso", "binding_confidence": "unique", "visible": True},
+    ]
+    pick, _ = select_next_seed_candidate(candidates, exclude_player_names=set())
+    assert pick and pick["global_index"] == 1
 
 
 def test_name_only_queue_rows_still_parse() -> None:

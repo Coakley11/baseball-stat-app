@@ -57,6 +57,14 @@ def classify_name_binding(names: list[str]) -> tuple[str, str]:
     return BINDING_AMBIGUOUS, ""
 
 
+_QUEUE_HELP_TITLE_RE = re.compile(r"Add\s+(.+?)\s+to\s+your\s+draft\s+queue", re.I)
+
+
+def parse_player_from_queue_help(text: str) -> str:
+    m = _QUEUE_HELP_TITLE_RE.search(str(text or ""))
+    return m.group(1).strip() if m else ""
+
+
 _DISCOVER_BOUND_CONTROLS_JS = """() => {
   function roots() {
     const r = [document];
@@ -91,17 +99,135 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
     }
     return names;
   }
-  function countAddQueueIn(el) {
+  function isVisibleButton(btn) {
+    const r = btn.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+  function countVisibleAddQueueIn(el) {
     let n = 0;
     for (const b of el.querySelectorAll('button')) {
-      if (/Add to Queue/i.test(String(b.innerText || ''))) n += 1;
+      if (!/Add to Queue/i.test(String(b.innerText || ''))) continue;
+      if (isVisibleButton(b)) n += 1;
     }
     return n;
+  }
+  function bindFromButtonHelp(btn) {
+    let el = btn;
+    for (let i = 0; i < 8 && el; i++) {
+      const title = String(el.getAttribute('title') || el.getAttribute('aria-label') || '');
+      const m = title.match(/Add\\s+(.+?)\\s+to\\s+your\\s+draft\\s+queue/i);
+      if (m) {
+        const names = extractNames([m[1].trim()]);
+        if (names.length === 1) {
+          return {
+            confidence: 'unique',
+            player_name: names[0],
+            names,
+            container_depth: -1,
+            container_sample: title.slice(0, 280),
+            binding_via: 'button_help_title',
+          };
+        }
+      }
+      const stBtn = el.closest && el.closest('[data-testid="stButton"]');
+      if (stBtn) {
+        const stTitle = String(stBtn.getAttribute('title') || stBtn.getAttribute('aria-label') || '');
+        const m2 = stTitle.match(/Add\\s+(.+?)\\s+to\\s+your\\s+draft\\s+queue/i);
+        if (m2) {
+          const names = extractNames([m2[1].trim()]);
+          if (names.length === 1) {
+            return {
+              confidence: 'unique',
+              player_name: names[0],
+              names,
+              container_depth: -1,
+              container_sample: stTitle.slice(0, 280),
+              binding_via: 'stButton_help_title',
+            };
+          }
+        }
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+  function bindFromRecCardScope(btn) {
+    let walk = btn;
+    for (let depth = 0; depth < 18 && walk; depth++) {
+      walk = walk.parentElement;
+      if (!walk) break;
+      if (countVisibleAddQueueIn(walk) !== 1) continue;
+      const meta = walk.querySelector('.ld-rec-card-meta');
+      if (meta) {
+        const nameEl = meta.querySelector('div');
+        const raw = nameEl ? String(nameEl.innerText || '').trim() : String(meta.innerText || '').split('\\n')[0].trim();
+        const names = extractNames([raw]);
+        if (names.length === 1) {
+          return {
+            confidence: 'unique',
+            player_name: names[0],
+            names,
+            container_depth: depth,
+            container_sample: raw.slice(0, 280),
+            binding_via: 'ld_rec_card_meta',
+          };
+        }
+      }
+      const header = walk.querySelector('.ld-rec-card-header');
+      if (header) {
+        const names = extractNames(String(header.innerText || '').split('\\n').map((x) => x.trim()).filter(Boolean));
+        if (names.length === 1) {
+          return {
+            confidence: 'unique',
+            player_name: names[0],
+            names,
+            container_depth: depth,
+            container_sample: String(header.innerText || '').slice(0, 280),
+            binding_via: 'ld_rec_card_header',
+          };
+        }
+        if (names.length > 1) {
+          return {
+            confidence: 'ambiguous',
+            player_name: '',
+            names,
+            container_depth: depth,
+            container_sample: String(header.innerText || '').slice(0, 280),
+            binding_via: 'ld_rec_card_header',
+          };
+        }
+      }
+      const t = String(walk.innerText || '');
+      if (!/Add to Queue/i.test(t)) continue;
+      const lines = t.split('\\n').map((x) => x.trim()).filter(Boolean);
+      const names = extractNames(lines);
+      if (names.length === 1) {
+        return {
+          confidence: 'unique',
+          player_name: names[0],
+          names,
+          container_depth: depth,
+          container_sample: t.slice(0, 280),
+          binding_via: 'single_visible_add_ancestor',
+        };
+      }
+      if (names.length > 1) {
+        return {
+          confidence: 'ambiguous',
+          player_name: '',
+          names,
+          container_depth: depth,
+          container_sample: t.slice(0, 280),
+          binding_via: 'single_visible_add_ancestor',
+        };
+      }
+    }
+    return null;
   }
   function bindFromRowTextBeforeButton(btn) {
     const row = btn.closest('[data-testid="stHorizontalBlock"]');
     if (!row) return null;
-    if (countAddQueueIn(row) > 1) return null;
+    if (countVisibleAddQueueIn(row) > 1) return null;
     const full = String(row.innerText || '');
     const parts = full.split(/\\u2b50\\s*Add to Queue|Add to Queue/i);
     const head = (parts[0] || '').trim();
@@ -146,6 +272,10 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
   }
   function bindPlayerName(btn) {
     let best = { confidence: 'missing', player_name: '', names: [], container_depth: -1, container_sample: '' };
+    const helpBind = bindFromButtonHelp(btn);
+    if (helpBind) return helpBind;
+    const cardBind = bindFromRecCardScope(btn);
+    if (cardBind) return cardBind;
     const rowBind = bindFromRowTextBeforeButton(btn);
     if (rowBind) return rowBind;
     const colBind = bindFromColumn(btn);
@@ -209,7 +339,7 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
       if (!walk) break;
       const t = String(walk.innerText||'');
       if (!/Add to Queue/i.test(t)) continue;
-      if (countAddQueueIn(walk) > 1) continue;
+      if (countVisibleAddQueueIn(walk) > 1) continue;
       const lines = t.split('\\n').map(x => x.trim()).filter(Boolean);
       const names = extractNames(lines);
       if (names.length === 1) {
@@ -219,6 +349,7 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
           names,
           container_depth: depth,
           container_sample: t.slice(0, 280),
+          binding_via: 'ancestor_walk',
         };
       }
       if (names.length > 1) {
@@ -228,6 +359,7 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
           names,
           container_depth: depth,
           container_sample: t.slice(0, 280),
+          binding_via: 'ancestor_walk',
         };
       }
     }
@@ -256,7 +388,7 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
       if (!/Add to Queue/i.test(t)) continue;
       const r = btn.getBoundingClientRect();
       const style = root.defaultView ? root.defaultView.getComputedStyle(btn) : null;
-      const visible = r.width > 0 && r.height > 0;
+      const visible = isVisibleButton(btn);
       const bind = bindPlayerName(btn);
       const attached = !!(btn.isConnected);
       let covered = false;
@@ -275,6 +407,7 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
         index_in_frame: indexInFrame,
         player_name: bind.player_name || '',
         binding_confidence: bind.confidence,
+        binding_via: bind.binding_via || '',
         candidate_names: bind.names || [],
         container_depth: bind.container_depth,
         container_sample: bind.container_sample || '',
@@ -332,14 +465,51 @@ _DELIVER_BOUND_CLICK_JS = """({ frameIndex, playerName }) => {
     }
     return names;
   }
-  function countAddQueueIn(el) {
+  function isVisibleButton(btn) {
+    const r = btn.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+  function countVisibleAddQueueIn(el) {
     let n = 0;
     for (const b of el.querySelectorAll('button')) {
-      if (/Add to Queue/i.test(String(b.innerText || ''))) n += 1;
+      if (!/Add to Queue/i.test(String(b.innerText || ''))) continue;
+      if (isVisibleButton(b)) n += 1;
     }
     return n;
   }
   function uniqueBind(btn) {
+    let el = btn;
+    for (let i = 0; i < 8 && el; i++) {
+      const title = String(el.getAttribute('title') || el.getAttribute('aria-label') || '');
+      const m = title.match(/Add\\s+(.+?)\\s+to\\s+your\\s+draft\\s+queue/i);
+      if (m) {
+        const names = extractNames([m[1].trim()]);
+        if (names.length === 1) return names[0];
+      }
+      el = el.parentElement;
+    }
+    let walk = btn;
+    for (let depth = 0; depth < 18 && walk; depth++) {
+      walk = walk.parentElement;
+      if (!walk) break;
+      if (countVisibleAddQueueIn(walk) !== 1) continue;
+      const meta = walk.querySelector('.ld-rec-card-meta');
+      if (meta) {
+        const nameEl = meta.querySelector('div');
+        const raw = nameEl ? String(nameEl.innerText || '').trim() : '';
+        const names = extractNames([raw]);
+        if (names.length === 1) return names[0];
+      }
+      const header = walk.querySelector('.ld-rec-card-header');
+      if (header) {
+        const names = extractNames(String(header.innerText || '').split('\\n').map((x) => x.trim()).filter(Boolean));
+        if (names.length === 1) return names[0];
+      }
+      const t = String(walk.innerText || '');
+      if (!/Add to Queue/i.test(t)) continue;
+      const names = extractNames(t.split('\\n').map((x) => x.trim()).filter(Boolean));
+      if (names.length === 1) return names[0];
+    }
     const col = btn.closest('[data-testid="stColumn"]');
     if (col && col.parentElement) {
       const cols = Array.from(col.parentElement.children).filter(
@@ -380,7 +550,7 @@ _DELIVER_BOUND_CLICK_JS = """({ frameIndex, playerName }) => {
       if (!walk) break;
       const t = String(walk.innerText||'');
       if (!/Add to Queue/i.test(t)) continue;
-      if (countAddQueueIn(walk) > 1) continue;
+      if (countVisibleAddQueueIn(walk) > 1) continue;
       const names = extractNames(t.split('\\n').map(x => x.trim()).filter(Boolean));
       if (names.length === 1) return names[0];
     }
@@ -439,6 +609,8 @@ def select_next_seed_candidate(
     viable: list[dict[str, Any]] = []
     for c in candidates:
         if c.get("error"):
+            continue
+        if c.get("visible") is False:
             continue
         conf = str(c.get("binding_confidence") or "")
         name = str(c.get("player_name") or "").strip()
