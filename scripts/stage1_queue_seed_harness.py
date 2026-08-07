@@ -742,133 +742,53 @@ def _seed_unnamed_via_queue_diff(
     return meta
 
 
-def seed_queue_distinct_players(
+def _poll_queue_mutation(
+    page,
+    scrape_fn,
+    *,
+    queue_before: list[str],
+    player_name: str,
+    timeout_s: float = 5.0,
+    poll_ms: int = 400,
+) -> dict[str, Any]:
+    t_end = time.time() + timeout_s
+    pn = player_name.strip().lower()
+    last: dict[str, Any] = {"mutation_observed": False}
+    while time.time() < t_end:
+        snap = _snapshot_queue(page, scrape_fn)
+        names = list(snap.get("queue_names") or [])
+        before_l = {n.lower() for n in queue_before if n}
+        added = [n for n in names if n.lower() not in before_l]
+        visible_hit = pn in {n.lower() for n in names} and pn not in before_l
+        structured = [
+            str(p.get("name") or "") for p in parse_queue_players_from_block(str(snap.get("excerpt") or ""))
+        ]
+        structured_hit = pn in {n.lower() for n in structured}
+        last = {
+            "queue_after": names,
+            "added_names": added,
+            "visible_confirmation": visible_hit,
+            "structured_confirmation": structured_hit,
+            "mutation_observed": visible_hit or (bool(added) and pn in {a.lower() for a in added}),
+        }
+        if last["mutation_observed"]:
+            return last
+        page.wait_for_timeout(poll_ms)
+    return last
+
+
+def _finalize_seed_meta(
     page,
     *,
+    seed_steps: list[dict[str, Any]],
+    min_players: int,
+    t0: float,
     scrape_container_fn,
-    min_players: int = 3,
-    mutation_wait_s: float = 4.0,
+    control_wait: dict[str, Any],
+    discovery_snapshots: list[dict[str, Any]],
+    seed_source: str,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Identify distinct players, click once each, prove mutation before continuing."""
-    t0 = time.time()
-    before_all = _snapshot_queue(page, scrape_container_fn)
-    control_wait = wait_for_min_add_to_queue_controls(page, min_controls=min_players, timeout_s=90.0)
-    if not control_wait.get("ok"):
-        return {
-            "ok": False,
-            "classification": QUEUE1E,
-            "seed_steps": [],
-            "candidates_discovered": 0,
-            "distinct_named_candidates": 0,
-            "add_control_wait": control_wait,
-            "min_players_required": min_players,
-            "queue_excerpt_before": before_all.get("excerpt"),
-            "queue_container": before_all.get("container"),
-            "elapsed_s": time.time() - t0,
-        }
-    candidates, expand_attempts = _ensure_named_candidates(page, min_players=min_players, wait_s=30.0)
-    global_hints = _collect_global_button_hints(page, min_players=min_players)
-    if len(global_hints) >= min_players:
-        return _seed_via_global_button_hints(
-            page,
-            hints=global_hints,
-            scrape_container_fn=scrape_container_fn,
-            min_players=min_players,
-            mutation_wait_s=mutation_wait_s,
-            control_wait=control_wait,
-            expand_attempts=expand_attempts,
-            t0=t0,
-        )
-    by_name: dict[str, dict[str, Any]] = {}
-    ambiguous: list[dict[str, Any]] = []
-    unnamed_buttons = 0
-    for c in candidates:
-        name = str(c.get("player_name") or "").strip()
-        if not name:
-            unnamed_buttons += 1
-            continue
-        key = name.lower()
-        if key in by_name:
-            ambiguous.append({"player_name": name, "reason": "duplicate_candidate"})
-            continue
-        by_name[key] = c
-    distinct = list(by_name.values())
-    if len(distinct) < min_players and len(candidates) >= min_players:
-        return _seed_via_global_indices_with_queue_diff(
-            page,
-            scrape_container_fn=scrape_container_fn,
-            min_players=min_players,
-            mutation_wait_s=mutation_wait_s,
-            control_wait=control_wait,
-            expand_attempts=expand_attempts,
-            t0=t0,
-        )
-    if len(distinct) < min_players and int(control_wait.get("add_to_queue_button_count") or 0) >= min_players:
-        return _seed_via_global_indices_with_queue_diff(
-            page,
-            scrape_container_fn=scrape_container_fn,
-            min_players=min_players,
-            mutation_wait_s=mutation_wait_s,
-            control_wait=control_wait,
-            expand_attempts=expand_attempts,
-            t0=t0,
-        )
-    if len(distinct) < min_players:
-        classification = QUEUE1B if unnamed_buttons and len(candidates) >= min_players else QUEUE1E
-        return {
-            "ok": False,
-            "classification": classification,
-            "seed_steps": [],
-            "candidates_discovered": len(candidates),
-            "distinct_named_candidates": len(distinct),
-            "unnamed_add_buttons": unnamed_buttons,
-            "candidate_expand_attempts": expand_attempts,
-            "add_control_wait": control_wait,
-            "candidate_debug": candidates[:8],
-            "min_players_required": min_players,
-            "queue_excerpt_before": before_all.get("excerpt"),
-            "queue_container": before_all.get("container"),
-            "elapsed_s": time.time() - t0,
-        }
-    seed_steps: list[dict[str, Any]] = []
-    queue_names = list(before_all.get("queue_names") or [])
-    intended: list[dict[str, Any]] = []
-    for c in distinct[: min_players + 2]:
-        if len(intended) >= min_players:
-            break
-        pre = _snapshot_queue(page, scrape_container_fn)
-        step: dict[str, Any] = {
-            "intended_player": c.get("player_name"),
-            "candidate": c,
-            "queue_before": list(pre.get("queue_names") or []),
-            "started_ts": time.time(),
-        }
-        intended.append(c)
-        click = _click_player_add_button(page, c)
-        step.update(click)
-        page.wait_for_timeout(int(mutation_wait_s * 1000))
-        post = _snapshot_queue(page, scrape_container_fn)
-        step["queue_after"] = list(post.get("queue_names") or [])
-        pname = str(c.get("player_name") or "")
-        step["visible_confirmation"] = _mutation_proven(step["queue_before"], step["queue_after"], pname)
-        after_structured = queue_names_from_state(
-            post.get("container") or {}, str((post.get("container") or {}).get("excerpt") or "")
-        )
-        step["structured_confirmation"] = pname.strip().lower() in {n.lower() for n in after_structured}
-        step["mutation_proven"] = step["visible_confirmation"] or step["structured_confirmation"]
-        step["elapsed_s"] = time.time() - float(step.get("started_ts") or time.time())
-        if not step.get("click_dispatched"):
-            step["classification"] = step.get("classification") or QUEUE1C
-            seed_steps.append(step)
-            break
-        if not step["mutation_proven"]:
-            step["classification"] = QUEUE1C
-            seed_steps.append(step)
-            break
-        queue_names = list(step["queue_after"])
-        step["player_name"] = c.get("player_name")
-        seed_steps.append(step)
-
     final = _snapshot_queue(page, scrape_container_fn)
     proven_order: list[str] = []
     for s in seed_steps:
@@ -878,12 +798,8 @@ def seed_queue_distinct_players(
                 proven_order.append(n)
     order_ok = len(proven_order) >= min_players and len(proven_order) == len({n.lower() for n in proven_order})
     meta: dict[str, Any] = {
-        "seed_source": "player_bound_distinct_seed",
+        "seed_source": seed_source,
         "min_players_required": min_players,
-        "candidates_discovered": len(candidates),
-        "distinct_named_candidates": len(distinct),
-        "ambiguous_candidates": ambiguous,
-        "intended_players_before_clicks": [{"player_name": c.get("player_name"), "frameIndex": c.get("frameIndex")} for c in intended],
         "seed_steps": seed_steps,
         "add_actions": seed_steps,
         "proven_queue_order": proven_order,
@@ -891,12 +807,13 @@ def seed_queue_distinct_players(
         "queue_excerpt_before": final.get("excerpt"),
         "queue_container": final.get("container"),
         "queue_order": proven_order,
-        "queue_players_before": [{"name": n, "slot": ""} for n in proven_order],
         "top_queued_player": {"name": proven_order[0]} if proven_order else {},
+        "add_control_wait": control_wait,
+        "discovery_snapshots": discovery_snapshots,
         "elapsed_s": time.time() - t0,
     }
-    if ambiguous:
-        meta["classification_hint"] = QUEUE1B
+    if extra:
+        meta.update(extra)
     evidence = build_queue_seed_evidence(meta, min_players=min_players)
     meta["queue_evidence"] = evidence
     meta["queue_contains_player"] = bool(evidence.get("queue_seed_resolved"))
@@ -906,4 +823,144 @@ def seed_queue_distinct_players(
     else:
         meta["ok"] = False
         meta["classification"] = classify_queue_seed_boundary(meta, min_players=min_players)
+    return meta
+
+
+def seed_queue_distinct_players(
+    page,
+    *,
+    scrape_container_fn,
+    min_players: int = 3,
+    mutation_wait_s: float = 5.0,
+) -> dict[str, Any]:
+    """Rediscover → bind player → click → prove mutation; discard bindings after each add."""
+    from stage1_add_to_queue_delivery import (
+        deliver_add_to_queue_click,
+        discover_bound_add_to_queue_controls,
+        select_next_seed_candidate,
+    )
+
+    t0 = time.time()
+    before_all = _snapshot_queue(page, scrape_container_fn)
+    control_wait = wait_for_min_add_to_queue_controls(page, min_controls=min_players, timeout_s=90.0)
+    if not control_wait.get("ok"):
+        return {
+            "ok": False,
+            "classification": QUEUE1E,
+            "seed_steps": [],
+            "add_control_wait": control_wait,
+            "min_players_required": min_players,
+            "queue_excerpt_before": before_all.get("excerpt"),
+            "queue_container": before_all.get("container"),
+            "elapsed_s": time.time() - t0,
+        }
+
+    seed_steps: list[dict[str, Any]] = []
+    queued_names: set[str] = set()
+    discovery_snapshots: list[dict[str, Any]] = []
+    fail_classification = ""
+
+    while len([s for s in seed_steps if s.get("mutation_proven")]) < min_players:
+        candidates = discover_bound_add_to_queue_controls(page)
+        discovery_snapshots.append(
+            {
+                "ts": time.time(),
+                "control_count": len(candidates),
+                "named_unique": sum(
+                    1 for c in candidates if c.get("binding_confidence") == "unique" and c.get("player_name")
+                ),
+                "candidates": candidates[:10],
+            }
+        )
+        pick, reject = select_next_seed_candidate(candidates, exclude_player_names=queued_names)
+        if not pick:
+            if reject == "ambiguous_binding":
+                fail_classification = QUEUE1B
+            elif reject == "missing_binding":
+                fail_classification = (
+                    QUEUE1B
+                    if int(control_wait.get("add_to_queue_button_count") or 0) >= min_players
+                    else QUEUE1E
+                )
+            else:
+                fail_classification = QUEUE1E
+            break
+
+        player_name = str(pick.get("player_name") or "").strip()
+        pre = _snapshot_queue(page, scrape_container_fn)
+        step: dict[str, Any] = {
+            "player_name": player_name,
+            "intended_player": player_name,
+            "pre_click_record": pick,
+            "queue_before": list(pre.get("queue_names") or []),
+            "started_ts": time.time(),
+        }
+        delivery = deliver_add_to_queue_click(page, pick)
+        step["click_dispatched"] = bool(delivery.get("click_dispatched"))
+        step["delivery_method"] = delivery.get("delivery_method") or ""
+        step["delivery_detail"] = delivery
+        if not step["click_dispatched"]:
+            step["classification"] = QUEUE1C
+            step["mutation_proven"] = False
+            step["mutation_observed"] = False
+            step["elapsed_s"] = time.time() - float(step["started_ts"])
+            seed_steps.append(step)
+            fail_classification = QUEUE1C
+            break
+
+        mut = _poll_queue_mutation(
+            page,
+            scrape_container_fn,
+            queue_before=step["queue_before"],
+            player_name=player_name,
+            timeout_s=max(mutation_wait_s, 4.0),
+        )
+        step["queue_after"] = list(mut.get("queue_after") or [])
+        step["visible_confirmation"] = bool(mut.get("visible_confirmation"))
+        step["structured_confirmation"] = bool(mut.get("structured_confirmation"))
+        step["mutation_observed"] = bool(mut.get("mutation_observed"))
+        step["mutation_proven"] = step["mutation_observed"]
+        step["elapsed_s"] = time.time() - float(step["started_ts"])
+        if not step["mutation_proven"]:
+            step["classification"] = QUEUE1C
+            seed_steps.append(step)
+            fail_classification = QUEUE1C
+            break
+        queued_names.add(player_name.lower())
+        seed_steps.append(step)
+        page.wait_for_timeout(900)
+
+    extra: dict[str, Any] = {}
+    if fail_classification and not seed_steps:
+        return {
+            "ok": False,
+            "classification": fail_classification,
+            "seed_steps": [],
+            "add_control_wait": control_wait,
+            "discovery_snapshots": discovery_snapshots,
+            "min_players_required": min_players,
+            "queue_excerpt_before": before_all.get("excerpt"),
+            "queue_container": before_all.get("container"),
+            "elapsed_s": time.time() - t0,
+        }
+
+    meta = _finalize_seed_meta(
+        page,
+        seed_steps=seed_steps,
+        min_players=min_players,
+        t0=t0,
+        scrape_container_fn=scrape_container_fn,
+        control_wait=control_wait,
+        discovery_snapshots=discovery_snapshots,
+        seed_source="rediscover_bind_deliver_mutation_loop",
+        extra={
+            "intended_players_before_clicks": [
+                {"player_name": s.get("player_name"), "pre_click_global_index": (s.get("pre_click_record") or {}).get("global_index")}
+                for s in seed_steps
+            ],
+            "candidates_discovered": discovery_snapshots[-1]["control_count"] if discovery_snapshots else 0,
+        },
+    )
+    if fail_classification and not meta.get("ok"):
+        meta["classification"] = fail_classification
     return meta
