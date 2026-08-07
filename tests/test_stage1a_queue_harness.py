@@ -35,6 +35,7 @@ def _obs_pass(*, room: str = "ABCD1234") -> dict:
         "pick0_token_ui": f"{room}|0|100.0",
         "pick0_deadline_ui": "100.0",
         "pause_draft_count": 1,
+        "resume_draft_count": 1,
         "board_rows": 1,
         "add_to_queue_button_count": 3,
         "countdown_or_timer_present": True,
@@ -42,9 +43,9 @@ def _obs_pass(*, room: str = "ABCD1234") -> dict:
 
 
 def test_active_live_page_gate_pass() -> None:
-    ev = evaluate_active_live_page_gate(_obs_pass(), start_val=_start_val())
+    ev = evaluate_active_live_page_gate(_obs_pass(), start_val=_start_val(), while_paused=True)
     assert ev["passed"] is True
-    assert all(ev["checks"].values())
+    assert ev["classification"] == "ACTIVE_QUEUE_SURFACE_RESOLVED"
 
 
 def test_active_live_page_gate_fails_without_ui_hydration() -> None:

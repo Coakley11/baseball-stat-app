@@ -1377,7 +1377,25 @@ def evaluate_active_live_page_gate(
     start_val: dict[str, Any],
     while_paused: bool = False,
 ) -> dict[str, Any]:
-    """All checks must pass; server latch alone is insufficient."""
+    """Delegate to frame-aware two-tier gate (server vs queue UI)."""
+    from stage1_active_queue_surface import evaluate_active_live_page_gate as _eval_frame_aware
+
+    return _eval_frame_aware(
+        observation,
+        start_val=start_val,
+        while_paused=while_paused,
+        auth_complete=True,
+        surface_activation_attempted=bool(observation.get("surface_activation_attempted")),
+    )
+
+
+def _evaluate_active_live_page_gate_legacy(
+    observation: dict[str, Any],
+    *,
+    start_val: dict[str, Any],
+    while_paused: bool = False,
+) -> dict[str, Any]:
+    """All checks must pass; server latch alone is insufficient (legacy monolithic gate)."""
     start_val = dict(start_val or {})
     obs = dict(observation or {})
     latched = str(start_val.get("latched_room_id") or start_val.get("visible_room_id") or "").upper()

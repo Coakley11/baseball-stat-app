@@ -1699,6 +1699,12 @@ def _names_differ(a: str, b: str) -> bool:
 
 
 def scrape_active_live_page_observation(page, *, start_val: dict[str, Any] | None = None) -> dict[str, Any]:
+    from stage1_active_queue_surface import scrape_frame_aware_active_observation
+
+    return scrape_frame_aware_active_observation(page, start_val=start_val)
+
+
+def _scrape_active_live_page_observation_legacy(page, *, start_val: dict[str, Any] | None = None) -> dict[str, Any]:
     from run_production_solo_soak import all_frames_text, dom_counts
 
     start_val = dict(start_val or {})
@@ -1748,6 +1754,27 @@ def scrape_active_live_page_observation(page, *, start_val: dict[str, Any] | Non
 
 
 def wait_for_active_live_page_gate(
+    page,
+    *,
+    start_val: dict[str, Any],
+    timeout_s: float = 120.0,
+    while_paused: bool = False,
+    run_id: str = "",
+    auth_complete: bool = True,
+) -> dict[str, Any]:
+    from stage1_active_queue_surface import wait_for_active_queue_surface
+
+    return wait_for_active_queue_surface(
+        page,
+        start_val=start_val,
+        timeout_s=timeout_s,
+        while_paused=while_paused,
+        auth_complete=auth_complete,
+        run_id=run_id,
+    )
+
+
+def _wait_for_active_live_page_gate_legacy(
     page,
     *,
     start_val: dict[str, Any],
@@ -2139,10 +2166,27 @@ def main() -> int:
     required_sha = resolve_required_cloud_sha()
     stage1a_mode = resolve_stage1a_mode()
     queue_manual_assist = resolve_queue_manual_assist() and stage1a_mode == "QUEUE"
-    from playwright_auth_bridge_restore_harness import resolve_bridge_suite_sid, wait_bridge_auth_hydrated
+    from playwright_auth_bridge_restore_harness import (
+        BridgeSuiteSidConflictError,
+        resolve_bridge_suite_sid_with_source,
+        wait_bridge_auth_hydrated,
+    )
 
-    bridge_sid = resolve_bridge_suite_sid()
+    try:
+        bridge_sid, bridge_sid_source = resolve_bridge_suite_sid_with_source()
+    except BridgeSuiteSidConflictError as exc:
+        print(json.dumps({"aborted": True, "reason": "bridge_suite_sid_conflict", "detail": str(exc)}))
+        return 1
     use_bridge_restore = bool(bridge_sid)
+    print(
+        json.dumps(
+            {
+                "bridge_suite_sid_prefix": bridge_sid[:8] if bridge_sid else "",
+                "bridge_suite_sid_source": bridge_sid_source,
+            }
+        ),
+        flush=True,
+    )
     if not required_sha:
         print(json.dumps({"aborted": True, "reason": "required_cloud_sha_unset"}))
         return 1
@@ -2185,6 +2229,7 @@ def main() -> int:
         "authenticated_restored": bool(pre.get("authenticated_restored")),
         "bridge_restore_mode": use_bridge_restore,
         "queue_audit_bridge_suite_sid": bridge_sid if use_bridge_restore else "",
+        "bridge_suite_sid_source": bridge_sid_source if use_bridge_restore else "",
         "auth_preflight": {
             "signed_in_display": pre.get("signed_in_display"),
             "authenticated_app": pre.get("authenticated_app"),
@@ -2577,12 +2622,20 @@ def main() -> int:
                     stage1a_mode=stage1a_mode,
                 )
 
-            gate_timeout = 300.0 if queue_manual_assist else 90.0
+            from stage1_active_queue_surface import default_active_surface_wait_s
+
+            gate_start_val = dict(start_val)
+            gate_start_val["pause_ack_ts"] = float(
+                (immediate_pause.get("pause_timing") or {}).get("pause_click_dispatch_ts") or time.time()
+            )
+            gate_timeout = 300.0 if queue_manual_assist else default_active_surface_wait_s()
             active_gate = wait_for_active_live_page_gate(
                 page,
-                start_val=start_val,
+                start_val=gate_start_val,
                 timeout_s=gate_timeout,
                 while_paused=True,
+                auth_complete=bool(summary.get("authenticated_restored") or pre.get("authenticated_restored")),
+                run_id=str(summary.get("application_diagnostic_run_id") or ""),
             )
             obs = dict(active_gate.get("observation") or {})
             obs["harness_post_pause"] = True
@@ -2594,10 +2647,11 @@ def main() -> int:
                 summary["finished_at"] = time.time()
                 OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
                 print(json.dumps({"aborted": True, "active_live_page_gate": active_gate}, indent=2))
+                page_boundary = str(active_gate.get("classification") or QUEUEUI1)
                 return _abort_queue_precondition(
                     summary,
-                    first_boundary=QUEUEUI1,
-                    reason="active_live_draft_page_not_hydrated",
+                    first_boundary=page_boundary,
+                    reason="active_queue_surface_not_ready",
                     active_live_page_gate=active_gate,
                     stage1a_mode=stage1a_mode,
                 )

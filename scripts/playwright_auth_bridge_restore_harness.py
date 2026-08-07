@@ -12,28 +12,47 @@ ROOT = Path(__file__).resolve().parent.parent
 CAPTURE_RESULT = ROOT / "data" / "capture_playwright_daniel_auth_once.result.json"
 
 
-def resolve_bridge_suite_sid(*, capture_path: Path | None = None) -> str:
-    env = str(os.environ.get("ROOT_AUDIT_BRIDGE_SUITE_SID") or os.environ.get("STAGE1_BRIDGE_SUITE_SID") or "").strip()
-    if env:
-        return env
+class BridgeSuiteSidConflictError(ValueError):
+    """Explicit Stage 1 and root-audit bridge SIDs disagree."""
+
+
+def resolve_bridge_suite_sid_with_source(*, capture_path: Path | None = None) -> tuple[str, str]:
+    """Return (suite_sid, source). STAGE1_BRIDGE_SUITE_SID wins over ROOT_AUDIT."""
+    stage1 = str(os.environ.get("STAGE1_BRIDGE_SUITE_SID") or "").strip()
+    root_audit = str(os.environ.get("ROOT_AUDIT_BRIDGE_SUITE_SID") or "").strip()
+    if stage1:
+        if root_audit and root_audit != stage1:
+            strict = str(os.environ.get("STAGE1_BRIDGE_SID_STRICT") or "").strip().lower() in ("1", "true", "yes")
+            if strict:
+                raise BridgeSuiteSidConflictError(
+                    f"STAGE1_BRIDGE_SUITE_SID ({stage1[:8]}…) conflicts with ROOT_AUDIT_BRIDGE_SUITE_SID ({root_audit[:8]}…)"
+                )
+        return stage1, "STAGE1_BRIDGE_SUITE_SID"
+    if root_audit:
+        return root_audit, "ROOT_AUDIT_BRIDGE_SUITE_SID"
     if str(os.environ.get("ROOT_AUDIT_USE_CAPTURE_BRIDGE") or os.environ.get("STAGE1_USE_CAPTURE_BRIDGE") or "1").strip().lower() in (
         "0",
         "false",
         "no",
     ):
-        return ""
+        return "", "none"
     cap_path = capture_path or CAPTURE_RESULT
     if not cap_path.is_file():
-        return ""
+        return "", "none"
     try:
         data = json.loads(cap_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return ""
+        return "", "capture_read_error"
     bp = (data.get("strict_capture") or {}).get("bridge_persistence") or {}
     sid = str(data.get("suite_sid") or "").strip()
     if sid and bp.get("persistence_succeeded"):
-        return sid
-    return ""
+        return sid, "capture_result"
+    return "", "capture_incomplete"
+
+
+def resolve_bridge_suite_sid(*, capture_path: Path | None = None) -> str:
+    sid, _src = resolve_bridge_suite_sid_with_source(capture_path=capture_path)
+    return sid
 
 
 def bridge_preflight_rejects_stale_session(*, bridge_sid: str, url_sid: str, authenticated: bool) -> str:
