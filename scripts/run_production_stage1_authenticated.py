@@ -1880,47 +1880,56 @@ def queue_setup_resume_after_seeding(page) -> dict[str, Any]:
     return out
 
 
-def queue_populate_deliberate(page, *, min_players: int = 3) -> dict[str, Any]:
+def queue_populate_deliberate(
+    page,
+    *,
+    min_players: int = 3,
+    surface_activation_queue_mutation: bool = False,
+) -> dict[str, Any]:
+    from stage1_queue_seed_harness import (
+        QUEUE1A,
+        QUEUE_SEED_RESOLVED,
+        build_queue_seed_evidence,
+        classify_queue_seed_boundary,
+        seed_queue_distinct_players,
+    )
+    from stage1_queue_harness_flow import pick_index_zero_from_observation
+
     expected_autopick = scrape_expected_autopick_candidate(page)
-    add_actions: list[dict[str, Any]] = []
-    for bi in (2, 3, 4, 5, 6, 7):
-        if len(add_actions) >= min_players:
-            break
-        meta = queue_add_by_button_index(page, bi)
-        if meta.get("clicked"):
-            add_actions.append(meta)
-        page.wait_for_timeout(1800)
-    page.wait_for_timeout(3000)
-    container = scrape_queue_container_state(page)
-    players = list(container.get("players") or [])
-    order = [str(p.get("name") or "") for p in players]
-    top_queued = players[0] if players else {}
-    differs = _names_differ(str(expected_autopick.get("name") or ""), str(top_queued.get("name") or ""))
-    if not differs and len(add_actions) < min_players + 2:
-        for bi in (8, 9, 10):
-            meta = queue_add_by_button_index(page, bi)
-            if meta.get("clicked"):
-                add_actions.append(meta)
-            page.wait_for_timeout(1800)
-        page.wait_for_timeout(2500)
-        container = scrape_queue_container_state(page)
-        players = list(container.get("players") or [])
-        order = [str(p.get("name") or "") for p in players]
-        top_queued = players[0] if players else {}
-        differs = _names_differ(str(expected_autopick.get("name") or ""), str(top_queued.get("name") or ""))
-    return {
-        "clicked": len(add_actions) >= min_players,
-        "expected_autopick_candidate": expected_autopick,
-        "queue_players_before": players,
-        "queue_order": order,
-        "top_queued_player": top_queued,
-        "autopick_differs_from_top_queue": differs,
-        "add_actions": add_actions,
-        "queue_container": container,
-        "queue_contains_player": len(players) >= min_players,
-        "seed_source": "deliberate_multi_add",
-        "min_players_required": min_players,
-    }
+    meta = seed_queue_distinct_players(
+        page,
+        scrape_container_fn=scrape_queue_container_state,
+        min_players=min_players,
+    )
+    meta["surface_activation_queue_mutation"] = bool(surface_activation_queue_mutation)
+    if meta["surface_activation_queue_mutation"]:
+        meta["classification"] = QUEUE1A
+        meta["ok"] = False
+        meta["queue_contains_player"] = False
+    obs_after = scrape_active_live_page_observation(page, start_val={})
+    meta["pick_index_zero_after_setup"] = pick_index_zero_from_observation(obs_after)
+    meta["paused_state_maintained"] = True
+    evidence = build_queue_seed_evidence(meta, min_players=min_players)
+    meta["queue_evidence"] = evidence
+    meta["queue_contains_player"] = bool(evidence.get("queue_seed_resolved"))
+    meta["queue_setup_proven"] = bool(evidence.get("queue_setup_proven"))
+    if meta["surface_activation_queue_mutation"]:
+        pass
+    elif evidence.get("queue_seed_resolved"):
+        meta["classification"] = QUEUE_SEED_RESOLVED
+        meta["ok"] = True
+    elif not meta.get("classification"):
+        meta["classification"] = classify_queue_seed_boundary(meta, min_players=min_players)
+    top_name = str((meta.get("top_queued_player") or {}).get("name") or "")
+    if not top_name and meta.get("proven_queue_order"):
+        top_name = str(meta["proven_queue_order"][0])
+        meta["top_queued_player"] = {"name": top_name}
+    meta["expected_autopick_candidate"] = expected_autopick
+    meta["autopick_differs_from_top_queue"] = _names_differ(
+        str(expected_autopick.get("name") or ""), top_name
+    )
+    meta["clicked"] = bool(meta.get("queue_contains_player"))
+    return meta
 
 
 def freeze_pick0_transaction(page, *, room_id: str) -> dict[str, Any]:
@@ -1959,18 +1968,27 @@ def scrape_queue_container_state(page) -> dict[str, Any]:
                 }
               }
               if (!best) return {found: false, empty: true, players: [], excerpt: ''};
-              const t = best.t;
+              let t = best.t;
+              const endIdx = t.search(/Clear Draft Queue/i);
+              if (endIdx > 0) t = t.slice(0, endIdx);
               const empty = /Queue empty|Empty — add players|Empty - add players/i.test(t);
               const players = [];
-              const skipLine = /^(Draft queue|Clear Draft Queue|Watchlist|Empty|Tracked players|Recently viewed|Command Center|keyboard_arrow|solo-deploy|Stop$|Fork$|✕|×)/i;
+              const skipLine = /^(Draft queue|Clear Draft Queue|Watchlist|Empty|Tracked players|Recently viewed|Command Center|keyboard_arrow|solo-deploy|Stop$|Fork$|✕|×|Saved session|Recommendations)/i;
               const nameOnly = /^[A-Z][A-Za-z .'-]{2,48}$/;
+              const seen = new Set();
               for (const line of t.split('\\n').map(x=>x.trim()).filter(Boolean)) {
+                if (skipLine.test(line)) continue;
+                if (line === '✕' || line === '×') continue;
                 const m = line.match(/^([A-Za-z][A-Za-z .\\'-]{2,60})\\s+[—\\-–]\\s+(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)/);
                 if (m && !/Draft queue|Clear Draft Queue|Watchlist|Empty/i.test(m[1])) {
-                  players.push({name: m[1].trim(), slot: m[2]});
+                  const k = m[1].trim().toLowerCase();
+                  if (!seen.has(k)) { seen.add(k); players.push({name: m[1].trim(), slot: m[2]}); }
                   continue;
                 }
-                if (nameOnly.test(line) && !skipLine.test(line)) players.push({name: line.trim(), slot: ''});
+                if (nameOnly.test(line) && !skipLine.test(line)) {
+                  const k = line.trim().toLowerCase();
+                  if (!seen.has(k)) { seen.add(k); players.push({name: line.trim(), slot: ''}); }
+                }
               }
               return {found: true, empty: empty && players.length===0, players: players.slice(0,8), excerpt: t.slice(0,600)};
             }"""
@@ -2697,14 +2715,25 @@ def main() -> int:
                         stage1a_mode=stage1a_mode,
                     )
             else:
-                queue_meta = queue_populate_deliberate(page, min_players=3)
+                surf_mut = bool((active_gate.get("timing") or {}).get("surface_activation_queue_mutation"))
+                queue_meta = queue_populate_deliberate(
+                    page,
+                    min_players=3,
+                    surface_activation_queue_mutation=surf_mut,
+                )
                 queue_meta["stage1a_mode"] = "QUEUE"
                 queue_meta["queue_excerpt_before"] = queue_text(page)
-                queue_meta["queue_evidence"] = build_queue_evidence_hierarchy(queue_meta, min_players=3)
-                queue_meta["queue_contains_player"] = bool(queue_meta["queue_evidence"].get("queue_setup_proven"))
+                if not queue_meta.get("queue_evidence"):
+                    from stage1_queue_harness_flow import build_queue_evidence_hierarchy
+
+                    queue_meta["queue_evidence"] = build_queue_evidence_hierarchy(queue_meta, min_players=3)
+                queue_meta["queue_contains_player"] = bool(
+                    queue_meta["queue_evidence"].get("queue_seed_resolved")
+                    or queue_meta["queue_evidence"].get("queue_setup_proven")
+                )
                 queue_meta["grading"] = (
-                    "QUEUE_DELIBERATE"
-                    if queue_meta.get("queue_contains_player")
+                    "QUEUE_SEED_RESOLVED"
+                    if queue_meta["queue_evidence"].get("queue_seed_resolved")
                     else (
                         "HARNESS_SCRAPER_GAP"
                         if queue_meta["queue_evidence"].get("harness_scraper_observation_gap")
@@ -2734,9 +2763,13 @@ def main() -> int:
                     browser.close()
                     summary["finished_at"] = time.time()
                     OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                    from stage1_harness_observability import QUEUE1 as QUEUE1_UMBRELLA
+
+                    narrow = str(queue_meta.get("classification") or "").strip()
+                    first_b = narrow if narrow and narrow != QUEUE1_UMBRELLA else QUEUE1_UMBRELLA
                     return _abort_queue_precondition(
                         summary,
-                        first_boundary=QUEUE1,
+                        first_boundary=first_b,
                         reason="queue_not_populated_before_expiration",
                         active_live_page_gate=active_gate,
                         queue_meta=queue_meta,

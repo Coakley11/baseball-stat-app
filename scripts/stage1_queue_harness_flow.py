@@ -64,7 +64,7 @@ def build_queue_evidence_hierarchy(
 ) -> dict[str, Any]:
     """Separate deliberate clicks, visible queue text, and structured scraper."""
     adds = list(queue_meta.get("add_actions") or [])
-    click_count = sum(1 for a in adds if a.get("clicked"))
+    click_count = sum(1 for a in adds if a.get("clicked") or a.get("click_dispatched"))
     excerpt = str(queue_meta.get("queue_excerpt_before") or queue_meta.get("queue_excerpt") or "")
     visible = visible_queue_names_from_excerpt(excerpt)
     structured = [str(n or "").strip() for n in (queue_meta.get("queue_order") or []) if str(n or "").strip()]

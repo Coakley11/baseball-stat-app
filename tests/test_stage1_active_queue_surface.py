@@ -12,10 +12,12 @@ from stage1_active_queue_surface import (  # noqa: E402
     ACTIVE_QUEUE_SURFACE_RESOLVED,
     QUEUE_ACTIVE_PAGE1B,
     QUEUE_ACTIVE_PAGE1E,
+    QUEUE_SURFACE_NAV_LABELS,
     evaluate_active_live_page_gate,
     evaluate_queue_ui_ready,
     evaluate_server_active_draft_ready,
     scrape_frame_aware_active_observation,
+    surface_activation_labels_are_navigation_only,
 )
 
 
@@ -96,3 +98,9 @@ def test_scrape_merges_expected_token_without_mount() -> None:
     assert obs["pick_index"] == 0
     queue = evaluate_queue_ui_ready(obs)
     assert queue["ready"] is False
+
+
+def test_surface_activation_navigation_only_cannot_match_add_to_queue() -> None:
+    assert surface_activation_labels_are_navigation_only()
+    combined = " ".join(QUEUE_SURFACE_NAV_LABELS).lower()
+    assert "add to queue" not in combined

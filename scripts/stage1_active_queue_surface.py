@@ -341,6 +341,21 @@ def classify_active_page_boundary(
     return QUEUE_ACTIVE_PAGE8
 
 
+# Navigation-only labels for surface activation (must never match Add to Queue).
+QUEUE_SURFACE_NAV_LABELS: tuple[str, ...] = (
+    "Available Players",
+    "Watchlist",
+    "Draft from lists",
+    "Recommendations",
+)
+
+
+def surface_activation_labels_are_navigation_only() -> bool:
+    """Regression guard: activation list must not include queue-mutating controls."""
+    forbidden = re.compile(r"Add to Queue|Add-to-Queue|On Clock|Draft Assistant|Draft Player", re.I)
+    return not any(forbidden.search(lbl) for lbl in QUEUE_SURFACE_NAV_LABELS)
+
+
 def try_activate_queue_player_surface(
     page,
     *,
@@ -353,32 +368,26 @@ def try_activate_queue_player_surface(
 
     start_val = dict(start_val or {})
     frame = _streamlit_app_frame(page)
-    labels = (
-        "Draft Queue",
-        "Available Players",
-        "Players",
-        "Watchlist",
-        "Draft from lists",
-        "Recommendations",
-        "Draft Assistant",
-        "Add to Queue",
-        "On Clock",
-    )
+    labels = QUEUE_SURFACE_NAV_LABELS
     steps: list[dict[str, Any]] = []
     for label in labels:
         step: dict[str, Any] = {"label": label, "clicked": False, "ts": time.time()}
         try:
-            loc = frame.get_by_role("button", name=re.compile(re.escape(label), re.I))
-            if loc.count() > 0:
-                loc.first.click(timeout=2500)
-                step["clicked"] = True
-                step["via"] = "role_button"
+            if label == "Available Players":
+                loc2 = frame.get_by_text(re.compile(r"Available Players", re.I))
             else:
-                loc2 = frame.get_by_text(re.compile(re.escape(label), re.I))
-                if loc2.count() > 0:
-                    loc2.first.click(timeout=2500)
+                loc = frame.get_by_role("button", name=re.compile(re.escape(label), re.I))
+                if loc.count() > 0:
+                    loc.first.click(timeout=2500)
                     step["clicked"] = True
-                    step["via"] = "text"
+                    step["via"] = "role_button"
+                    loc2 = None
+                else:
+                    loc2 = frame.get_by_text(re.compile(re.escape(label), re.I))
+            if loc2 is not None and loc2.count() > 0:
+                loc2.first.click(timeout=2500)
+                step["clicked"] = True
+                step["via"] = "text"
         except Exception as exc:
             step["error"] = str(exc)[:120]
         if step.get("clicked"):
@@ -489,12 +498,32 @@ def wait_for_active_queue_surface(
     last_eval: dict[str, Any] = {"passed": False}
     while time.time() < t_end:
         if while_paused and not surface_done:
+            pre_queue_names: list[str] = []
+            post_queue_names: list[str] = []
+            try:
+                from run_production_stage1_authenticated import scrape_queue_container_state
+                from stage1_queue_seed_harness import queue_names_from_state
+
+                pre_c = scrape_queue_container_state(page)
+                pre_queue_names = queue_names_from_state(pre_c, str(pre_c.get("excerpt") or ""))
+            except Exception:
+                pre_queue_names = []
             timing["surface_activation"] = try_activate_queue_player_surface(
                 page,
                 start_val=start_val,
                 run_id=run_id,
                 record_per_step=True,
             )
+            try:
+                post_c = scrape_queue_container_state(page)
+                post_queue_names = queue_names_from_state(post_c, str(post_c.get("excerpt") or ""))
+            except Exception:
+                post_queue_names = []
+            pre_set = {n.lower() for n in pre_queue_names if n}
+            post_set = {n.lower() for n in post_queue_names if n}
+            timing["queue_names_before_surface_activation"] = pre_queue_names
+            timing["queue_names_after_surface_activation"] = post_queue_names
+            timing["surface_activation_queue_mutation"] = bool(post_set - pre_set)
             surface_done = True
         ledger = ledger_checkpoint_from_page(
             page, run_id=run_id, room_id=str(start_val.get("latched_room_id") or "")
