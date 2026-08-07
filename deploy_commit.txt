@@ -1,7 +1,7 @@
-e944c1a  # auto-generated; Streamlit Cloud reads this at runtime
+44fc8a3  # auto-generated; Streamlit Cloud reads this at runtime
 
 
 
-# deploy_epoch: 2026-08-06T22:05:00Z current_auth_dom_checkpoint_and_auth_snapshot
+# deploy_epoch: 2026-08-07T01:12:00Z auth_finalize_diag1_restore_block_and_bound_eval
 
 branch: dev
