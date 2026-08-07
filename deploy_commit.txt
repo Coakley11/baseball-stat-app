@@ -1,7 +1,4 @@
-5b9ba13  # auto-generated; Streamlit Cloud reads this at runtime
-
-
-
-# deploy_epoch: 2026-08-07T01:49:00Z auth_bridge4_restore_failure_no_bridge_invalidate
-
-branch: dev
+dc46ac2  # auto-generated; Streamlit Cloud reads this at runtime
+
+# deploy_epoch: 2026-08-07T12:35:00Z auth_hydrate7_restore_diagnostics_deploy
+branch: dev
