@@ -23,6 +23,7 @@ EXPECTED_SHA = (
 ).read_text(encoding="utf-8").splitlines()[0].split("#", 1)[0].strip()[:7]
 
 AUTH_BRIDGE_DURABILITY_RESOLVED = "AUTH_BRIDGE_DURABILITY_RESOLVED"
+AUTH_BRIDGE_ROTATION_DURABILITY_RESOLVED = "AUTH_BRIDGE_ROTATION_DURABILITY_RESOLVED"
 AUTH_BRIDGE1 = "AUTH_BRIDGE1"
 AUTH_BRIDGE2 = "AUTH_BRIDGE2"
 AUTH_BRIDGE3 = "AUTH_BRIDGE3"
@@ -179,6 +180,68 @@ def context_a_source_probe(suite_sid: str) -> dict[str, Any]:
     else:
         out["local_supabase_probe"] = "skipped_not_configured"
     return out
+
+
+def _rotation_restore_metrics(ledger_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    blob = json.dumps(ledger_rows, default=str).lower()
+
+    def _rows(cp: str) -> list[dict[str, Any]]:
+        return [r for r in ledger_rows if str(r.get("checkpoint") or "") == cp]
+
+    restore_exits = _rows("restore_auth_session_exit")
+    rot_persist = _rows("bridge_restore_rotation_persist")
+    sf_acquire = _rows("bridge_restore_single_flight_acquire")
+    sf_skip = _rows("bridge_restore_single_flight_skip")
+    sf_release = _rows("bridge_restore_single_flight_release")
+    exceptions = _rows("restore_auth_session_exception")
+    saves = _rows("save_browser_auth_tokens")
+    readbacks = [r for r in _rows("save_browser_auth_tokens_readback") if r.get("readback_record_complete")]
+    invalidations = _bridge_invalidate_mutations(ledger_rows)
+
+    gens: list[int] = []
+    fp_prefixes: list[str] = []
+    for r in rot_persist + readbacks + saves:
+        for key in ("token_generation", "result_generation", "prior_generation", "expected_generation"):
+            try:
+                g = int(r.get(key) or 0)
+                if g > 0:
+                    gens.append(g)
+            except (TypeError, ValueError):
+                pass
+        fp = str(r.get("refresh_fp_prefix") or r.get("refresh_fp") or "")[:16]
+        if fp:
+            fp_prefixes.append(fp)
+
+    load_lookup = _rows("load_browser_auth_tokens_lookup")
+    load_ok = [r for r in load_lookup if r.get("browser_tokens_loaded") is True]
+    best_lookup = load_ok[-1] if load_ok else (load_lookup[-1] if load_lookup else {})
+
+    set_session_exceptions = [
+        r for r in exceptions if str(r.get("phase") or "") == "set_session" or "set_session" in str(r.get("phase") or "")
+    ]
+    set_session_ok_proxy = max(len(rot_persist), sum(1 for r in restore_exits if r.get("authenticated_after") is True))
+
+    return {
+        "restore_attempt_count": len(restore_exits),
+        "set_session_call_count_proxy": set_session_ok_proxy,
+        "set_session_exception_count": len(set_session_exceptions),
+        "single_flight_acquire_count": len(sf_acquire),
+        "single_flight_skip_count": len(sf_skip),
+        "single_flight_release_count": len(sf_release),
+        "rotation_persist_count": len(rot_persist),
+        "bridge_save_count": len(saves),
+        "readback_complete_count": len(readbacks),
+        "bridge_row_prefix_at_load": str(best_lookup.get("row_id_prefix") or "")[:16],
+        "access_token_present_at_load": bool(best_lookup.get("access_token_present")),
+        "refresh_token_present_at_load": bool(best_lookup.get("refresh_token_present")),
+        "load_rejection_reason": str(best_lookup.get("rejection_reason") or "")[:80],
+        "token_generation_observed": sorted(set(gens)) if gens else "not_observed",
+        "refresh_fp_prefixes_observed": sorted(set(fp_prefixes)) if fp_prefixes else "not_observed",
+        "refresh_token_already_used": "refresh_token_already_used" in blob,
+        "auth_hydrate_3b": "auth_hydrate_3b" in blob,
+        "bridge_invalidate_count": len(invalidations),
+        "bridge_invalidate_mutations": invalidations,
+    }
 
 
 def _ledger_bridge_facts(ledger_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -364,6 +427,7 @@ def run_fresh_context_hydration(
         out["url_suite_sid"] = suite_sid_from_url(page.url or "")
         out["url_suite_sid_matches"] = bool(out["url_suite_sid"] == suite_sid)
         out["bridge_ledger"] = _ledger_bridge_facts(ledger)
+        out["rotation_restore"] = _rotation_restore_metrics(ledger)
         out["bound_current_auth"] = {
             k: bound.get(k)
             for k in (
@@ -431,6 +495,13 @@ def classify_durability(
             return AUTH_BRIDGE6, f"{label}_apply_exit_incomplete"
         if not ctx.get("bridge_durability_pass"):
             return AUTH_BRIDGE6, f"{label}_final_session_state_incomplete"
+        rot = ctx.get("rotation_restore") or {}
+        if rot.get("refresh_token_already_used"):
+            return "AUTH_HYDRATE3B", f"{label}_refresh_token_already_used"
+        if rot.get("auth_hydrate_3b"):
+            return "AUTH_HYDRATE3B", f"{label}_auth_hydrate_3b_latched"
+        if int(rot.get("bridge_invalidate_count") or 0) > 0:
+            return AUTH_BRIDGE4, f"{label}_bridge_invalidated_during_restore"
         if ctx.get("session_binding_failure"):
             return AUTH_BRIDGE3, f"{label}_session_binding_{ctx.get('session_binding_failure')}"
 
@@ -438,7 +509,7 @@ def classify_durability(
         if ctx_b["streamlit_session_id"] == ctx_c["streamlit_session_id"]:
             return AUTH_BRIDGE8, "context_b_and_c_shared_streamlit_session_id"
 
-    return AUTH_BRIDGE_DURABILITY_RESOLVED, "both_fresh_contexts_hydrated_from_persisted_bridge"
+    return AUTH_BRIDGE_ROTATION_DURABILITY_RESOLVED, "both_fresh_contexts_hydrated_from_persisted_bridge"
 
 
 def probe_browser_auth_storage_post(suite_sid: str) -> dict[str, Any]:
@@ -499,7 +570,22 @@ def main() -> int:
     code, detail = classify_durability(ctx_a, ctx_b, ctx_c, expected_sha=EXPECTED_SHA)
     report["classification"] = code
     report["detail"] = detail
-    report["pass"] = code == AUTH_BRIDGE_DURABILITY_RESOLVED
+    report["pass"] = code == AUTH_BRIDGE_ROTATION_DURABILITY_RESOLVED
+    report["context_a_row_prefix_expected"] = "31869"
+    report["context_a_token_generation_baseline"] = "not_observed"
+    report["rotation_chain"] = {
+        "context_a": {"row_prefix": str(ctx_a.get("authoritative_row_id_prefix") or "31869")[:8], "token_generation": "not_observed"},
+        "context_b": {
+            "row_prefix_load": (ctx_b.get("rotation_restore") or {}).get("bridge_row_prefix_at_load"),
+            "token_generation": (ctx_b.get("rotation_restore") or {}).get("token_generation_observed"),
+            "rotation_persist_count": (ctx_b.get("rotation_restore") or {}).get("rotation_persist_count"),
+        },
+        "context_c": {
+            "row_prefix_load": (ctx_c.get("rotation_restore") or {}).get("bridge_row_prefix_at_load"),
+            "token_generation": (ctx_c.get("rotation_restore") or {}).get("token_generation_observed"),
+            "rotation_persist_count": (ctx_c.get("rotation_restore") or {}).get("rotation_persist_count"),
+        },
+    }
     report["finished_at"] = time.time()
     report["artifact"] = str(OUT)
     OUT.parent.mkdir(parents=True, exist_ok=True)
