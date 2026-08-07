@@ -547,16 +547,25 @@ def select_next_seed_candidate(
     return viable[0], ""
 
 
-def _frame_for_index(page, frame_index: int):
+def _frame_for_index(page, frame_index: int, frame_url: str = ""):
     from run_production_stage1_authenticated import _streamlit_app_frame
 
+    url_hint = str(frame_url or "").strip()
+    if url_hint:
+        for frame in page.frames:
+            fu = str(frame.url or "")
+            if fu and (fu == url_hint or url_hint in fu or fu in url_hint):
+                return frame
+    app = _streamlit_app_frame(page)
+    if app and app.url and ("/~/" in app.url or "~/+" in app.url):
+        return app
     try:
         frames = page.frames
         if 0 <= frame_index < len(frames):
             return frames[frame_index]
     except (TypeError, ValueError):
         pass
-    return _streamlit_app_frame(page)
+    return app or page.main_frame
 
 
 def scrape_click_transport_evidence(page, *, click_ts: float) -> dict[str, Any]:
@@ -647,7 +656,8 @@ def deliver_add_to_queue_click(
         out["error"] = "click_blocked_non_unique_binding"
         return out
 
-    frame = _frame_for_index(page, frame_index)
+    frame = _frame_for_index(page, frame_index, str(candidate.get("frameUrl") or ""))
+    out["playwright_frame_url"] = str(frame.url or "")[:220]
     escaped = re.escape(name)
     pw_error = ""
     index_in_frame = int(candidate.get("index_in_frame") if candidate.get("index_in_frame") is not None else -1)
