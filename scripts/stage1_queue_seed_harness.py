@@ -16,6 +16,12 @@ QUEUE_SEED_RESOLVED = "QUEUE_SEED_RESOLVED"
 QUEUE1A = "QUEUE1A — surface activation accidentally mutated queue"
 QUEUE1B = "QUEUE1B — candidate player/button association ambiguous"
 QUEUE1C = "QUEUE1C — Add-to-Queue click produced no observable mutation"
+QUEUE1C1 = "QUEUE1C1 — Playwright cannot dispatch click to bound button"
+QUEUE1C2 = "QUEUE1C2 — click dispatched but no Streamlit widget/back-message"
+QUEUE1C3 = "QUEUE1C3 — Streamlit message/rerun occurs but queue state does not change"
+QUEUE1C4 = "QUEUE1C4 — queue state changes but DOM evidence misses it"
+QUEUE1C5 = "QUEUE1C5 — button rerenders/stales during interaction"
+QUEUE1C8 = "QUEUE1C8 — another exact Add-to-Queue delivery boundary"
 QUEUE1D = "QUEUE1D — queue mutation visible but structured parser failed"
 QUEUE1E = "QUEUE1E — fewer than required distinct players available/seeded"
 QUEUE1F = "QUEUE1F — queue order cannot be established"
@@ -84,12 +90,54 @@ def queue_names_from_state(container: dict[str, Any], excerpt: str = "") -> list
     return merge_queue_player_lists(structured, [{"name": n} for n in visible])
 
 
+def classify_queue1c_subcode(step: dict[str, Any]) -> str:
+    """Narrow QUEUE1C using click, Streamlit transport, and mutation evidence."""
+    delivery = step.get("delivery_detail") if isinstance(step.get("delivery_detail"), dict) else {}
+    method = str(step.get("delivery_method") or delivery.get("delivery_method") or "")
+    dispatched = bool(step.get("click_dispatched") or delivery.get("click_dispatched"))
+    err = str(delivery.get("error") or step.get("error") or "").lower()
+    transport = delivery.get("post_click_transport") if isinstance(delivery.get("post_click_transport"), dict) else {}
+    if any(x in err for x in ("stale", "detached", "not attached", "target closed", "execution context")):
+        return QUEUE1C5
+    if not dispatched or method.startswith("js_"):
+        if not dispatched:
+            return QUEUE1C1
+        return QUEUE1C2
+    backmsg = bool(transport.get("streamlit_backmsg_sent"))
+    rerun = bool(transport.get("python_rerun_started"))
+    if dispatched and not backmsg and not rerun and int(transport.get("outbound_frames_after_click") or 0) == 0:
+        return QUEUE1C2
+    if step.get("mutation_observed"):
+        return QUEUE1C
+    if step.get("structured_confirmation") and not step.get("visible_confirmation"):
+        return QUEUE1C4
+    if (backmsg or rerun or int(transport.get("outbound_frames_after_click") or 0) > 0) and not step.get("mutation_observed"):
+        return QUEUE1C3
+    if dispatched and not step.get("mutation_observed"):
+        return QUEUE1C2 if not backmsg and not rerun else QUEUE1C3
+    return QUEUE1C8
+
+
 def classify_queue_seed_boundary(meta: dict[str, Any], *, min_players: int = 3) -> str:
     if meta.get("surface_activation_queue_mutation"):
         return QUEUE1A
     steps = list(meta.get("seed_steps") or [])
     if any(s.get("classification") == QUEUE1B for s in steps):
         return QUEUE1B
+    subcodes = (
+        QUEUE1C1,
+        QUEUE1C2,
+        QUEUE1C3,
+        QUEUE1C4,
+        QUEUE1C5,
+        QUEUE1C8,
+    )
+    for sub in subcodes:
+        if any(str(s.get("classification") or "").startswith(sub.split(" ")[0]) for s in steps):
+            for s in steps:
+                c = str(s.get("classification") or "")
+                if c.startswith(sub.split(" ")[0]):
+                    return c
     if any(s.get("classification") == QUEUE1C for s in steps):
         return QUEUE1C
     proven = list(meta.get("proven_queue_order") or [])
@@ -895,19 +943,20 @@ def seed_queue_distinct_players(
             "queue_before": list(pre.get("queue_names") or []),
             "started_ts": time.time(),
         }
-        delivery = deliver_add_to_queue_click(page, pick)
+        delivery = deliver_add_to_queue_click(page, pick, playwright_only=True)
         step["click_dispatched"] = bool(delivery.get("click_dispatched"))
         step["delivery_method"] = delivery.get("delivery_method") or ""
         step["delivery_detail"] = delivery
         if not step["click_dispatched"]:
-            step["classification"] = QUEUE1C
+            step["classification"] = classify_queue1c_subcode(step)
             step["mutation_proven"] = False
             step["mutation_observed"] = False
             step["elapsed_s"] = time.time() - float(step["started_ts"])
             seed_steps.append(step)
-            fail_classification = QUEUE1C
+            fail_classification = step["classification"]
             break
 
+        page.wait_for_timeout(600)
         mut = _poll_queue_mutation(
             page,
             scrape_container_fn,
@@ -922,9 +971,9 @@ def seed_queue_distinct_players(
         step["mutation_proven"] = step["mutation_observed"]
         step["elapsed_s"] = time.time() - float(step["started_ts"])
         if not step["mutation_proven"]:
-            step["classification"] = QUEUE1C
+            step["classification"] = classify_queue1c_subcode(step)
             seed_steps.append(step)
-            fail_classification = QUEUE1C
+            fail_classification = step["classification"]
             break
         queued_names.add(player_name.lower())
         seed_steps.append(step)

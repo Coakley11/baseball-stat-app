@@ -91,6 +91,20 @@ def test_three_mutations_produce_queue_seed_resolved() -> None:
     assert ev["queue_seed_resolved"] is True
 
 
+def test_click_without_mutation_classifies_queue1c_subcode() -> None:
+    from stage1_queue_seed_harness import QUEUE1C2, classify_queue1c_subcode
+
+    step = {
+        "click_dispatched": True,
+        "delivery_method": "playwright_ld_rec_card_meta_scope",
+        "mutation_observed": False,
+        "delivery_detail": {
+            "post_click_transport": {"streamlit_backmsg_sent": False, "python_rerun_started": False, "outbound_frames_after_click": 0},
+        },
+    }
+    assert classify_queue1c_subcode(step) == QUEUE1C2
+
+
 def test_click_without_mutation_is_not_resolved() -> None:
     meta = {
         "seed_steps": [

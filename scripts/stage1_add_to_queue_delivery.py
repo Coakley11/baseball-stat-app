@@ -559,6 +559,39 @@ def _frame_for_index(page, frame_index: int):
     return _streamlit_app_frame(page)
 
 
+def scrape_click_transport_evidence(page, *, click_ts: float) -> dict[str, Any]:
+    try:
+        from p8_proven_start_delivery import aggregate_ws_boundary_log
+
+        raw_log = aggregate_ws_boundary_log(page)
+        outbound = [e for e in raw_log if isinstance(e, dict) and e.get("direction") == "outbound"]
+        after = [e for e in outbound if float(e.get("wall_ts_ms") or 0) >= (click_ts * 1000.0 - 50.0)]
+        backmsg_sent = False
+        for entry in after[:16]:
+            hint = str(entry.get("frame_type_hint") or "").lower()
+            if "rerun" in hint or "widget" in hint or "backmsg" in hint:
+                backmsg_sent = True
+        pre_seq = ""
+        post_seq = ""
+        try:
+            from p8_production_start_harness import scrape_stage1_ledger_rows
+
+            rows = scrape_stage1_ledger_rows(page) or []
+            if rows:
+                post_seq = str(rows[-1].get("script_run_seq") or "")
+        except Exception:
+            pass
+        return {
+            "outbound_frames_after_click": len(after),
+            "streamlit_backmsg_sent": backmsg_sent or len(after) > 0,
+            "python_rerun_started": backmsg_sent,
+            "ws_log_sample": after[:5],
+            "ledger_script_run_seq_after": post_seq,
+        }
+    except Exception as exc:
+        return {"error": str(exc)[:160]}
+
+
 def scrape_streamlit_identity(page) -> dict[str, Any]:
     try:
         return (
@@ -583,16 +616,27 @@ def scrape_streamlit_identity(page) -> dict[str, Any]:
         return {"error": str(exc)[:120]}
 
 
-def deliver_add_to_queue_click(page, candidate: dict[str, Any]) -> dict[str, Any]:
-    """Delivery hierarchy: scroll → stable visible → Playwright click → JS on same bound element."""
+def deliver_add_to_queue_click(
+    page,
+    candidate: dict[str, Any],
+    *,
+    playwright_only: bool = False,
+) -> dict[str, Any]:
+    """Delivery hierarchy: scroll → stable visible → Playwright click → optional JS fallback."""
     name = str(candidate.get("player_name") or "").strip()
     frame_index = int(candidate.get("frameIndex") or 0)
     out: dict[str, Any] = {
         "player_name": name,
         "click_dispatched": False,
         "delivery_method": "",
+        "binding_method": str(candidate.get("binding_via") or ""),
+        "button_text": str(candidate.get("button_text") or ""),
+        "button_help": str(candidate.get("aria_label") or ""),
+        "bounding_box": dict(candidate.get("bounding_box") or {}),
+        "frame_index": frame_index,
+        "playwright_only": playwright_only,
         "pre_click_diagnostics": dict(candidate),
-        "streamlit_identity": scrape_streamlit_identity(page),
+        "streamlit_identity_before": scrape_streamlit_identity(page),
     }
     if not name:
         out["classification"] = "QUEUE1B"
@@ -609,24 +653,13 @@ def deliver_add_to_queue_click(page, candidate: dict[str, Any]) -> dict[str, Any
     index_in_frame = int(candidate.get("index_in_frame") if candidate.get("index_in_frame") is not None else -1)
     pw_timeout = 5000
 
-    try:
-        buttons = frame.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I))
-        if 0 <= index_in_frame < buttons.count():
-            btn = buttons.nth(index_in_frame)
-            btn.wait_for(state="attached", timeout=pw_timeout)
-            btn.wait_for(state="visible", timeout=pw_timeout)
-            if not btn.is_enabled():
-                out["error"] = "button_not_enabled"
-                out["classification"] = "QUEUE1C"
-                return out
-            btn.scroll_into_view_if_needed(timeout=pw_timeout)
-            page.wait_for_timeout(350)
-            btn.click(timeout=pw_timeout)
-            out["click_dispatched"] = True
-            out["delivery_method"] = "playwright_index_in_frame_after_bind"
-            return out
-    except Exception as exc:
-        pw_error = str(exc)[:240]
+    def _finish_playwright_click(method: str) -> dict[str, Any]:
+        out["click_end_ts"] = time.time()
+        out["streamlit_identity_after"] = scrape_streamlit_identity(page)
+        out["post_click_transport"] = scrape_click_transport_evidence(page, click_ts=float(out.get("click_start_ts") or out["click_end_ts"]))
+        out["click_dispatched"] = True
+        out["delivery_method"] = method
+        return out
 
     try:
         meta = frame.locator(".ld-rec-card-meta").filter(has_text=re.compile(escaped, re.I)).first
@@ -636,14 +669,31 @@ def deliver_add_to_queue_click(page, candidate: dict[str, Any]) -> dict[str, Any
         btn.wait_for(state="visible", timeout=pw_timeout)
         if not btn.is_enabled():
             out["error"] = "button_not_enabled"
-            out["classification"] = "QUEUE1C"
+            out["classification"] = "QUEUE1C1"
             return out
+        out["click_start_ts"] = time.time()
         btn.scroll_into_view_if_needed(timeout=pw_timeout)
         page.wait_for_timeout(350)
         btn.click(timeout=pw_timeout)
-        out["click_dispatched"] = True
-        out["delivery_method"] = "playwright_ld_rec_card_meta_scope"
-        return out
+        return _finish_playwright_click("playwright_ld_rec_card_meta_scope")
+    except Exception as exc:
+        pw_error = str(exc)[:240]
+
+    try:
+        buttons = frame.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I))
+        if 0 <= index_in_frame < buttons.count():
+            btn = buttons.nth(index_in_frame)
+            btn.wait_for(state="attached", timeout=pw_timeout)
+            btn.wait_for(state="visible", timeout=pw_timeout)
+            if not btn.is_enabled():
+                out["error"] = "button_not_enabled"
+                out["classification"] = "QUEUE1C1"
+                return out
+            out["click_start_ts"] = time.time()
+            btn.scroll_into_view_if_needed(timeout=pw_timeout)
+            page.wait_for_timeout(350)
+            btn.click(timeout=pw_timeout)
+            return _finish_playwright_click("playwright_index_in_frame_after_bind")
     except Exception as exc:
         pw_error = str(exc)[:240]
 
@@ -654,14 +704,13 @@ def deliver_add_to_queue_click(page, candidate: dict[str, Any]) -> dict[str, Any
         btn.wait_for(state="visible", timeout=pw_timeout)
         if not btn.is_enabled():
             out["error"] = "button_not_enabled"
-            out["classification"] = "QUEUE1C"
+            out["classification"] = "QUEUE1C1"
             return out
+        out["click_start_ts"] = time.time()
         btn.scroll_into_view_if_needed(timeout=pw_timeout)
         page.wait_for_timeout(350)
         btn.click(timeout=pw_timeout)
-        out["click_dispatched"] = True
-        out["delivery_method"] = "playwright_stHorizontalBlock_player_row"
-        return out
+        return _finish_playwright_click("playwright_stHorizontalBlock_player_row")
     except Exception as exc:
         pw_error = str(exc)[:240]
 
@@ -671,13 +720,18 @@ def deliver_add_to_queue_click(page, candidate: dict[str, Any]) -> dict[str, Any
             buttons = frame.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I))
             if 0 <= index_in_frame < buttons.count():
                 btn = buttons.nth(index_in_frame)
+                out["click_start_ts"] = time.time()
                 btn.scroll_into_view_if_needed(timeout=pw_timeout)
                 btn.click(timeout=pw_timeout, force=True)
-                out["click_dispatched"] = True
-                out["delivery_method"] = "playwright_force_index_in_frame"
-                return out
+                return _finish_playwright_click("playwright_force_index_in_frame")
     except Exception as exc:
         pw_error = str(exc)[:240]
+
+    if playwright_only:
+        out["error"] = pw_error or "playwright_only_no_dispatch"
+        out["classification"] = "QUEUE1C1"
+        out["js_skipped"] = True
+        return out
 
     try:
         js = page.evaluate(
@@ -689,9 +743,13 @@ def deliver_add_to_queue_click(page, candidate: dict[str, Any]) -> dict[str, Any
             },
         )
         if isinstance(js, dict) and js.get("ok"):
+            out["click_start_ts"] = time.time()
+            out["click_end_ts"] = time.time()
             out["click_dispatched"] = True
             out["delivery_method"] = str(js.get("method") or "js_bound_exact_element")
             out["js_delivery"] = js
+            out["post_click_transport"] = scrape_click_transport_evidence(page, click_ts=float(out["click_end_ts"]))
+            out["streamlit_identity_after"] = scrape_streamlit_identity(page)
             return out
         out["js_delivery"] = js
     except Exception as exc:
