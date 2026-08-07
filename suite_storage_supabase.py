@@ -845,11 +845,108 @@ def save_browser_auth_session(
     }
     if not sid or not uid or not access or not refresh:
         return meta
-    payload = {
+    write = save_browser_auth_session_versioned(
+        sid,
+        user_id=uid,
+        tokens=tokens,
+        expected_generation=None,
+    )
+    meta["write_committed"] = bool(write.get("write_committed"))
+    meta["write_mode"] = str(write.get("write_mode") or "")
+    meta["duplicate_handled"] = write.get("write_mode") == "update"
+    meta["token_generation"] = int(write.get("token_generation") or 0)
+    return meta
+
+
+def load_browser_auth_session_record(session_id: str) -> dict[str, Any] | None:
+    """Load bridge row metadata + tokens (uncached)."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    with _egress("load_browser_auth_session"):
+        rows = _request(
+            "GET",
+            _TABLE_SAVED,
+            params={
+                "select": "id,payload,updated_at,user_id",
+                "app": f"eq.{_AUTH_BROWSER_APP}",
+                "item_type": f"eq.{_AUTH_SESSION_ITEM_TYPE}",
+                "item_key": f"eq.{sid}",
+                "valid": "eq.true",
+                "limit": "1",
+            },
+            prefer="return=representation",
+            use_cache=False,
+        )
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+        return None
+    row = rows[0]
+    payload = row.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    access = str(payload.get("access_token") or "").strip()
+    refresh = str(payload.get("refresh_token") or "").strip()
+    if not access or not refresh:
+        return None
+    from suite_auth_bridge_token_meta import bridge_payload_meta
+
+    meta = bridge_payload_meta(payload)
+    return {
+        "row_id": str(row.get("id") or ""),
+        "user_id": str(row.get("user_id") or ""),
+        "updated_at": str(row.get("updated_at") or ""),
+        "payload": payload,
+        **meta,
         "access_token": access,
         "refresh_token": refresh,
-        "expires_at": int((tokens or {}).get("expires_at") or 0),
+        "expires_at": int(payload.get("expires_at") or 0),
     }
+
+
+def save_browser_auth_session_versioned(
+    session_id: str,
+    *,
+    user_id: str,
+    tokens: dict[str, Any],
+    expected_generation: int | None = None,
+) -> dict[str, Any]:
+    """Persist tokens with monotonic generation; reject stale overwrites."""
+    from suite_auth_bridge_token_meta import enrich_bridge_payload, token_fingerprint
+
+    sid = str(session_id or "").strip()
+    uid = str(user_id or "").strip()
+    access = str((tokens or {}).get("access_token") or "").strip()
+    refresh = str((tokens or {}).get("refresh_token") or "").strip()
+    meta: dict[str, Any] = {
+        "write_attempted": bool(sid and uid and access and refresh),
+        "write_committed": False,
+        "write_mode": "",
+        "stale_generation_rejected": False,
+        "prior_generation": 0,
+        "token_generation": 0,
+        "refresh_fp": token_fingerprint(refresh),
+        "row_id_prefix": "",
+    }
+    if not sid or not uid or not access or not refresh:
+        return meta
+    current_gen = 0
+    try:
+        rec = load_browser_auth_session_record(sid)
+        if rec:
+            current_gen = int(rec.get("token_generation") or 0)
+            meta["row_id_prefix"] = str(rec.get("row_id") or "")[:8]
+    except Exception:
+        current_gen = 0
+    meta["prior_generation"] = current_gen
+    exp = int(expected_generation) if expected_generation is not None else current_gen
+    if current_gen > exp:
+        meta["stale_generation_rejected"] = True
+        meta["token_generation"] = current_gen
+        return meta
+    new_gen = max(current_gen, exp) + 1
+    payload = enrich_bridge_payload(tokens, token_generation=new_gen)
+    meta["token_generation"] = new_gen
+    meta["refresh_fp"] = payload.get("refresh_fp") or meta["refresh_fp"]
     row_body = {
         "user_id": uid,
         "app": _AUTH_BROWSER_APP,
@@ -894,7 +991,6 @@ def save_browser_auth_session(
         )
         meta["write_committed"] = True
         meta["write_mode"] = "update"
-        meta["duplicate_handled"] = True
     return meta
 
 

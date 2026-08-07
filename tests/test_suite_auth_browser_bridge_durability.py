@@ -71,6 +71,9 @@ class BridgeDurabilityTests(unittest.TestCase):
 
         with mock.patch("suite_auth.is_auth_enabled", return_value=True), mock.patch(
             "suite_auth_browser.load_browser_auth_tokens", return_value=_tokens()
+        ), mock.patch(
+            "suite_auth_bridge_restore.load_bridge_tokens_with_meta",
+            return_value=(_tokens(), {"token_generation": 0, "refresh_fp": "fp"}),
         ), mock.patch("suite_auth._auth_api") as auth_api, mock.patch(
             "suite_auth_browser.clear_browser_auth_tokens"
         ) as clear_bridge, mock.patch("suite_auth.enforce_workspace_ownership"), mock.patch(
@@ -87,6 +90,9 @@ class BridgeDurabilityTests(unittest.TestCase):
         st.session_state = session
         with mock.patch("suite_auth.is_auth_enabled", return_value=True), mock.patch(
             "suite_auth_browser.load_browser_auth_tokens", return_value=_tokens()
+        ), mock.patch(
+            "suite_auth_bridge_restore.load_bridge_tokens_with_meta",
+            return_value=(_tokens(), {"token_generation": 0, "refresh_fp": "fp"}),
         ), mock.patch("suite_auth._auth_api") as auth_api, mock.patch(
             "suite_auth._user_from_auth_response", return_value=None
         ), mock.patch("suite_auth._user_from_obj", return_value=None), mock.patch(

@@ -1050,6 +1050,46 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
         return _finish(False, fail_reason)
 
     try:
+        from suite_auth_bridge_restore import (
+            RESTORE_FINAL_3B_KEY,
+            execute_bridge_set_session_restore,
+            load_bridge_tokens_with_meta,
+        )
+    except ImportError:
+        RESTORE_FINAL_3B_KEY = "_suite_auth_bridge_restore_final_3b"
+        execute_bridge_set_session_restore = None  # type: ignore[assignment,misc]
+        load_bridge_tokens_with_meta = None  # type: ignore[assignment,misc]
+
+    if session_state.get(RESTORE_FINAL_3B_KEY):
+        return _finish(False, "auth_hydrate_3b_final")
+
+    if st is not None and execute_bridge_set_session_restore is not None:
+        _, token_meta = load_bridge_tokens_with_meta(st)
+        token_meta = token_meta or {}
+        bridge_handled = execute_bridge_set_session_restore(
+            session_state,
+            st=st,
+            tokens=dict(tokens),
+            token_meta=token_meta,
+            auth_before=auth_before,
+            finish=_finish,
+        )
+        if bridge_handled is not None:
+            if not bridge_handled:
+                return False
+            try:
+                enforce_workspace_ownership(session_state)
+            except Exception:
+                pass
+            try:
+                from draft_archive_visibility import sanitize_workflow_library_for_account
+
+                sanitize_workflow_library_for_account(session_state, st=st, persist_cleanup=True)
+            except ImportError:
+                pass
+            return True
+
+    try:
         auth = _auth_api(session_state)
         resp = auth.set_session(str(tokens["access_token"]), str(tokens["refresh_token"]))
         user = _user_from_auth_response(resp)
