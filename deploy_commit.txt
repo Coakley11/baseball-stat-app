@@ -1,4 +1,4 @@
-dc46ac2  # auto-generated; Streamlit Cloud reads this at runtime
+71bb1ac  # auto-generated; Streamlit Cloud reads this at runtime
 
-# deploy_epoch: 2026-08-07T12:35:00Z auth_hydrate7_restore_diagnostics_deploy
+# deploy_epoch: 2026-08-07T12:40:00Z bridge_refresh_rotation_single_flight_deploy
 branch: dev
