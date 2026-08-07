@@ -36,6 +36,51 @@ START_BUTTON_KEY = "live_draft_start_btn"
 START_BUTTON_LABEL = "Start New Live Draft"
 
 
+def _ordered_start_click_frames(page):
+    """Prefer frame that hosts both Start and stage1 ledger diag."""
+    probes: list[dict[str, Any]] = []
+    try:
+        probes = page.evaluate(
+            """() => {
+              const nameRe = /Start New Live Draft/i;
+              function probeDoc(doc, frameUrl) {
+                let hasStart = false, hasLedger = false, startDisabled = true, startVisible = false;
+                for (const b of doc.querySelectorAll('button')) {
+                  const t = String(b.innerText || b.textContent || '').replace(/\\s+/g, ' ').trim();
+                  if (!nameRe.test(t)) continue;
+                  const r = b.getBoundingClientRect();
+                  startVisible = startVisible || (r.width > 0 && r.height > 0);
+                  if (!b.disabled) startDisabled = false;
+                  hasStart = true;
+                }
+                hasLedger = !!doc.querySelector('#solo-production-ledger-diag');
+                return { frameUrl, hasStart, hasLedger, startDisabled, startVisible };
+              }
+              const out = [probeDoc(document, location.href || '')];
+              for (const f of document.querySelectorAll('iframe')) {
+                try { if (f.contentDocument) out.push(probeDoc(f.contentDocument, f.src || '')); } catch (e) {}
+              }
+              return out;
+            }"""
+        ) or []
+    except Exception:
+        return list(page.frames)
+    enabled = [p for p in probes if p.get("hasStart") and not p.get("startDisabled") and p.get("startVisible")]
+    preferred_url = ""
+    for p in enabled:
+        if p.get("hasLedger"):
+            preferred_url = str(p.get("frameUrl") or "")
+            break
+    if not preferred_url and enabled:
+        preferred_url = str(enabled[0].get("frameUrl") or "")
+    frames = list(page.frames)
+    if preferred_url:
+        matched = [f for f in frames if preferred_url.split("?")[0] in (f.url or "")]
+        rest = [f for f in frames if f not in matched]
+        return matched + rest
+    return frames
+
+
 def dispatch_start_single_authoritative_click(page, checkpoints: list[dict[str, Any]]) -> dict[str, Any]:
     """One Playwright locator click only (evaluate used for inspection)."""
     if checkpoints and checkpoints[-1].get("_start_click_count", 0) >= 1:
@@ -63,31 +108,47 @@ def dispatch_start_single_authoritative_click(page, checkpoints: list[dict[str, 
     click_dispatch_started_at = time.time()
     intercept = False
     bbox: dict[str, Any] = {}
+    click_stale_detached = False
     if enabled:
         name_re = re.compile(re.escape(START_BUTTON_LABEL), re.I)
-        for frame in page.frames:
+        for frame in _ordered_start_click_frames(page):
             try:
                 loc = frame.get_by_role("button", name=name_re)
                 if loc.count() < 1 or loc.first.is_disabled():
                     continue
+                try:
+                    loc.first.scroll_into_view_if_needed(timeout=8000)
+                except Exception:
+                    pass
                 box = loc.first.bounding_box()
                 if box:
                     bbox = dict(box)
-                loc.first.click(timeout=15000, force=True)
+                try:
+                    loc.first.click(timeout=15000)
+                except Exception:
+                    loc.first.click(timeout=15000, force=True)
                 dom_click_dispatched = True
+                inspect["click_frame_index"] = page.frames.index(frame) if frame in page.frames else -1
+                inspect["click_frame_url"] = frame.url[:200]
                 checkpoint(checkpoints, "start_single_click_playwright", frame=frame.url[:80])
                 break
             except Exception as exc:
-                checkpoint(checkpoints, "start_single_click_frame_skip", error=str(exc)[:120])
+                err = str(exc)[:120]
+                if "not attached" in err.lower() or "detached" in err.lower():
+                    click_stale_detached = True
+                checkpoint(checkpoints, "start_single_click_frame_skip", error=err)
         if not dom_click_dispatched:
             try:
                 loc = page.get_by_role("button", name=name_re)
                 if loc.count() >= 1 and not loc.first.is_disabled():
+                    loc.first.scroll_into_view_if_needed(timeout=8000)
                     bbox = loc.first.bounding_box() or {}
-                    loc.first.click(timeout=15000, force=True)
+                    loc.first.click(timeout=15000)
                     dom_click_dispatched = True
             except Exception as exc:
                 inspect["click_error"] = str(exc)[:300]
+                if "not attached" in str(exc).lower() or "detached" in str(exc).lower():
+                    click_stale_detached = True
     click_dispatch_completed_at = time.time()
     inspect.update(
         {
@@ -97,6 +158,7 @@ def dispatch_start_single_authoritative_click(page, checkpoints: list[dict[str, 
             "click_dispatch_completed_at": click_dispatch_completed_at,
             "bounding_box": bbox,
             "click_intercepted": intercept,
+            "click_stale_detached": click_stale_detached,
         }
     )
     checkpoint(checkpoints, "_start_click_count", _start_click_count=1)
@@ -105,9 +167,9 @@ def dispatch_start_single_authoritative_click(page, checkpoints: list[dict[str, 
 
 def capture_start_click_transport(page, *, click_ts: float) -> dict[str, Any]:
     """Summarize WebSocket BackMsg evidence after the single click."""
-    from p8_streamlit_backmsg_decode import try_parse_backmsg
+    from p8_proven_start_delivery import aggregate_ws_boundary_log
 
-    raw_log = page.evaluate("() => (window.__p8WsBoundaryLog || []).slice()") or []
+    raw_log = aggregate_ws_boundary_log(page)
     outbound = [e for e in raw_log if isinstance(e, dict) and e.get("direction") == "outbound"]
     after = [
         e

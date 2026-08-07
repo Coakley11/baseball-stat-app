@@ -2221,17 +2221,12 @@ def main() -> int:
                 viewport={"width": 1440, "height": 1400},
             )
         )
+        from p8_proven_start_delivery import install_proven_start_context_scripts
+
+        summary["proven_start_context_scripts"] = install_proven_start_context_scripts(context)
         page = context.new_page()
         sink_install = install_parent_event_sink(page, parent_sink_store)
         summary["parent_event_sink_install"] = sink_install
-        try:
-            from stage1_parent_observer_probe import HARNESS_TOP_OBSERVER_INIT_SCRIPT
-            from stage1_harness_observability import LEDGER_DURABLE_INIT_SCRIPT
-
-            page.add_init_script(HARNESS_TOP_OBSERVER_INIT_SCRIPT)
-            page.add_init_script(LEDGER_DURABLE_INIT_SCRIPT)
-        except ImportError:
-            pass
 
         goto_and_wake(page, url, timeout_s=240)
         page.wait_for_timeout(15000)

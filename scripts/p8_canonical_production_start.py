@@ -90,12 +90,8 @@ def establish_single_solo_live_draft(
     Used by room-latch verification and Gate B diagnostics.
     """
     from p8_diagnostic_setup import ensure_p8_ldr_setup_surface
-    from p8_production_start_harness import (
-        capture_start_click_transport,
-        dispatch_start_single_authoritative_click,
-        scrape_stage1_ledger_rows,
-        start_proof_from_state,
-    )
+    from p8_production_start_harness import scrape_stage1_ledger_rows, start_proof_from_state
+    from p8_proven_start_delivery import CANONICAL_START_CLICK_HELPER, proven_start_single_click
     from p8_room_latch_ledger_export import filter_latch_ledger_rows, resolve_run_and_session
     from p8_room_latch_timeline import build_room_state_timeline
     from p8_room_latch_verify_classify import VERIFY1, classify_room_latch_verify
@@ -183,12 +179,14 @@ def establish_single_solo_live_draft(
             out["valid"] = out["pre_expiration_ready"]
             return out
 
-    click = dispatch_start_single_authoritative_click(page, checkpoints)
+    proven = proven_start_single_click(page, checkpoints)
+    click = proven["click"]
+    transport = proven["transport"]
     out["start_click"] = click
+    out["start_click_transport"] = transport
+    out["start_click_helper"] = CANONICAL_START_CLICK_HELPER
     out["click_count"] = 1
     click_ts = float(click.get("click_timestamp") or time.time())
-    transport = capture_start_click_transport(page, click_ts=click_ts)
-    out["start_click_transport"] = transport
 
     identity_timeline.append(
         capture_harness_page_identity(page, context, label="after_click", ledger_rows=scrape_stage1_ledger_rows(page))

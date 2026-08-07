@@ -130,11 +130,8 @@ def main() -> int:
         scrape_active_live_page_observation,
     )
     from p8_canonical_production_start import capture_harness_page_identity
-    from p8_production_start_harness import (
-        capture_start_click_transport,
-        dispatch_start_single_authoritative_click,
-        scrape_stage1_ledger_rows,
-    )
+    from p8_proven_start_delivery import install_proven_start_context_scripts, proven_start_single_click
+    from p8_production_start_harness import scrape_stage1_ledger_rows
     from solo_draft_start_harness import (
         SCAN_SETUP_JS,
         SOLO_RADIO_JS,
@@ -142,7 +139,6 @@ def main() -> int:
         maybe_clear_stale_draft,
         set_number_via_playwright,
     )
-    from stage1_harness_observability import LEDGER_DURABLE_INIT_SCRIPT
     from stage1_preflight_cleanup import _infer_status, _scrape_lobby, run_stage1_preflight_cleanup
 
     required = resolve_required_cloud_sha() or os.environ.get("REQUIRED_CLOUD_SHA") or DEFAULT_REQUIRED_DIAGNOSTIC_SHA
@@ -205,8 +201,8 @@ def main() -> int:
             context = browser.new_context(viewport={"width": 1440, "height": 1400})
         else:
             context = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
+        report["proven_start_context_scripts"] = install_proven_start_context_scripts(context)
         page = context.new_page()
-        page.add_init_script(LEDGER_DURABLE_INIT_SCRIPT)
         goto_and_wake(page, url, timeout_s=240)
         page.wait_for_timeout(15000)
         if use_bridge_restore:
@@ -411,7 +407,9 @@ def main() -> int:
         )
         report["audit_baseline"] = baseline
 
-        click = dispatch_start_single_authoritative_click(page, cps)
+        proven = proven_start_single_click(page, cps)
+        click = proven["click"]
+        transport = proven["transport"]
         record_click_dispatch_times(
             baseline,
             dispatch_started_at=float(click.get("click_dispatch_started_at") or preclick_at),
@@ -425,11 +423,8 @@ def main() -> int:
             or int(click.get("start_click_count") or 0) >= 1
         )
         report["start_draft_click"] = click
-        capture_start_click_transport(
-            page,
-            click_ts=float(click.get("click_dispatch_started_at") or click.get("click_timestamp") or preclick_at),
-        )
-        page.wait_for_timeout(1000)
+        report["start_click_transport"] = transport
+        page.wait_for_timeout(600)
 
         server_latch: dict[str, Any] = {"ok": False}
         seen_seq: set[int] = set()
