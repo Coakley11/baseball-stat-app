@@ -1655,7 +1655,7 @@ def queue_add_by_button_index(page, button_index: int) -> dict[str, Any]:
         except Exception:
             pass
     try:
-        buttons = frame.get_by_role("button", name=re.compile(r"Add to Queue", re.I))
+        buttons = frame.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I))
         if button_index < buttons.count():
             loc = buttons.nth(button_index)
             loc.scroll_into_view_if_needed(timeout=5000)
