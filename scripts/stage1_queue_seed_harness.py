@@ -174,7 +174,34 @@ _DISCOVER_CANDIDATES_JS = """() => {
       if (card) {
         domId = card.getAttribute('data-testid') || '';
         const lines = String(card.innerText||'').split('\\n').map(x=>x.trim()).filter(Boolean);
-        name = lines.find(l => /^[A-Z][A-Za-z .'-]{2,48}$/.test(l) && !/Add to Queue|Draft Player|⭐/i.test(l)) || '';
+        for (const l of lines) {
+          if (/Add to Queue|Draft Player|⭐|keyboard_arrow|^#\\d+/i.test(l)) continue;
+          if (/^(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)$/i.test(l)) continue;
+          let ln = l.replace(/^\\*+|\\*+$/g,'').trim().replace(/^\\d+\\.\\s*/, '');
+          const pos = ln.match(/^([A-Za-z][A-Za-z .\\'-]{2,60})\\s+[—\\-–]\\s+(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)\\b/);
+          if (pos) { name = pos[1].trim(); break; }
+          const two = ln.match(/^([A-Z][a-z]+(?: [A-Z][a-z'.\\-]+){1,3})$/);
+          if (two) { name = two[1].trim(); break; }
+          if (/^[A-Z][A-Za-z .\\'-]{2,48}$/.test(ln)) { name = ln.trim(); break; }
+        }
+      }
+      if (!name) {
+        let walk = btn.parentElement;
+        for (let i = 0; i < 6 && walk; i++) {
+          const lines = String(walk.innerText||'').split('\\n').map(x=>x.trim()).filter(Boolean);
+          for (const raw of lines) {
+            let l = raw.replace(/^\\*+|\\*+$/g,'').trim().replace(/^\\d+\\.\\s*/, '');
+            if (/Add to Queue|Draft Player|⭐|keyboard_arrow|Watchlist|Available Players|Recommendations|^ADP\\b/i.test(l)) continue;
+            if (/^(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)$/i.test(l)) continue;
+            const pos = l.match(/^([A-Za-z][A-Za-z .\\'-]{2,60})\\s+[—\\-–]\\s+(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)\\b/);
+            if (pos) { name = pos[1].trim(); break; }
+            const two = l.match(/^([A-Z][a-z]+(?: [A-Z][a-z'.\\-]+){1,3})$/);
+            if (two) { name = two[1].trim(); break; }
+            if (/^[A-Z][A-Za-z .\\'-]{2,48}$/.test(l)) { name = l.trim(); break; }
+          }
+          if (name) break;
+          walk = walk.parentElement;
+        }
       }
       out.push({
         frameIndex,
@@ -183,6 +210,7 @@ _DISCOVER_CANDIDATES_JS = """() => {
         button_text: t,
         disabled: !!btn.disabled,
         dom_hint: domId,
+        card_text_sample: card ? String(card.innerText||'').slice(0, 240) : '',
         button_index_in_frame: out.filter(x => x.frameIndex === frameIndex).length,
       });
     }
@@ -192,10 +220,39 @@ _DISCOVER_CANDIDATES_JS = """() => {
 }"""
 
 
+_NAME_TWO = re.compile(r"^([A-Z][a-z]+(?: [A-Z][a-z.'-]+){1,3})$")
+
+
+def infer_player_name_from_card_text(text: str) -> str:
+    for raw in str(text or "").splitlines():
+        ln = raw.strip().strip("*").strip()
+        ln = re.sub(r"^\d+\.\s*", "", ln)
+        if not ln or re.search(r"Add to Queue|Draft Player|Watchlist|Available", ln, re.I):
+            continue
+        pos = re.match(
+            r"^([A-Za-z][A-Za-z .'-]{2,60})\s+[—\-–]\s+(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)\b",
+            ln,
+        )
+        if pos:
+            return pos.group(1).strip()
+        if _NAME_TWO.match(ln):
+            return ln
+        if _NAME_ONLY.match(ln):
+            return ln
+    return ""
+
+
 def discover_player_add_candidates(page) -> list[dict[str, Any]]:
     try:
         raw = page.evaluate(_DISCOVER_CANDIDATES_JS) or []
-        return [x for x in raw if isinstance(x, dict)]
+        out = [x for x in raw if isinstance(x, dict)]
+        for c in out:
+            if not str(c.get("player_name") or "").strip():
+                inferred = infer_player_name_from_card_text(str(c.get("card_text_sample") or ""))
+                if inferred:
+                    c["player_name"] = inferred
+                    c["name_inferred_from_card"] = True
+        return out
     except Exception as exc:
         return [{"error": str(exc)[:200]}]
 
@@ -250,6 +307,84 @@ def _mutation_proven(before: list[str], after: list[str], player_name: str) -> b
     return pn in after_l and pn not in before_l
 
 
+def _scroll_player_list(page) -> None:
+    try:
+        page.evaluate(
+            """() => {
+              function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { if (f.contentDocument) r.push(f.contentDocument);} catch(e){} } return r; }
+              for (const root of roots()) {
+                try { root.defaultView && root.defaultView.scrollTo(0, 400); } catch(e){}
+              }
+            }"""
+        )
+    except Exception:
+        pass
+
+
+def _ensure_named_candidates(page, *, min_players: int, wait_s: float = 50.0) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Expand player surfaces until enough named Add-to-Queue rows exist."""
+    from stage1_active_queue_surface import try_activate_queue_player_surface
+
+    attempts: list[dict[str, Any]] = []
+    t_end = time.time() + wait_s
+    last: list[dict[str, Any]] = []
+    while time.time() < t_end:
+        last = discover_player_add_candidates(page)
+        unnamed = [c for c in last if not str(c.get("player_name") or "").strip()]
+        named = [c for c in last if str(c.get("player_name") or "").strip()]
+        by_name: dict[str, dict[str, Any]] = {}
+        for c in named:
+            key = str(c.get("player_name")).strip().lower()
+            if key not in by_name:
+                by_name[key] = c
+        if len(by_name) >= min_players:
+            return last, attempts
+        attempts.append(
+            {
+                "named_count": len(by_name),
+                "button_count": len(last),
+                "unnamed_button_count": len(unnamed),
+                "ts": time.time(),
+            }
+        )
+        try_activate_queue_player_surface(page, record_per_step=False)
+        _scroll_player_list(page)
+        page.wait_for_timeout(2200)
+    return last, attempts
+
+
+def wait_for_min_add_to_queue_controls(
+    page,
+    *,
+    min_controls: int = 3,
+    timeout_s: float = 90.0,
+    start_val: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Poll player surfaces until enough Add-to-Queue controls are visible to seed."""
+    from stage1_active_queue_surface import scrape_frame_aware_active_observation, try_activate_queue_player_surface
+
+    start_val = dict(start_val or {})
+    attempts: list[dict[str, Any]] = []
+    t_end = time.time() + timeout_s
+    last_count = 0
+    while time.time() < t_end:
+        obs = scrape_frame_aware_active_observation(page, start_val=start_val)
+        last_count = int(obs.get("add_to_queue_button_count") or 0)
+        attempts.append(
+            {
+                "add_to_queue_button_count": last_count,
+                "board_rows": obs.get("board_rows"),
+                "ts": time.time(),
+            }
+        )
+        if last_count >= min_controls:
+            return {"ok": True, "add_to_queue_button_count": last_count, "attempts": attempts, "observation": obs}
+        try_activate_queue_player_surface(page, start_val=start_val, record_per_step=False)
+        _scroll_player_list(page)
+        page.wait_for_timeout(2500)
+    return {"ok": False, "add_to_queue_button_count": last_count, "attempts": attempts}
+
+
 def seed_queue_distinct_players(
     page,
     *,
@@ -260,12 +395,28 @@ def seed_queue_distinct_players(
     """Identify distinct players, click once each, prove mutation before continuing."""
     t0 = time.time()
     before_all = _snapshot_queue(page, scrape_container_fn)
-    candidates = discover_player_add_candidates(page)
+    control_wait = wait_for_min_add_to_queue_controls(page, min_controls=min_players, timeout_s=90.0)
+    if not control_wait.get("ok"):
+        return {
+            "ok": False,
+            "classification": QUEUE1E,
+            "seed_steps": [],
+            "candidates_discovered": 0,
+            "distinct_named_candidates": 0,
+            "add_control_wait": control_wait,
+            "min_players_required": min_players,
+            "queue_excerpt_before": before_all.get("excerpt"),
+            "queue_container": before_all.get("container"),
+            "elapsed_s": time.time() - t0,
+        }
+    candidates, expand_attempts = _ensure_named_candidates(page, min_players=min_players, wait_s=30.0)
     by_name: dict[str, dict[str, Any]] = {}
     ambiguous: list[dict[str, Any]] = []
+    unnamed_buttons = 0
     for c in candidates:
         name = str(c.get("player_name") or "").strip()
         if not name:
+            unnamed_buttons += 1
             continue
         key = name.lower()
         if key in by_name:
@@ -274,12 +425,17 @@ def seed_queue_distinct_players(
         by_name[key] = c
     distinct = list(by_name.values())
     if len(distinct) < min_players:
+        classification = QUEUE1B if unnamed_buttons and len(candidates) >= min_players else QUEUE1E
         return {
             "ok": False,
-            "classification": QUEUE1E,
+            "classification": classification,
             "seed_steps": [],
             "candidates_discovered": len(candidates),
             "distinct_named_candidates": len(distinct),
+            "unnamed_add_buttons": unnamed_buttons,
+            "candidate_expand_attempts": expand_attempts,
+            "add_control_wait": control_wait,
+            "candidate_debug": candidates[:8],
             "min_players_required": min_players,
             "queue_excerpt_before": before_all.get("excerpt"),
             "queue_container": before_all.get("container"),

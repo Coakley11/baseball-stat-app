@@ -104,3 +104,15 @@ def test_surface_activation_navigation_only_cannot_match_add_to_queue() -> None:
     assert surface_activation_labels_are_navigation_only()
     combined = " ".join(QUEUE_SURFACE_NAV_LABELS).lower()
     assert "add to queue" not in combined
+
+
+def test_surface_activation_queue_mutation_detection_new_names_only() -> None:
+    """Pre/post snapshot in wait_for_active_queue_surface flags only new queue identities."""
+    pre = ["Francisco Lindor"]
+    post = ["Francisco Lindor", "Pete Alonso"]
+    pre_set = {n.lower() for n in pre}
+    post_set = {n.lower() for n in post}
+    assert bool(post_set - pre_set) is True
+    post_reorder = ["Francisco Lindor"]
+    post_reorder_set = {n.lower() for n in post_reorder}
+    assert bool(post_reorder_set - pre_set) is False

@@ -218,6 +218,15 @@ def main() -> int:
             print(json.dumps({"ok": False, "classification": report["classification"], "room_id": room_id}))
             return 2
         surf_mut = bool((active.get("timing") or {}).get("surface_activation_queue_mutation"))
+        from stage1_queue_seed_harness import wait_for_min_add_to_queue_controls
+
+        add_wait = wait_for_min_add_to_queue_controls(
+            page,
+            min_controls=3,
+            timeout_s=90.0,
+            start_val=gate_start,
+        )
+        report["add_control_wait"] = add_wait
         queue_meta = queue_populate_deliberate(
             page,
             min_players=3,
