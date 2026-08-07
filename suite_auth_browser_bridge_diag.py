@@ -1,4 +1,13 @@
-"""Non-secret Supabase browser-auth bridge diagnostics (ledger + probes)."""
+"""Non-secret Supabase browser-auth bridge diagnostics (ledger + probes).
+
+Intended bridge semantics (durability contract):
+- Reusable across multiple independent browser/Streamlit contexts that share ``suite_sid``.
+- Bound to opaque ``item_key`` (= suite_sid), not a single Streamlit session id.
+- Not consume-on-read: lookup and readback are side-effect free.
+- Invalidated only by explicit sign-out, confirmed token rejection, security mismatch,
+  or configured TTL expiration — not by transient restore/hydration failure.
+- ``expires_at`` in payload is advisory; row ``valid`` flag is authoritative until TTL enforcement.
+"""
 
 from __future__ import annotations
 
@@ -38,6 +47,45 @@ def supabase_environment_fingerprint() -> dict[str, Any]:
         "lookup_app": _AUTH_BROWSER_APP,
         "lookup_item_type": _AUTH_SESSION_ITEM_TYPE,
     }
+
+
+def _stable_hash(value: str, *, nbytes: int = 8) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[: nbytes * 2]
+
+
+def _deployment_sha() -> str:
+    try:
+        from suite_deploy_marker import resolve_git_commit_short
+
+        return str(resolve_git_commit_short() or "")[:7]
+    except Exception:
+        return ""
+
+
+def _session_diag_ids(session_state: dict[str, Any] | None, st: Any | None) -> dict[str, str]:
+    out = {"streamlit_session_id": "", "diagnostic_run_id": ""}
+    try:
+        from live_draft_auth_prestart_stage1_diag import _streamlit_session_id, ensure_stage1_run_id
+
+        out["streamlit_session_id"] = str(_streamlit_session_id() or "")[:64]
+        if session_state is not None:
+            out["diagnostic_run_id"] = str(ensure_stage1_run_id(session_state) or "")[:64]
+    except Exception:
+        pass
+    return out
+
+
+def _env_fingerprint_match(current: dict[str, Any], stored: dict[str, Any] | None) -> str:
+    if not stored:
+        return "not_compared"
+    cur_url = str(current.get("url_fingerprint") or "")
+    st_url = str(stored.get("url_fingerprint") or "")
+    if not cur_url or not st_url:
+        return "incomplete"
+    return "match" if cur_url == st_url else "mismatch"
 
 
 def _payload_token_flags(payload: Any) -> dict[str, bool]:
@@ -196,18 +244,55 @@ def emit_bridge_mutation(
     reason: str = "",
     prior_row_id: str = "",
     resulting_row_id: str = "",
+    prior_valid: bool | None = None,
+    new_valid: bool | None = None,
+    mutation_type: str = "",
+    invalidation_reason: str = "",
+    caller: str = "",
+    auth_user_id: str = "",
+    token_flags: dict[str, bool] | None = None,
+    expires_at_present: bool | None = None,
+    environment_fingerprint_result: str = "",
     st: Any | None = None,
 ) -> None:
+    import time
+
+    env = supabase_environment_fingerprint()
+    ids = _session_diag_ids(session_state, st)
+    uid = str(auth_user_id or "").strip()
+    if not uid:
+        try:
+            uid = str(session_state.get("_suite_auth_user_id") or "").strip()
+        except Exception:
+            uid = ""
+    flags = token_flags or {}
     emit_bridge_storage_checkpoint(
         session_state,
         "browser_auth_bridge_mutation",
         st=st,
         extra={
+            "mutation_type": str(mutation_type or operation or "")[:40],
             "operation": str(operation or "")[:40],
             "suite_sid_prefix": sid[:8] if sid else "",
-            "reason": str(reason or "")[:120],
+            "item_key_hash": _stable_hash(sid),
+            "row_id_prefix": str(prior_row_id or resulting_row_id or "")[:8],
             "prior_row_id": str(prior_row_id or "")[:64],
             "resulting_row_id": str(resulting_row_id or "")[:64],
-            "environment": supabase_environment_fingerprint(),
+            "auth_user_id_present": bool(uid),
+            "auth_user_id_hash": _stable_hash(uid),
+            "prior_valid": prior_valid,
+            "new_valid": new_valid,
+            "reason": str(reason or "")[:120],
+            "invalidation_reason": str(invalidation_reason or reason or "")[:120],
+            "caller": str(caller or "")[:80],
+            "streamlit_session_id": ids.get("streamlit_session_id", ""),
+            "diagnostic_run_id": ids.get("diagnostic_run_id", ""),
+            "deployment_sha": _deployment_sha(),
+            "mutation_ts": time.time(),
+            "access_token_present": bool(flags.get("access_token_present")),
+            "refresh_token_present": bool(flags.get("refresh_token_present")),
+            "expires_at_present": expires_at_present,
+            "environment_fingerprint_result": str(environment_fingerprint_result or "")[:32],
+            "environment": env,
         },
     )

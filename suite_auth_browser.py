@@ -205,20 +205,38 @@ def save_browser_auth_tokens(
     )
 
 
-def clear_browser_auth_tokens(st: Any) -> None:
+def clear_browser_auth_tokens(
+    st: Any,
+    *,
+    reason: str = "clear_browser_auth_tokens",
+    caller: str = "clear_browser_auth_tokens",
+) -> None:
     sid = _session_id_from_st(st)
     if sid:
         try:
-            from suite_auth_browser_bridge_diag import emit_bridge_mutation
+            from suite_auth_browser_bridge_diag import emit_bridge_mutation, probe_browser_auth_storage
             from suite_storage_supabase import invalidate_browser_auth_session
 
+            probe = probe_browser_auth_storage(sid, use_cache=False)
             inv = invalidate_browser_auth_session(sid)
+            flags = {
+                "access_token_present": bool(probe.get("access_token_present")),
+                "refresh_token_present": bool(probe.get("refresh_token_present")),
+            }
             emit_bridge_mutation(
                 st.session_state,
                 operation="invalidate",
                 sid=sid,
-                reason="clear_browser_auth_tokens",
-                prior_row_id=str(inv.get("prior_row_id") or ""),
+                reason=reason,
+                prior_row_id=str(inv.get("prior_row_id") or probe.get("row_id") or ""),
+                mutation_type="invalidate",
+                invalidation_reason=reason,
+                caller=caller,
+                prior_valid=bool(probe.get("production_row_valid")),
+                new_valid=False,
+                token_flags=flags,
+                expires_at_present=bool(int(probe.get("expires_at") or 0)),
+                environment_fingerprint_result="match",
                 st=st,
             )
         except Exception:

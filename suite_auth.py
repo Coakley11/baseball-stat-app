@@ -742,7 +742,17 @@ def _apply_authenticated_user(
     return apply_ok
 
 
-def _clear_auth_session(session_state: dict[str, Any], *, st: Any | None = None) -> None:
+def _clear_auth_session(
+    session_state: dict[str, Any],
+    *,
+    st: Any | None = None,
+    invalidate_bridge: bool = False,
+) -> None:
+    """Clear in-memory Streamlit auth keys.
+
+    ``invalidate_bridge=True`` only for explicit sign-out (invalidates Supabase browser bridge).
+    Failed restore / hydration must not destroy a reusable bridge row for other contexts.
+    """
     try:
         from live_draft_navigation import clear_private_baseball_simulator_runtime
 
@@ -773,11 +783,15 @@ def _clear_auth_session(session_state: dict[str, Any], *, st: Any | None = None)
         trace_auth_key_pop(session_state, AUTH_START_RERUN_SNAPSHOT_KEY, st=st)
     except ImportError:
         session_state.pop(AUTH_START_RERUN_SNAPSHOT_KEY, None)
-    if st is not None:
+    if st is not None and invalidate_bridge:
         try:
             from suite_auth_browser import clear_browser_auth_tokens
 
-            clear_browser_auth_tokens(st)
+            clear_browser_auth_tokens(
+                st,
+                reason="explicit_sign_out",
+                caller="_clear_auth_session",
+            )
         except ImportError:
             pass
 
@@ -1028,7 +1042,7 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             user_resp = auth.get_user()
             user = _user_from_obj(getattr(user_resp, "user", None))
         if user is None:
-            _clear_auth_session(session_state, st=st)
+            _clear_auth_session(session_state, st=st, invalidate_bridge=False)
             return _finish(False, "user_missing")
         refreshed = _tokens_from_auth_response(resp)
         if refreshed:
@@ -1054,7 +1068,7 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
         if session_state.get(AUTH_JUST_LOGGED_IN_KEY):
             # Workspace sync must not undo a login that just succeeded this session.
             return _finish(bool(auth_session_complete(session_state)), "exception_just_logged_in")
-        _clear_auth_session(session_state, st=st)
+        _clear_auth_session(session_state, st=st, invalidate_bridge=False)
         return _finish(False, f"exception:{type(exc).__name__}")
     # Clamp workspace outside the session-clearing try: a workspace resolution
     # failure must never invalidate an otherwise-valid authenticated session.
@@ -1141,7 +1155,7 @@ def logout(session_state: dict[str, Any], *, st: Any | None = None) -> None:
             auth.sign_out()
     except Exception:
         pass
-    _clear_auth_session(session_state, st=st)
+    _clear_auth_session(session_state, st=st, invalidate_bridge=True)
     session_state.pop(WORKSPACE_USER_SELECTED_KEY, None)
     try:
         from suite_user import reset_account_cache
@@ -2336,7 +2350,7 @@ def login_with_email(
             msg = "Login incomplete — missing user id or session tokens. Try again."
             session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
             session_state[AUTH_LAST_LOGIN_OK_KEY] = False
-            _clear_auth_session(session_state, st=st)
+            _clear_auth_session(session_state, st=st, invalidate_bridge=False)
             return False, msg
         session_state[AUTH_NOTICE_KEY] = "Signed in."
         session_state[AUTH_LAST_LOGIN_OK_KEY] = True
