@@ -544,16 +544,6 @@ _DELIVER_BOUND_CLICK_JS = """({ frameIndex, playerName }) => {
       const prevNames = extractNames(String(card.previousElementSibling.innerText||'').split('\\n').map(x => x.trim()).filter(Boolean));
       if (prevNames.length === 1) return prevNames[0];
     }
-    let walk = btn;
-    for (let depth = 0; depth < 12 && walk; depth++) {
-      walk = walk.parentElement;
-      if (!walk) break;
-      const t = String(walk.innerText||'');
-      if (!/Add to Queue/i.test(t)) continue;
-      if (countVisibleAddQueueIn(walk) > 1) continue;
-      const names = extractNames(t.split('\\n').map(x => x.trim()).filter(Boolean));
-      if (names.length === 1) return names[0];
-    }
     return '';
   }
   const root = roots()[frameIndex];
@@ -565,6 +555,7 @@ _DELIVER_BOUND_CLICK_JS = """({ frameIndex, playerName }) => {
     if (!/Add to Queue/i.test(t)) continue;
     const r = btn.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) continue;
+    if (!isVisibleButton(btn)) continue;
     const bound = uniqueBind(btn);
     if (bound && bound.toLowerCase() === want) {
       btn.scrollIntoView({ block: 'center', inline: 'nearest' });
@@ -695,6 +686,25 @@ def deliver_add_to_queue_click(page, candidate: dict[str, Any]) -> dict[str, Any
     frame = _frame_for_index(page, frame_index)
     escaped = re.escape(name)
     pw_error = ""
+    try:
+        card_scope = frame.locator('[data-testid="stVerticalBlock"]').filter(
+            has=frame.locator(".ld-rec-card-meta").filter(has_text=re.compile(escaped, re.I))
+        )
+        btn = card_scope.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I)).first
+        btn.wait_for(state="attached", timeout=8000)
+        btn.wait_for(state="visible", timeout=8000)
+        if not btn.is_enabled():
+            out["error"] = "button_not_enabled"
+            out["classification"] = "QUEUE1C"
+            return out
+        btn.scroll_into_view_if_needed(timeout=8000)
+        page.wait_for_timeout(350)
+        btn.click(timeout=10000)
+        out["click_dispatched"] = True
+        out["delivery_method"] = "playwright_ld_rec_card_meta_scope"
+        return out
+    except Exception as exc:
+        pw_error = str(exc)[:240]
     try:
         row = frame.locator('[data-testid="stHorizontalBlock"]').filter(has_text=re.compile(escaped, re.I))
         btn = row.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I)).first
