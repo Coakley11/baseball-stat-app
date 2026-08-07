@@ -2175,18 +2175,42 @@ def main() -> int:
 
         goto_and_wake(page, url, timeout_s=240)
         page.wait_for_timeout(15000)
-        try:
-            page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
-            page.wait_for_timeout(3000)
-        except Exception:
-            pass
+        from playwright_auth_bridge_restore_harness import resolve_real_accounts_wake
+
+        real_accounts_wake = resolve_real_accounts_wake(bridge_restore_mode=use_bridge_restore)
+        summary["bridge_hydration_preamble"] = {
+            "real_accounts_wake_enabled": real_accounts_wake,
+            "harness_init_scripts_installed": bool(sink_install.get("installed")),
+            "bridge_restore_mode": use_bridge_restore,
+            "isolated_path_divergence": (
+                "stage1_adds_harness_init_scripts_before_navigation"
+                if use_bridge_restore and sink_install.get("installed")
+                else ""
+            ),
+        }
+        if real_accounts_wake:
+            try:
+                page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
+                page.wait_for_timeout(3000)
+                summary["bridge_hydration_preamble"]["real_accounts_wake_clicked"] = True
+            except Exception:
+                summary["bridge_hydration_preamble"]["real_accounts_wake_clicked"] = False
         if use_bridge_restore:
             from p8_production_start_harness import scrape_stage1_ledger_rows
 
             hydrate_timeout = float(os.environ.get("BRIDGE_HYDRATION_TIMEOUT_S", "240"))
             bridge_pre = wait_bridge_auth_hydrated(
-                page, bridge_sid, scrape_stage1_ledger_rows, timeout_s=hydrate_timeout
+                page,
+                bridge_sid,
+                scrape_stage1_ledger_rows,
+                timeout_s=hydrate_timeout,
+                poll_interval_s=float(os.environ.get("BRIDGE_HYDRATION_POLL_S", "2")),
+                initial_settle_ms=0,
+                preamble_mode="stage1",
             )
+            summary["bridge_hydration"] = bridge_pre
+            if bridge_pre.get("authenticated_restored"):
+                summary["bridge_hydration_verdict"] = "BRIDGE_HYDRATION_PASS"
             pre.update(bridge_pre)
             summary["auth_preflight"] = pre
             summary["authenticated_restored"] = bool(bridge_pre.get("authenticated_restored"))

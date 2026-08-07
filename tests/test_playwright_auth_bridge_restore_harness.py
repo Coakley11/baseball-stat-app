@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from playwright_auth_bridge_restore_harness import (  # noqa: E402
     bridge_preflight_rejects_stale_session,
     resolve_bridge_suite_sid,
+    resolve_real_accounts_wake,
 )
 
 
@@ -81,6 +82,13 @@ class BridgeRestoreHarnessTests(unittest.TestCase):
             ),
             "",
         )
+
+
+    def test_real_accounts_wake_bridge_default_off(self) -> None:
+        import os
+
+        os.environ.pop("BRIDGE_RESTORE_REAL_ACCOUNTS_WAKE", None)
+        self.assertFalse(resolve_real_accounts_wake(bridge_restore_mode=True))
 
 
 if __name__ == "__main__":

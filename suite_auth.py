@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from typing import Any
 
 AUTH_ENABLED_ENV = "SUITE_AUTH_ENABLED"
@@ -924,6 +925,12 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
     """
     auth_before = bool(is_authenticated(session_state)) if is_auth_enabled() else True
     session_state["_suite_auth_last_restore_attempted"] = True
+    try:
+        seq = int(session_state.get("_suite_auth_restore_attempt_seq") or 0) + 1
+    except (TypeError, ValueError):
+        seq = 1
+    session_state["_suite_auth_restore_attempt_seq"] = seq
+    restore_attempt_ts = time.time()
 
     def _finish(ok: bool, reason: str = "") -> bool:
         session_state["_suite_auth_last_restore_ok"] = bool(ok)
@@ -937,6 +944,10 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
                 authenticated_before=auth_before,
                 authenticated_after=bool(is_authenticated(session_state)) if is_auth_enabled() else True,
                 skip_or_failure_reason=reason,
+                extra={
+                    "restore_attempt_seq": int(session_state.get("_suite_auth_restore_attempt_seq") or 0),
+                    "restore_attempt_exit_ts": time.time(),
+                },
             )
         except ImportError:
             pass
@@ -951,6 +962,10 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             st=st,
             authenticated_before=auth_before,
             hydration_attempted=True,
+            extra={
+                "restore_attempt_seq": seq,
+                "restore_attempt_entry_ts": restore_attempt_ts,
+            },
         )
         if st is not None:
             try:
@@ -1065,6 +1080,12 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             pass
     except Exception as exc:
         session_state[AUTH_LAST_RESTORE_ERROR_KEY] = str(exc)
+        try:
+            from suite_auth_restore_diag import emit_restore_auth_exception_checkpoint
+
+            emit_restore_auth_exception_checkpoint(session_state, exc, phase="set_session", st=st)
+        except ImportError:
+            pass
         if session_state.get(AUTH_JUST_LOGGED_IN_KEY):
             # Workspace sync must not undo a login that just succeeded this session.
             return _finish(bool(auth_session_complete(session_state)), "exception_just_logged_in")
