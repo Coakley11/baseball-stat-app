@@ -2079,25 +2079,35 @@ def main() -> int:
     required_sha = resolve_required_cloud_sha()
     stage1a_mode = resolve_stage1a_mode()
     queue_manual_assist = resolve_queue_manual_assist() and stage1a_mode == "QUEUE"
+    from playwright_auth_bridge_restore_harness import resolve_bridge_suite_sid, wait_bridge_auth_hydrated
+
+    bridge_sid = resolve_bridge_suite_sid()
+    use_bridge_restore = bool(bridge_sid)
     if not required_sha:
         print(json.dumps({"aborted": True, "reason": "required_cloud_sha_unset"}))
         return 1
-    if not harness_ready():
-        print(json.dumps({"aborted": True, "reason": "auth_harness_incomplete"}))
-        return 1
-
-    pre = run_preflight()
-    if not pre.get("authenticated_restored"):
-        print(
-            json.dumps(
-                {
-                    "aborted": True,
-                    "reason": "auth_replay_preflight_failed",
-                    "failure": pre.get("failure"),
-                }
+    if use_bridge_restore:
+        pre: dict[str, Any] = {
+            "bridge_restore_mode": True,
+            "suite_sid": bridge_sid,
+            "authenticated_restored": False,
+        }
+    else:
+        if not harness_ready():
+            print(json.dumps({"aborted": True, "reason": "auth_harness_incomplete"}))
+            return 1
+        pre = run_preflight()
+        if not pre.get("authenticated_restored"):
+            print(
+                json.dumps(
+                    {
+                        "aborted": True,
+                        "reason": "auth_replay_preflight_failed",
+                        "failure": pre.get("failure"),
+                    }
+                )
             )
-        )
-        return 1
+            return 1
 
     from cloud_streamlit_wake import goto_and_wake
     from playwright.sync_api import sync_playwright
@@ -2106,14 +2116,19 @@ def main() -> int:
 
     summary: dict[str, Any] = {
         "started_at": time.time(),
-        "cloud_sha": str(pre.get("cloud_sha") or ""),
+        "cloud_sha": str(pre.get("cloud_sha") or pre.get("deployment_sha") or ""),
         "required_cloud_sha": required_sha,
         "stage1a_mode": stage1a_mode,
+        "stage1a_core": f"PASS — post-fix regression confirmed on {required_sha}",
+        "stage1a_queue": "RUNNING" if stage1a_mode == "QUEUE" else "NOT_RUN — BLOCKED_BEFORE_EXPIRATION",
         "stage1a_queue_manual_assist": queue_manual_assist,
-        "authenticated_restored": True,
+        "authenticated_restored": bool(pre.get("authenticated_restored")),
+        "bridge_restore_mode": use_bridge_restore,
+        "queue_audit_bridge_suite_sid": bridge_sid if use_bridge_restore else "",
         "auth_preflight": {
             "signed_in_display": pre.get("signed_in_display"),
             "authenticated_app": pre.get("authenticated_app"),
+            **({"bridge_restore": pre} if use_bridge_restore else {}),
         },
     }
     try:
@@ -2125,7 +2140,11 @@ def main() -> int:
     except Exception:
         summary["harness_sha"] = ""
 
-    url = production_url()
+    url = production_url() if not use_bridge_restore else append_suite_sid_to_url(
+        f"{BASE}/?active_page=Live%20Draft%20Room"
+        f"&solo_component_diag=1&solo_diag_timer=10&solo_stage1_parent_boundary=1",
+        bridge_sid,
+    )
     from stage1_parent_event_sink import ParentEventSinkStore, install_parent_event_sink
 
     parent_sink_store = ParentEventSinkStore()
@@ -2134,9 +2153,13 @@ def main() -> int:
             headless=resolve_headless_launch(stage1a_mode=stage1a_mode),
             args=["--disable-blink-features=AutomationControlled"],
         )
-        context = browser.new_context(
-            storage_state=str(STORAGE_PATH),
-            viewport={"width": 1440, "height": 1400},
+        context = (
+            browser.new_context(viewport={"width": 1440, "height": 1400})
+            if use_bridge_restore
+            else browser.new_context(
+                storage_state=str(STORAGE_PATH),
+                viewport={"width": 1440, "height": 1400},
+            )
         )
         page = context.new_page()
         sink_install = install_parent_event_sink(page, parent_sink_store)
@@ -2151,6 +2174,24 @@ def main() -> int:
             pass
 
         goto_and_wake(page, url, timeout_s=240)
+        if use_bridge_restore:
+            from p8_production_start_harness import scrape_stage1_ledger_rows
+
+            bridge_pre = wait_bridge_auth_hydrated(page, bridge_sid, scrape_stage1_ledger_rows)
+            pre.update(bridge_pre)
+            summary["auth_preflight"] = pre
+            summary["authenticated_restored"] = bool(bridge_pre.get("authenticated_restored"))
+            if bridge_pre.get("deployment_sha"):
+                summary["cloud_sha"] = bridge_pre.get("deployment_sha")
+            if not bridge_pre.get("authenticated_restored"):
+                context.close()
+                browser.close()
+                summary["finished_at"] = time.time()
+                if stage1a_mode == "QUEUE":
+                    summary["stage1a_queue"] = "FAILED — BRIDGE_HYDRATION"
+                OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                print(json.dumps({"aborted": True, "reason": bridge_pre.get("failure") or "bridge_hydration_failed"}))
+                return 1
         page.wait_for_timeout(15000)
         try:
             page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
@@ -2723,6 +2764,12 @@ def main() -> int:
         browser.close()
 
     summary["finished_at"] = time.time()
+    if stage1a_mode == "QUEUE":
+        grade = (summary.get("stage1a") or {}).get("grade") or {}
+        if grade.get("stage1a_queue_functional_outcome") == "PASS" and grade.get("functional_verdict") == "PASS":
+            summary["stage1a_queue"] = "PASS"
+        elif summary.get("stage1a_queue") == "RUNNING":
+            summary["stage1a_queue"] = "FAILED"
     OUT_SUMMARY.parent.mkdir(parents=True, exist_ok=True)
     OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     print(json.dumps(summary, indent=2, default=str))

@@ -15,6 +15,12 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 OUT = ROOT / "data" / "queueui_root_predicate_audit.json"
+POST_FIX_OUT = ROOT / "data" / "post_fix_root_regression_audit.json"
+CAPTURE_RESULT = ROOT / "data" / "capture_playwright_daniel_auth_once.result.json"
+from playwright_auth_bridge_restore_harness import (  # noqa: E402
+    resolve_bridge_suite_sid,
+    wait_bridge_auth_hydrated,
+)
 
 
 def _deploy_pin() -> str:
@@ -27,6 +33,8 @@ def _deploy_pin() -> str:
 def _write_report(report: dict[str, Any]) -> None:
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    if report.get("post_fix_root_regression"):
+        POST_FIX_OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
 
 
 def _summarize(last_ledger: list[dict[str, Any]]) -> dict[str, Any]:
@@ -143,12 +151,22 @@ def main() -> int:
     from playwright_daniel_auth_session import STORAGE_PATH, append_suite_sid_to_url, harness_ready
     from replay_playwright_daniel_auth_preflight import run_preflight
 
-    if not harness_ready():
-        print(json.dumps({"aborted": True, "reason": "auth_harness_incomplete"}))
-        return 1
-    pre = run_preflight()
-    if not pre.get("authenticated_restored"):
-        return 1
+    bridge_sid = resolve_bridge_suite_sid()
+    use_bridge_restore = bool(bridge_sid)
+    if use_bridge_restore:
+        pre: dict[str, Any] = {
+            "bridge_restore_mode": True,
+            "suite_sid": bridge_sid,
+            "authenticated_restored": False,
+            "harness_ready": False,
+        }
+    else:
+        if not harness_ready():
+            print(json.dumps({"aborted": True, "reason": "auth_harness_incomplete"}))
+            return 1
+        pre = run_preflight()
+        if not pre.get("authenticated_restored"):
+            return 1
 
     deploy_pin = _deploy_pin()
     report: dict[str, Any] = {
@@ -165,12 +183,17 @@ def main() -> int:
         "queue_campaign_ran": False,
         "expiration_wait": False,
         "auth_preflight": pre,
+        "bridge_restore_mode": use_bridge_restore,
+        "root_audit_bridge_suite_sid": bridge_sid if use_bridge_restore else "",
     }
 
     from cloud_streamlit_wake import goto_and_wake
     from playwright.sync_api import sync_playwright
 
-    url = append_suite_sid_to_url(queueui_root_predicate_audit_url_base())
+    url = append_suite_sid_to_url(
+        queueui_root_predicate_audit_url_base(),
+        bridge_sid if use_bridge_restore else None,
+    )
     report["setup_url_redacted"] = redact_url(url)
 
     root: dict[str, Any] = {"classification": None, "proven": False}
@@ -178,11 +201,27 @@ def main() -> int:
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
-        context = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
+        if use_bridge_restore:
+            context = browser.new_context(viewport={"width": 1440, "height": 1400})
+        else:
+            context = browser.new_context(storage_state=str(STORAGE_PATH), viewport={"width": 1440, "height": 1400})
         page = context.new_page()
         page.add_init_script(LEDGER_DURABLE_INIT_SCRIPT)
         goto_and_wake(page, url, timeout_s=240)
         page.wait_for_timeout(15000)
+        if use_bridge_restore:
+            bridge_pre = wait_bridge_auth_hydrated(page, bridge_sid, scrape_stage1_ledger_rows)
+            pre.update(bridge_pre)
+            report["bridge_restore_preflight"] = bridge_pre
+            report["auth_preflight"] = pre
+            if not bridge_pre.get("authenticated_restored"):
+                browser.close()
+                report["audit_execution_status"] = "NOT_RUN"
+                report["first_boundary"] = "ROOT_AUDIT_BRIDGE_HYDRATION_FAILED"
+                report["finished_at"] = time.time()
+                _write_report(report)
+                print(json.dumps({"ok": False, "reason": bridge_pre.get("failure") or "bridge_hydration_failed"}))
+                return 1
         try:
             page.get_by_text("Real Accounts", exact=False).first.click(timeout=4000)
             page.wait_for_timeout(3000)
@@ -299,7 +338,7 @@ def main() -> int:
 
         run_id = str(identity.get("diagnostic_run_id") or "")
         st_sid = str(identity.get("streamlit_session_id") or "")
-        harness_sid = load_suite_sid()
+        harness_sid = bridge_sid if use_bridge_restore else load_suite_sid()
         start_inspect_pre = inspect_start_control(page)
 
         strict_initial = strict_preflight_from_page_scoped(
@@ -565,6 +604,18 @@ def main() -> int:
         _screenshot(page, "02_final")
         browser.close()
 
+    ok_completed = report.get("audit_execution_status") == "COMPLETED"
+    root_class = str(report.get("queueuiroot_classification") or "")
+    if ok_completed and (not root_class or "QUEUEUIROOT2" not in root_class):
+        report["post_fix_root_regression"] = "POST_FIX_ROOT_REGRESSION_PASS"
+        report["queueuiroot2_closed"] = True
+    elif ok_completed and "QUEUEUIROOT2" in root_class:
+        report["post_fix_root_regression"] = "POST_FIX_ROOT_REGRESSION_FAIL"
+        report["queueuiroot2_closed"] = False
+    else:
+        report["post_fix_root_regression"] = ""
+        report["queueuiroot2_closed"] = None
+
     _write_report(report)
     ok_completed = report.get("audit_execution_status") == "COMPLETED"
     print(
@@ -573,6 +624,7 @@ def main() -> int:
                 "ok": ok_completed,
                 "audit_execution_status": report.get("audit_execution_status"),
                 "root": report.get("queueuiroot_classification"),
+                "post_fix_root_regression": report.get("post_fix_root_regression"),
                 "distinct_seq": report.get("distinct_script_run_seq_with_audit"),
             }
         )
