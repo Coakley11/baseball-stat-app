@@ -154,6 +154,15 @@ def _strict_poll(page, *, target_sid: str, scrape_ledger) -> dict[str, Any]:
         start_visible=bool(start.get("visible")),
         paired_authenticated=paired,
         signed_in_display=signed_in,
+        current_auth_dom=(obs.get("checkpoint") or {}).get("current_auth_dom")
+        if obs
+        else None,
+        diagnostic_run_id=str((obs.get("checkpoint") or {}).get("diagnostic_run_id") or "")[:64]
+        if obs
+        else "",
+        streamlit_session_id=str((obs.get("checkpoint") or {}).get("streamlit_session_id") or "")[:36]
+        if obs
+        else "",
     )
     if obs:
         from playwright_auth_observability import apply_observability_to_strict_summary
@@ -321,6 +330,9 @@ def _finalize_exit(
         payload["auth_session_finalization"] = auth_finalize_class
         payload["auth_finalize_detail"] = auth_finalize_detail
         identity["auth_login_classification"] = ""
+    if strict_capture and strict_capture.get("auth_finalize_diag"):
+        payload["auth_finalize_diag"] = strict_capture.get("auth_finalize_diag")
+        payload["auth_finalize_diag_detail"] = strict_capture.get("auth_finalize_diag_detail")
     artifact = write_result_artifact(payload if code != 0 else {**payload, "ok": True, "failure": ""})
     stdout: dict[str, Any] = {
         "ok": code == 0,

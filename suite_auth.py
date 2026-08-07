@@ -707,6 +707,13 @@ def _apply_authenticated_user(
         except ImportError:
             pass
     apply_ok = bool(auth_session_complete(session_state)) if is_auth_enabled() else True
+    if apply_ok:
+        try:
+            from live_draft_state import reconcile_live_draft_auth_restore_block
+
+            reconcile_live_draft_auth_restore_block(session_state)
+        except ImportError:
+            pass
     try:
         from live_draft_auth_prestart_stage1_diag import arm_prestart_mutation_trace, emit_prestart_hydration_checkpoint
         from live_draft_auth_finalize_stage1_diag import emit_apply_write_checkpoint

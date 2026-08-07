@@ -65,6 +65,27 @@ def _bridge_lookup_status(session: dict[str, Any]) -> str:
     return "unknown"
 
 
+def restore_block_observability_fields(session: dict[str, Any], *, auth_on: bool) -> dict[str, Any]:
+    """Current vs historical restore-block fields for DOM and ledger (no secrets)."""
+    try:
+        from live_draft_state import reconcile_live_draft_auth_restore_block
+
+        reconcile_live_draft_auth_restore_block(session)
+    except ImportError:
+        pass
+    current = str(session.get("_live_draft_restore_blocked_reason") or "").strip()[:80]
+    if auth_on and bool(auth_session_complete(session)) and bool(is_authenticated(session)):
+        current = ""
+    last_reason = str(session.get("_live_draft_last_restore_failure_reason") or "").strip()[:80]
+    last_seq = int(session.get("_live_draft_last_restore_failure_seq") or 0)
+    return {
+        "current_restore_blocked_reason": current,
+        "last_restore_failure_reason": last_reason,
+        "last_restore_failure_seq": last_seq,
+        "restore_blocked_reason": current,
+    }
+
+
 def build_current_auth_state_payload(
     session: dict[str, Any],
     *,
@@ -75,6 +96,7 @@ def build_current_auth_state_payload(
     """Non-secret current auth snapshot for DOM export."""
     access, refresh = _token_presence(session)
     auth_on = bool(is_auth_enabled())
+    restore_fields = restore_block_observability_fields(session, auth_on=auth_on)
     return {
         "deployment_sha": str(session.get("_solo_stage1_deployment_sha") or "")[:7],
         "streamlit_session_id": _streamlit_session_id(),
@@ -90,7 +112,7 @@ def build_current_auth_state_payload(
         "auth_session_complete": bool(auth_session_complete(session)) if auth_on else True,
         "auth_hydration_source": str(session.get("_suite_auth_last_hydration_source") or "")[:64],
         "bridge_lookup_status": _bridge_lookup_status(session)[:40],
-        "restore_blocked_reason": str(session.get("_live_draft_restore_blocked_reason") or "")[:80],
+        **restore_fields,
         "start_visible": bool(start_visible),
         "start_enabled": bool(start_enabled),
         "probe_ts": time.time(),

@@ -117,7 +117,10 @@ _PROBE_CURRENT_AUTH_JS = """
       auth_session_complete: b("data-auth-session-complete"),
       auth_hydration_source: b("data-auth-hydration-source"),
       bridge_lookup_status: b("data-bridge-lookup-status"),
-      restore_blocked_reason: b("data-restore-blocked-reason"),
+      current_restore_blocked_reason: b("data-current-restore-blocked-reason"),
+      last_restore_failure_reason: b("data-last-restore-failure-reason"),
+      last_restore_failure_seq: parseInt(el.getAttribute("data-last-restore-failure-seq") || "0", 10) || 0,
+      restore_blocked_reason: b("data-current-restore-blocked-reason") || b("data-restore-blocked-reason"),
       start_visible: b("data-start-visible"),
       start_enabled: b("data-start-enabled"),
     };
@@ -232,7 +235,12 @@ def probe_dom_current_state_checkpoint(page, *, start_surface: dict[str, Any] | 
         "ledger_row_count_attr": int(dom.get("row_count_attr") or 0),
         "probe_checkpoint": str(dom.get("probe_checkpoint") or "")[:40],
         "diagnostic_query_flags": flags,
-        "restore_blocked_reason": str(current_auth.get("restore_blocked_reason") or "")[:80],
+        "restore_blocked_reason": str(
+            current_auth.get("current_restore_blocked_reason")
+            or current_auth.get("restore_blocked_reason")
+            or ""
+        )[:80],
+        "current_restore_blocked_reason": str(current_auth.get("current_restore_blocked_reason") or "")[:80],
         "is_authenticated": is_auth,
         "auth_session_complete": auth_complete,
         "session_flag_present": session_flag,
@@ -269,9 +277,24 @@ def scrape_ledger_with_surface_binding(page, *, start_surface: dict[str, Any] | 
         )
     ]
     before_start = next(
-        (r for r in reversed(rows) if str(r.get("event") or "") == "production_stage1_auth_state_before_start_control"),
+        (
+            r
+            for r in reversed(rows)
+            if str(r.get("event") or "") == "production_stage1_auth_state_before_start_control"
+        ),
         None,
     )
+    # Prefer newest before_start row by script sequence (not list tail).
+    if rows:
+        from playwright_auth_preflight_strict import _latest_before_start_row
+
+        latest_bs = _latest_before_start_row(
+            rows,
+            diagnostic_run_id=str(ledger_run or "")[:64],
+            streamlit_session_id=str(ledger_session or "")[:36],
+        )
+        if latest_bs:
+            before_start = latest_bs
     max_event_index = 0
     for r in rows:
         eid = str(r.get("event_id") or "")
@@ -430,8 +453,26 @@ def session_binding_mismatch(binding: dict[str, Any], checkpoint: dict[str, Any]
 
 
 def enrich_checkpoint_from_ledger(checkpoint: dict[str, Any], ledger_bind: dict[str, Any]) -> dict[str, Any]:
-    """Only set auth fields from explicit before_start row on bound ledger."""
+    """Prefer bound #solo-stage1-current-auth-state over stale ledger before_start rows."""
     cp = dict(checkpoint)
+    dom = cp.get("current_auth_dom") if isinstance(cp.get("current_auth_dom"), dict) else {}
+    dom_bound = bool(str(dom.get("streamlit_session_id") or "").strip())
+    if dom_bound:
+        for key in (
+            "is_authenticated",
+            "auth_session_complete",
+            "session_flag_present",
+            "auth_hydration_source",
+            "bridge_lookup_status",
+            "current_restore_blocked_reason",
+            "restore_blocked_reason",
+        ):
+            if key in dom and dom.get(key) not in (None, ""):
+                cp[key] = dom.get(key)
+        cur = str(dom.get("current_restore_blocked_reason") or dom.get("restore_blocked_reason") or "").strip()
+        cp["current_restore_blocked_reason"] = cur[:80]
+        cp["restore_blocked_reason"] = cur[:80]
+        return cp
     row = ledger_bind.get("before_start_row")
     if isinstance(row, dict):
         cp["is_authenticated"] = tri_state_from_row(row, "is_authenticated")
@@ -441,7 +482,9 @@ def enrich_checkpoint_from_ledger(checkpoint: dict[str, Any], ledger_bind: dict[
             cp["session_flag_present"] = bool(prot.get("session_flag_present"))
         elif "session_flag_present" in row:
             cp["session_flag_present"] = bool(row.get("session_flag_present"))
-        cp["restore_blocked_reason"] = str(row.get("restore_blocked_reason") or "")[:80]
+        cur = str(row.get("current_restore_blocked_reason") or row.get("restore_blocked_reason") or "").strip()
+        cp["current_restore_blocked_reason"] = cur[:80]
+        cp["restore_blocked_reason"] = cur[:80]
     return cp
 
 

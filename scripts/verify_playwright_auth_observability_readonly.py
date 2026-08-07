@@ -142,6 +142,8 @@ def run_verify(*, headed: bool | None = None) -> dict:
                 "bridge_lookup_status": cp.get("bridge_lookup_status"),
                 "current_auth_dom": current_auth_dom,
                 "session_binding_failure": obs.get("session_binding_failure"),
+                "_obs_ledger_rows": obs.get("ledger_rows_for_eval") or [],
+                "_obs_checkpoint": cp,
             }
         )
         context.close()
@@ -161,14 +163,27 @@ def run_verify(*, headed: bool | None = None) -> dict:
         result["auth_observability_classification"] = result["final_observability_classification"]
         return result
 
-    ok = (
-        result.get("start_enabled")
-        and result.get("url_suite_sid_match")
+    from playwright_auth_current_state_eval import (
+        bound_state_passes_observability_resolved,
+        evaluate_bound_current_auth_state,
+    )
+
+    cp = result.get("_obs_checkpoint") or {}
+    current_auth_dom = result.get("current_auth_dom") if isinstance(result.get("current_auth_dom"), dict) else {}
+    bound = evaluate_bound_current_auth_state(
+        current_auth_dom=current_auth_dom,
+        ledger_rows=result.get("_obs_ledger_rows") or [],
+        diagnostic_run_id=str(cp.get("diagnostic_run_id") or "")[:64],
+        streamlit_session_id=str(cp.get("streamlit_session_id") or "")[:36],
+        start_enabled=bool(cp.get("start_enabled")),
+        start_visible=bool(cp.get("start_visible")),
+    )
+    result["bound_current_auth"] = bound
+    result["bound_field_sources"] = bound.get("field_sources")
+
+    ok = bound_state_passes_observability_resolved(bound) and (
+        result.get("url_suite_sid_match")
         and not result.get("session_binding_failure")
-        and cp.get("is_authenticated") is True
-        and cp.get("auth_session_complete") is True
-        and cp.get("session_flag_present") is True
-        and not str(cp.get("restore_blocked_reason") or "").strip()
     )
     if ok:
         result["pass"] = True
@@ -190,8 +205,10 @@ def run_verify(*, headed: bool | None = None) -> dict:
         return result
 
     result["failure"] = result.get("session_binding_failure") or "binding_or_auth_not_proven"
-    result["final_observability_classification"] = obs.get("auth_observability_classification") or "AUTH_OBSERVABILITY8"
+    result["final_observability_classification"] = result.get("auth_observability_classification") or "AUTH_OBSERVABILITY8"
     result["auth_observability_classification"] = result["final_observability_classification"]
+    result.pop("_obs_ledger_rows", None)
+    result.pop("_obs_checkpoint", None)
     return result
 
 

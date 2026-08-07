@@ -96,8 +96,25 @@ def evaluate_strict_capture(
     paired_authenticated: bool | None,
     signed_in_display: bool = False,
     restore_blocked_reason: str = "",
+    current_auth_dom: dict[str, Any] | None = None,
+    diagnostic_run_id: str = "",
+    streamlit_session_id: str = "",
 ) -> dict[str, Any]:
     """All conditions required before writing harness auth files."""
+    from playwright_auth_current_state_eval import (
+        bound_state_passes_observability_resolved,
+        evaluate_bound_current_auth_state,
+        resolve_auth_finalize_failure,
+    )
+
+    bound = evaluate_bound_current_auth_state(
+        current_auth_dom=current_auth_dom,
+        ledger_rows=ledger_rows,
+        diagnostic_run_id=diagnostic_run_id,
+        streamlit_session_id=streamlit_session_id,
+        start_enabled=start_enabled,
+        start_visible=start_visible,
+    )
     out: dict[str, Any] = {
         "target_sid_prefix": target_sid[:8] if target_sid else "",
         "url_sid_prefix": url_sid[:8] if url_sid else "",
@@ -106,12 +123,16 @@ def evaluate_strict_capture(
         "strict_auth_passed": False,
         "start_enabled": bool(start_enabled),
         "start_visible": bool(start_visible),
-        "auth_session_complete": False,
-        "is_authenticated": False,
-        "session_flag_present": False,
-        "restore_blocked_reason": restore_blocked_reason or _restore_blocked_from_ledger(ledger_rows),
+        "auth_session_complete": bound.get("auth_session_complete"),
+        "is_authenticated": bound.get("is_authenticated"),
+        "session_flag_present": bound.get("session_flag_present"),
+        "restore_blocked_reason": str(bound.get("current_restore_blocked_reason") or "")[:80],
+        "current_restore_blocked_reason": str(bound.get("current_restore_blocked_reason") or "")[:80],
         "failure": "",
         "bridge_persistence": {},
+        "bound_field_sources": bound.get("field_sources"),
+        "auth_finalize_diag": "",
+        "auth_finalize_diag_detail": "",
     }
     if not target_sid:
         out["failure"] = "target_suite_sid_missing"
@@ -133,14 +154,27 @@ def evaluate_strict_capture(
         start_visible=start_visible,
         paired_authenticated=paired_authenticated,
         load_reason=load_reason,
+        diagnostic_run_id=diagnostic_run_id,
+        streamlit_session_id=streamlit_session_id,
+        current_auth_dom=current_auth_dom,
     )
     out.update(
         {
-            "hydration_source": base.get("hydration_source") or "",
-            "apply_authenticated_user_ok": bool(base.get("apply_authenticated_user_ok")),
+            "hydration_source": base.get("hydration_source") or bound.get("auth_hydration_source") or "",
+            "apply_authenticated_user_ok": bound.get("apply_authenticated_user_ok")
+            if bound.get("apply_authenticated_user_ok") is not None
+            else base.get("apply_authenticated_user_ok"),
             "bridge_lookup": base.get("bridge_lookup"),
         }
     )
+
+    resolved_failure, diag_class, diag_detail = resolve_auth_finalize_failure(
+        bound,
+        legacy_strict=base,
+        prior_failure=str(base.get("failure") or ""),
+    )
+    out["auth_finalize_diag"] = diag_class
+    out["auth_finalize_diag_detail"] = diag_detail
 
     persist = bridge_persistence_proof(ledger_rows, target_sid=target_sid)
     out["bridge_persistence"] = persist
@@ -149,33 +183,47 @@ def evaluate_strict_capture(
 
     apply_row = _last_hydration(ledger_rows, "apply_authenticated_user_exit")
     before_start = _before_start_row(ledger_rows)
-    session_flag = _flag_from_row(apply_row, "session_flag_present") or _flag_from_row(
-        before_start, "session_flag_present"
-    )
-    auth_complete = _flag_from_row(before_start, "auth_session_complete") or bool(
-        base.get("streamlit_auth_complete")
-    )
-    if before_start:
-        out["session_flag_present"] = session_flag
-        out["is_authenticated"] = _flag_from_row(before_start, "is_authenticated") or session_flag
-        out["auth_session_complete"] = auth_complete
-    else:
-        out["session_flag_present"] = None
+    session_flag = bound.get("session_flag_present")
+    if session_flag is None:
+        session_flag = _flag_from_row(apply_row, "session_flag_present") or _flag_from_row(
+            before_start, "session_flag_present"
+        )
+    auth_complete = bound.get("auth_session_complete")
+    if auth_complete is None:
+        auth_complete = _flag_from_row(before_start, "auth_session_complete") or bool(
+            base.get("streamlit_auth_complete")
+        )
+    is_auth = bound.get("is_authenticated")
+    if is_auth is None:
+        is_auth = _flag_from_row(before_start, "is_authenticated") or session_flag
+    out["session_flag_present"] = session_flag
+    out["is_authenticated"] = is_auth
+    out["auth_session_complete"] = auth_complete
+    if (bound.get("field_sources") or {}).get("is_authenticated") == "not_observed":
         out["is_authenticated"] = None
         out["auth_session_complete"] = None
+        out["session_flag_present"] = None
         out["auth_state_observability"] = "not_observed"
 
     if signed_in_display and not base.get("streamlit_auth_complete") and not load_row:
         out["failure"] = CAPTURE_FAIL_SIGNED_IN_ONLY
         return out
 
-    if base.get("failure"):
+    if base.get("failure") and not resolved_failure:
         out["failure"] = str(base["failure"])
         if out["failure"] == PREFLIGHT_FAIL_START_DISABLED and persist.get("persistence_succeeded"):
             out["failure"] = CAPTURE_FAIL_SESSION_FINALIZE
         elif out["failure"] == PREFLIGHT_FAIL_STREAMLIT_INCOMPLETE and persist.get("persistence_succeeded"):
-            out["failure"] = CAPTURE_FAIL_SESSION_FINALIZE
-        return out
+            if bound_state_passes_observability_resolved(bound):
+                out["failure"] = ""
+            else:
+                out["failure"] = CAPTURE_FAIL_SESSION_FINALIZE
+        if out["failure"]:
+            return out
+    elif base.get("failure") and resolved_failure:
+        out["failure"] = resolved_failure
+        if out["failure"]:
+            return out
 
     if not session_flag:
         out["failure"] = CAPTURE_FAIL_SESSION_FLAG
@@ -191,14 +239,18 @@ def evaluate_strict_capture(
         out["failure"] = CAPTURE_FAIL_BRIDGE_PERSIST
         return out
 
-    rb = str(out.get("restore_blocked_reason") or "").strip().lower()
-    if rb == "auth_required":
+    rb = str(out.get("current_restore_blocked_reason") or out.get("restore_blocked_reason") or "").strip().lower()
+    if rb == "auth_required" and not bound_state_passes_observability_resolved(bound):
         out["failure"] = CAPTURE_FAIL_RESTORE_AUTH_REQUIRED
         return out
 
-    out["bridge_persisted"] = True
-    out["strict_auth_passed"] = True
-    out["failure"] = ""
+    if bound_state_passes_observability_resolved(bound) and persist.get("persistence_succeeded"):
+        out["bridge_persisted"] = True
+        out["strict_auth_passed"] = True
+        out["failure"] = ""
+        return out
+
+    out["failure"] = CAPTURE_FAIL_SESSION_FINALIZE
     return out
 
 

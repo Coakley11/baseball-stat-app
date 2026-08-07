@@ -100,6 +100,22 @@ def arm_prestart_mutation_trace(session: dict[str, Any], *, reason: str = "") ->
         session["_solo_auth_prestart_trace_arm_reason"] = str(reason)[:120]
 
 
+def _restore_block_ledger_fields(session: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from live_draft_stage1_current_auth_state import restore_block_observability_fields
+
+        auth_on = bool(is_auth_enabled())
+        return restore_block_observability_fields(session, auth_on=auth_on)
+    except ImportError:
+        current = str(session.get("_live_draft_restore_blocked_reason") or "").strip()[:80]
+        return {
+            "current_restore_blocked_reason": current,
+            "last_restore_failure_reason": str(session.get("_live_draft_last_restore_failure_reason") or "")[:80],
+            "last_restore_failure_seq": int(session.get("_live_draft_last_restore_failure_seq") or 0),
+            "restore_blocked_reason": current,
+        }
+
+
 def emit_prestart_hydration_checkpoint(
     session: dict[str, Any],
     checkpoint: str,
@@ -122,7 +138,7 @@ def emit_prestart_hydration_checkpoint(
             "suite_sid_present": _suite_sid_present(st),
             "auth_hydration_source": str(session.get("_suite_auth_last_hydration_source") or ""),
             "warm_workspace_skip": bool(session.get("_baseball_warm_startup_skipped")),
-            "restore_blocked_reason": str(session.get("_live_draft_restore_blocked_reason") or ""),
+            **_restore_block_ledger_fields(session),
             "hydration_attempted": hydration_attempted,
             "hydration_skipped": hydration_skipped,
             "skip_or_failure_reason": str(skip_or_failure_reason or "")[:120],
@@ -239,7 +255,7 @@ def emit_auth_state_before_start_control(
             "auth_hydration_source": str(session.get("_suite_auth_last_hydration_source") or ""),
             "auth_session_validation_ok": bool(auth_session_complete(session)) if is_auth_enabled() else True,
             "warm_workspace_skip": bool(session.get("_baseball_warm_startup_skipped")),
-            "restore_blocked_reason": str(session.get("_live_draft_restore_blocked_reason") or ""),
+            **_restore_block_ledger_fields(session),
             "restore_attempted_last": restore_attempted,
             "restore_accepted_last": restore_ok,
             "start_button_enabled": start_button_enabled,

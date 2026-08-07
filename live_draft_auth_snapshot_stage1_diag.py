@@ -354,7 +354,16 @@ def trace_auth_key_set(session: dict[str, Any], key: str, *, st: Any | None = No
 def trace_restore_blocked_reason(session: dict[str, Any], reason: str, *, st: Any | None = None) -> None:
     key = "_live_draft_restore_blocked_reason"
     before = bool(str(session.get(key) or "").strip())
-    session[key] = str(reason or "")
+    blocked = str(reason or "").strip()
+    session[key] = blocked
+    if blocked:
+        session["_live_draft_last_restore_failure_reason"] = blocked[:80]
+        try:
+            from live_draft_stage1_production_ledger import STAGE1_SCRIPT_SEQ_KEY
+
+            session["_live_draft_last_restore_failure_seq"] = int(session.get(STAGE1_SCRIPT_SEQ_KEY) or 0)
+        except ImportError:
+            pass
     fn, ln = _caller_location()
     note_auth_state_mutation(
         session,

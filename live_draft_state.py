@@ -245,18 +245,37 @@ def should_preserve_in_session_room_on_auth_blocked_restore(
     return False
 
 
+def _archive_restore_block_as_historical(session: dict[str, Any], reason: str) -> None:
+    """Preserve last restore failure for diagnostics; do not keep it as the active latch."""
+    blocked = str(reason or "").strip()
+    if not blocked:
+        return
+    session["_live_draft_last_restore_failure_reason"] = blocked[:80]
+    try:
+        from live_draft_stage1_production_ledger import STAGE1_SCRIPT_SEQ_KEY
+
+        session["_live_draft_last_restore_failure_seq"] = int(session.get(STAGE1_SCRIPT_SEQ_KEY) or 0)
+    except ImportError:
+        session["_live_draft_last_restore_failure_seq"] = 0
+
+
 def reconcile_live_draft_auth_restore_block(session: dict[str, Any]) -> bool:
     """Drop stale auth_required restore latch after genuine authentication is present."""
     blocked = str(session.get("_live_draft_restore_blocked_reason") or "").strip()
     if blocked not in _AUTH_BLOCKED_RESTORE_REASONS:
         return False
     try:
-        from suite_auth import is_auth_enabled, is_authenticated
+        from suite_auth import auth_session_complete, is_auth_enabled, is_authenticated
     except ImportError:
         return False
     if not is_auth_enabled() or not is_authenticated(session):
         return False
     blob = canonical_live_draft(session)
+    if blocked == "auth_required" and auth_session_complete(session):
+        if not isinstance(blob, dict) or not blob.get("draft_room_id"):
+            _archive_restore_block_as_historical(session, blocked)
+            session.pop("_live_draft_restore_blocked_reason", None)
+            return True
     allowed, _reason = live_draft_restore_allowed(
         session,
         blob if isinstance(blob, dict) else None,
@@ -264,6 +283,7 @@ def reconcile_live_draft_auth_restore_block(session: dict[str, Any]) -> bool:
     )
     if not allowed:
         return False
+    _archive_restore_block_as_historical(session, blocked)
     session.pop("_live_draft_restore_blocked_reason", None)
     return True
 
