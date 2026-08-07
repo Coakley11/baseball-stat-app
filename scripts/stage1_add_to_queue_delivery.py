@@ -98,8 +98,35 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
     }
     return n;
   }
+  function bindFromColumn(btn) {
+    const col = btn.closest('[data-testid="stColumn"]');
+    if (!col || !col.parentElement) return null;
+    const cols = Array.from(col.parentElement.children).filter(
+      (c) => c.getAttribute && c.getAttribute('data-testid') === 'stColumn'
+    );
+    const idx = cols.indexOf(col);
+    if (idx <= 0) return null;
+    for (let i = idx - 1; i >= 0; i--) {
+      const t = String(cols[i].innerText || '');
+      const names = extractNames(t.split('\\n').map((x) => x.trim()).filter(Boolean));
+      if (names.length === 1) {
+        return {
+          confidence: 'unique',
+          player_name: names[0],
+          names,
+          container_depth: -1,
+          container_sample: t.slice(0, 280),
+          binding_via: 'stColumn_left',
+        };
+      }
+      if (names.length > 1) break;
+    }
+    return null;
+  }
   function bindPlayerName(btn) {
     let best = { confidence: 'missing', player_name: '', names: [], container_depth: -1, container_sample: '' };
+    const colBind = bindFromColumn(btn);
+    if (colBind) return colBind;
     const row = btn.closest('[data-testid="stHorizontalBlock"]');
     if (row) {
       const cols = Array.from(row.querySelectorAll('[data-testid="stVerticalBlock"]'));
@@ -290,6 +317,25 @@ _DELIVER_BOUND_CLICK_JS = """({ frameIndex, playerName }) => {
     return n;
   }
   function uniqueBind(btn) {
+    const col = btn.closest('[data-testid="stColumn"]');
+    if (col && col.parentElement) {
+      const cols = Array.from(col.parentElement.children).filter(
+        (c) => c.getAttribute && c.getAttribute('data-testid') === 'stColumn'
+      );
+      const idx = cols.indexOf(col);
+      if (idx > 0) {
+        for (let i = idx - 1; i >= 0; i--) {
+          const names = extractNames(
+            String(cols[i].innerText || '')
+              .split('\\n')
+              .map((x) => x.trim())
+              .filter(Boolean)
+          );
+          if (names.length === 1) return names[0];
+          if (names.length > 1) break;
+        }
+      }
+    }
     const row = btn.closest('[data-testid="stHorizontalBlock"]');
     if (row) {
       const cols = Array.from(row.querySelectorAll('[data-testid="stVerticalBlock"]'));
@@ -454,6 +500,23 @@ def deliver_add_to_queue_click(page, candidate: dict[str, Any]) -> dict[str, Any
     frame = _frame_for_index(page, frame_index)
     escaped = re.escape(name)
     pw_error = ""
+    try:
+        row = frame.locator('[data-testid="stHorizontalBlock"]').filter(has_text=re.compile(escaped, re.I))
+        btn = row.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I)).first
+        btn.wait_for(state="attached", timeout=8000)
+        btn.wait_for(state="visible", timeout=8000)
+        if not btn.is_enabled():
+            out["error"] = "button_not_enabled"
+            out["classification"] = "QUEUE1C"
+            return out
+        btn.scroll_into_view_if_needed(timeout=8000)
+        page.wait_for_timeout(350)
+        btn.click(timeout=10000)
+        out["click_dispatched"] = True
+        out["delivery_method"] = "playwright_stHorizontalBlock_player_row"
+        return out
+    except Exception as exc:
+        pw_error = str(exc)[:240]
     try:
         block = frame.locator('[data-testid="stVerticalBlock"]').filter(has_text=re.compile(escaped, re.I))
         btn = block.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I)).first
