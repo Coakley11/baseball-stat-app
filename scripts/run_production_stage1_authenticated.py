@@ -44,6 +44,15 @@ def resolve_stage1a_mode() -> str:
     return "FULL"
 
 
+def resolve_solo_diag_timer(*, stage1a_mode: str) -> str:
+    env = str(os.environ.get("STAGE1A_SOLO_DIAG_TIMER") or os.environ.get("SOLO_DIAG_TIMER") or "").strip()
+    if env:
+        return env
+    if stage1a_mode == "QUEUE":
+        return "120"
+    return "10"
+
+
 def resolve_queue_manual_assist() -> bool:
     return str(os.environ.get("STAGE1A_QUEUE_MANUAL_ASSIST") or "").strip().lower() in (
         "1",
@@ -94,9 +103,11 @@ def ensure_fresh_setup_lobby(page, *, max_wait_s: int = 180) -> dict[str, Any]:
 
 
 def production_url() -> str:
+    mode = resolve_stage1a_mode()
+    timer = resolve_solo_diag_timer(stage1a_mode=mode)
     base = (
         f"{BASE}/?active_page=Live%20Draft%20Room"
-        f"&solo_component_diag=1&solo_diag_timer=10&solo_stage1_parent_boundary=1"
+        f"&solo_component_diag=1&solo_diag_timer={timer}&solo_stage1_parent_boundary=1"
     )
     return append_suite_sid_to_url(base)
 
@@ -1712,13 +1723,22 @@ def scrape_active_live_page_observation(page, *, start_val: dict[str, Any] | Non
         or mount.get("key")
         or (iframe.get("countdown_iframe") or {}).get("href")
     )
+    counts = dom_counts(page)
     hint = _queue_button_player_hint(page, 0)
+    pick_index = state.get("pick")
+    if pick_index in (None, ""):
+        from stage1_queue_harness_flow import parse_pick_index_from_expire_token
+
+        parsed = parse_pick_index_from_expire_token(pick0_tok)
+        if parsed is not None:
+            pick_index = parsed
     return {
         "visible_room_id": visible_room,
-        "pick_index": state.get("pick"),
+        "pick_index": pick_index,
         "pick0_token_ui": pick0_tok,
         "pick0_deadline_ui": pick0_deadline,
-        "pause_draft_count": int(dom_counts(page).get("Pause Draft") or 0),
+        "pause_draft_count": int(counts.get("Pause Draft") or 0),
+        "resume_draft_count": int(counts.get("Resume Draft") or 0),
         "board_rows": state.get("boardRows"),
         "add_to_queue_button_count": int(hint.get("total") or 0),
         "countdown_or_timer_present": countdown_present,
@@ -1732,6 +1752,7 @@ def wait_for_active_live_page_gate(
     *,
     start_val: dict[str, Any],
     timeout_s: float = 120.0,
+    while_paused: bool = False,
 ) -> dict[str, Any]:
     from stage1_harness_observability import evaluate_active_live_page_gate
 
@@ -1739,7 +1760,7 @@ def wait_for_active_live_page_gate(
     last_eval: dict[str, Any] = {"passed": False, "checks": {}}
     while time.time() < t_end:
         obs = scrape_active_live_page_observation(page, start_val=start_val)
-        last_eval = evaluate_active_live_page_gate(obs, start_val=start_val)
+        last_eval = evaluate_active_live_page_gate(obs, start_val=start_val, while_paused=while_paused)
         if last_eval.get("passed"):
             last_eval["observation"] = obs
             return last_eval
@@ -1797,6 +1818,38 @@ def _abort_queue_precondition(
     OUT_QUEUE.write_text(json.dumps(summary["stage1a"], indent=2, default=str), encoding="utf-8")
     print(json.dumps(summary["stage1a"], indent=2, default=str))
     return 2
+
+
+def queue_setup_pause_for_seeding(page) -> dict[str, Any]:
+    """Pause live draft timer before deliberate queue seeding (QUEUE harness)."""
+    from run_production_solo_soak import dom_counts
+
+    out: dict[str, Any] = {"attempted": True, "paused": False, "resume_attempted": False, "resumed": False}
+    try:
+        page.get_by_role("button", name=re.compile(r"Pause Draft", re.I)).first.click(timeout=6000)
+        page.wait_for_timeout(2000)
+        counts = dom_counts(page)
+        out["paused"] = int(counts.get("Resume Draft") or 0) >= 1 or True
+        out["resume_draft_count_after_pause"] = int(counts.get("Resume Draft") or 0)
+        out["pause_draft_count_after_pause"] = int(counts.get("Pause Draft") or 0)
+    except Exception as exc:
+        out["pause_error"] = type(exc).__name__
+    return out
+
+
+def queue_setup_resume_after_seeding(page) -> dict[str, Any]:
+    out: dict[str, Any] = {"attempted": True, "resumed": False}
+    for label in (r"Resume Draft", r"Resume", r"Unpause"):
+        try:
+            page.get_by_role("button", name=re.compile(label, re.I)).first.click(timeout=4000)
+            page.wait_for_timeout(1500)
+            out["resumed"] = True
+            out["resume_label"] = label
+            return out
+        except Exception:
+            continue
+    out["resume_error"] = "no_resume_control"
+    return out
 
 
 def queue_populate_deliberate(page, *, min_players: int = 3) -> dict[str, Any]:
@@ -1881,9 +1934,15 @@ def scrape_queue_container_state(page) -> dict[str, Any]:
               const t = best.t;
               const empty = /Queue empty|Empty — add players|Empty - add players/i.test(t);
               const players = [];
+              const skipLine = /^(Draft queue|Clear Draft Queue|Watchlist|Empty|Tracked players|Recently viewed|Command Center|keyboard_arrow|solo-deploy|Stop$|Fork$|✕|×)/i;
+              const nameOnly = /^[A-Z][A-Za-z .'-]{2,48}$/;
               for (const line of t.split('\\n').map(x=>x.trim()).filter(Boolean)) {
                 const m = line.match(/^([A-Za-z][A-Za-z .\\'-]{2,60})\\s+[—\\-–]\\s+(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)/);
-                if (m && !/Draft queue|Clear Draft Queue|Watchlist|Empty/i.test(m[1])) players.push({name: m[1].trim(), slot: m[2]});
+                if (m && !/Draft queue|Clear Draft Queue|Watchlist|Empty/i.test(m[1])) {
+                  players.push({name: m[1].trim(), slot: m[2]});
+                  continue;
+                }
+                if (nameOnly.test(line) && !skipLine.test(line)) players.push({name: line.trim(), slot: ''});
               }
               return {found: true, empty: empty && players.length===0, players: players.slice(0,8), excerpt: t.slice(0,600)};
             }"""
@@ -2142,7 +2201,8 @@ def main() -> int:
 
     url = production_url() if not use_bridge_restore else append_suite_sid_to_url(
         f"{BASE}/?active_page=Live%20Draft%20Room"
-        f"&solo_component_diag=1&solo_diag_timer=10&solo_stage1_parent_boundary=1",
+        f"&solo_component_diag=1&solo_diag_timer={resolve_solo_diag_timer(stage1a_mode=stage1a_mode)}"
+        f"&solo_stage1_parent_boundary=1",
         bridge_sid,
     )
     from stage1_parent_event_sink import ParentEventSinkStore, install_parent_event_sink
@@ -2466,9 +2526,40 @@ def main() -> int:
                 QUEUEUI1,
                 verify_manual_queue_capture,
             )
+            from stage1_queue_harness_flow import (
+                QUEUE_SETUP_ORDER_AFTER_START,
+                build_queue_evidence_hierarchy,
+                pick_index_zero_from_observation,
+            )
 
-            gate_timeout = 300.0 if queue_manual_assist else 120.0
-            active_gate = wait_for_active_live_page_gate(page, start_val=start_val, timeout_s=gate_timeout)
+            summary["queue_setup_order"] = list(QUEUE_SETUP_ORDER_AFTER_START)
+            room_id = str(start_val.get("latched_room_id") or "")
+            summary["queue_post_start_pick0"] = freeze_pick0_transaction(page, room_id=room_id)
+
+            immediate_pause = queue_setup_pause_for_seeding(page)
+            summary["queue_immediate_pause_after_start"] = immediate_pause
+            if not immediate_pause.get("paused"):
+                context.close()
+                browser.close()
+                summary["finished_at"] = time.time()
+                OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                return _abort_queue_precondition(
+                    summary,
+                    first_boundary=QUEUEUI1,
+                    reason="immediate_pause_after_start_failed",
+                    stage1a_mode=stage1a_mode,
+                )
+
+            gate_timeout = 300.0 if queue_manual_assist else 90.0
+            active_gate = wait_for_active_live_page_gate(
+                page,
+                start_val=start_val,
+                timeout_s=gate_timeout,
+                while_paused=True,
+            )
+            obs = dict(active_gate.get("observation") or {})
+            obs["harness_post_pause"] = True
+            active_gate["observation"] = obs
             summary["active_live_page_gate"] = active_gate
             if not active_gate.get("passed"):
                 context.close()
@@ -2528,9 +2619,36 @@ def main() -> int:
                 queue_meta = queue_populate_deliberate(page, min_players=3)
                 queue_meta["stage1a_mode"] = "QUEUE"
                 queue_meta["queue_excerpt_before"] = queue_text(page)
-                queue_meta["queue_contains_player"] = queue_seed_satisfied(queue_meta)
-                queue_meta["grading"] = "QUEUE_DELIBERATE" if queue_meta.get("queue_contains_player") else "QUEUE_NOT_PROVEN"
-                if not queue_meta.get("queue_contains_player") or len(queue_meta.get("queue_order") or []) < 3:
+                queue_meta["queue_evidence"] = build_queue_evidence_hierarchy(queue_meta, min_players=3)
+                queue_meta["queue_contains_player"] = bool(queue_meta["queue_evidence"].get("queue_setup_proven"))
+                queue_meta["grading"] = (
+                    "QUEUE_DELIBERATE"
+                    if queue_meta.get("queue_contains_player")
+                    else (
+                        "HARNESS_SCRAPER_GAP"
+                        if queue_meta["queue_evidence"].get("harness_scraper_observation_gap")
+                        else "QUEUE_NOT_PROVEN"
+                    )
+                )
+                pick_after = freeze_pick0_transaction(page, room_id=room_id)
+                queue_meta["pick_index_after_queue_setup"] = pick_after
+                obs_after = scrape_active_live_page_observation(page, start_val=start_val)
+                queue_meta["pick_index_zero_after_setup"] = pick_index_zero_from_observation(obs_after)
+                if not queue_meta.get("pick_index_zero_after_setup"):
+                    context.close()
+                    browser.close()
+                    summary["finished_at"] = time.time()
+                    summary["queue_seed"] = queue_meta
+                    OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                    return _abort_queue_precondition(
+                        summary,
+                        first_boundary=QUEUEUI1,
+                        reason="pick_index_advanced_during_paused_queue_setup",
+                        active_live_page_gate=active_gate,
+                        queue_meta=queue_meta,
+                        stage1a_mode=stage1a_mode,
+                    )
+                if not queue_meta.get("queue_contains_player"):
                     context.close()
                     browser.close()
                     summary["finished_at"] = time.time()
@@ -2544,6 +2662,14 @@ def main() -> int:
                         stage1a_mode=stage1a_mode,
                     )
                 if not queue_meta.get("autopick_differs_from_top_queue"):
+                    top_name = str((queue_meta.get("top_queued_player") or {}).get("name") or "")
+                    vis = queue_meta["queue_evidence"].get("visible_queue_player_names") or []
+                    if vis:
+                        queue_meta["top_queued_player"] = {"name": vis[0]}
+                        queue_meta["autopick_differs_from_top_queue"] = _names_differ(
+                            str(expected_autopick.get("name") or ""), vis[0]
+                        )
+                if not queue_meta.get("autopick_differs_from_top_queue"):
                     context.close()
                     browser.close()
                     summary["finished_at"] = time.time()
@@ -2556,6 +2682,21 @@ def main() -> int:
                         queue_meta=queue_meta,
                         stage1a_mode=stage1a_mode,
                     )
+                queue_meta["queue_setup_resume"] = queue_setup_resume_after_seeding(page)
+                if not queue_meta["queue_setup_resume"].get("resumed"):
+                    context.close()
+                    browser.close()
+                    summary["finished_at"] = time.time()
+                    OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                    return _abort_queue_precondition(
+                        summary,
+                        first_boundary=QUEUEUI1,
+                        reason="resume_after_queue_setup_failed",
+                        active_live_page_gate=active_gate,
+                        queue_meta=queue_meta,
+                        stage1a_mode=stage1a_mode,
+                    )
+                summary["queue_seed"] = queue_meta
 
             queue_meta["pick0_freeze"] = freeze_pick0_transaction(
                 page, room_id=str(start_val.get("latched_room_id") or "")

@@ -119,3 +119,91 @@ def test_top_queue_must_differ_from_expected_autopick() -> None:
     v = verify_manual_queue_capture(meta, min_players=3)
     assert v["ok"] is False
     assert v["first_boundary"] == QUEUE6
+
+
+def test_queue_setup_order_pause_before_active_gate() -> None:
+    from stage1_queue_harness_flow import QUEUE_SETUP_ORDER_AFTER_START
+
+    steps = list(QUEUE_SETUP_ORDER_AFTER_START)
+    assert steps.index("immediate_pause") < steps.index("active_page_gate_while_paused")
+    assert steps.index("active_page_gate_while_paused") < steps.index("queue_seed_while_paused")
+    assert steps.index("queue_verification_while_paused") < steps.index("resume_after_queue_proven")
+    assert steps.index("resume_after_queue_proven") < steps.index("wait_real_expiration")
+
+
+def test_gate_while_paused_allows_frozen_deadline() -> None:
+    obs = _obs_pass()
+    obs["pick0_deadline_ui"] = ""
+    obs["pause_draft_count"] = 0
+    obs["resume_draft_count"] = 1
+    ev = evaluate_active_live_page_gate(obs, start_val=_start_val(), while_paused=True)
+    assert ev["checks"]["pick0_deadline_ui_present"] is True
+    assert ev["checks"]["pause_draft_or_live_control"] is True
+
+
+def test_visible_pete_alonso_without_structured_scraper() -> None:
+    from stage1_queue_harness_flow import build_queue_evidence_hierarchy, visible_queue_names_from_excerpt
+
+    excerpt = "Draft queue\n\nPete Alonso\n\n✕\n\nClear Draft Queue\n"
+    assert "Pete Alonso" in visible_queue_names_from_excerpt(excerpt)
+    meta = {
+        "add_actions": [{"clicked": True}, {"clicked": True}, {"clicked": True}],
+        "queue_excerpt_before": excerpt,
+        "queue_order": [],
+        "queue_container": {"players": []},
+    }
+    ev = build_queue_evidence_hierarchy(meta, min_players=3)
+    assert ev["deliberate_add_clicks_succeeded"] is True
+    assert ev["visible_queue_satisfied"] is False  # only one visible name in excerpt
+    meta["add_actions"] = [{"clicked": True}] * 3
+    meta["queue_excerpt_before"] = "Draft queue\n\nPete Alonso\n\nA Two\n\nB Three\n\nClear Draft Queue\n"
+    ev2 = build_queue_evidence_hierarchy(meta, min_players=3)
+    assert ev2["queue_setup_proven"] is True
+    assert ev2["harness_scraper_observation_gap"] is True
+
+
+def test_scraper_gap_does_not_equal_app_failure_classification() -> None:
+    from stage1_queue_harness_flow import build_queue_evidence_hierarchy
+
+    meta = {
+        "add_actions": [{"clicked": True}] * 3,
+        "queue_excerpt_before": "Draft queue\n\nPete Alonso\n\nX Y\n\nZ W\n\nClear Draft Queue\n",
+        "queue_order": [],
+        "queue_container": {"players": []},
+    }
+    ev = build_queue_evidence_hierarchy(meta, min_players=3)
+    assert ev["harness_scraper_observation_gap"] is True
+    assert ev["queue_setup_proven"] is True
+
+
+def test_resolve_solo_diag_timer_queue_vs_core() -> None:
+    import importlib.util
+    import os
+    import sys
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "run_production_stage1_authenticated.py"
+    spec = importlib.util.spec_from_file_location("run_production_stage1_authenticated_timer", path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    saved = {
+        k: os.environ.pop(k, None)
+        for k in ("STAGE1A_SOLO_DIAG_TIMER", "SOLO_DIAG_TIMER", "STAGE1A_MODE")
+    }
+    try:
+        spec.loader.exec_module(mod)
+        assert mod.resolve_solo_diag_timer(stage1a_mode="CORE") == "10"
+        assert mod.resolve_solo_diag_timer(stage1a_mode="QUEUE") == "120"
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+
+def test_pick_index_parsed_from_token_when_ui_null() -> None:
+    from stage1_queue_harness_flow import parse_pick_index_from_expire_token, pick_index_zero_from_observation
+
+    assert parse_pick_index_from_expire_token("ABCD|0|123.4") == 0
+    assert parse_pick_index_from_expire_token("ABCD|1|123.4") == 1
+    obs = {"pick_index": None, "pick0_token_ui": "ROOM|0|999.0"}
+    assert pick_index_zero_from_observation(obs) is True

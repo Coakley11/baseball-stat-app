@@ -1375,6 +1375,7 @@ def evaluate_active_live_page_gate(
     observation: dict[str, Any],
     *,
     start_val: dict[str, Any],
+    while_paused: bool = False,
 ) -> dict[str, Any]:
     """All checks must pass; server latch alone is insufficient."""
     start_val = dict(start_val or {})
@@ -1388,6 +1389,7 @@ def evaluate_active_live_page_gate(
     pick0_tok_ui = str(obs.get("pick0_token_ui") or "").strip()
     pick0_deadline_ui = str(obs.get("pick0_deadline_ui") or "").strip()
     pause = int(obs.get("pause_draft_count") or 0)
+    resume = int(obs.get("resume_draft_count") or 0)
     try:
         board_rows = int(obs.get("board_rows") or 0)
     except (TypeError, ValueError):
@@ -1398,18 +1400,25 @@ def evaluate_active_live_page_gate(
     if not in_progress and start_val.get("room_latch_pass"):
         in_progress = True
     token_room_ok = False
+    pick_zero = pick_i == 0
+    if not pick_zero and pick0_tok_ui:
+        from stage1_queue_harness_flow import parse_pick_index_from_expire_token
+
+        pick_zero = parse_pick_index_from_expire_token(pick0_tok_ui) == 0
     if latched and pick0_tok_ui:
         token_room_ok = latched in pick0_tok_ui.upper()
+    paused_control = resume >= 1 or (while_paused and bool(obs.get("harness_post_pause")))
+    live_control = pause >= 1 or paused_control
     checks = {
         "latched_room_visible_agrees": bool(latched) and visible == latched,
         "room_in_progress": in_progress,
-        "pick_index_zero": pick_i == 0,
+        "pick_index_zero": pick_zero,
         "pick0_token_ui_present": bool(pick0_tok_ui) and token_room_ok,
-        "pick0_deadline_ui_present": bool(pick0_deadline_ui),
-        "pause_draft_or_live_control": pause >= 1,
+        "pick0_deadline_ui_present": bool(pick0_deadline_ui) or while_paused,
+        "pause_draft_or_live_control": live_control,
         "board_or_recommendation_surface": board_rows >= 1 or add_btns >= 1,
         "add_to_queue_control_present": add_btns >= 1,
-        "countdown_or_timer_declaration": countdown,
+        "countdown_or_timer_declaration": countdown or while_paused,
     }
     passed = all(checks.values())
     return {
