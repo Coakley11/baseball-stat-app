@@ -98,6 +98,27 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
     }
     return n;
   }
+  function bindFromRowTextBeforeButton(btn) {
+    const row = btn.closest('[data-testid="stHorizontalBlock"]');
+    if (!row) return null;
+    if (countAddQueueIn(row) > 1) return null;
+    const full = String(row.innerText || '');
+    const parts = full.split(/\\u2b50\\s*Add to Queue|Add to Queue/i);
+    const head = (parts[0] || '').trim();
+    if (!head) return null;
+    const names = extractNames(head.split('\\n').map((x) => x.trim()).filter(Boolean));
+    if (names.length === 1) {
+      return {
+        confidence: 'unique',
+        player_name: names[0],
+        names,
+        container_depth: -1,
+        container_sample: head.slice(0, 280),
+        binding_via: 'row_text_before_add_button',
+      };
+    }
+    return null;
+  }
   function bindFromColumn(btn) {
     const col = btn.closest('[data-testid="stColumn"]');
     if (!col || !col.parentElement) return null;
@@ -125,6 +146,8 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
   }
   function bindPlayerName(btn) {
     let best = { confidence: 'missing', player_name: '', names: [], container_depth: -1, container_sample: '' };
+    const rowBind = bindFromRowTextBeforeButton(btn);
+    if (rowBind) return rowBind;
     const colBind = bindFromColumn(btn);
     if (colBind) return colBind;
     const row = btn.closest('[data-testid="stHorizontalBlock"]');
