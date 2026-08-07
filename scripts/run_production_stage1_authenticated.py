@@ -1820,20 +1820,21 @@ def _abort_queue_precondition(
     return 2
 
 
-def queue_setup_pause_for_seeding(page) -> dict[str, Any]:
+def queue_setup_pause_for_seeding(page, *, room_id: str = "", latch_completed_ts: float | None = None) -> dict[str, Any]:
     """Pause live draft timer before deliberate queue seeding (QUEUE harness)."""
-    from run_production_solo_soak import dom_counts
+    from p8_proven_pause_delivery import proven_pause_single_click
 
-    out: dict[str, Any] = {"attempted": True, "paused": False, "resume_attempted": False, "resumed": False}
-    try:
-        page.get_by_role("button", name=re.compile(r"Pause Draft", re.I)).first.click(timeout=6000)
-        page.wait_for_timeout(2000)
-        counts = dom_counts(page)
-        out["paused"] = int(counts.get("Resume Draft") or 0) >= 1 or True
-        out["resume_draft_count_after_pause"] = int(counts.get("Resume Draft") or 0)
-        out["pause_draft_count_after_pause"] = int(counts.get("Pause Draft") or 0)
-    except Exception as exc:
-        out["pause_error"] = type(exc).__name__
+    out = proven_pause_single_click(
+        page,
+        room_id=room_id,
+        latch_completed_ts=latch_completed_ts,
+        max_hydration_wait_s=float(__import__("os").environ.get("PAUSE_HYDRATION_WAIT_S", "45")),
+    )
+    out["attempted"] = True
+    out["resume_attempted"] = False
+    out["resumed"] = False
+    if not out.get("paused") and not out.get("pause_error"):
+        out["pause_error"] = out.get("pause_classification") or "pause_not_proven"
     return out
 
 
@@ -2554,16 +2555,24 @@ def main() -> int:
             room_id = str(start_val.get("latched_room_id") or "")
             summary["queue_post_start_pick0"] = freeze_pick0_transaction(page, room_id=room_id)
 
-            immediate_pause = queue_setup_pause_for_seeding(page)
+            latch_ts = time.time()
+            immediate_pause = queue_setup_pause_for_seeding(
+                page,
+                room_id=room_id,
+                latch_completed_ts=latch_ts,
+            )
             summary["queue_immediate_pause_after_start"] = immediate_pause
             if not immediate_pause.get("paused"):
                 context.close()
                 browser.close()
                 summary["finished_at"] = time.time()
                 OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                pause_boundary = str(
+                    immediate_pause.get("pause_classification") or QUEUEUI1
+                )
                 return _abort_queue_precondition(
                     summary,
-                    first_boundary=QUEUEUI1,
+                    first_boundary=pause_boundary,
                     reason="immediate_pause_after_start_failed",
                     stage1a_mode=stage1a_mode,
                 )
