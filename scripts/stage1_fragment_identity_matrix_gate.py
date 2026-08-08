@@ -96,22 +96,10 @@ def click_matrix_control(page, *, label: str, source: str) -> dict[str, Any]:
 
 
 def classify_matrix(steps: list[dict[str, Any]]) -> str:
-    by = {str(s.get("control") or ""): s for s in steps}
-    s0 = bool((by.get("S0") or {}).get("callback_entered"))
-    s1 = bool((by.get("S1") or {}).get("callback_entered"))
-    d0 = bool((by.get("D0") or {}).get("callback_entered"))
-    d1 = bool((by.get("D1") or {}).get("callback_entered"))
-    if not s0:
-        return "FRAGMENT_MATRIX_S0_FAIL"
-    if s0 and s1 and not d0 and not d1:
-        return "FRAGMENT_MATRIX_CASE_I_DYNAMIC_CONSTRUCTION"
-    if s0 and not s1 and d0 and not d1:
-        return "FRAGMENT_MATRIX_CASE_II_RUN_EVERY"
-    if s0 and s1 and d0 and not d1:
-        return "FRAGMENT_MATRIX_CASE_III_DYNAMIC_PLUS_TIMER"
-    if s0 and s1 and d0 and d1:
-        return "FRAGMENT_MATRIX_ALL_CONTROLS_CALLBACK"
-    return "FRAGMENT_MATRIX_MIXED_PARTIAL"
+    from stage1_fragment_matrix_gate_classify import classify_matrix_steps
+
+    case, _note = classify_matrix_steps(steps, expander=None)
+    return case
 
 
 def main() -> int:
