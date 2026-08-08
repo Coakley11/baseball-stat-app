@@ -85,6 +85,38 @@ def _app_frame(page):
     return page.main_frame
 
 
+def rec_fragment_interactive_steady(lifecycle: dict[str, Any]) -> bool:
+    hpd = str(lifecycle.get("heavy_paint_done") or "").strip().lower()
+    if hpd not in ("1", "true"):
+        return False
+    via = str(lifecycle.get("paint_via_probe") or "").strip()
+    return via in ("fragment_interactive_live", "full_page_interactive_live")
+
+
+def wait_for_rec_fragment_interactive_steady_state(
+    page,
+    *,
+    timeout_s: float = 120.0,
+    poll_ms: int = 1000,
+) -> dict[str, Any]:
+    """Wait until deferred heavy paint is done and live interactive path is active (F4 gate precondition)."""
+    deadline = time.time() + max(5.0, float(timeout_s))
+    last = snapshot_fragment_lifecycle(page, stage="wait_steady_initial")
+    attempts = 0
+    while time.time() < deadline:
+        attempts += 1
+        last = snapshot_fragment_lifecycle(page, stage="wait_steady")
+        if rec_fragment_interactive_steady(last):
+            return {"ok": True, "attempts": attempts, "lifecycle": last}
+        page.wait_for_timeout(max(250, int(poll_ms)))
+    return {
+        "ok": False,
+        "attempts": attempts,
+        "lifecycle": last,
+        "reason": "heavy_paint_done_or_interactive_live_timeout",
+    }
+
+
 def prove_fragment_probe_rendered(ctx: dict[str, Any], *, room_id: str) -> tuple[bool, str]:
     probe = ctx.get("fragment_widget_probe") if isinstance(ctx.get("fragment_widget_probe"), dict) else {}
     if not probe.get("widget_key"):
@@ -234,13 +266,19 @@ def click_francisco_add_to_queue(
         binding_mode=BINDING_MODE_RECOMMENDATION_WIDGET,
     )
     out["pre_click_run_binding"] = binding
-    if binding.get("run_binding_consistent") is False:
-        out["classification"] = "QUEUE1C3A2O1"
-        out["click_dispatched"] = False
-        return out
     liveness = str((step.get("app_render_trace") or {}).get("widget_liveness") or step.get("render_trace_widget_liveness") or "")
     out["widget_liveness"] = liveness
-    if liveness != "live_this_run":
+    lifecycle = out.get("lifecycle_before") if isinstance(out.get("lifecycle_before"), dict) else {}
+    lifecycle_live = str(lifecycle.get("widget_liveness") or "") == "live_this_run"
+    lifecycle_heavy_done = str(lifecycle.get("heavy_paint_done") or "").strip().lower() in ("1", "true")
+    if binding.get("run_binding_consistent") is False:
+        if lifecycle_live and lifecycle_heavy_done and liveness == "live_this_run":
+            out["run_binding_waiver"] = "lifecycle_live_this_run_after_heavy_paint"
+        else:
+            out["classification"] = "QUEUE1C3A2O1"
+            out["click_dispatched"] = False
+            return out
+    if liveness != "live_this_run" and not (lifecycle_live and lifecycle_heavy_done):
         out["classification"] = "ABORTED_FRANCISCO_NOT_LIVE_THIS_RUN"
         out["click_dispatched"] = False
         return out
@@ -294,6 +332,10 @@ def classify_fragment_gate(
         return "ABORTED_FRAGMENT_PROBE_NOT_RENDERED"
     if not pause_ok:
         return "ABORTED_PAUSE_NOT_RESOLVED"
+    probe_entered = bool(probe_step.get("callback_entered"))
+    fr_entered = bool(francisco_step.get("callback_entered"))
+    if probe_entered and fr_entered:
+        return "QUEUE1C3A2F4_RESOLVED"
     if probe_step.get("ledger_dom_observable") is False:
         return OBSERVABILITY_FRAGMENT_LEDGER_NOT_VISIBLE
     if francisco_step.get("ledger_dom_observable") is False:

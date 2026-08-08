@@ -260,7 +260,19 @@ def main() -> int:
 
         add_wait = wait_for_min_add_to_queue_controls(page, min_controls=1, timeout_s=90.0, start_val=gate_start)
         report["add_control_wait"] = add_wait
-        page.wait_for_timeout(4000)
+        from stage1_rec_fragment_exec_gate import wait_for_rec_fragment_interactive_steady_state
+
+        steady = wait_for_rec_fragment_interactive_steady_state(page, timeout_s=120.0)
+        report["rec_fragment_steady_state"] = steady
+        if not steady.get("ok"):
+            report["ok"] = False
+            report["classification"] = "ABORTED_FRAGMENT_NOT_STEADY_STATE"
+            report["finished_at"] = time.time()
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            context.close()
+            browser.close()
+            return 2
+        page.wait_for_timeout(2500)
         pre_surface_ctx = snapshot_fragment_exec_context(page)
         report["pre_interaction_exec_context"] = pre_surface_ctx
         chronology.append({"step": "recommendations_ready", "ts": time.time(), "ctx": "pre_probe"})
@@ -316,6 +328,8 @@ def main() -> int:
             "francisco_ledger_observable": francisco_step.get("ledger_dom_observable"),
         }
         report["ok"] = classification in (
+            "QUEUE1C3A2F4_RESOLVED",
+            "PLAYER_A_QUEUE_MUTATION_RESOLVED",
             "QUEUE1C3A2F1",
             "QUEUE1C3A2F2",
             "QUEUE1C3A2F3",
