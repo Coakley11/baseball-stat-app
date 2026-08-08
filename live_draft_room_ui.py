@@ -1790,7 +1790,9 @@ def render_live_draft_rec_cards(
                     session["_live_draft_rec_queue_key_scheme"] = "collision_safe_v1"
                     try:
                         from live_draft_rec_queue_click_trace import register_rec_queue_render_trace
+                        from live_draft_rec_queue_help_ab import resolve_rec_queue_help_variant
 
+                        help_variant, help_present = resolve_rec_queue_help_variant(st, session)
                         seq = int(session.get("_live_draft_rec_queue_render_seq") or 0) + 1
                         session["_live_draft_rec_queue_render_seq"] = seq
                         _render_trace_row = register_rec_queue_render_trace(
@@ -1803,6 +1805,8 @@ def render_live_draft_rec_cards(
                             surface="rec_card",
                             already_queued=already_queued,
                             render_run_seq=seq,
+                            help_variant=help_variant,
+                            help_present=help_present,
                         )
                     except ImportError:
                         _render_trace_row = None
@@ -1930,12 +1934,18 @@ def render_live_draft_rec_cards(
                         help=f"{name} is already in your draft queue.",
                     )
                 else:
+                    try:
+                        from live_draft_rec_queue_help_ab import rec_queue_add_button_help_kwargs
+
+                        _queue_help = rec_queue_add_button_help_kwargs(st, session, player_name=name)
+                    except ImportError:
+                        _queue_help = {"help": f"Add {name} to your draft queue."}
                     st.button(
                         "⭐ Add to Queue",
                         key=queue_widget_key,
                         use_container_width=True,
                         on_click=_on_rec_queue_click,
-                        help=f"Add {name} to your draft queue.",
+                        **_queue_help,
                     )
                 try:
                     from live_draft_rec_queue_click_trace import note_rec_queue_widget_button_rendered

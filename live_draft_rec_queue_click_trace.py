@@ -15,7 +15,7 @@ REC_QUEUE_CALLBACK_ID = "_on_rec_queue_click"
 REC_QUEUE_CALLBACK_VERSION = "live_draft_room_ui_v1"
 RENDER_TRACE_PROBE_ELEMENT_ID = "rec-card-queue-render-trace"
 PER_CARD_RENDER_TRACE_CLASS = "rec-card-queue-render-trace-card"
-REC_QUEUE_RENDER_TRACE_IMPL_REV = "rec_queue_render_trace_v3_lifecycle"
+REC_QUEUE_RENDER_TRACE_IMPL_REV = "rec_queue_render_trace_v4_help_ab"
 WIDGET_LIFECYCLE_KEY = "_live_draft_rec_queue_widget_lifecycle"
 MAX_LEDGER = 24
 MAX_RENDER_REGISTRY = 32
@@ -157,6 +157,8 @@ def register_rec_queue_render_trace(
     already_queued: bool = False,
     render_run_seq: int | None = None,
     app_build_sha: str = "",
+    help_variant: str = "",
+    help_present: bool | None = None,
 ) -> dict[str, Any]:
     """Render-time registry — proves instrumented rec card painted before any click."""
     reg = session.get(RENDER_TRACE_REGISTRY_KEY)
@@ -183,6 +185,8 @@ def register_rec_queue_render_trace(
         "render_run_seq": seq,
         "app_build_sha": str(app_build_sha or "").strip()[:12],
         "widget_key_dupes": list(session.get("_live_draft_rec_queue_widget_key_dupes") or []),
+        "help_variant": str(help_variant or "").strip() or "production_default",
+        "help_present": bool(help_present) if help_present is not None else True,
         **lc,
     }
     reg.append(row)
@@ -247,6 +251,8 @@ def render_per_card_rec_queue_render_trace_marker(
         f'data-widget-last-rendered-run-seq="{int(lc.get("widget_last_rendered_run_seq") or 0)}" '
         f'data-widget-liveness="{safe(lc.get("widget_liveness"))}" '
         f'data-app-sha="{safe(sha)}" '
+        f'data-help-variant="{safe(trace_row.get("help_variant"))}" '
+        f'data-help-present="{1 if trace_row.get("help_present") else 0}" '
         f'data-impl-rev="{REC_QUEUE_RENDER_TRACE_IMPL_REV}"></div>',
         unsafe_allow_html=True,
     )
@@ -316,6 +322,8 @@ def render_rec_queue_render_trace_probe(st: Any, session: dict[str, Any], *, pro
         f'data-widget-last-rendered-run-seq="{int(lc.get("widget_last_rendered_run_seq") or 0)}" '
         f'data-widget-liveness="{safe(lc.get("widget_liveness"))}" '
         f'data-app-sha="{safe(sha)}" '
+        f'data-help-variant="{safe(last.get("help_variant"))}" '
+        f'data-help-present="{1 if last.get("help_present") else 0}" '
         f'data-impl-rev="{REC_QUEUE_RENDER_TRACE_IMPL_REV}" '
         f'data-json="{payload.replace(chr(34), chr(39))}"></div>',
         unsafe_allow_html=True,

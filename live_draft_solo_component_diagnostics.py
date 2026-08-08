@@ -63,6 +63,12 @@ def bootstrap_solo_component_diag(st: Any | None, session: dict[str, Any]) -> No
             timer_raw = _qp_get(st, "solo_diag_timer") if st is not None else ""
             if timer_raw.isdigit():
                 session[SOLO_DIAG_TIMER_SESSION_KEY] = max(5, min(60, int(timer_raw)))
+            try:
+                from live_draft_rec_queue_help_ab import latch_rec_queue_help_variant_from_query
+
+                latch_rec_queue_help_variant_from_query(st, session)
+            except ImportError:
+                pass
             _install_stage1_registration_and_dispatch_probes(st, session)
             try:
                 from live_draft_solo_p8_focused_binding import bootstrap_solo_p8_focused_binding
@@ -81,6 +87,12 @@ def bootstrap_solo_component_diag(st: Any | None, session: dict[str, Any]) -> No
         pass
     if st is not None and _qp_flag(st, "solo_component_diag"):
         session[SOLO_DIAG_ENABLED_KEY] = True
+    try:
+        from live_draft_rec_queue_help_ab import latch_rec_queue_help_variant_from_query
+
+        latch_rec_queue_help_variant_from_query(st, session)
+    except ImportError:
+        pass
     timer_raw = _qp_get(st, "solo_diag_timer") if st is not None else ""
     if timer_raw.isdigit():
         session[SOLO_DIAG_TIMER_SESSION_KEY] = max(5, min(60, int(timer_raw)))
