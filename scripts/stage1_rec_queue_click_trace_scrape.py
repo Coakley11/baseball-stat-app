@@ -37,6 +37,8 @@ def scrape_rec_queue_render_trace(page, *, player_name: str = "") -> dict[str, A
                 widget_rendered_this_run: el.getAttribute('data-widget-rendered-this-run') || '',
                 widget_last_rendered_run_seq: el.getAttribute('data-widget-last-rendered-run-seq') || '',
                 widget_liveness: el.getAttribute('data-widget-liveness') || '',
+                help_variant: el.getAttribute('data-help-variant') || '',
+                help_present: el.getAttribute('data-help-present') || '',
                 json: el.getAttribute('data-json') || '',
               };
             }
@@ -94,6 +96,8 @@ def merge_render_trace_into_step(step: dict[str, Any], trace: dict[str, Any]) ->
         "widget_last_rendered_run_seq",
         "widget_liveness",
         "heavy_paint_done",
+        "help_variant",
+        "help_present",
     ):
         if trace.get(key) not in (None, ""):
             step[f"render_trace_{key}"] = trace.get(key)

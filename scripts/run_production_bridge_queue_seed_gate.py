@@ -33,7 +33,15 @@ def _queue_url(bridge_sid: str) -> str:
         f"{BASE}/?active_page=Live%20Draft%20Room"
         f"&solo_component_diag=1&solo_diag_timer={timer}&solo_stage1_parent_boundary=1"
     )
+    variant = str(os.environ.get("STAGE1_REC_QUEUE_HELP_VARIANT") or "").strip().lower()
+    if variant in ("with_help", "no_help"):
+        base += f"&solo_rec_queue_help_variant={variant}"
     return append_suite_sid_to_url(base, bridge_sid)
+
+
+def _help_ab_variant_env() -> str:
+    v = str(os.environ.get("STAGE1_REC_QUEUE_HELP_VARIANT") or "").strip().lower()
+    return v if v in ("with_help", "no_help") else ""
 
 
 def main() -> int:
@@ -81,6 +89,10 @@ def main() -> int:
         "started_at": time.time(),
         "artifact_path": str(OUT),
     }
+    help_ab = _help_ab_variant_env()
+    if help_ab:
+        report["stage1_rec_queue_help_variant"] = help_ab
+        report["stage1_rec_queue_help_ab_experiment"] = True
     print(json.dumps({"bridge_suite_sid_source": bridge_source, "bridge_suite_sid_prefix": bridge_sid[:8]}), flush=True)
 
     with sync_playwright() as p:

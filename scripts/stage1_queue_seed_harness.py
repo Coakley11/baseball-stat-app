@@ -990,6 +990,32 @@ def seed_queue_distinct_players(
             merge_render_trace_into_step(step, scrape_rec_queue_render_trace(page, player_name=player_name))
         except ImportError:
             pass
+        try:
+            import os
+
+            expected_help = str(os.environ.get("STAGE1_REC_QUEUE_HELP_VARIANT") or "").strip().lower()
+            if expected_help in ("with_help", "no_help"):
+                trace = step.get("app_render_trace") if isinstance(step.get("app_render_trace"), dict) else {}
+                got_variant = str(trace.get("help_variant") or step.get("render_trace_help_variant") or "").strip().lower()
+                want_present = expected_help == "with_help"
+                got_present_raw = trace.get("help_present", step.get("render_trace_help_present"))
+                got_present = got_present_raw in (True, "1", 1, "true")
+                step["help_variant_expected"] = expected_help
+                step["help_variant_observed"] = got_variant
+                step["help_present_observed"] = got_present
+                if got_variant != expected_help or got_present != want_present:
+                    step["classification"] = "ABORTED_REC_QUEUE_HELP_VARIANT"
+                    step["help_variant_binding_pass"] = False
+                    step["click_dispatched"] = False
+                    step["mutation_proven"] = False
+                    step["mutation_observed"] = False
+                    step["elapsed_s"] = time.time() - float(step["started_ts"])
+                    seed_steps.append(step)
+                    fail_classification = "ABORTED_REC_QUEUE_HELP_VARIANT"
+                    break
+                step["help_variant_binding_pass"] = True
+        except Exception:
+            pass
         if not step.get("render_trace_present"):
             step["classification"] = "QUEUE1C3A5"
             step["click_dispatched"] = False
