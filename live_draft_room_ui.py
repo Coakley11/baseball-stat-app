@@ -1757,7 +1757,8 @@ def render_live_draft_rec_cards(
                         help=disable_reason[:200],
                     )
             with queue_col:
-                queue_widget_key = f"rec_card_queue_{pick_idx}_{stable_key}"
+                legacy_widget_key = f"rec_card_queue_{pick_idx}_{stable_key}"
+                queue_widget_key = legacy_widget_key
                 queue_click_event_id = ""
                 try:
                     from live_draft_rec_queue_click_trace import (
@@ -1766,6 +1767,13 @@ def render_live_draft_rec_cards(
                         register_rec_queue_widget,
                     )
 
+                    canonical_widget_key = build_rec_card_queue_widget_key(
+                        room_id=room_id,
+                        pick_index=pick_idx,
+                        stable_key=stable_key,
+                        surface="rec_card",
+                    )
+                    queue_widget_key = canonical_widget_key
                     queue_click_event_id = new_rec_queue_event_id()
                     register_rec_queue_widget(
                         session,
@@ -1776,13 +1784,9 @@ def render_live_draft_rec_cards(
                         widget_key=queue_widget_key,
                         surface="rec_card",
                         already_queued=already_queued,
-                        canonical_widget_key=build_rec_card_queue_widget_key(
-                            room_id=room_id,
-                            pick_index=pick_idx,
-                            stable_key=stable_key,
-                            surface="rec_card",
-                        ),
+                        canonical_widget_key=canonical_widget_key,
                     )
+                    session["_live_draft_rec_queue_key_scheme"] = "collision_safe_v1"
                 except ImportError:
                     pass
 
