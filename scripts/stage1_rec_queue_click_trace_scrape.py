@@ -1,0 +1,59 @@
+"""Scrape app-side rec-card queue click trace DOM probe (solo_component_diag)."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+
+def scrape_rec_queue_app_trace(page) -> dict[str, Any]:
+    try:
+        raw = page.evaluate(
+            """() => {
+            const docs = [document];
+            for (const f of document.querySelectorAll('iframe')) {
+              try { if (f.contentDocument) docs.push(f.contentDocument); } catch (e) {}
+            }
+            for (const doc of docs) {
+              const el = doc.querySelector('#rec-card-queue-click-trace');
+              if (!el) continue;
+              return {
+                event_id: el.getAttribute('data-event-id') || '',
+                callback_entered: el.getAttribute('data-callback-entered') === '1',
+                added: el.getAttribute('data-added') === '1',
+                classification: el.getAttribute('data-classification') || '',
+                json: el.getAttribute('data-json') || '',
+              };
+            }
+            return {};
+          }"""
+        )
+    except Exception as exc:
+        return {"error": str(exc)[:200]}
+    if not isinstance(raw, dict):
+        return {}
+    out = dict(raw)
+    payload = out.get("json")
+    if isinstance(payload, str) and payload.strip():
+        try:
+            out["payload"] = json.loads(payload.replace("'", '"'))
+        except Exception:
+            out["payload_raw"] = payload[:2000]
+    return out
+
+
+def merge_app_trace_into_step(step: dict[str, Any], trace: dict[str, Any]) -> None:
+    if not trace:
+        return
+    step["app_queue_trace"] = trace
+    app_class = str(trace.get("classification") or "").strip()
+    if app_class:
+        step["app_classification"] = app_class
+    payload = trace.get("payload") if isinstance(trace.get("payload"), dict) else {}
+    last = payload.get("last") if isinstance(payload.get("last"), dict) else {}
+    if last:
+        step["app_callback_entered"] = bool(last.get("callback_entered"))
+        step["app_queue_after_mutation"] = list(last.get("queue_immediately_after_mutation") or [])
+        post = last.get("post_prepare") if isinstance(last.get("post_prepare"), dict) else {}
+        if post:
+            step["app_queue_after_prepare"] = list(post.get("queue_after_rerun_hydration") or [])

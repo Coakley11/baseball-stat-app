@@ -112,6 +112,11 @@ def classify_queue1c_subcode(step: dict[str, Any]) -> str:
     if step.get("structured_confirmation") and not step.get("visible_confirmation"):
         return QUEUE1C4
     if (backmsg or rerun or int(transport.get("outbound_frames_after_click") or 0) > 0) and not step.get("mutation_observed"):
+        app_class = str(step.get("app_classification") or "").strip()
+        if app_class.startswith("QUEUE1C3"):
+            return app_class.split(" ")[0] if " " in app_class else app_class
+        if step.get("app_callback_entered") is False:
+            return "QUEUE1C3A"
         return QUEUE1C3
     if dispatched and not step.get("mutation_observed"):
         return QUEUE1C2 if not backmsg and not rerun else QUEUE1C3
@@ -964,6 +969,12 @@ def seed_queue_distinct_players(
             player_name=player_name,
             timeout_s=max(mutation_wait_s, 4.0),
         )
+        try:
+            from stage1_rec_queue_click_trace_scrape import merge_app_trace_into_step, scrape_rec_queue_app_trace
+
+            merge_app_trace_into_step(step, scrape_rec_queue_app_trace(page))
+        except ImportError:
+            pass
         step["queue_after"] = list(mut.get("queue_after") or [])
         step["visible_confirmation"] = bool(mut.get("visible_confirmation"))
         step["structured_confirmation"] = bool(mut.get("structured_confirmation"))
