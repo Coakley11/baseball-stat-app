@@ -154,6 +154,28 @@ class RecQueueClickTraceTests(unittest.TestCase):
         self.assertEqual(session[CANON], ["Francisco Lindor"])
         self.assertEqual(session.get("draft_state", {}).get("queue"), ["Francisco Lindor"])
 
+    def test_trace_probe_requires_solo_component_diag(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from live_draft_rec_queue_click_trace import render_rec_queue_click_trace_probe
+
+        st = MagicMock()
+        session: dict[str, Any] = {}
+        with patch(
+            "live_draft_solo_component_diagnostics.solo_component_diag_enabled",
+            return_value=False,
+        ):
+            render_rec_queue_click_trace_probe(st, session)
+        st.markdown.assert_not_called()
+        with patch(
+            "live_draft_solo_component_diagnostics.solo_component_diag_enabled",
+            return_value=True,
+        ):
+            render_rec_queue_click_trace_probe(st, session)
+        st.markdown.assert_called_once()
+        html = str(st.markdown.call_args[0][0])
+        self.assertIn("rec-card-queue-click-trace", html)
+
 
 class RecQueueSimulatedOverwriteTests(unittest.TestCase):
     def test_prepare_restores_after_widget_wipe_when_dirty(self) -> None:
