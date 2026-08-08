@@ -8,6 +8,9 @@ from typing import Any
 QUEUE1C3A2O1 = "QUEUE1C3A2O1"
 QUEUE1C3A2O2 = "QUEUE1C3A2O2"
 
+BINDING_MODE_CONTROL_ONLY = "control_only"
+BINDING_MODE_RECOMMENDATION_WIDGET = "recommendation_widget"
+
 _LEDGER_DIAG_SEQ_JS = """() => {
   function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
   const out = [];
@@ -80,7 +83,7 @@ def scrape_ledger_row_seq_stats(page) -> dict[str, Any]:
         "ledger_last_row_script_run_seq": last_row_seq,
         "ledger_max_script_run_seq": max(seqs) if seqs else None,
         "ledger_min_script_run_seq": min(seqs) if seqs else None,
-        "ledger_last_row_seq_source": "scrape_stage1_ledger_rows[-1].script_run_seq",
+        "ledger_last_row_seq_source": "scrape_stage1_ledger_rows[-1].script_run_seq (historical, not authoritative)",
         "ledger_max_seq_source": "max(scrape_stage1_ledger_rows[*].script_run_seq)",
     }
 
@@ -97,17 +100,68 @@ def lifecycle_seq_from_render_trace(trace: dict[str, Any] | None) -> dict[str, A
     }
 
 
+def compute_run_binding_verdict(
+    *,
+    binding_mode: str,
+    lifecycle_seq: int | None,
+    transport_grade_seq: int | None,
+    ledger_last: int | None,
+    ledger_diag_seq: int | None,
+) -> tuple[bool, list[str], dict[str, Any]]:
+    """Pure binding grade: control_only (Pause/Start) vs recommendation_widget (Francisco)."""
+    mode = binding_mode or BINDING_MODE_RECOMMENDATION_WIDGET
+    notes: list[str] = []
+    meta: dict[str, Any] = {
+        "binding_mode": mode,
+        "lifecycle_not_applicable": mode == BINDING_MODE_CONTROL_ONLY,
+        "ledger_last_row_stale": False,
+        "ledger_transport_grade_precedence": [],
+    }
+
+    if ledger_diag_seq is not None:
+        meta["ledger_transport_grade_precedence"].append("ledger_diag_probe")
+    if transport_grade_seq is not None and ledger_diag_seq is None:
+        meta["ledger_transport_grade_precedence"].append("ledger_max_script_run_seq")
+
+    if ledger_last is not None and transport_grade_seq is not None and ledger_last != transport_grade_seq:
+        meta["ledger_last_row_stale"] = True
+        notes.append(f"last_row_stale_historical_{ledger_last}_vs_grade_{transport_grade_seq}")
+
+    if mode == BINDING_MODE_CONTROL_ONLY:
+        if transport_grade_seq is None:
+            notes.append("ledger_transport_seq_missing")
+            return False, notes, meta
+        return True, notes, meta
+
+    # recommendation_widget — strict lifecycle vs ledger grade
+    if lifecycle_seq is None:
+        notes.append("lifecycle_seq_missing")
+    if transport_grade_seq is None:
+        notes.append("ledger_transport_seq_missing")
+    consistent = False
+    if lifecycle_seq is not None and transport_grade_seq is not None:
+        if lifecycle_seq == transport_grade_seq:
+            consistent = True
+        else:
+            notes.append(f"lifecycle_{lifecycle_seq}_vs_ledger_grade_{transport_grade_seq}")
+    if lifecycle_seq is not None and ledger_last is not None and lifecycle_seq != ledger_last:
+        notes.append(f"legacy_last_row_would_be_{ledger_last}")
+    return consistent, notes, meta
+
+
 def capture_run_binding_snapshot(
     page,
     *,
     frame_url_hint: str = "",
     lifecycle_render_trace: dict[str, Any] | None = None,
     phase: str = "pre_click",
+    binding_mode: str = BINDING_MODE_RECOMMENDATION_WIDGET,
 ) -> dict[str, Any]:
     """Single snapshot: lifecycle DOM seq vs ledger diag vs ledger row aggregates."""
     ts = time.time()
+    mode = binding_mode or BINDING_MODE_RECOMMENDATION_WIDGET
     lifecycle = lifecycle_seq_from_render_trace(lifecycle_render_trace)
-    if lifecycle_render_trace is None:
+    if mode == BINDING_MODE_RECOMMENDATION_WIDGET and lifecycle_render_trace is None:
         try:
             from stage1_rec_queue_click_trace_scrape import scrape_rec_queue_render_trace
 
@@ -115,6 +169,15 @@ def capture_run_binding_snapshot(
             lifecycle = lifecycle_seq_from_render_trace(scraped)
         except ImportError:
             pass
+    elif mode == BINDING_MODE_CONTROL_ONLY:
+        lifecycle = {
+            "lifecycle_current_script_run_seq": None,
+            "lifecycle_actual_card_render_run_seq": None,
+            "lifecycle_widget_last_rendered_run_seq": None,
+            "lifecycle_source": "not_applicable_control_only",
+            "lifecycle_probe_source": "",
+            "lifecycle_widget_liveness": "",
+        }
 
     probes = scrape_ledger_diag_probes(page)
     auth_probe = pick_authoritative_ledger_probe(probes, frame_url_hint=frame_url_hint)
@@ -128,24 +191,16 @@ def capture_run_binding_snapshot(
     ledger_max = row_stats.get("ledger_max_script_run_seq")
     ledger_last = row_stats.get("ledger_last_row_script_run_seq")
 
-    # Authoritative ledger generation for transport is diag attr on app frame, then max row seq.
+    # Authoritative ledger generation: diag probe on app frame, then max row seq (never last row alone).
     transport_grade_seq = ledger_diag_seq if ledger_diag_seq is not None else ledger_max
 
-    consistent = False
-    mismatch_reasons: list[str] = []
-    if lifecycle_seq is None:
-        mismatch_reasons.append("lifecycle_seq_missing")
-    if transport_grade_seq is None:
-        mismatch_reasons.append("ledger_transport_seq_missing")
-    if lifecycle_seq is not None and transport_grade_seq is not None:
-        if lifecycle_seq == transport_grade_seq:
-            consistent = True
-        else:
-            mismatch_reasons.append(f"lifecycle_{lifecycle_seq}_vs_ledger_grade_{transport_grade_seq}")
-    if ledger_last is not None and transport_grade_seq is not None and ledger_last != transport_grade_seq:
-        mismatch_reasons.append(f"ledger_last_row_{ledger_last}_stale_vs_grade_{transport_grade_seq}")
-    if lifecycle_seq is not None and ledger_last is not None and lifecycle_seq != ledger_last:
-        mismatch_reasons.append(f"legacy_last_row_would_be_{ledger_last}")
+    consistent, mismatch_reasons, binding_meta = compute_run_binding_verdict(
+        binding_mode=mode,
+        lifecycle_seq=lifecycle_seq,
+        transport_grade_seq=transport_grade_seq,
+        ledger_last=ledger_last,
+        ledger_diag_seq=ledger_diag_seq,
+    )
 
     return {
         "phase": phase,
@@ -155,12 +210,30 @@ def capture_run_binding_snapshot(
         "ledger_diag_frame_href": str(auth_probe.get("frame_href") or "")[:280],
         **lifecycle,
         **row_stats,
+        **binding_meta,
         "ledger_diag_script_run_seq": ledger_diag_seq,
         "ledger_transport_grade_script_run_seq": transport_grade_seq,
         "run_binding_consistent": consistent,
         "run_binding_mismatch_reasons": mismatch_reasons,
         "ledger_diag_probe_count": len(probes),
     }
+
+
+def control_only_pause_binding_passes(
+    pre_binding: dict[str, Any],
+    *,
+    pause_delivery_resolved: bool,
+    dom_events_non_empty: bool,
+    dom_install_ok: bool,
+) -> bool:
+    """Known-good Pause control observability gate (does not require rec-card lifecycle)."""
+    if not pause_delivery_resolved:
+        return False
+    if not dom_install_ok or not dom_events_non_empty:
+        return False
+    if str(pre_binding.get("binding_mode") or "") != BINDING_MODE_CONTROL_ONLY:
+        return False
+    return bool(pre_binding.get("run_binding_consistent"))
 
 
 def merge_run_binding_into_transport(transport: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any]:
@@ -171,6 +244,7 @@ def merge_run_binding_into_transport(transport: dict[str, Any], binding: dict[st
     pre_s = str(pre) if pre is not None else ""
     post_s = str(post_seq) if post_seq is not None else ""
     out["run_binding"] = binding
+    out["binding_mode"] = binding.get("binding_mode") or BINDING_MODE_RECOMMENDATION_WIDGET
     out["lifecycle_script_run_seq_before"] = binding.get("lifecycle_current_script_run_seq")
     out["ledger_transport_grade_seq_before"] = pre
     out["ledger_last_row_seq_before"] = binding.get("ledger_last_row_script_run_seq")
@@ -184,16 +258,30 @@ def merge_run_binding_into_transport(transport: dict[str, Any], binding: dict[st
         except ValueError:
             seq_changed = post_s != pre_s
     out["script_run_seq_changed"] = seq_changed
-    if not out.get("run_binding_consistent"):
+    mode = str(binding.get("binding_mode") or BINDING_MODE_RECOMMENDATION_WIDGET)
+    if not out.get("run_binding_consistent") and mode == BINDING_MODE_RECOMMENDATION_WIDGET:
         out["python_rerun_started"] = False
         out["python_rerun_observability_blocked"] = True
     else:
         out["python_rerun_observability_blocked"] = False
-        out["python_rerun_started"] = bool(seq_changed)
+        if mode == BINDING_MODE_RECOMMENDATION_WIDGET:
+            out["python_rerun_started"] = bool(seq_changed)
     return out
 
 
-def classify_run_binding_observability(pre: dict[str, Any], *, dom_capture_ok: bool = True) -> str:
+def classify_run_binding_observability(
+    pre: dict[str, Any],
+    *,
+    dom_capture_ok: bool = True,
+    binding_mode: str = BINDING_MODE_RECOMMENDATION_WIDGET,
+) -> str:
+    mode = str(pre.get("binding_mode") or binding_mode or BINDING_MODE_RECOMMENDATION_WIDGET)
+    if mode == BINDING_MODE_CONTROL_ONLY:
+        if not pre.get("run_binding_consistent"):
+            return QUEUE1C3A2O1
+        if not dom_capture_ok:
+            return QUEUE1C3A2O2
+        return ""
     if not pre.get("run_binding_consistent"):
         return QUEUE1C3A2O1
     if not dom_capture_ok:

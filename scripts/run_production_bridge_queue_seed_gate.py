@@ -73,6 +73,7 @@ def main() -> int:
     report: dict[str, Any] = {
         "mode": "production_bridge_queue_seed_gate",
         "harness_sha": _harness_sha(),
+        "application_runtime_sha": "",
         "required_cloud_sha": required,
         "bridge_suite_sid_prefix": bridge_sid[:8],
         "bridge_suite_sid_source": bridge_source,
@@ -117,6 +118,7 @@ def main() -> int:
             expected_application_phase=EXPECTED_PHASE_AUTH_ONLY,
         )
         report["bridge_hydration_auth_only"] = bridge_pre
+        report["application_runtime_sha"] = str(bridge_pre.get("deployment_sha") or "")[:7]
         if not bridge_pre.get("authenticated_restored"):
             report["ok"] = False
             report["classification"] = bridge_pre.get("failure_classification") or "AUTH_HYDRATE7"
@@ -227,7 +229,16 @@ def main() -> int:
             browser.close()
             print(json.dumps({"ok": False, "classification": report["classification"], "room_id": room_id}))
             return 2
-        if pre_bind.get("run_binding_consistent") is False:
+        from stage1_run_binding import control_only_pause_binding_passes
+
+        pause_binding_ok = control_only_pause_binding_passes(
+            pre_bind,
+            pause_delivery_resolved=True,
+            dom_events_non_empty=bool(pause_dom),
+            dom_install_ok=bool(pause_install.get("ok")),
+        )
+        report["pause_observability_control"]["control_only_binding_pass"] = pause_binding_ok
+        if not pause_binding_ok:
             report["ok"] = False
             report["classification"] = "QUEUE1C3A2O1"
             report["observability_stop_reason"] = "pause_run_binding_inconsistent"

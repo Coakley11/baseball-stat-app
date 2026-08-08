@@ -314,22 +314,29 @@ def proven_pause_single_click(
     authority = inspect_pause_click_authority(page)
     pause_obs: dict[str, Any] = {}
     pre_bind: dict[str, Any] = {}
+    frame_hint = str(authority.get("preferred_frame_url") or "")
     try:
-        from stage1_run_binding import capture_run_binding_snapshot
+        from stage1_run_binding import BINDING_MODE_CONTROL_ONLY, capture_run_binding_snapshot
 
-        pre_bind = capture_run_binding_snapshot(page, phase="pre_click")
+        pre_bind = capture_run_binding_snapshot(
+            page,
+            phase="pre_click",
+            frame_url_hint=frame_hint,
+            binding_mode=BINDING_MODE_CONTROL_ONLY,
+        )
     except ImportError:
         pass
     click = dispatch_proven_pause_click(page)
     click_ts = float(click.get("click_timestamp") or time.time())
     timing["pause_click_dispatch_ts"] = click_ts
     try:
-        from stage1_run_binding import capture_run_binding_snapshot
+        from stage1_run_binding import BINDING_MODE_CONTROL_ONLY, capture_run_binding_snapshot
 
         post_bind = capture_run_binding_snapshot(
             page,
-            frame_url_hint=str(click.get("click_frame_url") or ""),
+            frame_url_hint=str(click.get("click_frame_url") or frame_hint),
             phase="post_click",
+            binding_mode=BINDING_MODE_CONTROL_ONLY,
         )
         pause_obs = {
             "pre_click_run_binding": pre_bind,

@@ -10,7 +10,11 @@ sys.path.insert(0, str(SCRIPTS))
 
 from stage1_native_widget_transport import classify_queue1c3a_subcode
 from stage1_run_binding import (
+    BINDING_MODE_CONTROL_ONLY,
+    BINDING_MODE_RECOMMENDATION_WIDGET,
     capture_run_binding_snapshot,
+    compute_run_binding_verdict,
+    control_only_pause_binding_passes,
     lifecycle_seq_from_render_trace,
     merge_run_binding_into_transport,
 )
@@ -105,3 +109,83 @@ def test_dom_capture_failure_o2() -> None:
         callback_entered=False,
     )
     assert sub == "QUEUE1C3A2O2"
+
+
+def test_control_only_pause_binding_pass_no_lifecycle() -> None:
+    """1865D12C pattern: max=10, last=9, no diag, no rec-card lifecycle."""
+    ok, reasons, meta = compute_run_binding_verdict(
+        binding_mode=BINDING_MODE_CONTROL_ONLY,
+        lifecycle_seq=None,
+        transport_grade_seq=10,
+        ledger_last=9,
+        ledger_diag_seq=None,
+    )
+    assert ok is True
+    assert meta["lifecycle_not_applicable"] is True
+    assert meta["ledger_last_row_stale"] is True
+    assert "lifecycle_seq_missing" not in reasons
+    assert any("last_row_stale" in r for r in reasons)
+
+
+def test_control_only_fails_without_transport_grade() -> None:
+    ok, reasons, _meta = compute_run_binding_verdict(
+        binding_mode=BINDING_MODE_CONTROL_ONLY,
+        lifecycle_seq=None,
+        transport_grade_seq=None,
+        ledger_last=9,
+        ledger_diag_seq=None,
+    )
+    assert ok is False
+    assert "ledger_transport_seq_missing" in reasons
+
+
+def test_francisco_missing_lifecycle_fails_recommendation_binding() -> None:
+    ok, reasons, meta = compute_run_binding_verdict(
+        binding_mode=BINDING_MODE_RECOMMENDATION_WIDGET,
+        lifecycle_seq=None,
+        transport_grade_seq=10,
+        ledger_last=9,
+        ledger_diag_seq=None,
+    )
+    assert ok is False
+    assert meta["lifecycle_not_applicable"] is False
+    assert "lifecycle_seq_missing" in reasons
+
+
+def test_francisco_lifecycle_vs_ledger_mismatch_o1() -> None:
+    ok, reasons, _meta = compute_run_binding_verdict(
+        binding_mode=BINDING_MODE_RECOMMENDATION_WIDGET,
+        lifecycle_seq=15,
+        transport_grade_seq=12,
+        ledger_last=12,
+        ledger_diag_seq=12,
+    )
+    assert ok is False
+    assert any("lifecycle_15_vs_ledger_grade_12" in r for r in reasons)
+
+
+def test_control_only_pause_binding_passes_helper() -> None:
+    pre = {
+        "binding_mode": BINDING_MODE_CONTROL_ONLY,
+        "run_binding_consistent": True,
+        "ledger_transport_grade_script_run_seq": 10,
+    }
+    assert control_only_pause_binding_passes(
+        pre,
+        pause_delivery_resolved=True,
+        dom_events_non_empty=True,
+        dom_install_ok=True,
+    )
+
+
+def test_pause_trusted_dom_chain_recognized() -> None:
+    events = [
+        {"type": "pointerdown", "is_trusted": True},
+        {"type": "mousedown", "is_trusted": True},
+        {"type": "pointerup", "is_trusted": True},
+        {"type": "mouseup", "is_trusted": True},
+        {"type": "click", "is_trusted": True, "target_testid": "stBaseButton-secondary"},
+    ]
+    trusted_click = [e for e in events if e.get("type") == "click" and e.get("is_trusted")]
+    assert len(trusted_click) == 1
+

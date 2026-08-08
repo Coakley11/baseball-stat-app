@@ -683,11 +683,14 @@ def deliver_add_to_queue_click(
         try:
             from stage1_run_binding import capture_run_binding_snapshot
 
+            from stage1_run_binding import BINDING_MODE_RECOMMENDATION_WIDGET
+
             snap = capture_run_binding_snapshot(
                 page,
                 frame_url_hint=str(candidate.get("frameUrl") or ""),
                 lifecycle_render_trace=None,
                 phase="pre_click",
+                binding_mode=BINDING_MODE_RECOMMENDATION_WIDGET,
             )
             grade = snap.get("ledger_transport_grade_script_run_seq")
             return str(grade) if grade is not None else ""
@@ -749,11 +752,14 @@ def deliver_add_to_queue_click(
         from stage1_run_binding import capture_run_binding_snapshot
 
         render_trace = scrape_rec_queue_render_trace(page, player_name=name)
+        from stage1_run_binding import BINDING_MODE_RECOMMENDATION_WIDGET
+
         pre_binding = capture_run_binding_snapshot(
             page,
             frame_url_hint=str(candidate.get("frameUrl") or ""),
             lifecycle_render_trace=render_trace,
             phase="pre_click",
+            binding_mode=BINDING_MODE_RECOMMENDATION_WIDGET,
         )
         out["pre_click_run_binding"] = pre_binding
     except ImportError:
