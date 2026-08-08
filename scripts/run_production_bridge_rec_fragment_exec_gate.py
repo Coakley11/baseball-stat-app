@@ -209,12 +209,21 @@ def main() -> int:
             dom_events_non_empty=bool(pause_dom),
             dom_install_ok=bool(pause_install.get("ok")),
         )
+        pause_click = pause.get("pause_click") if isinstance(pause.get("pause_click"), dict) else {}
+        pause_dom = pause_click.get("dom_click_capture") if isinstance(pause_click.get("dom_click_capture"), dict) else {}
+        if not pause_dom.get("capture_target"):
+            pause_dom = {
+                "capture_target": "pause_draft",
+                "trusted_dom_click": bool(pause_click.get("trusted_dom_click")),
+                "browser_dom_click_events": list(pause_click.get("browser_dom_click_events") or []),
+            }
         report["pause_control_A"] = {
             "pause_classification": pause.get("pause_classification"),
             "control_only_binding_pass": pause_binding_ok,
             "pre_click_run_binding": pre_bind,
             "post_click_run_binding": post_bind,
-            "browser_dom_click_events": pause_dom,
+            "dom_click_capture": pause_dom,
+            "browser_dom_click_events": list(pause_dom.get("browser_dom_click_events") or pause_click.get("browser_dom_click_events") or []),
         }
         chronology.append({"step": "pause_click", "ts": time.time(), "classification": pause.get("pause_classification")})
         if not pause_ok or not pause_binding_ok:
@@ -288,20 +297,30 @@ def main() -> int:
 
         classification = classify_fragment_gate(
             pause_ok=True,
+            pause_dom=pause_dom,
             probe_step=probe_step,
             francisco_step=francisco_step,
             probe_render_ok=probe_render_ok,
         )
         report["classification"] = classification
+        report["provisional_prior"] = "QUEUE1C3A2F4"
         report["fragment_exec_comparison"] = {
             "pause_functional": True,
+            "pause_trusted_dom_click": bool(pause_dom.get("trusted_dom_click")),
             "probe_callback_entered": probe_step.get("callback_entered"),
             "probe_trusted_click": probe_step.get("trusted_dom_click"),
+            "probe_ledger_observable": probe_step.get("ledger_dom_observable"),
             "francisco_callback_entered": francisco_step.get("callback_entered"),
             "francisco_trusted_click": francisco_step.get("trusted_dom_click"),
             "francisco_mutation_proven": francisco_step.get("mutation_proven"),
+            "francisco_ledger_observable": francisco_step.get("ledger_dom_observable"),
         }
-        report["ok"] = classification.startswith("QUEUE1C3A2F")
+        report["ok"] = classification in (
+            "QUEUE1C3A2F1",
+            "QUEUE1C3A2F2",
+            "QUEUE1C3A2F3",
+            "QUEUE1C3A2F4",
+        )
         report["finished_at"] = time.time()
         OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
         context.close()

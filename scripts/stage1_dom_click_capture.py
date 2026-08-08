@@ -41,6 +41,9 @@ _INSTALL_IN_DOC_JS = """(opts) => {
     if (o.mode === 'pause') {
       return pauseRe.test(text) && String(btn.getAttribute('data-testid') || '').includes('stBaseButton');
     }
+    if (o.mode === 'fragment_probe') {
+      return /Stage1 Recommendation Widget Probe/i.test(text) && String(btn.getAttribute('data-testid') || '').includes('stBaseButton');
+    }
     if (!labelRe.test(text)) return false;
     if (String(btn.getAttribute('data-testid') || '') !== testId && !String(btn.getAttribute('data-testid') || '').includes('stBaseButton')) return false;
     if (!player) return true;
@@ -131,6 +134,156 @@ _READ_LOG_FROM_WINDOW_JS = """() => {
   }
 }"""
 
+_CLEAR_LOG_JS = """() => {
+  const KEY = '__stage1DomClickCaptureLog';
+  window[KEY] = [];
+  return { cleared: true, len: 0 };
+}"""
+
+# Harness control IDs for isolated capture windows (one buffer per click).
+CAPTURE_TARGET_PAUSE = "pause_draft"
+CAPTURE_TARGET_FRAGMENT_PROBE = "fragment_widget_probe"
+CAPTURE_TARGET_FRANCISCO_ADD = "francisco_add_to_queue"
+
+_CAPTURE_TARGET_RULES: dict[str, dict[str, Any]] = {
+    CAPTURE_TARGET_PAUSE: {
+        "mode": "pause",
+        "button_label_re": "Pause Draft",
+        "match_substrings": ("pause draft",),
+        "reject_substrings": ("add to queue", "widget probe", "resume draft"),
+    },
+    CAPTURE_TARGET_FRAGMENT_PROBE: {
+        "mode": "fragment_probe",
+        "button_label_re": "Stage1 Recommendation Widget Probe",
+        "match_substrings": ("stage1 recommendation widget probe",),
+        "reject_substrings": ("add to queue", "pause draft"),
+    },
+    CAPTURE_TARGET_FRANCISCO_ADD: {
+        "mode": "rec_card",
+        "button_label_re": "Add to Queue",
+        "match_substrings": ("add to queue",),
+        "reject_substrings": ("pause draft", "widget probe", "resume draft"),
+    },
+}
+
+
+def clear_dom_click_capture_on_frame(frame) -> dict[str, Any]:
+    try:
+        return frame.evaluate(_CLEAR_LOG_JS) or {"cleared": False}
+    except Exception as exc:
+        return {"cleared": False, "error": str(exc)[:160]}
+
+
+def normalize_dom_click_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Single schema: ``is_trusted`` only (browser ``isTrusted`` normalized at scrape)."""
+    if not isinstance(event, dict):
+        return {}
+    out = dict(event)
+    if "is_trusted" not in out or out.get("is_trusted") is None:
+        if "isTrusted" in out:
+            out["is_trusted"] = bool(out.get("isTrusted"))
+        else:
+            out["is_trusted"] = False
+    else:
+        out["is_trusted"] = bool(out.get("is_trusted"))
+    out.pop("isTrusted", None)
+    return out
+
+
+def normalize_dom_click_events(events: list[Any]) -> list[dict[str, Any]]:
+    return [normalize_dom_click_event(e) for e in events if isinstance(e, dict)]
+
+
+def _event_text_blob(event: dict[str, Any]) -> str:
+    parts = [
+        str(event.get("target_text") or ""),
+        str(event.get("current_target_tag") or ""),
+    ]
+    return " ".join(parts).lower()
+
+
+def summarize_dom_click_capture(
+    events: list[Any],
+    *,
+    capture_target: str,
+) -> dict[str, Any]:
+    """Grade one isolated capture window for a control target."""
+    rules = _CAPTURE_TARGET_RULES.get(capture_target) or {}
+    normalized = normalize_dom_click_events(list(events or []))
+    match_subs = tuple(s.lower() for s in rules.get("match_substrings") or ())
+    reject_subs = tuple(s.lower() for s in rules.get("reject_substrings") or ())
+
+    def _matches_target(text: str) -> bool:
+        if not match_subs:
+            return True
+        return any(sub in text for sub in match_subs)
+
+    def _rejected(text: str) -> bool:
+        return any(sub in text for sub in reject_subs)
+
+    event_target_texts = [str(e.get("target_text") or "")[:120] for e in normalized]
+    event_types = [str(e.get("type") or "") for e in normalized]
+    unexpected: list[str] = []
+    trusted_click = False
+    for ev in normalized:
+        blob = _event_text_blob(ev)
+        if ev.get("type") == "click" and ev.get("is_trusted"):
+            if _matches_target(blob) and not _rejected(blob):
+                trusted_click = True
+            elif blob.strip():
+                unexpected.append(str(ev.get("target_text") or blob)[:80])
+        elif blob.strip() and _rejected(blob):
+            unexpected.append(str(ev.get("target_text") or blob)[:80])
+
+    return {
+        "capture_target": capture_target,
+        "trusted_dom_click": trusted_click,
+        "event_types": event_types,
+        "event_target_texts": event_target_texts,
+        "event_count": len(normalized),
+        "unexpected_event_targets": sorted(set(unexpected)),
+        "browser_dom_click_events": normalized,
+    }
+
+
+def prepare_isolated_dom_click_capture(
+    frame,
+    *,
+    capture_target: str,
+    frame_url_hint: str = "",
+    player_name: str = "",
+    button_test_id: str = "stBaseButton-secondary",
+    dom_generation_ts: str = "",
+) -> dict[str, Any]:
+    """Clear buffer, then install listeners on the target button in this frame."""
+    rules = _CAPTURE_TARGET_RULES.get(capture_target) or {}
+    cleared = clear_dom_click_capture_on_frame(frame)
+    install = install_dom_click_capture_on_frame(
+        frame,
+        frame_url_hint=frame_url_hint,
+        player_name=player_name,
+        button_test_id=button_test_id,
+        dom_generation_ts=dom_generation_ts,
+        mode=str(rules.get("mode") or "rec_card"),
+        button_label_re=str(rules.get("button_label_re") or "Add to Queue"),
+    )
+    return {
+        "capture_cleared_before_click": bool(cleared.get("cleared")),
+        "capture_target": capture_target,
+        "dom_click_capture_install": install,
+    }
+
+
+def read_and_summarize_dom_click_capture(
+    frame,
+    *,
+    capture_target: str,
+) -> dict[str, Any]:
+    events = read_dom_click_capture_from_frame(frame)
+    summary = summarize_dom_click_capture(events, capture_target=capture_target)
+    summary["capture_cleared_before_click"] = summary.get("capture_cleared_before_click")
+    return summary
+
 
 def install_dom_click_capture_on_frame(
     frame,
@@ -159,7 +312,7 @@ def install_dom_click_capture_on_frame(
 def read_dom_click_capture_from_frame(frame) -> list[dict[str, Any]]:
     try:
         raw = frame.evaluate(_READ_LOG_FROM_WINDOW_JS) or []
-        return [r for r in raw if isinstance(r, dict)]
+        return normalize_dom_click_events([r for r in raw if isinstance(r, dict)])
     except Exception:
         return []
 
@@ -186,4 +339,4 @@ def read_dom_click_capture_log(page) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for fr in page.frames:
         events.extend(read_dom_click_capture_from_frame(fr))
-    return events[-48:]
+    return normalize_dom_click_events(events[-48:])

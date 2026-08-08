@@ -717,16 +717,33 @@ def deliver_add_to_queue_click(
         out["click_end_ts"] = time.time()
         out["streamlit_identity_after"] = scrape_streamlit_identity(page)
         dom_events: list[dict[str, Any]] = []
+        dom_summary: dict[str, Any] = {}
         try:
-            from stage1_dom_click_capture import read_dom_click_capture_from_frame, read_dom_click_capture_log
+            from stage1_dom_click_capture import (
+                CAPTURE_TARGET_FRANCISCO_ADD,
+                read_and_summarize_dom_click_capture,
+                read_dom_click_capture_from_frame,
+                read_dom_click_capture_log,
+            )
 
             if click_frame is not None:
-                dom_events = read_dom_click_capture_from_frame(click_frame)
+                dom_summary = read_and_summarize_dom_click_capture(
+                    click_frame,
+                    capture_target=CAPTURE_TARGET_FRANCISCO_ADD,
+                )
+                dom_events = list(dom_summary.get("browser_dom_click_events") or [])
             if not dom_events:
                 dom_events = read_dom_click_capture_log(page)
+                if dom_events:
+                    dom_summary = read_and_summarize_dom_click_capture(
+                        click_frame or page.main_frame,
+                        capture_target=CAPTURE_TARGET_FRANCISCO_ADD,
+                    )
         except ImportError:
             pass
+        out["dom_click_capture"] = dom_summary
         out["browser_dom_click_events"] = dom_events
+        out["trusted_dom_click"] = bool(dom_summary.get("trusted_dom_click"))
         install_meta = out.get("dom_click_capture_install") if isinstance(out.get("dom_click_capture_install"), dict) else {}
         if install_meta.get("ok") and not dom_events:
             out["dom_capture_observability_failed"] = True
@@ -790,16 +807,18 @@ def deliver_add_to_queue_click(
         btn.scroll_into_view_if_needed(timeout=pw_timeout)
         page.wait_for_timeout(350)
         try:
-            from stage1_dom_click_capture import install_dom_click_capture_on_frame
+            from stage1_dom_click_capture import CAPTURE_TARGET_FRANCISCO_ADD, prepare_isolated_dom_click_capture
 
             dom_gen = str(candidate.get("dom_generation_ts") or "")
-            out["dom_click_capture_install"] = install_dom_click_capture_on_frame(
+            prep = prepare_isolated_dom_click_capture(
                 frame,
+                capture_target=CAPTURE_TARGET_FRANCISCO_ADD,
                 frame_url_hint=str(frame.url or candidate.get("frameUrl") or ""),
                 player_name=name,
                 dom_generation_ts=dom_gen,
-                mode="rec_card",
             )
+            out["dom_click_capture_prep"] = prep
+            out["dom_click_capture_install"] = prep.get("dom_click_capture_install") or {}
             install_href = str(out["dom_click_capture_install"].get("frame_href") or "")
             target_href = str(frame.url or "")
             if install_href and target_href and install_href.split("?")[0] not in target_href and target_href.split("?")[0] not in install_href:

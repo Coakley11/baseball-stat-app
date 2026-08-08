@@ -102,25 +102,51 @@ class RecFragmentExecDiagTests(unittest.TestCase):
         self.assertEqual(session[RECOMMENDATION_FRAGMENT_RUN_SEQ_KEY], 1)
 
     def test_classify_fragment_exec_f1_and_f4(self) -> None:
-        from scripts.stage1_rec_fragment_exec_scrape import classify_fragment_exec_comparison
+        import sys
+        from pathlib import Path
+
+        scripts = Path(__file__).resolve().parent.parent / "scripts"
+        if str(scripts) not in sys.path:
+            sys.path.insert(0, str(scripts))
+        from stage1_rec_fragment_exec_gate import classify_fragment_gate
 
         self.assertEqual(
-            classify_fragment_exec_comparison(
-                pause_functional=True,
-                probe_ledger_last={"callback_entered": True},
-                francisco_ledger_last={"callback_entered": False},
-                probe_dom_click=True,
-                francisco_dom_click=True,
+            classify_fragment_gate(
+                pause_ok=True,
+                pause_dom={"trusted_dom_click": True},
+                probe_step={
+                    "trusted_dom_click": True,
+                    "callback_entered": True,
+                    "ledger_dom_observable": True,
+                    "callback_ledger_last": {"callback_entered": True, "source": "fragment_widget_probe"},
+                },
+                francisco_step={
+                    "trusted_dom_click": True,
+                    "callback_entered": False,
+                    "ledger_dom_observable": True,
+                    "callback_ledger_last": {},
+                },
+                probe_render_ok=True,
             ),
             "QUEUE1C3A2F1",
         )
         self.assertEqual(
-            classify_fragment_exec_comparison(
-                pause_functional=True,
-                probe_ledger_last={"callback_entered": False},
-                francisco_ledger_last={"callback_entered": False},
-                probe_dom_click=True,
-                francisco_dom_click=True,
+            classify_fragment_gate(
+                pause_ok=True,
+                pause_dom={"trusted_dom_click": True},
+                probe_step={
+                    "trusted_dom_click": True,
+                    "callback_entered": False,
+                    "ledger_dom_observable": True,
+                    "callback_ledger_last": {},
+                },
+                francisco_step={
+                    "trusted_dom_click": True,
+                    "callback_entered": False,
+                    "ledger_dom_observable": True,
+                    "callback_ledger_last": {},
+                },
+                probe_render_ok=True,
             ),
             "QUEUE1C3A2F4",
         )

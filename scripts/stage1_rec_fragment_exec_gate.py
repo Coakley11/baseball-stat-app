@@ -5,10 +5,51 @@ from __future__ import annotations
 import time
 from typing import Any
 
+OBSERVABILITY_FRAGMENT_LEDGER_NOT_VISIBLE = "OBSERVABILITY_FRAGMENT_LEDGER_NOT_VISIBLE"
+
+
+def callback_ledger_dom_observable(scrape: dict[str, Any] | None) -> bool:
+    if not isinstance(scrape, dict) or scrape.get("error"):
+        return False
+    if not str(scrape.get("impl_rev") or "").strip():
+        return False
+    return scrape.get("ledger_len") is not None and str(scrape.get("ledger_len")) != ""
+
+
+def snapshot_fragment_lifecycle(page, *, stage: str) -> dict[str, Any]:
+    ctx = snapshot_fragment_exec_context(page)
+    probe = ctx.get("fragment_widget_probe") if isinstance(ctx.get("fragment_widget_probe"), dict) else {}
+    francisco_probe = ctx.get("francisco_exec_probe") if isinstance(ctx.get("francisco_exec_probe"), dict) else {}
+    rt = ctx.get("francisco_render_trace") if isinstance(ctx.get("francisco_render_trace"), dict) else {}
+    binding = ctx.get("full_app_binding") if isinstance(ctx.get("full_app_binding"), dict) else {}
+    return {
+        "stage": stage,
+        "ts": time.time(),
+        "recommendation_fragment_run_seq_probe": probe.get("recommendation_fragment_run_seq"),
+        "recommendation_fragment_run_seq_francisco_probe": francisco_probe.get("recommendation_fragment_run_seq"),
+        "recommendation_fragment_run_seq_render_trace": rt.get("current_script_run_seq"),
+        "paint_via_probe": probe.get("paint_via"),
+        "paint_via_francisco": francisco_probe.get("paint_via"),
+        "fragment_context_probe": probe.get("fragment_context"),
+        "heavy_paint_done": rt.get("heavy_paint_done"),
+        "widget_liveness": rt.get("widget_liveness"),
+        "probe_source": rt.get("probe_source"),
+        "paint_body_executed_vs_reemit_only": (
+            "reemit_only"
+            if str(rt.get("probe_source") or "") == "registry_reemit"
+            else "paint_body_or_actual_render"
+            if rt.get("widget_liveness") == "live_this_run"
+            else "unknown"
+        ),
+        "full_app_run_seq": binding.get("current_app_diag_seq") or binding.get("lifecycle_current_script_run_seq"),
+        "callback_ledger_observable": callback_ledger_dom_observable(ctx.get("callback_ledger_scrape")),
+        "ledger_len": (ctx.get("callback_ledger_scrape") or {}).get("ledger_len"),
+    }
+
 
 def snapshot_fragment_exec_context(page) -> dict[str, Any]:
     from stage1_rec_fragment_exec_scrape import scrape_fragment_callback_ledger, scrape_fragment_exec_probes
-    from stage1_run_binding import capture_run_binding_snapshot, BINDING_MODE_RECOMMENDATION_WIDGET
+    from stage1_run_binding import BINDING_MODE_RECOMMENDATION_WIDGET, capture_run_binding_snapshot
     from stage1_rec_queue_click_trace_scrape import scrape_rec_queue_render_trace
 
     probes = scrape_fragment_exec_probes(page)
@@ -44,31 +85,6 @@ def _app_frame(page):
     return page.main_frame
 
 
-def _install_dom_on_app_frame(page) -> dict[str, Any]:
-    try:
-        from stage1_dom_click_capture import install_dom_click_capture_on_frame
-
-        fr = _app_frame(page)
-        return install_dom_click_capture_on_frame(fr, frame_url_hint=str(fr.url or ""), mode="rec_card")
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)[:160]}
-
-
-def _read_dom_events(page) -> list[dict[str, Any]]:
-    try:
-        from stage1_dom_click_capture import read_dom_click_capture_from_frame, read_dom_click_capture_log
-
-        fr = _app_frame(page)
-        events = read_dom_click_capture_from_frame(fr)
-        return events if events else read_dom_click_capture_log(page)
-    except Exception:
-        return []
-
-
-def _trusted_click(events: list[dict[str, Any]]) -> bool:
-    return any(isinstance(e, dict) and e.get("type") == "click" and e.get("isTrusted") for e in events)
-
-
 def prove_fragment_probe_rendered(ctx: dict[str, Any], *, room_id: str) -> tuple[bool, str]:
     probe = ctx.get("fragment_widget_probe") if isinstance(ctx.get("fragment_widget_probe"), dict) else {}
     if not probe.get("widget_key"):
@@ -81,17 +97,51 @@ def prove_fragment_probe_rendered(ctx: dict[str, Any], *, room_id: str) -> tuple
     return True, ""
 
 
+def _ledger_delta(
+    before_payload: dict[str, Any],
+    after_payload: dict[str, Any],
+    *,
+    source: str,
+) -> dict[str, Any]:
+    before_len = int(before_payload.get("ledger_len") or 0)
+    after_len = int(after_payload.get("ledger_len") or 0)
+    last = ledger_last_for_source(after_payload, source)
+    if not last and isinstance(after_payload.get("last"), dict):
+        row = after_payload["last"]
+        if str(row.get("source") or "") == source:
+            last = dict(row)
+    return {
+        "ledger_len_before": before_len,
+        "ledger_len_after": after_len,
+        "new_event": after_len > before_len or bool(last.get("event_id")),
+        "callback_ledger_last": last,
+        "callback_entered": bool(last.get("callback_entered")),
+    }
+
+
 def click_fragment_widget_probe(page, *, settle_ms: int = 3500) -> dict[str, Any]:
+    from stage1_dom_click_capture import (
+        CAPTURE_TARGET_FRAGMENT_PROBE,
+        prepare_isolated_dom_click_capture,
+        read_and_summarize_dom_click_capture,
+    )
     from stage1_rec_fragment_exec_scrape import scrape_fragment_callback_ledger
 
     out: dict[str, Any] = {"control": "B_fragment_widget_probe", "started_ts": time.time()}
+    out["lifecycle_before"] = snapshot_fragment_lifecycle(page, stage="before_probe_click")
     out["pre"] = snapshot_fragment_exec_context(page)
-    out["dom_click_capture_install"] = _install_dom_on_app_frame(page)
+    before_payload = dict(out["pre"].get("ledger_payload") or {})
+    fr = _app_frame(page)
+    prep = prepare_isolated_dom_click_capture(
+        fr,
+        capture_target=CAPTURE_TARGET_FRAGMENT_PROBE,
+        frame_url_hint=str(fr.url or ""),
+    )
+    out["dom_click_capture_prep"] = prep
     label = "Stage1 Recommendation Widget Probe"
     clicked = False
     err = ""
     try:
-        fr = _app_frame(page)
         loc = fr.get_by_role("button", name=label, exact=False)
         if loc.count() == 0:
             loc = page.get_by_role("button", name=label, exact=False)
@@ -102,16 +152,23 @@ def click_fragment_widget_probe(page, *, settle_ms: int = 3500) -> dict[str, Any
         err = f"{type(exc).__name__}:{exc}"
     out["click_dispatched"] = clicked
     out["click_error"] = err[:240]
-    page.wait_for_timeout(settle_ms)
-    out["browser_dom_click_events"] = _read_dom_events(page)
-    out["trusted_dom_click"] = _trusted_click(out["browser_dom_click_events"])
+    page.wait_for_timeout(min(settle_ms, 800))
+    dom = read_and_summarize_dom_click_capture(fr, capture_target=CAPTURE_TARGET_FRAGMENT_PROBE)
+    dom["capture_cleared_before_click"] = bool(prep.get("capture_cleared_before_click"))
+    out["dom_click_capture"] = dom
+    out["browser_dom_click_events"] = list(dom.get("browser_dom_click_events") or [])
+    out["trusted_dom_click"] = bool(dom.get("trusted_dom_click"))
+    page.wait_for_timeout(max(0, settle_ms - 800))
     out["post"] = snapshot_fragment_exec_context(page)
+    out["lifecycle_after"] = snapshot_fragment_lifecycle(page, stage="after_probe_click")
     ledger = scrape_fragment_callback_ledger(page)
-    payload = ledger.get("payload") if isinstance(ledger.get("payload"), dict) else {}
-    last = payload.get("last") if isinstance(payload.get("last"), dict) else {}
-    out["callback_ledger_last"] = last
-    out["probe_click_count"] = payload.get("probe_click_count")
-    out["callback_entered"] = bool(last.get("callback_entered")) and str(last.get("source") or "") == "fragment_widget_probe"
+    after_payload = ledger.get("payload") if isinstance(ledger.get("payload"), dict) else {}
+    delta = _ledger_delta(before_payload, after_payload, source="fragment_widget_probe")
+    out["callback_ledger_delta"] = delta
+    out["callback_ledger_last"] = delta.get("callback_ledger_last") or {}
+    out["callback_entered"] = bool(delta.get("callback_entered"))
+    out["probe_click_count"] = after_payload.get("probe_click_count")
+    out["ledger_dom_observable"] = callback_ledger_dom_observable(ledger)
     out["finished_ts"] = time.time()
     return out
 
@@ -142,11 +199,13 @@ def click_francisco_add_to_queue(
     )
     from stage1_rec_fragment_exec_scrape import scrape_fragment_callback_ledger
     from stage1_rec_queue_click_trace_scrape import merge_render_trace_into_step, scrape_rec_queue_render_trace
-    from stage1_run_binding import capture_run_binding_snapshot, BINDING_MODE_RECOMMENDATION_WIDGET
+    from stage1_run_binding import BINDING_MODE_RECOMMENDATION_WIDGET, capture_run_binding_snapshot
     from stage1_queue_seed_harness import _poll_queue_mutation, _snapshot_queue
 
     out: dict[str, Any] = {"control": "C_francisco_add_to_queue", "started_ts": time.time()}
+    out["lifecycle_before"] = snapshot_fragment_lifecycle(page, stage="before_francisco_click")
     out["pre"] = snapshot_fragment_exec_context(page)
+    before_payload = dict(out["pre"].get("ledger_payload") or {})
     candidates = discover_bound_add_to_queue_controls(page)
     pick, reject = select_next_seed_candidate(
         candidates,
@@ -185,12 +244,12 @@ def click_francisco_add_to_queue(
         out["classification"] = "ABORTED_FRANCISCO_NOT_LIVE_THIS_RUN"
         out["click_dispatched"] = False
         return out
-    out["dom_click_capture_install"] = _install_dom_on_app_frame(page)
     delivery = deliver_add_to_queue_click(page, pick, playwright_only=True)
     out["delivery_detail"] = delivery
+    out["dom_click_capture"] = delivery.get("dom_click_capture") or {}
     out["click_dispatched"] = bool(delivery.get("click_dispatched"))
     out["browser_dom_click_events"] = list(delivery.get("browser_dom_click_events") or [])
-    out["trusted_dom_click"] = _trusted_click(out["browser_dom_click_events"])
+    out["trusted_dom_click"] = bool(delivery.get("trusted_dom_click") or out["dom_click_capture"].get("trusted_dom_click"))
     page.wait_for_timeout(settle_ms)
     mut = _poll_queue_mutation(
         page,
@@ -208,13 +267,15 @@ def click_francisco_add_to_queue(
         merge_app_trace_into_step(out, scrape_rec_queue_app_trace(page))
     except ImportError:
         pass
-    out["app_callback_entered"] = out.get("app_callback_entered")
     out["post"] = snapshot_fragment_exec_context(page)
+    out["lifecycle_after"] = snapshot_fragment_lifecycle(page, stage="after_francisco_click")
     ledger = scrape_fragment_callback_ledger(page)
-    payload = ledger.get("payload") if isinstance(ledger.get("payload"), dict) else {}
-    fr_last = ledger_last_for_source(payload, "rec_card_add_to_queue")
-    out["callback_ledger_last"] = fr_last
-    out["callback_entered"] = bool(fr_last.get("callback_entered"))
+    after_payload = ledger.get("payload") if isinstance(ledger.get("payload"), dict) else {}
+    delta = _ledger_delta(before_payload, after_payload, source="rec_card_add_to_queue")
+    out["callback_ledger_delta"] = delta
+    out["callback_ledger_last"] = delta.get("callback_ledger_last") or {}
+    out["callback_entered"] = bool(delta.get("callback_entered"))
+    out["ledger_dom_observable"] = callback_ledger_dom_observable(ledger)
     out["finished_ts"] = time.time()
     return out
 
@@ -222,6 +283,7 @@ def click_francisco_add_to_queue(
 def classify_fragment_gate(
     *,
     pause_ok: bool,
+    pause_dom: dict[str, Any] | None,
     probe_step: dict[str, Any],
     francisco_step: dict[str, Any],
     probe_render_ok: bool,
@@ -232,11 +294,14 @@ def classify_fragment_gate(
         return "ABORTED_FRAGMENT_PROBE_NOT_RENDERED"
     if not pause_ok:
         return "ABORTED_PAUSE_NOT_RESOLVED"
+    if not probe_step.get("ledger_dom_observable") or not francisco_step.get("ledger_dom_observable"):
+        return OBSERVABILITY_FRAGMENT_LEDGER_NOT_VISIBLE
 
+    pause_trusted = bool((pause_dom or {}).get("trusted_dom_click"))
     probe_ledger = probe_step.get("callback_ledger_last") if isinstance(probe_step.get("callback_ledger_last"), dict) else {}
     fr_ledger = francisco_step.get("callback_ledger_last") if isinstance(francisco_step.get("callback_ledger_last"), dict) else {}
     base = classify_fragment_exec_comparison(
-        pause_functional=True,
+        pause_functional=pause_ok and pause_trusted,
         probe_ledger_last=probe_ledger,
         francisco_ledger_last=fr_ledger,
         probe_dom_click=bool(probe_step.get("trusted_dom_click")),
@@ -250,8 +315,10 @@ def classify_fragment_gate(
             return "QUEUE1C3A2F3"
         if fr_entered:
             return "QUEUE1C3A2F2"
-    if base:
-        return base
+    if base == "QUEUE1C3A2F4":
+        return "QUEUE1C3A2F4"
+    if base == "QUEUE1C3A2F1":
+        return "QUEUE1C3A2F1"
     if fr_entered and fr_mut and not queue_after:
         return "QUEUE1C3A2F3"
     if fr_entered and not fr_mut:

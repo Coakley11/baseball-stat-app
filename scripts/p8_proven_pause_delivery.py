@@ -160,15 +160,20 @@ def dispatch_proven_pause_click(page) -> dict[str, Any]:
                 continue
             out["disabled_at_click"] = False
             try:
-                from stage1_dom_click_capture import install_dom_click_capture_on_frame
+                from stage1_dom_click_capture import (
+                    CAPTURE_TARGET_PAUSE,
+                    prepare_isolated_dom_click_capture,
+                    read_and_summarize_dom_click_capture,
+                )
 
-                dom_install = install_dom_click_capture_on_frame(
+                prep = prepare_isolated_dom_click_capture(
                     frame,
+                    capture_target=CAPTURE_TARGET_PAUSE,
                     frame_url_hint=str(frame.url or ""),
-                    mode="pause",
-                    button_label_re="Pause Draft",
                     button_test_id="stBaseButton-primary",
                 )
+                dom_install = prep.get("dom_click_capture_install") or {}
+                out["dom_click_capture_prep"] = prep
             except ImportError:
                 pass
             try:
@@ -197,14 +202,24 @@ def dispatch_proven_pause_click(page) -> dict[str, Any]:
         out["dom_click_capture_install"] = dom_install
     if click_frame is not None and out.get("dom_click_dispatched"):
         try:
-            from stage1_dom_click_capture import read_dom_click_capture_from_frame
+            from stage1_dom_click_capture import CAPTURE_TARGET_PAUSE, read_and_summarize_dom_click_capture
 
-            events = read_dom_click_capture_from_frame(click_frame)
-            out["browser_dom_click_events"] = events
-            if dom_install.get("ok") and not events:
+            summary = read_and_summarize_dom_click_capture(click_frame, capture_target=CAPTURE_TARGET_PAUSE)
+            out["dom_click_capture"] = summary
+            out["browser_dom_click_events"] = list(summary.get("browser_dom_click_events") or [])
+            out["trusted_dom_click"] = bool(summary.get("trusted_dom_click"))
+            if dom_install.get("ok") and not out["browser_dom_click_events"]:
                 out["dom_capture_observability_failed"] = True
         except ImportError:
-            pass
+            try:
+                from stage1_dom_click_capture import read_dom_click_capture_from_frame
+
+                events = read_dom_click_capture_from_frame(click_frame)
+                out["browser_dom_click_events"] = events
+                if dom_install.get("ok") and not events:
+                    out["dom_capture_observability_failed"] = True
+            except ImportError:
+                pass
     return out
 
 
