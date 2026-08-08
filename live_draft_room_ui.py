@@ -1518,6 +1518,7 @@ def render_live_draft_rec_cards(
         return
 
     pick_idx = int(room.get("current_pick_index") or 0)
+    room_id = str(room.get("draft_room_id") or "").strip()
     layout_mode = "stacked" if layout == "stacked" else "compact_horizontal"
     record_rec_card_diagnostics(
         session,
@@ -1756,12 +1757,64 @@ def render_live_draft_rec_cards(
                         help=disable_reason[:200],
                     )
             with queue_col:
+                queue_widget_key = f"rec_card_queue_{pick_idx}_{stable_key}"
+                queue_click_event_id = ""
+                try:
+                    from live_draft_rec_queue_click_trace import (
+                        build_rec_card_queue_widget_key,
+                        new_rec_queue_event_id,
+                        register_rec_queue_widget,
+                    )
+
+                    queue_click_event_id = new_rec_queue_event_id()
+                    register_rec_queue_widget(
+                        session,
+                        room_id=room_id,
+                        pick_index=pick_idx,
+                        player_id=player_id,
+                        player_name=name,
+                        widget_key=queue_widget_key,
+                        surface="rec_card",
+                        already_queued=already_queued,
+                        canonical_widget_key=build_rec_card_queue_widget_key(
+                            room_id=room_id,
+                            pick_index=pick_idx,
+                            stable_key=stable_key,
+                            surface="rec_card",
+                        ),
+                    )
+                except ImportError:
+                    pass
 
                 def _on_rec_queue_click(
                     _session: dict[str, Any] = session,
                     _name: str = name,
+                    _event_id: str = queue_click_event_id,
+                    _widget_key: str = queue_widget_key,
+                    _room_id: str = room_id,
+                    _pick_idx: int = pick_idx,
+                    _player_id: str = player_id,
                 ) -> None:
                     before = [str(x).strip() for x in (_session.get("draft_queue") or []) if str(x).strip()]
+                    try:
+                        from live_draft_rec_queue_click_trace import (
+                            begin_rec_queue_click_trace,
+                            new_rec_queue_event_id,
+                            note_rec_queue_mutation_trace,
+                        )
+
+                        begin_rec_queue_click_trace(
+                            _session,
+                            event_id=_event_id or new_rec_queue_event_id(),
+                            room_id=_room_id,
+                            pick_index=_pick_idx,
+                            player_id=_player_id,
+                            player_name=_name,
+                            widget_key=_widget_key,
+                            queue_before=before,
+                        )
+                    except ImportError:
+                        pass
                     try:
                         from live_draft_queue_survival import begin_queue_action
 
@@ -1781,20 +1834,40 @@ def render_live_draft_rec_cards(
                         pass
                     added = False
                     after = list(before)
+                    mut_exc: str | None = None
+                    mutation_entered = False
                     try:
                         from draft_state import add_player_to_draft_queue
                         from live_draft_rerun_scope import mark_live_draft_queue_tick
 
                         # Mutate session immediately; skip recommendation rebuild on the follow-up paint.
                         mark_live_draft_queue_tick(_session)
+                        mutation_entered = True
                         after, added = add_player_to_draft_queue(_session, _name)
                     except ImportError:
                         try:
                             from draft_state import add_player_to_draft_queue
 
+                            mutation_entered = True
                             after, added = add_player_to_draft_queue(_session, _name)
                         except ImportError:
                             pass
+                    except Exception as exc:
+                        mut_exc = f"{type(exc).__name__}: {exc}"
+                    try:
+                        from live_draft_rec_queue_click_trace import note_rec_queue_mutation_trace
+
+                        note_rec_queue_mutation_trace(
+                            _session,
+                            event_id=_event_id,
+                            mutation_helper_entered=mutation_entered,
+                            mutation_result={"added": added, "after_len": len(after)},
+                            queue_after=after,
+                            added=bool(added),
+                            exception=mut_exc,
+                        )
+                    except ImportError:
+                        pass
                     after = [str(x).strip() for x in (_session.get("draft_queue") or []) if str(x).strip()]
                     try:
                         from live_draft_queue_fragment import record_queue_add_diag
@@ -1828,7 +1901,7 @@ def render_live_draft_rec_cards(
                 if already_queued:
                     st.button(
                         "Queued",
-                        key=f"rec_card_queue_{pick_idx}_{stable_key}",
+                        key=queue_widget_key,
                         disabled=True,
                         use_container_width=True,
                         help=f"{name} is already in your draft queue.",
@@ -1836,7 +1909,7 @@ def render_live_draft_rec_cards(
                 else:
                     st.button(
                         "⭐ Add to Queue",
-                        key=f"rec_card_queue_{pick_idx}_{stable_key}",
+                        key=queue_widget_key,
                         use_container_width=True,
                         on_click=_on_rec_queue_click,
                         help=f"Add {name} to your draft queue.",
@@ -1854,6 +1927,13 @@ def render_live_draft_rec_cards(
                         ),
                         unsafe_allow_html=True,
                     )
+
+    try:
+        from live_draft_rec_queue_click_trace import render_rec_queue_click_trace_probe
+
+        render_rec_queue_click_trace_probe(st, session)
+    except ImportError:
+        pass
 
 
 def _position_heat_class(dropoff: float, *, strong_cut: float, weak_cut: float) -> str:

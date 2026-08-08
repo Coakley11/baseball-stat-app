@@ -32,7 +32,8 @@ class LiveDraftQueueFragmentTests(unittest.TestCase):
         paint = session.get(QUEUE_PAINT_DIAG_KEY) or {}
         self.assertEqual(paint.get("before_panel", {}).get("names"), ["Aaron Judge"])
 
-    def test_draft_from_queue_escalates_to_app_rerun(self) -> None:
+    def test_draft_from_queue_defers_full_rerun_for_pending_pick(self) -> None:
+        """Pick escalation defers st.rerun to page end (QUEUE_FRAGMENT_PICK_KEY retired)."""
         from live_draft_queue_fragment import (
             QUEUE_FRAGMENT_PICK_KEY,
             render_live_draft_queue_fragment,
@@ -44,18 +45,13 @@ class LiveDraftQueueFragmentTests(unittest.TestCase):
             "_pending_manual_draft_pick": {"player_name": "Player A"},
         }
         st = MagicMock()
-        calls: list[dict[str, Any]] = []
-
-        def _rerun(**kwargs):
-            calls.append(dict(kwargs))
-
-        st.rerun.side_effect = _rerun
 
         with patch("draft_ui.render_draft_queue_panel", return_value=True):
             render_live_draft_queue_fragment(st, session)
 
-        self.assertTrue(session.get(QUEUE_FRAGMENT_PICK_KEY))
-        self.assertEqual(calls, [{"scope": "app"}])
+        self.assertTrue(session.get("_live_draft_defer_full_rerun"))
+        self.assertFalse(session.get(QUEUE_FRAGMENT_PICK_KEY))
+        st.rerun.assert_not_called()
 
     def test_record_queue_add_diag(self) -> None:
         from live_draft_queue_fragment import QUEUE_ADD_DIAG_KEY, record_queue_add_diag

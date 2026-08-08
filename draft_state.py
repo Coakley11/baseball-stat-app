@@ -353,6 +353,15 @@ def gather_draft_workflow(session: dict[str, Any]) -> dict[str, list[str]]:
     return widget
 
 
+def _note_rec_queue_after_prepare(session: dict[str, Any], meta: dict[str, Any]) -> None:
+    try:
+        from live_draft_rec_queue_click_trace import note_rec_queue_post_prepare
+
+        note_rec_queue_post_prepare(session, prepare_reason=str(meta.get("last_write_reason") or ""))
+    except ImportError:
+        pass
+
+
 def prepare_draft_workflow(session: dict[str, Any]) -> dict[str, Any]:
     """Reconcile draft queue + watchlist before sidebar widgets render."""
     try:
@@ -369,7 +378,7 @@ def prepare_draft_workflow(session: dict[str, Any]) -> dict[str, Any]:
         # Always mirror merged values back onto widget keys. A prior participant
         # hydrate can leave draft_queue=[] while draft_state.queue still has names;
         # sync_widget_keys=False made the panel paint Empty despite "successful" Add.
-        return write_canonical_draft_state(
+        meta = write_canonical_draft_state(
             session,
             queue=widget["queue"] or canonical.get("queue"),
             watchlist_focus=widget["watchlist_focus"] or canonical.get("watchlist_focus"),
@@ -378,9 +387,11 @@ def prepare_draft_workflow(session: dict[str, Any]) -> dict[str, Any]:
             local_edit=True,
             sync_widget_keys=True,
         )
+        _note_rec_queue_after_prepare(session, meta)
+        return meta
     canonical = canonical_draft_workflow(session)
     if canonical and any(canonical.get(k) for k in ("queue", "watchlist_focus", "watchlist_favorites")):
-        return write_canonical_draft_state(
+        meta = write_canonical_draft_state(
             session,
             queue=canonical.get("queue"),
             watchlist_focus=canonical.get("watchlist_focus"),
@@ -388,14 +399,18 @@ def prepare_draft_workflow(session: dict[str, Any]) -> dict[str, Any]:
             reason="canonical_preserve",
             sync_widget_keys=not any(widget.values()),
         )
+        _note_rec_queue_after_prepare(session, meta)
+        return meta
     gathered = gather_draft_workflow(session)
-    return write_canonical_draft_state(
+    meta = write_canonical_draft_state(
         session,
         queue=gathered["queue"],
         watchlist_focus=gathered["watchlist_focus"],
         watchlist_favorites=gathered["watchlist_favorites"],
         reason="reconcile_on_load" if any(gathered.values()) else "empty",
     )
+    _note_rec_queue_after_prepare(session, meta)
+    return meta
 
 
 def mark_draft_pending_sync(session: dict[str, Any]) -> None:
