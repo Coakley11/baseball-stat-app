@@ -13,6 +13,9 @@ WIDGET_REGISTRY_KEY = "_live_draft_rec_queue_widget_registry"
 RENDER_TRACE_REGISTRY_KEY = "_live_draft_rec_queue_render_trace_registry"
 REC_QUEUE_CALLBACK_ID = "_on_rec_queue_click"
 REC_QUEUE_CALLBACK_VERSION = "live_draft_room_ui_v1"
+RENDER_TRACE_PROBE_ELEMENT_ID = "rec-card-queue-render-trace"
+PER_CARD_RENDER_TRACE_CLASS = "rec-card-queue-render-trace-card"
+REC_QUEUE_RENDER_TRACE_IMPL_REV = "rec_queue_render_trace_v2_per_card_reemit"
 MAX_LEDGER = 24
 MAX_RENDER_REGISTRY = 32
 
@@ -62,6 +65,7 @@ def register_rec_queue_render_trace(
         "player_name": str(player_name or "").strip(),
         "surface": str(surface or "rec_card"),
         "expected_widget_key": str(widget_key or "").strip(),
+        "widget_key": str(widget_key or "").strip(),
         "callback_id": REC_QUEUE_CALLBACK_ID,
         "callback_version": REC_QUEUE_CALLBACK_VERSION,
         "on_click_wired": True,
@@ -79,24 +83,73 @@ def register_rec_queue_render_trace(
     return row
 
 
-def render_rec_queue_render_trace_probe(st: Any, session: dict[str, Any]) -> None:
-    """Pre-click DOM: #rec-card-queue-render-trace (solo_component_diag only)."""
+def _render_trace_diag_enabled(st: Any | None, session: dict[str, Any]) -> bool:
     try:
         from live_draft_solo_component_diagnostics import solo_component_diag_enabled
 
-        if not solo_component_diag_enabled(st, session):
-            return
+        return bool(solo_component_diag_enabled(st, session))
     except ImportError:
-        if not session.get("_solo_component_diag_enabled"):
-            return
-    reg = list(session.get(RENDER_TRACE_REGISTRY_KEY) or [])
-    last = dict(session.get("_live_draft_rec_queue_render_trace_last") or {})
+        return bool(session.get("_solo_component_diag_enabled"))
+
+
+def _render_trace_build_sha() -> str:
     try:
         from suite_deploy_marker import resolve_git_commit_short
 
-        sha = resolve_git_commit_short()
+        return str(resolve_git_commit_short() or "")[:12]
     except ImportError:
-        sha = str(last.get("app_build_sha") or "")
+        return ""
+
+
+def render_per_card_rec_queue_render_trace_marker(
+    st: Any,
+    session: dict[str, Any],
+    trace_row: dict[str, Any],
+) -> None:
+    """Per-card render proof adjacent to the Add button (fragment-safe for harness)."""
+    if not _render_trace_diag_enabled(st, session):
+        return
+    if not isinstance(trace_row, dict) or not trace_row.get("player_name"):
+        return
+    safe = lambda s: str(s or "").replace('"', "'")[:120]
+    sha = str(trace_row.get("app_build_sha") or _render_trace_build_sha())
+    gen = int(trace_row.get("render_run_seq") or session.get("_live_draft_rec_queue_render_seq") or 0)
+    st.markdown(
+        f'<div class="{PER_CARD_RENDER_TRACE_CLASS}" '
+        f'data-room-id="{safe(trace_row.get("room_id"))}" '
+        f'data-player-name="{safe(trace_row.get("player_name"))}" '
+        f'data-player-id="{safe(trace_row.get("player_id"))}" '
+        f'data-pick-index="{int(trace_row.get("pick_index") or 0)}" '
+        f'data-widget-key="{safe(trace_row.get("expected_widget_key") or trace_row.get("widget_key"))}" '
+        f'data-surface="{safe(trace_row.get("surface") or "rec_card")}" '
+        f'data-callback-id="{safe(trace_row.get("callback_id") or REC_QUEUE_CALLBACK_ID)}" '
+        f'data-render-generation="{gen}" '
+        f'data-app-sha="{safe(sha)}" '
+        f'data-impl-rev="{REC_QUEUE_RENDER_TRACE_IMPL_REV}"></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def reemit_rec_queue_render_trace_diagnostics(st: Any, session: dict[str, Any]) -> None:
+    """Re-paint render probes from session registry without re-rendering recommendation cards."""
+    if not _render_trace_diag_enabled(st, session):
+        return
+    reg = list(session.get(RENDER_TRACE_REGISTRY_KEY) or [])
+    if not reg and not session.get("_live_draft_rec_queue_render_trace_last"):
+        return
+    render_rec_queue_render_trace_probe(st, session)
+    for row in reg[-6:]:
+        if isinstance(row, dict):
+            render_per_card_rec_queue_render_trace_marker(st, session, row)
+
+
+def render_rec_queue_render_trace_probe(st: Any, session: dict[str, Any]) -> None:
+    """Pre-click DOM: #rec-card-queue-render-trace (solo_component_diag only)."""
+    if not _render_trace_diag_enabled(st, session):
+        return
+    reg = list(session.get(RENDER_TRACE_REGISTRY_KEY) or [])
+    last = dict(session.get("_live_draft_rec_queue_render_trace_last") or {})
+    sha = _render_trace_build_sha() or str(last.get("app_build_sha") or "")
     payload = json.dumps(
         {
             "registry_len": len(reg),
@@ -118,15 +171,18 @@ def render_rec_queue_render_trace_probe(st: Any, session: dict[str, Any]) -> Non
     )[:12000]
     safe = lambda s: str(s or "").replace('"', "'")[:120]
     st.markdown(
-        f'<div id="rec-card-queue-render-trace" '
+        f'<div id="{RENDER_TRACE_PROBE_ELEMENT_ID}" '
+        f'class="{PER_CARD_RENDER_TRACE_CLASS} rec-card-queue-render-trace-global" '
         f'data-room-id="{safe(last.get("room_id"))}" '
         f'data-player-name="{safe(last.get("player_name"))}" '
         f'data-player-id="{safe(last.get("player_id"))}" '
         f'data-pick-index="{int(last.get("pick_index") or 0)}" '
-        f'data-widget-key="{safe(last.get("expected_widget_key"))}" '
+        f'data-widget-key="{safe(last.get("expected_widget_key") or last.get("widget_key"))}" '
+        f'data-surface="{safe(last.get("surface") or "rec_card")}" '
         f'data-callback-id="{safe(last.get("callback_id") or REC_QUEUE_CALLBACK_ID)}" '
         f'data-registry-len="{len(reg)}" '
         f'data-app-sha="{safe(sha)}" '
+        f'data-impl-rev="{REC_QUEUE_RENDER_TRACE_IMPL_REV}" '
         f'data-json="{payload.replace(chr(34), chr(39))}"></div>',
         unsafe_allow_html=True,
     )

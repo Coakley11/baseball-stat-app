@@ -1760,6 +1760,7 @@ def render_live_draft_rec_cards(
                 legacy_widget_key = f"rec_card_queue_{pick_idx}_{stable_key}"
                 queue_widget_key = legacy_widget_key
                 queue_click_event_id = ""
+                _render_trace_row: dict[str, Any] | None = None
                 try:
                     from live_draft_rec_queue_click_trace import (
                         build_rec_card_queue_widget_key,
@@ -1792,7 +1793,7 @@ def render_live_draft_rec_cards(
 
                         seq = int(session.get("_live_draft_rec_queue_render_seq") or 0) + 1
                         session["_live_draft_rec_queue_render_seq"] = seq
-                        register_rec_queue_render_trace(
+                        _render_trace_row = register_rec_queue_render_trace(
                             session,
                             room_id=room_id,
                             pick_index=pick_idx,
@@ -1804,7 +1805,7 @@ def render_live_draft_rec_cards(
                             render_run_seq=seq,
                         )
                     except ImportError:
-                        pass
+                        _render_trace_row = None
                 except ImportError:
                     pass
 
@@ -1936,6 +1937,13 @@ def render_live_draft_rec_cards(
                         on_click=_on_rec_queue_click,
                         help=f"Add {name} to your draft queue.",
                     )
+                try:
+                    from live_draft_rec_queue_click_trace import render_per_card_rec_queue_render_trace_marker
+
+                    if _render_trace_row:
+                        render_per_card_rec_queue_render_trace_marker(st, session, _render_trace_row)
+                except ImportError:
+                    pass
             with detail_col:
                 with st.expander("Why Recommended", expanded=False):
                     st.markdown(

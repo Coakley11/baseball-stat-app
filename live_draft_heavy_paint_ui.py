@@ -37,6 +37,14 @@ def render_deferred_heavy_paint_fragment(
     First Solo start: defer flag skips heavy work and uses a 1 Hz fragment tick to
     paint heavy content without ``st.rerun()`` (avoids duplicate control-center widgets).
     """
+    def _reemit_rec_queue_render_trace() -> None:
+        try:
+            from live_draft_rec_queue_click_trace import reemit_rec_queue_render_trace_diagnostics
+
+            reemit_rec_queue_render_trace_diagnostics(st, session)
+        except ImportError:
+            pass
+
     try:
         from live_draft_fast_solo_start import (
             clear_defer_heavy_first_paint,
@@ -48,6 +56,7 @@ def render_deferred_heavy_paint_fragment(
         return
 
     if session.get(HEAVY_PAINT_DONE_KEY):
+        _reemit_rec_queue_render_trace()
         return
 
     defer = should_defer_heavy_first_paint(session)
@@ -79,6 +88,7 @@ def render_deferred_heavy_paint_fragment(
     @fragment(run_every=1)
     def _heavy_paint_fragment() -> None:
         if session.get(HEAVY_PAINT_DONE_KEY):
+            _reemit_rec_queue_render_trace()
             return
         note_heavy_fragment_mount(session, phase="tick")
         try:

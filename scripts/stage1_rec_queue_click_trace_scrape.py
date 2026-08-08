@@ -15,25 +15,42 @@ def scrape_rec_queue_render_trace(page, *, player_name: str = "") -> dict[str, A
               try { if (f.contentDocument) docs.push(f.contentDocument); } catch (e) {}
             }
             const want = String(playerName || '').trim().toLowerCase();
-            for (const doc of docs) {
-              const el = doc.querySelector('#rec-card-queue-render-trace');
-              if (!el) continue;
-              const row = {
+            function rowFromEl(el) {
+              return {
                 room_id: el.getAttribute('data-room-id') || '',
                 player_name: el.getAttribute('data-player-name') || '',
                 player_id: el.getAttribute('data-player-id') || '',
                 pick_index: el.getAttribute('data-pick-index') || '',
                 widget_key: el.getAttribute('data-widget-key') || '',
+                surface: el.getAttribute('data-surface') || '',
                 callback_id: el.getAttribute('data-callback-id') || '',
                 registry_len: el.getAttribute('data-registry-len') || '',
                 app_sha: el.getAttribute('data-app-sha') || '',
+                impl_rev: el.getAttribute('data-impl-rev') || '',
                 json: el.getAttribute('data-json') || '',
               };
-              if (want && row.player_name && row.player_name.toLowerCase() !== want) {
-                const payload = row.json || '';
-                if (!payload.toLowerCase().includes(want)) continue;
+            }
+            function matchesPlayer(row) {
+              if (!want) return true;
+              if (row.player_name && row.player_name.toLowerCase() === want) return true;
+              const payload = row.json || '';
+              return payload.toLowerCase().includes(want);
+            }
+            const selectors = [
+              '#rec-card-queue-render-trace',
+              '.rec-card-queue-render-trace-card',
+            ];
+            for (const doc of docs) {
+              for (const sel of selectors) {
+                const nodes = sel.startsWith('#')
+                  ? [doc.querySelector(sel)].filter(Boolean)
+                  : Array.from(doc.querySelectorAll(sel));
+                for (const el of nodes) {
+                  const row = rowFromEl(el);
+                  if (!row.widget_key && !row.json && !row.player_name) continue;
+                  if (matchesPlayer(row)) return row;
+                }
               }
-              return row;
             }
             return {};
           }""",
@@ -53,10 +70,10 @@ def scrape_rec_queue_render_trace(page, *, player_name: str = "") -> dict[str, A
 
 
 def merge_render_trace_into_step(step: dict[str, Any], trace: dict[str, Any]) -> None:
-    if not trace or not trace.get("widget_key") and not trace.get("json"):
+    if not trace or not (trace.get("widget_key") or trace.get("json") or trace.get("player_name")):
         return
     step["app_render_trace"] = trace
-    step["render_trace_present"] = bool(trace.get("widget_key") or trace.get("json"))
+    step["render_trace_present"] = bool(trace.get("widget_key") or trace.get("json") or trace.get("player_name"))
     step["expected_widget_key"] = str(trace.get("widget_key") or "")
     step["render_callback_id"] = str(trace.get("callback_id") or "")
 
