@@ -575,12 +575,23 @@ def _frame_for_index(page, frame_index: int, frame_url: str = ""):
     return app or page.main_frame
 
 
-def scrape_click_transport_evidence(page, *, click_ts: float, pre_script_run_seq: str = "") -> dict[str, Any]:
+def scrape_click_transport_evidence(
+    page,
+    *,
+    click_ts: float,
+    pre_script_run_seq: str = "",
+    pre_run_binding: dict[str, Any] | None = None,
+    frame_url_hint: str = "",
+) -> dict[str, Any]:
     try:
         from stage1_native_widget_transport import scrape_native_widget_transport_evidence
 
         return scrape_native_widget_transport_evidence(
-            page, click_ts=click_ts, pre_script_run_seq=pre_script_run_seq
+            page,
+            click_ts=click_ts,
+            pre_script_run_seq=pre_script_run_seq,
+            pre_run_binding=pre_run_binding,
+            frame_url_hint=frame_url_hint,
         )
     except ImportError:
         pass
@@ -670,6 +681,19 @@ def deliver_add_to_queue_click(
 
     def _ledger_seq() -> str:
         try:
+            from stage1_run_binding import capture_run_binding_snapshot
+
+            snap = capture_run_binding_snapshot(
+                page,
+                frame_url_hint=str(candidate.get("frameUrl") or ""),
+                lifecycle_render_trace=None,
+                phase="pre_click",
+            )
+            grade = snap.get("ledger_transport_grade_script_run_seq")
+            return str(grade) if grade is not None else ""
+        except ImportError:
+            pass
+        try:
             from p8_production_start_harness import scrape_stage1_ledger_rows
 
             rows = scrape_stage1_ledger_rows(page) or []
@@ -679,18 +703,39 @@ def deliver_add_to_queue_click(
             pass
         return ""
 
-    def _finish_playwright_click(method: str, *, pre_seq: str = "", dom_inspection: dict | None = None) -> dict[str, Any]:
+    def _finish_playwright_click(
+        method: str,
+        *,
+        pre_seq: str = "",
+        pre_binding: dict | None = None,
+        dom_inspection: dict | None = None,
+        click_frame=None,
+    ) -> dict[str, Any]:
         out["click_end_ts"] = time.time()
         out["streamlit_identity_after"] = scrape_streamlit_identity(page)
+        dom_events: list[dict[str, Any]] = []
         try:
-            from stage1_dom_click_capture import read_dom_click_capture_log
+            from stage1_dom_click_capture import read_dom_click_capture_from_frame, read_dom_click_capture_log
 
-            out["browser_dom_click_events"] = read_dom_click_capture_log(page)
+            if click_frame is not None:
+                dom_events = read_dom_click_capture_from_frame(click_frame)
+            if not dom_events:
+                dom_events = read_dom_click_capture_log(page)
         except ImportError:
             pass
+        out["browser_dom_click_events"] = dom_events
+        install_meta = out.get("dom_click_capture_install") if isinstance(out.get("dom_click_capture_install"), dict) else {}
+        if install_meta.get("ok") and not dom_events:
+            out["dom_capture_observability_failed"] = True
         out["post_click_transport"] = scrape_click_transport_evidence(
-            page, click_ts=float(out.get("click_start_ts") or out["click_end_ts"]), pre_script_run_seq=pre_seq
+            page,
+            click_ts=float(out.get("click_start_ts") or out["click_end_ts"]),
+            pre_script_run_seq=pre_seq,
+            pre_run_binding=pre_binding if isinstance(pre_binding, dict) else None,
+            frame_url_hint=str(candidate.get("frameUrl") or ""),
         )
+        if out.get("dom_capture_observability_failed"):
+            out["post_click_transport"]["dom_capture_observability_failed"] = True
         if dom_inspection:
             out["pre_click_dom_inspection"] = dom_inspection
         out["click_dispatched"] = True
@@ -698,6 +743,21 @@ def deliver_add_to_queue_click(
         return out
 
     pre_seq = _ledger_seq()
+    pre_binding: dict[str, Any] = {}
+    try:
+        from stage1_rec_queue_click_trace_scrape import scrape_rec_queue_render_trace
+        from stage1_run_binding import capture_run_binding_snapshot
+
+        render_trace = scrape_rec_queue_render_trace(page, player_name=name)
+        pre_binding = capture_run_binding_snapshot(
+            page,
+            frame_url_hint=str(candidate.get("frameUrl") or ""),
+            lifecycle_render_trace=render_trace,
+            phase="pre_click",
+        )
+        out["pre_click_run_binding"] = pre_binding
+    except ImportError:
+        render_trace = {}
     try:
         from stage1_rec_card_dom_inspection import inspect_rec_card_add_to_queue_dom
 
@@ -723,18 +783,29 @@ def deliver_add_to_queue_click(
         btn.scroll_into_view_if_needed(timeout=pw_timeout)
         page.wait_for_timeout(350)
         try:
-            from stage1_dom_click_capture import install_dom_click_capture
+            from stage1_dom_click_capture import install_dom_click_capture_on_frame
 
-            out["dom_click_capture_install"] = install_dom_click_capture(
-                page, button_selector='button[data-testid="stBaseButton-secondary"]'
+            dom_gen = str(candidate.get("dom_generation_ts") or "")
+            out["dom_click_capture_install"] = install_dom_click_capture_on_frame(
+                frame,
+                frame_url_hint=str(frame.url or candidate.get("frameUrl") or ""),
+                player_name=name,
+                dom_generation_ts=dom_gen,
+                mode="rec_card",
             )
+            install_href = str(out["dom_click_capture_install"].get("frame_href") or "")
+            target_href = str(frame.url or "")
+            if install_href and target_href and install_href.split("?")[0] not in target_href and target_href.split("?")[0] not in install_href:
+                out["dom_click_capture_install"]["frame_url_mismatch"] = True
         except ImportError:
             pass
         btn.click(timeout=pw_timeout)
         return _finish_playwright_click(
             "playwright_ld_rec_card_meta_native_stbutton",
             pre_seq=pre_seq,
+            pre_binding=pre_binding,
             dom_inspection=dom_inspection if isinstance(dom_inspection, dict) else None,
+            click_frame=frame,
         )
     except Exception as exc:
         pw_error = str(exc)[:240]

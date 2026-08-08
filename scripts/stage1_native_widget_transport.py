@@ -83,7 +83,14 @@ def classify_transport_from_ws_samples(
     }
 
 
-def scrape_native_widget_transport_evidence(page, *, click_ts: float, pre_script_run_seq: str = "") -> dict[str, Any]:
+def scrape_native_widget_transport_evidence(
+    page,
+    *,
+    click_ts: float,
+    pre_script_run_seq: str = "",
+    pre_run_binding: dict[str, Any] | None = None,
+    frame_url_hint: str = "",
+) -> dict[str, Any]:
     """Distinguish native st.button widget traffic from solo timer/component SCV."""
     try:
         from p8_proven_start_delivery import aggregate_ws_boundary_log
@@ -94,26 +101,49 @@ def scrape_native_widget_transport_evidence(page, *, click_ts: float, pre_script
     outbound = [e for e in raw_log if isinstance(e, dict) and e.get("direction") == "outbound"]
     after = [e for e in outbound if float(e.get("wall_ts_ms") or 0) >= (click_ts * 1000.0 - 50.0)]
 
-    post_seq = ""
     try:
-        from p8_production_start_harness import scrape_stage1_ledger_rows
+        from stage1_run_binding import capture_run_binding_snapshot, merge_run_binding_into_transport
 
-        rows = scrape_stage1_ledger_rows(page) or []
-        if rows:
-            post_seq = str(rows[-1].get("script_run_seq") or "")
-    except Exception:
-        pass
+        post_binding = capture_run_binding_snapshot(page, frame_url_hint=frame_url_hint, phase="post_click")
+    except ImportError:
+        post_binding = {}
+        merge_run_binding_into_transport = None  # type: ignore[assignment,misc]
+
+    pre_binding = dict(pre_run_binding) if isinstance(pre_run_binding, dict) else {}
+    pre_grade = pre_binding.get("ledger_transport_grade_script_run_seq")
+    if pre_grade is None and pre_script_run_seq:
+        pre_grade = pre_script_run_seq
+    post_grade = post_binding.get("ledger_transport_grade_script_run_seq")
 
     out = classify_transport_from_ws_samples(
         after,
-        pre_script_run_seq=pre_script_run_seq,
-        post_script_run_seq=post_seq,
+        pre_script_run_seq=str(pre_grade) if pre_grade is not None else "",
+        post_script_run_seq=str(post_grade) if post_grade is not None else "",
     )
     out["click_ts"] = click_ts
+    out["legacy_pre_script_run_seq_arg"] = pre_script_run_seq
+    if merge_run_binding_into_transport and pre_binding:
+        combined_pre = {**pre_binding, "phase": "pre_click"}
+        out["run_binding_pre"] = combined_pre
+        out["run_binding_post"] = post_binding
+        out = merge_run_binding_into_transport(out, combined_pre)
+        if post_grade is not None:
+            out["ledger_script_run_seq_after"] = str(post_grade)
+            if out.get("run_binding_consistent"):
+                try:
+                    out["script_run_seq_changed"] = int(post_grade) > int(pre_grade or 0)
+                except (TypeError, ValueError):
+                    pass
+                out["python_rerun_started"] = bool(out.get("script_run_seq_changed"))
+            else:
+                out["python_rerun_started"] = False
+                out["python_rerun_observability_blocked"] = True
     return out
 
 
 QUEUE1C3A2L = "QUEUE1C3A2L"
+QUEUE1C3A2O1 = "QUEUE1C3A2O1"
+QUEUE1C3A2O2 = "QUEUE1C3A2O2"
 
 
 def classify_queue1c3a_subcode(
@@ -133,6 +163,10 @@ def classify_queue1c3a_subcode(
         return QUEUE1C3A2L
     tgt = click_target if isinstance(click_target, dict) else {}
     tr = transport if isinstance(transport, dict) else {}
+    if tr.get("run_binding_consistent") is False:
+        return QUEUE1C3A2O1
+    if tr.get("dom_capture_observability_failed"):
+        return QUEUE1C3A2O2
     if tgt.get("click_non_native_element"):
         return "QUEUE1C3A1"
     if tgt.get("inside_st_tooltip") and not tgt.get("is_st_base_button"):
@@ -143,9 +177,16 @@ def classify_queue1c3a_subcode(
         strict_native = tr.get("native_widget_event_observed")
     if not strict_native and tr.get("generic_component_traffic_only"):
         return "QUEUE1C3A2"
-    if not strict_native and not tr.get("script_run_seq_changed") and tr.get("streamlit_outbound_after_click"):
+    if (
+        not strict_native
+        and not tr.get("script_run_seq_changed")
+        and tr.get("streamlit_outbound_after_click")
+        and tr.get("run_binding_consistent") is not False
+    ):
         return "QUEUE1C3A2"
     if tr.get("native_widget_event_observed") and not tr.get("script_run_seq_changed"):
+        if tr.get("run_binding_consistent") is False:
+            return QUEUE1C3A2O1
         return "QUEUE1C3A3"
     if tr.get("script_run_seq_changed") and callback_entered is False:
         return "QUEUE1C3A4"

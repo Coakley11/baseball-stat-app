@@ -1,0 +1,11 @@
+{
+  "bridge": "968294d8",
+  "room": "EC8C116E",
+  "runtime": "9f7ea7b",
+  "lifecycle_current_script_run_seq": 15,
+  "legacy_transport_script_run_seq_before": "12",
+  "legacy_transport_script_run_seq_after": "12",
+  "root_cause": "Transport used scrape_stage1_ledger_rows[-1].script_run_seq (last appended ledger row, often an older event at seq 12) while lifecycle DOM used session _solo_stage1_script_run_seq embedded in rec-card render trace (current generation 15). These are different observers; Francisco was not necessarily clicked during ledger row 12 \u2014 the harness graded rerun against stale last-row seq.",
+  "fix": "Use #solo-production-ledger-diag data-script-run-seq / max ledger row seq as transport grade seq; compare to lifecycle seq via run_binding_consistent before A2/A3/A4.",
+  "dom_capture_empty_cause": "Listener was installed via page.evaluate on top document with generic first stBaseButton-secondary, while Playwright clicked Francisco inside the Streamlit app iframe \u2014 events logged in wrong window."
+}

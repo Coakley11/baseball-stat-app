@@ -133,7 +133,11 @@ def classify_queue1c_subcode(step: dict[str, Any]) -> str:
                 callback_entered=step.get("app_callback_entered") if "app_callback_entered" in step else None,
                 widget_liveness=liveness,
             )
+            if sub_a.startswith("QUEUE1C3A2O"):
+                return sub_a
             if sub_a.startswith("QUEUE1C3A"):
+                if transport.get("run_binding_consistent") is False:
+                    return "QUEUE1C3A2O1"
                 return sub_a
         except ImportError:
             pass

@@ -151,12 +151,26 @@ def dispatch_proven_pause_click(page) -> dict[str, Any]:
         "disabled_at_click": True,
     }
     click_dispatch_started_at = time.time()
+    dom_install: dict[str, Any] = {}
+    click_frame = None
     for frame in _ordered_pause_click_frames(page):
         try:
             loc = frame.get_by_role("button", name=name_re)
             if loc.count() < 1 or loc.first.is_disabled():
                 continue
             out["disabled_at_click"] = False
+            try:
+                from stage1_dom_click_capture import install_dom_click_capture_on_frame
+
+                dom_install = install_dom_click_capture_on_frame(
+                    frame,
+                    frame_url_hint=str(frame.url or ""),
+                    mode="pause",
+                    button_label_re="Pause Draft",
+                    button_test_id="stBaseButton-primary",
+                )
+            except ImportError:
+                pass
             try:
                 loc.first.scroll_into_view_if_needed(timeout=8000)
             except Exception:
@@ -168,6 +182,7 @@ def dispatch_proven_pause_click(page) -> dict[str, Any]:
             out["dom_click_dispatched"] = True
             out["click_frame_url"] = (frame.url or "")[:200]
             out["click_frame_index"] = page.frames.index(frame) if frame in page.frames else -1
+            click_frame = frame
             break
         except Exception as exc:
             err = str(exc)[:160]
@@ -178,6 +193,18 @@ def dispatch_proven_pause_click(page) -> dict[str, Any]:
     out["click_dispatch_started_at"] = click_dispatch_started_at
     out["click_dispatch_completed_at"] = click_dispatch_completed_at
     out["click_timestamp"] = click_dispatch_completed_at
+    if dom_install:
+        out["dom_click_capture_install"] = dom_install
+    if click_frame is not None and out.get("dom_click_dispatched"):
+        try:
+            from stage1_dom_click_capture import read_dom_click_capture_from_frame
+
+            events = read_dom_click_capture_from_frame(click_frame)
+            out["browser_dom_click_events"] = events
+            if dom_install.get("ok") and not events:
+                out["dom_capture_observability_failed"] = True
+        except ImportError:
+            pass
     return out
 
 
@@ -285,9 +312,33 @@ def proven_pause_single_click(
             "pause_error": "pause_control_not_hydrated",
         }
     authority = inspect_pause_click_authority(page)
+    pause_obs: dict[str, Any] = {}
+    pre_bind: dict[str, Any] = {}
+    try:
+        from stage1_run_binding import capture_run_binding_snapshot
+
+        pre_bind = capture_run_binding_snapshot(page, phase="pre_click")
+    except ImportError:
+        pass
     click = dispatch_proven_pause_click(page)
     click_ts = float(click.get("click_timestamp") or time.time())
     timing["pause_click_dispatch_ts"] = click_ts
+    try:
+        from stage1_run_binding import capture_run_binding_snapshot
+
+        post_bind = capture_run_binding_snapshot(
+            page,
+            frame_url_hint=str(click.get("click_frame_url") or ""),
+            phase="post_click",
+        )
+        pause_obs = {
+            "pre_click_run_binding": pre_bind,
+            "post_click_run_binding": post_bind,
+            "browser_dom_click_events": click.get("browser_dom_click_events"),
+            "dom_click_capture_install": click.get("dom_click_capture_install"),
+        }
+    except ImportError:
+        pass
     transport = capture_pause_click_transport(page, click_ts=click_ts)
     server_proof = wait_for_pause_server_proof(page, click_ts=click_ts)
     classification = classify_pause_delivery_outcome(
@@ -303,6 +354,7 @@ def proven_pause_single_click(
         "pause_click_authority": authority,
         "pause_click": click,
         "pause_click_transport": transport,
+        "pause_click_observability": pause_obs,
         "pause_server_proof": server_proof,
         "pause_timing": timing,
         "pause_classification": classification,
