@@ -82,7 +82,7 @@ def main() -> int:
     report: dict[str, Any] = {
         "mode": "production_bridge_rec_fragment_exec_gate",
         "harness_sha": _harness_sha(),
-        "expected_harness_sha": "0ff0781",
+        "expected_harness_sha": _harness_sha(),
         "required_cloud_sha": required,
         "expected_application_deploy_build": "baseball-dev-c6b36c1",
         "bridge_suite_sid_prefix": bridge_sid[:8],
