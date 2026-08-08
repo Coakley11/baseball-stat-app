@@ -122,20 +122,50 @@ def click_matrix_control(
     before = _ledger_payload(page)
     out["ledger_len_before"] = int(before.get("ledger_len") or len(before.get("rows") or []))
 
+    clicked = False
+    err = ""
+    loc = fr.get_by_role("button", name=label, exact=True)
+    if loc.count() == 0:
+        loc = page.get_by_role("button", name=label, exact=True)
+    out["target_visible"] = False
+    out["target_enabled"] = False
+    out["target_attached"] = False
+    try:
+        loc.first.wait_for(state="attached", timeout=8000)
+        out["target_attached"] = True
+        loc.first.wait_for(state="visible", timeout=8000)
+        out["target_visible"] = True
+        out["target_enabled"] = bool(loc.first.is_enabled())
+        if not out["target_enabled"]:
+            out["setup_abort"] = "UI_NOT_EXPOSED"
+            out["click_error"] = "target_not_enabled"
+            out["finished_ts"] = time.time()
+            return out
+        loc.first.scroll_into_view_if_needed(timeout=8000)
+    except Exception as exc:
+        err = f"{type(exc).__name__}:{exc}"
+        out["setup_abort"] = "UI_NOT_EXPOSED"
+        out["click_error"] = err[:240]
+        out["click_dispatched"] = False
+        out["trusted_dom_click"] = False
+        out["callback_ledger_delta"] = {
+            "ledger_len_before": int(before.get("ledger_len") or len(before.get("rows") or [])),
+            "ledger_len_after": int(before.get("ledger_len") or len(before.get("rows") or [])),
+            "new_event": False,
+            "callback_entered": False,
+            "callback_ledger_last": {},
+        }
+        out["callback_entered"] = False
+        out["finished_ts"] = time.time()
+        return out
+
     prep = prepare_isolated_dom_click_capture(
         fr,
         capture_target=cap_target,
         frame_url_hint=str(fr.url or ""),
     )
     out["dom_click_capture_prep"] = prep
-    clicked = False
-    err = ""
     try:
-        loc = fr.get_by_role("button", name=label, exact=False)
-        if loc.count() == 0:
-            loc = page.get_by_role("button", name=label, exact=False)
-        loc.first.wait_for(state="visible", timeout=8000)
-        loc.first.scroll_into_view_if_needed(timeout=8000)
         loc.first.click(timeout=8000)
         clicked = True
     except Exception as exc:
@@ -163,46 +193,8 @@ def click_matrix_control(
     return out
 
 
-def classify_matrix(steps: list[dict[str, Any]]) -> tuple[str, str]:
-    by = {str(s.get("control") or ""): s for s in steps}
-
-    def pass_(c: str) -> bool:
-        return bool((by.get(c) or {}).get("callback_entered"))
-
-    s0, s1, d0, d1 = pass_("S0"), pass_("S1"), pass_("D0"), pass_("D1")
-    subcodes = []
-    for c in ("S0", "S1", "D0", "D1"):
-        sub = str((by.get(c) or {}).get("pre_click_ownership") or {}).get("ownership_subcode") or ""
-        own = (by.get(c) or {}).get("pre_click_ownership") or {}
-        if own.get("ownership_subcode") == "FRAGMENT_WIDGET_OWNER_STALE":
-            subcodes.append(f"{c}:FRAGMENT_WIDGET_OWNER_STALE")
-    ownership_note = ";".join(subcodes) if subcodes else ""
-
-    if not s0:
-        return "FRAGMENT_MATRIX_CASE_V_S0_FAIL", ownership_note
-    if s0 and s1 and not d0 and not d1:
-        return "FRAGMENT_MATRIX_CASE_I_DYNAMIC_CONSTRUCTION", ownership_note
-    if s0 and not s1 and d0 and not d1:
-        return "FRAGMENT_MATRIX_CASE_II_RUN_EVERY", ownership_note
-    if s0 and s1 and d0 and not d1:
-        return "FRAGMENT_MATRIX_CASE_III_DYNAMIC_PLUS_TIMER", ownership_note
-    if s0 and s1 and d0 and d1:
-        return "FRAGMENT_MATRIX_CASE_IV_ALL_PASS", ownership_note
-    return "FRAGMENT_MATRIX_MIXED_PARTIAL", ownership_note
-
-
-def recommended_next_fix(case: str) -> str:
-    mapping = {
-        "FRAGMENT_MATRIX_CASE_I_DYNAMIC_CONSTRUCTION": "Replace dynamic fragment(run_every)(nested)() with stable module-level @st.fragment for live widgets.",
-        "FRAGMENT_MATRIX_CASE_II_RUN_EVERY": "Remove run_every=1 from interactive fragment; isolate timer refresh from widget registration.",
-        "FRAGMENT_MATRIX_CASE_III_DYNAMIC_PLUS_TIMER": "Stable module-level fragment + drop run_every on interactive surface (matches recommendation wrapper).",
-        "FRAGMENT_MATRIX_CASE_IV_ALL_PASS": "Compare recommendation fragment mount/ownership vs D1; do not change generic fragment architecture yet.",
-        "FRAGMENT_MATRIX_CASE_V_S0_FAIL": "Stop recommendation refactor; build minimal Streamlit 1.59.1 fragment reproduction.",
-    }
-    return mapping.get(case, "Review per-control ownership table before architecture change.")
-
-
 def main() -> int:
+    from stage1_fragment_matrix_gate_classify import classify_matrix_steps, recommended_next_fix
     from cloud_streamlit_wake import goto_and_wake
     from p8_canonical_production_start import establish_single_solo_live_draft
     from p8_proven_pause_delivery import PAUSE_DELIVERY_RESOLVED
@@ -310,14 +302,24 @@ def main() -> int:
             "trusted_dom_click": bool(pause_dom.get("trusted_dom_click") or pause_click.get("trusted_dom_click")),
         }
 
-        try:
-            page.get_by_text("Stage1 fragment identity matrix", exact=False).first.click(timeout=8000)
-            page.wait_for_timeout(1200)
-        except Exception as exc:
-            report["matrix_expander_error"] = str(exc)[:200]
+        from stage1_fragment_matrix_expander import open_fragment_identity_matrix_expander
+
+        expander = open_fragment_identity_matrix_expander(page)
+        report["matrix_expander"] = expander
+        chronology.append(
+            {
+                "step": "matrix_expander",
+                "open_after": expander.get("matrix_expander_open_after"),
+                "s0_visible": expander.get("s0_visible_after_open"),
+                "ts": time.time(),
+            }
+        )
 
         steps: list[dict[str, Any]] = []
+        matrix_aborted = False
         for ctrl, label, source, run_every in CONTROLS:
+            if matrix_aborted:
+                break
             step = click_matrix_control(
                 page,
                 control=ctrl,
@@ -332,9 +334,12 @@ def main() -> int:
                     "step": f"matrix_{ctrl}",
                     "callback_entered": step.get("callback_entered"),
                     "trusted_dom_click": step.get("trusted_dom_click"),
+                    "target_visible": step.get("target_visible"),
                     "ts": time.time(),
                 }
             )
+            if step.get("setup_abort") == "UI_NOT_EXPOSED":
+                matrix_aborted = True
             page.wait_for_timeout(800)
 
         report["matrix_controls"] = steps
@@ -347,12 +352,13 @@ def main() -> int:
             }
             for c in ("S0", "S1", "D0", "D1")
         }
-        case, ownership_note = classify_matrix(steps)
+        case, ownership_note = classify_matrix_steps(steps, expander=expander)
         report["classification"] = case
         report["ownership_subcodes"] = ownership_note
         report["recommended_next_fix"] = recommended_next_fix(case)
         report["room_id"] = room_id
         report["ok"] = case == "FRAGMENT_MATRIX_CASE_IV_ALL_PASS"
+        report["matrix_architecture_decidable"] = case.startswith("FRAGMENT_MATRIX_CASE_")
         report["finished_at"] = time.time()
         OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
         browser.close()
