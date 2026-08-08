@@ -12,7 +12,7 @@ RECOMMENDATION_FRAGMENT_INVOCATION_KEY = "_solo_stage1_recommendation_fragment_i
 FRAGMENT_CALLBACK_LEDGER_KEY = "_live_draft_rec_fragment_callback_ledger"
 FRAGMENT_PROBE_COUNTER_KEY = "_live_draft_rec_fragment_probe_click_count"
 FRAGMENT_PROBE_LAST_KEY = "_live_draft_rec_fragment_probe_last"
-FRAGMENT_EXEC_IMPL_REV = "rec_fragment_exec_diag_v1"
+FRAGMENT_EXEC_IMPL_REV = "rec_fragment_exec_diag_v2"
 FRAGMENT_EXEC_PROBE_ELEMENT_ID = "solo-stage1-rec-fragment-exec-diag"
 FRAGMENT_CALLBACK_LEDGER_PROBE_ID = "solo-stage1-rec-fragment-callback-ledger"
 FRAGMENT_PROBE_BUTTON_LABEL = "Stage1 Recommendation Widget Probe"
@@ -227,11 +227,17 @@ def emit_rec_card_widget_exec_probe(
     )
 
 
+def reemit_fragment_callback_ledger_probe(st: Any, session: dict[str, Any]) -> None:
+    """Re-emit session-backed ledger DOM without repainting recommendation cards."""
+    render_fragment_callback_ledger_probe(st, session)
+
+
 def render_fragment_callback_ledger_probe(st: Any, session: dict[str, Any]) -> None:
     """Session-backed callback ledger — readable without outer full-app repaint."""
     if not _solo_diag_enabled(st, session):
         return
-    payload = json.dumps(fragment_callback_ledger_export(session), default=str)[:16000]
+    export = fragment_callback_ledger_export(session)
+    payload = json.dumps(export, default=str)[:16000]
     safe = lambda s: str(s or "").replace('"', "'")[:200]
     last = dict(session.get("_live_draft_rec_fragment_callback_ledger_last") or {})
     st.markdown(
@@ -240,6 +246,13 @@ def render_fragment_callback_ledger_probe(st: Any, session: dict[str, Any]) -> N
         f'data-last-callback-entered="{1 if last.get("callback_entered") else 0}" '
         f'data-last-source="{safe(last.get("source"))}" '
         f'data-last-event-id="{safe(last.get("event_id"))}" '
+        f'data-last-callback-id="{safe(last.get("callback_id"))}" '
+        f'data-last-ts="{safe(last.get("ts"))}" '
+        f'data-last-room-id="{safe(last.get("room_id"))}" '
+        f'data-last-pick-index="{safe(last.get("pick_index"))}" '
+        f'data-last-player-name="{safe(last.get("player_name"))}" '
+        f'data-last-full-app-run-seq="{safe(last.get("full_app_run_seq"))}" '
+        f'data-last-recommendation-fragment-run-seq="{safe(last.get("recommendation_fragment_run_seq"))}" '
         f'data-probe-click-count="{int(session.get(FRAGMENT_PROBE_COUNTER_KEY) or 0)}" '
         f'data-impl-rev="{FRAGMENT_EXEC_IMPL_REV}" '
         f'data-json="{payload.replace(chr(34), chr(39))}"></div>',

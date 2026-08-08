@@ -45,6 +45,15 @@ def render_deferred_heavy_paint_fragment(
         except ImportError:
             pass
 
+    def _reemit_fragment_diagnostics() -> None:
+        _reemit_rec_queue_render_trace()
+        try:
+            from live_draft_rec_fragment_exec_diag import reemit_fragment_callback_ledger_probe
+
+            reemit_fragment_callback_ledger_probe(st, session)
+        except ImportError:
+            pass
+
     def _invoke_paint_body(*, via: str) -> None:
         try:
             from live_draft_rec_fragment_exec_diag import enter_recommendation_paint_invocation
@@ -65,7 +74,7 @@ def render_deferred_heavy_paint_fragment(
         return
 
     if session.get(HEAVY_PAINT_DONE_KEY):
-        _reemit_rec_queue_render_trace()
+        _reemit_fragment_diagnostics()
         return
 
     defer = should_defer_heavy_first_paint(session)
@@ -98,7 +107,7 @@ def render_deferred_heavy_paint_fragment(
     @fragment(run_every=1)
     def _heavy_paint_fragment() -> None:
         if session.get(HEAVY_PAINT_DONE_KEY):
-            _reemit_rec_queue_render_trace()
+            _reemit_fragment_diagnostics()
             return
         note_heavy_fragment_mount(session, phase="tick")
         try:
