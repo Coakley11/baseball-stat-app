@@ -760,6 +760,7 @@ def deliver_add_to_queue_click(
             lifecycle_render_trace=render_trace,
             phase="pre_click",
             binding_mode=BINDING_MODE_RECOMMENDATION_WIDGET,
+            expected_room_id=str(render_trace.get("room_id") or ""),
         )
         out["pre_click_run_binding"] = pre_binding
     except ImportError:

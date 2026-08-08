@@ -36,7 +36,7 @@ _PAUSE_PROBE_JS = """() => {
       }
       if (resumeRe.test(t)) resumeCount += 1;
     }
-    const hasLedger = !!doc.querySelector('#solo-production-ledger-diag');
+    const hasLedger = !!doc.querySelector('#solo-stage1-current-run-diag, #solo-stage1-production-ledger, #solo-production-ledger-diag');
     return { frameUrl, pauseCount, pauseDisabled, pauseVisible, resumeCount, hasLedger };
   }
   const out = [probeDoc(document, location.href || '')];

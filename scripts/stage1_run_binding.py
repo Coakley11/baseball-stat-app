@@ -1,4 +1,10 @@
-"""Reconcile lifecycle script_run_seq (app render trace) vs ledger/transport observers."""
+"""Reconcile lifecycle script_run_seq vs current app-generation vs historical ledger observers.
+
+Diagnosis: harness historically queried ``#solo-production-ledger-diag``, which the app never
+rendered. Current generation lives on ``#solo-stage1-current-run-diag`` and
+``#solo-stage1-production-ledger`` (``data-script-run-seq``). Append-only ledger row max/last
+may lag when no event row was appended for later script runs.
+"""
 
 from __future__ import annotations
 
@@ -11,19 +17,30 @@ QUEUE1C3A2O2 = "QUEUE1C3A2O2"
 BINDING_MODE_CONTROL_ONLY = "control_only"
 BINDING_MODE_RECOMMENDATION_WIDGET = "recommendation_widget"
 
-_LEDGER_DIAG_SEQ_JS = """() => {
+_CURRENT_APP_RUN_DIAG_JS = """() => {
   function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
+  const ids = ['solo-stage1-current-run-diag', 'solo-stage1-production-ledger'];
   const out = [];
   for (const root of roots()) {
-    const el = root.querySelector('#solo-production-ledger-diag');
-    if (!el) continue;
     const href = (root.defaultView && root.defaultView.location && root.defaultView.location.href) || '';
-    out.push({
-      frame_href: href,
-      script_run_seq: el.getAttribute('data-script-run-seq') || el.getAttribute('data-run-seq') || '',
-      run_id: el.getAttribute('data-run-id') || '',
-      streamlit_session_id: el.getAttribute('data-streamlit-session-id') || '',
-    });
+    for (const id of ids) {
+      const el = root.querySelector('#' + id);
+      if (!el) continue;
+      out.push({
+        probe_id: id,
+        frame_href: href,
+        script_run_seq: el.getAttribute('data-script-run-seq') || el.getAttribute('data-run-seq') || '',
+        run_id: el.getAttribute('data-run-id') || el.getAttribute('data-diagnostic-run-id') || '',
+        streamlit_session_id: el.getAttribute('data-streamlit-session-id') || '',
+        room_id: el.getAttribute('data-room-id') || '',
+        deployment_sha: el.getAttribute('data-deployment-sha') || '',
+        active_page: el.getAttribute('data-active-page') || '',
+        fragment_run_hint: el.getAttribute('data-fragment-run-hint') || '',
+        impl_rev: el.getAttribute('data-impl-rev') || '',
+        probe_ts: el.getAttribute('data-probe-ts') || '',
+        probe_checkpoint: el.getAttribute('data-probe-checkpoint') || '',
+      });
+    }
   }
   return out;
 }"""
@@ -39,26 +56,36 @@ def _parse_int_seq(value: Any) -> int | None:
         return None
 
 
-def scrape_ledger_diag_probes(page) -> list[dict[str, Any]]:
+def scrape_current_app_run_diag_probes(page) -> list[dict[str, Any]]:
     try:
-        raw = page.evaluate(_LEDGER_DIAG_SEQ_JS) or []
+        raw = page.evaluate(_CURRENT_APP_RUN_DIAG_JS) or []
         return [r for r in raw if isinstance(r, dict)]
     except Exception:
         return []
 
 
-def pick_authoritative_ledger_probe(probes: list[dict[str, Any]], *, frame_url_hint: str = "") -> dict[str, Any]:
+def pick_authoritative_current_app_probe(
+    probes: list[dict[str, Any]], *, frame_url_hint: str = ""
+) -> dict[str, Any]:
     hint = str(frame_url_hint or "").strip()
-    if hint:
-        for p in probes:
-            href = str(p.get("frame_href") or "")
-            if href and (hint in href or href in hint or "/~/" in href and "/~/" in hint):
-                return p
-    for p in probes:
+    preferred_id = "solo-stage1-current-run-diag"
+
+    def score(p: dict[str, Any]) -> tuple[int, int]:
         href = str(p.get("frame_href") or "")
-        if "/~/" in href or "~/+" in href:
-            return p
-    return probes[0] if probes else {}
+        pid = str(p.get("probe_id") or "")
+        frame_match = 0
+        if hint and href and (hint in href or href in hint):
+            frame_match = 2
+        elif "/~/" in href or "~/+" in href:
+            frame_match = 1
+        id_pref = 2 if pid == preferred_id else (1 if pid == "solo-stage1-production-ledger" else 0)
+        has_seq = 1 if _parse_int_seq(p.get("script_run_seq")) is not None else 0
+        return (frame_match, id_pref + has_seq)
+
+    if not probes:
+        return {}
+    ranked = sorted(probes, key=score, reverse=True)
+    return ranked[0]
 
 
 def scrape_ledger_row_seq_stats(page) -> dict[str, Any]:
@@ -84,7 +111,7 @@ def scrape_ledger_row_seq_stats(page) -> dict[str, Any]:
         "ledger_max_script_run_seq": max(seqs) if seqs else None,
         "ledger_min_script_run_seq": min(seqs) if seqs else None,
         "ledger_last_row_seq_source": "scrape_stage1_ledger_rows[-1].script_run_seq (historical, not authoritative)",
-        "ledger_max_seq_source": "max(scrape_stage1_ledger_rows[*].script_run_seq)",
+        "ledger_max_seq_source": "max(scrape_stage1_ledger_rows[*].script_run_seq) (historical, not authoritative)",
     }
 
 
@@ -94,59 +121,119 @@ def lifecycle_seq_from_render_trace(trace: dict[str, Any] | None) -> dict[str, A
         "lifecycle_current_script_run_seq": _parse_int_seq(tr.get("current_script_run_seq")),
         "lifecycle_actual_card_render_run_seq": _parse_int_seq(tr.get("actual_card_render_run_seq")),
         "lifecycle_widget_last_rendered_run_seq": _parse_int_seq(tr.get("widget_last_rendered_run_seq")),
+        "lifecycle_room_id": str(tr.get("room_id") or "").strip().upper()[:32],
         "lifecycle_source": "rec_card_render_trace_dom",
         "lifecycle_probe_source": str(tr.get("probe_source") or ""),
         "lifecycle_widget_liveness": str(tr.get("widget_liveness") or ""),
     }
 
 
-def compute_run_binding_verdict(
+def compute_recommendation_widget_binding(
     *,
-    binding_mode: str,
     lifecycle_seq: int | None,
-    transport_grade_seq: int | None,
+    lifecycle_room_id: str,
+    current_diag: dict[str, Any],
+    ledger_max: int | None,
     ledger_last: int | None,
-    ledger_diag_seq: int | None,
+    expected_room_id: str = "",
 ) -> tuple[bool, list[str], dict[str, Any]]:
-    """Pure binding grade: control_only (Pause/Start) vs recommendation_widget (Francisco)."""
-    mode = binding_mode or BINDING_MODE_RECOMMENDATION_WIDGET
+    """Francisco: lifecycle (A) must match current app-generation probe (B); ledger (C) is historical."""
     notes: list[str] = []
+    current_seq = _parse_int_seq(current_diag.get("script_run_seq"))
+    diag_session = str(current_diag.get("streamlit_session_id") or "").strip()
+    diag_room = str(current_diag.get("room_id") or "").strip().upper()[:32]
+    probe_id = str(current_diag.get("probe_id") or "")
+
     meta: dict[str, Any] = {
-        "binding_mode": mode,
-        "lifecycle_not_applicable": mode == BINDING_MODE_CONTROL_ONLY,
+        "binding_mode": BINDING_MODE_RECOMMENDATION_WIDGET,
+        "lifecycle_not_applicable": False,
+        "lifecycle_seq": lifecycle_seq,
+        "current_app_diag_seq": current_seq,
+        "current_app_diag_probe_id": probe_id,
+        "current_app_diag_streamlit_session_id": diag_session,
+        "current_app_diag_room_id": diag_room,
+        "current_app_diag_frame_href": str(current_diag.get("frame_href") or "")[:280],
+        "current_app_diag_impl_rev": str(current_diag.get("impl_rev") or ""),
+        "ledger_max_seq": ledger_max,
+        "ledger_last_row_seq": ledger_last,
+        "lifecycle_vs_current_diag_match": False,
+        "ledger_history_lag": False,
+        "binding_authorities": [],
+    }
+
+    if lifecycle_seq is None:
+        notes.append("lifecycle_seq_missing")
+    if current_seq is None or not probe_id:
+        notes.append("current_app_diag_missing")
+
+    if lifecycle_seq is not None and current_seq is not None:
+        meta["lifecycle_vs_current_diag_match"] = lifecycle_seq == current_seq
+        if lifecycle_seq != current_seq:
+            notes.append(f"lifecycle_{lifecycle_seq}_vs_current_app_diag_{current_seq}")
+
+    if current_seq is not None and not diag_session:
+        notes.append("current_app_diag_session_missing")
+
+    exp_room = str(expected_room_id or lifecycle_room_id or "").strip().upper()[:32]
+    if exp_room and diag_room and exp_room != diag_room:
+        notes.append(f"room_mismatch_expected_{exp_room}_diag_{diag_room}")
+    if lifecycle_room_id and diag_room and lifecycle_room_id.upper() != diag_room:
+        notes.append(f"lifecycle_room_{lifecycle_room_id}_vs_diag_room_{diag_room}")
+
+    if ledger_max is not None and lifecycle_seq is not None and ledger_max < lifecycle_seq:
+        meta["ledger_history_lag"] = True
+        notes.append(f"ledger_history_lag_max_{ledger_max}_behind_lifecycle_{lifecycle_seq}")
+
+    if ledger_last is not None and ledger_max is not None and ledger_last != ledger_max:
+        meta["ledger_last_row_stale"] = True
+        notes.append(f"ledger_last_row_stale_historical_{ledger_last}_vs_max_{ledger_max}")
+    else:
+        meta["ledger_last_row_stale"] = False
+
+    informational = ("ledger_history_lag_", "ledger_last_row_stale_")
+    blocking = [n for n in notes if not any(n.startswith(p) for p in informational)]
+
+    consistent = False
+    if (
+        not blocking
+        and lifecycle_seq is not None
+        and current_seq is not None
+        and lifecycle_seq == current_seq
+        and bool(diag_session)
+    ):
+        consistent = True
+        meta["binding_authorities"] = ["rec_lifecycle", "current_app_diag"]
+
+    return consistent, notes, meta
+
+
+def compute_control_only_binding(
+    *,
+    current_diag: dict[str, Any],
+    ledger_max: int | None,
+    ledger_last: int | None,
+) -> tuple[bool, list[str], dict[str, Any]]:
+    notes: list[str] = []
+    current_seq = _parse_int_seq(current_diag.get("script_run_seq"))
+    transport_grade = current_seq if current_seq is not None else ledger_max
+    meta: dict[str, Any] = {
+        "binding_mode": BINDING_MODE_CONTROL_ONLY,
+        "lifecycle_not_applicable": True,
+        "current_app_diag_seq": current_seq,
         "ledger_last_row_stale": False,
         "ledger_transport_grade_precedence": [],
     }
-
-    if ledger_diag_seq is not None:
-        meta["ledger_transport_grade_precedence"].append("ledger_diag_probe")
-    if transport_grade_seq is not None and ledger_diag_seq is None:
+    if current_seq is not None:
+        meta["ledger_transport_grade_precedence"].append("current_app_run_diag")
+    elif ledger_max is not None:
         meta["ledger_transport_grade_precedence"].append("ledger_max_script_run_seq")
-
-    if ledger_last is not None and transport_grade_seq is not None and ledger_last != transport_grade_seq:
+    if ledger_last is not None and transport_grade is not None and ledger_last != transport_grade:
         meta["ledger_last_row_stale"] = True
-        notes.append(f"last_row_stale_historical_{ledger_last}_vs_grade_{transport_grade_seq}")
-
-    if mode == BINDING_MODE_CONTROL_ONLY:
-        if transport_grade_seq is None:
-            notes.append("ledger_transport_seq_missing")
-            return False, notes, meta
-        return True, notes, meta
-
-    # recommendation_widget — strict lifecycle vs ledger grade
-    if lifecycle_seq is None:
-        notes.append("lifecycle_seq_missing")
-    if transport_grade_seq is None:
-        notes.append("ledger_transport_seq_missing")
-    consistent = False
-    if lifecycle_seq is not None and transport_grade_seq is not None:
-        if lifecycle_seq == transport_grade_seq:
-            consistent = True
-        else:
-            notes.append(f"lifecycle_{lifecycle_seq}_vs_ledger_grade_{transport_grade_seq}")
-    if lifecycle_seq is not None and ledger_last is not None and lifecycle_seq != ledger_last:
-        notes.append(f"legacy_last_row_would_be_{ledger_last}")
-    return consistent, notes, meta
+        notes.append(f"last_row_stale_historical_{ledger_last}_vs_grade_{transport_grade}")
+    if transport_grade is None:
+        notes.append("current_generation_seq_missing")
+        return False, notes, meta
+    return True, notes, meta
 
 
 def capture_run_binding_snapshot(
@@ -156,8 +243,9 @@ def capture_run_binding_snapshot(
     lifecycle_render_trace: dict[str, Any] | None = None,
     phase: str = "pre_click",
     binding_mode: str = BINDING_MODE_RECOMMENDATION_WIDGET,
+    expected_room_id: str = "",
 ) -> dict[str, Any]:
-    """Single snapshot: lifecycle DOM seq vs ledger diag vs ledger row aggregates."""
+    """Snapshot lifecycle vs current app-generation probe vs historical ledger rows."""
     ts = time.time()
     mode = binding_mode or BINDING_MODE_RECOMMENDATION_WIDGET
     lifecycle = lifecycle_seq_from_render_trace(lifecycle_render_trace)
@@ -174,48 +262,57 @@ def capture_run_binding_snapshot(
             "lifecycle_current_script_run_seq": None,
             "lifecycle_actual_card_render_run_seq": None,
             "lifecycle_widget_last_rendered_run_seq": None,
+            "lifecycle_room_id": "",
             "lifecycle_source": "not_applicable_control_only",
             "lifecycle_probe_source": "",
             "lifecycle_widget_liveness": "",
         }
 
-    probes = scrape_ledger_diag_probes(page)
-    auth_probe = pick_authoritative_ledger_probe(probes, frame_url_hint=frame_url_hint)
+    current_probes = scrape_current_app_run_diag_probes(page)
+    current_app = pick_authoritative_current_app_probe(current_probes, frame_url_hint=frame_url_hint)
     row_stats = scrape_ledger_row_seq_stats(page)
 
     lifecycle_seq = lifecycle.get("lifecycle_current_script_run_seq")
     if lifecycle_seq is None:
         lifecycle_seq = lifecycle.get("lifecycle_actual_card_render_run_seq")
 
-    ledger_diag_seq = _parse_int_seq(auth_probe.get("script_run_seq"))
     ledger_max = row_stats.get("ledger_max_script_run_seq")
     ledger_last = row_stats.get("ledger_last_row_script_run_seq")
+    current_seq = _parse_int_seq(current_app.get("script_run_seq"))
 
-    # Authoritative ledger generation: diag probe on app frame, then max row seq (never last row alone).
-    transport_grade_seq = ledger_diag_seq if ledger_diag_seq is not None else ledger_max
-
-    consistent, mismatch_reasons, binding_meta = compute_run_binding_verdict(
-        binding_mode=mode,
-        lifecycle_seq=lifecycle_seq,
-        transport_grade_seq=transport_grade_seq,
-        ledger_last=ledger_last,
-        ledger_diag_seq=ledger_diag_seq,
-    )
+    if mode == BINDING_MODE_CONTROL_ONLY:
+        consistent, mismatch_reasons, binding_meta = compute_control_only_binding(
+            current_diag=current_app,
+            ledger_max=ledger_max,
+            ledger_last=ledger_last,
+        )
+        transport_grade_seq = current_seq if current_seq is not None else ledger_max
+    else:
+        consistent, mismatch_reasons, binding_meta = compute_recommendation_widget_binding(
+            lifecycle_seq=lifecycle_seq,
+            lifecycle_room_id=str(lifecycle.get("lifecycle_room_id") or ""),
+            current_diag=current_app,
+            ledger_max=ledger_max,
+            ledger_last=ledger_last,
+            expected_room_id=expected_room_id,
+        )
+        transport_grade_seq = current_seq if current_seq is not None else None
 
     return {
         "phase": phase,
         "wall_ts": ts,
         "frame_url_hint": str(frame_url_hint or "")[:280],
-        "streamlit_session_id": str(auth_probe.get("streamlit_session_id") or ""),
-        "ledger_diag_frame_href": str(auth_probe.get("frame_href") or "")[:280],
+        "streamlit_session_id": str(current_app.get("streamlit_session_id") or ""),
+        "ledger_diag_frame_href": str(current_app.get("frame_href") or "")[:280],
         **lifecycle,
         **row_stats,
         **binding_meta,
-        "ledger_diag_script_run_seq": ledger_diag_seq,
+        "ledger_diag_script_run_seq": current_seq,
         "ledger_transport_grade_script_run_seq": transport_grade_seq,
         "run_binding_consistent": consistent,
         "run_binding_mismatch_reasons": mismatch_reasons,
-        "ledger_diag_probe_count": len(probes),
+        "current_app_diag_probe_count": len(current_probes),
+        "ledger_diag_probe_count": len(current_probes),
     }
 
 
@@ -238,13 +335,18 @@ def control_only_pause_binding_passes(
 
 def merge_run_binding_into_transport(transport: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any]:
     out = dict(transport)
-    pre = binding.get("ledger_transport_grade_script_run_seq")
+    mode = str(binding.get("binding_mode") or BINDING_MODE_RECOMMENDATION_WIDGET)
+    pre = binding.get("current_app_diag_seq")
+    if pre is None:
+        pre = binding.get("ledger_transport_grade_script_run_seq")
     post_binding = binding if binding.get("phase") == "post_click" else {}
-    post_seq = post_binding.get("ledger_transport_grade_script_run_seq", pre)
+    post_seq = post_binding.get("current_app_diag_seq")
+    if post_seq is None:
+        post_seq = post_binding.get("ledger_transport_grade_script_run_seq", pre)
     pre_s = str(pre) if pre is not None else ""
     post_s = str(post_seq) if post_seq is not None else ""
     out["run_binding"] = binding
-    out["binding_mode"] = binding.get("binding_mode") or BINDING_MODE_RECOMMENDATION_WIDGET
+    out["binding_mode"] = mode
     out["lifecycle_script_run_seq_before"] = binding.get("lifecycle_current_script_run_seq")
     out["ledger_transport_grade_seq_before"] = pre
     out["ledger_last_row_seq_before"] = binding.get("ledger_last_row_script_run_seq")
@@ -258,7 +360,6 @@ def merge_run_binding_into_transport(transport: dict[str, Any], binding: dict[st
         except ValueError:
             seq_changed = post_s != pre_s
     out["script_run_seq_changed"] = seq_changed
-    mode = str(binding.get("binding_mode") or BINDING_MODE_RECOMMENDATION_WIDGET)
     if not out.get("run_binding_consistent") and mode == BINDING_MODE_RECOMMENDATION_WIDGET:
         out["python_rerun_started"] = False
         out["python_rerun_observability_blocked"] = True
@@ -287,3 +388,42 @@ def classify_run_binding_observability(
     if not dom_capture_ok:
         return QUEUE1C3A2O2
     return ""
+
+
+# Backward-compatible names for older scripts/tests
+def scrape_ledger_diag_probes(page) -> list[dict[str, Any]]:
+    return scrape_current_app_run_diag_probes(page)
+
+
+def pick_authoritative_ledger_probe(probes: list[dict[str, Any]], *, frame_url_hint: str = "") -> dict[str, Any]:
+    return pick_authoritative_current_app_probe(probes, frame_url_hint=frame_url_hint)
+
+
+def compute_run_binding_verdict(
+    *,
+    binding_mode: str,
+    lifecycle_seq: int | None,
+    transport_grade_seq: int | None,
+    ledger_last: int | None,
+    ledger_diag_seq: int | None,
+    lifecycle_room_id: str = "",
+    current_diag: dict[str, Any] | None = None,
+    ledger_max: int | None = None,
+    expected_room_id: str = "",
+) -> tuple[bool, list[str], dict[str, Any]]:
+    """Pure binding grade (tests). Recommendation mode requires current_diag."""
+    mode = binding_mode or BINDING_MODE_RECOMMENDATION_WIDGET
+    if mode == BINDING_MODE_CONTROL_ONLY:
+        return compute_control_only_binding(
+            current_diag=current_diag or {},
+            ledger_max=ledger_max if ledger_max is not None else transport_grade_seq,
+            ledger_last=ledger_last,
+        )
+    return compute_recommendation_widget_binding(
+        lifecycle_seq=lifecycle_seq,
+        lifecycle_room_id=lifecycle_room_id,
+        current_diag=current_diag or {"script_run_seq": ledger_diag_seq, "probe_id": "test"},
+        ledger_max=ledger_max if ledger_max is not None else transport_grade_seq,
+        ledger_last=ledger_last,
+        expected_room_id=expected_room_id,
+    )
