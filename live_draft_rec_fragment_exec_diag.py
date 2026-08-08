@@ -201,6 +201,13 @@ def emit_rec_card_widget_exec_probe(
     safe = lambda s: str(s or "").replace('"', "'")[:120]
     paint = dict(session.get("_solo_stage1_last_recommendation_paint") or {})
     reg = _callback_registration_meta(callback_fn) if callback_fn is not None else {}
+    identity: dict[str, Any] = {}
+    try:
+        from live_draft_stage1_fragment_identity_runtime import snapshot_fragment_identity
+
+        identity = snapshot_fragment_identity(phase="rec_widget_emit", widget_user_key=str(widget_key or ""))
+    except ImportError:
+        identity = {}
     st.markdown(
         f'<div class="rec-fragment-exec-probe-card" data-probe-element="{FRAGMENT_EXEC_PROBE_ELEMENT_ID}" '
         f'data-widget-kind="{safe(widget_kind)}" '
@@ -216,6 +223,9 @@ def emit_rec_card_widget_exec_probe(
         f'data-fragment-context="{1 if paint.get("fragment_context") else 0}" '
         f'data-paint-via="{safe(paint.get("via"))}" '
         f'data-streamlit-session-id="{safe(_streamlit_session_id())}" '
+        f'data-thread-fragment-id="{safe(identity.get("thread_state_fragment_id"))}" '
+        f'data-metadata-fragment-id="{safe((identity.get("widget_metadata") or {}).get("fragment_id"))}" '
+        f'data-render-fragment-in-storage="{1 if identity.get("render_fragment_in_storage") else 0 if identity.get("render_fragment_in_storage") is False else ""}" '
         f'data-followed-widget-event="{1 if followed_widget_event else 0}" '
         f'data-help-variant="{safe(help_variant)}" '
         f'data-help-present="{1 if help_present else 0 if help_present is not None else ""}" '

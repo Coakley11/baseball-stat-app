@@ -144,6 +144,22 @@ _CLEAR_LOG_JS = """() => {
 CAPTURE_TARGET_PAUSE = "pause_draft"
 CAPTURE_TARGET_FRAGMENT_PROBE = "fragment_widget_probe"
 CAPTURE_TARGET_FRANCISCO_ADD = "francisco_add_to_queue"
+CAPTURE_TARGET_FRAGMENT_MATRIX_S0 = "fragment_matrix_s0"
+CAPTURE_TARGET_FRAGMENT_MATRIX_S1 = "fragment_matrix_s1"
+CAPTURE_TARGET_FRAGMENT_MATRIX_D0 = "fragment_matrix_d0"
+CAPTURE_TARGET_FRAGMENT_MATRIX_D1 = "fragment_matrix_d1"
+
+_MATRIX_CAPTURE_BY_CONTROL: dict[str, str] = {
+    "S0": CAPTURE_TARGET_FRAGMENT_MATRIX_S0,
+    "S1": CAPTURE_TARGET_FRAGMENT_MATRIX_S1,
+    "D0": CAPTURE_TARGET_FRAGMENT_MATRIX_D0,
+    "D1": CAPTURE_TARGET_FRAGMENT_MATRIX_D1,
+}
+
+
+def fragment_matrix_capture_target(control: str) -> str:
+    return _MATRIX_CAPTURE_BY_CONTROL.get(str(control or "").strip().upper(), CAPTURE_TARGET_FRAGMENT_MATRIX_S0)
+
 
 _CAPTURE_TARGET_RULES: dict[str, dict[str, Any]] = {
     CAPTURE_TARGET_PAUSE: {
@@ -163,6 +179,30 @@ _CAPTURE_TARGET_RULES: dict[str, dict[str, Any]] = {
         "button_label_re": "Add to Queue",
         "match_substrings": ("add to queue",),
         "reject_substrings": ("pause draft", "widget probe", "resume draft"),
+    },
+    CAPTURE_TARGET_FRAGMENT_MATRIX_S0: {
+        "mode": "fragment_matrix",
+        "button_label_re": "Stage1 Static Fragment Probe",
+        "match_substrings": ("stage1 static fragment probe",),
+        "reject_substrings": ("add to queue", "pause draft", "recommendation widget probe"),
+    },
+    CAPTURE_TARGET_FRAGMENT_MATRIX_S1: {
+        "mode": "fragment_matrix",
+        "button_label_re": "Stage1 Static Timed Fragment Probe",
+        "match_substrings": ("stage1 static timed fragment probe",),
+        "reject_substrings": ("add to queue", "pause draft", "recommendation widget probe"),
+    },
+    CAPTURE_TARGET_FRAGMENT_MATRIX_D0: {
+        "mode": "fragment_matrix",
+        "button_label_re": "Stage1 Dynamic Fragment Probe",
+        "match_substrings": ("stage1 dynamic fragment probe",),
+        "reject_substrings": ("add to queue", "pause draft", "recommendation widget probe", "timed fragment probe"),
+    },
+    CAPTURE_TARGET_FRAGMENT_MATRIX_D1: {
+        "mode": "fragment_matrix",
+        "button_label_re": "Stage1 Dynamic Timed Fragment Probe",
+        "match_substrings": ("stage1 dynamic timed fragment probe",),
+        "reject_substrings": ("add to queue", "pause draft", "recommendation widget probe"),
     },
 }
 
