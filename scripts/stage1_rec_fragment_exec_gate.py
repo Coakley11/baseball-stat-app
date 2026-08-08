@@ -90,7 +90,7 @@ def rec_fragment_interactive_steady(lifecycle: dict[str, Any]) -> bool:
     if hpd not in ("1", "true"):
         return False
     via = str(lifecycle.get("paint_via_probe") or "").strip()
-    return via in ("fragment_interactive_live", "full_page_interactive_live")
+    return via == "fragment_interactive_live"
 
 
 def wait_for_rec_fragment_interactive_steady_state(
@@ -199,9 +199,12 @@ def click_fragment_widget_probe(page, *, settle_ms: int = 3500) -> dict[str, Any
     out["callback_ledger_delta"] = delta
     out["callback_ledger_last"] = delta.get("callback_ledger_last") or {}
     out["callback_entered"] = bool(delta.get("callback_entered"))
+    out["probe_callback_new_event"] = bool(delta.get("new_event")) and bool(delta.get("callback_entered"))
     out["probe_click_count"] = after_payload.get("probe_click_count")
     out["ledger_dom_observable"] = callback_ledger_dom_observable(ledger)
     out["finished_ts"] = time.time()
+    if out["probe_callback_new_event"]:
+        out["probe_result"] = "FRAGMENT_INTERACTIVE_PROBE_RESOLVED"
     return out
 
 
@@ -271,6 +274,16 @@ def click_francisco_add_to_queue(
     lifecycle = out.get("lifecycle_before") if isinstance(out.get("lifecycle_before"), dict) else {}
     lifecycle_live = str(lifecycle.get("widget_liveness") or "") == "live_this_run"
     lifecycle_heavy_done = str(lifecycle.get("heavy_paint_done") or "").strip().lower() in ("1", "true")
+    paint_via = str(lifecycle.get("paint_via_francisco") or lifecycle.get("paint_via_probe") or "")
+    if paint_via != "fragment_interactive_live":
+        out["classification"] = "ABORTED_FRANCISCO_NOT_FRAGMENT_INTERACTIVE_LIVE"
+        out["click_dispatched"] = False
+        return out
+    if str(lifecycle.get("probe_source") or "") not in ("actual_card_render", ""):
+        if str(lifecycle.get("probe_source") or "") == "registry_reemit":
+            out["classification"] = "ABORTED_FRANCISCO_REGISTRY_REEMIT_ONLY"
+            out["click_dispatched"] = False
+            return out
     if binding.get("run_binding_consistent") is False:
         if lifecycle_live and lifecycle_heavy_done and liveness == "live_this_run":
             out["run_binding_waiver"] = "lifecycle_live_this_run_after_heavy_paint"
@@ -313,9 +326,26 @@ def click_francisco_add_to_queue(
     out["callback_ledger_delta"] = delta
     out["callback_ledger_last"] = delta.get("callback_ledger_last") or {}
     out["callback_entered"] = bool(delta.get("callback_entered"))
+    out["francisco_callback_new_event"] = bool(delta.get("new_event")) and bool(delta.get("callback_entered"))
     out["ledger_dom_observable"] = callback_ledger_dom_observable(ledger)
     out["finished_ts"] = time.time()
+    if out["callback_entered"] and out["mutation_proven"] and out.get("queue_mutation_visible"):
+        out["mutation_classification"] = "PLAYER_A_QUEUE_MUTATION_RESOLVED"
+    elif out["callback_entered"] and not out["mutation_proven"]:
+        out["mutation_classification"] = "QUEUE1C3B"
     return out
+
+
+def classify_francisco_mutation_step(francisco_step: dict[str, Any]) -> str:
+    if francisco_step.get("mutation_classification"):
+        return str(francisco_step["mutation_classification"])
+    if not francisco_step.get("callback_entered"):
+        return ""
+    if francisco_step.get("mutation_proven") and francisco_step.get("queue_mutation_visible"):
+        return "PLAYER_A_QUEUE_MUTATION_RESOLVED"
+    if francisco_step.get("mutation_proven") and not francisco_step.get("queue_mutation_visible"):
+        return "QUEUE1C3F"
+    return "QUEUE1C3B"
 
 
 def classify_fragment_gate(
@@ -335,6 +365,9 @@ def classify_fragment_gate(
     probe_entered = bool(probe_step.get("callback_entered"))
     fr_entered = bool(francisco_step.get("callback_entered"))
     if probe_entered and fr_entered:
+        mut = classify_francisco_mutation_step(francisco_step)
+        if mut == "PLAYER_A_QUEUE_MUTATION_RESOLVED":
+            return "PLAYER_A_QUEUE_MUTATION_RESOLVED"
         return "QUEUE1C3A2F4_RESOLVED"
     if probe_step.get("ledger_dom_observable") is False:
         return OBSERVABILITY_FRAGMENT_LEDGER_NOT_VISIBLE

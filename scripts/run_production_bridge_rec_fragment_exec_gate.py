@@ -82,7 +82,9 @@ def main() -> int:
     report: dict[str, Any] = {
         "mode": "production_bridge_rec_fragment_exec_gate",
         "harness_sha": _harness_sha(),
+        "expected_harness_sha": "0ff0781",
         "required_cloud_sha": required,
+        "expected_application_deploy_build": "baseball-dev-c6b36c1",
         "bridge_suite_sid_prefix": bridge_sid[:8],
         "bridge_suite_sid_source": bridge_source,
         "setup_url_redacted": redact_url(url),
@@ -126,6 +128,19 @@ def main() -> int:
         )
         report["bridge_hydration_auth_only"] = bridge_pre
         report["application_runtime_sha"] = str(bridge_pre.get("deployment_sha") or "")[:7]
+        try:
+            from queueui_audit_protocol import scrape_deploy_marker_from_page
+
+            _sha, _src = scrape_deploy_marker_from_page(page)
+            if _sha:
+                report["application_runtime_sha"] = str(_sha)[:7]
+            from run_production_solo_soak import scrape_deploy_build
+
+            report["application_deploy_build"] = str(scrape_deploy_build(page) or "")
+        except Exception:
+            report["application_deploy_build"] = f"baseball-dev-{report['application_runtime_sha']}"
+        if str(report.get("harness_sha") or "")[:7] != "0ff0781":
+            report["harness_sha_warning"] = "expected_0ff0781"
         if str(report["application_runtime_sha"]).lower()[:7] != required:
             report["ok"] = False
             report["classification"] = "ABORTED_RUNTIME_SHA_MISMATCH"
@@ -264,6 +279,14 @@ def main() -> int:
 
         steady = wait_for_rec_fragment_interactive_steady_state(page, timeout_s=120.0)
         report["rec_fragment_steady_state"] = steady
+        chronology.append(
+            {
+                "step": "heavy_paint_steady_state",
+                "ts": time.time(),
+                "ok": steady.get("ok"),
+                "lifecycle": steady.get("lifecycle"),
+            }
+        )
         if not steady.get("ok"):
             report["ok"] = False
             report["classification"] = "ABORTED_FRAGMENT_NOT_STEADY_STATE"
@@ -275,10 +298,18 @@ def main() -> int:
         page.wait_for_timeout(2500)
         pre_surface_ctx = snapshot_fragment_exec_context(page)
         report["pre_interaction_exec_context"] = pre_surface_ctx
-        chronology.append({"step": "recommendations_ready", "ts": time.time(), "ctx": "pre_probe"})
+        chronology.append({"step": "recommendations_steady_fragment_interactive_live", "ts": time.time(), "ctx": "pre_probe"})
 
         probe_render_ok, probe_render_reason = prove_fragment_probe_rendered(pre_surface_ctx, room_id=room_id)
         report["fragment_probe_render_proof"] = {"ok": probe_render_ok, "reason": probe_render_reason}
+        if not probe_render_ok:
+            report["ok"] = False
+            report["classification"] = "ABORTED_FRAGMENT_PROBE_NOT_RENDERED"
+            report["finished_at"] = time.time()
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            context.close()
+            browser.close()
+            return 2
 
         probe_step = click_fragment_widget_probe(page)
         report["fragment_probe_control_B"] = probe_step
@@ -287,33 +318,79 @@ def main() -> int:
                 "step": "fragment_probe_click",
                 "ts": time.time(),
                 "callback_entered": probe_step.get("callback_entered"),
+                "probe_result": probe_step.get("probe_result"),
                 "trusted_dom_click": probe_step.get("trusted_dom_click"),
+                "lifecycle_before": probe_step.get("lifecycle_before"),
+                "lifecycle_after": probe_step.get("lifecycle_after"),
             }
         )
 
-        francisco_step = click_francisco_add_to_queue(
-            page,
-            scrape_container_fn=scrape_queue_container_state,
-            preferred_name=str(os.environ.get("STAGE1_SEED_PLAYER_NAME") or "Francisco Lindor"),
-        )
-        report["francisco_control_C"] = francisco_step
-        chronology.append(
-            {
-                "step": "francisco_click",
-                "ts": time.time(),
-                "callback_entered": francisco_step.get("callback_entered"),
-                "trusted_dom_click": francisco_step.get("trusted_dom_click"),
-                "mutation_proven": francisco_step.get("mutation_proven"),
-            }
-        )
+        probe_resolved = bool(probe_step.get("probe_callback_new_event") or probe_step.get("probe_result"))
+        francisco_step: dict[str, Any] = {"skipped": True, "reason": "probe_callback_not_resolved"}
+        if probe_resolved:
+            francisco_step = click_francisco_add_to_queue(
+                page,
+                scrape_container_fn=scrape_queue_container_state,
+                preferred_name=str(os.environ.get("STAGE1_SEED_PLAYER_NAME") or "Francisco Lindor"),
+            )
+            report["francisco_control_C"] = francisco_step
+            chronology.append(
+                {
+                    "step": "francisco_click",
+                    "ts": time.time(),
+                    "callback_entered": francisco_step.get("callback_entered"),
+                    "trusted_dom_click": francisco_step.get("trusted_dom_click"),
+                    "mutation_proven": francisco_step.get("mutation_proven"),
+                    "mutation_classification": francisco_step.get("mutation_classification"),
+                }
+            )
+        else:
+            report["francisco_control_C"] = francisco_step
+            steady_lifecycle = steady.get("lifecycle") if isinstance(steady.get("lifecycle"), dict) else {}
+            probe_trusted = bool(probe_step.get("trusted_dom_click"))
+            probe_ledger = bool(probe_step.get("ledger_dom_observable"))
+            if (
+                steady.get("ok")
+                and str(steady_lifecycle.get("paint_via_probe") or "") == "fragment_interactive_live"
+                and probe_trusted
+                and probe_ledger
+                and not probe_step.get("callback_entered")
+            ):
+                report["classification"] = "QUEUE1C3A2F4"
+                report["f4_note"] = "persists_on_c6b36c1_steady_fragment_interactive_live"
+                report["ok"] = False
+                report["finished_at"] = time.time()
+                OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+                context.close()
+                browser.close()
+                print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "classification": report.get("classification"),
+                            "room_id": room_id,
+                            "harness_sha": report.get("harness_sha"),
+                            "application_runtime_sha": report.get("application_runtime_sha"),
+                            "f4_note": report.get("f4_note"),
+                        }
+                    )
+                )
+                return 2
+            report["francisco_control_C"] = francisco_step
 
-        classification = classify_fragment_gate(
-            pause_ok=True,
-            pause_dom=pause_dom,
-            probe_step=probe_step,
-            francisco_step=francisco_step,
-            probe_render_ok=probe_render_ok,
-        )
+        if not probe_resolved:
+            classification = report.get("classification") or "ABORTED_PROBE_NO_CALLBACK"
+        else:
+            classification = classify_fragment_gate(
+                pause_ok=True,
+                pause_dom=pause_dom,
+                probe_step=probe_step,
+                francisco_step=francisco_step,
+                probe_render_ok=probe_render_ok,
+            )
+            mut_cls = francisco_step.get("mutation_classification")
+            if mut_cls == "PLAYER_A_QUEUE_MUTATION_RESOLVED":
+                classification = "PLAYER_A_QUEUE_MUTATION_RESOLVED"
         report["classification"] = classification
         report["provisional_prior"] = "QUEUE1C3A2F4"
         report["fragment_exec_comparison"] = {
