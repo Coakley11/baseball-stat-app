@@ -1787,6 +1787,24 @@ def render_live_draft_rec_cards(
                         canonical_widget_key=canonical_widget_key,
                     )
                     session["_live_draft_rec_queue_key_scheme"] = "collision_safe_v1"
+                    try:
+                        from live_draft_rec_queue_click_trace import register_rec_queue_render_trace
+
+                        seq = int(session.get("_live_draft_rec_queue_render_seq") or 0) + 1
+                        session["_live_draft_rec_queue_render_seq"] = seq
+                        register_rec_queue_render_trace(
+                            session,
+                            room_id=room_id,
+                            pick_index=pick_idx,
+                            player_id=player_id,
+                            player_name=name,
+                            widget_key=queue_widget_key,
+                            surface="rec_card",
+                            already_queued=already_queued,
+                            render_run_seq=seq,
+                        )
+                    except ImportError:
+                        pass
                 except ImportError:
                     pass
 
@@ -1933,8 +1951,12 @@ def render_live_draft_rec_cards(
                     )
 
     try:
-        from live_draft_rec_queue_click_trace import render_rec_queue_click_trace_probe
+        from live_draft_rec_queue_click_trace import (
+            render_rec_queue_click_trace_probe,
+            render_rec_queue_render_trace_probe,
+        )
 
+        render_rec_queue_render_trace_probe(st, session)
         render_rec_queue_click_trace_probe(st, session)
     except ImportError:
         pass

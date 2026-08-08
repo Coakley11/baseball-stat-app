@@ -10,7 +10,11 @@ from typing import Any
 TRACE_LEDGER_KEY = "_live_draft_rec_queue_click_trace_ledger"
 TRACE_LAST_KEY = "_live_draft_rec_queue_click_trace_last"
 WIDGET_REGISTRY_KEY = "_live_draft_rec_queue_widget_registry"
+RENDER_TRACE_REGISTRY_KEY = "_live_draft_rec_queue_render_trace_registry"
+REC_QUEUE_CALLBACK_ID = "_on_rec_queue_click"
+REC_QUEUE_CALLBACK_VERSION = "live_draft_room_ui_v1"
 MAX_LEDGER = 24
+MAX_RENDER_REGISTRY = 32
 
 
 def new_rec_queue_event_id() -> str:
@@ -31,6 +35,101 @@ def _append_ledger(session: dict[str, Any], row: dict[str, Any]) -> None:
     if len(book) > MAX_LEDGER:
         del book[: len(book) - MAX_LEDGER]
     session[TRACE_LAST_KEY] = dict(row)
+
+
+def register_rec_queue_render_trace(
+    session: dict[str, Any],
+    *,
+    room_id: str,
+    pick_index: int,
+    player_id: str,
+    player_name: str,
+    widget_key: str,
+    surface: str = "rec_card",
+    already_queued: bool = False,
+    render_run_seq: int | None = None,
+    app_build_sha: str = "",
+) -> dict[str, Any]:
+    """Render-time registry — proves instrumented rec card painted before any click."""
+    reg = session.get(RENDER_TRACE_REGISTRY_KEY)
+    if not isinstance(reg, list):
+        reg = []
+        session[RENDER_TRACE_REGISTRY_KEY] = reg
+    row: dict[str, Any] = {
+        "room_id": str(room_id or "").strip(),
+        "pick_index": int(pick_index),
+        "player_id": str(player_id or "").strip(),
+        "player_name": str(player_name or "").strip(),
+        "surface": str(surface or "rec_card"),
+        "expected_widget_key": str(widget_key or "").strip(),
+        "callback_id": REC_QUEUE_CALLBACK_ID,
+        "callback_version": REC_QUEUE_CALLBACK_VERSION,
+        "on_click_wired": True,
+        "button_label": "⭐ Add to Queue",
+        "already_queued": bool(already_queued),
+        "render_ts": time.time(),
+        "render_run_seq": int(render_run_seq) if render_run_seq is not None else None,
+        "app_build_sha": str(app_build_sha or "").strip()[:12],
+        "widget_key_dupes": list(session.get("_live_draft_rec_queue_widget_key_dupes") or []),
+    }
+    reg.append(row)
+    if len(reg) > MAX_RENDER_REGISTRY:
+        del reg[: len(reg) - MAX_RENDER_REGISTRY]
+    session["_live_draft_rec_queue_render_trace_last"] = dict(row)
+    return row
+
+
+def render_rec_queue_render_trace_probe(st: Any, session: dict[str, Any]) -> None:
+    """Pre-click DOM: #rec-card-queue-render-trace (solo_component_diag only)."""
+    try:
+        from live_draft_solo_component_diagnostics import solo_component_diag_enabled
+
+        if not solo_component_diag_enabled(st, session):
+            return
+    except ImportError:
+        if not session.get("_solo_component_diag_enabled"):
+            return
+    reg = list(session.get(RENDER_TRACE_REGISTRY_KEY) or [])
+    last = dict(session.get("_live_draft_rec_queue_render_trace_last") or {})
+    try:
+        from suite_deploy_marker import resolve_git_commit_short
+
+        sha = resolve_git_commit_short()
+    except ImportError:
+        sha = str(last.get("app_build_sha") or "")
+    payload = json.dumps(
+        {
+            "registry_len": len(reg),
+            "last": last,
+            "players": [
+                {
+                    "player_name": r.get("player_name"),
+                    "expected_widget_key": r.get("expected_widget_key"),
+                    "room_id": r.get("room_id"),
+                    "pick_index": r.get("pick_index"),
+                    "player_id": r.get("player_id"),
+                }
+                for r in reg[-8:]
+                if isinstance(r, dict)
+            ],
+            "app_build_sha": sha,
+        },
+        default=str,
+    )[:12000]
+    safe = lambda s: str(s or "").replace('"', "'")[:120]
+    st.markdown(
+        f'<div id="rec-card-queue-render-trace" '
+        f'data-room-id="{safe(last.get("room_id"))}" '
+        f'data-player-name="{safe(last.get("player_name"))}" '
+        f'data-player-id="{safe(last.get("player_id"))}" '
+        f'data-pick-index="{int(last.get("pick_index") or 0)}" '
+        f'data-widget-key="{safe(last.get("expected_widget_key"))}" '
+        f'data-callback-id="{safe(last.get("callback_id") or REC_QUEUE_CALLBACK_ID)}" '
+        f'data-registry-len="{len(reg)}" '
+        f'data-app-sha="{safe(sha)}" '
+        f'data-json="{payload.replace(chr(34), chr(39))}"></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def register_rec_queue_widget(
