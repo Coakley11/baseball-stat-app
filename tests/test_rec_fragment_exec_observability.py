@@ -85,6 +85,14 @@ class RecFragmentObservabilityTests(unittest.TestCase):
 
     def test_heavy_paint_done_reemits_callback_ledger_and_runs_live_interactive(self) -> None:
         st = MagicMock()
+
+        def _fragment_decorator(**kwargs):
+            def _wrap(fn):
+                return fn
+
+            return _wrap
+
+        st.fragment = _fragment_decorator
         session: dict[str, Any] = {HEAVY_PAINT_DONE_KEY: True}
         interactive = {"n": 0}
 

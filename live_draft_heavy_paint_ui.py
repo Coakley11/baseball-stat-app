@@ -87,39 +87,8 @@ def render_deferred_heavy_paint_fragment(
         _invoke_paint_body(via="full_page_no_fast_start")
         return
 
-    if session.get(HEAVY_PAINT_DONE_KEY):
-        _invoke_paint_interactive(via="full_page_interactive_live")
-        _reemit_fragment_diagnostics()
-        return
-
-    defer = should_defer_heavy_first_paint(session)
-    loading = bool(session.get(DEFER_HEAVY_LOADING_KEY))
-
-    if not defer and not loading:
-        _invoke_paint_body(via="full_page")
-        session[HEAVY_PAINT_DONE_KEY] = True
-        try:
-            note_start_stage(session, "heavy_content_rendered", via="full_page")
-        except ImportError:
-            pass
-        return
-
     fragment = getattr(st, "fragment", None)
-    if fragment is None:
-        if defer:
-            st.caption(
-                "Draft is live — controls and timer are ready. "
-                "Loading recommendations and decision tools…"
-            )
-            note_start_stage(session, "first_page_rendered", deferred_heavy=True)
-            clear_defer_heavy_first_paint(session)
-            session[DEFER_HEAVY_LOADING_KEY] = True
-            return
-        _invoke_paint_body(via="full_page_no_fragment_api")
-        session[HEAVY_PAINT_DONE_KEY] = True
-        return
 
-    @fragment(run_every=1)
     def _heavy_paint_fragment() -> None:
         if session.get(HEAVY_PAINT_DONE_KEY):
             _invoke_paint_interactive(via="fragment_interactive_live")
@@ -146,5 +115,40 @@ def render_deferred_heavy_paint_fragment(
         session[HEAVY_PAINT_DONE_KEY] = True
         note_start_stage(session, "heavy_content_rendered", via="fragment")
 
+    if session.get(HEAVY_PAINT_DONE_KEY):
+        if fragment is None:
+            _invoke_paint_interactive(via="full_page_interactive_live")
+            _reemit_fragment_diagnostics()
+            return
+        note_heavy_fragment_mount(session, phase="mount")
+        fragment(run_every=1)(_heavy_paint_fragment)()
+        return
+
+    defer = should_defer_heavy_first_paint(session)
+    loading = bool(session.get(DEFER_HEAVY_LOADING_KEY))
+
+    if not defer and not loading:
+        _invoke_paint_body(via="full_page")
+        session[HEAVY_PAINT_DONE_KEY] = True
+        try:
+            note_start_stage(session, "heavy_content_rendered", via="full_page")
+        except ImportError:
+            pass
+        return
+
+    if fragment is None:
+        if defer:
+            st.caption(
+                "Draft is live — controls and timer are ready. "
+                "Loading recommendations and decision tools…"
+            )
+            note_start_stage(session, "first_page_rendered", deferred_heavy=True)
+            clear_defer_heavy_first_paint(session)
+            session[DEFER_HEAVY_LOADING_KEY] = True
+            return
+        _invoke_paint_body(via="full_page_no_fragment_api")
+        session[HEAVY_PAINT_DONE_KEY] = True
+        return
+
     note_heavy_fragment_mount(session, phase="mount")
-    _heavy_paint_fragment()
+    fragment(run_every=1)(_heavy_paint_fragment)()

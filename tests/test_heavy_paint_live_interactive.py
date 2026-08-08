@@ -24,9 +24,11 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
     def test_after_heavy_paint_done_interactive_path_must_run(self) -> None:
         """Pre-fix architecture skipped paint_body; interactive callback must still run."""
         st = MagicMock()
+        st.fragment = None
         session: dict[str, Any] = {HEAVY_PAINT_DONE_KEY: True}
         expensive = {"n": 0}
         interactive = {"n": 0}
+        via_log: list[str] = []
 
         def paint_body() -> None:
             expensive["n"] += 1
@@ -36,18 +38,61 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
 
         with patch("live_draft_fast_solo_start.should_defer_heavy_first_paint", return_value=False):
             with patch("live_draft_fast_solo_start.note_start_stage"):
-                render_deferred_heavy_paint_fragment(
-                    st,
-                    session,
-                    paint_body,
-                    paint_interactive=paint_interactive,
-                )
+                with patch(
+                    "live_draft_rec_fragment_exec_diag.enter_recommendation_paint_invocation",
+                    side_effect=lambda session, st, via="": via_log.append(str(via)),
+                ):
+                    render_deferred_heavy_paint_fragment(
+                        st,
+                        session,
+                        paint_body,
+                        paint_interactive=paint_interactive,
+                    )
         self.assertEqual(expensive["n"], 0, "expensive body must not rerun when heavy paint done")
         self.assertGreaterEqual(
             interactive["n"],
             1,
             "live interactive renderer must run when heavy paint is done",
         )
+        self.assertIn("full_page_interactive_live", via_log)
+
+    def test_heavy_done_with_fragment_invokes_interactive_inside_fragment_not_full_page(self) -> None:
+        st = MagicMock()
+        fragment_calls: list[str] = []
+
+        def _fragment_decorator(**kwargs):
+            def _wrap(fn):
+                def _run():
+                    fragment_calls.append("run")
+                    fn()
+
+                st._heavy_frag_fn = _run
+                return _run
+
+            return _wrap
+
+        st.fragment = _fragment_decorator
+        session: dict[str, Any] = {HEAVY_PAINT_DONE_KEY: True}
+        via_log: list[str] = []
+
+        def paint_interactive() -> None:
+            pass
+
+        with patch("live_draft_fast_solo_start.should_defer_heavy_first_paint", return_value=False):
+            with patch("live_draft_fast_solo_start.note_start_stage"):
+                with patch(
+                    "live_draft_rec_fragment_exec_diag.enter_recommendation_paint_invocation",
+                    side_effect=lambda session, st, via="": via_log.append(str(via)),
+                ):
+                    render_deferred_heavy_paint_fragment(
+                        st,
+                        session,
+                        lambda: None,
+                        paint_interactive=paint_interactive,
+                    )
+        self.assertIn("fragment_interactive_live", via_log)
+        self.assertNotIn("full_page_interactive_live", via_log)
+        self.assertGreaterEqual(len(fragment_calls), 1)
 
     def test_first_fragment_paint_runs_expensive_once_then_interactive_on_later_tick(self) -> None:
         st = MagicMock()

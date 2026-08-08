@@ -294,8 +294,12 @@ def classify_fragment_gate(
         return "ABORTED_FRAGMENT_PROBE_NOT_RENDERED"
     if not pause_ok:
         return "ABORTED_PAUSE_NOT_RESOLVED"
-    if not probe_step.get("ledger_dom_observable") or not francisco_step.get("ledger_dom_observable"):
+    if probe_step.get("ledger_dom_observable") is False:
         return OBSERVABILITY_FRAGMENT_LEDGER_NOT_VISIBLE
+    if francisco_step.get("ledger_dom_observable") is False:
+        return OBSERVABILITY_FRAGMENT_LEDGER_NOT_VISIBLE
+    if francisco_step.get("click_dispatched") is False and francisco_step.get("classification"):
+        return str(francisco_step.get("classification") or "ABORTED_FRANCISCO")
 
     pause_trusted = bool((pause_dom or {}).get("trusted_dom_click"))
     probe_ledger = probe_step.get("callback_ledger_last") if isinstance(probe_step.get("callback_ledger_last"), dict) else {}
