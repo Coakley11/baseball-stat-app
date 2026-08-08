@@ -103,15 +103,34 @@ def classify_queue1c_subcode(step: dict[str, Any]) -> str:
         if not dispatched:
             return QUEUE1C1
         return QUEUE1C2
+    transport = delivery.get("post_click_transport") if isinstance(delivery.get("post_click_transport"), dict) else {}
+    native = bool(transport.get("native_widget_event_observed"))
     backmsg = bool(transport.get("streamlit_backmsg_sent"))
-    rerun = bool(transport.get("python_rerun_started"))
-    if dispatched and not backmsg and not rerun and int(transport.get("outbound_frames_after_click") or 0) == 0:
+    rerun = bool(transport.get("python_rerun_started") or transport.get("script_run_seq_changed"))
+    generic_only = bool(transport.get("generic_component_traffic_only"))
+    if dispatched and not native and not rerun and int(transport.get("outbound_frames_after_click") or 0) == 0:
         return QUEUE1C2
     if step.get("mutation_observed"):
         return QUEUE1C
     if step.get("structured_confirmation") and not step.get("visible_confirmation"):
         return QUEUE1C4
-    if (backmsg or rerun or int(transport.get("outbound_frames_after_click") or 0) > 0) and not step.get("mutation_observed"):
+    if (native or generic_only or backmsg or rerun or int(transport.get("outbound_frames_after_click") or 0) > 0) and not step.get("mutation_observed"):
+        try:
+            from stage1_native_widget_transport import classify_queue1c3a_subcode
+
+            dom = delivery.get("pre_click_dom_inspection") if isinstance(delivery.get("pre_click_dom_inspection"), dict) else {}
+            rec = dom.get("recommended_click") if isinstance(dom.get("recommended_click"), dict) else dom
+            sub_a = classify_queue1c3a_subcode(
+                click_target=rec,
+                transport=transport,
+                render_trace_present=bool(step.get("render_trace_present")),
+                callback_trace_present=bool(step.get("app_queue_trace")),
+                callback_entered=step.get("app_callback_entered") if "app_callback_entered" in step else None,
+            )
+            if sub_a.startswith("QUEUE1C3A"):
+                return sub_a
+        except ImportError:
+            pass
         app_class = str(step.get("app_classification") or "").strip()
         if app_class.startswith("QUEUE1C3"):
             return app_class.split(" ")[0] if " " in app_class else app_class
@@ -948,6 +967,12 @@ def seed_queue_distinct_players(
             "queue_before": list(pre.get("queue_names") or []),
             "started_ts": time.time(),
         }
+        try:
+            from stage1_rec_queue_click_trace_scrape import merge_render_trace_into_step, scrape_rec_queue_render_trace
+
+            merge_render_trace_into_step(step, scrape_rec_queue_render_trace(page, player_name=player_name))
+        except ImportError:
+            pass
         delivery = deliver_add_to_queue_click(page, pick, playwright_only=True)
         step["click_dispatched"] = bool(delivery.get("click_dispatched"))
         step["delivery_method"] = delivery.get("delivery_method") or ""

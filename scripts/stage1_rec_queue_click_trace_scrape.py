@@ -6,6 +6,61 @@ import json
 from typing import Any
 
 
+def scrape_rec_queue_render_trace(page, *, player_name: str = "") -> dict[str, Any]:
+    try:
+        raw = page.evaluate(
+            """(playerName) => {
+            const docs = [document];
+            for (const f of document.querySelectorAll('iframe')) {
+              try { if (f.contentDocument) docs.push(f.contentDocument); } catch (e) {}
+            }
+            const want = String(playerName || '').trim().toLowerCase();
+            for (const doc of docs) {
+              const el = doc.querySelector('#rec-card-queue-render-trace');
+              if (!el) continue;
+              const row = {
+                room_id: el.getAttribute('data-room-id') || '',
+                player_name: el.getAttribute('data-player-name') || '',
+                player_id: el.getAttribute('data-player-id') || '',
+                pick_index: el.getAttribute('data-pick-index') || '',
+                widget_key: el.getAttribute('data-widget-key') || '',
+                callback_id: el.getAttribute('data-callback-id') || '',
+                registry_len: el.getAttribute('data-registry-len') || '',
+                app_sha: el.getAttribute('data-app-sha') || '',
+                json: el.getAttribute('data-json') || '',
+              };
+              if (want && row.player_name && row.player_name.toLowerCase() !== want) {
+                const payload = row.json || '';
+                if (!payload.toLowerCase().includes(want)) continue;
+              }
+              return row;
+            }
+            return {};
+          }""",
+            player_name,
+        )
+    except Exception as exc:
+        return {"error": str(exc)[:200]}
+    if not isinstance(raw, dict):
+        return {}
+    out = dict(raw)
+    if out.get("json"):
+        try:
+            out["payload"] = json.loads(str(out["json"]).replace("'", '"'))
+        except Exception:
+            pass
+    return out
+
+
+def merge_render_trace_into_step(step: dict[str, Any], trace: dict[str, Any]) -> None:
+    if not trace or not trace.get("widget_key") and not trace.get("json"):
+        return
+    step["app_render_trace"] = trace
+    step["render_trace_present"] = bool(trace.get("widget_key") or trace.get("json"))
+    step["expected_widget_key"] = str(trace.get("widget_key") or "")
+    step["render_callback_id"] = str(trace.get("callback_id") or "")
+
+
 def scrape_rec_queue_app_trace(page) -> dict[str, Any]:
     try:
         raw = page.evaluate(

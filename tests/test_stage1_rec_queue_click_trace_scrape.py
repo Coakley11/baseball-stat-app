@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
 from stage1_rec_queue_click_trace_scrape import merge_app_trace_into_step
 
 
@@ -32,12 +38,18 @@ def test_classify_queue1c_subcode_prefers_app_trace() -> None:
 
     step = {
         "click_dispatched": True,
-        "delivery_method": "playwright_ld_rec_card_meta_scope",
+        "delivery_method": "playwright_ld_rec_card_meta_native_stbutton",
         "mutation_observed": False,
+        "render_trace_present": True,
         "delivery_detail": {
-            "post_click_transport": {"streamlit_backmsg_sent": True, "outbound_frames_after_click": 2},
+            "post_click_transport": {
+                "native_widget_event_observed": False,
+                "generic_component_traffic_only": True,
+                "outbound_frames_after_click": 2,
+            },
+            "pre_click_dom_inspection": {
+                "recommended_click": {"is_st_base_button": True, "inside_st_tooltip": True},
+            },
         },
-        "app_classification": "QUEUE1C3A",
-        "app_callback_entered": False,
     }
-    assert classify_queue1c_subcode(step) == "QUEUE1C3A"
+    assert classify_queue1c_subcode(step) == "QUEUE1C3A2"

@@ -568,7 +568,15 @@ def _frame_for_index(page, frame_index: int, frame_url: str = ""):
     return app or page.main_frame
 
 
-def scrape_click_transport_evidence(page, *, click_ts: float) -> dict[str, Any]:
+def scrape_click_transport_evidence(page, *, click_ts: float, pre_script_run_seq: str = "") -> dict[str, Any]:
+    try:
+        from stage1_native_widget_transport import scrape_native_widget_transport_evidence
+
+        return scrape_native_widget_transport_evidence(
+            page, click_ts=click_ts, pre_script_run_seq=pre_script_run_seq
+        )
+    except ImportError:
+        pass
     try:
         from p8_proven_start_delivery import aggregate_ws_boundary_log
 
@@ -578,24 +586,14 @@ def scrape_click_transport_evidence(page, *, click_ts: float) -> dict[str, Any]:
         backmsg_sent = False
         for entry in after[:16]:
             hint = str(entry.get("frame_type_hint") or "").lower()
-            if "rerun" in hint or "widget" in hint or "backmsg" in hint:
+            if hint == "widget_state_backmsg_hint" or entry.get("widget_key_bytes_present"):
                 backmsg_sent = True
-        pre_seq = ""
-        post_seq = ""
-        try:
-            from p8_production_start_harness import scrape_stage1_ledger_rows
-
-            rows = scrape_stage1_ledger_rows(page) or []
-            if rows:
-                post_seq = str(rows[-1].get("script_run_seq") or "")
-        except Exception:
-            pass
         return {
             "outbound_frames_after_click": len(after),
-            "streamlit_backmsg_sent": backmsg_sent or len(after) > 0,
-            "python_rerun_started": backmsg_sent,
+            "streamlit_backmsg_sent": backmsg_sent,
+            "python_rerun_started": False,
+            "native_widget_event_observed": backmsg_sent,
             "ws_log_sample": after[:5],
-            "ledger_script_run_seq_after": post_seq,
         }
     except Exception as exc:
         return {"error": str(exc)[:160]}
@@ -663,13 +661,62 @@ def deliver_add_to_queue_click(
     index_in_frame = int(candidate.get("index_in_frame") if candidate.get("index_in_frame") is not None else -1)
     pw_timeout = 5000
 
-    def _finish_playwright_click(method: str) -> dict[str, Any]:
+    def _ledger_seq() -> str:
+        try:
+            from p8_production_start_harness import scrape_stage1_ledger_rows
+
+            rows = scrape_stage1_ledger_rows(page) or []
+            if rows:
+                return str(rows[-1].get("script_run_seq") or "")
+        except Exception:
+            pass
+        return ""
+
+    def _finish_playwright_click(method: str, *, pre_seq: str = "", dom_inspection: dict | None = None) -> dict[str, Any]:
         out["click_end_ts"] = time.time()
         out["streamlit_identity_after"] = scrape_streamlit_identity(page)
-        out["post_click_transport"] = scrape_click_transport_evidence(page, click_ts=float(out.get("click_start_ts") or out["click_end_ts"]))
+        out["post_click_transport"] = scrape_click_transport_evidence(
+            page, click_ts=float(out.get("click_start_ts") or out["click_end_ts"]), pre_script_run_seq=pre_seq
+        )
+        if dom_inspection:
+            out["pre_click_dom_inspection"] = dom_inspection
         out["click_dispatched"] = True
         out["delivery_method"] = method
         return out
+
+    pre_seq = _ledger_seq()
+    try:
+        from stage1_rec_card_dom_inspection import inspect_rec_card_add_to_queue_dom
+
+        dom_inspection = inspect_rec_card_add_to_queue_dom(
+            page, player_name=name, frame_url=str(candidate.get("frameUrl") or "")
+        )
+        out["pre_click_dom_inspection"] = dom_inspection
+    except ImportError:
+        dom_inspection = {}
+
+    try:
+        meta = frame.locator(".ld-rec-card-meta").filter(has_text=re.compile(escaped, re.I)).first
+        card_scope = meta.locator("xpath=ancestor::div[@data-testid='stVerticalBlock'][1]")
+        st_btn = card_scope.locator('[data-testid="stButton"]').filter(has_text=re.compile(r"Add to Queue", re.I)).first
+        btn = st_btn.locator('button[data-testid="stBaseButton-secondary"]').first
+        btn.wait_for(state="attached", timeout=pw_timeout)
+        btn.wait_for(state="visible", timeout=pw_timeout)
+        if not btn.is_enabled():
+            out["error"] = "button_not_enabled"
+            out["classification"] = "QUEUE1C1"
+            return out
+        out["click_start_ts"] = time.time()
+        btn.scroll_into_view_if_needed(timeout=pw_timeout)
+        page.wait_for_timeout(350)
+        btn.click(timeout=pw_timeout)
+        return _finish_playwright_click(
+            "playwright_ld_rec_card_meta_native_stbutton",
+            pre_seq=pre_seq,
+            dom_inspection=dom_inspection if isinstance(dom_inspection, dict) else None,
+        )
+    except Exception as exc:
+        pw_error = str(exc)[:240]
 
     try:
         meta = frame.locator(".ld-rec-card-meta").filter(has_text=re.compile(escaped, re.I)).first
@@ -685,7 +732,7 @@ def deliver_add_to_queue_click(
         btn.scroll_into_view_if_needed(timeout=pw_timeout)
         page.wait_for_timeout(350)
         btn.click(timeout=pw_timeout)
-        return _finish_playwright_click("playwright_ld_rec_card_meta_scope")
+        return _finish_playwright_click("playwright_ld_rec_card_meta_scope", pre_seq=pre_seq)
     except Exception as exc:
         pw_error = str(exc)[:240]
 
