@@ -113,6 +113,9 @@ def scrape_native_widget_transport_evidence(page, *, click_ts: float, pre_script
     return out
 
 
+QUEUE1C3A2L = "QUEUE1C3A2L"
+
+
 def classify_queue1c3a_subcode(
     *,
     click_target: dict[str, Any] | None,
@@ -120,10 +123,14 @@ def classify_queue1c3a_subcode(
     render_trace_present: bool,
     callback_trace_present: bool,
     callback_entered: bool | None,
+    widget_liveness: str = "",
 ) -> str:
     """Refine QUEUE1C3A using DOM target + transport + render/callback probes."""
     if not render_trace_present:
         return "QUEUE1C3A5"
+    live = str(widget_liveness or "").strip().lower()
+    if live == "stale_retained_dom":
+        return QUEUE1C3A2L
     tgt = click_target if isinstance(click_target, dict) else {}
     tr = transport if isinstance(transport, dict) else {}
     if tgt.get("click_non_native_element"):

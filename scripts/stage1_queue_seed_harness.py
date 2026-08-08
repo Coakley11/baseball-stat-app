@@ -120,12 +120,18 @@ def classify_queue1c_subcode(step: dict[str, Any]) -> str:
 
             dom = delivery.get("pre_click_dom_inspection") if isinstance(delivery.get("pre_click_dom_inspection"), dict) else {}
             rec = dom.get("recommended_click") if isinstance(dom.get("recommended_click"), dict) else dom
+            liveness = str(
+                step.get("render_trace_widget_liveness")
+                or (step.get("app_render_trace") or {}).get("widget_liveness")
+                or ""
+            ).strip()
             sub_a = classify_queue1c3a_subcode(
                 click_target=rec,
                 transport=transport,
                 render_trace_present=bool(step.get("render_trace_present")),
                 callback_trace_present=bool(step.get("app_queue_trace")),
                 callback_entered=step.get("app_callback_entered") if "app_callback_entered" in step else None,
+                widget_liveness=liveness,
             )
             if sub_a.startswith("QUEUE1C3A"):
                 return sub_a

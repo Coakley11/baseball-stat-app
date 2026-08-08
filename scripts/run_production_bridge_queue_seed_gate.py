@@ -248,6 +248,21 @@ def main() -> int:
                 queue_meta["ok"] = True
         report["queue_seed"] = queue_meta
         report["classification"] = str(queue_meta.get("classification") or "")
+        steps = list(queue_meta.get("seed_steps") or [])
+        if steps:
+            first = steps[0] if isinstance(steps[0], dict) else {}
+            report["francisco_widget_liveness_proof"] = {
+                "player_name": first.get("player_name"),
+                "app_render_trace": first.get("app_render_trace"),
+                "render_trace_fields": {
+                    k.replace("render_trace_", ""): first.get(k)
+                    for k in first
+                    if k.startswith("render_trace_")
+                },
+                "browser_dom_click_events": (first.get("delivery_detail") or {}).get("browser_dom_click_events"),
+                "post_click_transport": (first.get("delivery_detail") or {}).get("post_click_transport"),
+                "classification": first.get("classification"),
+            }
         report["ok"] = report["classification"] == QUEUE_SEED_RESOLVED
         if active.get("classification") == ACTIVE_QUEUE_SURFACE_RESOLVED:
             report["active_queue_surface"] = ACTIVE_QUEUE_SURFACE_RESOLVED
