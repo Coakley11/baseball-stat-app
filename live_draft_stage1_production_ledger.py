@@ -357,6 +357,12 @@ def render_stage1_production_ledger_probe(
 ) -> None:
     if not stage1_production_ledger_enabled(st, session):
         return
+    try:
+        from live_draft_stage1_current_run_diag import render_stage1_current_run_diag_probe
+
+        render_stage1_current_run_diag_probe(st, session, probe_checkpoint=probe_checkpoint)
+    except ImportError:
+        pass
     rows = ledger_rows_for_export(session)
     run_id = ensure_stage1_run_id(session)
     script_run_seq = int(session.get(STAGE1_SCRIPT_SEQ_KEY) or 0)
