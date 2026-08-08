@@ -27037,21 +27037,26 @@ elif active_page == "Live Draft Room":
                                                 "**Fantasy Edge** shows value vs market; **Roster Fit** adjusts for your open slots. "
                                                 "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
                                             )
-                                        render_live_draft_rec_summary_banner(st, top_rec, gaps=_gaps)
-                                        # Cards stay outside the queue fragment so Add uses a full-app
-                                        # paint and remounts the board_col queue (fixes empty-queue bug).
+                                        from live_draft_rec_live_paint import (
+                                            render_rec_interactive_widgets,
+                                            store_prepared_rec_interactive,
+                                        )
+
+                                        store_prepared_rec_interactive(
+                                            st.session_state,
+                                            room_id=str(room.get("draft_room_id") or ""),
+                                            gaps=_gaps,
+                                            category_needs=_category_needs,
+                                            max_cards=6,
+                                            multiplayer=_multiplayer_draft,
+                                        )
                                         try:
-                                            render_live_draft_rec_cards(
+                                            render_rec_interactive_widgets(
                                                 st,
                                                 st.session_state,
                                                 room,
-                                                top_rec,
-                                                max_cards=6,
-                                                multiplayer=_multiplayer_draft,
                                                 fmt_rate_4=fmt_rate_4,
                                                 fmt_int=fmt_int,
-                                                gaps=_gaps,
-                                                category_needs=_category_needs,
                                             )
                                         except Exception as _rec_card_exc:
                                             st.error(
@@ -27228,6 +27233,20 @@ elif active_page == "Live Draft Room":
                                                 key_suffix="live",
                                             )
 
+                def _paint_live_recommendation_interactive_only() -> None:
+                    try:
+                        from live_draft_rec_live_paint import render_rec_interactive_widgets
+
+                        render_rec_interactive_widgets(
+                            st,
+                            st.session_state,
+                            room,
+                            fmt_rate_4=fmt_rate_4,
+                            fmt_int=fmt_int,
+                        )
+                    except ImportError:
+                        pass
+
                 try:
                     from live_draft_heavy_paint_ui import render_deferred_heavy_paint_fragment
 
@@ -27250,6 +27269,7 @@ elif active_page == "Live Draft Room":
                         st,
                         st.session_state,
                         _paint_heavy_recommendations_body,
+                        paint_interactive=_paint_live_recommendation_interactive_only,
                     )
                 except ImportError:
                     if not _defer_heavy_paint:

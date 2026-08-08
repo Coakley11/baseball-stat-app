@@ -31,11 +31,14 @@ def render_deferred_heavy_paint_fragment(
     st: Any,
     session: dict[str, Any],
     paint_body: Callable[[], None],
+    *,
+    paint_interactive: Callable[[], None] | None = None,
 ) -> None:
-    """Paint recommendations/decision panels once the stable shell is visible.
+    """Defer expensive recommendation paint; keep interactive widgets on a live render path.
 
-    First Solo start: defer flag skips heavy work and uses a 1 Hz fragment tick to
-    paint heavy content without ``st.rerun()`` (avoids duplicate control-center widgets).
+    ``paint_body`` runs once for heavy compute + initial paint. After ``HEAVY_PAINT_DONE_KEY``,
+    ``paint_interactive`` runs on each applicable fragment/full-page pass so ``st.button`` widgets
+    stay registered for callbacks (F4 fix).
     """
     def _reemit_rec_queue_render_trace() -> None:
         try:
@@ -63,6 +66,17 @@ def render_deferred_heavy_paint_fragment(
             pass
         paint_body()
 
+    def _invoke_paint_interactive(*, via: str) -> None:
+        if paint_interactive is None:
+            return
+        try:
+            from live_draft_rec_fragment_exec_diag import enter_recommendation_paint_invocation
+
+            enter_recommendation_paint_invocation(session, st, via=via)
+        except ImportError:
+            pass
+        paint_interactive()
+
     try:
         from live_draft_fast_solo_start import (
             clear_defer_heavy_first_paint,
@@ -74,6 +88,7 @@ def render_deferred_heavy_paint_fragment(
         return
 
     if session.get(HEAVY_PAINT_DONE_KEY):
+        _invoke_paint_interactive(via="full_page_interactive_live")
         _reemit_fragment_diagnostics()
         return
 
@@ -107,6 +122,7 @@ def render_deferred_heavy_paint_fragment(
     @fragment(run_every=1)
     def _heavy_paint_fragment() -> None:
         if session.get(HEAVY_PAINT_DONE_KEY):
+            _invoke_paint_interactive(via="fragment_interactive_live")
             _reemit_fragment_diagnostics()
             return
         note_heavy_fragment_mount(session, phase="tick")

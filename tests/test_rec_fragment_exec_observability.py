@@ -83,19 +83,28 @@ class RecFragmentObservabilityTests(unittest.TestCase):
         )
         self.assertEqual(session[FRAGMENT_CALLBACK_LEDGER_KEY][0]["source"], "rec_card_add_to_queue")
 
-    def test_heavy_paint_done_reemits_callback_ledger_probe(self) -> None:
+    def test_heavy_paint_done_reemits_callback_ledger_and_runs_live_interactive(self) -> None:
         st = MagicMock()
         session: dict[str, Any] = {HEAVY_PAINT_DONE_KEY: True}
-        append_fragment_callback_ledger(session, {"event_id": "x", "callback_entered": True, "source": "fragment_widget_probe"})
+        interactive = {"n": 0}
 
         def body() -> None:
             raise AssertionError("paint body must not run when heavy paint done")
 
-        with patch("live_draft_fast_solo_start.should_defer_heavy_first_paint", return_value=True):
+        def paint_interactive() -> None:
+            interactive["n"] += 1
+
+        with patch("live_draft_fast_solo_start.should_defer_heavy_first_paint", return_value=False):
             with patch("live_draft_fast_solo_start.note_start_stage"):
                 with patch("live_draft_rec_fragment_exec_diag.reemit_fragment_callback_ledger_probe") as reemit:
-                    render_deferred_heavy_paint_fragment(st, session, body)
+                    render_deferred_heavy_paint_fragment(
+                        st,
+                        session,
+                        body,
+                        paint_interactive=paint_interactive,
+                    )
                     reemit.assert_called_once()
+        self.assertEqual(interactive["n"], 1)
 
 
 if __name__ == "__main__":
