@@ -1824,6 +1824,21 @@ def render_live_draft_rec_cards(
                 ) -> None:
                     before = [str(x).strip() for x in (_session.get("draft_queue") or []) if str(x).strip()]
                     try:
+                        from live_draft_rec_fragment_exec_diag import record_rec_queue_callback_entry
+
+                        record_rec_queue_callback_entry(
+                            _session,
+                            event_id=_event_id or "",
+                            room_id=_room_id,
+                            pick_index=_pick_idx,
+                            player_id=_player_id,
+                            player_name=_name,
+                            widget_key=_widget_key,
+                            queue_before=before,
+                        )
+                    except ImportError:
+                        pass
+                    try:
                         from live_draft_rec_queue_click_trace import (
                             begin_rec_queue_click_trace,
                             new_rec_queue_event_id,
@@ -1940,6 +1955,78 @@ def render_live_draft_rec_cards(
                         _queue_help = rec_queue_add_button_help_kwargs(st, session, player_name=name)
                     except ImportError:
                         _queue_help = {"help": f"Add {name} to your draft queue."}
+                    try:
+                        from live_draft_rec_fragment_exec_diag import emit_rec_card_widget_exec_probe
+                        from live_draft_rec_queue_help_ab import resolve_rec_queue_help_variant
+
+                        _hv, _hp = resolve_rec_queue_help_variant(st, session)
+                        emit_rec_card_widget_exec_probe(
+                            st,
+                            session,
+                            room_id=room_id,
+                            pick_index=pick_idx,
+                            player_id=player_id,
+                            player_name=name,
+                            widget_key=queue_widget_key,
+                            callback_id="_on_rec_queue_click",
+                            widget_kind="francisco_add_to_queue",
+                            callback_fn=_on_rec_queue_click,
+                            disabled=False,
+                            help_present=_hp,
+                            help_variant=_hv,
+                        )
+                    except ImportError:
+                        pass
+                    if i == 1:
+                        try:
+                            from live_draft_rec_fragment_exec_diag import (
+                                FRAGMENT_PROBE_BUTTON_LABEL,
+                                build_fragment_probe_widget_key,
+                                on_recommendation_fragment_probe_click,
+                            )
+                            from live_draft_solo_component_diagnostics import solo_component_diag_enabled
+
+                            if solo_component_diag_enabled(st, session):
+                                from live_draft_rec_fragment_exec_diag import emit_rec_card_widget_exec_probe
+
+                                _probe_key = build_fragment_probe_widget_key(
+                                    room_id=room_id, pick_index=pick_idx
+                                )
+
+                                def _on_probe_click(
+                                    _session: dict[str, Any] = session,
+                                    _room_id: str = room_id,
+                                    _pick_index: int = pick_idx,
+                                    _widget_key: str = _probe_key,
+                                ) -> None:
+                                    on_recommendation_fragment_probe_click(
+                                        _session,
+                                        _room_id,
+                                        _pick_index,
+                                        _widget_key,
+                                    )
+
+                                st.button(
+                                    FRAGMENT_PROBE_BUTTON_LABEL,
+                                    key=_probe_key,
+                                    use_container_width=True,
+                                    on_click=_on_probe_click,
+                                )
+                                emit_rec_card_widget_exec_probe(
+                                    st,
+                                    session,
+                                    room_id=room_id,
+                                    pick_index=pick_idx,
+                                    player_id=player_id,
+                                    player_name=name,
+                                    widget_key=_probe_key,
+                                    callback_id="on_recommendation_fragment_probe_click",
+                                    widget_kind="fragment_widget_probe",
+                                    callback_fn=_on_probe_click,
+                                    disabled=False,
+                                )
+                        except ImportError:
+                            pass
                     st.button(
                         "⭐ Add to Queue",
                         key=queue_widget_key,
@@ -1982,6 +2069,12 @@ def render_live_draft_rec_cards(
 
         render_rec_queue_render_trace_probe(st, session)
         render_rec_queue_click_trace_probe(st, session)
+    except ImportError:
+        pass
+    try:
+        from live_draft_rec_fragment_exec_diag import render_fragment_callback_ledger_probe
+
+        render_fragment_callback_ledger_probe(st, session)
     except ImportError:
         pass
 

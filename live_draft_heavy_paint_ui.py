@@ -45,6 +45,15 @@ def render_deferred_heavy_paint_fragment(
         except ImportError:
             pass
 
+    def _invoke_paint_body(*, via: str) -> None:
+        try:
+            from live_draft_rec_fragment_exec_diag import enter_recommendation_paint_invocation
+
+            enter_recommendation_paint_invocation(session, st, via=via)
+        except ImportError:
+            pass
+        paint_body()
+
     try:
         from live_draft_fast_solo_start import (
             clear_defer_heavy_first_paint,
@@ -52,7 +61,7 @@ def render_deferred_heavy_paint_fragment(
             should_defer_heavy_first_paint,
         )
     except ImportError:
-        paint_body()
+        _invoke_paint_body(via="full_page_no_fast_start")
         return
 
     if session.get(HEAVY_PAINT_DONE_KEY):
@@ -61,8 +70,9 @@ def render_deferred_heavy_paint_fragment(
 
     defer = should_defer_heavy_first_paint(session)
     loading = bool(session.get(DEFER_HEAVY_LOADING_KEY))
+
     if not defer and not loading:
-        paint_body()
+        _invoke_paint_body(via="full_page")
         session[HEAVY_PAINT_DONE_KEY] = True
         try:
             note_start_stage(session, "heavy_content_rendered", via="full_page")
@@ -81,7 +91,7 @@ def render_deferred_heavy_paint_fragment(
             clear_defer_heavy_first_paint(session)
             session[DEFER_HEAVY_LOADING_KEY] = True
             return
-        paint_body()
+        _invoke_paint_body(via="full_page_no_fragment_api")
         session[HEAVY_PAINT_DONE_KEY] = True
         return
 
@@ -107,7 +117,7 @@ def render_deferred_heavy_paint_fragment(
             session[DEFER_HEAVY_LOADING_KEY] = True
             return
         session.pop(DEFER_HEAVY_LOADING_KEY, None)
-        paint_body()
+        _invoke_paint_body(via="fragment")
         session[HEAVY_PAINT_DONE_KEY] = True
         note_start_stage(session, "heavy_content_rendered", via="fragment")
 

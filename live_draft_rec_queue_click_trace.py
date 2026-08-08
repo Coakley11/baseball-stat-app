@@ -187,6 +187,8 @@ def register_rec_queue_render_trace(
         "widget_key_dupes": list(session.get("_live_draft_rec_queue_widget_key_dupes") or []),
         "help_variant": str(help_variant or "").strip() or "production_default",
         "help_present": bool(help_present) if help_present is not None else True,
+        "full_app_run_seq_at_render": _script_run_seq(session),
+        "recommendation_fragment_run_seq_at_render": int(session.get("_solo_stage1_recommendation_fragment_run_seq") or 0),
         **lc,
     }
     reg.append(row)
