@@ -12,6 +12,8 @@ import time
 from typing import Any
 
 QUEUE1C3A2O1 = "QUEUE1C3A2O1"
+QUEUE1C3A2O1A = "QUEUE1C3A2O1A"
+QUEUE1C3A2O1B = "QUEUE1C3A2O1B"
 QUEUE1C3A2O2 = "QUEUE1C3A2O2"
 
 BINDING_MODE_CONTROL_ONLY = "control_only"
@@ -19,27 +21,35 @@ BINDING_MODE_RECOMMENDATION_WIDGET = "recommendation_widget"
 
 _CURRENT_APP_RUN_DIAG_JS = """() => {
   function roots(){ const r=[document]; for (const f of document.querySelectorAll('iframe')) { try { r.push(f.contentDocument);} catch(e){} } return r.filter(Boolean); }
-  const ids = ['solo-stage1-current-run-diag', 'solo-stage1-production-ledger'];
+  function rowFromEl(el, root, href, probeId, domIndex) {
+    const r = el.getBoundingClientRect();
+    return {
+      probe_id: probeId,
+      dom_index: domIndex,
+      frame_href: href,
+      script_run_seq: el.getAttribute('data-script-run-seq') || el.getAttribute('data-run-seq') || '',
+      run_id: el.getAttribute('data-run-id') || el.getAttribute('data-diagnostic-run-id') || '',
+      streamlit_session_id: el.getAttribute('data-streamlit-session-id') || '',
+      room_id: el.getAttribute('data-room-id') || '',
+      deployment_sha: el.getAttribute('data-deployment-sha') || '',
+      active_page: el.getAttribute('data-active-page') || '',
+      fragment_run_hint: el.getAttribute('data-fragment-run-hint') || '',
+      impl_rev: el.getAttribute('data-impl-rev') || '',
+      probe_ts: el.getAttribute('data-probe-ts') || '',
+      probe_checkpoint: el.getAttribute('data-probe-checkpoint') || '',
+      attached: !!el.isConnected,
+      visible: !!(r && r.width > 0 && r.height > 0),
+    };
+  }
   const out = [];
   for (const root of roots()) {
     const href = (root.defaultView && root.defaultView.location && root.defaultView.location.href) || '';
-    for (const id of ids) {
-      const el = root.querySelector('#' + id);
-      if (!el) continue;
-      out.push({
-        probe_id: id,
-        frame_href: href,
-        script_run_seq: el.getAttribute('data-script-run-seq') || el.getAttribute('data-run-seq') || '',
-        run_id: el.getAttribute('data-run-id') || el.getAttribute('data-diagnostic-run-id') || '',
-        streamlit_session_id: el.getAttribute('data-streamlit-session-id') || '',
-        room_id: el.getAttribute('data-room-id') || '',
-        deployment_sha: el.getAttribute('data-deployment-sha') || '',
-        active_page: el.getAttribute('data-active-page') || '',
-        fragment_run_hint: el.getAttribute('data-fragment-run-hint') || '',
-        impl_rev: el.getAttribute('data-impl-rev') || '',
-        probe_ts: el.getAttribute('data-probe-ts') || '',
-        probe_checkpoint: el.getAttribute('data-probe-checkpoint') || '',
-      });
+    let idx = 0;
+    for (const el of root.querySelectorAll('#solo-stage1-current-run-diag')) {
+      out.push(rowFromEl(el, root, href, 'solo-stage1-current-run-diag', idx++));
+    }
+    for (const el of root.querySelectorAll('#solo-stage1-production-ledger')) {
+      out.push(rowFromEl(el, root, href, 'solo-stage1-production-ledger', idx++));
     }
   }
   return out;
@@ -64,28 +74,119 @@ def scrape_current_app_run_diag_probes(page) -> list[dict[str, Any]]:
         return []
 
 
-def pick_authoritative_current_app_probe(
-    probes: list[dict[str, Any]], *, frame_url_hint: str = ""
+def _frame_matches_hint(href: str, hint: str) -> bool:
+    if not hint:
+        return "/~/" in href or "~/+" in href
+    return bool(href and (hint in href or href in hint))
+
+
+def _parse_probe_ts(value: Any) -> float:
+    try:
+        return float(str(value or "").strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def select_current_app_diag_probe(
+    probes: list[dict[str, Any]],
+    *,
+    frame_url_hint: str = "",
+    expected_room_id: str = "",
+    expected_session_id: str = "",
+    expected_deployment_sha: str = "",
+    require_live_draft_page: bool = True,
 ) -> dict[str, Any]:
+    """Filter bound candidates in authoritative frame; pick highest script_run_seq (then newest ts)."""
     hint = str(frame_url_hint or "").strip()
-    preferred_id = "solo-stage1-current-run-diag"
+    exp_room = str(expected_room_id or "").strip().upper()[:32]
+    exp_session = str(expected_session_id or "").strip()
+    exp_deploy = str(expected_deployment_sha or "").strip().lower()[:7]
 
-    def score(p: dict[str, Any]) -> tuple[int, int]:
+    candidates: list[dict[str, Any]] = []
+    for p in probes:
+        if not isinstance(p, dict):
+            continue
         href = str(p.get("frame_href") or "")
-        pid = str(p.get("probe_id") or "")
-        frame_match = 0
-        if hint and href and (hint in href or href in hint):
-            frame_match = 2
-        elif "/~/" in href or "~/+" in href:
-            frame_match = 1
-        id_pref = 2 if pid == preferred_id else (1 if pid == "solo-stage1-production-ledger" else 0)
-        has_seq = 1 if _parse_int_seq(p.get("script_run_seq")) is not None else 0
-        return (frame_match, id_pref + has_seq)
+        if not _frame_matches_hint(href, hint):
+            continue
+        seq = _parse_int_seq(p.get("script_run_seq"))
+        if seq is None:
+            continue
+        session = str(p.get("streamlit_session_id") or "").strip()
+        room = str(p.get("room_id") or "").strip().upper()[:32]
+        deploy = str(p.get("deployment_sha") or "").strip().lower()[:7]
+        active = str(p.get("active_page") or "").strip()
+        if exp_session and session and session != exp_session:
+            continue
+        if exp_room and room and room != exp_room:
+            continue
+        if exp_deploy and deploy and deploy != exp_deploy:
+            continue
+        if require_live_draft_page and active and "live draft" not in active.lower():
+            continue
+        row = dict(p)
+        row["script_run_seq_int"] = seq
+        row["probe_ts_float"] = _parse_probe_ts(p.get("probe_ts"))
+        candidates.append(row)
 
-    if not probes:
-        return {}
-    ranked = sorted(probes, key=score, reverse=True)
-    return ranked[0]
+    selection: dict[str, Any] = {
+        "current_app_diag_candidates": [
+            {
+                "probe_id": c.get("probe_id"),
+                "dom_index": c.get("dom_index"),
+                "script_run_seq": c.get("script_run_seq_int"),
+                "streamlit_session_id": c.get("streamlit_session_id"),
+                "room_id": c.get("room_id"),
+                "active_page": c.get("active_page"),
+                "probe_ts": c.get("probe_ts"),
+                "deployment_sha": c.get("deployment_sha"),
+                "fragment_run_hint": c.get("fragment_run_hint"),
+                "impl_rev": c.get("impl_rev"),
+                "frame_href": str(c.get("frame_href") or "")[:120],
+                "attached": c.get("attached"),
+                "visible": c.get("visible"),
+            }
+            for c in candidates
+        ],
+        "current_app_diag_candidate_count": len(candidates),
+        "current_diag_selection_reason": "",
+        "stale_current_diag_probe_seqs": [],
+    }
+
+    if not candidates:
+        selection["current_diag_selection_reason"] = "no_bound_candidates_after_filter"
+        return {"selected": {}, "selection": selection}
+
+    ranked = sorted(
+        candidates,
+        key=lambda c: (int(c["script_run_seq_int"]), float(c["probe_ts_float"]), int(c.get("dom_index") or 0)),
+        reverse=True,
+    )
+    selected = ranked[0]
+    selected_seq = int(selected["script_run_seq_int"])
+    max_seq = max(int(c["script_run_seq_int"]) for c in candidates)
+    selection["current_app_diag_max_candidate_seq"] = max_seq
+    selection["current_app_diag_selected_seq"] = selected_seq
+    selection["current_app_diag_selected_ts"] = selected.get("probe_ts")
+    selection["current_diag_selection_reason"] = (
+        "highest_script_run_seq_among_session_room_frame_bound_candidates"
+    )
+    selection["stale_current_diag_probe_seqs"] = sorted(
+        {
+            int(c["script_run_seq_int"])
+            for c in candidates
+            if int(c["script_run_seq_int"]) < selected_seq
+        }
+    )
+    return {"selected": selected, "selection": selection}
+
+
+def pick_authoritative_current_app_probe(
+    probes: list[dict[str, Any]], *, frame_url_hint: str = "", expected_room_id: str = ""
+) -> dict[str, Any]:
+    return select_current_app_diag_probe(
+        probes, frame_url_hint=frame_url_hint, expected_room_id=expected_room_id
+    )["selected"]
 
 
 def scrape_ledger_row_seq_stats(page) -> dict[str, Any]:
@@ -269,7 +370,14 @@ def capture_run_binding_snapshot(
         }
 
     current_probes = scrape_current_app_run_diag_probes(page)
-    current_app = pick_authoritative_current_app_probe(current_probes, frame_url_hint=frame_url_hint)
+    lifecycle_room = str(lifecycle.get("lifecycle_room_id") or expected_room_id or "")
+    pick = select_current_app_diag_probe(
+        current_probes,
+        frame_url_hint=frame_url_hint,
+        expected_room_id=lifecycle_room or expected_room_id,
+    )
+    current_app = pick["selected"]
+    selection_meta = pick["selection"]
     row_stats = scrape_ledger_row_seq_stats(page)
 
     lifecycle_seq = lifecycle.get("lifecycle_current_script_run_seq")
@@ -298,6 +406,8 @@ def capture_run_binding_snapshot(
         )
         transport_grade_seq = current_seq if current_seq is not None else None
 
+    binding_meta = {**binding_meta, **selection_meta}
+
     return {
         "phase": phase,
         "wall_ts": ts,
@@ -313,7 +423,37 @@ def capture_run_binding_snapshot(
         "run_binding_mismatch_reasons": mismatch_reasons,
         "current_app_diag_probe_count": len(current_probes),
         "ledger_diag_probe_count": len(current_probes),
+        "current_run_diag_ids_seen": [
+            int(_parse_int_seq(p.get("script_run_seq")))
+            for p in current_probes
+            if str(p.get("probe_id") or "") == "solo-stage1-current-run-diag"
+            and _parse_int_seq(p.get("script_run_seq")) is not None
+        ],
     }
+
+
+def classify_recommendation_o1_subcode(binding: dict[str, Any]) -> str:
+    """Distinguish selector stale pick (O1A) vs true lifecycle/diag disagreement (O1/O1B)."""
+    if binding.get("run_binding_consistent"):
+        return ""
+    lifecycle_seq = binding.get("lifecycle_seq") or binding.get("lifecycle_current_script_run_seq")
+    selected = binding.get("current_app_diag_selected_seq") or binding.get("current_app_diag_seq")
+    max_cand = binding.get("current_app_diag_max_candidate_seq")
+    try:
+        life_i = int(lifecycle_seq) if lifecycle_seq is not None else None
+        sel_i = int(selected) if selected is not None else None
+        max_i = int(max_cand) if max_cand is not None else None
+    except (TypeError, ValueError):
+        life_i = sel_i = max_i = None
+    if life_i is not None and max_i is not None and sel_i is not None:
+        if life_i == max_i and sel_i < max_i:
+            return QUEUE1C3A2O1A
+        if life_i != max_i and max_i == sel_i:
+            return QUEUE1C3A2O1B
+    reasons = list(binding.get("run_binding_mismatch_reasons") or [])
+    if "current_app_diag_missing" in reasons:
+        return QUEUE1C3A2O1B
+    return QUEUE1C3A2O1
 
 
 def control_only_pause_binding_passes(

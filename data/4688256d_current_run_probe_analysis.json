@@ -1,0 +1,148 @@
+{
+  "room_id": "4688256D",
+  "bridge_prefix": "89559703",
+  "application_runtime_sha": "4b2384e",
+  "harness_sha_at_run": "381be09",
+  "original_classification": "QUEUE1C3A2O1",
+  "legacy_selected_seq": 7,
+  "legacy_selection_reason": "pre-381be09: root.querySelector('#solo-stage1-current-run-diag') returned only the first duplicate id in DOM order (seq 7); pick_authoritative then preferred current-run-diag probe_id over solo-stage1-production-ledger even when ledger carried a higher script_run_seq.",
+  "current_run_diag_seqs_reconstructed": [
+    7,
+    12
+  ],
+  "reconstructed_candidates": [
+    {
+      "probe_id": "solo-stage1-current-run-diag",
+      "dom_index": 0,
+      "script_run_seq": "7",
+      "streamlit_session_id": "088a6d73-f94f-47fc-ad99-4b0ed5b0a5cf",
+      "room_id": "4688256D",
+      "active_page": "Live Draft Room",
+      "probe_ts": "1786195749.0",
+      "deployment_sha": "4b2384e",
+      "fragment_run_hint": "full_run",
+      "impl_rev": "stage1_current_run_diag_v1",
+      "frame_href": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/~/+/?active_page=Live+Draft+Room&solo_component_diag=1&solo_diag_timer=120&solo_stage1_parent_boundary=1&suite_sid=89559703-5f5b-45ad-89c1-8870c252a6d4",
+      "attached": true,
+      "visible": true,
+      "reconstruction_note": "first duplicate; only probe visible to legacy querySelector"
+    },
+    {
+      "probe_id": "solo-stage1-current-run-diag",
+      "dom_index": 1,
+      "script_run_seq": "12",
+      "streamlit_session_id": "088a6d73-f94f-47fc-ad99-4b0ed5b0a5cf",
+      "room_id": "4688256D",
+      "active_page": "Live Draft Room",
+      "probe_ts": "1786195769.0",
+      "deployment_sha": "4b2384e",
+      "fragment_run_hint": "full_run",
+      "impl_rev": "stage1_current_run_diag_v1",
+      "frame_href": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/~/+/?active_page=Live+Draft+Room&solo_component_diag=1&solo_diag_timer=120&solo_stage1_parent_boundary=1&suite_sid=89559703-5f5b-45ad-89c1-8870c252a6d4",
+      "attached": true,
+      "visible": true,
+      "reconstruction_note": "second duplicate coexisting with lifecycle 12; omitted by legacy scraper"
+    },
+    {
+      "probe_id": "solo-stage1-production-ledger",
+      "dom_index": 2,
+      "script_run_seq": "12",
+      "streamlit_session_id": "088a6d73-f94f-47fc-ad99-4b0ed5b0a5cf",
+      "room_id": "4688256D",
+      "active_page": "",
+      "probe_ts": "1786195769.0",
+      "deployment_sha": "",
+      "frame_href": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/~/+/?active_page=Live+Draft+Room&solo_component_diag=1&solo_diag_timer=120&solo_stage1_parent_boundary=1&suite_sid=89559703-5f5b-45ad-89c1-8870c252a6d4",
+      "attached": true,
+      "visible": true,
+      "reconstruction_note": "second row in legacy probe_count=2 scrape (production ledger)"
+    }
+  ],
+  "regrade_selected_seq": 12,
+  "regrade_run_binding_consistent": true,
+  "regrade_binding_authorities": [
+    "rec_lifecycle",
+    "current_app_diag"
+  ],
+  "regrade_ledger_history_lag": true,
+  "regrade_mismatch_reasons": [
+    "ledger_history_lag_max_9_behind_lifecycle_12"
+  ],
+  "regrade_observability_subcode": "pre_click_would_pass_after_selector_fix",
+  "retrospective_conclusion": "Pre-click O1 stop was caused by diagnostic probe selection (QUEUE1C3A2O1A class); Francisco was not clicked; no callback/mutation inference.",
+  "selection_meta": {
+    "binding_mode": "recommendation_widget",
+    "lifecycle_not_applicable": false,
+    "lifecycle_seq": 12,
+    "current_app_diag_seq": 12,
+    "current_app_diag_probe_id": "solo-stage1-production-ledger",
+    "current_app_diag_streamlit_session_id": "088a6d73-f94f-47fc-ad99-4b0ed5b0a5cf",
+    "current_app_diag_room_id": "4688256D",
+    "current_app_diag_frame_href": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/~/+/?active_page=Live+Draft+Room&solo_component_diag=1&solo_diag_timer=120&solo_stage1_parent_boundary=1&suite_sid=89559703-5f5b-45ad-89c1-8870c252a6d4",
+    "current_app_diag_impl_rev": "",
+    "ledger_max_seq": 9,
+    "ledger_last_row_seq": 9,
+    "lifecycle_vs_current_diag_match": true,
+    "ledger_history_lag": true,
+    "binding_authorities": [
+      "rec_lifecycle",
+      "current_app_diag"
+    ],
+    "ledger_last_row_stale": false,
+    "current_app_diag_candidates": [
+      {
+        "probe_id": "solo-stage1-current-run-diag",
+        "dom_index": 0,
+        "script_run_seq": 7,
+        "streamlit_session_id": "088a6d73-f94f-47fc-ad99-4b0ed5b0a5cf",
+        "room_id": "4688256D",
+        "active_page": "Live Draft Room",
+        "probe_ts": "1786195749.0",
+        "deployment_sha": "4b2384e",
+        "fragment_run_hint": "full_run",
+        "impl_rev": "stage1_current_run_diag_v1",
+        "frame_href": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/~/+/?active_page=Live+Draft+Room&solo_component_diag=1&so",
+        "attached": true,
+        "visible": true
+      },
+      {
+        "probe_id": "solo-stage1-current-run-diag",
+        "dom_index": 1,
+        "script_run_seq": 12,
+        "streamlit_session_id": "088a6d73-f94f-47fc-ad99-4b0ed5b0a5cf",
+        "room_id": "4688256D",
+        "active_page": "Live Draft Room",
+        "probe_ts": "1786195769.0",
+        "deployment_sha": "4b2384e",
+        "fragment_run_hint": "full_run",
+        "impl_rev": "stage1_current_run_diag_v1",
+        "frame_href": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/~/+/?active_page=Live+Draft+Room&solo_component_diag=1&so",
+        "attached": true,
+        "visible": true
+      },
+      {
+        "probe_id": "solo-stage1-production-ledger",
+        "dom_index": 2,
+        "script_run_seq": 12,
+        "streamlit_session_id": "088a6d73-f94f-47fc-ad99-4b0ed5b0a5cf",
+        "room_id": "4688256D",
+        "active_page": "",
+        "probe_ts": "1786195769.0",
+        "deployment_sha": "",
+        "fragment_run_hint": null,
+        "impl_rev": null,
+        "frame_href": "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/~/+/?active_page=Live+Draft+Room&solo_component_diag=1&so",
+        "attached": true,
+        "visible": true
+      }
+    ],
+    "current_app_diag_candidate_count": 3,
+    "current_diag_selection_reason": "highest_script_run_seq_among_session_room_frame_bound_candidates",
+    "stale_current_diag_probe_seqs": [
+      7
+    ],
+    "current_app_diag_max_candidate_seq": 12,
+    "current_app_diag_selected_seq": 12,
+    "current_app_diag_selected_ts": "1786195769.0"
+  }
+}

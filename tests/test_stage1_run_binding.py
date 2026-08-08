@@ -12,11 +12,13 @@ from stage1_native_widget_transport import classify_queue1c3a_subcode
 from stage1_run_binding import (
     BINDING_MODE_CONTROL_ONLY,
     BINDING_MODE_RECOMMENDATION_WIDGET,
+    QUEUE1C3A2O1A,
     compute_recommendation_widget_binding,
     compute_run_binding_verdict,
     control_only_pause_binding_passes,
     lifecycle_seq_from_render_trace,
     merge_run_binding_into_transport,
+    select_current_app_diag_probe,
 )
 
 
@@ -234,3 +236,136 @@ def test_pause_trusted_dom_chain_recognized() -> None:
     ]
     trusted_click = [e for e in events if e.get("type") == "click" and e.get("is_trusted")]
     assert len(trusted_click) == 1
+
+
+def test_duplicate_current_probes_select_highest_seq() -> None:
+    frame = "https://example.test/~/+/?active_page=Live+Draft+Room"
+    probes = [
+        {
+            "probe_id": "solo-stage1-current-run-diag",
+            "dom_index": 0,
+            "script_run_seq": "7",
+            "streamlit_session_id": "s1",
+            "room_id": "ROOM1",
+            "active_page": "Live Draft Room",
+            "probe_ts": "100.0",
+            "deployment_sha": "4b2384e",
+            "frame_href": frame,
+        },
+        {
+            "probe_id": "solo-stage1-current-run-diag",
+            "dom_index": 1,
+            "script_run_seq": "12",
+            "streamlit_session_id": "s1",
+            "room_id": "ROOM1",
+            "active_page": "Live Draft Room",
+            "probe_ts": "200.0",
+            "deployment_sha": "4b2384e",
+            "frame_href": frame,
+        },
+    ]
+    pick = select_current_app_diag_probe(
+        probes, frame_url_hint=frame, expected_room_id="ROOM1", expected_session_id="s1"
+    )
+    assert pick["selected"]["script_run_seq_int"] == 12
+    assert pick["selection"]["stale_current_diag_probe_seqs"] == [7]
+
+
+def test_wrong_room_high_seq_rejected() -> None:
+    frame = "https://example.test/~/+/"
+    probes = [
+        {
+            "probe_id": "solo-stage1-current-run-diag",
+            "script_run_seq": "12",
+            "streamlit_session_id": "s1",
+            "room_id": "ROOM1",
+            "active_page": "Live Draft Room",
+            "frame_href": frame,
+        },
+        {
+            "probe_id": "solo-stage1-current-run-diag",
+            "script_run_seq": "15",
+            "streamlit_session_id": "s1",
+            "room_id": "OTHER",
+            "active_page": "Live Draft Room",
+            "frame_href": frame,
+        },
+    ]
+    pick = select_current_app_diag_probe(probes, frame_url_hint=frame, expected_room_id="ROOM1")
+    assert pick["selected"]["script_run_seq_int"] == 12
+
+
+def test_wrong_session_high_seq_rejected() -> None:
+    frame = "https://example.test/~/+/"
+    probes = [
+        {
+            "probe_id": "solo-stage1-current-run-diag",
+            "script_run_seq": "12",
+            "streamlit_session_id": "s1",
+            "room_id": "ROOM1",
+            "active_page": "Live Draft Room",
+            "frame_href": frame,
+        },
+        {
+            "probe_id": "solo-stage1-current-run-diag",
+            "script_run_seq": "15",
+            "streamlit_session_id": "other",
+            "room_id": "ROOM1",
+            "active_page": "Live Draft Room",
+            "frame_href": frame,
+        },
+    ]
+    pick = select_current_app_diag_probe(
+        probes, frame_url_hint=frame, expected_room_id="ROOM1", expected_session_id="s1"
+    )
+    assert pick["selected"]["script_run_seq_int"] == 12
+
+
+def test_lifecycle_12_selected_diag_12_ledger_9_pass() -> None:
+    ok, notes, meta = compute_recommendation_widget_binding(
+        lifecycle_seq=12,
+        lifecycle_room_id="4688256D",
+        current_diag={
+            "probe_id": "solo-stage1-current-run-diag",
+            "script_run_seq": "12",
+            "streamlit_session_id": "088a6d73-f94f-47fc-ad99-4b0ed5b0a5cf",
+            "room_id": "4688256D",
+        },
+        ledger_max=9,
+        ledger_last=9,
+        expected_room_id="4688256D",
+    )
+    assert ok is True
+    assert meta["ledger_history_lag"] is True
+    assert meta["binding_authorities"] == ["rec_lifecycle", "current_app_diag"]
+    assert any("ledger_history_lag" in n for n in notes)
+
+
+def test_real_disagreement_all_valid_probes_7() -> None:
+    ok, _notes, _meta = compute_recommendation_widget_binding(
+        lifecycle_seq=12,
+        lifecycle_room_id="ROOM1",
+        current_diag={
+            "probe_id": "solo-stage1-current-run-diag",
+            "script_run_seq": "7",
+            "streamlit_session_id": "s1",
+            "room_id": "ROOM1",
+        },
+        ledger_max=9,
+        ledger_last=9,
+    )
+    assert ok is False
+
+
+def test_o1a_class_when_max_candidate_matches_lifecycle() -> None:
+    from stage1_run_binding import classify_recommendation_o1_subcode
+
+    sub = classify_recommendation_o1_subcode(
+        {
+            "run_binding_consistent": False,
+            "lifecycle_seq": 12,
+            "current_app_diag_selected_seq": 7,
+            "current_app_diag_max_candidate_seq": 12,
+        }
+    )
+    assert sub == QUEUE1C3A2O1A
