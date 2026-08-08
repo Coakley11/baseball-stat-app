@@ -682,6 +682,12 @@ def deliver_add_to_queue_click(
     def _finish_playwright_click(method: str, *, pre_seq: str = "", dom_inspection: dict | None = None) -> dict[str, Any]:
         out["click_end_ts"] = time.time()
         out["streamlit_identity_after"] = scrape_streamlit_identity(page)
+        try:
+            from stage1_dom_click_capture import read_dom_click_capture_log
+
+            out["browser_dom_click_events"] = read_dom_click_capture_log(page)
+        except ImportError:
+            pass
         out["post_click_transport"] = scrape_click_transport_evidence(
             page, click_ts=float(out.get("click_start_ts") or out["click_end_ts"]), pre_script_run_seq=pre_seq
         )
@@ -716,6 +722,14 @@ def deliver_add_to_queue_click(
         out["click_start_ts"] = time.time()
         btn.scroll_into_view_if_needed(timeout=pw_timeout)
         page.wait_for_timeout(350)
+        try:
+            from stage1_dom_click_capture import install_dom_click_capture
+
+            out["dom_click_capture_install"] = install_dom_click_capture(
+                page, button_selector='button[data-testid="stBaseButton-secondary"]'
+            )
+        except ImportError:
+            pass
         btn.click(timeout=pw_timeout)
         return _finish_playwright_click(
             "playwright_ld_rec_card_meta_native_stbutton",

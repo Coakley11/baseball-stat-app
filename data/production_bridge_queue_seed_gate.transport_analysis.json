@@ -1,0 +1,158 @@
+{
+  "room_id": "AA75D36E",
+  "runtime_sha": "109799c",
+  "bridge_prefix": "1092897c",
+  "detector_validation": {
+    "pause": {
+      "click_timestamp": 1786158394.5808203,
+      "outbound_frames": 1,
+      "native_widget_frames_relaxed": 1,
+      "native_widget_frames_strict": 0,
+      "component_frames_only": 0,
+      "native_widget_event_observed": true,
+      "native_widget_event_observed_strict": false,
+      "streamlit_outbound_after_click": true,
+      "handler_proof": {
+        "pause_classification": "PAUSE_DELIVERY_RESOLVED",
+        "server_paused_recognized": true,
+        "resume_draft_count": 1
+      },
+      "legacy_pause_streamlit_backmsg_sent": true
+    },
+    "start": {
+      "click_timestamp": null,
+      "handler_entered": true,
+      "ws_samples_in_artifact": false,
+      "note": "Start WS sample not stored in gate artifact; use handler_entered + future start_click_transport."
+    },
+    "francisco": {
+      "found": true,
+      "click_timestamp": 1786158412.799342,
+      "transport_recorded": {
+        "outbound_frames_after_click": 2,
+        "native_widget_event_observed": false,
+        "native_widget_frame_count": 0,
+        "component_value_only_frame_count": 2,
+        "generic_component_traffic_only": true,
+        "streamlit_backmsg_sent": false,
+        "python_rerun_started": false,
+        "script_run_seq_before": "12",
+        "ledger_script_run_seq_after": "12",
+        "script_run_seq_changed": false,
+        "ws_log_sample": [
+          {
+            "wall_ts_ms": 1786158412688,
+            "direction": "outbound",
+            "byte_len": 1905,
+            "frame_type_hint": "component_value_hint",
+            "expiration_token_bytes_present": false,
+            "widget_key_bytes_present": false,
+            "component_name_bytes_present": false,
+            "ws_url_redacted": "wss://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app:/~/+/_stcore/stream",
+            "diagnostic_run_id": "",
+            "room_id": "",
+            "deployment_sha": "",
+            "sha256": "bae60349d34fc7fff72c10638e0e342688253f13b92bc1027a50d481d1d65c21",
+            "native_widget_event_hint": "false",
+            "component_value_only_hint": "true"
+          },
+          {
+            "wall_ts_ms": 1786158412796,
+            "direction": "outbound",
+            "byte_len": 1985,
+            "frame_type_hint": "component_value_hint",
+            "expiration_token_bytes_present": false,
+            "widget_key_bytes_present": false,
+            "component_name_bytes_present": false,
+            "ws_url_redacted": "wss://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app:/~/+/_stcore/stream",
+            "diagnostic_run_id": "",
+            "room_id": "",
+            "deployment_sha": "",
+            "sha256": "add44661b044428e0616db28817fff331141a78ae8aaebafb70e0e6530e46ccd",
+            "native_widget_event_hint": "false",
+            "component_value_only_hint": "true"
+          }
+        ]
+      },
+      "transport_reclassified": {
+        "outbound_frames_after_click": 2,
+        "native_widget_event_observed_strict": false,
+        "native_widget_event_observed": true,
+        "native_widget_frame_count_strict": 0,
+        "native_widget_frame_count": 2,
+        "component_value_only_frame_count": 0,
+        "generic_component_traffic_only": false,
+        "streamlit_outbound_after_click": true,
+        "streamlit_backmsg_sent": true,
+        "python_rerun_started": false,
+        "script_run_seq_before": "12",
+        "ledger_script_run_seq_after": "12",
+        "script_run_seq_changed": false,
+        "ws_log_sample": [
+          {
+            "wall_ts_ms": 1786158412688,
+            "direction": "outbound",
+            "byte_len": 1905,
+            "frame_type_hint": "component_value_hint",
+            "expiration_token_bytes_present": false,
+            "widget_key_bytes_present": false,
+            "component_name_bytes_present": false,
+            "ws_url_redacted": "wss://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app:/~/+/_stcore/stream",
+            "diagnostic_run_id": "",
+            "room_id": "",
+            "deployment_sha": "",
+            "sha256": "bae60349d34fc7fff72c10638e0e342688253f13b92bc1027a50d481d1d65c21",
+            "native_widget_event_hint": "true",
+            "component_value_only_hint": "false",
+            "native_widget_event_hint_strict": "false",
+            "component_user_action_hint": "true"
+          },
+          {
+            "wall_ts_ms": 1786158412796,
+            "direction": "outbound",
+            "byte_len": 1985,
+            "frame_type_hint": "component_value_hint",
+            "expiration_token_bytes_present": false,
+            "widget_key_bytes_present": false,
+            "component_name_bytes_present": false,
+            "ws_url_redacted": "wss://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app:/~/+/_stcore/stream",
+            "diagnostic_run_id": "",
+            "room_id": "",
+            "deployment_sha": "",
+            "sha256": "add44661b044428e0616db28817fff331141a78ae8aaebafb70e0e6530e46ccd",
+            "native_widget_event_hint": "true",
+            "component_value_only_hint": "false",
+            "native_widget_event_hint_strict": "false",
+            "component_user_action_hint": "true"
+          }
+        ]
+      },
+      "app_render_trace": {
+        "room_id": "AA75D36E",
+        "player_name": "Francisco Lindor",
+        "player_id": "231",
+        "pick_index": "0",
+        "widget_key": "rec_card_queue_AA75D36E_0_231_rec_card",
+        "surface": "rec_card",
+        "callback_id": "_on_rec_queue_click",
+        "registry_len": "",
+        "app_sha": "109799c",
+        "impl_rev": "rec_queue_render_trace_v2_per_card_reemit",
+        "json": ""
+      },
+      "script_run_at_click": "12",
+      "callback_entered": false,
+      "classification": "QUEUE1C3A2"
+    }
+  },
+  "interpretation": {
+    "detector_false_negative_on_pause": true,
+    "relaxed_detector_matches_pause": true,
+    "francisco_same_ws_shape_as_pause": true
+  },
+  "timeline": {
+    "pause_click_ts": 1786158394.5808203,
+    "francisco_click_ts": 1786158412.799342,
+    "seconds_pause_to_francisco": 18.219
+  }
+}

@@ -14,6 +14,8 @@ from live_draft_rec_queue_click_trace import (
     RENDER_TRACE_PROBE_ELEMENT_ID,
     REC_QUEUE_CALLBACK_ID,
     REC_QUEUE_RENDER_TRACE_IMPL_REV,
+    note_rec_queue_probe_emit,
+    note_rec_queue_widget_button_rendered,
     register_rec_queue_render_trace,
     reemit_rec_queue_render_trace_diagnostics,
     render_per_card_rec_queue_render_trace_marker,
@@ -67,8 +69,10 @@ class RecQueueRenderTraceLifecycleTests(unittest.TestCase):
 
     def test_heavy_paint_done_reemits_render_trace_only(self) -> None:
         st = MagicMock()
-        session: dict[str, Any] = {HEAVY_PAINT_DONE_KEY: True}
-        self._francisco_trace(session)
+        session: dict[str, Any] = {HEAVY_PAINT_DONE_KEY: True, "_solo_stage1_script_run_seq": 9}
+        row = self._francisco_trace(session)
+        note_rec_queue_widget_button_rendered(session, widget_key=row["widget_key"])
+        session["_solo_stage1_script_run_seq"] = 12
         painted = {"count": 0}
 
         def paint_body() -> None:
@@ -81,6 +85,58 @@ class RecQueueRenderTraceLifecycleTests(unittest.TestCase):
             render_deferred_heavy_paint_fragment(st, session, paint_body)
         self.assertEqual(painted["count"], 0)
         self.assertGreater(st.markdown.call_count, 0)
+        combined = " ".join(str(c[0][0]) for c in st.markdown.call_args_list)
+        self.assertIn('data-probe-source="registry_reemit"', combined)
+        self.assertIn('data-widget-rendered-this-run="0"', combined)
+        self.assertIn('data-widget-last-rendered-run-seq="9"', combined)
+        self.assertIn("stale_retained_dom", combined)
+
+    def test_reemit_does_not_mark_widget_rendered_this_run(self) -> None:
+        session: dict[str, Any] = {"_solo_stage1_script_run_seq": 5}
+        row = self._francisco_trace(session)
+        note_rec_queue_widget_button_rendered(session, widget_key=row["widget_key"])
+        session["_solo_stage1_script_run_seq"] = 7
+        note_rec_queue_probe_emit(session, widget_key=row["widget_key"], probe_source="registry_reemit")
+        from live_draft_rec_queue_click_trace import lifecycle_for_widget
+
+        lc = lifecycle_for_widget(session, row["widget_key"])
+        self.assertFalse(lc.get("widget_rendered_this_run"))
+        self.assertEqual(lc.get("probe_source"), "registry_reemit")
+        self.assertEqual(lc.get("actual_card_render_run_seq"), 5)
+
+    def test_actual_render_vs_registry_reemit_distinguishable(self) -> None:
+        st = MagicMock()
+        session: dict[str, Any] = {"_solo_stage1_script_run_seq": 3}
+        row = register_rec_queue_render_trace(
+            session,
+            room_id="AA75D36E",
+            pick_index=0,
+            player_id="231",
+            player_name="Francisco Lindor",
+            widget_key="rec_card_queue_AA75D36E_0_231_rec_card",
+            render_run_seq=3,
+        )
+        note_rec_queue_widget_button_rendered(session, widget_key=row["widget_key"])
+        with patch(
+            "live_draft_solo_component_diagnostics.solo_component_diag_enabled",
+            return_value=True,
+        ):
+            render_per_card_rec_queue_render_trace_marker(st, session, row)
+        actual_html = str(st.markdown.call_args[0][0])
+        self.assertIn('data-probe-source="actual_card_render"', actual_html)
+        self.assertIn('data-widget-rendered-this-run="1"', actual_html)
+        session["_solo_stage1_script_run_seq"] = 8
+        emit_row = dict(row)
+        emit_row["probe_source"] = "registry_reemit"
+        note_rec_queue_probe_emit(session, widget_key=row["widget_key"])
+        with patch(
+            "live_draft_solo_component_diagnostics.solo_component_diag_enabled",
+            return_value=True,
+        ):
+            render_per_card_rec_queue_render_trace_marker(st, session, emit_row)
+        reemit_html = str(st.markdown.call_args[0][0])
+        self.assertIn('data-probe-source="registry_reemit"', reemit_html)
+        self.assertIn('data-widget-rendered-this-run="0"', reemit_html)
 
     def test_render_live_draft_rec_cards_francisco_with_diag(self) -> None:
         from live_draft_room_ui import render_live_draft_rec_cards

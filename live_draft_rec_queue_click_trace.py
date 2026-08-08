@@ -15,9 +15,114 @@ REC_QUEUE_CALLBACK_ID = "_on_rec_queue_click"
 REC_QUEUE_CALLBACK_VERSION = "live_draft_room_ui_v1"
 RENDER_TRACE_PROBE_ELEMENT_ID = "rec-card-queue-render-trace"
 PER_CARD_RENDER_TRACE_CLASS = "rec-card-queue-render-trace-card"
-REC_QUEUE_RENDER_TRACE_IMPL_REV = "rec_queue_render_trace_v2_per_card_reemit"
+REC_QUEUE_RENDER_TRACE_IMPL_REV = "rec_queue_render_trace_v3_lifecycle"
+WIDGET_LIFECYCLE_KEY = "_live_draft_rec_queue_widget_lifecycle"
 MAX_LEDGER = 24
 MAX_RENDER_REGISTRY = 32
+
+
+def _script_run_seq(session: dict[str, Any]) -> int:
+    try:
+        return int(session.get("_solo_stage1_script_run_seq") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _heavy_paint_done(session: dict[str, Any]) -> bool:
+    try:
+        from live_draft_heavy_paint_ui import HEAVY_PAINT_DONE_KEY
+
+        return bool(session.get(HEAVY_PAINT_DONE_KEY))
+    except ImportError:
+        return bool(session.get("_live_draft_heavy_paint_done"))
+
+
+def _lifecycle_map(session: dict[str, Any]) -> dict[str, Any]:
+    raw = session.get(WIDGET_LIFECYCLE_KEY)
+    if not isinstance(raw, dict):
+        raw = {}
+        session[WIDGET_LIFECYCLE_KEY] = raw
+    return raw
+
+
+def lifecycle_for_widget(session: dict[str, Any], widget_key: str) -> dict[str, Any]:
+    reg = _lifecycle_map(session)
+    row = reg.get(str(widget_key))
+    return dict(row) if isinstance(row, dict) else {}
+
+
+def _merge_lifecycle_dom_attrs(session: dict[str, Any], widget_key: str, *, probe_source: str = "") -> dict[str, Any]:
+    """Snapshot for DOM markers — distinguishes actual st.button render vs registry re-emit."""
+    lc = lifecycle_for_widget(session, widget_key)
+    current_seq = _script_run_seq(session)
+    last_render_seq = int(lc.get("widget_last_rendered_run_seq") or lc.get("actual_card_render_run_seq") or 0)
+    rendered_this_run = bool(lc.get("widget_rendered_this_run"))
+    stale_vs_current = bool(last_render_seq and current_seq and last_render_seq < current_seq and not rendered_this_run)
+    out: dict[str, Any] = {
+        "actual_card_render_run_seq": lc.get("actual_card_render_run_seq"),
+        "actual_card_render_ts": lc.get("actual_card_render_ts"),
+        "probe_emit_run_seq": lc.get("probe_emit_run_seq"),
+        "probe_emit_ts": lc.get("probe_emit_ts"),
+        "probe_source": probe_source or lc.get("probe_source") or "",
+        "current_script_run_seq": current_seq,
+        "current_fragment_run_seq": lc.get("current_fragment_run_seq"),
+        "heavy_paint_done": _heavy_paint_done(session),
+        "widget_rendered_this_run": rendered_this_run,
+        "widget_last_rendered_run_seq": last_render_seq or lc.get("widget_last_rendered_run_seq"),
+        "widget_liveness": "live_this_run" if rendered_this_run else ("stale_retained_dom" if stale_vs_current else "unknown"),
+    }
+    return out
+
+
+def note_rec_queue_widget_button_rendered(session: dict[str, Any], *, widget_key: str) -> None:
+    """Call immediately after st.button(...) for Add-to-Queue — proves widget ran this script pass."""
+    wk = str(widget_key or "").strip()
+    if not wk:
+        return
+    reg = _lifecycle_map(session)
+    now = time.time()
+    seq = _script_run_seq(session)
+    prev = dict(reg.get(wk) or {})
+    reg[wk] = {
+        **prev,
+        "widget_key": wk,
+        "actual_card_render_run_seq": seq,
+        "actual_card_render_ts": now,
+        "widget_last_rendered_run_seq": seq,
+        "widget_rendered_this_run": True,
+        "probe_source": "actual_card_render",
+        "current_script_run_seq_at_render": seq,
+        "heavy_paint_done_at_render": _heavy_paint_done(session),
+    }
+    session["_live_draft_rec_queue_render_trace_last_lifecycle"] = dict(reg[wk])
+
+
+def note_rec_queue_probe_emit(
+    session: dict[str, Any],
+    *,
+    widget_key: str = "",
+    probe_source: str = "registry_reemit",
+) -> None:
+    """Registry/HTML re-emit without st.button — must not set widget_rendered_this_run."""
+    reg = _lifecycle_map(session)
+    seq = _script_run_seq(session)
+    now = time.time()
+    keys = [widget_key] if widget_key else list(reg.keys())[-6:]
+    for wk in keys:
+        wk = str(wk or "").strip()
+        if not wk:
+            continue
+        prev = dict(reg.get(wk) or {})
+        reg[wk] = {
+            **prev,
+            "widget_key": wk,
+            "probe_emit_run_seq": seq,
+            "probe_emit_ts": now,
+            "probe_source": probe_source,
+            "widget_rendered_this_run": False,
+            "current_script_run_seq_at_probe": seq,
+            "heavy_paint_done_at_probe": _heavy_paint_done(session),
+        }
 
 
 def new_rec_queue_event_id() -> str:
@@ -58,23 +163,27 @@ def register_rec_queue_render_trace(
     if not isinstance(reg, list):
         reg = []
         session[RENDER_TRACE_REGISTRY_KEY] = reg
+    wk = str(widget_key or "").strip()
+    seq = int(render_run_seq) if render_run_seq is not None else _script_run_seq(session)
+    lc = _merge_lifecycle_dom_attrs(session, wk, probe_source="actual_card_render")
     row: dict[str, Any] = {
         "room_id": str(room_id or "").strip(),
         "pick_index": int(pick_index),
         "player_id": str(player_id or "").strip(),
         "player_name": str(player_name or "").strip(),
         "surface": str(surface or "rec_card"),
-        "expected_widget_key": str(widget_key or "").strip(),
-        "widget_key": str(widget_key or "").strip(),
+        "expected_widget_key": wk,
+        "widget_key": wk,
         "callback_id": REC_QUEUE_CALLBACK_ID,
         "callback_version": REC_QUEUE_CALLBACK_VERSION,
         "on_click_wired": True,
         "button_label": "⭐ Add to Queue",
         "already_queued": bool(already_queued),
         "render_ts": time.time(),
-        "render_run_seq": int(render_run_seq) if render_run_seq is not None else None,
+        "render_run_seq": seq,
         "app_build_sha": str(app_build_sha or "").strip()[:12],
         "widget_key_dupes": list(session.get("_live_draft_rec_queue_widget_key_dupes") or []),
+        **lc,
     }
     reg.append(row)
     if len(reg) > MAX_RENDER_REGISTRY:
@@ -113,17 +222,30 @@ def render_per_card_rec_queue_render_trace_marker(
         return
     safe = lambda s: str(s or "").replace('"', "'")[:120]
     sha = str(trace_row.get("app_build_sha") or _render_trace_build_sha())
-    gen = int(trace_row.get("render_run_seq") or session.get("_live_draft_rec_queue_render_seq") or 0)
+    wk = str(trace_row.get("expected_widget_key") or trace_row.get("widget_key") or "")
+    probe_source = str(trace_row.get("probe_source") or "actual_card_render")
+    lc = _merge_lifecycle_dom_attrs(session, wk, probe_source=probe_source)
+    gen = int(trace_row.get("render_run_seq") or lc.get("actual_card_render_run_seq") or 0)
     st.markdown(
         f'<div class="{PER_CARD_RENDER_TRACE_CLASS}" '
         f'data-room-id="{safe(trace_row.get("room_id"))}" '
         f'data-player-name="{safe(trace_row.get("player_name"))}" '
         f'data-player-id="{safe(trace_row.get("player_id"))}" '
         f'data-pick-index="{int(trace_row.get("pick_index") or 0)}" '
-        f'data-widget-key="{safe(trace_row.get("expected_widget_key") or trace_row.get("widget_key"))}" '
+        f'data-widget-key="{safe(wk)}" '
         f'data-surface="{safe(trace_row.get("surface") or "rec_card")}" '
         f'data-callback-id="{safe(trace_row.get("callback_id") or REC_QUEUE_CALLBACK_ID)}" '
         f'data-render-generation="{gen}" '
+        f'data-actual-card-render-run-seq="{int(lc.get("actual_card_render_run_seq") or 0)}" '
+        f'data-actual-card-render-ts="{safe(lc.get("actual_card_render_ts"))}" '
+        f'data-probe-emit-run-seq="{int(lc.get("probe_emit_run_seq") or 0)}" '
+        f'data-probe-emit-ts="{safe(lc.get("probe_emit_ts"))}" '
+        f'data-probe-source="{safe(probe_source)}" '
+        f'data-current-script-run-seq="{int(lc.get("current_script_run_seq") or 0)}" '
+        f'data-heavy-paint-done="{1 if lc.get("heavy_paint_done") else 0}" '
+        f'data-widget-rendered-this-run="{1 if lc.get("widget_rendered_this_run") else 0}" '
+        f'data-widget-last-rendered-run-seq="{int(lc.get("widget_last_rendered_run_seq") or 0)}" '
+        f'data-widget-liveness="{safe(lc.get("widget_liveness"))}" '
         f'data-app-sha="{safe(sha)}" '
         f'data-impl-rev="{REC_QUEUE_RENDER_TRACE_IMPL_REV}"></div>',
         unsafe_allow_html=True,
@@ -137,18 +259,23 @@ def reemit_rec_queue_render_trace_diagnostics(st: Any, session: dict[str, Any]) 
     reg = list(session.get(RENDER_TRACE_REGISTRY_KEY) or [])
     if not reg and not session.get("_live_draft_rec_queue_render_trace_last"):
         return
-    render_rec_queue_render_trace_probe(st, session)
+    note_rec_queue_probe_emit(session, probe_source="registry_reemit")
+    render_rec_queue_render_trace_probe(st, session, probe_source="registry_reemit")
     for row in reg[-6:]:
         if isinstance(row, dict):
-            render_per_card_rec_queue_render_trace_marker(st, session, row)
+            emit_row = dict(row)
+            emit_row["probe_source"] = "registry_reemit"
+            render_per_card_rec_queue_render_trace_marker(st, session, emit_row)
 
 
-def render_rec_queue_render_trace_probe(st: Any, session: dict[str, Any]) -> None:
+def render_rec_queue_render_trace_probe(st: Any, session: dict[str, Any], *, probe_source: str = "actual_card_render") -> None:
     """Pre-click DOM: #rec-card-queue-render-trace (solo_component_diag only)."""
     if not _render_trace_diag_enabled(st, session):
         return
     reg = list(session.get(RENDER_TRACE_REGISTRY_KEY) or [])
     last = dict(session.get("_live_draft_rec_queue_render_trace_last") or {})
+    wk = str(last.get("expected_widget_key") or last.get("widget_key") or "")
+    lc = _merge_lifecycle_dom_attrs(session, wk, probe_source=probe_source)
     sha = _render_trace_build_sha() or str(last.get("app_build_sha") or "")
     payload = json.dumps(
         {
@@ -181,6 +308,13 @@ def render_rec_queue_render_trace_probe(st: Any, session: dict[str, Any]) -> Non
         f'data-surface="{safe(last.get("surface") or "rec_card")}" '
         f'data-callback-id="{safe(last.get("callback_id") or REC_QUEUE_CALLBACK_ID)}" '
         f'data-registry-len="{len(reg)}" '
+        f'data-probe-source="{safe(probe_source)}" '
+        f'data-actual-card-render-run-seq="{int(lc.get("actual_card_render_run_seq") or 0)}" '
+        f'data-current-script-run-seq="{int(lc.get("current_script_run_seq") or 0)}" '
+        f'data-heavy-paint-done="{1 if lc.get("heavy_paint_done") else 0}" '
+        f'data-widget-rendered-this-run="{1 if lc.get("widget_rendered_this_run") else 0}" '
+        f'data-widget-last-rendered-run-seq="{int(lc.get("widget_last_rendered_run_seq") or 0)}" '
+        f'data-widget-liveness="{safe(lc.get("widget_liveness"))}" '
         f'data-app-sha="{safe(sha)}" '
         f'data-impl-rev="{REC_QUEUE_RENDER_TRACE_IMPL_REV}" '
         f'data-json="{payload.replace(chr(34), chr(39))}"></div>',

@@ -1938,6 +1938,12 @@ def render_live_draft_rec_cards(
                         help=f"Add {name} to your draft queue.",
                     )
                 try:
+                    from live_draft_rec_queue_click_trace import note_rec_queue_widget_button_rendered
+
+                    note_rec_queue_widget_button_rendered(session, widget_key=queue_widget_key)
+                except ImportError:
+                    pass
+                try:
                     from live_draft_rec_queue_click_trace import render_per_card_rec_queue_render_trace_marker
 
                     if _render_trace_row:

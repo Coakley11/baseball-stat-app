@@ -176,6 +176,11 @@ def main() -> int:
         report["start_latch"] = {
             "room_id": canonical.get("room_id") or canonical.get("created_room_id"),
             "handler_entered": canonical.get("handler_entered"),
+            "start_click_transport": canonical.get("start_click_transport"),
+            "start_click": {
+                "click_timestamp": (canonical.get("start_click") or {}).get("click_timestamp"),
+                "pre_click_script_run_seq": (canonical.get("start_click") or {}).get("pre_click_script_run_seq"),
+            },
         }
         room_id = str(report["start_latch"].get("room_id") or "").upper()
         start_val = {

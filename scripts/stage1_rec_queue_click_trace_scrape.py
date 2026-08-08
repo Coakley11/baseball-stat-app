@@ -27,6 +27,16 @@ def scrape_rec_queue_render_trace(page, *, player_name: str = "") -> dict[str, A
                 registry_len: el.getAttribute('data-registry-len') || '',
                 app_sha: el.getAttribute('data-app-sha') || '',
                 impl_rev: el.getAttribute('data-impl-rev') || '',
+                probe_source: el.getAttribute('data-probe-source') || '',
+                actual_card_render_run_seq: el.getAttribute('data-actual-card-render-run-seq') || '',
+                actual_card_render_ts: el.getAttribute('data-actual-card-render-ts') || '',
+                probe_emit_run_seq: el.getAttribute('data-probe-emit-run-seq') || '',
+                probe_emit_ts: el.getAttribute('data-probe-emit-ts') || '',
+                current_script_run_seq: el.getAttribute('data-current-script-run-seq') || '',
+                heavy_paint_done: el.getAttribute('data-heavy-paint-done') || '',
+                widget_rendered_this_run: el.getAttribute('data-widget-rendered-this-run') || '',
+                widget_last_rendered_run_seq: el.getAttribute('data-widget-last-rendered-run-seq') || '',
+                widget_liveness: el.getAttribute('data-widget-liveness') || '',
                 json: el.getAttribute('data-json') || '',
               };
             }
@@ -76,6 +86,17 @@ def merge_render_trace_into_step(step: dict[str, Any], trace: dict[str, Any]) ->
     step["render_trace_present"] = bool(trace.get("widget_key") or trace.get("json") or trace.get("player_name"))
     step["expected_widget_key"] = str(trace.get("widget_key") or "")
     step["render_callback_id"] = str(trace.get("callback_id") or "")
+    for key in (
+        "probe_source",
+        "actual_card_render_run_seq",
+        "current_script_run_seq",
+        "widget_rendered_this_run",
+        "widget_last_rendered_run_seq",
+        "widget_liveness",
+        "heavy_paint_done",
+    ):
+        if trace.get(key) not in (None, ""):
+            step[f"render_trace_{key}"] = trace.get(key)
 
 
 def scrape_rec_queue_app_trace(page) -> dict[str, Any]:
