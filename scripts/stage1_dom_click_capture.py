@@ -152,6 +152,22 @@ CAPTURE_TARGET_CONTEXT_C0 = "fragment_context_c0"
 CAPTURE_TARGET_CONTEXT_C1 = "fragment_context_c1"
 CAPTURE_TARGET_CONTEXT_C2 = "fragment_context_c2"
 CAPTURE_TARGET_CONTEXT_C3 = "fragment_context_c3"
+CAPTURE_TARGET_DISPATCH_R0 = "button_dispatch_r0"
+CAPTURE_TARGET_DISPATCH_O0 = "button_dispatch_o0"
+CAPTURE_TARGET_DISPATCH_O1 = "button_dispatch_o1"
+CAPTURE_TARGET_DISPATCH_O2 = "button_dispatch_o2"
+
+_DISPATCH_CAPTURE_BY_MODE: dict[str, str] = {
+    "R0": CAPTURE_TARGET_DISPATCH_R0,
+    "O0": CAPTURE_TARGET_DISPATCH_O0,
+    "O1": CAPTURE_TARGET_DISPATCH_O1,
+    "O2": CAPTURE_TARGET_DISPATCH_O2,
+}
+
+
+def button_dispatch_capture_target(mode: str) -> str:
+    return _DISPATCH_CAPTURE_BY_MODE.get(str(mode or "").strip().upper(), CAPTURE_TARGET_DISPATCH_R0)
+
 
 _CONTEXT_CAPTURE_BY_CONTROL: dict[str, str] = {
     "C0": CAPTURE_TARGET_CONTEXT_C0,
@@ -243,6 +259,30 @@ _CAPTURE_TARGET_RULES: dict[str, dict[str, Any]] = {
         "button_label_re": "Stage1 Top-Level Normal Button Probe",
         "match_substrings": ("stage1 top-level normal button probe",),
         "reject_substrings": ("add to queue", "pause draft"),
+    },
+    CAPTURE_TARGET_DISPATCH_R0: {
+        "mode": "button_dispatch",
+        "button_label_re": "Stage1 Return-Value Probe",
+        "match_substrings": ("stage1 return-value probe",),
+        "reject_substrings": ("add to queue", "pause draft", "onclick"),
+    },
+    CAPTURE_TARGET_DISPATCH_O0: {
+        "mode": "button_dispatch",
+        "button_label_re": "Stage1 OnClick Direct Probe",
+        "match_substrings": ("stage1 onclick direct probe",),
+        "reject_substrings": ("add to queue", "pause draft", "return-value"),
+    },
+    CAPTURE_TARGET_DISPATCH_O1: {
+        "mode": "button_dispatch",
+        "button_label_re": "Stage1 OnClick Args Probe",
+        "match_substrings": ("stage1 onclick args probe",),
+        "reject_substrings": ("add to queue", "pause draft", "direct probe", "closure probe"),
+    },
+    CAPTURE_TARGET_DISPATCH_O2: {
+        "mode": "button_dispatch",
+        "button_label_re": "Stage1 OnClick Closure Probe",
+        "match_substrings": ("stage1 onclick closure probe",),
+        "reject_substrings": ("add to queue", "pause draft", "direct probe", "args probe"),
     },
 }
 

@@ -26416,6 +26416,15 @@ elif active_page == "Live Draft Room":
                 pass
 
             try:
+                from live_draft_stage1_button_dispatch_probe import render_stage1_button_dispatch_probe
+
+                render_stage1_button_dispatch_probe(
+                    st, st.session_state, str(room.get("draft_room_id") or "")
+                )
+            except ImportError:
+                pass
+
+            try:
                 from live_draft_stage1_fragment_context_isolation import render_stage1_fragment_context_isolation
 
                 render_stage1_fragment_context_isolation(
