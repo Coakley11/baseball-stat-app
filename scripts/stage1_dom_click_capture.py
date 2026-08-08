@@ -148,6 +148,22 @@ CAPTURE_TARGET_FRAGMENT_MATRIX_S0 = "fragment_matrix_s0"
 CAPTURE_TARGET_FRAGMENT_MATRIX_S1 = "fragment_matrix_s1"
 CAPTURE_TARGET_FRAGMENT_MATRIX_D0 = "fragment_matrix_d0"
 CAPTURE_TARGET_FRAGMENT_MATRIX_D1 = "fragment_matrix_d1"
+CAPTURE_TARGET_CONTEXT_C0 = "fragment_context_c0"
+CAPTURE_TARGET_CONTEXT_C1 = "fragment_context_c1"
+CAPTURE_TARGET_CONTEXT_C2 = "fragment_context_c2"
+CAPTURE_TARGET_CONTEXT_C3 = "fragment_context_c3"
+
+_CONTEXT_CAPTURE_BY_CONTROL: dict[str, str] = {
+    "C0": CAPTURE_TARGET_CONTEXT_C0,
+    "C1": CAPTURE_TARGET_CONTEXT_C1,
+    "C2": CAPTURE_TARGET_CONTEXT_C2,
+    "C3": CAPTURE_TARGET_CONTEXT_C3,
+}
+
+
+def fragment_context_capture_target(control: str) -> str:
+    return _CONTEXT_CAPTURE_BY_CONTROL.get(str(control or "").strip().upper(), CAPTURE_TARGET_CONTEXT_C0)
+
 
 _MATRIX_CAPTURE_BY_CONTROL: dict[str, str] = {
     "S0": CAPTURE_TARGET_FRAGMENT_MATRIX_S0,
@@ -203,6 +219,30 @@ _CAPTURE_TARGET_RULES: dict[str, dict[str, Any]] = {
         "button_label_re": "Stage1 Dynamic Timed Fragment Probe",
         "match_substrings": ("stage1 dynamic timed fragment probe",),
         "reject_substrings": ("add to queue", "pause draft", "recommendation widget probe"),
+    },
+    CAPTURE_TARGET_CONTEXT_C0: {
+        "mode": "fragment_context",
+        "button_label_re": "Stage1 Top-Level Fragment Probe",
+        "match_substrings": ("stage1 top-level fragment probe",),
+        "reject_substrings": ("add to queue", "pause draft"),
+    },
+    CAPTURE_TARGET_CONTEXT_C1: {
+        "mode": "fragment_context",
+        "button_label_re": "Stage1 Expander Fragment Probe",
+        "match_substrings": ("stage1 expander fragment probe",),
+        "reject_substrings": ("add to queue", "pause draft"),
+    },
+    CAPTURE_TARGET_CONTEXT_C2: {
+        "mode": "fragment_context",
+        "button_label_re": "Stage1 Expander Normal Button Probe",
+        "match_substrings": ("stage1 expander normal button probe",),
+        "reject_substrings": ("add to queue", "pause draft"),
+    },
+    CAPTURE_TARGET_CONTEXT_C3: {
+        "mode": "fragment_context",
+        "button_label_re": "Stage1 Top-Level Normal Button Probe",
+        "match_substrings": ("stage1 top-level normal button probe",),
+        "reject_substrings": ("add to queue", "pause draft"),
     },
 }
 

@@ -55,9 +55,44 @@ def _solo_diag_enabled(st: Any | None, session: dict[str, Any]) -> bool:
         return bool(session.get("_solo_component_diag_enabled"))
 
 
-def matrix_widget_key(control: str, room_id: str) -> str:
+def matrix_widget_key(control: str, room_id: str, *, suffix: str = "") -> str:
     rid = str(room_id or "noroom").strip().upper()[:16]
-    return f"stage1_fragment_matrix_{control.lower()}_{rid}_diag"
+    suf = str(suffix or "").strip()
+    return f"stage1_fragment_matrix_{control.lower()}_{rid}_diag{suf}"
+
+
+def render_s0_outside_matrix_expander(st: Any, session: dict[str, Any], room_id: str) -> None:
+    """Same S0 static fragment as matrix, mounted top-level for container A/B."""
+    if not _solo_diag_enabled(st, session):
+        return
+    rid = str(room_id or "").strip()
+    session[MATRIX_ROOM_SESSION_KEY] = rid
+    wk = matrix_widget_key(CONTROL_S0, rid, suffix="_toplevel")
+    inv = _bump_invocation(session, "S0_TOP")
+    identity = snapshot_fragment_identity(phase="render", widget_user_key=wk)
+
+    def _click() -> None:
+        on_fragment_matrix_probe_click(
+            st.session_state,
+            control=CONTROL_S0,
+            room_id=rid,
+            widget_key=wk,
+        )
+
+    st.button(
+        _LABELS[CONTROL_S0] + " (top-level)",
+        key=wk,
+        use_container_width=True,
+        on_click=_click,
+    )
+    _emit_matrix_dom_probe(
+        control="S0_TOP",
+        room_id=rid,
+        widget_key=wk,
+        invocation=inv,
+        identity=identity,
+        run_every=None,
+    )
 
 
 def _full_app_run_seq(session: Any) -> int:

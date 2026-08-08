@@ -26416,6 +26416,15 @@ elif active_page == "Live Draft Room":
                 pass
 
             try:
+                from live_draft_stage1_fragment_context_isolation import render_stage1_fragment_context_isolation
+
+                render_stage1_fragment_context_isolation(
+                    st, st.session_state, str(room.get("draft_room_id") or "")
+                )
+            except ImportError:
+                pass
+
+            try:
                 from live_draft_stage1_fragment_identity_matrix import render_stage1_fragment_identity_matrix
 
                 render_stage1_fragment_identity_matrix(st, st.session_state, str(room.get("draft_room_id") or ""))
