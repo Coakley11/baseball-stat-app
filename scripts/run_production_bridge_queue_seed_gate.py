@@ -203,6 +203,40 @@ def main() -> int:
             context.close()
             browser.close()
             return 1
+        pause_click = pause.get("pause_click") if isinstance(pause.get("pause_click"), dict) else {}
+        pause_obs = pause.get("pause_click_observability") if isinstance(pause.get("pause_click_observability"), dict) else {}
+        pause_dom = list(pause_click.get("browser_dom_click_events") or [])
+        pause_install = pause_click.get("dom_click_capture_install") if isinstance(pause_click.get("dom_click_capture_install"), dict) else {}
+        pre_bind = pause_obs.get("pre_click_run_binding") if isinstance(pause_obs.get("pre_click_run_binding"), dict) else {}
+        post_bind = pause_obs.get("post_click_run_binding") if isinstance(pause_obs.get("post_click_run_binding"), dict) else {}
+        report["pause_observability_control"] = {
+            "dom_click_capture_install": pause_install,
+            "browser_dom_click_events": pause_dom,
+            "pre_click_run_binding": pre_bind,
+            "post_click_run_binding": post_bind,
+            "run_binding_consistent_pre": pre_bind.get("run_binding_consistent"),
+            "pause_frame_url": pause_click.get("click_frame_url"),
+        }
+        if pause_install.get("ok") and not pause_dom:
+            report["ok"] = False
+            report["classification"] = "QUEUE1C3A2O2"
+            report["observability_stop_reason"] = "pause_functional_but_dom_capture_empty"
+            report["finished_at"] = time.time()
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            context.close()
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "room_id": room_id}))
+            return 2
+        if pre_bind.get("run_binding_consistent") is False:
+            report["ok"] = False
+            report["classification"] = "QUEUE1C3A2O1"
+            report["observability_stop_reason"] = "pause_run_binding_inconsistent"
+            report["finished_at"] = time.time()
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            context.close()
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "room_id": room_id}))
+            return 2
         gate_start = dict(start_val)
         gate_start["pause_ack_ts"] = float((pause.get("pause_timing") or {}).get("pause_click_dispatch_ts") or time.time())
         active = wait_for_active_queue_surface(
@@ -259,10 +293,50 @@ def main() -> int:
                     for k in first
                     if k.startswith("render_trace_")
                 },
+                "pre_click_run_binding": first.get("pre_click_run_binding"),
                 "browser_dom_click_events": (first.get("delivery_detail") or {}).get("browser_dom_click_events"),
                 "post_click_transport": (first.get("delivery_detail") or {}).get("post_click_transport"),
                 "classification": first.get("classification"),
             }
+            detail = first.get("delivery_detail") if isinstance(first.get("delivery_detail"), dict) else {}
+            transport = detail.get("post_click_transport") if isinstance(detail.get("post_click_transport"), dict) else {}
+            fr_dom = list(detail.get("browser_dom_click_events") or [])
+            trusted_click = any(
+                e.get("type") == "click" and e.get("isTrusted") for e in fr_dom if isinstance(e, dict)
+            )
+            report["pause_vs_francisco_comparison"] = {
+                "pause": {
+                    "functional": pause.get("pause_classification"),
+                    "run_binding_pre": pre_bind,
+                    "run_binding_post": post_bind,
+                    "dom_events": pause_dom,
+                    "ws_sample": (pause.get("pause_click_transport") or {}).get("ws_log_sample"),
+                },
+                "francisco": {
+                    "widget_liveness": (first.get("app_render_trace") or {}).get("widget_liveness"),
+                    "run_binding_pre": first.get("pre_click_run_binding"),
+                    "run_binding_consistent": transport.get("run_binding_consistent"),
+                    "dom_events": fr_dom,
+                    "trusted_native_click": trusted_click,
+                    "ws_sample": transport.get("ws_log_sample"),
+                    "script_run_seq_changed": transport.get("script_run_seq_changed"),
+                    "callback_entered": first.get("app_callback_entered"),
+                    "mutation_proven": first.get("mutation_proven"),
+                },
+            }
+            if str(first.get("classification") or "").startswith("QUEUE1C3A2O"):
+                report["classification"] = str(first.get("classification"))
+            elif (
+                (first.get("render_trace_widget_liveness") or (first.get("app_render_trace") or {}).get("widget_liveness"))
+                == "live_this_run"
+                and transport.get("run_binding_consistent") is True
+                and trusted_click
+                and pause_dom
+                and not first.get("mutation_proven")
+                and first.get("app_callback_entered") is not True
+            ):
+                if str(first.get("classification") or "") in ("QUEUE1C3A2", "QUEUE1C3A"):
+                    report["observability_refined_classification"] = "QUEUE1C3A2D"
         report["ok"] = report["classification"] == QUEUE_SEED_RESOLVED
         if active.get("classification") == ACTIVE_QUEUE_SURFACE_RESOLVED:
             report["active_queue_surface"] = ACTIVE_QUEUE_SURFACE_RESOLVED

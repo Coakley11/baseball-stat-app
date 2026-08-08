@@ -1003,6 +1003,24 @@ def seed_queue_distinct_players(
         step["click_dispatched"] = bool(delivery.get("click_dispatched"))
         step["delivery_method"] = delivery.get("delivery_method") or ""
         step["delivery_detail"] = delivery
+        step["pre_click_run_binding"] = delivery.get("pre_click_run_binding")
+        pre_bind = step.get("pre_click_run_binding") if isinstance(step.get("pre_click_run_binding"), dict) else {}
+        if pre_bind.get("run_binding_consistent") is False:
+            step["classification"] = "QUEUE1C3A2O1"
+            step["mutation_proven"] = False
+            step["mutation_observed"] = False
+            step["elapsed_s"] = time.time() - float(step["started_ts"])
+            seed_steps.append(step)
+            fail_classification = "QUEUE1C3A2O1"
+            break
+        if delivery.get("dom_capture_observability_failed"):
+            step["classification"] = "QUEUE1C3A2O2"
+            step["mutation_proven"] = False
+            step["mutation_observed"] = False
+            step["elapsed_s"] = time.time() - float(step["started_ts"])
+            seed_steps.append(step)
+            fail_classification = "QUEUE1C3A2O2"
+            break
         if not step["click_dispatched"]:
             step["classification"] = classify_queue1c_subcode(step)
             step["mutation_proven"] = False
