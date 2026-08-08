@@ -8,7 +8,22 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from stage1_rec_queue_click_trace_scrape import merge_app_trace_into_step
+from stage1_rec_queue_click_trace_scrape import merge_app_trace_into_step, merge_render_trace_into_step
+
+
+def test_merge_render_trace_per_card_player_name_only() -> None:
+    step: dict = {}
+    merge_render_trace_into_step(
+        step,
+        {
+            "player_name": "Francisco Lindor",
+            "widget_key": "rec_card_queue_E667FBC4_0_592789_rec_card",
+            "callback_id": "_on_rec_queue_click",
+            "impl_rev": "rec_queue_render_trace_v2_per_card_reemit",
+        },
+    )
+    assert step["render_trace_present"] is True
+    assert step["expected_widget_key"].startswith("rec_card_queue_E667FBC4")
 
 
 def test_merge_app_trace_sets_callback_and_classification() -> None:

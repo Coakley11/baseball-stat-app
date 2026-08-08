@@ -220,18 +220,27 @@ def main() -> int:
         surf_mut = bool((active.get("timing") or {}).get("surface_activation_queue_mutation"))
         from stage1_queue_seed_harness import wait_for_min_add_to_queue_controls
 
+        seed_min = max(1, int(str(os.environ.get("STAGE1_QUEUE_SEED_MIN_PLAYERS") or "3").strip() or "3"))
         add_wait = wait_for_min_add_to_queue_controls(
             page,
-            min_controls=3,
+            min_controls=max(1, seed_min),
             timeout_s=90.0,
             start_val=gate_start,
         )
         report["add_control_wait"] = add_wait
+        report["stage1_queue_seed_min_players"] = seed_min
+        report["stage1_seed_player_name"] = str(os.environ.get("STAGE1_SEED_PLAYER_NAME") or "").strip()
         queue_meta = queue_populate_deliberate(
             page,
-            min_players=3,
+            min_players=seed_min,
             surface_activation_queue_mutation=surf_mut,
         )
+        focus_name = str(os.environ.get("STAGE1_SEED_PLAYER_NAME") or "").strip()
+        if seed_min == 1 and focus_name and queue_meta.get("ok"):
+            steps = list(queue_meta.get("seed_steps") or [])
+            if steps and steps[0].get("mutation_proven") and str(steps[0].get("player_name") or "").lower() == focus_name.lower():
+                queue_meta["classification"] = "PLAYER_A_QUEUE_MUTATION_RESOLVED"
+                queue_meta["ok"] = True
         report["queue_seed"] = queue_meta
         report["classification"] = str(queue_meta.get("classification") or "")
         report["ok"] = report["classification"] == QUEUE_SEED_RESOLVED

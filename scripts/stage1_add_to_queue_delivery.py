@@ -514,6 +514,7 @@ def select_next_seed_candidate(
     *,
     exclude_player_names: set[str],
     exclude_global_indices: set[int] | None = None,
+    preferred_player_name: str = "",
 ) -> tuple[dict[str, Any] | None, str]:
     """Pick next uniquely-bound player not yet queued. Returns (candidate, reject_reason)."""
     exclude_global_indices = exclude_global_indices or set()
@@ -543,6 +544,12 @@ def select_next_seed_candidate(
         if unnamed and not viable:
             return None, "missing_binding"
         return None, "no_viable_candidate"
+    want = str(preferred_player_name or "").strip().lower()
+    if want:
+        for c in viable:
+            if str(c.get("player_name") or "").strip().lower() == want:
+                return c, ""
+        return None, "preferred_player_not_found"
     viable.sort(key=lambda x: int(x.get("global_index") or 0))
     return viable[0], ""
 

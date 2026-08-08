@@ -906,12 +906,15 @@ def seed_queue_distinct_players(
     mutation_wait_s: float = 5.0,
 ) -> dict[str, Any]:
     """Rediscover → bind player → click → prove mutation; discard bindings after each add."""
+    import os
+
     from stage1_add_to_queue_delivery import (
         deliver_add_to_queue_click,
         discover_bound_add_to_queue_controls,
         select_next_seed_candidate,
     )
 
+    preferred_player = str(os.environ.get("STAGE1_SEED_PLAYER_NAME") or "").strip()
     t0 = time.time()
     before_all = _snapshot_queue(page, scrape_container_fn)
     control_wait = wait_for_min_add_to_queue_controls(page, min_controls=min_players, timeout_s=90.0)
@@ -944,7 +947,11 @@ def seed_queue_distinct_players(
                 "candidates": candidates[:10],
             }
         )
-        pick, reject = select_next_seed_candidate(candidates, exclude_player_names=queued_names)
+        pick, reject = select_next_seed_candidate(
+            candidates,
+            exclude_player_names=queued_names,
+            preferred_player_name=preferred_player,
+        )
         if not pick:
             if reject == "ambiguous_binding":
                 fail_classification = QUEUE1B
@@ -973,6 +980,15 @@ def seed_queue_distinct_players(
             merge_render_trace_into_step(step, scrape_rec_queue_render_trace(page, player_name=player_name))
         except ImportError:
             pass
+        if not step.get("render_trace_present"):
+            step["classification"] = "QUEUE1C3A5"
+            step["click_dispatched"] = False
+            step["mutation_proven"] = False
+            step["mutation_observed"] = False
+            step["elapsed_s"] = time.time() - float(step["started_ts"])
+            seed_steps.append(step)
+            fail_classification = "QUEUE1C3A5"
+            break
         delivery = deliver_add_to_queue_click(page, pick, playwright_only=True)
         step["click_dispatched"] = bool(delivery.get("click_dispatched"))
         step["delivery_method"] = delivery.get("delivery_method") or ""

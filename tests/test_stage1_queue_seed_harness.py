@@ -51,6 +51,28 @@ def test_surface_activation_labels_never_match_add_to_queue() -> None:
     assert all("Add" not in lbl or "Available" in lbl for lbl in QUEUE_SURFACE_NAV_LABELS)
 
 
+def test_classify_queue1c_subcode_missing_render_is_queue1c3a5() -> None:
+    from stage1_queue_seed_harness import classify_queue1c_subcode
+
+    step = {
+        "click_dispatched": True,
+        "delivery_method": "playwright_ld_rec_card_meta_native_stbutton",
+        "mutation_observed": False,
+        "render_trace_present": False,
+        "delivery_detail": {
+            "post_click_transport": {
+                "native_widget_event_observed": False,
+                "generic_component_traffic_only": True,
+                "outbound_frames_after_click": 1,
+            },
+            "pre_click_dom_inspection": {
+                "recommended_click": {"is_st_base_button": True},
+            },
+        },
+    }
+    assert classify_queue1c_subcode(step) == "QUEUE1C3A5"
+
+
 def test_three_clicks_two_visible_names_is_not_queue_seed_resolved() -> None:
     meta = {
         "seed_steps": [

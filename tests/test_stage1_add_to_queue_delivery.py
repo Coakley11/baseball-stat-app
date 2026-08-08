@@ -62,6 +62,26 @@ def test_select_next_rejects_ambiguous_binding() -> None:
     assert pick is None and reason == "ambiguous_binding"
 
 
+def test_select_preferred_francisco_over_lower_index() -> None:
+    candidates = [
+        {"global_index": 0, "player_name": "Pete Alonso", "binding_confidence": "unique"},
+        {"global_index": 1, "player_name": "Francisco Lindor", "binding_confidence": "unique"},
+    ]
+    pick, reason = select_next_seed_candidate(
+        candidates,
+        exclude_player_names=set(),
+        preferred_player_name="Francisco Lindor",
+    )
+    assert reason == ""
+    assert pick and pick["player_name"] == "Francisco Lindor"
+    pick3, reason3 = select_next_seed_candidate(
+        candidates,
+        exclude_player_names=set(),
+        preferred_player_name="Mike Trout",
+    )
+    assert pick3 is None and reason3 == "preferred_player_not_found"
+
+
 def test_identical_add_labels_distinct_player_cards() -> None:
     candidates = [
         {"global_index": 0, "player_name": "Francisco Lindor", "binding_confidence": "unique", "button_text": "⭐ Add to Queue"},
