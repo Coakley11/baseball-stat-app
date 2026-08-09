@@ -1,0 +1,277 @@
+"""Production: S3 server registry gate — wire ID → register → state apply → R1–R7."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(SCRIPTS))
+
+OUT = ROOT / "data" / "production_bridge_s3_server_registry_gate.json"
+BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
+
+
+def _harness_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=str(ROOT), text=True).strip()
+    except Exception:
+        return ""
+
+
+def _wire_from_sibling_step(sibling_step: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    tr = dict(sibling_step.get("streamlit_transport") or {})
+    strict = dict(tr.get("strict_backmsg") or {})
+    ids = list(strict.get("activated_widget_ids") or [])
+    wire = str(ids[0] if ids else "")
+    frag = ""
+    for fr in strict.get("decoded_outbound_frames") or []:
+        if not isinstance(fr, dict):
+            continue
+        dec = fr.get("decode") if isinstance(fr.get("decode"), dict) else {}
+        cs = dec.get("client_state") if isinstance(dec.get("client_state"), dict) else {}
+        if cs.get("fragment_id"):
+            frag = str(cs.get("fragment_id") or "")
+            break
+    return wire, frag, strict
+
+
+def _wait_post_registration(page, *, max_wait_s: float = 90.0) -> dict[str, Any]:
+    from stage1_s3_server_registry_scrape import extract_post_registration, scrape_s3_server_diag_ledger
+
+    deadline = time.time() + max_wait_s
+    last: dict[str, Any] = {"found": False}
+    while time.time() < deadline:
+        snap = scrape_s3_server_diag_ledger(page)
+        last = snap
+        post = extract_post_registration(snap.get("payload") if isinstance(snap.get("payload"), dict) else None)
+        if snap.get("found") and str(post.get("registered_widget_id") or "").startswith("$$ID-"):
+            return {"ok": True, "scrape": snap, "post_registration": post}
+        page.wait_for_timeout(800)
+    return {"ok": False, "scrape": last, "post_registration": extract_post_registration(last.get("payload") if isinstance(last.get("payload"), dict) else None)}
+
+
+def _capture_pause_strict(page, *, room_id: str) -> dict[str, Any]:
+    from p8_proven_pause_delivery import (
+        PAUSE_DELIVERY_RESOLVED,
+        dispatch_proven_pause_click,
+        wait_for_authoritative_pause_control,
+        wait_for_pause_server_proof,
+    )
+    from stage1_streamlit_click_transport import capture_streamlit_click_transport, clear_ws_boundary_log
+
+    out: dict[str, Any] = {"step": "pause_strict_backmsg", "started_ts": time.time()}
+    hydration = wait_for_authoritative_pause_control(page, max_wait_s=30.0, room_id=room_id)
+    out["pause_hydration"] = hydration
+    if not hydration.get("ready"):
+        out["setup_abort"] = "PAUSE_UI_NOT_READY"
+        out["finished_ts"] = time.time()
+        return out
+    pre_click_ts = time.time()
+    out["pre_click_timestamp"] = pre_click_ts
+    out["ws_clear"] = clear_ws_boundary_log(page)
+    click = dispatch_proven_pause_click(page)
+    out["pause_click"] = click
+    click_ts = float(click.get("click_timestamp") or pre_click_ts)
+    page.wait_for_timeout(650)
+    transport = capture_streamlit_click_transport(
+        page,
+        click_ts=pre_click_ts - 0.05,
+        frame_url_hint=str(click.get("click_frame_url") or ""),
+    )
+    out["streamlit_transport"] = transport
+    server = wait_for_pause_server_proof(page, click_ts=click_ts, max_wait_s=22.0)
+    out["pause_server_proof"] = server
+    out["trusted_dom_click"] = bool(click.get("trusted_dom_click"))
+    out["pause_resolved"] = bool(server.get("paused_recognized"))
+    out["pause_classification"] = PAUSE_DELIVERY_RESOLVED if out["pause_resolved"] else "PAUSE_NOT_RESOLVED"
+    out["finished_ts"] = time.time()
+    return out
+
+
+def main() -> int:
+    from cloud_streamlit_wake import goto_and_wake
+    from p8_canonical_production_start import establish_single_solo_live_draft
+    from p8_proven_pause_delivery import wait_for_authoritative_pause_control
+    from p8_proven_start_delivery import install_proven_start_context_scripts
+    from playwright.sync_api import sync_playwright
+    from playwright_auth_bridge_restore_harness import resolve_bridge_suite_sid_with_source, wait_bridge_auth_hydrated
+    from playwright_daniel_auth_session import append_suite_sid_to_url
+    from run_production_stage1_authenticated import resolve_required_cloud_sha
+    from stage1_pause_sibling_transport_capture import capture_sibling_pre_pause_transport
+    from stage1_preflight_cleanup import run_stage1_preflight_cleanup
+    from stage1_s3_server_registry_classify import classify_s3_server_registry
+    from stage1_s3_server_registry_scrape import extract_post_registration, scrape_s3_server_diag_ledger
+    from streamlit_app_frame import describe_page_frames, resolve_streamlit_app_frame
+
+    if str(os.environ.get("STAGE1_USE_CAPTURE_BRIDGE") or "").strip().lower() in ("0", "false"):
+        print(json.dumps({"ok": False, "classification": "ABORTED_CAPTURE_BRIDGE_DISABLED"}))
+        return 1
+
+    bridge_sid, bridge_source = resolve_bridge_suite_sid_with_source()
+    if not bridge_sid:
+        print(json.dumps({"ok": False, "classification": "ABORTED_NO_BRIDGE_SID"}))
+        return 1
+
+    required = (resolve_required_cloud_sha() or os.environ.get("REQUIRED_CLOUD_SHA") or "").strip().lower()[:7]
+    timer = str(os.environ.get("SOLO_DIAG_TIMER") or "120").strip() or "120"
+    url = append_suite_sid_to_url(
+        f"{BASE}/?active_page=Live%20Draft%20Room&solo_component_diag=1&solo_diag_timer={timer}&solo_stage1_parent_boundary=1",
+        bridge_sid,
+    )
+    report: dict[str, Any] = {
+        "mode": "production_bridge_s3_server_registry_gate",
+        "harness_sha": _harness_sha(),
+        "required_cloud_sha": required,
+        "accepted_boundary": "BUTTON_DISPATCH_E2B_S3_TRIGGER_SENT_SERVER_NOT_APPLIED",
+        "bridge_suite_sid_prefix": bridge_sid[:8],
+        "bridge_suite_sid_source": bridge_source,
+        "sequence": [
+            "start",
+            "wait_post_registration_snapshot",
+            "sibling_strict_click",
+            "scrape_s3_server_evidence",
+            "pause_positive_control",
+            "classify_r1_r7",
+        ],
+        "started_at": time.time(),
+    }
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+        context = browser.new_context(viewport={"width": 1440, "height": 1400})
+        install_proven_start_context_scripts(context)
+        page = context.new_page()
+        goto_and_wake(page, url, timeout_s=240)
+        page.wait_for_timeout(12000)
+
+        from p8_production_start_harness import scrape_stage1_ledger_rows
+        from queueui_audit_protocol import scrape_deploy_marker_from_page
+
+        deploy_sha, _ = scrape_deploy_marker_from_page(page)
+        report["application_runtime_sha"] = str(deploy_sha or "")[:7]
+        if required and str(report["application_runtime_sha"]).lower()[:7] != required:
+            report["classification"] = "ABORTED_RUNTIME_SHA_MISMATCH"
+            report["ok"] = False
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            return 1
+
+        bridge_pre = wait_bridge_auth_hydrated(page, bridge_sid, scrape_stage1_ledger_rows, timeout_s=240.0, preamble_mode="stage1")
+        report["bridge_hydration"] = bridge_pre
+        if not bridge_pre.get("authenticated_restored"):
+            report["classification"] = bridge_pre.get("failure_classification") or "AUTH_HYDRATE7"
+            report["ok"] = False
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            return 1
+
+        cleanup = run_stage1_preflight_cleanup(page, max_wait_s=180.0)
+        report["preflight_cleanup"] = cleanup
+        if not cleanup.get("ok"):
+            report["classification"] = "ABORTED_SETUP_LOBBY"
+            report["ok"] = False
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            return 1
+
+        canonical = establish_single_solo_live_draft(page, context, setup_url=url, prior_room_id="", max_wait_s=90.0)
+        room_id = str(canonical.get("room_id") or "").upper()
+        report["start_latch"] = {"room_id": room_id, "room_latch_pass": canonical.get("room_latch_pass")}
+        if not room_id or not canonical.get("room_latch_pass"):
+            report["classification"] = "ABORTED_START_LATCH"
+            report["ok"] = False
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            return 1
+
+        wait_for_authoritative_pause_control(page, max_wait_s=45.0, room_id=room_id)
+        report["app_frame_inventory"] = describe_page_frames(page)
+        report["app_frame_url"] = str(resolve_streamlit_app_frame(page).url or "")[:240]
+
+        post_wait = _wait_post_registration(page)
+        report["post_registration_wait"] = post_wait
+        post_reg = dict(post_wait.get("post_registration") or {})
+        report["post_registration_server_snapshot"] = post_reg
+        if not post_wait.get("ok"):
+            report["classification"] = "ABORTED_S3_POST_REGISTRATION_NOT_READY"
+            report["ok"] = False
+            report["finished_at"] = time.time()
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(OUT)}))
+            return 1
+
+        sibling_step = capture_sibling_pre_pause_transport(page)
+        report["sibling_strict_transport"] = sibling_step
+        wire_id, wire_frag, strict_backmsg = _wire_from_sibling_step(sibling_step)
+        report["wire_widget_id"] = wire_id
+        report["wire_fragment_id"] = wire_frag
+        report["sibling_user_key"] = f"stage1_pause_sibling_return_{room_id}_diag"
+
+        page.wait_for_timeout(1200)
+        s3_after = scrape_s3_server_diag_ledger(page)
+        report["s3_server_diag_after_click"] = s3_after
+        payload = s3_after.get("payload") if isinstance(s3_after.get("payload"), dict) else {}
+        ledger = (payload.get("ledger") or {}) if isinstance(payload, dict) else {}
+        s3_rows = list(ledger.get("rows") or [])
+
+        pause_step = _capture_pause_strict(page, room_id=room_id)
+        report["pause_positive_control"] = pause_step
+
+        pre = payload.get("pre_declaration") if isinstance(payload.get("pre_declaration"), dict) else {}
+        render_meta = dict((payload.get("post_registration") or {}))  # noqa: may include last render from pause ledger
+        sibling_export = dict(sibling_step.get("scrape_after") or sibling_step.get("scrape_before") or {})
+        from stage1_pause_sibling_scrape import scrape_pause_sibling_probe
+
+        sib_after = scrape_pause_sibling_probe(page)
+        report["sibling_scrape_after"] = sib_after
+
+        reg_result = None
+        for r in s3_rows:
+            if r.get("phase") == "REGISTER_RESULT":
+                reg_result = bool(r.get("register_widget_result_value"))
+        st_btn = None
+        if sib_after.get("probe_found"):
+            payload = sib_after.get("payload") if isinstance(sib_after.get("payload"), dict) else {}
+            lr = dict(payload.get("last") or {})
+            if lr.get("st_button_returned") is not None:
+                st_btn = bool(lr.get("st_button_returned"))
+            elif lr.get("returned_true") is not None:
+                st_btn = bool(lr.get("returned_true"))
+
+        case, note = classify_s3_server_registry(
+            wire_widget_id=wire_id,
+            wire_fragment_id=wire_frag,
+            post_registration=post_reg,
+            strict_backmsg=strict_backmsg,
+            s3_ledger_rows=s3_rows,
+            sibling_python_effect=bool(sibling_step.get("sibling_python_effect")),
+            register_widget_result=reg_result,
+            st_button_returned=st_btn,
+            pause_resolved=bool(pause_step.get("pause_resolved")),
+        )
+        report["classification"] = case
+        report["classification_note"] = note
+        report["pre_declaration_snapshot"] = pre
+        report["wire_id_equals_post_registration"] = bool(wire_id and post_reg.get("registered_widget_id") == wire_id)
+        report["room_id"] = room_id
+        report["streamlit_session_id"] = sibling_step.get("streamlit_session_id")
+        report["ok"] = not str(case).endswith("INCOMPLETE_EVIDENCE") and not str(case).startswith("ABORTED")
+        report["finished_at"] = time.time()
+        OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        browser.close()
+
+    print(json.dumps({"ok": report.get("ok"), "classification": report.get("classification"), "artifact": str(OUT)}))
+    return 0 if report.get("ok") else (1 if str(report.get("classification", "")).startswith("ABORTED") else 2)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

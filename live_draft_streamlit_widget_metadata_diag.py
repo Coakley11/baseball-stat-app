@@ -197,11 +197,43 @@ def install_streamlit_register_widget_probe(st: Any | None, session: dict[str, A
     original = SessionState.register_widget
 
     def wrapped_register_widget(self: Any, metadata: Any, user_key: str | None = None) -> Any:
+        uk = str(user_key or "")
+        try:
+            from live_draft_stage1_s3_server_diag import append_s3_event, is_pause_sibling_user_key
+
+            if is_pause_sibling_user_key(uk):
+                append_s3_event(
+                    session,
+                    "REGISTER_ENTRY",
+                    user_key=uk,
+                    metadata_id=str(getattr(metadata, "id", "") or ""),
+                    fragment_id=str(getattr(metadata, "fragment_id", "") or ""),
+                    value_type=str(getattr(metadata, "value_type", "") or ""),
+                )
+        except ImportError:
+            pass
         try:
             emit_metadata_at_registration(metadata, user_key=user_key, session=session, st=st)
         except Exception:
             pass
-        return original(self, metadata, user_key)
+        result = original(self, metadata, user_key)
+        try:
+            from live_draft_stage1_s3_server_diag import append_s3_event, is_pause_sibling_user_key
+
+            if is_pause_sibling_user_key(uk):
+                append_s3_event(
+                    session,
+                    "REGISTER_RESULT",
+                    user_key=uk,
+                    register_widget_result_value=bool(result),
+                    register_widget_result_repr=repr(result)[:120],
+                    metadata_id=str(getattr(metadata, "id", "") or "")[:200],
+                    metadata_fragment_id=str(getattr(metadata, "fragment_id", "") or "")[:80],
+                )
+                session["_stage1_pause_sibling_register_result_value"] = bool(result)
+        except ImportError:
+            pass
+        return result
 
     wrapped_register_widget._solo_reg_diag_wrapped = True  # type: ignore[attr-defined]
     SessionState.register_widget = wrapped_register_widget  # type: ignore[method-assign]

@@ -8,7 +8,10 @@ from typing import Any
 
 from streamlit_app_frame import resolve_streamlit_app_frame
 
-PAUSE_SIBLING_IMPL_REV = "stage1_pause_sibling_probe_v1"
+try:
+    from live_draft_stage1_pause_sibling_probe import PAUSE_SIBLING_IMPL_REV
+except ImportError:
+    PAUSE_SIBLING_IMPL_REV = "stage1_pause_sibling_probe_v2"
 SIBLING_BUTTON_LABEL = "Stage1 Pause-Sibling Return Probe"
 
 _LEDGER_JS = """() => {
