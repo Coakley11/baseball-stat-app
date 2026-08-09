@@ -55,8 +55,14 @@ def _wait_post_registration(page, *, max_wait_s: float = 90.0) -> dict[str, Any]
         snap = scrape_s3_server_diag_ledger(page)
         last = snap
         post = extract_post_registration(snap.get("payload") if isinstance(snap.get("payload"), dict) else None)
-        if snap.get("found") and str(post.get("registered_widget_id") or "").startswith("$$ID-"):
-            return {"ok": True, "scrape": snap, "post_registration": post}
+        payload = snap.get("payload") if isinstance(snap.get("payload"), dict) else {}
+        binding = payload.get("s3_diag_binding") if isinstance(payload.get("s3_diag_binding"), dict) else {}
+        if (
+            snap.get("found")
+            and str(post.get("registered_widget_id") or "").startswith("$$ID-")
+            and bool(binding.get("sessionstate_binding_ok"))
+        ):
+            return {"ok": True, "scrape": snap, "post_registration": post, "s3_diag_binding": binding}
         page.wait_for_timeout(800)
     return {"ok": False, "scrape": last, "post_registration": extract_post_registration(last.get("payload") if isinstance(last.get("payload"), dict) else None)}
 
@@ -111,6 +117,7 @@ def main() -> int:
     from stage1_pause_sibling_transport_capture import capture_sibling_pre_pause_transport
     from stage1_preflight_cleanup import run_stage1_preflight_cleanup
     from stage1_s3_r2_subclassify import classify_s3_r2_subclass, wire_target_in_preclick_storage
+    from stage1_s3_r3_observability_classify import classify_s3_with_observability
     from stage1_s3_server_registry_classify import classify_s3_server_registry
     from stage1_s3_server_registry_scrape import extract_post_registration, scrape_s3_server_diag_ledger
     from streamlit_app_frame import describe_page_frames, resolve_streamlit_app_frame
@@ -204,8 +211,23 @@ def main() -> int:
         report["post_registration_wait"] = post_wait
         post_reg = dict(post_wait.get("post_registration") or {})
         report["post_registration_server_snapshot"] = post_reg
+        pre_click_payload = (
+            (post_wait.get("scrape") or {}).get("payload") if isinstance(post_wait.get("scrape"), dict) else None
+        )
+        if not isinstance(pre_click_payload, dict):
+            pre_click_payload = {}
+        binding_pre = pre_click_payload.get("s3_diag_binding") if isinstance(pre_click_payload.get("s3_diag_binding"), dict) else {}
+        report["s3_diag_binding_pre_click"] = binding_pre
         if not post_wait.get("ok"):
             report["classification"] = "ABORTED_S3_POST_REGISTRATION_NOT_READY"
+            report["ok"] = False
+            report["finished_at"] = time.time()
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(OUT)}))
+            return 1
+        if not binding_pre.get("sessionstate_binding_ok"):
+            report["classification"] = "ABORTED_S3_DIAG_BINDING_NOT_READY"
             report["ok"] = False
             report["finished_at"] = time.time()
             OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
@@ -233,8 +255,8 @@ def main() -> int:
         payload = s3_after.get("payload") if isinstance(s3_after.get("payload"), dict) else {}
         ledger = (payload.get("ledger") or {}) if isinstance(payload, dict) else {}
         s3_rows = list(ledger.get("rows") or [])
-        ingress_payload = payload.get("appsession_ingress") if isinstance(payload.get("appsession_ingress"), dict) else {}
-        appsession_rows = list(ingress_payload.get("rows") or [])
+        binding_post = payload.get("s3_diag_binding") if isinstance(payload.get("s3_diag_binding"), dict) else {}
+        report["s3_diag_binding_post_pause"] = binding_post
         report["fragment_owner_history"] = list(payload.get("fragment_owner_history") or [])[-16:]
 
         pre = payload.get("pre_declaration") if isinstance(payload.get("pre_declaration"), dict) else {}
@@ -283,18 +305,31 @@ def main() -> int:
             post_registration=post_reg,
             strict_backmsg=strict_backmsg,
             s3_ledger_rows=s3_rows,
-            appsession_ingress_rows=appsession_rows,
+            appsession_ingress_rows=[r for r in s3_rows if str(r.get("phase", "")).startswith("APPSESSION_")],
             sibling_click_ts=click_ts or None,
         )
-        if base_case == "BUTTON_DISPATCH_S3_R2_FRAGMENT_OWNER_MISMATCH" or str(r2_case).startswith(
-            "BUTTON_DISPATCH_S3_R2"
+        obs_case, obs_note, obs_evidence = classify_s3_with_observability(
+            module_rows=s3_rows,
+            pause_resolved=bool(pause_step.get("pause_resolved")),
+            strict_backmsg=strict_backmsg,
+            wire_widget_id=wire_id,
+            sibling_python_effect=bool(sibling_step.get("sibling_python_effect")),
+            register_widget_result=reg_result,
+            st_button_returned=st_btn,
+            binding_ok=binding_pre.get("sessionstate_binding_ok"),
+        )
+        if str(r2_case).startswith("BUTTON_DISPATCH_S3_R2") and r2_case not in (
+            "BUTTON_DISPATCH_S3_R2C_OWNER_MATCH_AFTER_RECHECK",
         ):
             case, note = r2_case, r2_note
             report["r2_subclass_evidence"] = r2_evidence
+            report["classification_observability"] = {"case": obs_case, "note": obs_note, "evidence": obs_evidence}
         else:
-            case, note = base_case, base_note
+            case, note = obs_case, obs_note
+            report["r2_subclass_evidence"] = r2_evidence
+            report["observability_evidence"] = obs_evidence
+        report["classification_legacy_base"] = base_case
         report["register_widget_value_changed"] = reg_value_changed
-        report["classification_base"] = base_case
         report["classification"] = case
         report["classification_note"] = note
         report["pre_declaration_snapshot"] = pre

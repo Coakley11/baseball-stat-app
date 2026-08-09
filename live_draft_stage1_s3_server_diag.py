@@ -7,13 +7,12 @@ import time
 import uuid
 from typing import Any
 
-S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v2"
+S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v3"
 S3_LEDGER_DOM_ID = "solo-stage1-s3-server-diag-ledger"
 S3_SESSION_LEDGER_KEY = "_stage1_s3_server_diag_ledger"
 S3_PATCHED_KEY = "_stage1_s3_server_diag_patched"
 S3_WATCH_KEY = "_stage1_s3_server_watch_user_key"
-
-_S3_LEDGER_BY_STREAMLIT_SESSION: dict[str, list[dict[str, Any]]] = {}
+S3_BINDING_KEY = "_stage1_s3_diag_binding"
 
 
 def is_pause_sibling_user_key(user_key: str) -> bool:
@@ -21,46 +20,36 @@ def is_pause_sibling_user_key(user_key: str) -> bool:
 
 
 def _streamlit_session_id() -> str:
-    try:
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
+    from live_draft_stage1_s3_process_global_diag import streamlit_session_id_from_ctx
 
-        ctx = get_script_run_ctx()
-        return str(getattr(ctx, "session_id", "") or "")[:64]
-    except Exception:
-        return ""
+    return streamlit_session_id_from_ctx()
 
 
-def append_s3_event(session: dict[str, Any], phase: str, **fields: Any) -> dict[str, Any]:
-    sid = _streamlit_session_id()
-    row: dict[str, Any] = {
-        "event_id": uuid.uuid4().hex[:12],
-        "ts": time.time(),
-        "phase": str(phase or "")[:48],
-        "streamlit_session_id": sid,
-        **{k: v for k, v in fields.items() if v is not None},
-    }
-    book = list(session.get(S3_SESSION_LEDGER_KEY) or [])
-    book.append(dict(row))
-    session[S3_SESSION_LEDGER_KEY] = book[-64:]
-    if sid:
-        mod = list(_S3_LEDGER_BY_STREAMLIT_SESSION.get(sid) or [])
-        mod.append(dict(row))
-        _S3_LEDGER_BY_STREAMLIT_SESSION[sid] = mod[-64:]
+def append_s3_event(session: dict[str, Any] | None, phase: str, **fields: Any) -> dict[str, Any]:
+    from live_draft_stage1_s3_process_global_diag import append_module_event, streamlit_session_id_from_ctx
+
+    sid = streamlit_session_id_from_ctx()
+    row = append_module_event(sid, phase, **fields)
+    if isinstance(session, dict) and sid:
+        book = list(session.get(S3_SESSION_LEDGER_KEY) or [])
+        book.append(dict(row))
+        session[S3_SESSION_LEDGER_KEY] = book[-64:]
     return row
 
 
-def s3_ledger_export(session: dict[str, Any]) -> dict[str, Any]:
-    sid = _streamlit_session_id()
-    rows = list(session.get(S3_SESSION_LEDGER_KEY) or [])
-    if sid and sid in _S3_LEDGER_BY_STREAMLIT_SESSION:
-        merged = list(_S3_LEDGER_BY_STREAMLIT_SESSION.get(sid) or [])
-        if len(merged) > len(rows):
-            rows = merged
-    return {"event_count": len(rows), "rows": rows[-32:], "impl_rev": S3_SERVER_DIAG_IMPL_REV}
+def s3_ledger_export(session: dict[str, Any] | None = None) -> dict[str, Any]:
+    from live_draft_stage1_s3_process_global_diag import module_ledger_export_for_current_ctx
+
+    exp = module_ledger_export_for_current_ctx()
+    rows = list(exp.get("rows") or [])
+    if isinstance(session, dict):
+        local = list(session.get(S3_SESSION_LEDGER_KEY) or [])
+        if len(local) > len(rows):
+            rows = local
+    return {"event_count": len(rows), "rows": rows[-48:], "impl_rev": S3_SERVER_DIAG_IMPL_REV}
 
 
 def post_registration_server_snapshot(st: Any, user_key: str) -> dict[str, Any]:
-    """Authoritative POST-declaration registration evidence."""
     from live_draft_stage1_fragment_identity_runtime import snapshot_fragment_identity
     from live_draft_streamlit_widget_metadata_diag import (
         get_streamlit_session_state,
@@ -81,46 +70,87 @@ def post_registration_server_snapshot(st: Any, user_key: str) -> dict[str, Any]:
     return snap
 
 
-def _widget_state_row_from_proto(ws: Any) -> dict[str, Any]:
-    return {
-        "id": str(getattr(ws, "id", "") or ""),
-        "trigger_value": bool(getattr(ws, "trigger_value", False)),
-        "bool_value": getattr(ws, "bool_value", None),
-        "string_value": str(getattr(ws, "string_value", "") or "")[:120],
-    }
+def _ensure_global_sessionstate_wrappers() -> None:
+    from live_draft_stage1_s3_process_global_diag import (
+        append_module_event,
+        mark_global_wrapper,
+        resolve_sessionstate_streamlit_session_id,
+        scan_widget_states_proto,
+    )
 
-
-def _find_sibling_in_proto(widget_states: Any, *, user_key: str, exact_id: str = "") -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "incoming_widget_count": 0,
-        "sibling_present": False,
-        "matched_by": "",
-        "sibling_proto": {},
-    }
     try:
-        widgets = list(widget_states.widgets)
-    except Exception:
-        return out
-    out["incoming_widget_count"] = len(widgets)
-    suffix = f"-{user_key}" if user_key else ""
-    for ws in widgets:
-        wid = str(getattr(ws, "id", "") or "")
-        if exact_id and wid == exact_id:
-            out["sibling_present"] = True
-            out["matched_by"] = "exact_id"
-            out["sibling_proto"] = _widget_state_row_from_proto(ws)
-            return out
-        if suffix and (wid.endswith(suffix) or suffix in wid):
-            out["sibling_present"] = True
-            out["matched_by"] = "user_key_suffix"
-            out["sibling_proto"] = _widget_state_row_from_proto(ws)
-            return out
-    return out
+        from streamlit.runtime.state.session_state import SessionState
+    except ImportError:
+        return
+
+    if not getattr(SessionState.on_script_will_rerun, "_solo_s3_wrapped", False):
+        orig_rerun = SessionState.on_script_will_rerun
+
+        def wrapped_on_script_will_rerun(self: Any, latest_widget_states: Any) -> None:
+            sid = resolve_sessionstate_streamlit_session_id(self) or ""
+            scan = scan_widget_states_proto(latest_widget_states)
+            append_module_event(
+                sid,
+                "SERVER_RECEIVE_ENTRY",
+                on_script_will_rerun_executed=True,
+                sibling_present=scan.get("pause_sibling_present"),
+                sibling_proto=scan.get("pause_sibling_proto"),
+                pause_present=scan.get("pause_present"),
+                pause_proto=scan.get("pause_proto"),
+                incoming_widget_count=scan.get("incoming_widget_count"),
+                activated_triggers=scan.get("activated_triggers"),
+            )
+            return orig_rerun(self, latest_widget_states)
+
+        wrapped_on_script_will_rerun._solo_s3_wrapped = True  # type: ignore[attr-defined]
+        SessionState.on_script_will_rerun = wrapped_on_script_will_rerun  # type: ignore[method-assign]
+        mark_global_wrapper("sessionstate_on_script_will_rerun")
+
+    if not getattr(SessionState.set_widgets_from_proto, "_solo_s3_wrapped", False):
+        orig_set = SessionState.set_widgets_from_proto
+
+        def wrapped_set_widgets_from_proto(self: Any, widget_states: Any) -> None:
+            sid = resolve_sessionstate_streamlit_session_id(self) or ""
+            pre_scan = scan_widget_states_proto(widget_states)
+            sib_id = str((pre_scan.get("pause_sibling_proto") or {}).get("id") or "")
+            orig_set(self, widget_states)
+            applied: dict[str, Any] = {
+                "present_in_new_widget_state": False,
+                "trigger_from_deserialized": False,
+            }
+            if sib_id:
+                try:
+                    applied["present_in_new_widget_state"] = sib_id in self._new_widget_state.states
+                    applied["deserialized_value_repr"] = repr(self._new_widget_state.get(sib_id))[:200]
+                    applied["trigger_from_deserialized"] = bool(self._new_widget_state.get(sib_id))
+                except Exception:
+                    pass
+            pause_id = str((pre_scan.get("pause_proto") or {}).get("id") or "")
+            pause_applied = {}
+            if pause_id:
+                try:
+                    pause_applied = {
+                        "pause_present_in_new_widget_state": pause_id in self._new_widget_state.states,
+                        "pause_trigger_from_deserialized": bool(self._new_widget_state.get(pause_id)),
+                    }
+                except Exception:
+                    pass
+            append_module_event(
+                sid,
+                "SERVER_STATE_APPLIED",
+                exact_widget_id=sib_id or None,
+                sibling_present=bool(pre_scan.get("pause_sibling_present")),
+                pause_present=bool(pre_scan.get("pause_present")),
+                **applied,
+                **pause_applied,
+            )
+
+        wrapped_set_widgets_from_proto._solo_s3_wrapped = True  # type: ignore[attr-defined]
+        SessionState.set_widgets_from_proto = wrapped_set_widgets_from_proto  # type: ignore[method-assign]
+        mark_global_wrapper("sessionstate_set_widgets_from_proto")
 
 
 def install_s3_server_diagnostics(st: Any | None, session: dict[str, Any]) -> None:
-    if session.get(S3_PATCHED_KEY):
-        return
     try:
         from live_draft_stage1_production_ledger import stage1_production_ledger_enabled
 
@@ -128,10 +158,12 @@ def install_s3_server_diagnostics(st: Any | None, session: dict[str, Any]) -> No
             return
     except ImportError:
         return
-    try:
-        from streamlit.runtime.state.session_state import SessionState
-    except ImportError:
-        return
+
+    from live_draft_stage1_s3_process_global_diag import (
+        register_sessionstate_instance,
+        s3_diag_binding_snapshot,
+        streamlit_session_id_from_ctx,
+    )
 
     watch_key = str(session.get(S3_WATCH_KEY) or "")
     try:
@@ -141,69 +173,33 @@ def install_s3_server_diagnostics(st: Any | None, session: dict[str, Any]) -> No
     except ImportError:
         pass
 
-    if not getattr(SessionState.on_script_will_rerun, "_solo_s3_wrapped", False):
-        orig_rerun = SessionState.on_script_will_rerun
-
-        def wrapped_on_script_will_rerun(self: Any, latest_widget_states: Any) -> None:
-            uk = str(session.get(S3_WATCH_KEY) or watch_key or "")
-            exact = str(session.get("_stage1_s3_strict_wire_widget_id") or "")
-            found = _find_sibling_in_proto(latest_widget_states, user_key=uk, exact_id=exact)
-            append_s3_event(
-                session,
-                "SERVER_RECEIVE_ENTRY",
-                user_key=uk,
-                on_script_will_rerun_executed=True,
-                **found,
-            )
-            return orig_rerun(self, latest_widget_states)
-
-        wrapped_on_script_will_rerun._solo_s3_wrapped = True  # type: ignore[attr-defined]
-        SessionState.on_script_will_rerun = wrapped_on_script_will_rerun  # type: ignore[method-assign]
-
-    if not getattr(SessionState.set_widgets_from_proto, "_solo_s3_wrapped", False):
-        orig_set = SessionState.set_widgets_from_proto
-
-        def wrapped_set_widgets_from_proto(self: Any, widget_states: Any) -> None:
-            uk = str(session.get(S3_WATCH_KEY) or watch_key or "")
-            exact = str(session.get("_stage1_s3_strict_wire_widget_id") or "")
-            pre_found = _find_sibling_in_proto(widget_states, user_key=uk, exact_id=exact)
-            exact_use = exact or str((pre_found.get("sibling_proto") or {}).get("id") or "")
-            orig_set(self, widget_states)
-            try:
-                from live_draft_streamlit_widget_metadata_diag import get_streamlit_session_state
-
-                ss = get_streamlit_session_state(st)
-            except Exception:
-                ss = None
-            applied: dict[str, Any] = {"present_in_new_widget_state": False}
-            if ss and exact_use:
-                try:
-                    applied["present_in_new_widget_state"] = exact_use in ss._new_widget_state.states
-                    applied["deserialized_value_repr"] = repr(ss._new_widget_state.get(exact_use))[:200]
-                    applied["trigger_from_deserialized"] = bool(ss._new_widget_state.get(exact_use))
-                except Exception:
-                    pass
-            append_s3_event(
-                session,
-                "SERVER_STATE_APPLIED",
-                user_key=uk,
-                exact_widget_id=exact_use,
-                sibling_present=bool(pre_found.get("sibling_present")),
-                **applied,
-            )
-
-        wrapped_set_widgets_from_proto._solo_s3_wrapped = True  # type: ignore[attr-defined]
-        SessionState.set_widgets_from_proto = wrapped_set_widgets_from_proto  # type: ignore[method-assign]
+    _ensure_global_sessionstate_wrappers()
 
     try:
-        from live_draft_stage1_appsession_ingress_diag import install_appsession_request_rerun_probe
+        from live_draft_streamlit_widget_metadata_diag import get_streamlit_session_state
 
-        install_appsession_request_rerun_probe(st, session)
+        ss = get_streamlit_session_state(st)
+        sid = streamlit_session_id_from_ctx()
+        if ss and sid:
+            register_sessionstate_instance(ss, sid)
+    except Exception:
+        ss = None
+        sid = streamlit_session_id_from_ctx()
+
+    try:
+        from live_draft_stage1_appsession_ingress_diag import install_appsession_probes
+
+        install_appsession_probes(st, session)
     except ImportError:
         pass
 
+    binding = s3_diag_binding_snapshot(ss)
+    session[S3_BINDING_KEY] = dict(binding)
+    append_s3_event(session, "S3_DIAG_BINDING", **binding)
     session[S3_PATCHED_KEY] = True
-    append_s3_event(session, "S3_DIAG_INSTALLED", user_key=watch_key)
+    if not session.get("_stage1_s3_diag_installed_once"):
+        append_s3_event(session, "S3_DIAG_INSTALLED", user_key=watch_key)
+        session["_stage1_s3_diag_installed_once"] = True
 
 
 def emit_s3_dom_ledger(st: Any, session: dict[str, Any]) -> None:
@@ -220,18 +216,20 @@ def emit_s3_dom_ledger(st: Any, session: dict[str, Any]) -> None:
         owner_hist = list(session.get(FRAGMENT_OWNER_HISTORY_KEY) or [])[-16:]
     except ImportError:
         owner_hist = []
+    binding = dict(session.get(S3_BINDING_KEY) or {})
     post = session.get("_stage1_pause_sibling_post_registration") or {}
     pre = session.get("_stage1_pause_sibling_pre_declaration") or {}
     payload = json.dumps(
         {
             "ledger": export,
             "appsession_ingress": ingress,
+            "s3_diag_binding": binding,
             "fragment_owner_history": owner_hist,
             "pre_declaration": pre,
             "post_registration": post,
         },
         default=str,
-    )[:32000]
+    )[:36000]
     safe = payload.replace('"', "'")
     st.markdown(
         f'<div id="{S3_LEDGER_DOM_ID}" '

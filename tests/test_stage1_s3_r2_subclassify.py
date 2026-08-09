@@ -119,9 +119,9 @@ class AppSessionWrapperTests(unittest.TestCase):
     def test_single_wrap_marker(self) -> None:
         import inspect
 
-        from live_draft_stage1_appsession_ingress_diag import install_appsession_request_rerun_probe
+        from live_draft_stage1_appsession_ingress_diag import install_appsession_probes
 
-        src = inspect.getsource(install_appsession_request_rerun_probe)
+        src = inspect.getsource(install_appsession_probes)
         self.assertIn("_solo_appsession_ingress_wrapped", src)
         self.assertIn("return original(self, client_state)", src)
 
