@@ -122,8 +122,9 @@ class AppSessionWrapperTests(unittest.TestCase):
         from live_draft_stage1_appsession_ingress_diag import install_appsession_probes
 
         src = inspect.getsource(install_appsession_probes)
-        self.assertIn("_solo_appsession_ingress_wrapped", src)
-        self.assertIn("return original(self, client_state)", src)
+        self.assertIn("_solo_appsession_rerun_wrapped", src)
+        self.assertIn("_solo_appsession_backmsg_wrapped", src)
+        self.assertIn("return orig_rerun(self, client_state)", src)
 
 
 if __name__ == "__main__":
