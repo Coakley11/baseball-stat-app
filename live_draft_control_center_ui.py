@@ -107,6 +107,12 @@ def render_live_draft_control_center(
                 request_live_draft_rerun(st, session, "pause_draft", room=room)
             except ImportError:
                 st.rerun()
+        try:
+            from live_draft_stage1_pause_sibling_probe import render_stage1_pause_sibling_return_probe
+
+            render_stage1_pause_sibling_return_probe(st, session, room)
+        except ImportError:
+            pass
     with top2:
         if st.button(
             "▶ Resume Draft",
