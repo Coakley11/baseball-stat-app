@@ -25,6 +25,14 @@ CONTROLS = (
     ("O2", "Stage1 OnClick Closure Probe"),
 )
 
+LABEL_BY_MODE = {m: lbl for m, lbl in CONTROLS}
+REMAINING_AFTER = {
+    "R0": ("O0", "O1", "O2"),
+    "O0": ("O1", "O2"),
+    "O1": ("O2",),
+    "O2": (),
+}
+
 
 def _harness_sha() -> str:
     try:
@@ -33,33 +41,73 @@ def _harness_sha() -> str:
         return ""
 
 
-def _app_frame(page):
-    for fr in page.frames:
-        if "/~/" in str(fr.url or ""):
-            return fr
-    return page.main_frame
+def _remaining_visibility(page, frame, modes: tuple[str, ...]) -> dict[str, Any]:
+    from stage1_button_dispatch_scrape import scrape_dispatch_control_marker, scrape_dispatch_surface_continuity
+
+    out: dict[str, Any] = {"modes": {}}
+    for m in modes:
+        label = LABEL_BY_MODE[m]
+        marker = scrape_dispatch_control_marker(frame, m)
+        try:
+            loc = frame.get_by_role("button", name=label, exact=True)
+            attached = loc.count() > 0 and loc.first.is_visible()
+        except Exception:
+            attached = False
+        out["modes"][m] = {
+            "button_visible": attached,
+            "marker_found": bool(marker.get("marker_found")),
+            "marker": marker,
+        }
+    out["surface"] = scrape_dispatch_surface_continuity(page, frame, control_labels=LABEL_BY_MODE)
+    return out
 
 
-def click_dispatch_control(page, *, mode: str, label: str) -> dict[str, Any]:
-    from stage1_button_dispatch_scrape import dispatch_delta, scrape_button_dispatch_probe
+def click_dispatch_control(
+    page,
+    frame,
+    *,
+    mode: str,
+    label: str,
+    session_id_hint: str = "",
+) -> dict[str, Any]:
+    from stage1_button_dispatch_scrape import (
+        dispatch_delta,
+        evaluate_dispatch_pass,
+        scrape_button_dispatch_probe,
+        wait_for_dispatch_probe,
+    )
+    from stage1_button_dispatch_gate_classify import DISPATCH_PROBE_LOST_AFTER_RERUN
     from stage1_dom_click_capture import (
         button_dispatch_capture_target,
         prepare_isolated_dom_click_capture,
         read_and_summarize_dom_click_capture,
     )
+    from streamlit_app_frame import describe_page_frames
 
     cap = button_dispatch_capture_target(mode)
-    out: dict[str, Any] = {"mode": mode, "label": label, "started_ts": time.time()}
-    fr = _app_frame(page)
-    before = scrape_button_dispatch_probe(page)
+    out: dict[str, Any] = {
+        "mode": mode,
+        "label": label,
+        "started_ts": time.time(),
+        "frame_binding": describe_page_frames(page),
+    }
+    before = scrape_button_dispatch_probe(page, frame=frame)
     out["dispatch_scrape_before"] = before
-    loc = fr.get_by_role("button", name=label, exact=True)
-    if loc.count() == 0:
-        loc = page.get_by_role("button", name=label, exact=True)
+    if not before.get("probe_found"):
+        out["observability_abort"] = "before_probe_missing"
+        out["setup_abort"] = "OBSERVABILITY"
+        out["click_dispatched"] = False
+        out["trusted_dom_click"] = False
+        out["dispatch_pass"] = False
+        out["dispatch_delta"] = dispatch_delta(before, before, mode)
+        out["finished_ts"] = time.time()
+        return out
+
+    loc = frame.get_by_role("button", name=label, exact=True)
     try:
-        loc.first.wait_for(state="attached", timeout=8000)
+        loc.first.wait_for(state="attached", timeout=12000)
         out["target_attached"] = True
-        loc.first.wait_for(state="visible", timeout=8000)
+        loc.first.wait_for(state="visible", timeout=12000)
         out["target_visible"] = True
         out["target_enabled"] = bool(loc.first.is_enabled())
         if not out["target_enabled"]:
@@ -70,7 +118,7 @@ def click_dispatch_control(page, *, mode: str, label: str) -> dict[str, Any]:
             out["dispatch_delta"] = dispatch_delta(before, before, mode)
             out["finished_ts"] = time.time()
             return out
-        loc.first.scroll_into_view_if_needed(timeout=8000)
+        loc.first.scroll_into_view_if_needed(timeout=12000)
     except Exception as exc:
         out["setup_abort"] = "UI_NOT_EXPOSED"
         out["click_error"] = str(exc)[:240]
@@ -81,33 +129,47 @@ def click_dispatch_control(page, *, mode: str, label: str) -> dict[str, Any]:
         out["finished_ts"] = time.time()
         return out
 
-    prep = prepare_isolated_dom_click_capture(fr, capture_target=cap, frame_url_hint=str(fr.url or ""))
+    prep = prepare_isolated_dom_click_capture(frame, capture_target=cap, frame_url_hint=str(frame.url or ""))
     out["dom_click_capture_prep"] = prep
     clicked = False
     err = ""
     try:
-        loc.first.click(timeout=8000)
+        loc.first.click(timeout=12000)
         clicked = True
     except Exception as exc:
         err = str(exc)[:240]
-    page.wait_for_timeout(4500)
-    dom = read_and_summarize_dom_click_capture(fr, capture_target=cap)
-    out["dom_click_capture"] = dom
-    out["trusted_dom_click"] = bool(dom.get("trusted_dom_click"))
     out["click_dispatched"] = clicked
     out["click_error"] = err
-    after = scrape_button_dispatch_probe(page)
+
+    wait = wait_for_dispatch_probe(page, frame, timeout_s=22.0, session_id_hint=session_id_hint)
+    out["dispatch_probe_wait"] = wait
+    after = dict(wait.get("scrape") or {})
+    if not wait.get("ready") or not after.get("probe_found"):
+        out["observability_abort"] = DISPATCH_PROBE_LOST_AFTER_RERUN
+        out["dispatch_scrape_after"] = after
+        out["dispatch_delta"] = dispatch_delta(before, after, mode)
+        out["trusted_dom_click"] = bool(
+            read_and_summarize_dom_click_capture(frame, capture_target=cap).get("trusted_dom_click")
+        ) if clicked else False
+        out["dom_click_capture"] = read_and_summarize_dom_click_capture(frame, capture_target=cap) if clicked else {}
+        out["dispatch_pass"] = False
+        out["finished_ts"] = time.time()
+        return out
+
+    dom = read_and_summarize_dom_click_capture(frame, capture_target=cap)
+    out["dom_click_capture"] = dom
+    out["trusted_dom_click"] = bool(dom.get("trusted_dom_click"))
     out["dispatch_scrape_after"] = after
     delta = dispatch_delta(before, after, mode)
     out["dispatch_delta"] = delta
-    count_ok = int(delta.get("count_delta") or 0) > 0
-    event_ok = bool(delta.get("new_dispatch_event")) and bool((delta.get("last_event") or {}).get("event_id"))
-    out["dispatch_pass"] = count_ok and event_ok
-    if mode == "R0":
-        out["r0_return_value_evidence"] = {
-            "count_delta": delta.get("count_delta"),
-            "last_event_kind": (delta.get("last_event") or {}).get("dispatch_kind"),
-        }
+    if delta.get("observability_abort"):
+        out["observability_abort"] = delta["observability_abort"]
+        out["dispatch_pass"] = False
+    else:
+        passed, evidence = evaluate_dispatch_pass(delta, after, mode)
+        out["dispatch_pass"] = passed
+        out["dispatch_pass_evidence"] = evidence
+    out["remaining_after"] = _remaining_visibility(page, frame, REMAINING_AFTER.get(mode, ()))
     out["finished_ts"] = time.time()
     return out
 
@@ -121,8 +183,14 @@ def main() -> int:
     from playwright_auth_bridge_restore_harness import resolve_bridge_suite_sid_with_source, wait_bridge_auth_hydrated
     from playwright_daniel_auth_session import append_suite_sid_to_url
     from run_production_stage1_authenticated import queue_setup_pause_for_seeding, resolve_required_cloud_sha
-    from stage1_button_dispatch_gate_classify import classify_dispatch_steps, recommended_dispatch_fix
+    from stage1_button_dispatch_gate_classify import (
+        ABORTED_BUTTON_DISPATCH_LEDGER_NOT_EXPOSED,
+        classify_dispatch_gate_report,
+        recommended_dispatch_fix,
+    )
+    from stage1_button_dispatch_scrape import scrape_button_dispatch_probe, validate_pre_r0_ledger
     from stage1_preflight_cleanup import run_stage1_preflight_cleanup
+    from streamlit_app_frame import describe_page_frames, resolve_streamlit_app_frame
 
     if str(os.environ.get("STAGE1_USE_CAPTURE_BRIDGE") or "").strip().lower() in ("0", "false"):
         print(json.dumps({"ok": False, "classification": "ABORTED_CAPTURE_BRIDGE_DISABLED"}))
@@ -212,19 +280,53 @@ def main() -> int:
             browser.close()
             return 2
 
+        app_frame = resolve_streamlit_app_frame(page)
+        report["app_frame_inventory"] = describe_page_frames(page)
+        ledger_pre = scrape_button_dispatch_probe(page, frame=app_frame)
+        report["dispatch_ledger_before_r0"] = ledger_pre
+        pre_ok, pre_reasons = validate_pre_r0_ledger(ledger_pre)
+        report["dispatch_ledger_before_r0_validation"] = {"ok": pre_ok, "reasons": pre_reasons}
+        if not pre_ok:
+            report["classification"] = ABORTED_BUTTON_DISPATCH_LEDGER_NOT_EXPOSED
+            report["classification_note"] = ",".join(pre_reasons)
+            report["ok"] = False
+            report["finished_at"] = time.time()
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(OUT)}))
+            return 2
+
+        session_hint = str(ledger_pre.get("streamlit_session_id") or "")
         steps: list[dict[str, Any]] = []
         for mode, label in CONTROLS:
-            step = click_dispatch_control(page, mode=mode, label=label)
+            app_frame = resolve_streamlit_app_frame(page)
+            step = click_dispatch_control(
+                page,
+                app_frame,
+                mode=mode,
+                label=label,
+                session_id_hint=session_hint,
+            )
             steps.append(step)
             report["chronology"].append(
-                {"step": mode, "dispatch_pass": step.get("dispatch_pass"), "ts": time.time()}
+                {
+                    "step": mode,
+                    "dispatch_pass": step.get("dispatch_pass"),
+                    "observability_abort": step.get("observability_abort"),
+                    "ts": time.time(),
+                }
             )
-            if step.get("setup_abort"):
+            if step.get("setup_abort") or step.get("observability_abort"):
                 break
-            page.wait_for_timeout(600)
+            page.wait_for_timeout(400)
 
         report["dispatch_controls"] = steps
-        case, note = classify_dispatch_steps(steps, pause_resolved=pause_ok)
+        case, note = classify_dispatch_gate_report(
+            report,
+            steps,
+            pause_resolved=pause_ok,
+            ledger_before_r0=ledger_pre,
+        )
         report["classification"] = case
         report["classification_note"] = note
         report["recommended_next_fix"] = recommended_dispatch_fix(case)

@@ -15,6 +15,17 @@ from stage1_button_dispatch_gate_classify import (  # noqa: E402
     classify_dispatch_steps,
 )
 
+_LEDGER_OK = {
+    "probe_found": True,
+    "streamlit_session_id": "s",
+    "impl_rev": "stage1_button_dispatch_probe_v1",
+    "r0_count": 0,
+    "o0_count": 0,
+    "o1_count": 0,
+    "o2_count": 0,
+    "event_count": 0,
+}
+
 
 class DispatchGateClassifyTests(unittest.TestCase):
     def test_case_a_on_click_fail(self) -> None:
@@ -24,7 +35,7 @@ class DispatchGateClassifyTests(unittest.TestCase):
             {"mode": "O1", "click_dispatched": True, "trusted_dom_click": True, "dispatch_pass": False},
             {"mode": "O2", "click_dispatched": True, "trusted_dom_click": True, "dispatch_pass": False},
         ]
-        case, _ = classify_dispatch_steps(steps, pause_resolved=True)
+        case, _ = classify_dispatch_steps(steps, pause_resolved=True, ledger_before_r0=_LEDGER_OK)
         self.assertEqual(case, "BUTTON_DISPATCH_CASE_A_ON_CLICK_FAIL")
 
     def test_case_b_closure_fail(self) -> None:
@@ -34,7 +45,7 @@ class DispatchGateClassifyTests(unittest.TestCase):
             {"mode": "O1", "click_dispatched": True, "trusted_dom_click": True, "dispatch_pass": True},
             {"mode": "O2", "click_dispatched": True, "trusted_dom_click": True, "dispatch_pass": False},
         ]
-        case, _ = classify_dispatch_steps(steps, pause_resolved=True)
+        case, _ = classify_dispatch_steps(steps, pause_resolved=True, ledger_before_r0=_LEDGER_OK)
         self.assertEqual(case, "BUTTON_DISPATCH_CASE_B_CLOSURE_FAIL")
 
     def test_case_c_args_fail(self) -> None:
@@ -44,7 +55,7 @@ class DispatchGateClassifyTests(unittest.TestCase):
             {"mode": "O1", "click_dispatched": True, "trusted_dom_click": True, "dispatch_pass": False},
             {"mode": "O2", "click_dispatched": True, "trusted_dom_click": True, "dispatch_pass": True},
         ]
-        case, _ = classify_dispatch_steps(steps, pause_resolved=True)
+        case, _ = classify_dispatch_steps(steps, pause_resolved=True, ledger_before_r0=_LEDGER_OK)
         self.assertEqual(case, "BUTTON_DISPATCH_CASE_C_ARGS_FAIL")
 
     def test_case_d_all_pass(self) -> None:
@@ -52,7 +63,7 @@ class DispatchGateClassifyTests(unittest.TestCase):
             {"mode": m, "click_dispatched": True, "trusted_dom_click": True, "dispatch_pass": True}
             for m in ("R0", "O0", "O1", "O2")
         ]
-        case, _ = classify_dispatch_steps(steps, pause_resolved=True)
+        case, _ = classify_dispatch_steps(steps, pause_resolved=True, ledger_before_r0=_LEDGER_OK)
         self.assertEqual(case, "BUTTON_DISPATCH_CASE_D_ALL_PASS")
 
     def test_case_e_r0_fail_pause_pass(self) -> None:
@@ -62,12 +73,12 @@ class DispatchGateClassifyTests(unittest.TestCase):
             {"mode": "O1", "click_dispatched": True, "trusted_dom_click": True, "dispatch_pass": False},
             {"mode": "O2", "click_dispatched": True, "trusted_dom_click": True, "dispatch_pass": False},
         ]
-        case, _ = classify_dispatch_steps(steps, pause_resolved=True)
+        case, _ = classify_dispatch_steps(steps, pause_resolved=True, ledger_before_r0=_LEDGER_OK)
         self.assertEqual(case, "BUTTON_DISPATCH_CASE_E_R0_FAIL_PAUSE_PASS")
 
     def test_ui_abort(self) -> None:
         steps = [{"mode": "R0", "click_dispatched": False, "target_visible": False, "setup_abort": "UI_NOT_EXPOSED"}]
-        case, _ = classify_dispatch_steps(steps, pause_resolved=True)
+        case, _ = classify_dispatch_steps(steps, pause_resolved=True, ledger_before_r0=_LEDGER_OK)
         self.assertEqual(case, ABORTED_BUTTON_DISPATCH_UI_NOT_EXPOSED)
 
 
