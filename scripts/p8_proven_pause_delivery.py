@@ -224,20 +224,18 @@ def dispatch_proven_pause_click(page) -> dict[str, Any]:
 
 
 def capture_pause_click_transport(page, *, click_ts: float) -> dict[str, Any]:
-    from p8_proven_start_delivery import aggregate_ws_boundary_log
+    from stage1_streamlit_click_transport import capture_streamlit_click_transport
 
-    raw_log = aggregate_ws_boundary_log(page)
-    outbound = [e for e in raw_log if isinstance(e, dict) and e.get("direction") == "outbound"]
-    after = [e for e in outbound if float(e.get("wall_ts_ms") or 0) >= (click_ts * 1000.0 - 50.0)]
-    backmsg = any(
-        "widget" in str(e.get("frame_type_hint") or "").lower()
-        or "backmsg" in str(e.get("frame_type_hint") or "").lower()
-        for e in after
-    )
+    out = capture_streamlit_click_transport(page, click_ts=click_ts)
+    # Preserve legacy pause gate field names.
     return {
-        "outbound_frames_after_click": len(after),
-        "streamlit_backmsg_sent": backmsg or len(after) > 0,
-        "ws_log_sample": after[:5],
+        "outbound_frames_after_click": out.get("outbound_frames_after_click"),
+        "streamlit_backmsg_sent": out.get("streamlit_backmsg_sent"),
+        "ws_log_sample": out.get("ws_log_sample"),
+        "inbound_frames_after_click": out.get("inbound_frames_after_click"),
+        "transport_authority": out.get("transport_authority"),
+        "websocket_hook_seen": out.get("websocket_hook_seen"),
+        "native_widget_event_observed": out.get("native_widget_event_observed"),
     }
 
 
@@ -286,7 +284,7 @@ def classify_pause_delivery_outcome(
         if click.get("click_stale_detached"):
             return QUEUEUI_PAUSE1B
         return QUEUEUI_PAUSE1B
-    if click.get("dom_click_dispatched") and not transport.get("streamlit_backmsg_sent"):
+    if click.get("dom_click_dispatched") and transport.get("streamlit_backmsg_sent") is False:
         return QUEUEUI_PAUSE1C
     if transport.get("streamlit_backmsg_sent") and not server_proof.get("paused_recognized"):
         return QUEUEUI_PAUSE1E
