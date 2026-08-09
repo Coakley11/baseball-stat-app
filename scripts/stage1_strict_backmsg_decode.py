@@ -67,7 +67,8 @@ def summarize_strict_backmsg_evidence(
     rerun_script_seen = len(rerun_rows) > 0
 
     widget_states_count = 0
-    fragment_ids: list[str] = []
+    wire_rerun_target_fragment_id = ""
+    other_fragment_ids_observed: list[str] = []
     all_activated: list[dict[str, Any]] = []
     for r in rerun_rows:
         dec = r.get("decode") or {}
@@ -75,8 +76,14 @@ def summarize_strict_backmsg_evidence(
         cs = dec.get("client_state") if isinstance(dec.get("client_state"), dict) else {}
         fid = str(cs.get("fragment_id") or "").strip()
         if fid:
-            fragment_ids.append(fid)
+            if not wire_rerun_target_fragment_id:
+                wire_rerun_target_fragment_id = fid
+            elif fid != wire_rerun_target_fragment_id and fid not in other_fragment_ids_observed:
+                other_fragment_ids_observed.append(fid)
         all_activated.extend(_activated_widget_states(dec))
+
+    # Legacy alias — prefer wire_rerun_target_fragment_id in new artifacts.
+    fragment_ids = ([wire_rerun_target_fragment_id] if wire_rerun_target_fragment_id else []) + other_fragment_ids_observed
 
     payload_missing = any(not r.get("has_payload_base64") for r in decoded_rows) if frames else False
     decode_available = not payload_missing and all(
@@ -103,6 +110,8 @@ def summarize_strict_backmsg_evidence(
         "activated_widget_state_present": len(all_activated) > 0,
         "activated_widget_states": all_activated[:24],
         "activated_widget_ids": [str(w.get("id") or "") for w in all_activated if w.get("id")][:24],
+        "wire_rerun_target_fragment_id": wire_rerun_target_fragment_id,
+        "other_fragment_ids_observed": other_fragment_ids_observed[:8],
         "fragment_ids_from_rerun": fragment_ids[:8],
         "decoded_outbound_frames": decoded_rows[:12],
         "supplementary_relaxed_heuristic": {},
@@ -146,7 +155,11 @@ def build_strict_evidence_table_row(
         "widget_states_count": strict.get("widget_states_count_max"),
         "triggered_widget_state_present": strict.get("activated_widget_state_present"),
         "triggered_widget_ids": list(strict.get("activated_widget_ids") or [])[:8],
-        "fragment_id": (strict.get("fragment_ids_from_rerun") or [""])[0] if strict.get("fragment_ids_from_rerun") else "",
+        "wire_rerun_target_fragment_id": strict.get("wire_rerun_target_fragment_id")
+        or ((strict.get("fragment_ids_from_rerun") or [""])[0] if strict.get("fragment_ids_from_rerun") else ""),
+        "other_fragment_ids_observed": list(strict.get("other_fragment_ids_observed") or [])[:8],
+        "fragment_id": strict.get("wire_rerun_target_fragment_id")
+        or ((strict.get("fragment_ids_from_rerun") or [""])[0] if strict.get("fragment_ids_from_rerun") else ""),
         "python_session_effect": python_effect,
         "websocket_outbound_seen": strict.get("websocket_outbound_seen"),
         "protobuf_decode_available": strict.get("protobuf_decode_available"),

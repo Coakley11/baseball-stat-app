@@ -17,6 +17,7 @@ from stage1_pause_sibling_scrape import (
     scrape_pause_sibling_probe,
     sibling_delta,
 )
+from stage1_fragment_batch_console import attach_console_capture, summarize_fragment_batch_console
 from stage1_streamlit_click_transport import capture_streamlit_click_transport, clear_ws_boundary_log
 from streamlit_app_frame import describe_page_frames, resolve_streamlit_app_frame
 
@@ -54,6 +55,7 @@ def capture_sibling_pre_pause_transport(page, *, session_hint: str = "") -> dict
         return out
 
     out["ws_clear"] = clear_ws_boundary_log(page)
+    console_rows = attach_console_capture(page)
     prep = prepare_isolated_dom_click_capture(
         frame, capture_target=CAPTURE_TARGET_PAUSE_SIBLING, frame_url_hint=str(frame.url or "")
     )
@@ -82,6 +84,9 @@ def capture_sibling_pre_pause_transport(page, *, session_hint: str = "") -> dict
         pre_script_run_seq=str(before.get("full_app_run_seq") or ""),
     )
     out["streamlit_transport"] = transport
+    out["browser_console_fragment_batch"] = summarize_fragment_batch_console(
+        console_rows, click_ts=click_ts
+    )
 
     frame_after = resolve_streamlit_app_frame(page)
     after = scrape_pause_sibling_probe(page, frame=frame_after)

@@ -37,9 +37,18 @@ def classify_s3_server_registry(
     pause_resolved: bool,
 ) -> tuple[str, str]:
     reg_id = str(post_registration.get("registered_widget_id") or "")
+    owner_fid = str(
+        next(
+            (
+                str(r.get("fragment_id") or "")
+                for r in s3_ledger_rows
+                if isinstance(r, dict) and r.get("phase") == "REGISTER_ENTRY" and r.get("fragment_id")
+            ),
+            "",
+        )
+    ).strip() or str(post_registration.get("thread_state_fragment_id") or "")
     meta = post_registration.get("widget_metadata") if isinstance(post_registration.get("widget_metadata"), dict) else {}
     meta_fid = str(meta.get("fragment_id") or post_registration.get("metadata_fragment_id") or "")
-    thread_fid = str(post_registration.get("thread_state_fragment_id") or "")
 
     if sibling_python_effect and st_button_returned:
         return BUTTON_DISPATCH_S3_R7_NONDETERMINISTIC_RECOVERY, "sibling_delivered"
@@ -47,11 +56,11 @@ def classify_s3_server_registry(
     if wire_widget_id and reg_id and wire_widget_id != reg_id:
         return BUTTON_DISPATCH_S3_R1_STALE_FRONTEND_WIDGET_ID, "wire_id_ne_registered_id"
 
-    wire_frag = str(wire_fragment_id or "")
-    if wire_frag and meta_fid and wire_frag != meta_fid:
-        return BUTTON_DISPATCH_S3_R2_FRAGMENT_OWNER_MISMATCH, "wire_frag_ne_metadata_frag"
-    if wire_frag and thread_fid and wire_frag != thread_fid:
-        return BUTTON_DISPATCH_S3_R2_FRAGMENT_OWNER_MISMATCH, "wire_frag_ne_thread_frag"
+    wire_frag = str(wire_fragment_id or strict_backmsg.get("wire_rerun_target_fragment_id") or "")
+    if wire_frag and owner_fid and wire_frag != owner_fid:
+        return BUTTON_DISPATCH_S3_R2_FRAGMENT_OWNER_MISMATCH, "wire_rerun_target_ne_register_owner"
+    if wire_frag and meta_fid and wire_frag != meta_fid and owner_fid != meta_fid:
+        return BUTTON_DISPATCH_S3_R2_FRAGMENT_OWNER_MISMATCH, "wire_rerun_target_ne_metadata_frag"
 
     by_phase = _events_by_phase(s3_ledger_rows)
     receive = by_phase.get("SERVER_RECEIVE_ENTRY") or []

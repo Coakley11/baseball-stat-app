@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any
 
-S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v1"
+S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v2"
 S3_LEDGER_DOM_ID = "solo-stage1-s3-server-diag-ledger"
 S3_SESSION_LEDGER_KEY = "_stage1_s3_server_diag_ledger"
 S3_PATCHED_KEY = "_stage1_s3_server_diag_patched"
@@ -195,18 +195,43 @@ def install_s3_server_diagnostics(st: Any | None, session: dict[str, Any]) -> No
         wrapped_set_widgets_from_proto._solo_s3_wrapped = True  # type: ignore[attr-defined]
         SessionState.set_widgets_from_proto = wrapped_set_widgets_from_proto  # type: ignore[method-assign]
 
+    try:
+        from live_draft_stage1_appsession_ingress_diag import install_appsession_request_rerun_probe
+
+        install_appsession_request_rerun_probe(st, session)
+    except ImportError:
+        pass
+
     session[S3_PATCHED_KEY] = True
     append_s3_event(session, "S3_DIAG_INSTALLED", user_key=watch_key)
 
 
 def emit_s3_dom_ledger(st: Any, session: dict[str, Any]) -> None:
     export = s3_ledger_export(session)
+    try:
+        from live_draft_stage1_appsession_ingress_diag import appsession_ingress_export
+
+        ingress = appsession_ingress_export(session)
+    except ImportError:
+        ingress = {"rows": []}
+    try:
+        from live_draft_cloud_diagnostics import FRAGMENT_OWNER_HISTORY_KEY
+
+        owner_hist = list(session.get(FRAGMENT_OWNER_HISTORY_KEY) or [])[-16:]
+    except ImportError:
+        owner_hist = []
     post = session.get("_stage1_pause_sibling_post_registration") or {}
     pre = session.get("_stage1_pause_sibling_pre_declaration") or {}
     payload = json.dumps(
-        {"ledger": export, "pre_declaration": pre, "post_registration": post},
+        {
+            "ledger": export,
+            "appsession_ingress": ingress,
+            "fragment_owner_history": owner_hist,
+            "pre_declaration": pre,
+            "post_registration": post,
+        },
         default=str,
-    )[:24000]
+    )[:32000]
     safe = payload.replace('"', "'")
     st.markdown(
         f'<div id="{S3_LEDGER_DOM_ID}" '

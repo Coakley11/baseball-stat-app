@@ -218,19 +218,22 @@ def install_streamlit_register_widget_probe(st: Any | None, session: dict[str, A
             pass
         result = original(self, metadata, user_key)
         try:
+            from live_draft_stage1_register_widget_result import extract_register_widget_result_fields
             from live_draft_stage1_s3_server_diag import append_s3_event, is_pause_sibling_user_key
 
             if is_pause_sibling_user_key(uk):
+                rw_fields = extract_register_widget_result_fields(result)
                 append_s3_event(
                     session,
                     "REGISTER_RESULT",
                     user_key=uk,
-                    register_widget_result_value=bool(result),
-                    register_widget_result_repr=repr(result)[:120],
                     metadata_id=str(getattr(metadata, "id", "") or "")[:200],
                     metadata_fragment_id=str(getattr(metadata, "fragment_id", "") or "")[:80],
+                    **rw_fields,
                 )
-                session["_stage1_pause_sibling_register_result_value"] = bool(result)
+                v = rw_fields.get("register_widget_result_value")
+                if isinstance(v, bool):
+                    session["_stage1_pause_sibling_register_result_value"] = v
         except ImportError:
             pass
         return result

@@ -31,16 +31,19 @@ def _wire_from_sibling_step(sibling_step: dict[str, Any]) -> tuple[str, str, dic
     strict = dict(tr.get("strict_backmsg") or {})
     ids = list(strict.get("activated_widget_ids") or [])
     wire = str(ids[0] if ids else "")
-    frag = ""
-    for fr in strict.get("decoded_outbound_frames") or []:
-        if not isinstance(fr, dict):
-            continue
-        dec = fr.get("decode") if isinstance(fr.get("decode"), dict) else {}
-        cs = dec.get("client_state") if isinstance(dec.get("client_state"), dict) else {}
-        if cs.get("fragment_id"):
-            frag = str(cs.get("fragment_id") or "")
-            break
-    return wire, frag, strict
+    wire_target = str(strict.get("wire_rerun_target_fragment_id") or "").strip()
+    if not wire_target:
+        for fr in strict.get("decoded_outbound_frames") or []:
+            if not isinstance(fr, dict):
+                continue
+            dec = fr.get("decode") if isinstance(fr.get("decode"), dict) else {}
+            if dec.get("backmsg_oneof_type") != "rerun_script":
+                continue
+            cs = dec.get("client_state") if isinstance(dec.get("client_state"), dict) else {}
+            wire_target = str(cs.get("fragment_id") or "").strip()
+            if wire_target:
+                break
+    return wire, wire_target, strict
 
 
 def _wait_post_registration(page, *, max_wait_s: float = 90.0) -> dict[str, Any]:
@@ -107,6 +110,7 @@ def main() -> int:
     from run_production_stage1_authenticated import resolve_required_cloud_sha
     from stage1_pause_sibling_transport_capture import capture_sibling_pre_pause_transport
     from stage1_preflight_cleanup import run_stage1_preflight_cleanup
+    from stage1_s3_r2_subclassify import classify_s3_r2_subclass, wire_target_in_preclick_storage
     from stage1_s3_server_registry_classify import classify_s3_server_registry
     from stage1_s3_server_registry_scrape import extract_post_registration, scrape_s3_server_diag_ledger
     from streamlit_app_frame import describe_page_frames, resolve_streamlit_app_frame
@@ -211,20 +215,27 @@ def main() -> int:
 
         sibling_step = capture_sibling_pre_pause_transport(page)
         report["sibling_strict_transport"] = sibling_step
-        wire_id, wire_frag, strict_backmsg = _wire_from_sibling_step(sibling_step)
+        wire_id, wire_target, strict_backmsg = _wire_from_sibling_step(sibling_step)
         report["wire_widget_id"] = wire_id
-        report["wire_fragment_id"] = wire_frag
+        report["wire_rerun_target_fragment_id"] = wire_target
+        report["wire_fragment_id"] = wire_target  # legacy alias
+        report["other_fragment_ids_observed"] = list(strict_backmsg.get("other_fragment_ids_observed") or [])
+        report["wire_target_in_preclick_fragment_storage"] = wire_target_in_preclick_storage(wire_target, post_reg)
         report["sibling_user_key"] = f"stage1_pause_sibling_return_{room_id}_diag"
-
-        page.wait_for_timeout(1200)
-        s3_after = scrape_s3_server_diag_ledger(page)
-        report["s3_server_diag_after_click"] = s3_after
-        payload = s3_after.get("payload") if isinstance(s3_after.get("payload"), dict) else {}
-        ledger = (payload.get("ledger") or {}) if isinstance(payload, dict) else {}
-        s3_rows = list(ledger.get("rows") or [])
+        report["browser_console_fragment_batch"] = sibling_step.get("browser_console_fragment_batch")
 
         pause_step = _capture_pause_strict(page, room_id=room_id)
         report["pause_positive_control"] = pause_step
+
+        page.wait_for_timeout(1200)
+        s3_after = scrape_s3_server_diag_ledger(page)
+        report["s3_server_diag_after_pause"] = s3_after
+        payload = s3_after.get("payload") if isinstance(s3_after.get("payload"), dict) else {}
+        ledger = (payload.get("ledger") or {}) if isinstance(payload, dict) else {}
+        s3_rows = list(ledger.get("rows") or [])
+        ingress_payload = payload.get("appsession_ingress") if isinstance(payload.get("appsession_ingress"), dict) else {}
+        appsession_rows = list(ingress_payload.get("rows") or [])
+        report["fragment_owner_history"] = list(payload.get("fragment_owner_history") or [])[-16:]
 
         pre = payload.get("pre_declaration") if isinstance(payload.get("pre_declaration"), dict) else {}
         render_meta = dict((payload.get("post_registration") or {}))  # noqa: may include last render from pause ledger
@@ -235,21 +246,28 @@ def main() -> int:
         report["sibling_scrape_after"] = sib_after
 
         reg_result = None
+        reg_value_changed = None
         for r in s3_rows:
             if r.get("phase") == "REGISTER_RESULT":
-                reg_result = bool(r.get("register_widget_result_value"))
+                v = r.get("register_widget_result_value")
+                if isinstance(v, bool):
+                    reg_result = v
+                reg_value_changed = r.get("register_widget_value_changed")
         st_btn = None
         if sib_after.get("probe_found"):
-            payload = sib_after.get("payload") if isinstance(sib_after.get("payload"), dict) else {}
-            lr = dict(payload.get("last") or {})
+            sib_payload = sib_after.get("payload") if isinstance(sib_after.get("payload"), dict) else {}
+            lr = dict(sib_payload.get("last") or {})
+            lr_render = dict(sib_payload.get("last_render") or {})
             if lr.get("st_button_returned") is not None:
                 st_btn = bool(lr.get("st_button_returned"))
             elif lr.get("returned_true") is not None:
                 st_btn = bool(lr.get("returned_true"))
+            elif lr_render.get("st_button_returned") is not None:
+                st_btn = bool(lr_render.get("st_button_returned"))
 
-        case, note = classify_s3_server_registry(
+        base_case, base_note = classify_s3_server_registry(
             wire_widget_id=wire_id,
-            wire_fragment_id=wire_frag,
+            wire_fragment_id=wire_target,
             post_registration=post_reg,
             strict_backmsg=strict_backmsg,
             s3_ledger_rows=s3_rows,
@@ -258,6 +276,25 @@ def main() -> int:
             st_button_returned=st_btn,
             pause_resolved=bool(pause_step.get("pause_resolved")),
         )
+        click_ts = float(sibling_step.get("click_timestamp") or 0)
+        r2_case, r2_note, r2_evidence = classify_s3_r2_subclass(
+            wire_widget_id=wire_id,
+            wire_rerun_target_fragment_id=wire_target,
+            post_registration=post_reg,
+            strict_backmsg=strict_backmsg,
+            s3_ledger_rows=s3_rows,
+            appsession_ingress_rows=appsession_rows,
+            sibling_click_ts=click_ts or None,
+        )
+        if base_case == "BUTTON_DISPATCH_S3_R2_FRAGMENT_OWNER_MISMATCH" or str(r2_case).startswith(
+            "BUTTON_DISPATCH_S3_R2"
+        ):
+            case, note = r2_case, r2_note
+            report["r2_subclass_evidence"] = r2_evidence
+        else:
+            case, note = base_case, base_note
+        report["register_widget_value_changed"] = reg_value_changed
+        report["classification_base"] = base_case
         report["classification"] = case
         report["classification_note"] = note
         report["pre_declaration_snapshot"] = pre

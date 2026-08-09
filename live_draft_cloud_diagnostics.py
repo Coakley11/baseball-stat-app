@@ -10,6 +10,7 @@ RUN_SEQ_KEY = "_live_draft_cloud_diag_run_seq"
 RUN_LOG_KEY = "_live_draft_cloud_diag_run_log"
 ACTION_LOG_KEY = "_live_draft_cloud_action_timing_log"
 FRAGMENT_OWNERS_KEY = "_live_draft_fragment_owner_counts"
+FRAGMENT_OWNER_HISTORY_KEY = "_live_draft_fragment_owner_history"
 SOLO_NO_FRAGMENT_KEY = "_live_draft_solo_no_fragment_mode"
 CANARY_MODE_KEY = "_live_draft_cloud_canary_mode"
 CLOUD_ACCEPT_KEY = "_live_draft_cloud_accept_mode"
@@ -135,6 +136,34 @@ def note_fragment_owner(session: dict[str, Any], owner: str, *, delta: int = 1) 
     counts = dict(session.get(FRAGMENT_OWNERS_KEY) or {})
     counts[str(owner)] = int(counts.get(str(owner), 0)) + int(delta)
     session[FRAGMENT_OWNERS_KEY] = counts
+    row: dict[str, Any] = {
+        "ts": time.time(),
+        "owner": str(owner),
+        "delta": int(delta),
+        "streamlit_session_id": "",
+        "thread_state_fragment_id": "",
+        "current_fragment_id_ctx": "",
+        "fragment_storage_ids": [],
+        "fragment_in_storage": None,
+    }
+    try:
+        from live_draft_stage1_fragment_identity_runtime import snapshot_fragment_identity
+
+        snap = snapshot_fragment_identity(phase="FRAGMENT_OWNER_NOTE", widget_user_key="")
+        row["thread_state_fragment_id"] = str(snap.get("thread_state_fragment_id") or "")
+        row["current_fragment_id_ctx"] = str(snap.get("current_fragment_id_ctx") or "")
+        fs = snap.get("fragment_storage") if isinstance(snap.get("fragment_storage"), dict) else {}
+        stored = list(fs.get("stored_fragment_ids") or [])
+        row["fragment_storage_ids"] = stored[:16]
+        tid = row["thread_state_fragment_id"]
+        if tid and stored:
+            row["fragment_in_storage"] = tid in stored
+        row["streamlit_session_id"] = str(snap.get("streamlit_session_id") or "")
+    except Exception:
+        pass
+    hist = list(session.get(FRAGMENT_OWNER_HISTORY_KEY) or [])
+    hist.append(dict(row))
+    session[FRAGMENT_OWNER_HISTORY_KEY] = hist[-48:]
 
 
 def note_control_center_mount(session: dict[str, Any], *, source: str = "control_center") -> None:
