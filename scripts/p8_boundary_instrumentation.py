@@ -91,6 +91,16 @@ P8_WS_BOUNDARY_INIT_SCRIPT = """
       room_id: String((window.__p8WsCorrelationMeta || {}).room_id || ""),
       deployment_sha: String((window.__p8WsCorrelationMeta || {}).deployment_sha || ""),
     };
+    var MAX_PAYLOAD_CAPTURE = 65536;
+    if (direction === "outbound" && bytes.length > 0 && bytes.length <= MAX_PAYLOAD_CAPTURE) {
+      try {
+        var bin = "";
+        for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        entry.payload_base64 = btoa(bin);
+      } catch (eCap) {
+        entry.payload_base64_error = String(eCap || "btoa_failed").slice(0, 80);
+      }
+    }
     sha256HexAsync(bytes, function (hash) {
       entry.sha256 = hash;
       LOG.push(entry);

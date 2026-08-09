@@ -93,14 +93,6 @@ def capture_sibling_pre_pause_transport(page, *, session_hint: str = "") -> dict
     out["full_app_run_seq_before"] = before.get("full_app_run_seq")
     out["full_app_run_seq_after"] = after.get("full_app_run_seq")
     out["streamlit_session_id"] = after.get("streamlit_session_id") or before.get("streamlit_session_id")
-    out["server_execution_hint"] = bool(
-        transport.get("inbound_frames_after_click")
-        or transport.get("script_run_seq_changed")
-        or (
-            after.get("full_app_run_seq") is not None
-            and before.get("full_app_run_seq") is not None
-            and int(after.get("full_app_run_seq") or 0) > int(before.get("full_app_run_seq") or 0)
-        )
-    )
+    out["inbound_ws_activity_seen"] = bool(transport.get("websocket_inbound_activity_seen"))
     out["finished_ts"] = time.time()
     return out

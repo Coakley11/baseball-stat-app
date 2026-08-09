@@ -44,10 +44,13 @@ def capture_streamlit_click_transport(
     frame_url_hint: str = "",
     pre_script_run_seq: str = "",
     post_script_run_seq: str = "",
+    include_strict_backmsg: bool = True,
 ) -> dict[str, Any]:
     """
-    Grade outbound/inbound WS traffic after click_ts using the same classifier as native widget transport.
-    ``streamlit_backmsg_sent`` is None when hooks cannot authoritatively observe traffic (T0).
+    Capture WS traffic after click_ts.
+
+    Strict protobuf fields (authoritative for S1–S3) live under ``strict_backmsg``.
+    ``streamlit_backmsg_sent`` means ``rerun_script`` BackMsg decoded (not any outbound frame).
     """
     try:
         from p8_proven_start_delivery import aggregate_ws_boundary_log, websocket_open_at_click
@@ -57,6 +60,7 @@ def capture_streamlit_click_transport(
             "transport_authority": "unavailable",
             "error": str(exc)[:200],
             "streamlit_backmsg_sent": None,
+            "websocket_outbound_seen": False,
             "outbound_frames_after_click": 0,
             "inbound_frames_after_click": 0,
             "ws_log_sample": [],
@@ -77,8 +81,16 @@ def capture_streamlit_click_transport(
         post_script_run_seq=str(post_script_run_seq or ""),
     )
 
+    strict: dict[str, Any] = {}
+    if include_strict_backmsg:
+        from stage1_strict_backmsg_decode import summarize_strict_backmsg_evidence
+
+        strict = summarize_strict_backmsg_evidence(raw_log, click_ts=click_ts, relaxed_ws_sample=after_out)
+
     backmsg: bool | None
-    if authority == "available":
+    if strict:
+        backmsg = strict.get("streamlit_backmsg_sent")
+    elif authority == "available":
         backmsg = bool(classified.get("streamlit_backmsg_sent"))
     else:
         backmsg = None
@@ -97,6 +109,12 @@ def capture_streamlit_click_transport(
         "transport_authority": authority,
         "websocket_hook_seen": hook,
         "aggregate_ws_entries_total": len(raw_log),
+        "websocket_outbound_seen": bool(strict.get("websocket_outbound_seen")) if strict else len(after_out) > 0,
+        "websocket_inbound_activity_seen": bool(strict.get("websocket_inbound_activity_seen")) if strict else len(after_in) > 0,
+        "protobuf_backmsg_decoded": strict.get("protobuf_backmsg_decoded") if strict else None,
+        "rerun_script_backmsg_seen": strict.get("rerun_script_backmsg_seen") if strict else None,
+        "widget_states_present": strict.get("widget_states_present") if strict else None,
+        "activated_widget_state_present": strict.get("activated_widget_state_present") if strict else None,
         "outbound_frames_after_click": int(classified.get("outbound_frames_after_click") or len(after_out)),
         "inbound_frames_after_click": len(after_in),
         "streamlit_backmsg_sent": backmsg,
@@ -112,10 +130,23 @@ def capture_streamlit_click_transport(
         "decoded_hints": decoded_hints,
         "python_rerun_started": classified.get("python_rerun_started"),
         "script_run_seq_changed": classified.get("script_run_seq_changed"),
+        "strict_backmsg": strict,
     }
 
 
 def build_transport_comparison_row(dom: dict[str, Any], transport: dict[str, Any], *, python_effect: str, ui_effect: str) -> dict[str, Any]:
+    strict = dict(transport.get("strict_backmsg") or {})
+    if strict:
+        from stage1_strict_backmsg_decode import build_strict_evidence_table_row
+
+        row = build_strict_evidence_table_row(
+            trusted_dom_click=bool(dom.get("trusted_dom_click")),
+            strict=strict,
+            python_effect=python_effect,
+        )
+        row["ui_effect"] = ui_effect
+        row["transport_authority"] = transport.get("transport_authority")
+        return row
     hints = dict(transport.get("decoded_hints") or {})
     sample = list(transport.get("ws_log_sample") or [])
     first = sample[0] if sample else {}
