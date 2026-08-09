@@ -156,6 +156,7 @@ CAPTURE_TARGET_DISPATCH_R0 = "button_dispatch_r0"
 CAPTURE_TARGET_DISPATCH_O0 = "button_dispatch_o0"
 CAPTURE_TARGET_DISPATCH_O1 = "button_dispatch_o1"
 CAPTURE_TARGET_DISPATCH_O2 = "button_dispatch_o2"
+CAPTURE_TARGET_PAUSE_SIBLING = "pause_sibling_return_probe"
 
 _DISPATCH_CAPTURE_BY_MODE: dict[str, str] = {
     "R0": CAPTURE_TARGET_DISPATCH_R0,
@@ -283,6 +284,12 @@ _CAPTURE_TARGET_RULES: dict[str, dict[str, Any]] = {
         "button_label_re": "Stage1 OnClick Closure Probe",
         "match_substrings": ("stage1 onclick closure probe",),
         "reject_substrings": ("add to queue", "pause draft", "direct probe", "args probe"),
+    },
+    CAPTURE_TARGET_PAUSE_SIBLING: {
+        "mode": "pause_sibling",
+        "button_label_re": "Stage1 Pause-Sibling Return Probe",
+        "match_substrings": ("stage1 pause-sibling return probe",),
+        "reject_substrings": ("add to queue", "onclick", "return-value probe"),
     },
 }
 
