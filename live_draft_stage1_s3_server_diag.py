@@ -7,8 +7,10 @@ import time
 import uuid
 from typing import Any
 
-S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v5"
+S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v6"
 S3_LEDGER_DOM_ID = "solo-stage1-s3-server-diag-ledger"
+S3_READINESS_DOM_ID = "solo-stage1-s3-server-diag-readiness"
+S3_DOM_PAYLOAD_SCHEMA_REV = "stage1_s3_dom_payload_v2"
 S3_SESSION_LEDGER_KEY = "_stage1_s3_server_diag_ledger"
 S3_PATCHED_KEY = "_stage1_s3_server_diag_patched"
 S3_WATCH_KEY = "_stage1_s3_server_watch_user_key"
@@ -80,6 +82,247 @@ def s3_ledger_export(session: dict[str, Any] | None = None) -> dict[str, Any]:
         "module_row_count_before_tail": len(module_rows),
         "impl_rev": S3_SERVER_DIAG_IMPL_REV,
     }
+
+
+_S3_DOM_ROW_LIMITS = {
+    "ledger_rows": 96,
+    "module_rows": 48,
+    "local_rows": 48,
+    "critical_server_rows": 96,
+    "merged_rows": 96,
+    "ingress_rows": 48,
+    "unrouted_rows": 32,
+    "fragment_owner_history": 16,
+}
+
+_PRESERVE_PHASE_PREFIXES = (
+    "APPSESSION_",
+    "SAFE_SESSIONSTATE_",
+    "SERVER_",
+    "RUNTIME_BACKMSG",
+    "S3_DIAG_",
+    "REGISTER_",
+)
+
+
+def _row_phase(row: dict[str, Any]) -> str:
+    return str(row.get("phase") or row.get("event") or "")[:80]
+
+
+def _is_priority_row(row: dict[str, Any]) -> bool:
+    ph = _row_phase(row)
+    if is_pause_sibling_user_key(str(row.get("user_key") or row.get("widget_key") or "")):
+        return True
+    if "pause" in ph.lower() or "sibling" in ph.lower():
+        return True
+    return any(ph.startswith(p) for p in _PRESERVE_PHASE_PREFIXES)
+
+
+def _bound_row_list(
+    rows: list[dict[str, Any]],
+    limit: int,
+    *,
+    label: str,
+    bounds_log: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    src = list(rows or [])
+    before = len(src)
+    if before <= limit:
+        return src
+    priority = [r for r in src if _is_priority_row(r)]
+    tail = src[-limit:]
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for r in priority + tail:
+        eid = str(r.get("event_id") or id(r))
+        if eid in seen:
+            continue
+        seen.add(eid)
+        out.append(r)
+        if len(out) >= limit:
+            break
+    bounds_log.append({"collection": label, "before": before, "after": len(out), "limit": limit})
+    return out
+
+
+def build_s3_dom_payload(
+    session: dict[str, Any],
+    *,
+    export: dict[str, Any] | None = None,
+    ingress: dict[str, Any] | None = None,
+    unrouted: dict[str, Any] | None = None,
+    owner_hist: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build a complete, JSON-serializable S3 DOM payload (setup fields always included)."""
+    export = dict(export if export is not None else s3_ledger_export(session))
+    binding = dict(session.get(S3_BINDING_KEY) or {})
+    post = dict(session.get("_stage1_pause_sibling_post_registration") or {})
+    pre = dict(session.get("_stage1_pause_sibling_pre_declaration") or {})
+    if ingress is None:
+        try:
+            from live_draft_stage1_appsession_ingress_diag import appsession_ingress_export
+
+            ingress = appsession_ingress_export(session)
+        except ImportError:
+            ingress = {"rows": []}
+    if unrouted is None:
+        try:
+            from live_draft_stage1_s3_process_global_diag import unrouted_ledger_export
+
+            unrouted = unrouted_ledger_export()
+        except ImportError:
+            unrouted = {"rows": []}
+    if owner_hist is None:
+        try:
+            from live_draft_cloud_diagnostics import FRAGMENT_OWNER_HISTORY_KEY
+
+            owner_hist = list(session.get(FRAGMENT_OWNER_HISTORY_KEY) or [])
+        except ImportError:
+            owner_hist = []
+
+    bounds_log: list[dict[str, Any]] = []
+    lim = _S3_DOM_ROW_LIMITS
+    ledger_slim = {
+        "streamlit_session_id": export.get("streamlit_session_id"),
+        "event_count": export.get("event_count"),
+        "impl_rev": export.get("impl_rev"),
+        "rows": _bound_row_list(list(export.get("rows") or []), lim["ledger_rows"], label="ledger.rows", bounds_log=bounds_log),
+        "module_rows": _bound_row_list(
+            list(export.get("module_rows") or []), lim["module_rows"], label="ledger.module_rows", bounds_log=bounds_log
+        ),
+        "local_rows": _bound_row_list(
+            list(export.get("local_rows") or []), lim["local_rows"], label="ledger.local_rows", bounds_log=bounds_log
+        ),
+        "critical_server_rows": _bound_row_list(
+            list(export.get("critical_server_rows") or []),
+            lim["critical_server_rows"],
+            label="ledger.critical_server_rows",
+            bounds_log=bounds_log,
+        ),
+        "merged_rows": _bound_row_list(
+            list(export.get("merged_rows") or []), lim["merged_rows"], label="ledger.merged_rows", bounds_log=bounds_log
+        ),
+        "merge_stats": export.get("merge_stats"),
+        "module_row_count_before_tail": export.get("module_row_count_before_tail"),
+    }
+    ingress_rows = _bound_row_list(
+        list((ingress or {}).get("rows") or []), lim["ingress_rows"], label="appsession_ingress.rows", bounds_log=bounds_log
+    )
+    unrouted_rows = _bound_row_list(
+        list((unrouted or {}).get("rows") or []), lim["unrouted_rows"], label="unrouted_events.rows", bounds_log=bounds_log
+    )
+    owner_bounded = list(owner_hist or [])[-lim["fragment_owner_history"] :]
+    if len(owner_hist or []) > len(owner_bounded):
+        bounds_log.append(
+            {
+                "collection": "fragment_owner_history",
+                "before": len(owner_hist or []),
+                "after": len(owner_bounded),
+                "limit": lim["fragment_owner_history"],
+            }
+        )
+
+    before_counts = {
+        "ledger.rows": len(export.get("rows") or []),
+        "ledger.module_rows": len(export.get("module_rows") or []),
+        "ledger.local_rows": len(export.get("local_rows") or []),
+        "ledger.critical_server_rows": len(export.get("critical_server_rows") or []),
+        "ledger.merged_rows": len(export.get("merged_rows") or []),
+        "appsession_ingress.rows": len((ingress or {}).get("rows") or []),
+        "unrouted_events.rows": len((unrouted or {}).get("rows") or []),
+        "fragment_owner_history": len(owner_hist or []),
+    }
+    exported_counts = {
+        "ledger.rows": len(ledger_slim["rows"]),
+        "ledger.module_rows": len(ledger_slim["module_rows"]),
+        "ledger.local_rows": len(ledger_slim["local_rows"]),
+        "ledger.critical_server_rows": len(ledger_slim["critical_server_rows"]),
+        "ledger.merged_rows": len(ledger_slim["merged_rows"]),
+        "appsession_ingress.rows": len(ingress_rows),
+        "unrouted_events.rows": len(unrouted_rows),
+        "fragment_owner_history": len(owner_bounded),
+    }
+    rows_bounded = bool(bounds_log)
+    sid = _streamlit_session_id()
+    payload: dict[str, Any] = {
+        "payload_schema_rev": S3_DOM_PAYLOAD_SCHEMA_REV,
+        "impl_rev": S3_SERVER_DIAG_IMPL_REV,
+        "streamlit_session_id": sid,
+        "s3_diag_binding": binding,
+        "pre_declaration": pre,
+        "post_registration": post,
+        "ledger": ledger_slim,
+        "appsession_ingress": {**(dict(ingress) if isinstance(ingress, dict) else {}), "rows": ingress_rows},
+        "unrouted_events": {**(dict(unrouted) if isinstance(unrouted, dict) else {}), "rows": unrouted_rows},
+        "fragment_owner_history": owner_bounded,
+        "export_meta": {
+            "payload_complete": True,
+            "payload_truncated": False,
+            "rows_bounded": rows_bounded,
+            "bounds_applied": bounds_log,
+            "row_counts_before_bounding": before_counts,
+            "row_counts_exported": exported_counts,
+        },
+    }
+    text = json.dumps(payload, default=str)
+    payload["export_meta"]["payload_json_length"] = len(text)
+    return payload
+
+
+def build_s3_readiness_payload(session: dict[str, Any]) -> dict[str, Any]:
+    binding = dict(session.get(S3_BINDING_KEY) or {})
+    post = dict(session.get("_stage1_pause_sibling_post_registration") or {})
+    watch_key = str(session.get(S3_WATCH_KEY) or "")
+    reg_id = str(post.get("registered_widget_id") or "")
+    return {
+        "payload_schema_rev": S3_DOM_PAYLOAD_SCHEMA_REV,
+        "impl_rev": S3_SERVER_DIAG_IMPL_REV,
+        "streamlit_session_id": _streamlit_session_id(),
+        "watched_widget_key": watch_key,
+        "registered_widget_id": reg_id,
+        "post_registration": post,
+        "s3_diag_binding": binding,
+        "server_wrapper_integrity_ok": binding.get("server_wrapper_integrity_ok"),
+    }
+
+
+def serialize_s3_dom_json(payload: dict[str, Any]) -> str:
+    """Serialize without mid-string truncation; re-measure length on export_meta."""
+    text = json.dumps(payload, default=str)
+    meta = payload.get("export_meta")
+    if isinstance(meta, dict):
+        meta["payload_json_length"] = len(text)
+        meta["payload_complete"] = True
+        meta["payload_truncated"] = False
+        text = json.dumps(payload, default=str)
+        meta["payload_json_length"] = len(text)
+    return text
+
+
+def _html_attr_json(raw_json: str) -> str:
+    return raw_json.replace('"', "'")
+
+
+def emit_s3_dom_ledger(st: Any, session: dict[str, Any]) -> None:
+    payload = build_s3_dom_payload(session)
+    payload_text = serialize_s3_dom_json(payload)
+    readiness = build_s3_readiness_payload(session)
+    readiness_text = json.dumps(readiness, default=str)
+    sid = _streamlit_session_id()
+    st.markdown(
+        f'<div id="{S3_READINESS_DOM_ID}" '
+        f'data-impl-rev="{S3_SERVER_DIAG_IMPL_REV}" '
+        f'data-streamlit-session-id="{sid}" '
+        f'data-json="{_html_attr_json(readiness_text)}"></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div id="{S3_LEDGER_DOM_ID}" '
+        f'data-impl-rev="{S3_SERVER_DIAG_IMPL_REV}" '
+        f'data-streamlit-session-id="{sid}" '
+        f'data-json="{_html_attr_json(payload_text)}"></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def post_registration_server_snapshot(st: Any, user_key: str) -> dict[str, Any]:
@@ -298,48 +541,3 @@ def install_s3_server_diagnostics(st: Any | None, session: dict[str, Any]) -> No
     if not session.get("_stage1_s3_diag_installed_once"):
         append_s3_event(session, "S3_DIAG_INSTALLED", user_key=watch_key)
         session["_stage1_s3_diag_installed_once"] = True
-
-
-def emit_s3_dom_ledger(st: Any, session: dict[str, Any]) -> None:
-    export = s3_ledger_export(session)
-    try:
-        from live_draft_stage1_appsession_ingress_diag import appsession_ingress_export
-
-        ingress = appsession_ingress_export(session)
-    except ImportError:
-        ingress = {"rows": []}
-    try:
-        from live_draft_cloud_diagnostics import FRAGMENT_OWNER_HISTORY_KEY
-
-        owner_hist = list(session.get(FRAGMENT_OWNER_HISTORY_KEY) or [])[-16:]
-    except ImportError:
-        owner_hist = []
-    binding = dict(session.get(S3_BINDING_KEY) or {})
-    post = session.get("_stage1_pause_sibling_post_registration") or {}
-    pre = session.get("_stage1_pause_sibling_pre_declaration") or {}
-    try:
-        from live_draft_stage1_s3_process_global_diag import unrouted_ledger_export
-
-        unrouted = unrouted_ledger_export()
-    except ImportError:
-        unrouted = {"rows": []}
-    payload = json.dumps(
-        {
-            "ledger": export,
-            "appsession_ingress": ingress,
-            "s3_diag_binding": binding,
-            "unrouted_events": unrouted,
-            "fragment_owner_history": owner_hist,
-            "pre_declaration": pre,
-            "post_registration": post,
-        },
-        default=str,
-    )[:36000]
-    safe = payload.replace('"', "'")
-    st.markdown(
-        f'<div id="{S3_LEDGER_DOM_ID}" '
-        f'data-impl-rev="{S3_SERVER_DIAG_IMPL_REV}" '
-        f'data-streamlit-session-id="{_streamlit_session_id()}" '
-        f'data-json="{safe}"></div>',
-        unsafe_allow_html=True,
-    )

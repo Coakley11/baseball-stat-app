@@ -18,6 +18,7 @@ ABORTED_S3_SIBLING_POST_REGISTRATION_NOT_REACHED = "ABORTED_S3_SIBLING_POST_REGI
 ABORTED_S3_SIBLING_BUTTON_DOM_MISMATCH = "ABORTED_S3_SIBLING_BUTTON_DOM_MISMATCH"
 ABORTED_S3_SIBLING_LEDGER_EMIT_MISSING = "ABORTED_S3_SIBLING_LEDGER_EMIT_MISSING"
 ABORTED_S3_LEDGER_EMIT_MISSING = "ABORTED_S3_LEDGER_EMIT_MISSING"
+ABORTED_S3_LEDGER_PAYLOAD_INVALID = "ABORTED_S3_LEDGER_PAYLOAD_INVALID"
 ABORTED_S3_POST_REGISTRATION_NOT_READY = "ABORTED_S3_POST_REGISTRATION_NOT_READY"
 ABORTED_S3_DIAG_BINDING_NOT_READY = "ABORTED_S3_DIAG_BINDING_NOT_READY"
 ABORTED_S3_SERVER_WRAPPER_INTEGRITY = "ABORTED_S3_SERVER_WRAPPER_INTEGRITY"
@@ -103,6 +104,42 @@ def classify_setup_early_exception(sibling_layers: dict[str, Any]) -> tuple[str 
     return None, ""
 
 
+def classify_s3_ledger_scrape_issues(
+    *,
+    s3_ledger_scrape: dict[str, Any],
+    readiness_scrape: dict[str, Any] | None = None,
+) -> tuple[str | None, str]:
+    if not s3_ledger_scrape.get("found"):
+        return None, ""
+    if not s3_ledger_scrape.get("parse_ok"):
+        err = str(s3_ledger_scrape.get("parse_error") or "parse_failed")[:120]
+        return ABORTED_S3_LEDGER_PAYLOAD_INVALID, f"s3_ledger_json_parse_failed:{err}"
+    payload = s3_ledger_scrape.get("payload")
+    if not payload_has_setup_metadata(payload if isinstance(payload, dict) else None):
+        return ABORTED_S3_LEDGER_PAYLOAD_INVALID, "s3_ledger_payload_incomplete"
+    readiness_scrape = readiness_scrape or {}
+    if readiness_scrape.get("found") and not readiness_scrape.get("parse_ok"):
+        err = str(readiness_scrape.get("parse_error") or "parse_failed")[:120]
+        return ABORTED_S3_LEDGER_PAYLOAD_INVALID, f"s3_readiness_json_parse_failed:{err}"
+    if readiness_scrape.get("found") and readiness_scrape.get("parse_ok"):
+        from stage1_s3_server_registry_scrape import reconcile_s3_readiness_vs_ledger
+
+        rec = reconcile_s3_readiness_vs_ledger(ledger_scrape=s3_ledger_scrape, readiness_scrape=readiness_scrape)
+        if rec.get("mismatch"):
+            return ABORTED_S3_LEDGER_PAYLOAD_INVALID, f"s3_readiness_surface_mismatch:{rec.get('mismatch_reason')}"
+    return None, ""
+
+
+def payload_has_setup_metadata(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if not isinstance(payload.get("post_registration"), dict):
+        return False
+    if not isinstance(payload.get("s3_diag_binding"), dict):
+        return False
+    return True
+
+
 def classify_setup_failure(
     *,
     pause_ready: dict[str, Any],
@@ -111,6 +148,7 @@ def classify_setup_failure(
     post_registration: dict[str, Any],
     binding: dict[str, Any],
     after_stabilization: bool = False,
+    readiness_scrape: dict[str, Any] | None = None,
 ) -> tuple[str | None, str]:
     if not pause_ready.get("ready"):
         return ABORTED_S3_CONTROL_CENTER_NOT_READY, "pause_control_not_ready"
@@ -173,6 +211,13 @@ def classify_setup_failure(
         if sibling_layers.get("sibling_declaration_reached"):
             return ABORTED_S3_SIBLING_BUTTON_NOT_MOUNTED, "sibling_button_missing_after_declaration"
         return ABORTED_S3_SIBLING_BUTTON_NOT_MOUNTED, "sibling_button_missing"
+    if s3_ledger_scrape.get("found"):
+        invalid, invalid_note = classify_s3_ledger_scrape_issues(
+            s3_ledger_scrape=s3_ledger_scrape,
+            readiness_scrape=readiness_scrape,
+        )
+        if invalid:
+            return invalid, invalid_note
     if not sibling_layers.get("sibling_ledger_found"):
         if after_stabilization and sibling_layers.get("sibling_post_button_return_reached"):
             return (

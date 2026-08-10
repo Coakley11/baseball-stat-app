@@ -30,6 +30,19 @@ from stage1_s3_setup_localize import (  # noqa: E402
 )
 
 
+def _s3_scrape(*, post: dict | None = None, binding: dict | None = None, found: bool = True) -> dict:
+    return {
+        "found": found,
+        "parse_ok": True,
+        "payload": {
+            "post_registration": post if post is not None else {"registered_widget_id": "$$ID-abc"},
+            "s3_diag_binding": binding
+            if binding is not None
+            else {"sessionstate_binding_ok": True, "server_wrapper_integrity_ok": True},
+        },
+    }
+
+
 def _layers(**kw: object) -> dict:
     base = {
         "sibling_callsite_found": True,
@@ -147,7 +160,7 @@ class SetupLocalizeTests(unittest.TestCase):
         case, _ = classify_setup_failure(
             pause_ready={"ready": True},
             sibling_layers=_layers(),
-            s3_ledger_scrape={"found": True},
+            s3_ledger_scrape=_s3_scrape(post={}),
             post_registration={},
             binding={"sessionstate_binding_ok": True},
         )
@@ -157,7 +170,7 @@ class SetupLocalizeTests(unittest.TestCase):
         case, _ = classify_setup_failure(
             pause_ready={"ready": True},
             sibling_layers=_layers(),
-            s3_ledger_scrape={"found": True},
+            s3_ledger_scrape=_s3_scrape(binding={"sessionstate_binding_ok": False}),
             post_registration={"registered_widget_id": "$$ID-abc"},
             binding={"sessionstate_binding_ok": False},
         )
@@ -182,7 +195,7 @@ class SetupLocalizeTests(unittest.TestCase):
         case, note = classify_setup_failure(
             pause_ready={"ready": True},
             sibling_layers=layers,
-            s3_ledger_scrape={"found": True},
+            s3_ledger_scrape=_s3_scrape(),
             post_registration={"registered_widget_id": "$$ID-abc"},
             binding={"sessionstate_binding_ok": True, "server_wrapper_integrity_ok": True},
         )

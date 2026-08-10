@@ -6,7 +6,11 @@ import time
 from typing import Any
 
 from stage1_pause_sibling_scrape import scrape_pause_sibling_probe
-from stage1_s3_server_registry_scrape import evaluate_post_registration_from_ledger, scrape_s3_server_diag_ledger
+from stage1_s3_server_registry_scrape import (
+    resolve_authoritative_s3_setup_from_scrapes,
+    scrape_s3_server_diag_ledger,
+    scrape_s3_server_diag_readiness,
+)
 from stage1_s3_setup_localize import (
     build_setup_readiness_table,
     classify_setup_early_exception,
@@ -185,7 +189,11 @@ def _poll_setup_once(
     sibling_layers = scrape_sibling_setup_layers(page, frame=frame)
     sibling_scrape = scrape_pause_sibling_probe(page, frame=frame)
     s3_ledger_scrape = scrape_s3_server_diag_ledger(page, frame=frame)
-    post_reg, binding, pre_decl = evaluate_post_registration_from_ledger(s3_ledger_scrape)
+    readiness_scrape = scrape_s3_server_diag_readiness(page, frame=frame)
+    resolved = resolve_authoritative_s3_setup_from_scrapes(s3_ledger_scrape, readiness_scrape)
+    post_reg = dict(resolved.get("post_registration") or {})
+    binding = dict(resolved.get("s3_diag_binding") or {})
+    pre_decl = dict(resolved.get("pre_declaration") or {})
     post_reg_ready = str(post_reg.get("registered_widget_id") or "").startswith("$$ID-")
     binding_ok = bool(binding.get("sessionstate_binding_ok"))
     sibling_layers = finalize_sibling_import_evidence(
@@ -219,6 +227,8 @@ def _poll_setup_once(
         "streamlit_session_id": streamlit_sid,
         "full_app_run_seq": run_seq,
         "room_aligned": _room_aligned(room_id, sibling_layers, atomic),
+        "s3_readiness_scrape": readiness_scrape,
+        "s3_setup_reconcile": resolved.get("reconcile"),
     }
 
 
@@ -332,6 +342,7 @@ def wait_for_sibling_setup_stable(
         post_registration=post_reg,
         binding=binding,
         after_stabilization=True,
+        readiness_scrape=dict(snap.get("s3_readiness_scrape") or {}),
     )
     setup_table = build_setup_readiness_table(
         runtime_sha=runtime_sha,
