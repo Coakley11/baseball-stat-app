@@ -135,9 +135,9 @@ def main() -> int:
         classify_setup_failure,
         setup_ready_for_sibling_click,
     )
-        from stage1_pause_sibling_scrape import scrape_pause_sibling_probe
-        from stage1_sibling_setup_stable import wait_for_sibling_setup_stable
-        from streamlit_app_frame import describe_page_frames, resolve_streamlit_app_frame
+    from stage1_pause_sibling_scrape import scrape_pause_sibling_probe
+    from stage1_sibling_setup_stable import wait_for_sibling_setup_stable
+    from streamlit_app_frame import describe_page_frames, resolve_streamlit_app_frame
 
     if str(os.environ.get("STAGE1_USE_CAPTURE_BRIDGE") or "").strip().lower() in ("0", "false"):
         print(json.dumps({"ok": False, "classification": "ABORTED_CAPTURE_BRIDGE_DISABLED"}))
