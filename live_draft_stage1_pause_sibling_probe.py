@@ -7,9 +7,11 @@ import time
 import uuid
 from typing import Any
 
-PAUSE_SIBLING_IMPL_REV = "stage1_pause_sibling_probe_v2"
+PAUSE_SIBLING_IMPL_REV = "stage1_pause_sibling_probe_v3"
 PAUSE_SIBLING_PROBE_ELEMENT_ID = "solo-stage1-pause-sibling-probe"
 PAUSE_SIBLING_LEDGER_DOM_ID = "solo-stage1-pause-sibling-ledger"
+PAUSE_SIBLING_ENTRY_DOM_ID = "solo-stage1-pause-sibling-entry"
+PAUSE_SIBLING_DECL_DOM_ID = "solo-stage1-pause-sibling-declaration"
 
 PAUSE_SIBLING_COUNT_KEY = "_stage1_pause_sibling_count"
 PAUSE_SIBLING_EVENTS_KEY = "_stage1_pause_sibling_events"
@@ -151,16 +153,121 @@ def _emit_pause_sibling_probes(
         pass
 
 
+def _solo_diag_evidence(st: Any | None, session: dict[str, Any]) -> dict[str, Any]:
+    raw = ""
+    qp_flag = False
+    session_latched = bool(session.get("_solo_component_diag_enabled"))
+    mount_diag_present = False
+    mount_diag_value: Any = None
+    try:
+        from live_draft_solo_component_diagnostics import (
+            SOLO_DIAG_ENABLED_KEY,
+            SOLO_MOUNT_DIAG_KEY,
+            _qp_flag,
+            _qp_get,
+            solo_component_diag_enabled,
+        )
+
+        raw = _qp_get(st, "solo_component_diag") if st is not None else ""
+        qp_flag = bool(st is not None and _qp_flag(st, "solo_component_diag"))
+        session_latched = bool(session.get(SOLO_DIAG_ENABLED_KEY) or session_latched)
+        if SOLO_MOUNT_DIAG_KEY in session:
+            mount_diag_present = True
+            mount_diag_value = session.get(SOLO_MOUNT_DIAG_KEY)
+        final = bool(solo_component_diag_enabled(st, session))
+    except ImportError:
+        final = bool(_solo_diag_enabled(st, session))
+    return {
+        "solo_component_diag_raw": str(raw)[:32],
+        "solo_component_diag_qp_flag": qp_flag,
+        "session_solo_component_diag_enabled": session_latched,
+        "solo_mount_diag_key_present": mount_diag_present,
+        "solo_mount_diag_key_value": mount_diag_value,
+        "solo_diag_enabled_final": final,
+    }
+
+
+def _emit_sibling_render_entry(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    room_id: str,
+    widget_key: str,
+    evidence: dict[str, Any],
+) -> None:
+    payload: dict[str, Any] = {
+        "event": "SIBLING_RENDER_ENTRY",
+        "called": True,
+        "ts": time.time(),
+        "room_id": room_id,
+        "widget_user_key": widget_key,
+        "streamlit_session_id": _streamlit_session_id(),
+        "full_app_run_seq": _full_app_run_seq(session),
+        **evidence,
+    }
+    try:
+        from live_draft_stage1_fragment_identity_runtime import snapshot_fragment_identity
+
+        snap = snapshot_fragment_identity(phase="SIBLING_RENDER_ENTRY", widget_user_key=widget_key)
+        payload["thread_state_fragment_id"] = str(snap.get("thread_state_fragment_id") or "")[:64]
+    except ImportError:
+        payload["thread_state_fragment_id"] = ""
+    safe = lambda s: str(s or "").replace('"', "'")[:160]
+    blob = json.dumps(payload, default=str)[:12000].replace('"', "'")
+    en = evidence.get("solo_diag_enabled_final")
+    st.markdown(
+        f'<div id="{PAUSE_SIBLING_ENTRY_DOM_ID}" '
+        f'data-event="SIBLING_RENDER_ENTRY" '
+        f'data-diag-enabled="{1 if en else 0}" '
+        f'data-called="1" '
+        f'data-room-id="{safe(room_id)}" '
+        f'data-widget-key="{safe(widget_key)}" '
+        f'data-streamlit-session-id="{safe(_streamlit_session_id())}" '
+        f'data-impl-rev="{PAUSE_SIBLING_IMPL_REV}" '
+        f'data-json="{blob}"></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _emit_sibling_declaration(
+    st: Any,
+    *,
+    phase: str,
+    room_id: str,
+    widget_key: str,
+    data: dict[str, Any],
+) -> None:
+    payload = {
+        "event": phase,
+        "ts": time.time(),
+        "room_id": room_id,
+        "widget_key": widget_key,
+        **data,
+    }
+    safe = lambda s: str(s or "").replace('"', "'")[:160]
+    blob = json.dumps(payload, default=str)[:8000].replace('"', "'")
+    reached = 1 if data.get("declaration_reached") else 0
+    st.markdown(
+        f'<div id="{PAUSE_SIBLING_DECL_DOM_ID}" '
+        f'data-event="{safe(phase)}" '
+        f'data-declaration-reached="{reached}" '
+        f'data-json="{blob}"></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def render_stage1_pause_sibling_return_probe(
     st: Any,
     session: dict[str, Any],
     room: dict[str, Any],
 ) -> None:
     """Return-value button adjacent to Pause — Control Center path only."""
-    if not _solo_diag_enabled(st, session):
-        return
     room_id = str(room.get("draft_room_id") or room.get("room_id") or "").strip()
     wk = pause_sibling_widget_key(room_id)
+    evidence = _solo_diag_evidence(st, session)
+    _emit_sibling_render_entry(st, session, room_id=room_id, widget_key=wk, evidence=evidence)
+    if not evidence.get("solo_diag_enabled_final"):
+        return
     try:
         from live_draft_stage1_fragment_identity_runtime import snapshot_fragment_identity
     except ImportError:
@@ -182,6 +289,13 @@ def render_stage1_pause_sibling_return_probe(
     session[PAUSE_SIBLING_PRE_DECL_KEY] = dict(pre_identity)
 
     count_before = int(session.get(PAUSE_SIBLING_COUNT_KEY) or 0)
+    _emit_sibling_declaration(
+        st,
+        phase="SIBLING_BUTTON_DECLARATION_ENTRY",
+        room_id=room_id,
+        widget_key=wk,
+        data={"declaration_reached": True},
+    )
     returned = st.button(
         LABEL_PAUSE_SIBLING,
         key=wk,
@@ -196,6 +310,19 @@ def render_stage1_pause_sibling_return_probe(
     except ImportError:
         post_identity = snapshot_fragment_identity(phase="POST_REGISTRATION", widget_user_key=wk)
     session[PAUSE_SIBLING_POST_REG_KEY] = dict(post_identity)
+
+    _emit_sibling_declaration(
+        st,
+        phase="SIBLING_BUTTON_DECLARATION_RESULT",
+        room_id=room_id,
+        widget_key=wk,
+        data={
+            "declaration_reached": True,
+            "returned_value": bool(returned),
+            "registered_widget_id": str(post_identity.get("registered_widget_id") or "")[:96],
+            "thread_state_fragment_id": str(post_identity.get("thread_state_fragment_id") or "")[:64],
+        },
+    )
 
     branch_entered = bool(returned)
     count_after = count_before

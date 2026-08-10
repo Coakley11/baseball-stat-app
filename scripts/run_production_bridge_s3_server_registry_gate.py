@@ -134,6 +134,7 @@ def main() -> int:
         setup_ready_for_sibling_click,
     )
     from stage1_pause_sibling_scrape import scrape_pause_sibling_probe
+    from stage1_sibling_setup_scrape import scrape_sibling_setup_layers
     from streamlit_app_frame import describe_page_frames, resolve_streamlit_app_frame
 
     if str(os.environ.get("STAGE1_USE_CAPTURE_BRIDGE") or "").strip().lower() in ("0", "false"):
@@ -234,6 +235,8 @@ def main() -> int:
         frame = resolve_streamlit_app_frame(page)
         report["app_frame_url"] = str(frame.url or "")[:240]
 
+        sibling_layers = scrape_sibling_setup_layers(page, frame=frame)
+        report["sibling_setup_layers"] = sibling_layers
         sibling_scrape = scrape_pause_sibling_probe(page, frame=frame)
         report["sibling_probe_scrape"] = sibling_scrape
         s3_ledger_scrape = scrape_s3_server_diag_ledger(page, frame=frame)
@@ -265,7 +268,7 @@ def main() -> int:
             room_id=room_id,
             streamlit_session_id=streamlit_sid,
             pause_control_ready=bool(pause_ready.get("ready")),
-            sibling_probe_found=bool(sibling_scrape.get("probe_found")),
+            sibling_layers=sibling_layers,
             s3_ledger_found=bool(s3_ledger_scrape.get("found")),
             post_registration_ready=str(post_reg.get("registered_widget_id") or "").startswith("$$ID-"),
             binding_ok=bool(binding.get("sessionstate_binding_ok")),
@@ -277,7 +280,7 @@ def main() -> int:
 
         setup_abort, setup_note = classify_setup_failure(
             pause_ready=pause_ready,
-            sibling_scrape=sibling_scrape,
+            sibling_layers=sibling_layers,
             s3_ledger_scrape=s3_ledger_scrape,
             post_registration=post_reg,
             binding=binding,

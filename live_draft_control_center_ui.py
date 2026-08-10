@@ -108,9 +108,28 @@ def render_live_draft_control_center(
             except ImportError:
                 st.rerun()
         try:
-            from live_draft_stage1_pause_sibling_probe import render_stage1_pause_sibling_return_probe
+            from live_draft_stage1_pause_sibling_callsite_diag import emit_sibling_callsite_marker
 
-            render_stage1_pause_sibling_return_probe(st, session, room)
+            emit_sibling_callsite_marker(st, session, room, room_status=status)
+            import_error = ""
+            import_ok = False
+            try:
+                from live_draft_stage1_pause_sibling_probe import render_stage1_pause_sibling_return_probe
+
+                import_ok = True
+            except ImportError as exc:
+                import_error = f"{type(exc).__name__}: {exc}"
+            emit_sibling_callsite_marker(
+                st,
+                session,
+                room,
+                room_status=status,
+                import_attempted=True,
+                import_ok=import_ok,
+                import_error=import_error,
+            )
+            if import_ok:
+                render_stage1_pause_sibling_return_probe(st, session, room)
         except ImportError:
             pass
     with top2:

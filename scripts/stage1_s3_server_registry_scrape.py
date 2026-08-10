@@ -54,14 +54,17 @@ def scrape_frame_dom_diagnostics(page) -> dict[str, Any]:
       const pauseLabel = 'Pause Draft';
       const siblingLabel = 'Stage1 Pause-Sibling Return Probe';
       function scan(doc) {
-        let pause = false, sibling = false, ledger = false;
+        let pause = false, sibling = false, ledger = false, callsite = false, entry = false;
         for (const b of doc.querySelectorAll('button')) {
           const t = String(b.innerText || b.textContent || '').replace(/\\s+/g, ' ').trim();
           if (t === pauseLabel) pause = true;
           if (t === siblingLabel) sibling = true;
         }
         ledger = !!doc.querySelector('#solo-stage1-s3-server-diag-ledger');
-        return { pause, sibling, ledger };
+        callsite = !!doc.querySelector('#solo-stage1-pause-sibling-callsite');
+        entry = !!doc.querySelector('#solo-stage1-pause-sibling-entry');
+        const sibLedger = !!doc.querySelector('#solo-stage1-pause-sibling-ledger');
+        return { pause, sibling, ledger, callsite, entry, sibling_ledger: sibLedger };
       }
       const main = scan(document);
       const out = { main, frames: [] };

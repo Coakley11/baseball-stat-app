@@ -29,7 +29,9 @@ def append_s3_event(session: dict[str, Any] | None, phase: str, **fields: Any) -
     from live_draft_stage1_s3_process_global_diag import append_module_event, streamlit_session_id_from_ctx
 
     sid = streamlit_session_id_from_ctx()
-    row = append_module_event(sid, phase, **fields)
+    extra = dict(fields)
+    extra.pop("streamlit_session_id", None)
+    row = append_module_event(sid, phase, **extra)
     if isinstance(session, dict) and sid:
         book = list(session.get(S3_SESSION_LEDGER_KEY) or [])
         book.append(dict(row))
