@@ -30,6 +30,15 @@ class FakeSafeSessionState:
 
 
 class SessionStateRoutingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import live_draft_stage1_s3_process_global_diag as pg
+
+        with pg._LEDGER_LOCK:
+            pg._MODULE_LEDGER_BY_STREAMLIT_SESSION.clear()
+            pg._CRITICAL_LEDGER_BY_SESSION.clear()
+            pg._UNROUTED_ORPHAN_LEDGER.clear()
+            pg._SESSIONSTATE_INSTANCE_TO_STREAMLIT_SESSION.clear()
+
     def test_wrapper_and_underlying_distinct_ids(self) -> None:
         underlying = FakeSessionState()
         wrapper = FakeSafeSessionState(underlying)
@@ -92,10 +101,18 @@ class SessionStateRoutingTests(unittest.TestCase):
 
 
 class PositiveControlChainTest(unittest.TestCase):
+    def setUp(self) -> None:
+        import live_draft_stage1_s3_process_global_diag as pg
+
+        with pg._LEDGER_LOCK:
+            pg._MODULE_LEDGER_BY_STREAMLIT_SESSION.clear()
+            pg._CRITICAL_LEDGER_BY_SESSION.clear()
+
     def test_appsession_to_underlying_pause_propagation_synthetic(self) -> None:
         underlying = FakeSessionState()
         wrapper = FakeSafeSessionState(underlying)
         register_sessionstate_pair_from_wrapper(wrapper, "sid-chain")
+        append_module_event("sid-chain", "RUNTIME_BACKMSG_ENTRY", pause_present=True)
         append_module_event("sid-chain", "APPSESSION_BACKMSG_ENTRY", pause_present=True)
         append_module_event("sid-chain", "APPSESSION_REQUEST_RERUN_ENTRY", pause_present=True)
         append_module_event("sid-chain", "SAFE_SESSIONSTATE_RECEIVE_ENTRY", pause_present=True)

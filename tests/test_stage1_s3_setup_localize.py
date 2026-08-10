@@ -165,6 +165,7 @@ class SetupLocalizeTests(unittest.TestCase):
             s3_ledger_found=True,
             post_registration_ready=True,
             binding_ok=True,
+            server_wrapper_integrity_ok=True,
         )
         self.assertTrue(setup_ready_for_sibling_click(table))
         case, note = classify_setup_failure(
@@ -172,7 +173,7 @@ class SetupLocalizeTests(unittest.TestCase):
             sibling_layers=layers,
             s3_ledger_scrape={"found": True},
             post_registration={"registered_widget_id": "$$ID-abc"},
-            binding={"sessionstate_binding_ok": True},
+            binding={"sessionstate_binding_ok": True, "server_wrapper_integrity_ok": True},
         )
         self.assertIsNone(case)
         self.assertEqual(note, "setup_pass")

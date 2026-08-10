@@ -29,12 +29,14 @@ def _any(rows: list[dict[str, Any]], pred) -> bool:
 def pause_observability_chain(rows: list[dict[str, Any]], *, unrouted_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     by = _by_phase(rows)
     un = list(unrouted_rows or [])
+    runtime = by.get("RUNTIME_BACKMSG_ENTRY") or []
     back = by.get("APPSESSION_BACKMSG_ENTRY") or []
     req = by.get("APPSESSION_REQUEST_RERUN_ENTRY") or []
     safe_recv = by.get("SAFE_SESSIONSTATE_RECEIVE_ENTRY") or []
     recv = by.get("SERVER_RECEIVE_ENTRY") or []
     applied = by.get("SERVER_STATE_APPLIED") or []
     ev = {
+        "runtime_backmsg_pause": _any(runtime, lambda r: bool(r.get("pause_present"))),
         "backmsg_pause": _any(back, lambda r: bool(r.get("pause_present"))),
         "request_rerun_pause": _any(req, lambda r: bool(r.get("pause_present"))),
         "safe_sessionstate_pause": _any(safe_recv, lambda r: bool(r.get("pause_present"))),
@@ -50,6 +52,7 @@ def pause_observability_chain(rows: list[dict[str, Any]], *, unrouted_rows: list
     ev["ok"] = all(
         ev[k]
         for k in (
+            "runtime_backmsg_pause",
             "backmsg_pause",
             "request_rerun_pause",
             "safe_sessionstate_pause",
@@ -63,27 +66,22 @@ def pause_observability_chain(rows: list[dict[str, Any]], *, unrouted_rows: list
 def observability_failure_boundary(pause_obs: dict[str, Any]) -> str:
     if pause_obs.get("ok"):
         return ""
-    missing: list[str] = []
-    if not pause_obs.get("backmsg_pause"):
-        missing.append("appsession_backmsg")
-    if not pause_obs.get("request_rerun_pause"):
-        missing.append("appsession_request_rerun")
-    if not pause_obs.get("safe_sessionstate_pause"):
-        missing.append("safe_sessionstate_receive")
-    if not pause_obs.get("server_receive_pause"):
-        if pause_obs.get("unrouted_server_receive"):
-            missing.append("sessionstate_sid_routing")
-        else:
-            missing.append("underlying_sessionstate_receive")
-    if not pause_obs.get("server_applied_pause"):
-        if pause_obs.get("unrouted_server_applied"):
-            missing.append("sessionstate_sid_routing")
-        else:
-            missing.append("underlying_sessionstate_apply")
-    if len(missing) == 1:
-        return missing[0]
-    if len(missing) > 1:
-        return "multiple"
+    chain: list[tuple[str, str]] = [
+        ("runtime_backmsg_pause", "browser_to_runtime"),
+        ("backmsg_pause", "runtime_to_appsession"),
+        ("request_rerun_pause", "appsession_to_request_rerun"),
+        ("safe_sessionstate_pause", "request_to_safe_sessionstate"),
+        ("server_receive_pause", "safe_to_underlying_receive"),
+        ("server_applied_pause", "underlying_receive_to_apply"),
+    ]
+    for key, boundary in chain:
+        if pause_obs.get(key):
+            continue
+        if key == "server_receive_pause" and pause_obs.get("unrouted_server_receive"):
+            return "sessionstate_sid_routing"
+        if key == "server_applied_pause" and pause_obs.get("unrouted_server_applied"):
+            return "sessionstate_sid_routing"
+        return boundary
     return "unknown"
 
 
@@ -115,6 +113,7 @@ def sibling_rows(rows: list[dict[str, Any]], *, wire_widget_id: str = "") -> dic
 def classify_s3_with_observability(
     *,
     module_rows: list[dict[str, Any]],
+    authoritative_rows: list[dict[str, Any]] | None = None,
     pause_resolved: bool,
     strict_backmsg: dict[str, Any],
     wire_widget_id: str,
@@ -124,14 +123,25 @@ def classify_s3_with_observability(
     binding_ok: bool | None,
     unrouted_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
+    rows = list(authoritative_rows if authoritative_rows is not None else module_rows)
     evidence: dict[str, Any] = {
         "classification_history": {
             "prior_d89e94f": "BUTTON_DISPATCH_S3_R2_FRAGMENT_OWNER_MISMATCH",
             "prior_26effa0_r2": "BUTTON_DISPATCH_S3_R2C_OWNER_MATCH_AFTER_RECHECK",
+            "accepted_374ecc0_r3o0": {
+                "classification": BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_ABORT,
+                "note": "pause_functional_but_server_chain_missing:multiple",
+                "retrospective_diagnostic_concern": (
+                    "server-boundary rows may have been lost by destructive local-vs-module export "
+                    "and generic-tail truncation"
+                ),
+                "not_proven_as_sole_cause": True,
+            },
         },
         "binding_ok": binding_ok,
+        "authoritative_row_count": len(rows),
     }
-    pause_obs = pause_observability_chain(module_rows, unrouted_rows=unrouted_rows)
+    pause_obs = pause_observability_chain(rows, unrouted_rows=unrouted_rows)
     evidence["pause_observability"] = pause_obs
     evidence["observability_failure_boundary"] = observability_failure_boundary(pause_obs)
     evidence["unrouted_event_count"] = len(list(unrouted_rows or []))
@@ -154,7 +164,7 @@ def classify_s3_with_observability(
         return BUTTON_DISPATCH_S3_R0_INCOMPLETE_EVIDENCE, "pause_observability_incomplete", evidence
 
     strict_trigger = bool(strict_backmsg.get("activated_widget_state_present"))
-    sib = sibling_rows(module_rows, wire_widget_id=wire_widget_id)
+    sib = sibling_rows(rows, wire_widget_id=wire_widget_id)
     evidence["sibling_chain"] = sib
 
     if register_widget_result is True and st_button_returned is False:

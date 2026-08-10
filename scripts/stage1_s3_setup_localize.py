@@ -16,6 +16,7 @@ ABORTED_S3_SIBLING_LEDGER_EMIT_MISSING = "ABORTED_S3_SIBLING_LEDGER_EMIT_MISSING
 ABORTED_S3_LEDGER_EMIT_MISSING = "ABORTED_S3_LEDGER_EMIT_MISSING"
 ABORTED_S3_POST_REGISTRATION_NOT_READY = "ABORTED_S3_POST_REGISTRATION_NOT_READY"
 ABORTED_S3_DIAG_BINDING_NOT_READY = "ABORTED_S3_DIAG_BINDING_NOT_READY"
+ABORTED_S3_SERVER_WRAPPER_INTEGRITY = "ABORTED_S3_SERVER_WRAPPER_INTEGRITY"
 
 
 def build_setup_readiness_table(
@@ -30,6 +31,7 @@ def build_setup_readiness_table(
     s3_ledger_found: bool | None,
     post_registration_ready: bool | None,
     binding_ok: bool | None,
+    server_wrapper_integrity_ok: bool | None = None,
 ) -> dict[str, Any]:
     layers = dict(sibling_layers or {})
     import_ok = layers.get("import_effective_ok")
@@ -51,6 +53,7 @@ def build_setup_readiness_table(
         "S3 ledger DOM": s3_ledger_found,
         "POST_REGISTRATION": post_registration_ready,
         "S3_DIAG_BINDING": binding_ok,
+        "Server wrapper integrity": server_wrapper_integrity_ok,
     }
 
 
@@ -67,6 +70,7 @@ def setup_ready_for_sibling_click(table: dict[str, Any]) -> bool:
         "S3 ledger DOM",
         "POST_REGISTRATION",
         "S3_DIAG_BINDING",
+        "Server wrapper integrity",
     )
     for key in required_truthy:
         if table.get(key) is not True:
@@ -129,6 +133,9 @@ def classify_setup_failure(
         return ABORTED_S3_POST_REGISTRATION_NOT_READY, "post_registration_id_missing"
     if not binding.get("sessionstate_binding_ok"):
         return ABORTED_S3_DIAG_BINDING_NOT_READY, "sessionstate_binding_not_ok"
+    integrity = binding.get("server_wrapper_integrity_ok")
+    if integrity is False:
+        return ABORTED_S3_SERVER_WRAPPER_INTEGRITY, "live_wrapper_integrity_failed"
     return None, "setup_pass"
 
 

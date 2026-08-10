@@ -119,6 +119,7 @@ def main() -> int:
     from run_production_stage1_authenticated import resolve_required_cloud_sha
     from stage1_pause_sibling_transport_capture import capture_sibling_pre_pause_transport
     from stage1_preflight_cleanup import run_stage1_preflight_cleanup
+    from stage1_s3_authoritative_evidence import build_authoritative_server_rows_from_payload
     from stage1_s3_r2_subclassify import classify_s3_r2_subclass, wire_target_in_preclick_storage
     from stage1_s3_r3_observability_classify import classify_s3_with_observability
     from stage1_s3_server_registry_classify import classify_s3_server_registry
@@ -280,8 +281,8 @@ def main() -> int:
             s3_ledger_found=bool(s3_ledger_scrape.get("found")),
             post_registration_ready=post_reg_ready,
             binding_ok=binding_ok,
+            server_wrapper_integrity_ok=binding.get("server_wrapper_integrity_ok"),
         )
-        report["setup_readiness_table"] = setup_table
         report["post_registration_server_snapshot"] = post_reg
         report["s3_diag_binding_pre_click"] = binding
         report["pre_declaration_snapshot"] = pre_decl
@@ -335,9 +336,14 @@ def main() -> int:
         report["s3_server_diag_after_pause"] = s3_after
         payload = s3_after.get("payload") if isinstance(s3_after.get("payload"), dict) else {}
         ledger = (payload.get("ledger") or {}) if isinstance(payload, dict) else {}
+        auth_evidence = build_authoritative_server_rows_from_payload(payload)
+        authoritative_rows = list(auth_evidence.get("authoritative_server_rows") or [])
+        report["authoritative_server_evidence"] = auth_evidence
         s3_rows = list(ledger.get("rows") or [])
         unrouted_payload = payload.get("unrouted_events") if isinstance(payload.get("unrouted_events"), dict) else {}
         unrouted_rows = list(unrouted_payload.get("rows") or [])
+        if not unrouted_rows:
+            unrouted_rows = list(ledger.get("unrouted_rows") or [])
         binding_post = payload.get("s3_diag_binding") if isinstance(payload.get("s3_diag_binding"), dict) else {}
         report["s3_diag_binding_post_pause"] = binding_post
         report["fragment_owner_history"] = list(payload.get("fragment_owner_history") or [])[-16:]
@@ -391,6 +397,7 @@ def main() -> int:
         )
         obs_case, obs_note, obs_evidence = classify_s3_with_observability(
             module_rows=s3_rows,
+            authoritative_rows=authoritative_rows,
             pause_resolved=bool(pause_step.get("pause_resolved")),
             strict_backmsg=strict_backmsg,
             wire_widget_id=wire_id,
@@ -400,6 +407,37 @@ def main() -> int:
             binding_ok=binding_pre.get("sessionstate_binding_ok"),
             unrouted_rows=unrouted_rows,
         )
+        if obs_case == "BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_ABORT":
+            report["r3o0_row_inventory"] = {
+                "runtime_rows": [r for r in authoritative_rows if r.get("phase") == "RUNTIME_BACKMSG_ENTRY"],
+                "appsession_rows": [r for r in authoritative_rows if str(r.get("phase", "")).startswith("APPSESSION_")],
+                "safe_sessionstate_rows": [r for r in authoritative_rows if r.get("phase") == "SAFE_SESSIONSTATE_RECEIVE_ENTRY"],
+                "underlying_sessionstate_rows": [
+                    r for r in authoritative_rows if r.get("phase") in ("SERVER_RECEIVE_ENTRY", "SERVER_STATE_APPLIED")
+                ],
+                "critical_ledger_rows": list(ledger.get("critical_server_rows") or []),
+                "local_ledger_rows": list(ledger.get("local_rows") or []),
+                "module_ledger_rows": list(ledger.get("module_rows") or []),
+                "merged_authoritative_rows": authoritative_rows,
+                "unrouted_rows": unrouted_rows,
+                "live_wrapper_integrity": dict(binding_post.get("server_wrapper_integrity") or {}),
+            }
+            case, note = obs_case, obs_note
+            report["observability_evidence"] = obs_evidence
+            report["classification_legacy_base"] = base_case
+            report["register_widget_value_changed"] = reg_value_changed
+            report["classification"] = case
+            report["classification_note"] = note
+            report["pre_declaration_snapshot"] = pre
+            report["wire_id_equals_post_registration"] = bool(wire_id and post_reg.get("registered_widget_id") == wire_id)
+            report["room_id"] = room_id
+            report["streamlit_session_id"] = sibling_step.get("streamlit_session_id")
+            report["ok"] = False
+            report["finished_at"] = time.time()
+            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(OUT)}))
+            return 2
         if str(r2_case).startswith("BUTTON_DISPATCH_S3_R2") and r2_case not in (
             "BUTTON_DISPATCH_S3_R2C_OWNER_MATCH_AFTER_RECHECK",
         ):

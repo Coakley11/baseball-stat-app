@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any
 
-S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v4"
+S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v5"
 S3_LEDGER_DOM_ID = "solo-stage1-s3-server-diag-ledger"
 S3_SESSION_LEDGER_KEY = "_stage1_s3_server_diag_ledger"
 S3_PATCHED_KEY = "_stage1_s3_server_diag_patched"
@@ -40,15 +40,46 @@ def append_s3_event(session: dict[str, Any] | None, phase: str, **fields: Any) -
 
 
 def s3_ledger_export(session: dict[str, Any] | None = None) -> dict[str, Any]:
-    from live_draft_stage1_s3_process_global_diag import module_ledger_export_for_current_ctx
+    from live_draft_stage1_s3_process_global_diag import (
+        critical_ledger_export,
+        module_ledger_export_for_current_ctx,
+        streamlit_session_id_from_ctx,
+        unrouted_ledger_export,
+    )
+    from live_draft_stage1_server_evidence import merge_authoritative_server_rows
 
-    exp = module_ledger_export_for_current_ctx()
-    rows = list(exp.get("rows") or [])
+    sid = streamlit_session_id_from_ctx()
+    mod_exp = module_ledger_export_for_current_ctx(include_full_module_rows=True)
+    module_rows = list(mod_exp.get("module_rows") or [])
+    local_rows: list[dict[str, Any]] = []
     if isinstance(session, dict):
-        local = list(session.get(S3_SESSION_LEDGER_KEY) or [])
-        if len(local) > len(rows):
-            rows = local
-    return {"event_count": len(rows), "rows": rows[-48:], "impl_rev": S3_SERVER_DIAG_IMPL_REV}
+        local_rows = list(session.get(S3_SESSION_LEDGER_KEY) or [])
+    critical_rows = list(critical_ledger_export(sid).get("rows") or [])
+    merge = merge_authoritative_server_rows(module_rows=module_rows, local_rows=local_rows, critical_rows=critical_rows)
+    merged_rows = list(merge.get("merged_rows") or [])
+    unrouted = unrouted_ledger_export()
+    return {
+        "streamlit_session_id": sid,
+        "event_count": len(merged_rows),
+        "rows": merged_rows[-96:],
+        "module_rows": module_rows,
+        "local_rows": local_rows,
+        "critical_server_rows": critical_rows,
+        "merged_rows": merged_rows,
+        "unrouted_rows": list(unrouted.get("rows") or []),
+        "merge_stats": {
+            "module_row_count": merge.get("module_row_count"),
+            "local_row_count": merge.get("local_row_count"),
+            "critical_row_count": merge.get("critical_row_count"),
+            "merged_row_count": merge.get("merged_row_count"),
+            "duplicate_event_id_count": merge.get("duplicate_event_id_count"),
+            "oldest_ts": merge.get("oldest_ts"),
+            "newest_ts": merge.get("newest_ts"),
+            "phase_counts": merge.get("phase_counts"),
+        },
+        "module_row_count_before_tail": len(module_rows),
+        "impl_rev": S3_SERVER_DIAG_IMPL_REV,
+    }
 
 
 def post_registration_server_snapshot(st: Any, user_key: str) -> dict[str, Any]:
@@ -245,6 +276,13 @@ def install_s3_server_diagnostics(st: Any | None, session: dict[str, Any]) -> No
     except Exception:
         ss_wrapper = None
         sid = streamlit_session_id_from_ctx()
+
+    try:
+        from live_draft_stage1_runtime_backmsg_diag import install_runtime_backmsg_probe
+
+        install_runtime_backmsg_probe(st, session)
+    except ImportError:
+        pass
 
     try:
         from live_draft_stage1_appsession_ingress_diag import install_appsession_probes

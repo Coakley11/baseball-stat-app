@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-APPSESSION_INGRESS_IMPL_REV = "stage1_appsession_ingress_diag_v2"
+APPSESSION_INGRESS_IMPL_REV = "stage1_appsession_ingress_diag_v3"
 APPSESSION_PATCHED_KEY = "_stage1_appsession_ingress_patched"
 
 
@@ -157,13 +157,15 @@ def install_appsession_probes(st: Any | None, session: dict[str, Any]) -> None:
 
 
 def appsession_ingress_export(session: dict[str, Any] | None = None) -> dict[str, Any]:
-    from live_draft_stage1_s3_process_global_diag import module_ledger_export_for_current_ctx, streamlit_session_id_from_ctx
+    from live_draft_stage1_s3_process_global_diag import critical_ledger_rows, streamlit_session_id_from_ctx
 
-    exp = module_ledger_export_for_current_ctx()
-    rows = [r for r in exp.get("rows") or [] if str(r.get("phase") or "").startswith("APPSESSION_")]
+    sid = streamlit_session_id_from_ctx()
+    critical = critical_ledger_rows(sid)
+    rows = [r for r in critical if str(r.get("phase") or "").startswith("APPSESSION_")]
     return {
-        "streamlit_session_id": streamlit_session_id_from_ctx(),
+        "streamlit_session_id": sid,
         "event_count": len(rows),
-        "rows": rows[-32:],
+        "rows": rows,
+        "source": "critical_ledger",
         "impl_rev": APPSESSION_INGRESS_IMPL_REV,
     }

@@ -7,14 +7,28 @@ import time
 import uuid
 from typing import Any
 
-S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v2"
+S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v3"
+
+CRITICAL_SERVER_PHASES: frozenset[str] = frozenset(
+    {
+        "RUNTIME_BACKMSG_ENTRY",
+        "APPSESSION_BACKMSG_ENTRY",
+        "APPSESSION_REQUEST_RERUN_ENTRY",
+        "SAFE_SESSIONSTATE_RECEIVE_ENTRY",
+        "SERVER_RECEIVE_ENTRY",
+        "SERVER_STATE_APPLIED",
+    }
+)
+_CRITICAL_EVENTS_PER_PHASE = 8
 
 _LEDGER_LOCK = threading.Lock()
 _MODULE_LEDGER_BY_STREAMLIT_SESSION: dict[str, list[dict[str, Any]]] = {}
+_CRITICAL_LEDGER_BY_SESSION: dict[str, dict[str, list[dict[str, Any]]]] = {}
 _UNROUTED_ORPHAN_LEDGER: list[dict[str, Any]] = []
 _MAX_UNROUTED = 32
 _SESSIONSTATE_INSTANCE_TO_STREAMLIT_SESSION: dict[int, str] = {}
 _GLOBAL_WRAPPERS_INSTALLED: dict[str, bool] = {
+    "runtime_handle_backmsg": False,
     "appsession_handle_backmsg": False,
     "appsession_request_rerun": False,
     "sessionstate_on_script_will_rerun": False,
@@ -117,18 +131,52 @@ def unrouted_ledger_export() -> dict[str, Any]:
     return {"event_count": len(rows), "rows": rows[-24:], "impl_rev": S3_PROCESS_GLOBAL_IMPL_REV}
 
 
+def _append_critical_row_locked(sid: str, phase: str, row: dict[str, Any]) -> None:
+    ph = str(phase or "")[:48]
+    if ph not in CRITICAL_SERVER_PHASES:
+        return
+    by_phase = _CRITICAL_LEDGER_BY_SESSION.setdefault(sid, {})
+    bucket = list(by_phase.get(ph) or [])
+    bucket.append(dict(row))
+    by_phase[ph] = bucket[-_CRITICAL_EVENTS_PER_PHASE:]
+
+
+def critical_ledger_rows(streamlit_session_id: str) -> list[dict[str, Any]]:
+    sid = str(streamlit_session_id or "").strip()[:64]
+    if not sid:
+        return []
+    with _LEDGER_LOCK:
+        by_phase = _CRITICAL_LEDGER_BY_SESSION.get(sid) or {}
+        flat: list[dict[str, Any]] = []
+        for ph in sorted(by_phase.keys()):
+            flat.extend(by_phase[ph])
+    return sorted(flat, key=lambda r: float(r.get("ts") or 0))
+
+
+def critical_ledger_export(streamlit_session_id: str | None = None) -> dict[str, Any]:
+    sid = str(streamlit_session_id or streamlit_session_id_from_ctx() or "").strip()[:64]
+    rows = critical_ledger_rows(sid)
+    return {
+        "streamlit_session_id": sid,
+        "event_count": len(rows),
+        "rows": rows,
+        "impl_rev": S3_PROCESS_GLOBAL_IMPL_REV,
+    }
+
+
 def append_module_event(streamlit_session_id: str, phase: str, **fields: Any) -> dict[str, Any]:
     sid = str(streamlit_session_id or "").strip()[:64]
+    ph = str(phase or "")[:48]
     row: dict[str, Any] = {
         "event_id": uuid.uuid4().hex[:12],
         "ts": time.time(),
-        "phase": str(phase or "")[:48],
+        "phase": ph,
         "streamlit_session_id": sid,
         **{k: v for k, v in fields.items() if v is not None},
     }
     if not sid:
         append_unrouted_event(
-            str(phase or "")[:48],
+            ph,
             routing_failure_reason="empty_streamlit_session_id",
             attempted_sid="",
             **{k: v for k, v in fields.items() if k not in ("streamlit_session_id",)},
@@ -138,6 +186,7 @@ def append_module_event(streamlit_session_id: str, phase: str, **fields: Any) ->
         book = list(_MODULE_LEDGER_BY_STREAMLIT_SESSION.get(sid) or [])
         book.append(dict(row))
         _MODULE_LEDGER_BY_STREAMLIT_SESSION[sid] = book[-96:]
+        _append_critical_row_locked(sid, ph, row)
     return row
 
 
@@ -180,13 +229,15 @@ def module_ledger_rows(streamlit_session_id: str) -> list[dict[str, Any]]:
         return list(_MODULE_LEDGER_BY_STREAMLIT_SESSION.get(sid) or [])
 
 
-def module_ledger_export_for_current_ctx() -> dict[str, Any]:
+def module_ledger_export_for_current_ctx(*, include_full_module_rows: bool = False) -> dict[str, Any]:
     sid = streamlit_session_id_from_ctx()
     rows = module_ledger_rows(sid)
     return {
         "streamlit_session_id": sid,
         "event_count": len(rows),
-        "rows": rows[-48:],
+        "module_row_count_before_tail": len(rows),
+        "rows": rows if include_full_module_rows else rows[-48:],
+        "module_rows": rows,
         "impl_rev": S3_PROCESS_GLOBAL_IMPL_REV,
         "unrouted_events": unrouted_ledger_export(),
     }
@@ -242,7 +293,10 @@ def scan_widget_states_proto(widget_states: Any, *, max_triggers: int = 12) -> d
 
 
 def s3_diag_binding_snapshot(session_state_wrapper: Any | None = None) -> dict[str, Any]:
+    from live_draft_stage1_server_evidence import live_server_wrapper_integrity_snapshot
+
     sid = streamlit_session_id_from_ctx()
+    integrity = live_server_wrapper_integrity_snapshot()
     resolved = resolve_sessionstate_objects(session_state_wrapper)
     wrapper = resolved.get("wrapper")
     underlying = resolved.get("underlying")
@@ -252,6 +306,8 @@ def s3_diag_binding_snapshot(session_state_wrapper: Any | None = None) -> dict[s
     underlying_ok = bool(sid and underlying_bound and sid == underlying_bound)
     return {
         "global_wrappers_installed": dict(_GLOBAL_WRAPPERS_INSTALLED),
+        "server_wrapper_integrity_ok": bool(integrity.get("server_wrapper_integrity_ok")),
+        "server_wrapper_integrity": integrity,
         "streamlit_session_id": sid,
         "context_session_state_type": resolved.get("wrapper_type") or "",
         "context_session_state_object_id": resolved.get("wrapper_object_id"),
