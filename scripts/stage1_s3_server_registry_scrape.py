@@ -30,6 +30,13 @@ def scrape_s3_server_diag_ledger(page, frame=None) -> dict[str, Any]:
     return out
 
 
+def extract_post_registration(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    post = payload.get("post_registration")
+    return dict(post) if isinstance(post, dict) else {}
+
+
 def extract_s3_diag_binding(payload: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
