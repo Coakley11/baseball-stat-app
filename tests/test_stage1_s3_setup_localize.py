@@ -33,6 +33,9 @@ def _layers(**kw: object) -> dict:
     base = {
         "sibling_callsite_found": True,
         "sibling_import_ok": True,
+        "sibling_import_ok_direct": True,
+        "import_effective_ok": True,
+        "import_evidence_consistent": True,
         "sibling_entry_found": True,
         "sibling_diag_enabled": True,
         "sibling_button_found": True,
@@ -67,7 +70,12 @@ class SetupLocalizeTests(unittest.TestCase):
     def test_import_failed(self) -> None:
         case, _ = classify_setup_failure(
             pause_ready={"ready": True},
-            sibling_layers=_layers(sibling_import_ok=False),
+            sibling_layers=_layers(
+                sibling_import_ok_direct=False,
+                import_effective_ok=False,
+                sibling_import_ok=False,
+                sibling_entry_found=False,
+            ),
             s3_ledger_scrape={"found": False},
             post_registration={},
             binding={},

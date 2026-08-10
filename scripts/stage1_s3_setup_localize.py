@@ -8,6 +8,7 @@ ABORTED_S3_CONTROL_CENTER_NOT_READY = "ABORTED_S3_CONTROL_CENTER_NOT_READY"
 ABORTED_S3_SIBLING_PROBE_NOT_RENDERED = "ABORTED_S3_SIBLING_PROBE_NOT_RENDERED"
 ABORTED_S3_SIBLING_CALLSITE_NOT_REACHED = "ABORTED_S3_SIBLING_CALLSITE_NOT_REACHED"
 ABORTED_S3_SIBLING_IMPORT_FAILED = "ABORTED_S3_SIBLING_IMPORT_FAILED"
+ABORTED_S3_SETUP_EVIDENCE_CONTRADICTION = "ABORTED_S3_SETUP_EVIDENCE_CONTRADICTION"
 ABORTED_S3_SIBLING_FUNCTION_NOT_ENTERED = "ABORTED_S3_SIBLING_FUNCTION_NOT_ENTERED"
 ABORTED_S3_SIBLING_DIAG_DISABLED = "ABORTED_S3_SIBLING_DIAG_DISABLED"
 ABORTED_S3_SIBLING_BUTTON_NOT_MOUNTED = "ABORTED_S3_SIBLING_BUTTON_NOT_MOUNTED"
@@ -31,6 +32,9 @@ def build_setup_readiness_table(
     binding_ok: bool | None,
 ) -> dict[str, Any]:
     layers = dict(sibling_layers or {})
+    import_ok = layers.get("import_effective_ok")
+    if import_ok is None:
+        import_ok = layers.get("sibling_import_ok")
     return {
         "Runtime SHA": runtime_sha or "",
         "Auth restored": auth_restored,
@@ -39,7 +43,7 @@ def build_setup_readiness_table(
         "Streamlit session": streamlit_session_id or "",
         "Control Center / Pause": pause_control_ready,
         "Sibling callsite DOM": layers.get("sibling_callsite_found"),
-        "Sibling import OK": layers.get("sibling_import_ok"),
+        "Sibling import OK": import_ok,
         "Sibling entry DOM": layers.get("sibling_entry_found"),
         "Sibling diag enabled": layers.get("sibling_diag_enabled"),
         "Sibling button DOM": layers.get("sibling_button_found"),
@@ -88,10 +92,26 @@ def classify_setup_failure(
         return ABORTED_S3_CONTROL_CENTER_NOT_READY, "pause_control_not_ready"
     if not sibling_layers.get("sibling_callsite_found"):
         return ABORTED_S3_SIBLING_CALLSITE_NOT_REACHED, "sibling_callsite_missing"
-    if sibling_layers.get("sibling_import_ok") is False:
-        return ABORTED_S3_SIBLING_IMPORT_FAILED, "sibling_import_failed"
-    if sibling_layers.get("sibling_import_ok") is not True:
-        return ABORTED_S3_SIBLING_IMPORT_FAILED, "sibling_import_unknown"
+
+    if sibling_layers.get("import_evidence_consistent") is False:
+        return ABORTED_S3_SETUP_EVIDENCE_CONTRADICTION, "import_direct_vs_downstream_contradiction"
+
+    direct_false = sibling_layers.get("sibling_import_ok_direct") is False
+    entry = bool(sibling_layers.get("sibling_entry_found"))
+    if direct_false and entry:
+        return ABORTED_S3_SETUP_EVIDENCE_CONTRADICTION, "import_false_but_function_entered"
+
+    effective = sibling_layers.get("import_effective_ok")
+    if effective is None:
+        effective = sibling_layers.get("sibling_import_ok")
+
+    if effective is not True:
+        if direct_false and not entry:
+            return ABORTED_S3_SIBLING_IMPORT_FAILED, "sibling_import_failed"
+        if not entry:
+            return ABORTED_S3_SIBLING_IMPORT_FAILED, "sibling_import_unproven"
+        return ABORTED_S3_SIBLING_FUNCTION_NOT_ENTERED, "sibling_render_entry_missing"
+
     if not sibling_layers.get("sibling_entry_found"):
         return ABORTED_S3_SIBLING_FUNCTION_NOT_ENTERED, "sibling_render_entry_missing"
     if sibling_layers.get("sibling_diag_enabled") is not True:

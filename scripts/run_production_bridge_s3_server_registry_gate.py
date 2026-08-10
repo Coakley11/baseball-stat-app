@@ -134,7 +134,7 @@ def main() -> int:
         setup_ready_for_sibling_click,
     )
     from stage1_pause_sibling_scrape import scrape_pause_sibling_probe
-    from stage1_sibling_setup_scrape import scrape_sibling_setup_layers
+    from stage1_sibling_setup_scrape import finalize_sibling_import_evidence, scrape_sibling_setup_layers
     from streamlit_app_frame import describe_page_frames, resolve_streamlit_app_frame
 
     if str(os.environ.get("STAGE1_USE_CAPTURE_BRIDGE") or "").strip().lower() in ("0", "false"):
@@ -236,7 +236,6 @@ def main() -> int:
         report["app_frame_url"] = str(frame.url or "")[:240]
 
         sibling_layers = scrape_sibling_setup_layers(page, frame=frame)
-        report["sibling_setup_layers"] = sibling_layers
         sibling_scrape = scrape_pause_sibling_probe(page, frame=frame)
         report["sibling_probe_scrape"] = sibling_scrape
         s3_ledger_scrape = scrape_s3_server_diag_ledger(page, frame=frame)
@@ -261,6 +260,15 @@ def main() -> int:
             or s3_ledger_scrape.get("payload", {}).get("ledger", {}).get("streamlit_session_id")
             or ""
         )[:64]
+        post_reg_ready = str(post_reg.get("registered_widget_id") or "").startswith("$$ID-")
+        binding_ok = bool(binding.get("sessionstate_binding_ok"))
+        sibling_layers = finalize_sibling_import_evidence(
+            sibling_layers,
+            s3_ledger_found=bool(s3_ledger_scrape.get("found")),
+            post_registration_ready=post_reg_ready,
+            binding_ok=binding_ok,
+        )
+        report["sibling_setup_layers"] = sibling_layers
         setup_table = build_setup_readiness_table(
             runtime_sha=str(report.get("application_runtime_sha") or ""),
             auth_restored=bool(bridge_pre.get("authenticated_restored")),
@@ -270,8 +278,8 @@ def main() -> int:
             pause_control_ready=bool(pause_ready.get("ready")),
             sibling_layers=sibling_layers,
             s3_ledger_found=bool(s3_ledger_scrape.get("found")),
-            post_registration_ready=str(post_reg.get("registered_widget_id") or "").startswith("$$ID-"),
-            binding_ok=bool(binding.get("sessionstate_binding_ok")),
+            post_registration_ready=post_reg_ready,
+            binding_ok=binding_ok,
         )
         report["setup_readiness_table"] = setup_table
         report["post_registration_server_snapshot"] = post_reg
