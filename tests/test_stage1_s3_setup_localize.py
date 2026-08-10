@@ -14,6 +14,7 @@ from stage1_s3_setup_localize import (  # noqa: E402
     ABORTED_S3_DIAG_BINDING_NOT_READY,
     ABORTED_S3_LEDGER_EMIT_MISSING,
     ABORTED_S3_POST_REGISTRATION_NOT_READY,
+    ABORTED_S3_SIBLING_BUTTON_CALL_NOT_RETURNED,
     ABORTED_S3_SIBLING_BUTTON_NOT_MOUNTED,
     ABORTED_S3_SIBLING_CALLSITE_NOT_REACHED,
     ABORTED_S3_SIBLING_DIAG_DISABLED,
@@ -41,6 +42,11 @@ def _layers(**kw: object) -> dict:
         "sibling_button_found": True,
         "sibling_ledger_found": True,
         "sibling_declaration_reached": True,
+        "sibling_pre_button_reached": True,
+        "sibling_post_button_return_reached": True,
+        "sibling_button_call_returned_reached": True,
+        "sibling_post_registration_returned_reached": True,
+        "sibling_setup_export_complete_reached": True,
     }
     base.update(kw)
     return base
@@ -105,12 +111,17 @@ class SetupLocalizeTests(unittest.TestCase):
     def test_button_not_mounted(self) -> None:
         case, _ = classify_setup_failure(
             pause_ready={"ready": True},
-            sibling_layers=_layers(sibling_button_found=False),
+            sibling_layers=_layers(
+                sibling_button_found=False,
+                sibling_button_call_returned_reached=False,
+                sibling_post_registration_returned_reached=False,
+                sibling_post_button_return_reached=False,
+            ),
             s3_ledger_scrape={"found": False},
             post_registration={},
             binding={},
         )
-        self.assertEqual(case, ABORTED_S3_SIBLING_BUTTON_NOT_MOUNTED)
+        self.assertEqual(case, ABORTED_S3_SIBLING_BUTTON_CALL_NOT_RETURNED)
 
     def test_sibling_ledger_missing(self) -> None:
         case, _ = classify_setup_failure(

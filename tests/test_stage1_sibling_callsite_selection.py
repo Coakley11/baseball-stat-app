@@ -145,7 +145,42 @@ class ImportEvidenceTests(unittest.TestCase):
             "sibling_button_found": True,
             "sibling_ledger_found": True,
             "entry_json": {"solo_diag_enabled_final": True, "solo_component_diag_raw": "1"},
-            "declaration_json": {"declaration_reached": True},
+            "declaration_candidates": [
+                {
+                    "dom_index": 0,
+                    "data_event": "SIBLING_BUTTON_DECLARATION_ENTRY",
+                    "declaration_reached": "1",
+                    "json": {"event": "SIBLING_BUTTON_DECLARATION_ENTRY", "declaration_reached": True, "ts": 1.0},
+                },
+                {
+                    "dom_index": 1,
+                    "data_event": "SIBLING_BUTTON_DECLARATION_RESULT",
+                    "declaration_reached": "1",
+                    "json": {
+                        "event": "SIBLING_BUTTON_DECLARATION_RESULT",
+                        "declaration_reached": True,
+                        "returned_value": False,
+                        "ts": 2.0,
+                    },
+                },
+            ],
+            "setup_checkpoint_candidates": [
+                {
+                    "dom_index": 0,
+                    "data_event": "SIBLING_BUTTON_CALL_RETURNED",
+                    "json": {"event": "SIBLING_BUTTON_CALL_RETURNED", "ts": 2.1},
+                },
+                {
+                    "dom_index": 1,
+                    "data_event": "SIBLING_POST_REGISTRATION_RETURNED",
+                    "json": {"event": "SIBLING_POST_REGISTRATION_RETURNED", "ts": 2.2},
+                },
+                {
+                    "dom_index": 2,
+                    "data_event": "SIBLING_SETUP_EXPORT_COMPLETE",
+                    "json": {"event": "SIBLING_SETUP_EXPORT_COMPLETE", "ts": 2.3},
+                },
+            ],
         }
         layers = finalize_sibling_import_evidence(
             merge_layers_from_dom_dict(raw),
@@ -164,6 +199,7 @@ class ImportEvidenceTests(unittest.TestCase):
             s3_ledger_found=True,
             post_registration_ready=True,
             binding_ok=True,
+            server_wrapper_integrity_ok=True,
         )
         self.assertTrue(setup_ready_for_sibling_click(table))
 

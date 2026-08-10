@@ -12,6 +12,10 @@ ABORTED_S3_SETUP_EVIDENCE_CONTRADICTION = "ABORTED_S3_SETUP_EVIDENCE_CONTRADICTI
 ABORTED_S3_SIBLING_FUNCTION_NOT_ENTERED = "ABORTED_S3_SIBLING_FUNCTION_NOT_ENTERED"
 ABORTED_S3_SIBLING_DIAG_DISABLED = "ABORTED_S3_SIBLING_DIAG_DISABLED"
 ABORTED_S3_SIBLING_BUTTON_NOT_MOUNTED = "ABORTED_S3_SIBLING_BUTTON_NOT_MOUNTED"
+ABORTED_S3_SIBLING_BUTTON_CALL_EXCEPTION = "ABORTED_S3_SIBLING_BUTTON_CALL_EXCEPTION"
+ABORTED_S3_SIBLING_BUTTON_CALL_NOT_RETURNED = "ABORTED_S3_SIBLING_BUTTON_CALL_NOT_RETURNED"
+ABORTED_S3_SIBLING_POST_REGISTRATION_NOT_REACHED = "ABORTED_S3_SIBLING_POST_REGISTRATION_NOT_REACHED"
+ABORTED_S3_SIBLING_BUTTON_DOM_MISMATCH = "ABORTED_S3_SIBLING_BUTTON_DOM_MISMATCH"
 ABORTED_S3_SIBLING_LEDGER_EMIT_MISSING = "ABORTED_S3_SIBLING_LEDGER_EMIT_MISSING"
 ABORTED_S3_LEDGER_EMIT_MISSING = "ABORTED_S3_LEDGER_EMIT_MISSING"
 ABORTED_S3_POST_REGISTRATION_NOT_READY = "ABORTED_S3_POST_REGISTRATION_NOT_READY"
@@ -49,6 +53,11 @@ def build_setup_readiness_table(
         "Sibling entry DOM": layers.get("sibling_entry_found"),
         "Sibling diag enabled": layers.get("sibling_diag_enabled"),
         "Sibling button DOM": layers.get("sibling_button_found"),
+        "Sibling PRE declaration": layers.get("sibling_pre_button_reached"),
+        "Sibling POST declaration": layers.get("sibling_post_button_return_reached"),
+        "Sibling button call returned": layers.get("sibling_button_call_returned_reached"),
+        "Sibling post-registration checkpoint": layers.get("sibling_post_registration_returned_reached"),
+        "Sibling setup export complete": layers.get("sibling_setup_export_complete_reached"),
         "Sibling ledger DOM": layers.get("sibling_ledger_found"),
         "S3 ledger DOM": s3_ledger_found,
         "POST_REGISTRATION": post_registration_ready,
@@ -120,13 +129,46 @@ def classify_setup_failure(
         return ABORTED_S3_SIBLING_FUNCTION_NOT_ENTERED, "sibling_render_entry_missing"
     if sibling_layers.get("sibling_diag_enabled") is not True:
         return ABORTED_S3_SIBLING_DIAG_DISABLED, "solo_diag_disabled_at_entry"
+
+    if sibling_layers.get("checkpoint_sibling_render_exception"):
+        return ABORTED_S3_SIBLING_BUTTON_CALL_EXCEPTION, "sibling_render_exception"
+
+    if sibling_layers.get("checkpoint_sibling_button_call_exception"):
+        return ABORTED_S3_SIBLING_BUTTON_CALL_EXCEPTION, "st_button_call_exception"
+
+    if sibling_layers.get("sibling_pre_button_reached") and not sibling_layers.get(
+        "sibling_button_call_returned_reached"
+    ):
+        if not sibling_layers.get("checkpoint_sibling_button_call_exception"):
+            return ABORTED_S3_SIBLING_BUTTON_CALL_NOT_RETURNED, "button_call_did_not_return_checkpoint"
+
+    if sibling_layers.get("sibling_button_call_returned_reached") and not sibling_layers.get(
+        "sibling_post_registration_returned_reached"
+    ):
+        if sibling_layers.get("checkpoint_sibling_post_registration_exception"):
+            return ABORTED_S3_SIBLING_BUTTON_CALL_EXCEPTION, "post_registration_snapshot_exception"
+        return ABORTED_S3_SIBLING_POST_REGISTRATION_NOT_REACHED, "post_registration_checkpoint_missing"
+
+    if sibling_layers.get("sibling_post_registration_returned_reached") and not sibling_layers.get(
+        "sibling_button_found"
+    ):
+        return ABORTED_S3_SIBLING_BUTTON_DOM_MISMATCH, "exact_button_dom_absent_after_post_registration"
+
     if not sibling_layers.get("sibling_button_found"):
+        if sibling_layers.get("sibling_pre_button_reached") and not sibling_layers.get(
+            "sibling_post_button_return_reached"
+        ):
+            return ABORTED_S3_SIBLING_BUTTON_NOT_MOUNTED, "sibling_button_missing_after_pre_declaration_only"
         if sibling_layers.get("sibling_declaration_reached"):
             return ABORTED_S3_SIBLING_BUTTON_NOT_MOUNTED, "sibling_button_missing_after_declaration"
         return ABORTED_S3_SIBLING_BUTTON_NOT_MOUNTED, "sibling_button_missing"
     if not sibling_layers.get("sibling_ledger_found"):
+        if sibling_layers.get("sibling_post_button_return_reached"):
+            return ABORTED_S3_SIBLING_LEDGER_EMIT_MISSING, "sibling_hidden_ledger_missing_after_post_declaration"
         return ABORTED_S3_SIBLING_LEDGER_EMIT_MISSING, "sibling_hidden_ledger_missing"
     if not s3_ledger_scrape.get("found"):
+        if sibling_layers.get("sibling_setup_export_complete_reached"):
+            return ABORTED_S3_LEDGER_EMIT_MISSING, "s3_ledger_dom_missing_after_export_complete"
         return ABORTED_S3_LEDGER_EMIT_MISSING, "s3_ledger_dom_missing"
     reg_id = str(post_registration.get("registered_widget_id") or "")
     if not reg_id.startswith("$$ID-"):

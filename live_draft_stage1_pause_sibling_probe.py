@@ -7,11 +7,15 @@ import time
 import uuid
 from typing import Any
 
-PAUSE_SIBLING_IMPL_REV = "stage1_pause_sibling_probe_v3"
+PAUSE_SIBLING_IMPL_REV = "stage1_pause_sibling_probe_v4"
 PAUSE_SIBLING_PROBE_ELEMENT_ID = "solo-stage1-pause-sibling-probe"
 PAUSE_SIBLING_LEDGER_DOM_ID = "solo-stage1-pause-sibling-ledger"
 PAUSE_SIBLING_ENTRY_DOM_ID = "solo-stage1-pause-sibling-entry"
 PAUSE_SIBLING_DECL_DOM_ID = "solo-stage1-pause-sibling-declaration"
+PAUSE_SIBLING_DECL_PRE_DOM_ID = "solo-stage1-pause-sibling-declaration-pre"
+PAUSE_SIBLING_DECL_POST_DOM_ID = "solo-stage1-pause-sibling-declaration-post"
+PAUSE_SIBLING_SETUP_CHECKPOINT_DOM_ID = "solo-stage1-pause-sibling-setup-checkpoint"
+PAUSE_SIBLING_SETUP_CHECKPOINTS_KEY = "_stage1_pause_sibling_setup_checkpoints"
 
 PAUSE_SIBLING_COUNT_KEY = "_stage1_pause_sibling_count"
 PAUSE_SIBLING_EVENTS_KEY = "_stage1_pause_sibling_events"
@@ -247,13 +251,73 @@ def _emit_sibling_declaration(
     safe = lambda s: str(s or "").replace('"', "'")[:160]
     blob = json.dumps(payload, default=str)[:8000].replace('"', "'")
     reached = 1 if data.get("declaration_reached") else 0
+    dom_id = PAUSE_SIBLING_DECL_DOM_ID
     st.markdown(
-        f'<div id="{PAUSE_SIBLING_DECL_DOM_ID}" '
+        f'<div id="{dom_id}" '
+        f'class="solo-stage1-pause-sibling-declaration" '
+        f'data-sibling-declaration-phase="{safe(phase)}" '
+        f'data-dom-id-alias="{PAUSE_SIBLING_DECL_PRE_DOM_ID if phase == "SIBLING_BUTTON_DECLARATION_ENTRY" else PAUSE_SIBLING_DECL_POST_DOM_ID}" '
         f'data-event="{safe(phase)}" '
         f'data-declaration-reached="{reached}" '
         f'data-json="{blob}"></div>',
         unsafe_allow_html=True,
     )
+
+
+def _emit_setup_checkpoint(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    event: str,
+    room_id: str,
+    widget_key: str,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "event": str(event or "")[:80],
+        "ts": time.time(),
+        "room_id": str(room_id or "").strip(),
+        "widget_key": str(widget_key or "").strip(),
+        "streamlit_session_id": _streamlit_session_id(),
+        "full_app_run_seq": _full_app_run_seq(session),
+    }
+    if extra:
+        payload.update(extra)
+    try:
+        from live_draft_stage1_fragment_identity_runtime import snapshot_fragment_identity
+
+        snap = snapshot_fragment_identity(phase=str(event or "")[:48], widget_user_key=widget_key)
+        payload["thread_state_fragment_id"] = str(snap.get("thread_state_fragment_id") or "")[:64]
+    except ImportError:
+        payload["thread_state_fragment_id"] = ""
+    book = list(session.get(PAUSE_SIBLING_SETUP_CHECKPOINTS_KEY) or [])
+    book.append(dict(payload))
+    session[PAUSE_SIBLING_SETUP_CHECKPOINTS_KEY] = book[-32:]
+    try:
+        print(f"SOLO_SIBLING_SETUP_CHECKPOINT {json.dumps(payload, default=str)[:4000]}", flush=True)
+    except Exception:
+        pass
+    safe = lambda s: str(s or "").replace('"', "'")[:160]
+    blob = json.dumps(payload, default=str)[:8000].replace('"', "'")
+    st.markdown(
+        f'<div id="{PAUSE_SIBLING_SETUP_CHECKPOINT_DOM_ID}" '
+        f'class="solo-stage1-pause-sibling-setup-checkpoint" '
+        f'data-event="{safe(event)}" '
+        f'data-json="{blob}"></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def emit_sibling_setup_checkpoint(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    event: str,
+    room_id: str,
+    widget_key: str,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    _emit_setup_checkpoint(st, session, event=event, room_id=room_id, widget_key=widget_key, extra=extra)
 
 
 def render_stage1_pause_sibling_return_probe(
@@ -296,20 +360,71 @@ def render_stage1_pause_sibling_return_probe(
         widget_key=wk,
         data={"declaration_reached": True},
     )
-    returned = st.button(
-        LABEL_PAUSE_SIBLING,
-        key=wk,
-        use_container_width=True,
-        disabled=False,
-    )
+    returned = False
     reg_result = session.get("_stage1_pause_sibling_register_result_value")
+    post_identity: dict[str, Any] = {}
+    try:
+        returned = st.button(
+            LABEL_PAUSE_SIBLING,
+            key=wk,
+            use_container_width=True,
+            disabled=False,
+        )
+    except Exception as exc:
+        _emit_setup_checkpoint(
+            st,
+            session,
+            event="SIBLING_BUTTON_CALL_EXCEPTION",
+            room_id=room_id,
+            widget_key=wk,
+            extra={
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc)[:400],
+            },
+        )
+        raise
+    _emit_setup_checkpoint(
+        st,
+        session,
+        event="SIBLING_BUTTON_CALL_RETURNED",
+        room_id=room_id,
+        widget_key=wk,
+        extra={"returned_value": bool(returned)},
+    )
     try:
         from live_draft_stage1_s3_server_diag import post_registration_server_snapshot
 
         post_identity = post_registration_server_snapshot(st, wk)
     except ImportError:
         post_identity = snapshot_fragment_identity(phase="POST_REGISTRATION", widget_user_key=wk)
+    except Exception as exc:
+        _emit_setup_checkpoint(
+            st,
+            session,
+            event="SIBLING_POST_REGISTRATION_EXCEPTION",
+            room_id=room_id,
+            widget_key=wk,
+            extra={
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc)[:400],
+            },
+        )
+        raise
     session[PAUSE_SIBLING_POST_REG_KEY] = dict(post_identity)
+    meta = post_identity.get("widget_metadata") if isinstance(post_identity.get("widget_metadata"), dict) else {}
+    _emit_setup_checkpoint(
+        st,
+        session,
+        event="SIBLING_POST_REGISTRATION_RETURNED",
+        room_id=room_id,
+        widget_key=wk,
+        extra={
+            "registered_widget_id": str(post_identity.get("registered_widget_id") or "")[:96],
+            "metadata_fragment_id": str(meta.get("fragment_id") or "")[:64],
+            "thread_state_fragment_id": str(post_identity.get("thread_state_fragment_id") or "")[:64],
+            "register_widget_result_value": reg_result if isinstance(reg_result, bool) else None,
+        },
+    )
 
     _emit_sibling_declaration(
         st,
@@ -357,4 +472,12 @@ def render_stage1_pause_sibling_return_probe(
         room_id=room_id,
         render_meta=render_meta,
         identity_post=post_identity,
+    )
+    _emit_setup_checkpoint(
+        st,
+        session,
+        event="SIBLING_SETUP_EXPORT_COMPLETE",
+        room_id=room_id,
+        widget_key=wk,
+        extra={"export_event_count": int(session.get(PAUSE_SIBLING_COUNT_KEY) or 0)},
     )

@@ -129,7 +129,34 @@ def render_live_draft_control_center(
                 import_error=import_error,
             )
             if import_ok:
-                render_stage1_pause_sibling_return_probe(st, session, room)
+                try:
+                    render_stage1_pause_sibling_return_probe(st, session, room)
+                except Exception as exc:
+                    try:
+                        from live_draft_stage1_pause_sibling_probe import (
+                            emit_sibling_setup_checkpoint,
+                            pause_sibling_widget_key,
+                        )
+
+                        rid = str(room.get("draft_room_id") or room.get("room_id") or "").strip()
+                        wk = pause_sibling_widget_key(rid)
+                        emit_sibling_setup_checkpoint(
+                            st,
+                            session,
+                            event="SIBLING_RENDER_EXCEPTION",
+                            room_id=rid,
+                            widget_key=wk,
+                            extra={
+                                "exception_type": type(exc).__name__,
+                                "exception_message": str(exc)[:400],
+                            },
+                        )
+                    except ImportError:
+                        print(
+                            f"SIBLING_RENDER_EXCEPTION {type(exc).__name__}: {exc}",
+                            flush=True,
+                        )
+                    raise
         except ImportError:
             pass
     with top2:

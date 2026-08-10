@@ -8,22 +8,69 @@ from typing import Any
 from streamlit_app_frame import resolve_streamlit_app_frame
 
 SIBLING_BUTTON_LABEL = "Stage1 Pause-Sibling Return Probe"
+SIBLING_BUTTON_LABEL_NORMALIZED = SIBLING_BUTTON_LABEL
+DECL_PRE_EVENT = "SIBLING_BUTTON_DECLARATION_ENTRY"
+DECL_POST_EVENT = "SIBLING_BUTTON_DECLARATION_RESULT"
+
 
 _SETUP_LAYERS_JS = """() => {
+  const DECL_SEL = '#solo-stage1-pause-sibling-declaration, .solo-stage1-pause-sibling-declaration';
   const callsiteNodes = document.querySelectorAll('#solo-stage1-pause-sibling-callsite');
   const entry = document.querySelector('#solo-stage1-pause-sibling-entry');
-  const decl = document.querySelector('#solo-stage1-pause-sibling-declaration');
+  const declNodes = document.querySelectorAll(DECL_SEL);
+  const checkpointNodes = document.querySelectorAll('#solo-stage1-pause-sibling-setup-checkpoint, .solo-stage1-pause-sibling-setup-checkpoint');
   const ledger = document.querySelector('#solo-stage1-pause-sibling-ledger');
-  let button = null;
-  for (const b of document.querySelectorAll('button')) {
-    const t = String(b.innerText || b.textContent || '').replace(/\\s+/g, ' ').trim();
-    if (t === 'Stage1 Pause-Sibling Return Probe') { button = b; break; }
-  }
   function parseJson(el) {
     if (!el) return null;
     const raw = el.getAttribute('data-json') || '';
     if (!raw) return null;
     try { return JSON.parse(raw.replace(/'/g, '"')); } catch (e) { return null; }
+  }
+  function normText(s) {
+    return String(s || '').replace(/\\s+/g, ' ').trim();
+  }
+  const declaration_candidates = [];
+  declNodes.forEach((el, idx) => {
+    const j = parseJson(el);
+    declaration_candidates.push({
+      dom_index: idx,
+      data_event: el.getAttribute('data-event') || '',
+      declaration_reached: el.getAttribute('data-declaration-reached') || '',
+      data_phase: el.getAttribute('data-sibling-declaration-phase') || '',
+      json: j,
+    });
+  });
+  const setup_checkpoint_candidates = [];
+  checkpointNodes.forEach((el, idx) => {
+    const j = parseJson(el);
+    setup_checkpoint_candidates.push({
+      dom_index: idx,
+      data_event: el.getAttribute('data-event') || '',
+      json: j,
+    });
+  });
+  const button_inventory = [];
+  const buttons = document.querySelectorAll('button');
+  buttons.forEach((b, idx) => {
+    const t = normText(b.innerText || b.textContent || '');
+    const aria = normText(b.getAttribute('aria-label') || '');
+    const outer = (b.outerHTML || '').slice(0, 240);
+    button_inventory.push({
+      index: idx,
+      normalized_text: t,
+      aria_label: aria,
+      disabled: !!b.disabled,
+      type: b.getAttribute('type') || '',
+      outer_html_trunc: outer,
+      exact_label_match: t === 'Stage1 Pause-Sibling Return Probe',
+      contains_pause_sibling: /Pause-Sibling/i.test(t),
+      contains_stage1: /Stage1/i.test(t),
+    });
+  });
+  let button = null;
+  for (const b of buttons) {
+    const t = normText(b.innerText || b.textContent || '');
+    if (t === 'Stage1 Pause-Sibling Return Probe') { button = b; break; }
   }
   const candidates = [];
   callsiteNodes.forEach((el, idx) => {
@@ -36,7 +83,6 @@ _SETUP_LAYERS_JS = """() => {
     });
   });
   const en = parseJson(entry);
-  const dc = parseJson(decl);
   return {
     callsite_count: callsiteNodes.length,
     callsite_candidates_raw: candidates,
@@ -46,7 +92,10 @@ _SETUP_LAYERS_JS = """() => {
     sibling_button_found: !!button,
     sibling_ledger_found: !!ledger,
     entry_json: en,
-    declaration_json: dc,
+    declaration_candidates,
+    setup_checkpoint_candidates,
+    button_inventory,
+    button_inventory_count: button_inventory.length,
     probe_found: !!ledger,
   };
 }"""
@@ -72,6 +121,67 @@ def _coerce_bool_attr(val: str) -> bool | None:
     return None
 
 
+def normalize_declaration_candidate(raw: dict[str, Any], *, dom_index: int) -> dict[str, Any]:
+    j = _parse_json_blob(raw.get("json")) or {}
+    event = str(raw.get("data_event") or j.get("event") or "")[:80]
+    ts = j.get("ts")
+    try:
+        ts_f = float(ts) if ts is not None else None
+    except (TypeError, ValueError):
+        ts_f = None
+    return {
+        "dom_index": dom_index,
+        "data_event": event,
+        "declaration_reached": _coerce_bool_attr(str(raw.get("declaration_reached") or "")),
+        "json": j,
+        "room_id": str(j.get("room_id") or "")[:32],
+        "widget_key": str(j.get("widget_key") or "")[:80],
+        "returned_value": j.get("returned_value"),
+        "registered_widget_id": str(j.get("registered_widget_id") or "")[:96],
+        "thread_state_fragment_id": str(j.get("thread_state_fragment_id") or "")[:64],
+        "ts": ts_f,
+    }
+
+
+def select_authoritative_declaration(
+    candidates: list[dict[str, Any]],
+    *,
+    event: str,
+) -> dict[str, Any] | None:
+    normalized = [
+        normalize_declaration_candidate(c, dom_index=int(c.get("dom_index") or i))
+        for i, c in enumerate(candidates)
+    ]
+    matches = [c for c in normalized if c.get("data_event") == event]
+    if not matches:
+        return None
+    best_ts = max((c.get("ts") or 0.0) for c in matches)
+    tied = [c for c in matches if (c.get("ts") or 0.0) == best_ts]
+    return max(tied, key=lambda c: int(c.get("dom_index") or 0))
+
+
+def normalize_setup_checkpoint(raw: dict[str, Any], *, dom_index: int) -> dict[str, Any]:
+    j = _parse_json_blob(raw.get("json")) or {}
+    event = str(raw.get("data_event") or j.get("event") or "")[:80]
+    ts = j.get("ts")
+    try:
+        ts_f = float(ts) if ts is not None else None
+    except (TypeError, ValueError):
+        ts_f = None
+    return {"dom_index": dom_index, "data_event": event, "json": j, "ts": ts_f}
+
+
+def select_setup_checkpoint(candidates: list[dict[str, Any]], *, event: str) -> dict[str, Any] | None:
+    normalized = [
+        normalize_setup_checkpoint(c, dom_index=int(c.get("dom_index") or i))
+        for i, c in enumerate(candidates)
+    ]
+    matches = [c for c in normalized if c.get("data_event") == event]
+    if not matches:
+        return None
+    return max(matches, key=lambda c: (c.get("ts") or 0.0, int(c.get("dom_index") or 0)))
+
+
 def normalize_callsite_candidate(raw: dict[str, Any], *, dom_index: int) -> dict[str, Any]:
     j = _parse_json_blob(raw.get("json")) or {}
     attempted_attr = _coerce_bool_attr(str(raw.get("import_attempted_attr") or ""))
@@ -95,7 +205,7 @@ def normalize_callsite_candidate(raw: dict[str, Any], *, dom_index: int) -> dict
         "streamlit_session_id": str(j.get("streamlit_session_id") or "")[:64],
         "ts": ts_f,
         "full_app_run_seq": j.get("full_app_run_seq"),
-        "thread_fragment_id": str(j.get("thread_fragment_id") or "")[:64],
+        "thread_fragment_id": str(j.get("thread_state_fragment_id") or "")[:64],
         "json": j,
     }
 
@@ -138,7 +248,7 @@ def build_downstream_import_success_evidence(
     return {
         "sibling_entry_found": bool(layers.get("sibling_entry_found")),
         "sibling_diag_enabled": layers.get("sibling_diag_enabled") is True,
-        "sibling_declaration_reached": bool(layers.get("sibling_declaration_reached")),
+        "sibling_declaration_reached": bool(layers.get("sibling_pre_button_reached")),
         "sibling_button_found": bool(layers.get("sibling_button_found")),
         "sibling_ledger_found": bool(layers.get("sibling_ledger_found")),
         "s3_ledger_found": bool(s3_ledger_found),
@@ -228,6 +338,46 @@ def _apply_dom_scrape_raw(out: dict[str, Any]) -> dict[str, Any]:
     direct = out.get("sibling_import_ok_direct")
     out["sibling_import_ok"] = direct
 
+    decl_raw = list(out.pop("declaration_candidates", []) or [])
+    out["declaration_candidate_count"] = len(decl_raw)
+    pre = select_authoritative_declaration(decl_raw, event=DECL_PRE_EVENT)
+    post = select_authoritative_declaration(decl_raw, event=DECL_POST_EVENT)
+    out["declaration_pre_json"] = dict((pre or {}).get("json") or {})
+    out["declaration_post_json"] = dict((post or {}).get("json") or {})
+    out["declaration_json"] = dict(out["declaration_pre_json"])
+    out["sibling_pre_button_reached"] = bool(pre and (pre.get("json") or {}).get("declaration_reached"))
+    out["sibling_post_button_return_reached"] = bool(post and (post.get("json") or {}).get("declaration_reached"))
+    rv = (post or {}).get("returned_value")
+    if rv is None and post:
+        rv = (post.get("json") or {}).get("returned_value")
+    out["sibling_post_button_return_value"] = rv
+    out["sibling_post_button_registered_widget_id"] = str((post or {}).get("registered_widget_id") or "")[:96]
+    out["sibling_declaration_reached"] = bool(out["sibling_pre_button_reached"])
+
+    ck_raw = list(out.pop("setup_checkpoint_candidates", []) or [])
+    out["setup_checkpoint_candidate_count"] = len(ck_raw)
+    ck_events = (
+        "SIBLING_BUTTON_CALL_EXCEPTION",
+        "SIBLING_BUTTON_CALL_RETURNED",
+        "SIBLING_POST_REGISTRATION_EXCEPTION",
+        "SIBLING_POST_REGISTRATION_RETURNED",
+        "SIBLING_SETUP_EXPORT_COMPLETE",
+        "SIBLING_RENDER_EXCEPTION",
+    )
+    for ev in ck_events:
+        hit = select_setup_checkpoint(ck_raw, event=ev)
+        out[f"checkpoint_{ev.lower()}"] = dict((hit or {}).get("json") or {}) if hit else None
+    out["sibling_button_call_returned_reached"] = bool(out.get("checkpoint_sibling_button_call_returned"))
+    out["sibling_post_registration_returned_reached"] = bool(out.get("checkpoint_sibling_post_registration_returned"))
+    out["sibling_setup_export_complete_reached"] = bool(out.get("checkpoint_sibling_setup_export_complete"))
+
+    inv = list(out.pop("button_inventory", []) or [])
+    out["button_inventory"] = inv
+    out["button_inventory_count"] = int(out.pop("button_inventory_count", len(inv)) or len(inv))
+    out["button_candidates_exact"] = [b for b in inv if b.get("exact_label_match")]
+    out["button_candidates_contains_pause_sibling"] = [b for b in inv if b.get("contains_pause_sibling")]
+    out["button_candidates_contains_stage1"] = [b for b in inv if b.get("contains_stage1")]
+
     de = str(out.pop("sibling_diag_enabled_attr", "") or "")
     if de == "1":
         out["sibling_diag_enabled"] = True
@@ -239,8 +389,6 @@ def _apply_dom_scrape_raw(out: dict[str, Any]) -> dict[str, Any]:
             out["sibling_diag_enabled"] = bool(en.get("solo_diag_enabled_final"))
         else:
             out["sibling_diag_enabled"] = None
-    decl = out.get("declaration_json") if isinstance(out.get("declaration_json"), dict) else {}
-    out["sibling_declaration_reached"] = bool(decl.get("declaration_reached"))
     out["sibling_button_label"] = SIBLING_BUTTON_LABEL
     return out
 

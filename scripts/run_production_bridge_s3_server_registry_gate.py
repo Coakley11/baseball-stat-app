@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SCRIPTS))
 
 OUT = ROOT / "data" / "production_bridge_s3_server_registry_gate.json"
+SETUP_ONLY_OUT = ROOT / "data" / "production_bridge_s3_setup_only_gate.json"
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
 
 
@@ -142,6 +143,10 @@ def main() -> int:
         print(json.dumps({"ok": False, "classification": "ABORTED_CAPTURE_BRIDGE_DISABLED"}))
         return 1
 
+    setup_only = str(os.environ.get("STAGE1_S3_SETUP_ONLY") or "").strip().lower() in ("1", "true", "yes")
+    artifact_out = SETUP_ONLY_OUT if setup_only else OUT
+    out_path = artifact_out
+
     bridge_sid, bridge_source = resolve_bridge_suite_sid_with_source()
     if not bridge_sid:
         print(json.dumps({"ok": False, "classification": "ABORTED_NO_BRIDGE_SID"}))
@@ -165,10 +170,9 @@ def main() -> int:
             "pause_control_center_ready",
             "setup_dom_layers",
             "post_registration_and_binding",
-            "sibling_strict_click",
-            "pause_positive_control",
-            "classify_r3_chain",
-        ],
+        ]
+        + ([] if setup_only else ["sibling_strict_click", "pause_positive_control", "classify_r3_chain"]),
+        "setup_only_mode": setup_only,
         "started_at": time.time(),
     }
 
@@ -188,7 +192,7 @@ def main() -> int:
         if required and str(report["application_runtime_sha"]).lower()[:7] != required:
             report["classification"] = "ABORTED_RUNTIME_SHA_MISMATCH"
             report["ok"] = False
-            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             browser.close()
             return 1
 
@@ -197,7 +201,7 @@ def main() -> int:
         if not bridge_pre.get("authenticated_restored"):
             report["classification"] = bridge_pre.get("failure_classification") or "AUTH_HYDRATE7"
             report["ok"] = False
-            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             browser.close()
             return 1
 
@@ -206,7 +210,7 @@ def main() -> int:
         if not cleanup.get("ok"):
             report["classification"] = "ABORTED_SETUP_LOBBY"
             report["ok"] = False
-            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             browser.close()
             return 1
 
@@ -226,7 +230,7 @@ def main() -> int:
         if not room_id or not canonical.get("room_latch_pass"):
             report["classification"] = "ABORTED_START_LATCH"
             report["ok"] = False
-            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             browser.close()
             return 1
 
@@ -294,14 +298,43 @@ def main() -> int:
             post_registration=post_reg,
             binding=binding,
         )
+        report["setup_readiness_table"] = setup_table
+        if setup_only:
+            report["finished_at"] = time.time()
+            if setup_abort:
+                report["classification"] = setup_abort
+                report["classification_note"] = setup_note
+                report["ok"] = False
+            elif not setup_ready_for_sibling_click(setup_table):
+                report["classification"] = ABORTED_S3_POST_REGISTRATION_NOT_READY
+                report["classification_note"] = "setup_table_incomplete"
+                report["ok"] = False
+            else:
+                report["classification"] = "SETUP_LOCALIZATION_PASS"
+                report["classification_note"] = "setup_ready_for_full_s3_gate"
+                report["ok"] = True
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(
+                json.dumps(
+                    {
+                        "ok": bool(report.get("ok")),
+                        "classification": report.get("classification"),
+                        "artifact": str(out_path),
+                        "setup_only": True,
+                    }
+                )
+            )
+            return 0 if report.get("ok") else 1
+
         if setup_abort:
             report["classification"] = setup_abort
             report["classification_note"] = setup_note
             report["ok"] = False
             report["finished_at"] = time.time()
-            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             browser.close()
-            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(OUT)}))
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
             return 1
 
         if not setup_ready_for_sibling_click(setup_table):
@@ -309,9 +342,9 @@ def main() -> int:
             report["classification_note"] = "setup_table_incomplete"
             report["ok"] = False
             report["finished_at"] = time.time()
-            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             browser.close()
-            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(OUT)}))
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
             return 1
 
         post_reg = dict(post_reg)
@@ -434,9 +467,9 @@ def main() -> int:
             report["streamlit_session_id"] = sibling_step.get("streamlit_session_id")
             report["ok"] = False
             report["finished_at"] = time.time()
-            OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             browser.close()
-            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(OUT)}))
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
             return 2
         if str(r2_case).startswith("BUTTON_DISPATCH_S3_R2") and r2_case not in (
             "BUTTON_DISPATCH_S3_R2C_OWNER_MATCH_AFTER_RECHECK",
@@ -458,10 +491,10 @@ def main() -> int:
         report["streamlit_session_id"] = sibling_step.get("streamlit_session_id")
         report["ok"] = not str(case).endswith("INCOMPLETE_EVIDENCE") and not str(case).startswith("ABORTED")
         report["finished_at"] = time.time()
-        OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
         browser.close()
 
-    print(json.dumps({"ok": report.get("ok"), "classification": report.get("classification"), "artifact": str(OUT)}))
+    print(json.dumps({"ok": report.get("ok"), "classification": report.get("classification"), "artifact": str(out_path)}))
     return 0 if report.get("ok") else (1 if str(report.get("classification", "")).startswith("ABORTED") else 2)
 
 
