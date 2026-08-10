@@ -267,6 +267,18 @@ def _metadata_type_name(metadata: Any) -> str:
     return type(metadata).__name__
 
 
+def get_underlying_streamlit_session_state(st: Any | None) -> Any | None:
+    wrapper = get_streamlit_session_state(st)
+    if wrapper is None:
+        return None
+    try:
+        from live_draft_stage1_s3_process_global_diag import resolve_sessionstate_objects
+
+        return resolve_sessionstate_objects(wrapper).get("underlying")
+    except ImportError:
+        return wrapper
+
+
 def get_streamlit_session_state(st: Any | None) -> Any | None:
     try:
         from streamlit.runtime.scriptrunner import get_script_run_ctx

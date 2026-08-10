@@ -86,6 +86,7 @@ class ObservabilityClassifyTests(unittest.TestCase):
         rows = [
             {"phase": "APPSESSION_BACKMSG_ENTRY", "pause_present": True},
             {"phase": "APPSESSION_REQUEST_RERUN_ENTRY", "pause_present": True},
+            {"phase": "SAFE_SESSIONSTATE_RECEIVE_ENTRY", "pause_present": True},
             {"phase": "SERVER_RECEIVE_ENTRY", "pause_present": True},
             {"phase": "SERVER_STATE_APPLIED", "pause_present": True, "pause_trigger_from_deserialized": True},
             {"phase": "APPSESSION_BACKMSG_ENTRY", "pause_sibling_present": True},

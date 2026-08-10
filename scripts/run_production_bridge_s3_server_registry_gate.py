@@ -336,6 +336,8 @@ def main() -> int:
         payload = s3_after.get("payload") if isinstance(s3_after.get("payload"), dict) else {}
         ledger = (payload.get("ledger") or {}) if isinstance(payload, dict) else {}
         s3_rows = list(ledger.get("rows") or [])
+        unrouted_payload = payload.get("unrouted_events") if isinstance(payload.get("unrouted_events"), dict) else {}
+        unrouted_rows = list(unrouted_payload.get("rows") or [])
         binding_post = payload.get("s3_diag_binding") if isinstance(payload.get("s3_diag_binding"), dict) else {}
         report["s3_diag_binding_post_pause"] = binding_post
         report["fragment_owner_history"] = list(payload.get("fragment_owner_history") or [])[-16:]
@@ -396,6 +398,7 @@ def main() -> int:
             register_widget_result=reg_result,
             st_button_returned=st_btn,
             binding_ok=binding_pre.get("sessionstate_binding_ok"),
+            unrouted_rows=unrouted_rows,
         )
         if str(r2_case).startswith("BUTTON_DISPATCH_S3_R2") and r2_case not in (
             "BUTTON_DISPATCH_S3_R2C_OWNER_MATCH_AFTER_RECHECK",

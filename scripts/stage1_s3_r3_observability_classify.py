@@ -26,23 +26,65 @@ def _any(rows: list[dict[str, Any]], pred) -> bool:
     return any(pred(r) for r in rows)
 
 
-def pause_observability_chain(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def pause_observability_chain(rows: list[dict[str, Any]], *, unrouted_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     by = _by_phase(rows)
+    un = list(unrouted_rows or [])
     back = by.get("APPSESSION_BACKMSG_ENTRY") or []
     req = by.get("APPSESSION_REQUEST_RERUN_ENTRY") or []
+    safe_recv = by.get("SAFE_SESSIONSTATE_RECEIVE_ENTRY") or []
     recv = by.get("SERVER_RECEIVE_ENTRY") or []
     applied = by.get("SERVER_STATE_APPLIED") or []
     ev = {
         "backmsg_pause": _any(back, lambda r: bool(r.get("pause_present"))),
         "request_rerun_pause": _any(req, lambda r: bool(r.get("pause_present"))),
+        "safe_sessionstate_pause": _any(safe_recv, lambda r: bool(r.get("pause_present"))),
         "server_receive_pause": _any(recv, lambda r: bool(r.get("pause_present"))),
         "server_applied_pause": _any(
             applied,
             lambda r: bool(r.get("pause_present")) or bool(r.get("pause_trigger_from_deserialized")),
         ),
+        "unrouted_server_receive": _any(un, lambda r: str(r.get("phase") or "") == "SERVER_RECEIVE_ENTRY"),
+        "unrouted_server_applied": _any(un, lambda r: str(r.get("phase") or "") == "SERVER_STATE_APPLIED"),
+        "unrouted_safe_receive": _any(un, lambda r: str(r.get("phase") or "") == "SAFE_SESSIONSTATE_RECEIVE_ENTRY"),
     }
-    ev["ok"] = all(ev[k] for k in ("backmsg_pause", "request_rerun_pause", "server_receive_pause", "server_applied_pause"))
+    ev["ok"] = all(
+        ev[k]
+        for k in (
+            "backmsg_pause",
+            "request_rerun_pause",
+            "safe_sessionstate_pause",
+            "server_receive_pause",
+            "server_applied_pause",
+        )
+    )
     return ev
+
+
+def observability_failure_boundary(pause_obs: dict[str, Any]) -> str:
+    if pause_obs.get("ok"):
+        return ""
+    missing: list[str] = []
+    if not pause_obs.get("backmsg_pause"):
+        missing.append("appsession_backmsg")
+    if not pause_obs.get("request_rerun_pause"):
+        missing.append("appsession_request_rerun")
+    if not pause_obs.get("safe_sessionstate_pause"):
+        missing.append("safe_sessionstate_receive")
+    if not pause_obs.get("server_receive_pause"):
+        if pause_obs.get("unrouted_server_receive"):
+            missing.append("sessionstate_sid_routing")
+        else:
+            missing.append("underlying_sessionstate_receive")
+    if not pause_obs.get("server_applied_pause"):
+        if pause_obs.get("unrouted_server_applied"):
+            missing.append("sessionstate_sid_routing")
+        else:
+            missing.append("underlying_sessionstate_apply")
+    if len(missing) == 1:
+        return missing[0]
+    if len(missing) > 1:
+        return "multiple"
+    return "unknown"
 
 
 def sibling_rows(rows: list[dict[str, Any]], *, wire_widget_id: str = "") -> dict[str, Any]:
@@ -50,14 +92,14 @@ def sibling_rows(rows: list[dict[str, Any]], *, wire_widget_id: str = "") -> dic
     wid = str(wire_widget_id or "")
 
     def sib_hit(r: dict[str, Any]) -> bool:
-        if bool(r.get("pause_sibling_present")):
+        if bool(r.get("pause_sibling_present")) or bool(r.get("sibling_present")):
             return True
         if wid and wid in str(r.get("activated_triggers") or ""):
             return True
         proto = r.get("pause_sibling_proto") or r.get("sibling_proto") or {}
         if wid and str(proto.get("id") or "") == wid:
             return True
-        return bool(r.get("sibling_present"))
+        return False
 
     return {
         "backmsg": _any(by.get("APPSESSION_BACKMSG_ENTRY") or [], sib_hit),
@@ -80,6 +122,7 @@ def classify_s3_with_observability(
     register_widget_result: bool | None,
     st_button_returned: bool | None,
     binding_ok: bool | None,
+    unrouted_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
     evidence: dict[str, Any] = {
         "classification_history": {
@@ -88,8 +131,10 @@ def classify_s3_with_observability(
         },
         "binding_ok": binding_ok,
     }
-    pause_obs = pause_observability_chain(module_rows)
+    pause_obs = pause_observability_chain(module_rows, unrouted_rows=unrouted_rows)
     evidence["pause_observability"] = pause_obs
+    evidence["observability_failure_boundary"] = observability_failure_boundary(pause_obs)
+    evidence["unrouted_event_count"] = len(list(unrouted_rows or []))
 
     if sibling_python_effect and st_button_returned:
         return BUTTON_DISPATCH_S3_R7_NONDETERMINISTIC_RECOVERY, "sibling_delivered", evidence
@@ -98,7 +143,12 @@ def classify_s3_with_observability(
         evidence["binding_failure"] = True
 
     if pause_resolved and not pause_obs.get("ok"):
-        return BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_ABORT, "pause_functional_but_server_chain_missing", evidence
+        boundary = evidence["observability_failure_boundary"] or "unknown"
+        return (
+            BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_ABORT,
+            f"pause_functional_but_server_chain_missing:{boundary}",
+            evidence,
+        )
 
     if not pause_obs.get("ok"):
         return BUTTON_DISPATCH_S3_R0_INCOMPLETE_EVIDENCE, "pause_observability_incomplete", evidence
