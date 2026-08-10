@@ -47,16 +47,18 @@ def _wire_from_sibling_step(sibling_step: dict[str, Any]) -> tuple[str, str, dic
 
 
 def _wait_post_registration(page, *, max_wait_s: float = 90.0) -> dict[str, Any]:
-    from stage1_s3_server_registry_scrape import extract_post_registration, scrape_s3_server_diag_ledger
+    from stage1_s3_server_registry_scrape import (
+        evaluate_post_registration_from_ledger,
+        scrape_s3_server_diag_ledger,
+    )
 
     deadline = time.time() + max_wait_s
     last: dict[str, Any] = {"found": False}
     while time.time() < deadline:
         snap = scrape_s3_server_diag_ledger(page)
         last = snap
-        post = extract_post_registration(snap.get("payload") if isinstance(snap.get("payload"), dict) else None)
+        post, binding, _pre = evaluate_post_registration_from_ledger(snap)
         payload = snap.get("payload") if isinstance(snap.get("payload"), dict) else {}
-        binding = payload.get("s3_diag_binding") if isinstance(payload.get("s3_diag_binding"), dict) else {}
         if (
             snap.get("found")
             and str(post.get("registered_widget_id") or "").startswith("$$ID-")
@@ -64,7 +66,8 @@ def _wait_post_registration(page, *, max_wait_s: float = 90.0) -> dict[str, Any]
         ):
             return {"ok": True, "scrape": snap, "post_registration": post, "s3_diag_binding": binding}
         page.wait_for_timeout(800)
-    return {"ok": False, "scrape": last, "post_registration": extract_post_registration(last.get("payload") if isinstance(last.get("payload"), dict) else None)}
+    post, binding, _pre = evaluate_post_registration_from_ledger(last)
+    return {"ok": False, "scrape": last, "post_registration": post, "s3_diag_binding": binding}
 
 
 def _capture_pause_strict(page, *, room_id: str) -> dict[str, Any]:
@@ -119,7 +122,18 @@ def main() -> int:
     from stage1_s3_r2_subclassify import classify_s3_r2_subclass, wire_target_in_preclick_storage
     from stage1_s3_r3_observability_classify import classify_s3_with_observability
     from stage1_s3_server_registry_classify import classify_s3_server_registry
-    from stage1_s3_server_registry_scrape import extract_post_registration, scrape_s3_server_diag_ledger
+    from stage1_s3_server_registry_scrape import (
+        evaluate_post_registration_from_ledger,
+        scrape_frame_dom_diagnostics,
+        scrape_s3_server_diag_ledger,
+    )
+    from stage1_s3_setup_localize import (
+        ABORTED_S3_POST_REGISTRATION_NOT_READY,
+        build_setup_readiness_table,
+        classify_setup_failure,
+        setup_ready_for_sibling_click,
+    )
+    from stage1_pause_sibling_scrape import scrape_pause_sibling_probe
     from streamlit_app_frame import describe_page_frames, resolve_streamlit_app_frame
 
     if str(os.environ.get("STAGE1_USE_CAPTURE_BRIDGE") or "").strip().lower() in ("0", "false"):
@@ -145,12 +159,13 @@ def main() -> int:
         "bridge_suite_sid_prefix": bridge_sid[:8],
         "bridge_suite_sid_source": bridge_source,
         "sequence": [
-            "start",
-            "wait_post_registration_snapshot",
+            "start_latch",
+            "pause_control_center_ready",
+            "setup_dom_layers",
+            "post_registration_and_binding",
             "sibling_strict_click",
-            "scrape_s3_server_evidence",
             "pause_positive_control",
-            "classify_r1_r7",
+            "classify_r3_chain",
         ],
         "started_at": time.time(),
     }
@@ -195,7 +210,17 @@ def main() -> int:
 
         canonical = establish_single_solo_live_draft(page, context, setup_url=url, prior_room_id="", max_wait_s=90.0)
         room_id = str(canonical.get("room_id") or "").upper()
-        report["start_latch"] = {"room_id": room_id, "room_latch_pass": canonical.get("room_latch_pass")}
+        report["canonical_start"] = dict(canonical)
+        report["start_latch"] = {
+            "room_id": room_id,
+            "room_latch_pass": canonical.get("room_latch_pass"),
+            "start_click_count": canonical.get("start_click_count"),
+            "start_classification": canonical.get("start_classification"),
+            "streamlit_session_id": canonical.get("streamlit_session_id"),
+            "diagnostic_run_id": canonical.get("diagnostic_run_id"),
+            "authoritative_room_status": canonical.get("authoritative_room_status"),
+            "countdown_mounted": canonical.get("countdown_mounted"),
+        }
         if not room_id or not canonical.get("room_latch_pass"):
             report["classification"] = "ABORTED_START_LATCH"
             report["ok"] = False
@@ -203,37 +228,82 @@ def main() -> int:
             browser.close()
             return 1
 
-        wait_for_authoritative_pause_control(page, max_wait_s=45.0, room_id=room_id)
+        pause_ready = wait_for_authoritative_pause_control(page, max_wait_s=45.0, room_id=room_id)
+        report["pause_control_ready"] = dict(pause_ready)
         report["app_frame_inventory"] = describe_page_frames(page)
-        report["app_frame_url"] = str(resolve_streamlit_app_frame(page).url or "")[:240]
+        frame = resolve_streamlit_app_frame(page)
+        report["app_frame_url"] = str(frame.url or "")[:240]
 
-        post_wait = _wait_post_registration(page)
-        report["post_registration_wait"] = post_wait
-        post_reg = dict(post_wait.get("post_registration") or {})
-        report["post_registration_server_snapshot"] = post_reg
-        pre_click_payload = (
-            (post_wait.get("scrape") or {}).get("payload") if isinstance(post_wait.get("scrape"), dict) else None
+        sibling_scrape = scrape_pause_sibling_probe(page, frame=frame)
+        report["sibling_probe_scrape"] = sibling_scrape
+        s3_ledger_scrape = scrape_s3_server_diag_ledger(page, frame=frame)
+        report["s3_ledger_scrape_initial"] = s3_ledger_scrape
+        report["frame_dom_diagnostics"] = scrape_frame_dom_diagnostics(page)
+
+        post_reg, binding, pre_decl = evaluate_post_registration_from_ledger(s3_ledger_scrape)
+        if s3_ledger_scrape.get("found") and not str(post_reg.get("registered_widget_id") or "").startswith("$$ID-"):
+            post_wait = _wait_post_registration(page, max_wait_s=45.0)
+            report["post_registration_poll"] = post_wait
+            if isinstance(post_wait.get("scrape"), dict):
+                s3_ledger_scrape = dict(post_wait["scrape"])
+                post_reg = dict(post_wait.get("post_registration") or {})
+                pre_click_payload = post_wait.get("scrape", {}).get("payload") if isinstance(post_wait.get("scrape"), dict) else {}
+                if isinstance(pre_click_payload, dict):
+                    binding = dict(pre_click_payload.get("s3_diag_binding") or {}) if isinstance(pre_click_payload.get("s3_diag_binding"), dict) else binding
+                    pre_decl = dict(pre_click_payload.get("pre_declaration") or {}) if isinstance(pre_click_payload.get("pre_declaration"), dict) else pre_decl
+
+        streamlit_sid = str(
+            sibling_scrape.get("streamlit_session_id")
+            or canonical.get("streamlit_session_id")
+            or s3_ledger_scrape.get("payload", {}).get("ledger", {}).get("streamlit_session_id")
+            or ""
+        )[:64]
+        setup_table = build_setup_readiness_table(
+            runtime_sha=str(report.get("application_runtime_sha") or ""),
+            auth_restored=bool(bridge_pre.get("authenticated_restored")),
+            start_latch_pass=bool(canonical.get("room_latch_pass")),
+            room_id=room_id,
+            streamlit_session_id=streamlit_sid,
+            pause_control_ready=bool(pause_ready.get("ready")),
+            sibling_probe_found=bool(sibling_scrape.get("probe_found")),
+            s3_ledger_found=bool(s3_ledger_scrape.get("found")),
+            post_registration_ready=str(post_reg.get("registered_widget_id") or "").startswith("$$ID-"),
+            binding_ok=bool(binding.get("sessionstate_binding_ok")),
         )
-        if not isinstance(pre_click_payload, dict):
-            pre_click_payload = {}
-        binding_pre = pre_click_payload.get("s3_diag_binding") if isinstance(pre_click_payload.get("s3_diag_binding"), dict) else {}
-        report["s3_diag_binding_pre_click"] = binding_pre
-        if not post_wait.get("ok"):
-            report["classification"] = "ABORTED_S3_POST_REGISTRATION_NOT_READY"
+        report["setup_readiness_table"] = setup_table
+        report["post_registration_server_snapshot"] = post_reg
+        report["s3_diag_binding_pre_click"] = binding
+        report["pre_declaration_snapshot"] = pre_decl
+
+        setup_abort, setup_note = classify_setup_failure(
+            pause_ready=pause_ready,
+            sibling_scrape=sibling_scrape,
+            s3_ledger_scrape=s3_ledger_scrape,
+            post_registration=post_reg,
+            binding=binding,
+        )
+        if setup_abort:
+            report["classification"] = setup_abort
+            report["classification_note"] = setup_note
             report["ok"] = False
             report["finished_at"] = time.time()
             OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             browser.close()
             print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(OUT)}))
             return 1
-        if not binding_pre.get("sessionstate_binding_ok"):
-            report["classification"] = "ABORTED_S3_DIAG_BINDING_NOT_READY"
+
+        if not setup_ready_for_sibling_click(setup_table):
+            report["classification"] = ABORTED_S3_POST_REGISTRATION_NOT_READY
+            report["classification_note"] = "setup_table_incomplete"
             report["ok"] = False
             report["finished_at"] = time.time()
             OUT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             browser.close()
             print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(OUT)}))
             return 1
+
+        post_reg = dict(post_reg)
+        binding_pre = dict(binding)
 
         sibling_step = capture_sibling_pre_pause_transport(page)
         report["sibling_strict_transport"] = sibling_step
@@ -259,11 +329,9 @@ def main() -> int:
         report["s3_diag_binding_post_pause"] = binding_post
         report["fragment_owner_history"] = list(payload.get("fragment_owner_history") or [])[-16:]
 
-        pre = payload.get("pre_declaration") if isinstance(payload.get("pre_declaration"), dict) else {}
+        pre = pre_decl if isinstance(pre_decl, dict) else {}
         render_meta = dict((payload.get("post_registration") or {}))  # noqa: may include last render from pause ledger
         sibling_export = dict(sibling_step.get("scrape_after") or sibling_step.get("scrape_before") or {})
-        from stage1_pause_sibling_scrape import scrape_pause_sibling_probe
-
         sib_after = scrape_pause_sibling_probe(page)
         report["sibling_scrape_after"] = sib_after
 
