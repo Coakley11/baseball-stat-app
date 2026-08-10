@@ -99,6 +99,7 @@ class SetupLocalizeTests(unittest.TestCase):
 
     def test_r3_blocked_on_aborted(self) -> None:
         self.assertFalse(r3_classification_allowed("ABORTED_S3_LEDGER_EMIT_MISSING"))
+        self.assertFalse(r3_classification_allowed("ABORTED_START_LATCH"))
         self.assertTrue(r3_classification_allowed("BUTTON_DISPATCH_S3_R3A_DROPPED_IN_APPSESSION_BACKMSG_PATH"))
 
 
