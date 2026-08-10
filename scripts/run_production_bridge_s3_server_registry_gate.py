@@ -135,9 +135,9 @@ def main() -> int:
         classify_setup_failure,
         setup_ready_for_sibling_click,
     )
-    from stage1_pause_sibling_scrape import scrape_pause_sibling_probe
-    from stage1_sibling_setup_scrape import finalize_sibling_import_evidence, scrape_sibling_setup_layers
-    from streamlit_app_frame import describe_page_frames, resolve_streamlit_app_frame
+        from stage1_pause_sibling_scrape import scrape_pause_sibling_probe
+        from stage1_sibling_setup_stable import wait_for_sibling_setup_stable
+        from streamlit_app_frame import describe_page_frames, resolve_streamlit_app_frame
 
     if str(os.environ.get("STAGE1_USE_CAPTURE_BRIDGE") or "").strip().lower() in ("0", "false"):
         print(json.dumps({"ok": False, "classification": "ABORTED_CAPTURE_BRIDGE_DISABLED"}))
@@ -237,67 +237,71 @@ def main() -> int:
         pause_ready = wait_for_authoritative_pause_control(page, max_wait_s=45.0, room_id=room_id)
         report["pause_control_ready"] = dict(pause_ready)
         report["app_frame_inventory"] = describe_page_frames(page)
-        frame = resolve_streamlit_app_frame(page)
-        report["app_frame_url"] = str(frame.url or "")[:240]
+        report["app_frame_url"] = str(resolve_streamlit_app_frame(page).url or "")[:240]
 
-        sibling_layers = scrape_sibling_setup_layers(page, frame=frame)
-        sibling_scrape = scrape_pause_sibling_probe(page, frame=frame)
-        report["sibling_probe_scrape"] = sibling_scrape
-        s3_ledger_scrape = scrape_s3_server_diag_ledger(page, frame=frame)
-        report["s3_ledger_scrape_initial"] = s3_ledger_scrape
-        report["frame_dom_diagnostics"] = scrape_frame_dom_diagnostics(page)
-
-        post_reg, binding, pre_decl = evaluate_post_registration_from_ledger(s3_ledger_scrape)
-        if s3_ledger_scrape.get("found") and not str(post_reg.get("registered_widget_id") or "").startswith("$$ID-"):
-            post_wait = _wait_post_registration(page, max_wait_s=45.0)
-            report["post_registration_poll"] = post_wait
-            if isinstance(post_wait.get("scrape"), dict):
-                s3_ledger_scrape = dict(post_wait["scrape"])
-                post_reg = dict(post_wait.get("post_registration") or {})
-                pre_click_payload = post_wait.get("scrape", {}).get("payload") if isinstance(post_wait.get("scrape"), dict) else {}
-                if isinstance(pre_click_payload, dict):
-                    binding = dict(pre_click_payload.get("s3_diag_binding") or {}) if isinstance(pre_click_payload.get("s3_diag_binding"), dict) else binding
-                    pre_decl = dict(pre_click_payload.get("pre_declaration") or {}) if isinstance(pre_click_payload.get("pre_declaration"), dict) else pre_decl
-
-        streamlit_sid = str(
-            sibling_scrape.get("streamlit_session_id")
-            or canonical.get("streamlit_session_id")
-            or s3_ledger_scrape.get("payload", {}).get("ledger", {}).get("streamlit_session_id")
-            or ""
-        )[:64]
-        post_reg_ready = str(post_reg.get("registered_widget_id") or "").startswith("$$ID-")
-        binding_ok = bool(binding.get("sessionstate_binding_ok"))
-        sibling_layers = finalize_sibling_import_evidence(
-            sibling_layers,
-            s3_ledger_found=bool(s3_ledger_scrape.get("found")),
-            post_registration_ready=post_reg_ready,
-            binding_ok=binding_ok,
-        )
-        report["sibling_setup_layers"] = sibling_layers
-        setup_table = build_setup_readiness_table(
+        setup_stable = wait_for_sibling_setup_stable(
+            page,
+            room_id=room_id,
+            pause_ready=pause_ready,
             runtime_sha=str(report.get("application_runtime_sha") or ""),
             auth_restored=bool(bridge_pre.get("authenticated_restored")),
             start_latch_pass=bool(canonical.get("room_latch_pass")),
-            room_id=room_id,
-            streamlit_session_id=streamlit_sid,
-            pause_control_ready=bool(pause_ready.get("ready")),
-            sibling_layers=sibling_layers,
-            s3_ledger_found=bool(s3_ledger_scrape.get("found")),
-            post_registration_ready=post_reg_ready,
-            binding_ok=binding_ok,
-            server_wrapper_integrity_ok=binding.get("server_wrapper_integrity_ok"),
+            max_wait_s=45.0,
+            poll_interval_ms=600,
+        )
+        report["setup_stabilization"] = {
+            "ok": setup_stable.get("ok"),
+            "stable": setup_stable.get("stable"),
+            "early_abort": setup_stable.get("early_abort"),
+            "timed_out": setup_stable.get("timed_out"),
+            "poll_count": setup_stable.get("poll_count"),
+            "poll_history": setup_stable.get("poll_history"),
+            "atomic_presence_final": setup_stable.get("atomic_presence_final"),
+        }
+        last = dict(setup_stable.get("last_poll") or {})
+        sibling_layers = dict(last.get("sibling_setup_layers") or {})
+        sibling_scrape = dict(last.get("sibling_probe_scrape") or {})
+        s3_ledger_scrape = dict(last.get("s3_ledger_scrape") or {})
+        post_reg = dict(last.get("post_registration") or {})
+        binding = dict(last.get("s3_diag_binding") or {})
+        pre_decl = dict(last.get("pre_declaration") or {})
+        report["sibling_probe_scrape"] = sibling_scrape
+        report["s3_ledger_scrape_initial"] = s3_ledger_scrape
+        report["frame_dom_diagnostics"] = scrape_frame_dom_diagnostics(page)
+
+        streamlit_sid = str(
+            last.get("streamlit_session_id")
+            or sibling_scrape.get("streamlit_session_id")
+            or canonical.get("streamlit_session_id")
+            or ""
+        )[:64]
+        post_reg_ready = bool(last.get("post_registration_ready"))
+        binding_ok = bool(last.get("binding_ok"))
+        report["sibling_setup_layers"] = sibling_layers
+        setup_table = dict(
+            setup_stable.get("setup_readiness_table")
+            or build_setup_readiness_table(
+                runtime_sha=str(report.get("application_runtime_sha") or ""),
+                auth_restored=bool(bridge_pre.get("authenticated_restored")),
+                start_latch_pass=bool(canonical.get("room_latch_pass")),
+                room_id=room_id,
+                streamlit_session_id=streamlit_sid,
+                pause_control_ready=bool(pause_ready.get("ready")),
+                sibling_layers=sibling_layers,
+                s3_ledger_found=bool(s3_ledger_scrape.get("found")),
+                post_registration_ready=post_reg_ready,
+                binding_ok=binding_ok,
+                server_wrapper_integrity_ok=binding.get("server_wrapper_integrity_ok"),
+            )
         )
         report["post_registration_server_snapshot"] = post_reg
         report["s3_diag_binding_pre_click"] = binding
         report["pre_declaration_snapshot"] = pre_decl
 
-        setup_abort, setup_note = classify_setup_failure(
-            pause_ready=pause_ready,
-            sibling_layers=sibling_layers,
-            s3_ledger_scrape=s3_ledger_scrape,
-            post_registration=post_reg,
-            binding=binding,
-        )
+        setup_abort = setup_stable.get("setup_abort")
+        setup_note = setup_stable.get("setup_note")
+        if setup_stable.get("ok"):
+            setup_abort, setup_note = None, "setup_pass"
         report["setup_readiness_table"] = setup_table
         if setup_only:
             report["finished_at"] = time.time()

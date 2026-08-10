@@ -93,6 +93,16 @@ def setup_ready_for_sibling_click(table: dict[str, Any]) -> bool:
     return True
 
 
+def classify_setup_early_exception(sibling_layers: dict[str, Any]) -> tuple[str | None, str]:
+    if sibling_layers.get("checkpoint_sibling_render_exception"):
+        return ABORTED_S3_SIBLING_BUTTON_CALL_EXCEPTION, "sibling_render_exception"
+    if sibling_layers.get("checkpoint_sibling_button_call_exception"):
+        return ABORTED_S3_SIBLING_BUTTON_CALL_EXCEPTION, "st_button_call_exception"
+    if sibling_layers.get("checkpoint_sibling_post_registration_exception"):
+        return ABORTED_S3_SIBLING_BUTTON_CALL_EXCEPTION, "post_registration_snapshot_exception"
+    return None, ""
+
+
 def classify_setup_failure(
     *,
     pause_ready: dict[str, Any],
@@ -100,6 +110,7 @@ def classify_setup_failure(
     s3_ledger_scrape: dict[str, Any],
     post_registration: dict[str, Any],
     binding: dict[str, Any],
+    after_stabilization: bool = False,
 ) -> tuple[str | None, str]:
     if not pause_ready.get("ready"):
         return ABORTED_S3_CONTROL_CENTER_NOT_READY, "pause_control_not_ready"
@@ -163,10 +174,17 @@ def classify_setup_failure(
             return ABORTED_S3_SIBLING_BUTTON_NOT_MOUNTED, "sibling_button_missing_after_declaration"
         return ABORTED_S3_SIBLING_BUTTON_NOT_MOUNTED, "sibling_button_missing"
     if not sibling_layers.get("sibling_ledger_found"):
+        if after_stabilization and sibling_layers.get("sibling_post_button_return_reached"):
+            return (
+                ABORTED_S3_SIBLING_LEDGER_EMIT_MISSING,
+                "sibling_hidden_ledger_persistently_missing_after_setup_stabilization",
+            )
         if sibling_layers.get("sibling_post_button_return_reached"):
             return ABORTED_S3_SIBLING_LEDGER_EMIT_MISSING, "sibling_hidden_ledger_missing_after_post_declaration"
         return ABORTED_S3_SIBLING_LEDGER_EMIT_MISSING, "sibling_hidden_ledger_missing"
     if not s3_ledger_scrape.get("found"):
+        if after_stabilization:
+            return ABORTED_S3_LEDGER_EMIT_MISSING, "s3_ledger_persistently_missing_after_setup_stabilization"
         if sibling_layers.get("sibling_setup_export_complete_reached"):
             return ABORTED_S3_LEDGER_EMIT_MISSING, "s3_ledger_dom_missing_after_export_complete"
         return ABORTED_S3_LEDGER_EMIT_MISSING, "s3_ledger_dom_missing"
