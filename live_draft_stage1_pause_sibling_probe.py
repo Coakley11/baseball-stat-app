@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any
 
-PAUSE_SIBLING_IMPL_REV = "stage1_pause_sibling_probe_v4"
+PAUSE_SIBLING_IMPL_REV = "stage1_pause_sibling_probe_v5"
 PAUSE_SIBLING_PROBE_ELEMENT_ID = "solo-stage1-pause-sibling-probe"
 PAUSE_SIBLING_LEDGER_DOM_ID = "solo-stage1-pause-sibling-ledger"
 PAUSE_SIBLING_ENTRY_DOM_ID = "solo-stage1-pause-sibling-entry"
@@ -251,12 +251,16 @@ def _emit_sibling_declaration(
     safe = lambda s: str(s or "").replace('"', "'")[:160]
     blob = json.dumps(payload, default=str)[:8000].replace('"', "'")
     reached = 1 if data.get("declaration_reached") else 0
-    dom_id = PAUSE_SIBLING_DECL_DOM_ID
+    dom_id = (
+        PAUSE_SIBLING_DECL_PRE_DOM_ID
+        if phase == "SIBLING_BUTTON_DECLARATION_ENTRY"
+        else PAUSE_SIBLING_DECL_POST_DOM_ID
+    )
     st.markdown(
         f'<div id="{dom_id}" '
         f'class="solo-stage1-pause-sibling-declaration" '
         f'data-sibling-declaration-phase="{safe(phase)}" '
-        f'data-dom-id-alias="{PAUSE_SIBLING_DECL_PRE_DOM_ID if phase == "SIBLING_BUTTON_DECLARATION_ENTRY" else PAUSE_SIBLING_DECL_POST_DOM_ID}" '
+        f'data-dom-id-legacy="{PAUSE_SIBLING_DECL_DOM_ID}" '
         f'data-event="{safe(phase)}" '
         f'data-declaration-reached="{reached}" '
         f'data-json="{blob}"></div>',
@@ -293,6 +297,19 @@ def _emit_setup_checkpoint(
     book = list(session.get(PAUSE_SIBLING_SETUP_CHECKPOINTS_KEY) or [])
     book.append(dict(payload))
     session[PAUSE_SIBLING_SETUP_CHECKPOINTS_KEY] = book[-32:]
+    try:
+        from live_draft_stage1_s3_process_global_diag import append_module_event
+
+        append_module_event(
+            _streamlit_session_id(),
+            str(event or "")[:48],
+            room_id=str(room_id or "").strip(),
+            widget_key=str(widget_key or "").strip(),
+            full_app_run_seq=_full_app_run_seq(session),
+            **{k: v for k, v in (extra or {}).items()},
+        )
+    except ImportError:
+        pass
     try:
         print(f"SOLO_SIBLING_SETUP_CHECKPOINT {json.dumps(payload, default=str)[:4000]}", flush=True)
     except Exception:

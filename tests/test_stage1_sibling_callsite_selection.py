@@ -93,7 +93,42 @@ class ImportEvidenceTests(unittest.TestCase):
             "sibling_button_found": True,
             "sibling_ledger_found": True,
             "entry_json": {"solo_diag_enabled_final": True},
-            "declaration_json": {"declaration_reached": True},
+            "declaration_candidates": [
+                {
+                    "dom_index": 0,
+                    "data_event": "SIBLING_BUTTON_DECLARATION_ENTRY",
+                    "declaration_reached": "1",
+                    "json": {"event": "SIBLING_BUTTON_DECLARATION_ENTRY", "declaration_reached": True, "ts": 1.0},
+                },
+                {
+                    "dom_index": 1,
+                    "data_event": "SIBLING_BUTTON_DECLARATION_RESULT",
+                    "declaration_reached": "1",
+                    "json": {
+                        "event": "SIBLING_BUTTON_DECLARATION_RESULT",
+                        "declaration_reached": True,
+                        "returned_value": False,
+                        "ts": 2.0,
+                    },
+                },
+            ],
+            "setup_checkpoint_candidates": [
+                {
+                    "dom_index": 0,
+                    "data_event": "SIBLING_BUTTON_CALL_RETURNED",
+                    "json": {"event": "SIBLING_BUTTON_CALL_RETURNED", "ts": 2.1},
+                },
+                {
+                    "dom_index": 1,
+                    "data_event": "SIBLING_POST_REGISTRATION_RETURNED",
+                    "json": {"event": "SIBLING_POST_REGISTRATION_RETURNED", "ts": 2.2},
+                },
+                {
+                    "dom_index": 2,
+                    "data_event": "SIBLING_SETUP_EXPORT_COMPLETE",
+                    "json": {"event": "SIBLING_SETUP_EXPORT_COMPLETE", "ts": 2.3},
+                },
+            ],
         }
         layers = merge_layers_from_dom_dict(raw)
         layers = finalize_sibling_import_evidence(layers, s3_ledger_found=True, post_registration_ready=True, binding_ok=True)
@@ -101,9 +136,16 @@ class ImportEvidenceTests(unittest.TestCase):
         case, note = classify_setup_failure(
             pause_ready={"ready": True},
             sibling_layers=layers,
-            s3_ledger_scrape={"found": True},
+            s3_ledger_scrape={
+                "found": True,
+                "parse_ok": True,
+                "payload": {
+                    "post_registration": {"registered_widget_id": "$$ID-abc"},
+                    "s3_diag_binding": {"sessionstate_binding_ok": True, "server_wrapper_integrity_ok": True},
+                },
+            },
             post_registration={"registered_widget_id": "$$ID-abc"},
-            binding={"sessionstate_binding_ok": True},
+            binding={"sessionstate_binding_ok": True, "server_wrapper_integrity_ok": True},
         )
         self.assertIsNone(case)
         self.assertEqual(note, "setup_pass")

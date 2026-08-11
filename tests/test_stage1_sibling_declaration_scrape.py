@@ -90,6 +90,22 @@ class DeclarationScrapeTests(unittest.TestCase):
         self.assertTrue(layers["sibling_pre_button_reached"])
         self.assertFalse(layers["sibling_post_button_return_reached"])
 
+    def test_pre_post_use_distinct_dom_id_selectors(self) -> None:
+        from live_draft_stage1_pause_sibling_probe import (
+            PAUSE_SIBLING_DECL_POST_DOM_ID,
+            PAUSE_SIBLING_DECL_PRE_DOM_ID,
+        )
+
+        src = (
+            Path(__file__).resolve().parent.parent.joinpath("live_draft_stage1_pause_sibling_probe.py").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertIn(PAUSE_SIBLING_DECL_PRE_DOM_ID, src)
+        self.assertIn(PAUSE_SIBLING_DECL_POST_DOM_ID, src)
+        self.assertIn("PAUSE_SIBLING_DECL_PRE_DOM_ID", src)
+        self.assertIn("PAUSE_SIBLING_DECL_POST_DOM_ID", src)
+
     def test_button_inventory_candidates(self) -> None:
         inv = [
             {"index": 0, "normalized_text": "Pause", "exact_label_match": False, "contains_pause_sibling": False},

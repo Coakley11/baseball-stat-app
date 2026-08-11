@@ -14,7 +14,7 @@ DECL_POST_EVENT = "SIBLING_BUTTON_DECLARATION_RESULT"
 
 
 _SETUP_LAYERS_JS = """() => {
-  const DECL_SEL = '#solo-stage1-pause-sibling-declaration, .solo-stage1-pause-sibling-declaration';
+  const DECL_SEL = '#solo-stage1-pause-sibling-declaration-pre, #solo-stage1-pause-sibling-declaration-post, #solo-stage1-pause-sibling-declaration, .solo-stage1-pause-sibling-declaration';
   const callsiteNodes = document.querySelectorAll('#solo-stage1-pause-sibling-callsite');
   const entry = document.querySelector('#solo-stage1-pause-sibling-entry');
   const declNodes = document.querySelectorAll(DECL_SEL);
