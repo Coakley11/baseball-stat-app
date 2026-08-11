@@ -113,6 +113,7 @@ class AppSessionIdTests(unittest.TestCase):
 
         src = inspect.getsource(_record_request_rerun)
         self.assertIn("_appsession_streamlit_session_id", src)
+        self.assertIn("register_sessionstate_from_appsession_owner", src)
         self.assertNotIn("get_script_run_ctx", src)
         app = SimpleNamespace(id="streamlit-session-uuid", _fragment_storage=None)
         self.assertEqual(_appsession_streamlit_session_id(app), "streamlit-session-uuid")

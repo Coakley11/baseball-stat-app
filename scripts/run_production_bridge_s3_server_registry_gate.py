@@ -122,7 +122,15 @@ def main() -> int:
     from stage1_preflight_cleanup import run_stage1_preflight_cleanup
     from stage1_s3_authoritative_evidence import build_authoritative_server_rows_from_payload
     from stage1_s3_r2_subclassify import classify_s3_r2_subclass, wire_target_in_preclick_storage
-    from stage1_s3_r3_observability_classify import classify_s3_with_observability
+    from stage1_s3_export_freshness import (
+        compare_export_freshness,
+        extract_export_freshness_from_scrape,
+        wait_for_export_generation_after,
+    )
+    from stage1_s3_r3_observability_classify import (
+        classify_export_freshness_after_pause,
+        classify_s3_with_observability,
+    )
     from stage1_s3_server_registry_classify import classify_s3_server_registry
     from stage1_s3_server_registry_scrape import (
         evaluate_post_registration_from_ledger,
@@ -354,8 +362,19 @@ def main() -> int:
         post_reg = dict(post_reg)
         binding_pre = dict(binding)
 
+        pre_sibling_scrape = scrape_s3_server_diag_ledger(page)
+        pre_sibling_fresh = extract_export_freshness_from_scrape(pre_sibling_scrape, local_scrape_ts=time.time())
+        report["s3_export_freshness_pre_sibling_click"] = pre_sibling_fresh
+        report["pre_click_export_generation"] = pre_sibling_fresh.get("export_generation")
+
         sibling_step = capture_sibling_pre_pause_transport(page)
         report["sibling_strict_transport"] = sibling_step
+
+        post_sibling_scrape = scrape_s3_server_diag_ledger(page)
+        post_sibling_fresh = extract_export_freshness_from_scrape(post_sibling_scrape, local_scrape_ts=time.time())
+        report["s3_export_freshness_post_sibling_click"] = post_sibling_fresh
+        report["post_sibling_export_generation"] = post_sibling_fresh.get("export_generation")
+        report["s3_export_freshness_sibling_delta"] = compare_export_freshness(pre_sibling_fresh, post_sibling_fresh)
         wire_id, wire_target, strict_backmsg = _wire_from_sibling_step(sibling_step)
         report["wire_widget_id"] = wire_id
         report["wire_rerun_target_fragment_id"] = wire_target
@@ -367,9 +386,46 @@ def main() -> int:
 
         pause_step = _capture_pause_strict(page, room_id=room_id)
         report["pause_positive_control"] = pause_step
+        report["pre_pause_export_generation"] = post_sibling_fresh.get("export_generation") or pre_sibling_fresh.get(
+            "export_generation"
+        )
 
-        page.wait_for_timeout(1200)
-        s3_after = scrape_s3_server_diag_ledger(page)
+        s3_after: dict[str, Any]
+        post_pause_fresh: dict[str, Any] = {}
+        if pause_step.get("pause_resolved"):
+            wait_result = wait_for_export_generation_after(
+                page,
+                min_generation=int(report.get("pre_pause_export_generation") or 0),
+                max_wait_s=30.0,
+            )
+            report["s3_export_freshness_wait_after_pause"] = wait_result
+            post_pause_fresh = dict(wait_result.get("freshness") or {})
+            post_pause_fresh["freshness_wait_ok"] = bool(wait_result.get("ok"))
+            report["s3_export_freshness_post_pause"] = post_pause_fresh
+            stale = classify_export_freshness_after_pause(
+                pause_resolved=True,
+                pre_pause_export_generation=int(report.get("pre_pause_export_generation") or 0),
+                post_pause_freshness=post_pause_fresh,
+            )
+            if stale is not None:
+                stale_case, stale_note, stale_evidence = stale
+                report["classification"] = stale_case
+                report["classification_note"] = stale_note
+                report["export_freshness_evidence"] = stale_evidence
+                report["s3_server_diag_after_pause"] = wait_result.get("scrape") or {}
+                report["ok"] = False
+                report["finished_at"] = time.time()
+                out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+                browser.close()
+                print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
+                return 2
+            s3_after = dict(wait_result.get("scrape") or {})
+        else:
+            page.wait_for_timeout(1200)
+            s3_after = scrape_s3_server_diag_ledger(page)
+            post_pause_fresh = extract_export_freshness_from_scrape(s3_after, local_scrape_ts=time.time())
+            report["s3_export_freshness_post_pause"] = post_pause_fresh
+
         report["s3_server_diag_after_pause"] = s3_after
         payload = s3_after.get("payload") if isinstance(s3_after.get("payload"), dict) else {}
         ledger = (payload.get("ledger") or {}) if isinstance(payload, dict) else {}

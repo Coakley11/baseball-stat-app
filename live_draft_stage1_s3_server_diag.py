@@ -7,10 +7,10 @@ import time
 import uuid
 from typing import Any
 
-S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v6"
+S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v7"
 S3_LEDGER_DOM_ID = "solo-stage1-s3-server-diag-ledger"
 S3_READINESS_DOM_ID = "solo-stage1-s3-server-diag-readiness"
-S3_DOM_PAYLOAD_SCHEMA_REV = "stage1_s3_dom_payload_v2"
+S3_DOM_PAYLOAD_SCHEMA_REV = "stage1_s3_dom_payload_v3"
 S3_SESSION_LEDGER_KEY = "_stage1_s3_server_diag_ledger"
 S3_PATCHED_KEY = "_stage1_s3_server_diag_patched"
 S3_WATCH_KEY = "_stage1_s3_server_watch_user_key"
@@ -145,6 +145,24 @@ def _bound_row_list(
     return out
 
 
+def _session_export_identity(session: dict[str, Any]) -> dict[str, Any]:
+    script_run_seq = 0
+    diagnostic_run_id = ""
+    try:
+        from live_draft_stage1_pause_sibling_probe import _full_app_run_seq
+
+        script_run_seq = int(_full_app_run_seq(session))
+    except Exception:
+        script_run_seq = int(session.get("_full_app_run_seq") or session.get("full_app_run_seq") or 0)
+    diagnostic_run_id = str(
+        session.get("diagnostic_run_id")
+        or session.get("application_diagnostic_run_id")
+        or session.get("run_id")
+        or ""
+    )[:64]
+    return {"script_run_seq": script_run_seq, "diagnostic_run_id": diagnostic_run_id}
+
+
 def build_s3_dom_payload(
     session: dict[str, Any],
     *,
@@ -152,6 +170,8 @@ def build_s3_dom_payload(
     ingress: dict[str, Any] | None = None,
     unrouted: dict[str, Any] | None = None,
     owner_hist: list[dict[str, Any]] | None = None,
+    export_generation: int | None = None,
+    export_generated_server_ts: float | None = None,
 ) -> dict[str, Any]:
     """Build a complete, JSON-serializable S3 DOM payload (setup fields always included)."""
     export = dict(export if export is not None else s3_ledger_export(session))
@@ -244,10 +264,25 @@ def build_s3_dom_payload(
     }
     rows_bounded = bool(bounds_log)
     sid = _streamlit_session_id()
+    identity = _session_export_identity(session)
+    from live_draft_stage1_s3_process_global_diag import build_latest_ingress_summaries, ledger_totals_for_session
+
+    ledger_totals = ledger_totals_for_session(sid)
+    ingress_summaries = build_latest_ingress_summaries(sid)
+    gen = int(export_generation or 0)
+    server_ts = float(export_generated_server_ts or time.time())
     payload: dict[str, Any] = {
         "payload_schema_rev": S3_DOM_PAYLOAD_SCHEMA_REV,
         "impl_rev": S3_SERVER_DIAG_IMPL_REV,
         "streamlit_session_id": sid,
+        "export_generation": gen,
+        "export_generated_server_ts": server_ts,
+        "script_run_seq": identity.get("script_run_seq"),
+        "diagnostic_run_id": identity.get("diagnostic_run_id"),
+        "module_ledger_total_count": ledger_totals.get("module_ledger_total_count"),
+        "critical_ledger_total_count": ledger_totals.get("critical_ledger_total_count"),
+        "unrouted_ledger_total_count": ledger_totals.get("unrouted_ledger_total_count"),
+        "latest_ingress_summaries": ingress_summaries,
         "s3_diag_binding": binding,
         "pre_declaration": pre,
         "post_registration": post,
@@ -262,6 +297,14 @@ def build_s3_dom_payload(
             "bounds_applied": bounds_log,
             "row_counts_before_bounding": before_counts,
             "row_counts_exported": exported_counts,
+            "export_generation": gen,
+            "export_generated_server_ts": server_ts,
+            "streamlit_session_id": sid,
+            "script_run_seq": identity.get("script_run_seq"),
+            "diagnostic_run_id": identity.get("diagnostic_run_id"),
+            "module_ledger_total_count": ledger_totals.get("module_ledger_total_count"),
+            "critical_ledger_total_count": ledger_totals.get("critical_ledger_total_count"),
+            "unrouted_ledger_total_count": ledger_totals.get("unrouted_ledger_total_count"),
         },
     }
     text = json.dumps(payload, default=str)
@@ -304,7 +347,15 @@ def _html_attr_json(raw_json: str) -> str:
 
 
 def emit_s3_dom_ledger(st: Any, session: dict[str, Any]) -> None:
-    payload = build_s3_dom_payload(session)
+    from live_draft_stage1_s3_process_global_diag import next_s3_export_generation
+
+    export_generation = next_s3_export_generation()
+    export_generated_server_ts = time.time()
+    payload = build_s3_dom_payload(
+        session,
+        export_generation=export_generation,
+        export_generated_server_ts=export_generated_server_ts,
+    )
     payload_text = serialize_s3_dom_json(payload)
     readiness = build_s3_readiness_payload(session)
     readiness_text = json.dumps(readiness, default=str)
@@ -320,6 +371,8 @@ def emit_s3_dom_ledger(st: Any, session: dict[str, Any]) -> None:
         f'<div id="{S3_LEDGER_DOM_ID}" '
         f'data-impl-rev="{S3_SERVER_DIAG_IMPL_REV}" '
         f'data-streamlit-session-id="{sid}" '
+        f'data-export-generation="{export_generation}" '
+        f'data-export-generated-server-ts="{export_generated_server_ts}" '
         f'data-json="{_html_attr_json(payload_text)}"></div>',
         unsafe_allow_html=True,
     )
@@ -429,7 +482,7 @@ def _ensure_safe_sessionstate_wrappers() -> None:
         append_module_event,
         mark_global_wrapper,
         resolve_sessionstate_objects,
-        resolve_sessionstate_streamlit_session_id,
+        resolve_sessionstate_routing,
         scan_widget_states_proto,
         streamlit_session_id_from_ctx,
         append_unrouted_event,
@@ -450,23 +503,24 @@ def _ensure_safe_sessionstate_wrappers() -> None:
         underlying = resolved.get("underlying")
         wrapper_id = resolved.get("wrapper_object_id")
         underlying_id = resolved.get("underlying_object_id")
-        sid = resolve_sessionstate_streamlit_session_id(underlying) if underlying is not None else ""
-        if not sid:
-            sid = resolve_sessionstate_streamlit_session_id(self)
+        route_obj = underlying if underlying is not None else self
+        routing_sid, routing_source, provenance = resolve_sessionstate_routing(route_obj)
         ctx_sid = streamlit_session_id_from_ctx()
         payload = {
             "safe_sessionstate_object_id": wrapper_id,
             "underlying_sessionstate_object_id": underlying_id,
             "ctx_streamlit_session_id": ctx_sid,
-            "routing_resolved": bool(sid),
+            "routing_resolved": bool(routing_sid),
+            "routing_source": routing_source,
             "pause_present": scan.get("pause_present"),
             "pause_proto": scan.get("pause_proto"),
             "pause_sibling_present": scan.get("pause_sibling_present"),
             "pause_sibling_proto": scan.get("pause_sibling_proto"),
             "incoming_widget_count": scan.get("incoming_widget_count"),
+            **provenance,
         }
-        if sid:
-            append_module_event(sid, "SAFE_SESSIONSTATE_RECEIVE_ENTRY", **payload)
+        if routing_sid:
+            append_module_event(routing_sid, "SAFE_SESSIONSTATE_RECEIVE_ENTRY", **payload)
         else:
             append_unrouted_event(
                 "SAFE_SESSIONSTATE_RECEIVE_ENTRY",
@@ -515,7 +569,7 @@ def install_s3_server_diagnostics(st: Any | None, session: dict[str, Any]) -> No
         ss_wrapper = get_streamlit_session_state(st)
         sid = streamlit_session_id_from_ctx()
         if ss_wrapper and sid:
-            register_sessionstate_pair_from_wrapper(ss_wrapper, sid)
+            register_sessionstate_pair_from_wrapper(ss_wrapper, sid, mapping_source="script_run_context")
     except Exception:
         ss_wrapper = None
         sid = streamlit_session_id_from_ctx()

@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any
 
-S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v3"
+S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v4"
 
 CRITICAL_SERVER_PHASES: frozenset[str] = frozenset(
     {
@@ -36,6 +36,73 @@ _GLOBAL_WRAPPERS_INSTALLED: dict[str, bool] = {
     "safe_sessionstate_on_script_will_rerun": False,
     "register_widget_probe": False,
 }
+_EXPORT_GENERATION_LOCK = threading.Lock()
+_S3_EXPORT_GENERATION = 0
+
+INGRESS_SUMMARY_PHASE_KEYS: dict[str, str] = {
+    "runtime_backmsg": "RUNTIME_BACKMSG_ENTRY",
+    "appsession_backmsg": "APPSESSION_BACKMSG_ENTRY",
+    "appsession_request_rerun": "APPSESSION_REQUEST_RERUN_ENTRY",
+    "safe_sessionstate_receive": "SAFE_SESSIONSTATE_RECEIVE_ENTRY",
+    "server_receive": "SERVER_RECEIVE_ENTRY",
+    "server_state_applied": "SERVER_STATE_APPLIED",
+}
+
+
+def next_s3_export_generation() -> int:
+    global _S3_EXPORT_GENERATION
+    with _EXPORT_GENERATION_LOCK:
+        _S3_EXPORT_GENERATION += 1
+        return _S3_EXPORT_GENERATION
+
+
+def current_s3_export_generation() -> int:
+    with _EXPORT_GENERATION_LOCK:
+        return _S3_EXPORT_GENERATION
+
+
+def ledger_totals_for_session(streamlit_session_id: str) -> dict[str, int]:
+    sid = str(streamlit_session_id or "").strip()[:64]
+    with _LEDGER_LOCK:
+        module_total = len(_MODULE_LEDGER_BY_STREAMLIT_SESSION.get(sid) or [])
+        critical_by_phase = _CRITICAL_LEDGER_BY_SESSION.get(sid) or {}
+        critical_total = sum(len(rows or []) for rows in critical_by_phase.values())
+        unrouted_total = len(_UNROUTED_ORPHAN_LEDGER)
+    return {
+        "module_ledger_total_count": module_total,
+        "critical_ledger_total_count": critical_total,
+        "unrouted_ledger_total_count": unrouted_total,
+    }
+
+
+def _latest_row_for_phase(rows: list[dict[str, Any]], phase: str) -> dict[str, Any]:
+    hits = [r for r in rows if str(r.get("phase") or "") == phase]
+    if not hits:
+        return {}
+    return max(hits, key=lambda r: float(r.get("ts") or 0))
+
+
+def build_latest_ingress_summaries(streamlit_session_id: str) -> dict[str, Any]:
+    sid = str(streamlit_session_id or "").strip()[:64]
+    rows = module_ledger_rows(sid)
+    out: dict[str, Any] = {}
+    for key, phase in INGRESS_SUMMARY_PHASE_KEYS.items():
+        phase_rows = [r for r in rows if str(r.get("phase") or "") == phase]
+        last = _latest_row_for_phase(rows, phase)
+        summary: dict[str, Any] = {
+            "phase": phase,
+            "total_count": len(phase_rows),
+            "latest_event_id": str(last.get("event_id") or "")[:16],
+            "latest_server_ts": last.get("ts"),
+            "latest_routing_sid": str(last.get("routing_sid") or last.get("streamlit_session_id") or "")[:64],
+            "latest_routing_source": str(last.get("routing_source") or "")[:64],
+        }
+        if phase == "RUNTIME_BACKMSG_ENTRY":
+            summary["latest_runtime_sid"] = str(last.get("runtime_session_id") or "")[:64]
+        if phase in ("APPSESSION_BACKMSG_ENTRY", "APPSESSION_REQUEST_RERUN_ENTRY"):
+            summary["latest_appsession_sid"] = str(last.get("appsession_id") or "")[:64]
+        out[key] = summary
+    return out
 
 
 def streamlit_session_id_from_ctx() -> str:
@@ -91,7 +158,12 @@ def register_sessionstate_instance(session_state_obj: Any, streamlit_session_id:
         _SESSIONSTATE_INSTANCE_TO_STREAMLIT_SESSION[id(session_state_obj)] = sid
 
 
-def register_sessionstate_pair_from_wrapper(session_state_wrapper: Any, streamlit_session_id: str) -> dict[str, Any]:
+def register_sessionstate_pair_from_wrapper(
+    session_state_wrapper: Any,
+    streamlit_session_id: str,
+    *,
+    mapping_source: str = "sessionstate_instance_map",
+) -> dict[str, Any]:
     """Register wrapper + underlying SessionState to the same Streamlit session ID."""
     resolved = resolve_sessionstate_objects(session_state_wrapper)
     sid = str(streamlit_session_id or "").strip()[:64]
@@ -100,7 +172,137 @@ def register_sessionstate_pair_from_wrapper(session_state_wrapper: Any, streamli
             register_sessionstate_instance(resolved["wrapper"], sid)
         if resolved.get("underlying") is not None:
             register_sessionstate_instance(resolved["underlying"], sid)
+    resolved["mapping_source"] = str(mapping_source or "")[:64]
+    resolved["streamlit_session_id"] = sid
     return resolved
+
+
+def register_sessionstate_from_appsession_owner(app_session: Any) -> dict[str, Any]:
+    """Register AppSession-owned SessionState against authoritative self.id."""
+    sid = str(getattr(app_session, "id", "") or "").strip()[:64]
+    out: dict[str, Any] = {
+        "appsession_id": sid,
+        "mapping_source": "appsession_owner",
+        "registered": False,
+    }
+    if not sid:
+        return out
+    ss = getattr(app_session, "_session_state", None)
+    if ss is None:
+        return out
+    resolved = register_sessionstate_pair_from_wrapper(ss, sid, mapping_source="appsession_owner")
+    out.update(resolved)
+    out["registered"] = True
+    return out
+
+
+def build_routing_provenance(
+    *,
+    routing_sid: str,
+    routing_source: str,
+    lookup_object_id: int | None = None,
+    ctx_sid: str = "",
+    appsession_sid: str = "",
+    runtime_sid: str = "",
+) -> dict[str, Any]:
+    sid = str(routing_sid or "").strip()[:64]
+    ctx = str(ctx_sid or "").strip()[:64]
+    app = str(appsession_sid or "").strip()[:64]
+    runtime = str(runtime_sid or "").strip()[:64]
+    comparable = [x for x in (sid, ctx, app, runtime) if x]
+    agree = len(set(comparable)) <= 1 if comparable else False
+    return {
+        "routing_sid": sid,
+        "routing_source": str(routing_source or "unresolved")[:64],
+        "lookup_object_id": lookup_object_id,
+        "ctx_streamlit_session_id": ctx,
+        "appsession_sid": app,
+        "runtime_sid": runtime,
+        "routing_ids_agree": agree,
+    }
+
+
+def resolve_sessionstate_routing(
+    session_state_obj: Any,
+    *,
+    appsession_sid: str = "",
+    runtime_sid: str = "",
+) -> tuple[str, str, dict[str, Any]]:
+    """Resolve Streamlit session for a SessionState object (map first, ctx secondary when consistent)."""
+    lookup_oid = id(session_state_obj) if session_state_obj is not None else None
+    ctx_sid = streamlit_session_id_from_ctx()
+    mapped_sid = resolve_sessionstate_streamlit_session_id(session_state_obj)
+    app_sid = str(appsession_sid or "").strip()[:64]
+    run_sid = str(runtime_sid or "").strip()[:64]
+
+    available = [x for x in (mapped_sid, app_sid, run_sid, ctx_sid) if x]
+    ids_agree = len(set(available)) <= 1 if available else True
+
+    if mapped_sid:
+        if ctx_sid and mapped_sid != ctx_sid:
+            ids_agree = False
+        return (
+            mapped_sid,
+            "sessionstate_instance_map",
+            build_routing_provenance(
+                routing_sid=mapped_sid,
+                routing_source="sessionstate_instance_map",
+                lookup_object_id=lookup_oid,
+                ctx_sid=ctx_sid,
+                appsession_sid=app_sid,
+                runtime_sid=run_sid,
+            )
+            | {"routing_ids_agree": ids_agree},
+        )
+
+    conflicting = False
+    if ctx_sid and app_sid and ctx_sid != app_sid:
+        conflicting = True
+    if ctx_sid and run_sid and ctx_sid != run_sid:
+        conflicting = True
+    if app_sid and run_sid and app_sid != run_sid:
+        conflicting = True
+
+    if conflicting:
+        return (
+            "",
+            "unresolved",
+            build_routing_provenance(
+                routing_sid="",
+                routing_source="unresolved",
+                lookup_object_id=lookup_oid,
+                ctx_sid=ctx_sid,
+                appsession_sid=app_sid,
+                runtime_sid=run_sid,
+            )
+            | {"routing_ids_agree": False, "routing_id_conflict": True},
+        )
+
+    if ctx_sid:
+        return (
+            ctx_sid,
+            "script_run_context",
+            build_routing_provenance(
+                routing_sid=ctx_sid,
+                routing_source="script_run_context",
+                lookup_object_id=lookup_oid,
+                ctx_sid=ctx_sid,
+                appsession_sid=app_sid,
+                runtime_sid=run_sid,
+            ),
+        )
+    return (
+        "",
+        "unresolved",
+        build_routing_provenance(
+            routing_sid="",
+            routing_source="unresolved",
+            lookup_object_id=lookup_oid,
+            ctx_sid=ctx_sid,
+            appsession_sid=app_sid,
+            runtime_sid=run_sid,
+        ),
+    )
 
 
 def resolve_sessionstate_streamlit_session_id(session_state_obj: Any) -> str:
@@ -195,21 +397,28 @@ def append_module_event_for_underlying_sessionstate(
     phase: str,
     *,
     extra_identity: dict[str, Any] | None = None,
+    appsession_sid: str = "",
+    runtime_sid: str = "",
     **fields: Any,
 ) -> dict[str, Any]:
-    mapped_sid = resolve_sessionstate_streamlit_session_id(underlying_session_state)
-    ctx_sid = streamlit_session_id_from_ctx()
-    routing_resolved = bool(mapped_sid)
+    routing_sid, routing_source, provenance = resolve_sessionstate_routing(
+        underlying_session_state,
+        appsession_sid=appsession_sid,
+        runtime_sid=runtime_sid,
+    )
+    ctx_sid = provenance.get("ctx_streamlit_session_id") or streamlit_session_id_from_ctx()
+    routing_resolved = bool(routing_sid)
     payload = {
         "underlying_sessionstate_object_id": id(underlying_session_state),
         "underlying_sessionstate_type": type(underlying_session_state).__name__,
         "routing_resolved": routing_resolved,
         "ctx_streamlit_session_id": ctx_sid,
+        **provenance,
         **(extra_identity or {}),
         **fields,
     }
-    if mapped_sid:
-        return append_module_event(mapped_sid, phase, **payload)
+    if routing_sid:
+        return append_module_event(routing_sid, phase, **payload)
     append_unrouted_event(
         phase,
         routing_failure_reason="underlying_sessionstate_not_mapped",

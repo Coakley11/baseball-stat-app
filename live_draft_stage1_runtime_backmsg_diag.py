@@ -26,12 +26,25 @@ def install_runtime_backmsg_probe(st: Any | None, session: dict[str, Any]) -> No
     orig = Runtime.handle_backmsg
 
     def wrapped_handle_backmsg(self: Any, session_id: str, msg: Any) -> Any:
-        from live_draft_stage1_s3_process_global_diag import scan_widget_states_proto
+        from live_draft_stage1_s3_process_global_diag import (
+            append_module_event,
+            build_routing_provenance,
+            scan_widget_states_proto,
+            streamlit_session_id_from_ctx,
+        )
 
         sid = str(session_id or "")[:64]
+        ctx_sid = streamlit_session_id_from_ctx()
+        provenance = build_routing_provenance(
+            routing_sid=sid,
+            routing_source="runtime_explicit_session_id",
+            ctx_sid=ctx_sid,
+            runtime_sid=sid,
+        )
         fields: dict[str, Any] = {
             "runtime_session_id": sid,
             "thread_id": threading.get_ident(),
+            **provenance,
         }
         try:
             msg_type = msg.WhichOneof("type")

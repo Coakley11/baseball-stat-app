@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-APPSESSION_INGRESS_IMPL_REV = "stage1_appsession_ingress_diag_v3"
+APPSESSION_INGRESS_IMPL_REV = "stage1_appsession_ingress_diag_v4"
 APPSESSION_PATCHED_KEY = "_stage1_appsession_ingress_patched"
 
 
@@ -25,11 +25,26 @@ def _fragment_storage_snapshot(fragment_storage: Any) -> dict[str, Any]:
 
 
 def _record_backmsg(app_session: Any, msg: Any) -> None:
-    from live_draft_stage1_s3_process_global_diag import append_module_event, scan_widget_states_proto
+    from live_draft_stage1_s3_process_global_diag import (
+        append_module_event,
+        build_routing_provenance,
+        register_sessionstate_from_appsession_owner,
+        scan_widget_states_proto,
+        streamlit_session_id_from_ctx,
+    )
 
     sid = _appsession_streamlit_session_id(app_session)
     if not sid:
         return
+    owner = register_sessionstate_from_appsession_owner(app_session)
+    ctx_sid = streamlit_session_id_from_ctx()
+    provenance = build_routing_provenance(
+        routing_sid=sid,
+        routing_source="appsession_self_id",
+        lookup_object_id=owner.get("underlying_object_id"),
+        ctx_sid=ctx_sid,
+        appsession_sid=sid,
+    )
     try:
         msg_type = msg.WhichOneof("type")
     except Exception:
@@ -38,6 +53,9 @@ def _record_backmsg(app_session: Any, msg: Any) -> None:
         "appsession_id": sid,
         "backmsg_type": str(msg_type or ""),
         "rerun_script": msg_type == "rerun_script",
+        **provenance,
+        "appsession_owner_registered": bool(owner.get("registered")),
+        "mapping_source": owner.get("mapping_source") or "appsession_owner",
     }
     if msg_type == "rerun_script":
         try:
@@ -62,11 +80,26 @@ def _record_backmsg(app_session: Any, msg: Any) -> None:
 
 
 def _record_request_rerun(app_session: Any, client_state: Any | None) -> None:
-    from live_draft_stage1_s3_process_global_diag import append_module_event, scan_widget_states_proto
+    from live_draft_stage1_s3_process_global_diag import (
+        append_module_event,
+        build_routing_provenance,
+        register_sessionstate_from_appsession_owner,
+        scan_widget_states_proto,
+        streamlit_session_id_from_ctx,
+    )
 
     sid = _appsession_streamlit_session_id(app_session)
     if not sid:
         return
+    owner = register_sessionstate_from_appsession_owner(app_session)
+    ctx_sid = streamlit_session_id_from_ctx()
+    provenance = build_routing_provenance(
+        routing_sid=sid,
+        routing_source="appsession_self_id",
+        lookup_object_id=owner.get("underlying_object_id"),
+        ctx_sid=ctx_sid,
+        appsession_sid=sid,
+    )
     frag_id = ""
     page_hash = ""
     target_exists = False
@@ -107,6 +140,9 @@ def _record_request_rerun(app_session: Any, client_state: Any | None) -> None:
         pause_present=scan.get("pause_present"),
         pause_proto=scan.get("pause_proto"),
         activated_triggers=scan.get("activated_triggers"),
+        **provenance,
+        appsession_owner_registered=bool(owner.get("registered")),
+        mapping_source=owner.get("mapping_source") or "appsession_owner",
     )
 
 

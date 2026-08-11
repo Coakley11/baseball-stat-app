@@ -33,6 +33,8 @@ def _scrape_dom_marker(page, frame, *, selector: str) -> dict[str, Any]:
         json: raw,
         impl_rev: el.getAttribute('data-impl-rev') || '',
         streamlit_session_id: el.getAttribute('data-streamlit-session-id') || '',
+        export_generation: el.getAttribute('data-export-generation') || '',
+        export_generated_server_ts: el.getAttribute('data-export-generated-server-ts') || '',
       };
     }"""
     try:
@@ -47,6 +49,8 @@ def _scrape_dom_marker(page, frame, *, selector: str) -> dict[str, Any]:
         "found": True,
         "impl_rev": raw.get("impl_rev"),
         "streamlit_session_id": raw.get("streamlit_session_id"),
+        "export_generation": raw.get("export_generation"),
+        "export_generated_server_ts": raw.get("export_generated_server_ts"),
         "raw_json_length": len(json_text),
         "parse_ok": payload is not None,
         "parse_error": parse_error or "",

@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_ABORT = "BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_ABORT"
+BUTTON_DISPATCH_S3_R3O0_SERVER_EXPORT_NOT_REFRESHED_AFTER_PAUSE = (
+    "BUTTON_DISPATCH_S3_R3O0_SERVER_EXPORT_NOT_REFRESHED_AFTER_PAUSE"
+)
 BUTTON_DISPATCH_S3_R3A_DROPPED_IN_APPSESSION_BACKMSG_PATH = "BUTTON_DISPATCH_S3_R3A_DROPPED_IN_APPSESSION_BACKMSG_PATH"
 BUTTON_DISPATCH_S3_R3B_DROPPED_AFTER_RERUN_REQUEST = "BUTTON_DISPATCH_S3_R3B_DROPPED_AFTER_RERUN_REQUEST"
 BUTTON_DISPATCH_S3_R4_TRIGGER_LOST_DURING_STATE_APPLY = "BUTTON_DISPATCH_S3_R4_TRIGGER_LOST_DURING_STATE_APPLY"
@@ -108,6 +111,33 @@ def sibling_rows(rows: list[dict[str, Any]], *, wire_widget_id: str = "") -> dic
             lambda r: sib_hit(r) and bool(r.get("trigger_from_deserialized")),
         ),
     }
+
+
+def classify_export_freshness_after_pause(
+    *,
+    pause_resolved: bool,
+    pre_pause_export_generation: int | None,
+    post_pause_freshness: dict[str, Any] | None,
+) -> tuple[str, str, dict[str, Any]] | None:
+    """Return stale-export classification when Pause resolved but DOM export did not refresh."""
+    if not pause_resolved:
+        return None
+    pre_gen = int(pre_pause_export_generation or 0)
+    fresh = dict(post_pause_freshness or {})
+    post_gen = int(fresh.get("export_generation") or 0)
+    evidence = {
+        "pre_pause_export_generation": pre_gen,
+        "post_pause_export_generation": post_gen,
+        "export_generation_advanced": post_gen > pre_gen,
+        "freshness_wait_ok": fresh.get("freshness_wait_ok"),
+    }
+    if post_gen <= pre_gen:
+        return (
+            BUTTON_DISPATCH_S3_R3O0_SERVER_EXPORT_NOT_REFRESHED_AFTER_PAUSE,
+            f"export_generation_stale:pre={pre_gen}:post={post_gen}",
+            evidence,
+        )
+    return None
 
 
 def classify_s3_with_observability(
