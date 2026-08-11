@@ -549,6 +549,13 @@ ML_DERIVED_FEATURE_STATS = ["PA_est", "BB_rate", "K_rate", "SB_rate", "XBH", "XB
 st.set_page_config(page_title="⚾ Daniel Cohen Baseball Explorer ⚾", layout="wide")
 
 try:
+    from cloud_runtime_fs_probe import maybe_render_cloud_runtime_fs_probe
+
+    maybe_render_cloud_runtime_fs_probe(st)
+except ImportError:
+    pass
+
+try:
     from live_draft_solo_p6_diag_observer import try_serve_p6_diag_observer
 
     try_serve_p6_diag_observer(st)
