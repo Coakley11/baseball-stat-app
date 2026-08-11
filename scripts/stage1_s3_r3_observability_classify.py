@@ -150,12 +150,17 @@ def classify_export_freshness_after_pause(
     return None
 
 
-def classify_oob_channel_unavailable(*, channel: dict[str, Any], initial_fetch: dict[str, Any] | None) -> tuple[str, str, dict[str, Any]] | None:
+def classify_oob_channel_unavailable(
+    *,
+    channel: dict[str, Any],
+    initial_fetch: dict[str, Any] | None,
+    note: str = "oob_channel_missing_or_unreadable",
+) -> tuple[str, str, dict[str, Any]] | None:
     if channel.get("registered") and initial_fetch and initial_fetch.get("ok"):
         return None
     return (
         BUTTON_DISPATCH_S3_R3O0_SERVER_OOB_CHANNEL_UNAVAILABLE,
-        "oob_channel_missing_or_unreadable",
+        str(note or "oob_channel_missing_or_unreadable"),
         {"channel": channel, "initial_fetch": dict(initial_fetch or {})},
     )
 

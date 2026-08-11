@@ -61,12 +61,131 @@ def _scrape_dom_marker(page, frame, *, selector: str) -> dict[str, Any]:
     return out
 
 
+def _readiness_candidate_inventory(raw_nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for idx, raw in enumerate(raw_nodes):
+        if not isinstance(raw, dict):
+            continue
+        json_text = str(raw.get("json") or "")
+        payload, parse_error = _parse_dom_json_attr(json_text)
+        oob = payload.get("oob_channel") if isinstance(payload, dict) else {}
+        oob = dict(oob) if isinstance(oob, dict) else {}
+        payload_sid = str((payload or {}).get("streamlit_session_id") or "")
+        dom_sid = str(raw.get("streamlit_session_id") or "")
+        candidates.append(
+            {
+                "dom_index": idx,
+                "found": True,
+                "impl_rev": raw.get("impl_rev"),
+                "dom_streamlit_session_id": dom_sid[:64],
+                "streamlit_session_id": (payload_sid or dom_sid)[:64],
+                "export_generation": raw.get("export_generation"),
+                "export_generated_server_ts": raw.get("export_generated_server_ts"),
+                "raw_json_length": len(json_text),
+                "parse_ok": payload is not None,
+                "parse_error": parse_error or "",
+                "oob_channel_registered": bool(oob.get("registered")),
+                "diagnostic_token": str(oob.get("diagnostic_token") or "")[:32],
+                "static_url_path": str(oob.get("static_url_path") or "")[:120],
+                "snapshot_generation": oob.get("snapshot_generation"),
+                "published": bool(oob.get("published")),
+                "payload": payload,
+            }
+        )
+    return candidates
+
+
+def _scrape_readiness_markers(page, frame, *, selector: str) -> dict[str, Any]:
+    fr = frame if frame is not None else resolve_streamlit_app_frame(page)
+    js = """(sel) => {
+      const nodes = Array.from(document.querySelectorAll(sel));
+      if (!nodes.length) return { found: false, candidate_count: 0, nodes: [] };
+      return {
+        found: true,
+        candidate_count: nodes.length,
+        nodes: nodes.map((el, idx) => ({
+          dom_index: idx,
+          json: el.getAttribute('data-json') || '',
+          impl_rev: el.getAttribute('data-impl-rev') || '',
+          streamlit_session_id: el.getAttribute('data-streamlit-session-id') || '',
+          export_generation: el.getAttribute('data-export-generation') || '',
+          export_generated_server_ts: el.getAttribute('data-export-generated-server-ts') || '',
+        })),
+      };
+    }"""
+    try:
+        raw = fr.evaluate(js, selector)
+    except Exception as exc:
+        return {"found": False, "error": str(exc)[:200], "candidate_count": 0, "candidates": []}
+    if not isinstance(raw, dict) or not raw.get("found"):
+        return {"found": False, "candidate_count": 0, "candidates": []}
+    candidates = _readiness_candidate_inventory(list(raw.get("nodes") or []))
+    return {
+        "found": True,
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+    }
+
+
 def scrape_s3_server_diag_ledger(page, frame=None) -> dict[str, Any]:
     return _scrape_dom_marker(page, frame, selector=S3_LEDGER_DOM_SELECTOR)
 
 
-def scrape_s3_server_diag_readiness(page, frame=None) -> dict[str, Any]:
-    return _scrape_dom_marker(page, frame, selector=S3_READINESS_DOM_SELECTOR)
+def scrape_s3_server_diag_readiness(
+    page,
+    frame=None,
+    *,
+    expected_streamlit_session_id: str = "",
+) -> dict[str, Any]:
+    from stage1_s3_oob_readback import select_valid_readiness_candidate
+
+    inventory = _scrape_readiness_markers(page, frame, selector=S3_READINESS_DOM_SELECTOR)
+    candidates = list(inventory.get("candidates") or [])
+    selected, selection_reason = select_valid_readiness_candidate(
+        candidates, expected_streamlit_sid=expected_streamlit_session_id
+    )
+    out: dict[str, Any] = {
+        "found": bool(inventory.get("found")),
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+        "selected_candidate_index": selected.get("dom_index") if isinstance(selected, dict) else None,
+        "selection_reason": selection_reason,
+        "selected_candidate": dict(selected) if isinstance(selected, dict) else {},
+    }
+    if isinstance(selected, dict):
+        payload = selected.get("payload") if isinstance(selected.get("payload"), dict) else {}
+        out.update(
+            {
+                "impl_rev": selected.get("impl_rev"),
+                "streamlit_session_id": selected.get("streamlit_session_id"),
+                "export_generation": selected.get("export_generation"),
+                "export_generated_server_ts": selected.get("export_generated_server_ts"),
+                "raw_json_length": selected.get("raw_json_length"),
+                "parse_ok": bool(selected.get("parse_ok")),
+                "parse_error": selected.get("parse_error") or "",
+                "payload": payload,
+            }
+        )
+        if payload:
+            out["top_level_keys"] = sorted(payload.keys())
+    elif candidates:
+        first = candidates[0]
+        out.update(
+            {
+                "impl_rev": first.get("impl_rev"),
+                "streamlit_session_id": first.get("streamlit_session_id"),
+                "export_generation": first.get("export_generation"),
+                "export_generated_server_ts": first.get("export_generated_server_ts"),
+                "raw_json_length": first.get("raw_json_length"),
+                "parse_ok": bool(first.get("parse_ok")),
+                "parse_error": first.get("parse_error") or "",
+                "payload": first.get("payload"),
+            }
+        )
+    else:
+        out["parse_ok"] = False
+        out["parse_error"] = "no_readiness_candidates"
+    return out
 
 
 def extract_post_registration(payload: dict[str, Any] | None) -> dict[str, Any]:

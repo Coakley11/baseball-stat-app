@@ -142,8 +142,15 @@ class OobSnapshotTests(unittest.TestCase):
         captured: dict[str, str] = {}
 
         class FakeResponse:
-            ok = True
             status = 200
+
+            @property
+            def headers(self):
+                return {"content-type": "application/json"}
+
+            @staticmethod
+            def text():
+                return json.dumps({"snapshot_generation": 1, "streamlit_session_id": "sid", "diagnostic_token": "tok", "publish_source": "initial_pre_click"})
 
             @staticmethod
             def json():
@@ -163,6 +170,17 @@ class OobSnapshotTests(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertIn("?cb=", captured["url"])
         self.assertTrue(captured["url"].startswith("https://example.test/app/static/s3_oob/tok123.json"))
+
+    def test_empty_path_fetch_aborts_without_http(self) -> None:
+        from stage1_s3_oob_readback import fetch_oob_snapshot_via_page
+
+        page = SimpleNamespace(
+            evaluate=lambda _js: "https://example.test",
+            request=SimpleNamespace(get=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no fetch"))),
+        )
+        out = fetch_oob_snapshot_via_page(page, "")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["reason"], "empty_static_url_path")
 
     def test_sibling_oob_r2_pattern(self) -> None:
         snap = {

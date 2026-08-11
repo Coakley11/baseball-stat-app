@@ -17,6 +17,8 @@ sys.path.insert(0, str(SCRIPTS))
 
 OUT = ROOT / "data" / "production_bridge_s3_server_registry_gate.json"
 SETUP_ONLY_OUT = ROOT / "data" / "production_bridge_s3_setup_only_gate.json"
+OOB_SETUP_ONLY_OUT = ROOT / "data" / "production_bridge_s3_oob_setup_only_gate.json"
+OOB_CHANNEL_DISCOVERY_PASS = "OOB_CHANNEL_DISCOVERY_PASS"
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
 
 
@@ -25,6 +27,70 @@ def _harness_sha() -> str:
         return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=str(ROOT), text=True).strip()
     except Exception:
         return ""
+
+
+def _expected_streamlit_session_id(report: dict[str, Any]) -> str:
+    start = report.get("start_latch") if isinstance(report.get("start_latch"), dict) else {}
+    bridge = report.get("bridge_hydration") if isinstance(report.get("bridge_hydration"), dict) else {}
+    return str(start.get("streamlit_session_id") or bridge.get("streamlit_session_id") or "")[:64]
+
+
+def _apply_oob_discovery_to_report(
+    report: dict[str, Any],
+    *,
+    page,
+    expected_streamlit_sid: str,
+) -> dict[str, Any]:
+    from stage1_s3_oob_readback import extract_oob_freshness_from_snapshot
+    from stage1_s3_r3_observability_classify import classify_oob_channel_unavailable
+    from stage1_s3_server_registry_scrape import scrape_s3_server_diag_ledger, scrape_s3_server_diag_readiness
+
+    readiness_pre = scrape_s3_server_diag_readiness(page, expected_streamlit_session_id=expected_streamlit_sid)
+    ledger_pre = scrape_s3_server_diag_ledger(page)
+    discovery = run_oob_discovery_pipeline(
+        readiness_scrape=readiness_pre,
+        ledger_scrape=ledger_pre,
+        expected_streamlit_sid=expected_streamlit_sid,
+        page=page,
+    )
+    oob_channel = dict(discovery.get("resolved_channel") or {})
+    initial_oob_fetch = dict(discovery.get("initial_fetch") or {})
+    pre_oob_snapshot = dict(discovery.get("pre_oob_snapshot") or initial_oob_fetch.get("snapshot") or {})
+    pre_oob_fresh = extract_oob_freshness_from_snapshot(pre_oob_snapshot)
+    report["s3_readiness_candidate_inventory"] = {
+        "candidate_count": readiness_pre.get("candidate_count"),
+        "candidates": readiness_pre.get("candidates"),
+        "selected_candidate_index": readiness_pre.get("selected_candidate_index"),
+        "selection_reason": readiness_pre.get("selection_reason"),
+    }
+    report["s3_oob_discovery"] = discovery
+    report["s3_oob_channel_pre_sibling"] = oob_channel
+    report["s3_oob_initial_fetch"] = initial_oob_fetch
+    report["s3_oob_freshness_pre_sibling_click"] = pre_oob_fresh
+    report["pre_sibling_oob_generation"] = pre_oob_fresh.get("snapshot_generation")
+    unavailable = None
+    if not discovery.get("ok"):
+        note = str(
+            discovery.get("snapshot_validation_note")
+            or discovery.get("identity_note")
+            or discovery.get("selection_reason")
+            or "oob_channel_missing_or_unreadable"
+        )
+        unavailable = classify_oob_channel_unavailable(
+            channel=oob_channel,
+            initial_fetch=initial_oob_fetch,
+            note=note,
+        )
+    return {
+        "discovery": discovery,
+        "oob_channel": oob_channel,
+        "initial_oob_fetch": initial_oob_fetch,
+        "pre_oob_snapshot": pre_oob_snapshot,
+        "pre_oob_fresh": pre_oob_fresh,
+        "readiness_pre": readiness_pre,
+        "ledger_pre": ledger_pre,
+        "unavailable": unavailable,
+    }
 
 
 def _wire_from_sibling_step(sibling_step: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
@@ -136,6 +202,7 @@ def main() -> int:
         extract_oob_channel_from_readiness_scrape,
         extract_oob_freshness_from_snapshot,
         fetch_oob_snapshot_via_page,
+        run_oob_discovery_pipeline,
         wait_for_oob_generation_after,
     )
     from stage1_s3_r3_observability_classify import (
@@ -169,7 +236,13 @@ def main() -> int:
         return 1
 
     setup_only = str(os.environ.get("STAGE1_S3_SETUP_ONLY") or "").strip().lower() in ("1", "true", "yes")
-    artifact_out = SETUP_ONLY_OUT if setup_only else OUT
+    oob_setup_only = str(os.environ.get("STAGE1_S3_OOB_SETUP_ONLY") or "").strip().lower() in ("1", "true", "yes")
+    if oob_setup_only:
+        artifact_out = OOB_SETUP_ONLY_OUT
+    elif setup_only:
+        artifact_out = SETUP_ONLY_OUT
+    else:
+        artifact_out = OUT
     out_path = artifact_out
 
     bridge_sid, bridge_source = resolve_bridge_suite_sid_with_source()
@@ -196,8 +269,10 @@ def main() -> int:
             "setup_dom_layers",
             "post_registration_and_binding",
         ]
-        + ([] if setup_only else ["sibling_strict_click", "pause_positive_control", "classify_r3_chain"]),
+        + ([] if setup_only or oob_setup_only else ["sibling_strict_click", "pause_positive_control", "classify_r3_chain"])
+        + (["oob_channel_discovery"] if oob_setup_only else []),
         "setup_only_mode": setup_only,
+        "oob_setup_only_mode": oob_setup_only,
         "started_at": time.time(),
     }
 
@@ -328,7 +403,7 @@ def main() -> int:
         if setup_stable.get("ok"):
             setup_abort, setup_note = None, "setup_pass"
         report["setup_readiness_table"] = setup_table
-        if setup_only:
+        if setup_only and not oob_setup_only:
             report["finished_at"] = time.time()
             if setup_abort:
                 report["classification"] = setup_abort
@@ -378,18 +453,38 @@ def main() -> int:
 
         post_reg = dict(post_reg)
         binding_pre = dict(binding)
+        expected_sid = _expected_streamlit_session_id(report)
 
-        readiness_pre = scrape_s3_server_diag_readiness(page)
-        oob_channel = extract_oob_channel_from_readiness_scrape(readiness_pre)
-        initial_oob_fetch = fetch_oob_snapshot_via_page(page, str(oob_channel.get("static_url_path") or ""))
-        pre_oob_snapshot = dict(initial_oob_fetch.get("snapshot") or {})
-        pre_oob_fresh = extract_oob_freshness_from_snapshot(pre_oob_snapshot)
-        report["s3_oob_channel_pre_sibling"] = oob_channel
-        report["s3_oob_initial_fetch"] = initial_oob_fetch
-        report["s3_oob_freshness_pre_sibling_click"] = pre_oob_fresh
-        unavailable = classify_oob_channel_unavailable(channel=oob_channel, initial_fetch=initial_oob_fetch)
-        if unavailable is not None:
-            case, note, evidence = unavailable
+        if oob_setup_only:
+            oob_step = _apply_oob_discovery_to_report(report, page=page, expected_streamlit_sid=expected_sid)
+            report["finished_at"] = time.time()
+            if oob_step.get("unavailable") is not None:
+                case, note, evidence = oob_step["unavailable"]
+                report["classification"] = case
+                report["classification_note"] = note
+                report["oob_channel_evidence"] = evidence
+                report["ok"] = False
+            else:
+                report["classification"] = OOB_CHANNEL_DISCOVERY_PASS
+                report["classification_note"] = "oob_channel_ready_for_full_s3_gate"
+                report["ok"] = True
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(
+                json.dumps(
+                    {
+                        "ok": bool(report.get("ok")),
+                        "classification": report.get("classification"),
+                        "artifact": str(out_path),
+                        "oob_setup_only": True,
+                    }
+                )
+            )
+            return 0 if report.get("ok") else 2
+
+        oob_step = _apply_oob_discovery_to_report(report, page=page, expected_streamlit_sid=expected_sid)
+        if oob_step.get("unavailable") is not None:
+            case, note, evidence = oob_step["unavailable"]
             report["classification"] = case
             report["classification_note"] = note
             report["oob_channel_evidence"] = evidence
@@ -400,7 +495,13 @@ def main() -> int:
             print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
             return 2
 
-        pre_sibling_scrape = scrape_s3_server_diag_ledger(page)
+        oob_channel = dict(oob_step.get("oob_channel") or {})
+        initial_oob_fetch = dict(oob_step.get("initial_oob_fetch") or {})
+        pre_oob_snapshot = dict(oob_step.get("pre_oob_snapshot") or {})
+        pre_oob_fresh = dict(oob_step.get("pre_oob_fresh") or {})
+        ledger_pre = dict(oob_step.get("ledger_pre") or {})
+
+        pre_sibling_scrape = ledger_pre if ledger_pre.get("found") else scrape_s3_server_diag_ledger(page)
         pre_sibling_fresh = extract_export_freshness_from_scrape(pre_sibling_scrape, local_scrape_ts=time.time())
         report["s3_export_freshness_pre_sibling_click"] = pre_sibling_fresh
         report["pre_click_export_generation"] = pre_sibling_fresh.get("export_generation")
