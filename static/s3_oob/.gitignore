@@ -1,0 +1,5 @@
+# Runtime OOB token snapshots are generated on the server; keep them out of Git.
+*
+!.gitignore
+!__repo_static_probe_v1.json
+!.gitkeep

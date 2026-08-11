@@ -41,7 +41,7 @@ def _apply_oob_discovery_to_report(
     page,
     expected_streamlit_sid: str,
 ) -> dict[str, Any]:
-    from stage1_s3_oob_readback import extract_oob_freshness_from_snapshot
+    from stage1_s3_oob_readback import extract_oob_freshness_from_snapshot, run_oob_discovery_pipeline
     from stage1_s3_r3_observability_classify import classify_oob_channel_unavailable
     from stage1_s3_server_registry_scrape import scrape_s3_server_diag_ledger, scrape_s3_server_diag_readiness
 
