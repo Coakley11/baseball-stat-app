@@ -120,15 +120,31 @@ def main() -> int:
     from run_production_stage1_authenticated import resolve_required_cloud_sha
     from stage1_pause_sibling_transport_capture import capture_sibling_pre_pause_transport
     from stage1_preflight_cleanup import run_stage1_preflight_cleanup
-    from stage1_s3_authoritative_evidence import build_authoritative_server_rows_from_payload
-    from stage1_s3_r2_subclassify import classify_s3_r2_subclass, wire_target_in_preclick_storage
+    from stage1_s3_r2_subclassify import (
+        classify_s3_r2_subclass,
+        classify_sibling_oob_r2_from_snapshot,
+        resolve_sibling_owner_fragment_id,
+        wire_target_in_preclick_storage,
+    )
     from stage1_s3_export_freshness import (
         compare_export_freshness,
         extract_export_freshness_from_scrape,
-        wait_for_export_generation_after,
+    )
+    from stage1_s3_oob_readback import (
+        authoritative_rows_from_oob_snapshot,
+        compare_oob_freshness,
+        extract_oob_channel_from_readiness_scrape,
+        extract_oob_freshness_from_snapshot,
+        fetch_oob_snapshot_via_page,
+        wait_for_oob_generation_after,
     )
     from stage1_s3_r3_observability_classify import (
+        BUTTON_DISPATCH_S3_R3O0_SERVER_EXPORT_NOT_REFRESHED_AFTER_PAUSE,
         classify_export_freshness_after_pause,
+        classify_oob_channel_unavailable,
+        classify_oob_freshness_after_pause,
+        classify_oob_freshness_after_sibling,
+        classify_pause_instrumentation_failure,
         classify_s3_with_observability,
     )
     from stage1_s3_server_registry_classify import classify_s3_server_registry
@@ -136,6 +152,7 @@ def main() -> int:
         evaluate_post_registration_from_ledger,
         scrape_frame_dom_diagnostics,
         scrape_s3_server_diag_ledger,
+        scrape_s3_server_diag_readiness,
     )
     from stage1_s3_setup_localize import (
         ABORTED_S3_POST_REGISTRATION_NOT_READY,
@@ -362,13 +379,63 @@ def main() -> int:
         post_reg = dict(post_reg)
         binding_pre = dict(binding)
 
+        readiness_pre = scrape_s3_server_diag_readiness(page)
+        oob_channel = extract_oob_channel_from_readiness_scrape(readiness_pre)
+        initial_oob_fetch = fetch_oob_snapshot_via_page(page, str(oob_channel.get("static_url_path") or ""))
+        pre_oob_snapshot = dict(initial_oob_fetch.get("snapshot") or {})
+        pre_oob_fresh = extract_oob_freshness_from_snapshot(pre_oob_snapshot)
+        report["s3_oob_channel_pre_sibling"] = oob_channel
+        report["s3_oob_initial_fetch"] = initial_oob_fetch
+        report["s3_oob_freshness_pre_sibling_click"] = pre_oob_fresh
+        unavailable = classify_oob_channel_unavailable(channel=oob_channel, initial_fetch=initial_oob_fetch)
+        if unavailable is not None:
+            case, note, evidence = unavailable
+            report["classification"] = case
+            report["classification_note"] = note
+            report["oob_channel_evidence"] = evidence
+            report["ok"] = False
+            report["finished_at"] = time.time()
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
+            return 2
+
         pre_sibling_scrape = scrape_s3_server_diag_ledger(page)
         pre_sibling_fresh = extract_export_freshness_from_scrape(pre_sibling_scrape, local_scrape_ts=time.time())
         report["s3_export_freshness_pre_sibling_click"] = pre_sibling_fresh
         report["pre_click_export_generation"] = pre_sibling_fresh.get("export_generation")
+        report["pre_sibling_oob_generation"] = pre_oob_fresh.get("snapshot_generation")
 
         sibling_step = capture_sibling_pre_pause_transport(page)
         report["sibling_strict_transport"] = sibling_step
+
+        static_url_path = str(oob_channel.get("static_url_path") or "")
+        sibling_oob_wait = wait_for_oob_generation_after(
+            page,
+            static_url_path=static_url_path,
+            min_generation=int(pre_oob_fresh.get("snapshot_generation") or 0),
+            max_wait_s=30.0,
+        )
+        report["s3_oob_wait_after_sibling"] = sibling_oob_wait
+        sibling_oob_snapshot = dict((sibling_oob_wait.get("fetch") or {}).get("snapshot") or {})
+        post_sibling_oob_fresh = extract_oob_freshness_from_snapshot(sibling_oob_snapshot)
+        report["s3_oob_freshness_post_sibling_click"] = post_sibling_oob_fresh
+        report["s3_oob_freshness_sibling_delta"] = compare_oob_freshness(pre_oob_fresh, post_sibling_oob_fresh)
+        stale_sibling_oob = classify_oob_freshness_after_sibling(
+            pre_sibling_generation=int(pre_oob_fresh.get("snapshot_generation") or 0),
+            post_sibling_freshness=post_sibling_oob_fresh,
+        )
+        if stale_sibling_oob is not None:
+            case, note, evidence = stale_sibling_oob
+            report["classification"] = case
+            report["classification_note"] = note
+            report["oob_freshness_evidence"] = evidence
+            report["ok"] = False
+            report["finished_at"] = time.time()
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
+            return 2
 
         post_sibling_scrape = scrape_s3_server_diag_ledger(page)
         post_sibling_fresh = extract_export_freshness_from_scrape(post_sibling_scrape, local_scrape_ts=time.time())
@@ -389,54 +456,77 @@ def main() -> int:
         report["pre_pause_export_generation"] = post_sibling_fresh.get("export_generation") or pre_sibling_fresh.get(
             "export_generation"
         )
+        report["pre_pause_oob_generation"] = post_sibling_oob_fresh.get("snapshot_generation") or pre_oob_fresh.get(
+            "snapshot_generation"
+        )
 
-        s3_after: dict[str, Any]
-        post_pause_fresh: dict[str, Any] = {}
+        pause_oob_wait: dict[str, Any] = {"ok": False}
+        pause_oob_snapshot: dict[str, Any] = {}
+        post_pause_oob_fresh: dict[str, Any] = {}
         if pause_step.get("pause_resolved"):
-            wait_result = wait_for_export_generation_after(
+            pause_oob_wait = wait_for_oob_generation_after(
                 page,
-                min_generation=int(report.get("pre_pause_export_generation") or 0),
+                static_url_path=static_url_path,
+                min_generation=int(report.get("pre_pause_oob_generation") or 0),
                 max_wait_s=30.0,
             )
-            report["s3_export_freshness_wait_after_pause"] = wait_result
-            post_pause_fresh = dict(wait_result.get("freshness") or {})
-            post_pause_fresh["freshness_wait_ok"] = bool(wait_result.get("ok"))
-            report["s3_export_freshness_post_pause"] = post_pause_fresh
-            stale = classify_export_freshness_after_pause(
-                pause_resolved=True,
-                pre_pause_export_generation=int(report.get("pre_pause_export_generation") or 0),
-                post_pause_freshness=post_pause_fresh,
+            report["s3_oob_wait_after_pause"] = pause_oob_wait
+            pause_oob_snapshot = dict((pause_oob_wait.get("fetch") or {}).get("snapshot") or {})
+            post_pause_oob_fresh = extract_oob_freshness_from_snapshot(pause_oob_snapshot)
+            report["s3_oob_freshness_post_pause"] = post_pause_oob_fresh
+            report["s3_oob_freshness_pause_delta"] = compare_oob_freshness(
+                post_sibling_oob_fresh if post_sibling_oob_fresh else pre_oob_fresh,
+                post_pause_oob_fresh,
             )
-            if stale is not None:
-                stale_case, stale_note, stale_evidence = stale
-                report["classification"] = stale_case
-                report["classification_note"] = stale_note
-                report["export_freshness_evidence"] = stale_evidence
-                report["s3_server_diag_after_pause"] = wait_result.get("scrape") or {}
+            stale_pause_oob = classify_oob_freshness_after_pause(
+                pause_resolved=True,
+                pre_pause_generation=int(report.get("pre_pause_oob_generation") or 0),
+                post_pause_freshness=post_pause_oob_fresh,
+            )
+            if stale_pause_oob is not None:
+                case, note, evidence = stale_pause_oob
+                report["classification"] = case
+                report["classification_note"] = note
+                report["oob_freshness_evidence"] = evidence
                 report["ok"] = False
                 report["finished_at"] = time.time()
                 out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
                 browser.close()
                 print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
                 return 2
-            s3_after = dict(wait_result.get("scrape") or {})
         else:
-            page.wait_for_timeout(1200)
-            s3_after = scrape_s3_server_diag_ledger(page)
-            post_pause_fresh = extract_export_freshness_from_scrape(s3_after, local_scrape_ts=time.time())
-            report["s3_export_freshness_post_pause"] = post_pause_fresh
+            report["s3_oob_freshness_post_pause"] = post_pause_oob_fresh
 
+        page.wait_for_timeout(800)
+        s3_after = scrape_s3_server_diag_ledger(page)
+        post_pause_fresh = extract_export_freshness_from_scrape(s3_after, local_scrape_ts=time.time())
+        report["s3_export_freshness_post_pause"] = post_pause_fresh
+        dom_stale = classify_export_freshness_after_pause(
+            pause_resolved=bool(pause_step.get("pause_resolved")),
+            pre_pause_export_generation=int(report.get("pre_pause_export_generation") or 0),
+            post_pause_freshness=post_pause_fresh,
+        )
+        report["s3_export_freshness_dom_stale_after_pause"] = (
+            dict(dom_stale[2])
+            if dom_stale is not None
+            else {"classification": BUTTON_DISPATCH_S3_R3O0_SERVER_EXPORT_NOT_REFRESHED_AFTER_PAUSE, "skipped_for_oob_authority": True}
+        )
         report["s3_server_diag_after_pause"] = s3_after
         payload = s3_after.get("payload") if isinstance(s3_after.get("payload"), dict) else {}
         ledger = (payload.get("ledger") or {}) if isinstance(payload, dict) else {}
-        auth_evidence = build_authoritative_server_rows_from_payload(payload)
-        authoritative_rows = list(auth_evidence.get("authoritative_server_rows") or [])
+        oob_authoritative_snapshot = pause_oob_snapshot if pause_oob_snapshot else sibling_oob_snapshot
+        authoritative_rows = authoritative_rows_from_oob_snapshot(oob_authoritative_snapshot)
+        auth_evidence = {
+            "source": "oob_snapshot",
+            "row_count": len(authoritative_rows),
+            "authoritative_server_rows": authoritative_rows,
+            "snapshot_generation": oob_authoritative_snapshot.get("snapshot_generation"),
+            "publish_source": oob_authoritative_snapshot.get("publish_source"),
+        }
         report["authoritative_server_evidence"] = auth_evidence
-        s3_rows = list(ledger.get("rows") or [])
-        unrouted_payload = payload.get("unrouted_events") if isinstance(payload.get("unrouted_events"), dict) else {}
-        unrouted_rows = list(unrouted_payload.get("rows") or [])
-        if not unrouted_rows:
-            unrouted_rows = list(ledger.get("unrouted_rows") or [])
+        report["s3_oob_authoritative_snapshot"] = oob_authoritative_snapshot
+        s3_rows = list(authoritative_rows)
+        unrouted_rows = list(oob_authoritative_snapshot.get("unrouted_rows") or [])
         binding_post = payload.get("s3_diag_binding") if isinstance(payload.get("s3_diag_binding"), dict) else {}
         report["s3_diag_binding_post_pause"] = binding_post
         report["fragment_owner_history"] = list(payload.get("fragment_owner_history") or [])[-16:]
@@ -466,6 +556,53 @@ def main() -> int:
                 st_btn = bool(lr.get("returned_true"))
             elif lr_render.get("st_button_returned") is not None:
                 st_btn = bool(lr_render.get("st_button_returned"))
+
+        owner_fragment = resolve_sibling_owner_fragment_id(
+            post_reg, list(sibling_oob_snapshot.get("module_ledger_rows") or s3_rows)
+        )
+        report["sibling_owner_fragment_id"] = owner_fragment
+        report["browser_candidate_wire_target_fragment"] = wire_target
+        report["browser_candidate_owner_fragment"] = owner_fragment
+        report["browser_candidate_wire_target_in_preclick_fragment_storage"] = wire_target_in_preclick_storage(
+            wire_target, post_reg
+        )
+
+        instrumentation = classify_pause_instrumentation_failure(
+            pause_resolved=bool(pause_step.get("pause_resolved")),
+            authoritative_rows=authoritative_rows,
+        )
+        if instrumentation is not None:
+            case, note, evidence = instrumentation
+            report["classification"] = case
+            report["classification_note"] = note
+            report["observability_evidence"] = evidence
+            report["ok"] = False
+            report["finished_at"] = time.time()
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
+            return 2
+
+        sibling_oob_r2 = classify_sibling_oob_r2_from_snapshot(
+            oob_snapshot=sibling_oob_snapshot,
+            wire_rerun_target_fragment_id=wire_target,
+            owner_fragment_id=owner_fragment,
+            wire_target_in_preclick_fragment_storage=wire_target_in_preclick_storage(wire_target, post_reg),
+            strict_backmsg=strict_backmsg,
+            wire_widget_id=wire_id,
+            post_registration=post_reg,
+        )
+        if sibling_oob_r2 is not None:
+            case, note, evidence = sibling_oob_r2
+            report["classification"] = case
+            report["classification_note"] = note
+            report["r2_oob_evidence"] = evidence
+            report["ok"] = False
+            report["finished_at"] = time.time()
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
+            return 2
 
         base_case, base_note = classify_s3_server_registry(
             wire_widget_id=wire_id,

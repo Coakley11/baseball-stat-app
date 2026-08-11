@@ -8,6 +8,16 @@ BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_ABORT = "BUTTON_DISPATCH_S3_R3O0_SE
 BUTTON_DISPATCH_S3_R3O0_SERVER_EXPORT_NOT_REFRESHED_AFTER_PAUSE = (
     "BUTTON_DISPATCH_S3_R3O0_SERVER_EXPORT_NOT_REFRESHED_AFTER_PAUSE"
 )
+BUTTON_DISPATCH_S3_R3O0_SERVER_OOB_CHANNEL_UNAVAILABLE = "BUTTON_DISPATCH_S3_R3O0_SERVER_OOB_CHANNEL_UNAVAILABLE"
+BUTTON_DISPATCH_S3_R3O0_SERVER_OOB_CHANNEL_NOT_REFRESHED_AFTER_SIBLING = (
+    "BUTTON_DISPATCH_S3_R3O0_SERVER_OOB_CHANNEL_NOT_REFRESHED_AFTER_SIBLING"
+)
+BUTTON_DISPATCH_S3_R3O0_SERVER_OOB_CHANNEL_NOT_REFRESHED_AFTER_PAUSE = (
+    "BUTTON_DISPATCH_S3_R3O0_SERVER_OOB_CHANNEL_NOT_REFRESHED_AFTER_PAUSE"
+)
+BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_INSTRUMENTATION_FAILURE = (
+    "BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_INSTRUMENTATION_FAILURE"
+)
 BUTTON_DISPATCH_S3_R3A_DROPPED_IN_APPSESSION_BACKMSG_PATH = "BUTTON_DISPATCH_S3_R3A_DROPPED_IN_APPSESSION_BACKMSG_PATH"
 BUTTON_DISPATCH_S3_R3B_DROPPED_AFTER_RERUN_REQUEST = "BUTTON_DISPATCH_S3_R3B_DROPPED_AFTER_RERUN_REQUEST"
 BUTTON_DISPATCH_S3_R4_TRIGGER_LOST_DURING_STATE_APPLY = "BUTTON_DISPATCH_S3_R4_TRIGGER_LOST_DURING_STATE_APPLY"
@@ -138,6 +148,88 @@ def classify_export_freshness_after_pause(
             evidence,
         )
     return None
+
+
+def classify_oob_channel_unavailable(*, channel: dict[str, Any], initial_fetch: dict[str, Any] | None) -> tuple[str, str, dict[str, Any]] | None:
+    if channel.get("registered") and initial_fetch and initial_fetch.get("ok"):
+        return None
+    return (
+        BUTTON_DISPATCH_S3_R3O0_SERVER_OOB_CHANNEL_UNAVAILABLE,
+        "oob_channel_missing_or_unreadable",
+        {"channel": channel, "initial_fetch": dict(initial_fetch or {})},
+    )
+
+
+def classify_oob_freshness_after_sibling(
+    *,
+    pre_sibling_generation: int | None,
+    post_sibling_freshness: dict[str, Any] | None,
+) -> tuple[str, str, dict[str, Any]] | None:
+    pre_gen = int(pre_sibling_generation or 0)
+    fresh = dict(post_sibling_freshness or {})
+    post_gen = int(fresh.get("snapshot_generation") or 0)
+    evidence = {
+        "pre_sibling_snapshot_generation": pre_gen,
+        "post_sibling_snapshot_generation": post_gen,
+        "generation_advanced": post_gen > pre_gen,
+    }
+    if post_gen <= pre_gen:
+        return (
+            BUTTON_DISPATCH_S3_R3O0_SERVER_OOB_CHANNEL_NOT_REFRESHED_AFTER_SIBLING,
+            f"oob_snapshot_stale:pre={pre_gen}:post={post_gen}",
+            evidence,
+        )
+    return None
+
+
+def classify_oob_freshness_after_pause(
+    *,
+    pause_resolved: bool,
+    pre_pause_generation: int | None,
+    post_pause_freshness: dict[str, Any] | None,
+) -> tuple[str, str, dict[str, Any]] | None:
+    if not pause_resolved:
+        return None
+    pre_gen = int(pre_pause_generation or 0)
+    fresh = dict(post_pause_freshness or {})
+    post_gen = int(fresh.get("snapshot_generation") or 0)
+    evidence = {
+        "pre_pause_snapshot_generation": pre_gen,
+        "post_pause_snapshot_generation": post_gen,
+        "generation_advanced": post_gen > pre_gen,
+    }
+    if post_gen <= pre_gen:
+        return (
+            BUTTON_DISPATCH_S3_R3O0_SERVER_OOB_CHANNEL_NOT_REFRESHED_AFTER_PAUSE,
+            f"oob_snapshot_stale:pre={pre_gen}:post={post_gen}",
+            evidence,
+        )
+    return None
+
+
+def classify_pause_instrumentation_failure(
+    *,
+    pause_resolved: bool,
+    authoritative_rows: list[dict[str, Any]],
+) -> tuple[str, str, dict[str, Any]] | None:
+    if not pause_resolved:
+        return None
+    by = _by_phase(authoritative_rows)
+    runtime = bool(by.get("RUNTIME_BACKMSG_ENTRY"))
+    back = bool(by.get("APPSESSION_BACKMSG_ENTRY"))
+    req = bool(by.get("APPSESSION_REQUEST_RERUN_ENTRY"))
+    if runtime or back or req:
+        return None
+    return (
+        BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_INSTRUMENTATION_FAILURE,
+        "pause_functional_but_runtime_appsession_absent_from_fresh_oob",
+        {
+            "runtime_backmsg_present": runtime,
+            "appsession_backmsg_present": back,
+            "appsession_request_rerun_present": req,
+            "authoritative_row_count": len(authoritative_rows),
+        },
+    )
 
 
 def classify_s3_with_observability(

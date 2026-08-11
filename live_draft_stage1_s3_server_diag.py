@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any
 
-S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v7"
+S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v8"
 S3_LEDGER_DOM_ID = "solo-stage1-s3-server-diag-ledger"
 S3_READINESS_DOM_ID = "solo-stage1-s3-server-diag-readiness"
 S3_DOM_PAYLOAD_SCHEMA_REV = "stage1_s3_dom_payload_v3"
@@ -317,6 +317,12 @@ def build_s3_readiness_payload(session: dict[str, Any]) -> dict[str, Any]:
     post = dict(session.get("_stage1_pause_sibling_post_registration") or {})
     watch_key = str(session.get(S3_WATCH_KEY) or "")
     reg_id = str(post.get("registered_widget_id") or "")
+    try:
+        from live_draft_stage1_s3_oob_snapshot import oob_channel_export
+
+        oob_channel = oob_channel_export(session)
+    except ImportError:
+        oob_channel = {"registered": False}
     return {
         "payload_schema_rev": S3_DOM_PAYLOAD_SCHEMA_REV,
         "impl_rev": S3_SERVER_DIAG_IMPL_REV,
@@ -326,6 +332,7 @@ def build_s3_readiness_payload(session: dict[str, Any]) -> dict[str, Any]:
         "post_registration": post,
         "s3_diag_binding": binding,
         "server_wrapper_integrity_ok": binding.get("server_wrapper_integrity_ok"),
+        "oob_channel": oob_channel,
     }
 
 
@@ -591,6 +598,13 @@ def install_s3_server_diagnostics(st: Any | None, session: dict[str, Any]) -> No
     binding = s3_diag_binding_snapshot(ss_wrapper)
     session[S3_BINDING_KEY] = dict(binding)
     append_s3_event(session, "S3_DIAG_BINDING", **binding)
+    try:
+        from live_draft_stage1_s3_oob_snapshot import publish_initial_oob_snapshot
+
+        oob = publish_initial_oob_snapshot(sid, session)
+        append_s3_event(session, "S3_OOB_CHANNEL_REGISTERED", **{k: v for k, v in oob.items() if k != "module_ledger_rows"})
+    except Exception:
+        pass
     session[S3_PATCHED_KEY] = True
     if not session.get("_stage1_s3_diag_installed_once"):
         append_s3_event(session, "S3_DIAG_INSTALLED", user_key=watch_key)

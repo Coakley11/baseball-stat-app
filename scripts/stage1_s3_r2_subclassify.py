@@ -126,3 +126,56 @@ def classify_s3_r2_subclass(
         return BUTTON_DISPATCH_S3_R2B_WRONG_LIVE_FRAGMENT_TARGET, "wire_target_in_storage_no_sessionstate", evidence
 
     return BUTTON_DISPATCH_S3_R2_FRAGMENT_OWNER_MISMATCH, "r2_unresolved_subclass", evidence
+
+
+def classify_sibling_oob_r2_from_snapshot(
+    *,
+    oob_snapshot: dict[str, Any],
+    wire_rerun_target_fragment_id: str,
+    owner_fragment_id: str,
+    wire_target_in_preclick_fragment_storage: bool | None,
+    strict_backmsg: dict[str, Any],
+    wire_widget_id: str,
+    post_registration: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]] | None:
+    """Return R2 subclass when fresh OOB sibling evidence matches fragment-target/owner pattern."""
+    rows = list(oob_snapshot.get("module_ledger_rows") or []) + list(oob_snapshot.get("critical_ledger_rows") or [])
+    by_phase = _events_by_phase(rows)
+    runtime_present = bool(by_phase.get("RUNTIME_BACKMSG_ENTRY"))
+    backmsg_present = bool(by_phase.get("APPSESSION_BACKMSG_ENTRY"))
+    rerun_present = bool(by_phase.get("APPSESSION_REQUEST_RERUN_ENTRY"))
+    receive_present = bool(by_phase.get("SERVER_RECEIVE_ENTRY"))
+    evidence: dict[str, Any] = {
+        "runtime_backmsg_present": runtime_present,
+        "appsession_backmsg_present": backmsg_present,
+        "appsession_request_rerun_present": rerun_present,
+        "server_receive_present": receive_present,
+        "wire_rerun_target_fragment_id": wire_rerun_target_fragment_id,
+        "owner_fragment_id": owner_fragment_id,
+        "wire_target_in_preclick_fragment_storage": wire_target_in_preclick_fragment_storage,
+        "oob_snapshot_generation": oob_snapshot.get("snapshot_generation"),
+    }
+    if not (runtime_present and backmsg_present and rerun_present):
+        return None
+    strict_trigger = bool(strict_backmsg.get("activated_widget_state_present"))
+    reg_id = str(post_registration.get("registered_widget_id") or "").strip()
+    ids_match = bool(wire_widget_id and reg_id and wire_widget_id == reg_id)
+    if not (strict_trigger and ids_match and wire_rerun_target_fragment_id and owner_fragment_id):
+        return None
+    if wire_rerun_target_fragment_id == owner_fragment_id:
+        return None
+    if wire_target_in_preclick_fragment_storage is False and not receive_present:
+        note = "oob_wire_target_absent_preclick_no_sessionstate"
+        ingress = [r for r in rows if str(r.get("phase") or "").startswith("APPSESSION_")]
+        guard_fail = any(bool(r.get("would_fail_streamlit_fragment_storage_guard")) for r in ingress)
+        target_absent = any(r.get("target_fragment_exists") is False for r in ingress)
+        if guard_fail or target_absent:
+            note += "_ingress_guard_confirmed"
+        return BUTTON_DISPATCH_S3_R2A_STALE_RERUN_TARGET_DROPPED, note, evidence
+    if wire_target_in_preclick_fragment_storage is True and not receive_present:
+        return (
+            BUTTON_DISPATCH_S3_R2B_WRONG_LIVE_FRAGMENT_TARGET,
+            "oob_wire_target_in_storage_no_sessionstate",
+            evidence,
+        )
+    return None

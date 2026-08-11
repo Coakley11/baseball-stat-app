@@ -67,9 +67,20 @@ def install_runtime_backmsg_probe(st: Any | None, session: dict[str, Any]) -> No
                     )
         except Exception:
             pass
-        if sid:
-            append_module_event(sid, "RUNTIME_BACKMSG_ENTRY", **fields)
-        return orig(self, session_id, msg)
+        try:
+            if sid:
+                append_module_event(sid, "RUNTIME_BACKMSG_ENTRY", **fields)
+            return orig(self, session_id, msg)
+        finally:
+            try:
+                from live_draft_stage1_s3_oob_snapshot import publish_oob_snapshot
+
+                publish_oob_snapshot(
+                    sid,
+                    publish_source="runtime_handle_backmsg_finally",
+                )
+            except Exception:
+                pass
 
     wrapped_handle_backmsg._solo_runtime_backmsg_wrapped = True  # type: ignore[attr-defined]
     Runtime.handle_backmsg = wrapped_handle_backmsg  # type: ignore[method-assign]
