@@ -250,6 +250,8 @@ def validate_oob_snapshot_identity(
     fetch = dict(fetch or {})
     if fetch.get("reason") == "empty_static_url_path":
         return False, "oob_channel_discovery_missing"
+    if fetch.get("reason") == "oob_connected_server_uri_unresolved":
+        return False, "oob_connected_server_uri_unresolved"
     if fetch and fetch.get("http_ok") and not fetch.get("parse_ok"):
         return False, "oob_static_fetch_not_json"
     if not fetch.get("ok"):
@@ -270,7 +272,23 @@ def validate_oob_snapshot_identity(
     return True, ""
 
 
-def fetch_oob_snapshot_via_page(page, static_url_path: str, *, cache_bust: bool = True) -> dict[str, Any]:
+def fetch_oob_snapshot_via_page(
+    page,
+    static_url_path: str,
+    *,
+    cache_bust: bool = True,
+    connected_server_uri: str | None = None,
+    require_connected_server_uri: bool = False,
+    allow_origin_fallback: bool = True,
+) -> dict[str, Any]:
+    """Fetch OOB JSON via page.request.
+
+    Production Cloud must pass connected_server_uri (e.g. .../~/+) and
+    require_connected_server_uri=True so bare location.origin is never used.
+    Local/unit tests may omit the URI and fall back to location.origin.
+    """
+    from stage1_s3_connected_server_uri import join_connected_server_static_url
+
     path = str(static_url_path or "").strip()
     if not path:
         return {
@@ -283,8 +301,24 @@ def fetch_oob_snapshot_via_page(page, static_url_path: str, *, cache_bust: bool 
         }
     if not path.startswith("/"):
         path = "/" + path
-    origin = str(page.evaluate("() => location.origin") or "").rstrip("/")
-    url = f"{origin}{path}"
+
+    base = str(connected_server_uri or "").strip().rstrip("/")
+    base_source = "connected_server_uri"
+    if not base:
+        if require_connected_server_uri or not allow_origin_fallback:
+            return {
+                "url": "",
+                "ok": False,
+                "reason": "oob_connected_server_uri_unresolved",
+                "http_ok": False,
+                "parse_ok": False,
+                "snapshot_present": False,
+                "http_request_attempted": False,
+            }
+        base = str(page.evaluate("() => location.origin") or "").rstrip("/")
+        base_source = "location_origin_fallback"
+
+    url = join_connected_server_static_url(base, path)
     if cache_bust:
         url = f"{url}?cb={int(time.time() * 1000)}"
     out: dict[str, Any] = {
@@ -293,6 +327,10 @@ def fetch_oob_snapshot_via_page(page, static_url_path: str, *, cache_bust: bool 
         "http_ok": False,
         "parse_ok": False,
         "snapshot_present": False,
+        "connected_server_uri": base,
+        "url_base_source": base_source,
+        "static_url_path": path,
+        "http_request_attempted": True,
     }
     try:
         response = page.request.get(url, timeout=30_000)
@@ -328,6 +366,8 @@ def run_oob_discovery_pipeline(
     expected_streamlit_sid: str,
     page=None,
     fetch_fn: Callable[..., dict[str, Any]] | None = None,
+    connected_server_uri: str | None = None,
+    require_connected_server_uri: bool = False,
 ) -> dict[str, Any]:
     resolution = resolve_oob_channel(
         readiness_scrape=readiness_scrape,
@@ -347,14 +387,36 @@ def run_oob_discovery_pipeline(
         "snapshot_validation_ok": False,
         "snapshot_validation_note": "",
         "ok": False,
+        "connected_server_uri": str(connected_server_uri or ""),
+        "require_connected_server_uri": bool(require_connected_server_uri),
     }
     if not identity_ok or not channel:
         out["snapshot_validation_note"] = identity_note or resolution.get("selection_reason") or "oob_channel_discovery_missing"
         return out
+    if require_connected_server_uri and not str(connected_server_uri or "").strip():
+        fetch = {
+            "ok": False,
+            "reason": "oob_connected_server_uri_unresolved",
+            "http_ok": False,
+            "parse_ok": False,
+            "snapshot_present": False,
+            "http_request_attempted": False,
+        }
+        out["initial_fetch"] = fetch
+        out["snapshot_validation_ok"] = False
+        out["snapshot_validation_note"] = "oob_connected_server_uri_unresolved"
+        out["pre_oob_snapshot"] = {}
+        return out
     fetch = {"ok": False, "reason": "fetch_not_requested"}
     if page is not None:
         fetcher = fetch_fn or fetch_oob_snapshot_via_page
-        fetch = fetcher(page, str(channel.get("static_url_path") or ""))
+        fetch = fetcher(
+            page,
+            str(channel.get("static_url_path") or ""),
+            connected_server_uri=connected_server_uri,
+            require_connected_server_uri=require_connected_server_uri,
+            allow_origin_fallback=not require_connected_server_uri,
+        )
     out["initial_fetch"] = fetch
     snapshot = fetch.get("snapshot") if isinstance(fetch.get("snapshot"), dict) else {}
     snap_ok, snap_note = validate_oob_snapshot_identity(
@@ -427,14 +489,40 @@ def wait_for_oob_generation_after(
     min_generation: int,
     max_wait_s: float = 30.0,
     poll_interval_ms: int = 600,
+    connected_server_uri: str | None = None,
+    require_connected_server_uri: bool = False,
 ) -> dict[str, Any]:
+    if require_connected_server_uri and not str(connected_server_uri or "").strip():
+        return {
+            "ok": False,
+            "poll_count": 0,
+            "fetch": {
+                "ok": False,
+                "reason": "oob_connected_server_uri_unresolved",
+                "http_ok": False,
+                "parse_ok": False,
+                "snapshot_present": False,
+                "http_request_attempted": False,
+            },
+            "freshness": {},
+            "min_generation_required": int(min_generation or 0),
+            "wait_s": 0.0,
+            "reason": "oob_connected_server_uri_unresolved",
+        }
     deadline = time.time() + max_wait_s
     last_fetch: dict[str, Any] = {"ok": False}
     last_freshness: dict[str, Any] = {}
     polls = 0
     while time.time() < deadline:
         polls += 1
-        last_fetch = fetch_oob_snapshot_via_page(page, static_url_path, cache_bust=True)
+        last_fetch = fetch_oob_snapshot_via_page(
+            page,
+            static_url_path,
+            cache_bust=True,
+            connected_server_uri=connected_server_uri,
+            require_connected_server_uri=require_connected_server_uri,
+            allow_origin_fallback=not require_connected_server_uri,
+        )
         snap = last_fetch.get("snapshot") if isinstance(last_fetch.get("snapshot"), dict) else {}
         last_freshness = extract_oob_freshness_from_snapshot(snap)
         gen = int(last_freshness.get("snapshot_generation") or 0)

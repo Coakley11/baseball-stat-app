@@ -298,7 +298,7 @@ class OobDiscoveryRepairTests(unittest.TestCase):
         readiness = {"candidates": [_readiness_candidate(dom_index=0, sid=SID, registered=False)]}
         ledger = {"payload": {"ledger": {"merged_rows": [_ledger_event()]}}}
 
-        def fake_fetch(_page, static_url_path, cache_bust=True):
+        def fake_fetch(_page, static_url_path, cache_bust=True, **_kwargs):
             self.assertEqual(static_url_path, PATH)
             return {
                 "ok": True,

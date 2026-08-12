@@ -40,6 +40,7 @@ def _apply_oob_discovery_to_report(
     *,
     page,
     expected_streamlit_sid: str,
+    connected_server_uri: str = "",
 ) -> dict[str, Any]:
     from stage1_s3_oob_readback import extract_oob_freshness_from_snapshot, run_oob_discovery_pipeline
     from stage1_s3_r3_observability_classify import classify_oob_channel_unavailable
@@ -52,6 +53,8 @@ def _apply_oob_discovery_to_report(
         ledger_scrape=ledger_pre,
         expected_streamlit_sid=expected_streamlit_sid,
         page=page,
+        connected_server_uri=connected_server_uri or None,
+        require_connected_server_uri=True,
     )
     oob_channel = dict(discovery.get("resolved_channel") or {})
     initial_oob_fetch = dict(discovery.get("initial_fetch") or {})
@@ -281,8 +284,18 @@ def main() -> int:
         context = browser.new_context(viewport={"width": 1440, "height": 1400})
         install_proven_start_context_scripts(context)
         page = context.new_page()
+        from stage1_s3_connected_server_uri import ConnectedServerUriCapture
+
+        connected_uri_capture = ConnectedServerUriCapture()
+        connected_uri_capture.attach(page)
         goto_and_wake(page, url, timeout_s=240)
         page.wait_for_timeout(12000)
+        connected_uri_resolution = connected_uri_capture.resolve()
+        report["streamlit_connected_server_uri"] = str(connected_uri_resolution.get("uri") or "")
+        report["streamlit_connected_server_uri_source"] = str(connected_uri_resolution.get("source") or "")
+        report["streamlit_connected_server_uri_endpoints"] = connected_uri_resolution.get("endpoint_summaries") or {}
+        report["streamlit_connected_server_uri_ok"] = bool(connected_uri_resolution.get("ok"))
+        connected_server_uri = str(report["streamlit_connected_server_uri"] or "")
 
         from p8_production_start_harness import scrape_stage1_ledger_rows
         from queueui_audit_protocol import scrape_deploy_marker_from_page
@@ -456,7 +469,12 @@ def main() -> int:
         expected_sid = _expected_streamlit_session_id(report)
 
         if oob_setup_only:
-            oob_step = _apply_oob_discovery_to_report(report, page=page, expected_streamlit_sid=expected_sid)
+            oob_step = _apply_oob_discovery_to_report(
+                report,
+                page=page,
+                expected_streamlit_sid=expected_sid,
+                connected_server_uri=connected_server_uri,
+            )
             report["finished_at"] = time.time()
             if oob_step.get("unavailable") is not None:
                 case, note, evidence = oob_step["unavailable"]
@@ -482,7 +500,12 @@ def main() -> int:
             )
             return 0 if report.get("ok") else 2
 
-        oob_step = _apply_oob_discovery_to_report(report, page=page, expected_streamlit_sid=expected_sid)
+        oob_step = _apply_oob_discovery_to_report(
+            report,
+            page=page,
+            expected_streamlit_sid=expected_sid,
+            connected_server_uri=connected_server_uri,
+        )
         if oob_step.get("unavailable") is not None:
             case, note, evidence = oob_step["unavailable"]
             report["classification"] = case
@@ -516,6 +539,8 @@ def main() -> int:
             static_url_path=static_url_path,
             min_generation=int(pre_oob_fresh.get("snapshot_generation") or 0),
             max_wait_s=30.0,
+            connected_server_uri=connected_server_uri,
+            require_connected_server_uri=True,
         )
         report["s3_oob_wait_after_sibling"] = sibling_oob_wait
         sibling_oob_snapshot = dict((sibling_oob_wait.get("fetch") or {}).get("snapshot") or {})
@@ -570,6 +595,8 @@ def main() -> int:
                 static_url_path=static_url_path,
                 min_generation=int(report.get("pre_pause_oob_generation") or 0),
                 max_wait_s=30.0,
+                connected_server_uri=connected_server_uri,
+                require_connected_server_uri=True,
             )
             report["s3_oob_wait_after_pause"] = pause_oob_wait
             pause_oob_snapshot = dict((pause_oob_wait.get("fetch") or {}).get("snapshot") or {})
