@@ -7,13 +7,20 @@ import time
 import uuid
 from typing import Any
 
-S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v4"
+S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v5"
 
 CRITICAL_SERVER_PHASES: frozenset[str] = frozenset(
     {
         "RUNTIME_BACKMSG_ENTRY",
         "APPSESSION_BACKMSG_ENTRY",
         "APPSESSION_REQUEST_RERUN_ENTRY",
+        "SCRIPTRUNNER_REQUEST_RERUN_ENTRY",
+        "SCRIPTRUNNER_REQUEST_RERUN_RESULT",
+        "SCRIPTREQUESTS_REQUEST_RERUN_ENTRY",
+        "SCRIPTREQUESTS_RERUN_STORED",
+        "SCRIPTREQUESTS_RERUN_COALESCED",
+        "SCRIPTREQUESTS_RERUN_CONSUMED",
+        "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
         "SAFE_SESSIONSTATE_RECEIVE_ENTRY",
         "SERVER_RECEIVE_ENTRY",
         "SERVER_STATE_APPLIED",
@@ -31,6 +38,11 @@ _GLOBAL_WRAPPERS_INSTALLED: dict[str, bool] = {
     "runtime_handle_backmsg": False,
     "appsession_handle_backmsg": False,
     "appsession_request_rerun": False,
+    "scriptrunner_request_rerun": False,
+    "scriptrunner_run_script": False,
+    "scriptrequests_request_rerun": False,
+    "scriptrequests_on_scriptrunner_yield": False,
+    "scriptrequests_on_scriptrunner_ready": False,
     "sessionstate_on_script_will_rerun": False,
     "sessionstate_set_widgets_from_proto": False,
     "safe_sessionstate_on_script_will_rerun": False,
@@ -43,6 +55,11 @@ INGRESS_SUMMARY_PHASE_KEYS: dict[str, str] = {
     "runtime_backmsg": "RUNTIME_BACKMSG_ENTRY",
     "appsession_backmsg": "APPSESSION_BACKMSG_ENTRY",
     "appsession_request_rerun": "APPSESSION_REQUEST_RERUN_ENTRY",
+    "scriptrunner_request_rerun": "SCRIPTRUNNER_REQUEST_RERUN_ENTRY",
+    "scriptrequests_rerun_stored": "SCRIPTREQUESTS_RERUN_STORED",
+    "scriptrequests_rerun_coalesced": "SCRIPTREQUESTS_RERUN_COALESCED",
+    "scriptrequests_rerun_consumed": "SCRIPTREQUESTS_RERUN_CONSUMED",
+    "scriptrunner_run_script": "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
     "safe_sessionstate_receive": "SAFE_SESSIONSTATE_RECEIVE_ENTRY",
     "server_receive": "SERVER_RECEIVE_ENTRY",
     "server_state_applied": "SERVER_STATE_APPLIED",

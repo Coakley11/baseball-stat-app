@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any
 
-S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v8"
+S3_SERVER_DIAG_IMPL_REV = "stage1_s3_server_diag_v9"
 S3_LEDGER_DOM_ID = "solo-stage1-s3-server-diag-ledger"
 S3_READINESS_DOM_ID = "solo-stage1-s3-server-diag-readiness"
 S3_DOM_PAYLOAD_SCHEMA_REV = "stage1_s3_dom_payload_v3"
@@ -97,6 +97,8 @@ _S3_DOM_ROW_LIMITS = {
 
 _PRESERVE_PHASE_PREFIXES = (
     "APPSESSION_",
+    "SCRIPTRUNNER_",
+    "SCRIPTREQUESTS_",
     "SAFE_SESSIONSTATE_",
     "SERVER_",
     "RUNTIME_BACKMSG",
@@ -424,7 +426,7 @@ def _ensure_global_sessionstate_wrappers() -> None:
 
         def wrapped_on_script_will_rerun(self: Any, latest_widget_states: Any) -> None:
             scan = scan_widget_states_proto(latest_widget_states)
-            append_module_event_for_underlying_sessionstate(
+            row = append_module_event_for_underlying_sessionstate(
                 self,
                 "SERVER_RECEIVE_ENTRY",
                 on_script_will_rerun_executed=True,
@@ -435,6 +437,14 @@ def _ensure_global_sessionstate_wrappers() -> None:
                 incoming_widget_count=scan.get("incoming_widget_count"),
                 activated_triggers=scan.get("activated_triggers"),
             )
+            try:
+                from live_draft_stage1_s3_oob_snapshot import publish_oob_snapshot
+
+                pub_sid = str((row or {}).get("streamlit_session_id") or "")[:64]
+                if pub_sid:
+                    publish_oob_snapshot(pub_sid, publish_source="sessionstate_receive")
+            except Exception:
+                pass
             return orig_rerun(self, latest_widget_states)
 
         wrapped_on_script_will_rerun._solo_s3_wrapped = True  # type: ignore[attr-defined]
@@ -469,7 +479,7 @@ def _ensure_global_sessionstate_wrappers() -> None:
                     }
                 except Exception:
                     pass
-            append_module_event_for_underlying_sessionstate(
+            row = append_module_event_for_underlying_sessionstate(
                 self,
                 "SERVER_STATE_APPLIED",
                 exact_widget_id=sib_id or None,
@@ -478,6 +488,14 @@ def _ensure_global_sessionstate_wrappers() -> None:
                 **applied,
                 **pause_applied,
             )
+            try:
+                from live_draft_stage1_s3_oob_snapshot import publish_oob_snapshot
+
+                pub_sid = str((row or {}).get("streamlit_session_id") or "")[:64]
+                if pub_sid:
+                    publish_oob_snapshot(pub_sid, publish_source="sessionstate_applied")
+            except Exception:
+                pass
 
         wrapped_set_widgets_from_proto._solo_s3_wrapped = True  # type: ignore[attr-defined]
         SessionState.set_widgets_from_proto = wrapped_set_widgets_from_proto  # type: ignore[method-assign]
@@ -528,6 +546,12 @@ def _ensure_safe_sessionstate_wrappers() -> None:
         }
         if routing_sid:
             append_module_event(routing_sid, "SAFE_SESSIONSTATE_RECEIVE_ENTRY", **payload)
+            try:
+                from live_draft_stage1_s3_oob_snapshot import publish_oob_snapshot
+
+                publish_oob_snapshot(routing_sid, publish_source="safe_sessionstate_receive")
+            except Exception:
+                pass
         else:
             append_unrouted_event(
                 "SAFE_SESSIONSTATE_RECEIVE_ENTRY",
@@ -568,6 +592,13 @@ def install_s3_server_diagnostics(st: Any | None, session: dict[str, Any]) -> No
 
     _ensure_global_sessionstate_wrappers()
     _ensure_safe_sessionstate_wrappers()
+
+    try:
+        from live_draft_stage1_scriptrunner_handoff_diag import ensure_scriptrunner_handoff_wrappers
+
+        ensure_scriptrunner_handoff_wrappers()
+    except ImportError:
+        pass
 
     ss_wrapper = None
     try:

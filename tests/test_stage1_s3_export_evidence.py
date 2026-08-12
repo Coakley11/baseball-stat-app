@@ -208,7 +208,7 @@ def test_runtime_pause_and_sibling_detection(monkeypatch):
     assert orig_called
 
 
-def test_wrapper_integrity_detects_six_wrappers(monkeypatch):
+def test_wrapper_integrity_detects_eleven_wrappers(monkeypatch):
     ev = importlib.import_module("live_draft_stage1_server_evidence")
     built: dict[tuple[str, str], type] = {}
 
@@ -229,7 +229,7 @@ def test_wrapper_integrity_detects_six_wrappers(monkeypatch):
     monkeypatch.setattr(ev, "_load_class", fake_load)
     snap = ev.live_server_wrapper_integrity_snapshot()
     assert snap["server_wrapper_integrity_ok"] is True
-    assert len(snap["wrappers"]) == 6
+    assert len(snap["wrappers"]) == 11
 
 
 def test_stale_flag_unwrapped_fails_integrity(monkeypatch):
