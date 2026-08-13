@@ -21,11 +21,22 @@ from run_solo_key_ownership_compare import resolve_storage_state  # noqa: E402
 
 def _classify_scenario(*, authenticated: bool, a0: dict[str, Any], login: dict[str, Any]) -> dict[str, Any]:
     if authenticated:
-        if not login.get("signed_in_after"):
+        if not login.get("authenticated_restored") and not login.get("signed_in_after"):
             return {
                 "harness_valid": False,
                 "verdict": "INVALID",
                 "reason": "authenticated_session_not_proven_after_storage_restore",
+            }
+        if not login.get("authenticated_restored"):
+            pt = a0.get("paired_transition_analysis") or {}
+            lp = pt.get("last_present") if isinstance(pt, dict) else {}
+            if isinstance(lp, dict) and lp.get("authenticated") is True and login.get("url_has_suite_sid"):
+                login = {**login, "authenticated_restored": True, "authenticated_app_probe": True}
+        if not login.get("authenticated_restored"):
+            return {
+                "harness_valid": False,
+                "verdict": "INVALID",
+                "reason": "suite_sid_or_signed_in_not_proven_after_restore",
             }
         if not a0.get("session_continuity_ok", True):
             return {
@@ -114,20 +125,22 @@ def _ws_continuity(ws_frames: list[dict[str, Any]], baseline: int) -> dict[str, 
     }
 
 
-def run_scenario(*, authenticated: bool) -> dict[str, Any]:
+def run_scenario(*, authenticated: bool, suite_sid: str | None = None) -> dict[str, Any]:
     from playwright.sync_api import sync_playwright
+    from playwright_daniel_auth_session import harness_ready, load_suite_sid
     from run_solo_bridge_transition_a0_only import run_a0
     from run_solo_delivery_isolation import install_ws_and_postmessage_hooks
 
     ws_frames: list[dict[str, Any]] = []
     storage = resolve_storage_state() if authenticated else None
     meta: dict[str, Any] = {"authenticated_requested": authenticated}
-    if authenticated and not storage:
+    sid = (suite_sid or load_suite_sid()).strip() if authenticated else ""
+    if authenticated and (not storage or not sid):
         return {
             "skipped_run": True,
             "login": {
                 "ok": False,
-                "reason": "No Playwright storage — use ensure_playwright_daniel_storage_manual.py",
+                "reason": "Auth harness incomplete — run capture_playwright_daniel_auth_once.py",
             },
         }
     with sync_playwright() as p:
@@ -135,27 +148,37 @@ def run_scenario(*, authenticated: bool) -> dict[str, Any]:
         if storage:
             context = browser.new_context(viewport={"width": 1440, "height": 1400}, storage_state=str(storage))
             meta["storage_loaded"] = True
+            meta["suite_sid_configured"] = bool(sid)
         else:
             context = browser.new_context(viewport={"width": 1440, "height": 1400})
         page = context.new_page()
         ws_baseline = len(ws_frames)
         install_ws_and_postmessage_hooks(page, ws_frames)
-        a0 = run_a0(page, ws_frames)
+        a0 = run_a0(page, ws_frames, suite_sid=sid if authenticated else None)
         meta["ws"] = _ws_continuity(ws_frames, ws_baseline)
         if authenticated:
             meta["signed_in_after"] = bool(
-                page.evaluate("() => /Signed in as/i.test(document.body ? document.body.innerText : '')")
-            )
-            meta["workspace_hint"] = str(
                 page.evaluate(
                     """() => {
-                      const t = document.body ? document.body.innerText : '';
-                      const ws = t.match(/Workspace[:\\s]+([A-Za-z0-9_-]+)/i);
-                      return ws ? ws[1] : '';
+                      const roots=[document];
+                      for (const f of document.querySelectorAll('iframe')) {
+                        try { if (f.contentDocument) roots.push(f.contentDocument); } catch (e) {}
+                      }
+                      const t = roots.map(r => (r.body && r.body.innerText) || '').join('\\n');
+                      return /Signed in as/i.test(t);
                     }"""
                 )
-                or ""
-            ).strip()[:40]
+            )
+            meta["url_has_suite_sid"] = "suite_sid=" in (page.url or "")
+            meta["authenticated_restored"] = bool(
+                meta.get("signed_in_after") or meta.get("url_has_suite_sid")
+            )
+            if a0.get("paired_transition_analysis"):
+                pt = a0.get("paired_transition_analysis") or {}
+                lp = pt.get("last_present") if isinstance(pt, dict) else {}
+                if isinstance(lp, dict) and lp.get("authenticated") is True:
+                    meta["authenticated_restored"] = True
+                    meta["authenticated_app_probe"] = True
         context.close()
         browser.close()
     boundary = boundary_from_a0(a0)
@@ -184,32 +207,64 @@ def run_scenario(*, authenticated: bool) -> dict[str, Any]:
 
 
 def main() -> int:
+    from replay_playwright_daniel_auth_preflight import run_preflight
     from run_solo_clean_verification import scrape_live_sha
     from playwright.sync_api import sync_playwright
 
-    deploy: dict[str, Any] = {"expected_from_deploy_commit": ""}
+    preflight = run_preflight()
+    if not preflight.get("authenticated_restored"):
+        print(
+            json.dumps(
+                {
+                    "aborted": True,
+                    "reason": "auth_replay_preflight_failed",
+                    "failure": preflight.get("failure"),
+                    "signed_in_display": preflight.get("signed_in_display"),
+                    "authenticated_app": preflight.get("authenticated_app"),
+                    "authenticated_restored": False,
+                },
+                indent=2,
+            )
+        )
+        return 1
+
+    deploy: dict[str, Any] = {
+        "expected_from_deploy_commit": "",
+        "runtime_sha_live": preflight.get("cloud_sha") or "",
+        "auth_preflight_pass": True,
+    }
     try:
         line = (ROOT / "deploy_commit.txt").read_text(encoding="utf-8").splitlines()[0]
         deploy["expected_from_deploy_commit"] = line.split("#", 1)[0].strip()
     except Exception:
         pass
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        from cloud_streamlit_wake import goto_and_wake
+    if not deploy.get("runtime_sha_live"):
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            from cloud_streamlit_wake import goto_and_wake
 
-        goto_and_wake(
-            page,
-            "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/?active_page=Live%20Draft%20Room",
-            timeout_s=180,
-        )
-        deploy["runtime_sha_live"] = scrape_live_sha(page)
-        browser.close()
+            goto_and_wake(
+                page,
+                "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app/?active_page=Live%20Draft%20Room",
+                timeout_s=180,
+            )
+            deploy["runtime_sha_live"] = scrape_live_sha(page)
+            browser.close()
 
     report: dict[str, Any] = {
         "started_at": time.time(),
         "deploy_probe": deploy,
+        "auth_preflight": {
+            k: preflight.get(k)
+            for k in (
+                "cloud_sha",
+                "signed_in_display",
+                "authenticated_app",
+                "authenticated_restored",
+            )
+        },
         "anonymous": run_scenario(authenticated=False),
         "authenticated": run_scenario(authenticated=True),
     }

@@ -45,12 +45,16 @@ def capture_streamlit_click_transport(
     pre_script_run_seq: str = "",
     post_script_run_seq: str = "",
     include_strict_backmsg: bool = True,
+    expected_widget_id: str = "",
 ) -> dict[str, Any]:
     """
     Capture WS traffic after click_ts.
 
     Strict protobuf fields (authoritative for S1–S3) live under ``strict_backmsg``.
     ``streamlit_backmsg_sent`` means ``rerun_script`` BackMsg decoded (not any outbound frame).
+
+    When ``expected_widget_id`` is supplied, strict wire fragment comes from the target-trigger
+    BackMsg only (not the first temporally nearby rerun_script frame).
     """
     try:
         from p8_proven_start_delivery import aggregate_ws_boundary_log, websocket_open_at_click
@@ -85,7 +89,12 @@ def capture_streamlit_click_transport(
     if include_strict_backmsg:
         from stage1_strict_backmsg_decode import summarize_strict_backmsg_evidence
 
-        strict = summarize_strict_backmsg_evidence(raw_log, click_ts=click_ts, relaxed_ws_sample=after_out)
+        strict = summarize_strict_backmsg_evidence(
+            raw_log,
+            click_ts=click_ts,
+            relaxed_ws_sample=after_out,
+            expected_widget_id=str(expected_widget_id or ""),
+        )
 
     backmsg: bool | None
     if strict:

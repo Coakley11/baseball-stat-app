@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any
 
-PAUSE_SIBLING_IMPL_REV = "stage1_pause_sibling_probe_v5"
+PAUSE_SIBLING_IMPL_REV = "stage1_pause_sibling_probe_v6"
 PAUSE_SIBLING_PROBE_ELEMENT_ID = "solo-stage1-pause-sibling-probe"
 PAUSE_SIBLING_LEDGER_DOM_ID = "solo-stage1-pause-sibling-ledger"
 PAUSE_SIBLING_ENTRY_DOM_ID = "solo-stage1-pause-sibling-entry"
@@ -58,6 +58,78 @@ def _streamlit_session_id() -> str:
         return ""
 
 
+def _diagnostic_run_id(session: dict[str, Any]) -> str:
+    return str(
+        session.get("_solo_stage1_run_id")
+        or session.get("diagnostic_run_id")
+        or session.get("application_diagnostic_run_id")
+        or ""
+    )[:64]
+
+
+def _ctx_fragment_fields() -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "current_fragment_id_ctx": "",
+        "fragment_ids_this_run": [],
+    }
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        ctx = get_script_run_ctx()
+        if ctx is not None:
+            out["current_fragment_id_ctx"] = str(getattr(ctx, "current_fragment_id", "") or "")[:80]
+            out["fragment_ids_this_run"] = [str(x) for x in list(getattr(ctx, "fragment_ids_this_run", None) or [])][:32]
+    except Exception:
+        pass
+    return out
+
+
+def sibling_execution_identity(
+    session: dict[str, Any],
+    *,
+    widget_key: str = "",
+    declaration_invocation_id: str = "",
+    authoritative_widget_id: str = "",
+) -> dict[str, Any]:
+    """Run-correlated identity fields for sibling diagnostic events."""
+    seq = _full_app_run_seq(session)
+    frag = _ctx_fragment_fields()
+    thread_fid = ""
+    try:
+        from live_draft_stage1_fragment_identity_runtime import snapshot_fragment_identity
+
+        snap = snapshot_fragment_identity(phase="SIBLING_IDENTITY", widget_user_key=widget_key)
+        thread_fid = str(snap.get("thread_state_fragment_id") or "")[:64]
+        if not authoritative_widget_id:
+            meta = snap.get("widget_metadata") if isinstance(snap.get("widget_metadata"), dict) else {}
+            authoritative_widget_id = str(meta.get("id") or meta.get("authoritative_widget_id") or "")[:200]
+    except Exception:
+        pass
+    return {
+        "streamlit_session_id": _streamlit_session_id(),
+        "diagnostic_run_id": _diagnostic_run_id(session),
+        "script_run_seq": seq,
+        "full_app_run_seq": seq,
+        "fragment_id": str(frag.get("current_fragment_id_ctx") or thread_fid or "")[:80],
+        "thread_state_fragment_id": thread_fid,
+        "current_fragment_id_ctx": str(frag.get("current_fragment_id_ctx") or "")[:80],
+        "fragment_ids_this_run": list(frag.get("fragment_ids_this_run") or []),
+        "widget_key": str(widget_key or "").strip()[:160],
+        "widget_user_key": str(widget_key or "").strip()[:160],
+        "authoritative_widget_id": str(authoritative_widget_id or "")[:200],
+        "declaration_invocation_id": str(declaration_invocation_id or "")[:64],
+    }
+
+
+def _append_sibling_module_event(session: dict[str, Any], phase: str, **fields: Any) -> dict[str, Any]:
+    try:
+        from live_draft_stage1_s3_process_global_diag import append_module_event
+
+        return append_module_event(_streamlit_session_id(), str(phase or "")[:48], **fields)
+    except ImportError:
+        return {"phase": phase, **fields}
+
+
 def append_pause_sibling_event(
     session: dict[str, Any],
     *,
@@ -69,19 +141,25 @@ def append_pause_sibling_event(
     delta_path: list[Any] | None = None,
     register_widget_result_value: bool | None = None,
     st_button_returned: bool | None = None,
+    declaration_invocation_id: str = "",
+    authoritative_widget_id: str = "",
 ) -> dict[str, Any]:
     n = int(session.get(PAUSE_SIBLING_COUNT_KEY) or 0) + 1
     session[PAUSE_SIBLING_COUNT_KEY] = n
+    identity = sibling_execution_identity(
+        session,
+        widget_key=widget_key,
+        declaration_invocation_id=declaration_invocation_id,
+        authoritative_widget_id=authoritative_widget_id,
+    )
     row: dict[str, Any] = {
         "event_id": uuid.uuid4().hex[:12],
         "ts": time.time(),
         "room_id": str(room_id or "").strip(),
-        "streamlit_session_id": _streamlit_session_id(),
-        "full_app_run_seq": _full_app_run_seq(session),
-        "widget_key": str(widget_key or "").strip(),
+        **identity,
         "returned_true": bool(returned_true),
         "branch_entered": bool(branch_entered),
-        "fragment_id": str(fragment_id or "")[:64],
+        "fragment_id": str(fragment_id or identity.get("fragment_id") or "")[:64],
         "delta_path": list(delta_path or [])[:24],
     }
     if register_widget_result_value is not None:
@@ -199,23 +277,22 @@ def _emit_sibling_render_entry(
     widget_key: str,
     evidence: dict[str, Any],
 ) -> None:
+    identity = sibling_execution_identity(session, widget_key=widget_key)
     payload: dict[str, Any] = {
         "event": "SIBLING_RENDER_ENTRY",
         "called": True,
         "ts": time.time(),
         "room_id": room_id,
-        "widget_user_key": widget_key,
-        "streamlit_session_id": _streamlit_session_id(),
-        "full_app_run_seq": _full_app_run_seq(session),
+        **identity,
         **evidence,
     }
-    try:
-        from live_draft_stage1_fragment_identity_runtime import snapshot_fragment_identity
-
-        snap = snapshot_fragment_identity(phase="SIBLING_RENDER_ENTRY", widget_user_key=widget_key)
-        payload["thread_state_fragment_id"] = str(snap.get("thread_state_fragment_id") or "")[:64]
-    except ImportError:
-        payload["thread_state_fragment_id"] = ""
+    _append_sibling_module_event(
+        session,
+        "SIBLING_RENDER_ENTRY",
+        room_id=room_id,
+        called=True,
+        **{k: v for k, v in identity.items() if k != "streamlit_session_id"},
+    )
     safe = lambda s: str(s or "").replace('"', "'")[:160]
     blob = json.dumps(payload, default=str)[:12000].replace('"', "'")
     en = evidence.get("solo_diag_enabled_final")
@@ -235,19 +312,32 @@ def _emit_sibling_render_entry(
 
 def _emit_sibling_declaration(
     st: Any,
+    session: dict[str, Any],
     *,
     phase: str,
     room_id: str,
     widget_key: str,
     data: dict[str, Any],
 ) -> None:
+    identity = sibling_execution_identity(
+        session,
+        widget_key=widget_key,
+        declaration_invocation_id=str(data.get("declaration_invocation_id") or ""),
+        authoritative_widget_id=str(data.get("registered_widget_id") or data.get("authoritative_widget_id") or ""),
+    )
     payload = {
         "event": phase,
         "ts": time.time(),
         "room_id": room_id,
-        "widget_key": widget_key,
+        **identity,
         **data,
     }
+    _append_sibling_module_event(
+        session,
+        str(phase or "")[:48],
+        room_id=room_id,
+        **{k: v for k, v in payload.items() if k not in ("event", "streamlit_session_id") and v is not None},
+    )
     safe = lambda s: str(s or "").replace('"', "'")[:160]
     blob = json.dumps(payload, default=str)[:8000].replace('"', "'")
     reached = 1 if data.get("declaration_reached") else 0
@@ -277,39 +367,29 @@ def _emit_setup_checkpoint(
     widget_key: str,
     extra: dict[str, Any] | None = None,
 ) -> None:
+    identity = sibling_execution_identity(
+        session,
+        widget_key=widget_key,
+        declaration_invocation_id=str((extra or {}).get("declaration_invocation_id") or ""),
+        authoritative_widget_id=str((extra or {}).get("registered_widget_id") or (extra or {}).get("authoritative_widget_id") or ""),
+    )
     payload: dict[str, Any] = {
         "event": str(event or "")[:80],
         "ts": time.time(),
         "room_id": str(room_id or "").strip(),
-        "widget_key": str(widget_key or "").strip(),
-        "streamlit_session_id": _streamlit_session_id(),
-        "full_app_run_seq": _full_app_run_seq(session),
+        **identity,
     }
     if extra:
         payload.update(extra)
-    try:
-        from live_draft_stage1_fragment_identity_runtime import snapshot_fragment_identity
-
-        snap = snapshot_fragment_identity(phase=str(event or "")[:48], widget_user_key=widget_key)
-        payload["thread_state_fragment_id"] = str(snap.get("thread_state_fragment_id") or "")[:64]
-    except ImportError:
-        payload["thread_state_fragment_id"] = ""
     book = list(session.get(PAUSE_SIBLING_SETUP_CHECKPOINTS_KEY) or [])
     book.append(dict(payload))
     session[PAUSE_SIBLING_SETUP_CHECKPOINTS_KEY] = book[-32:]
-    try:
-        from live_draft_stage1_s3_process_global_diag import append_module_event
-
-        append_module_event(
-            _streamlit_session_id(),
-            str(event or "")[:48],
-            room_id=str(room_id or "").strip(),
-            widget_key=str(widget_key or "").strip(),
-            full_app_run_seq=_full_app_run_seq(session),
-            **{k: v for k, v in (extra or {}).items()},
-        )
-    except ImportError:
-        pass
+    _append_sibling_module_event(
+        session,
+        str(event or "")[:48],
+        room_id=str(room_id or "").strip(),
+        **{k: v for k, v in payload.items() if k not in ("event", "streamlit_session_id", "ts") and v is not None},
+    )
     try:
         print(f"SOLO_SIBLING_SETUP_CHECKPOINT {json.dumps(payload, default=str)[:4000]}", flush=True)
     except Exception:
@@ -370,15 +450,22 @@ def render_stage1_pause_sibling_return_probe(
     session[PAUSE_SIBLING_PRE_DECL_KEY] = dict(pre_identity)
 
     count_before = int(session.get(PAUSE_SIBLING_COUNT_KEY) or 0)
+    declaration_invocation_id = uuid.uuid4().hex[:16]
+    session["_stage1_pause_sibling_active_declaration_invocation_id"] = declaration_invocation_id
     _emit_sibling_declaration(
         st,
+        session,
         phase="SIBLING_BUTTON_DECLARATION_ENTRY",
         room_id=room_id,
         widget_key=wk,
-        data={"declaration_reached": True},
+        data={
+            "declaration_reached": True,
+            "declaration_invocation_id": declaration_invocation_id,
+        },
     )
     returned = False
-    reg_result = session.get("_stage1_pause_sibling_register_result_value")
+    # Legacy pre-button scalar is explicitly non-authoritative for this render.
+    legacy_reg_result = session.get("_stage1_pause_sibling_register_result_value")
     post_identity: dict[str, Any] = {}
     try:
         returned = st.button(
@@ -397,16 +484,34 @@ def render_stage1_pause_sibling_return_probe(
             extra={
                 "exception_type": type(exc).__name__,
                 "exception_message": str(exc)[:400],
+                "declaration_invocation_id": declaration_invocation_id,
             },
         )
         raise
+    # Resolve RegisterWidgetResult for THIS declaration_invocation_id (not legacy scalar).
+    by_inv = dict(session.get("_stage1_pause_sibling_register_by_invocation") or {})
+    current_reg = dict(by_inv.get(declaration_invocation_id) or session.get("_stage1_pause_sibling_current_register_result") or {})
+    if str(current_reg.get("declaration_invocation_id") or "") != declaration_invocation_id:
+        current_reg = dict(by_inv.get(declaration_invocation_id) or {})
+    reg_result = current_reg.get("register_widget_result_value")
+    if not isinstance(reg_result, bool):
+        reg_result = None
+    registered_widget_id = str(current_reg.get("metadata_id") or "")[:200]
     _emit_setup_checkpoint(
         st,
         session,
         event="SIBLING_BUTTON_CALL_RETURNED",
         room_id=room_id,
         widget_key=wk,
-        extra={"returned_value": bool(returned)},
+        extra={
+            "declaration_invocation_id": declaration_invocation_id,
+            "returned_value": bool(returned),
+            "st_button_returned": bool(returned),
+            "register_widget_result_value": reg_result,
+            "register_widget_result_value_legacy": legacy_reg_result if isinstance(legacy_reg_result, bool) else None,
+            "registered_widget_id": registered_widget_id,
+            "authoritative_widget_id": registered_widget_id,
+        },
     )
     try:
         from live_draft_stage1_s3_server_diag import post_registration_server_snapshot
@@ -424,11 +529,14 @@ def render_stage1_pause_sibling_return_probe(
             extra={
                 "exception_type": type(exc).__name__,
                 "exception_message": str(exc)[:400],
+                "declaration_invocation_id": declaration_invocation_id,
             },
         )
         raise
     session[PAUSE_SIBLING_POST_REG_KEY] = dict(post_identity)
     meta = post_identity.get("widget_metadata") if isinstance(post_identity.get("widget_metadata"), dict) else {}
+    if not registered_widget_id:
+        registered_widget_id = str(post_identity.get("registered_widget_id") or meta.get("id") or "")[:200]
     _emit_setup_checkpoint(
         st,
         session,
@@ -436,22 +544,31 @@ def render_stage1_pause_sibling_return_probe(
         room_id=room_id,
         widget_key=wk,
         extra={
-            "registered_widget_id": str(post_identity.get("registered_widget_id") or "")[:96],
+            "declaration_invocation_id": declaration_invocation_id,
+            "registered_widget_id": registered_widget_id[:96],
+            "authoritative_widget_id": registered_widget_id[:200],
             "metadata_fragment_id": str(meta.get("fragment_id") or "")[:64],
             "thread_state_fragment_id": str(post_identity.get("thread_state_fragment_id") or "")[:64],
-            "register_widget_result_value": reg_result if isinstance(reg_result, bool) else None,
+            "register_widget_result_value": reg_result,
+            "register_widget_result_value_legacy": legacy_reg_result if isinstance(legacy_reg_result, bool) else None,
+            "st_button_returned": bool(returned),
         },
     )
 
     _emit_sibling_declaration(
         st,
+        session,
         phase="SIBLING_BUTTON_DECLARATION_RESULT",
         room_id=room_id,
         widget_key=wk,
         data={
             "declaration_reached": True,
+            "declaration_invocation_id": declaration_invocation_id,
             "returned_value": bool(returned),
-            "registered_widget_id": str(post_identity.get("registered_widget_id") or "")[:96],
+            "st_button_returned": bool(returned),
+            "register_widget_result_value": reg_result,
+            "registered_widget_id": registered_widget_id[:96],
+            "authoritative_widget_id": registered_widget_id[:200],
             "thread_state_fragment_id": str(post_identity.get("thread_state_fragment_id") or "")[:64],
         },
     )
@@ -470,6 +587,8 @@ def render_stage1_pause_sibling_return_probe(
             delta_path=list(post_identity.get("thread_state_delta_path") or []),
             register_widget_result_value=reg_result if isinstance(reg_result, bool) else None,
             st_button_returned=bool(returned),
+            declaration_invocation_id=declaration_invocation_id,
+            authoritative_widget_id=registered_widget_id,
         )
         count_after = int(session.get(PAUSE_SIBLING_COUNT_KEY) or 0)
     render_meta = {
@@ -478,9 +597,14 @@ def render_stage1_pause_sibling_return_probe(
         "branch_entered": branch_entered,
         "count_before": count_before,
         "count_after": count_after,
+        "declaration_invocation_id": declaration_invocation_id,
         "register_widget_result_value": reg_result,
+        "register_widget_result_value_legacy": legacy_reg_result if isinstance(legacy_reg_result, bool) else None,
         "st_button_returned": bool(returned),
+        "script_run_seq": _full_app_run_seq(session),
+        "diagnostic_run_id": _diagnostic_run_id(session),
     }
+    session.pop("_stage1_pause_sibling_active_declaration_invocation_id", None)
     session[PAUSE_SIBLING_LAST_RENDER_KEY] = dict(render_meta)
     _emit_pause_sibling_probes(
         st,

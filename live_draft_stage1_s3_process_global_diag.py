@@ -24,6 +24,15 @@ CRITICAL_SERVER_PHASES: frozenset[str] = frozenset(
         "SAFE_SESSIONSTATE_RECEIVE_ENTRY",
         "SERVER_RECEIVE_ENTRY",
         "SERVER_STATE_APPLIED",
+        # Sibling same-run registration / fragment-execution correlation (diagnostic retention).
+        "CONTROL_CENTER_FRAGMENT_ENTRY",
+        "SIBLING_RENDER_ENTRY",
+        "SIBLING_BUTTON_DECLARATION_ENTRY",
+        "SIBLING_BUTTON_DECLARATION_RESULT",
+        "SIBLING_BUTTON_CALL_RETURNED",
+        "SIBLING_POST_REGISTRATION_RETURNED",
+        "REGISTER_ENTRY",
+        "REGISTER_RESULT",
     }
 )
 _CRITICAL_EVENTS_PER_PHASE = 8

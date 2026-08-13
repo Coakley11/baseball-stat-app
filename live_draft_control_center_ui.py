@@ -350,6 +350,45 @@ def render_control_center_with_live_chat(
             note_fragment_owner(session, "control_center_fragment", delta=0)
         except ImportError:
             pass
+        # Observational fragment-entry checkpoint for same-run sibling correlation (diag only).
+        try:
+            from live_draft_solo_component_diagnostics import solo_component_diag_enabled
+            from live_draft_stage1_s3_process_global_diag import append_module_event, streamlit_session_id_from_ctx
+
+            if solo_component_diag_enabled(st, session):
+                fid = ""
+                frag_ids: list[str] = []
+                try:
+                    from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+                    ctx = get_script_run_ctx()
+                    if ctx is not None:
+                        fid = str(getattr(ctx, "current_fragment_id", "") or "")[:80]
+                        frag_ids = [str(x) for x in list(getattr(ctx, "fragment_ids_this_run", None) or [])][:32]
+                except Exception:
+                    pass
+                try:
+                    script_run_seq = int(session.get("_solo_stage1_script_run_seq") or 0)
+                except (TypeError, ValueError):
+                    script_run_seq = 0
+                append_module_event(
+                    streamlit_session_id_from_ctx(),
+                    "CONTROL_CENTER_FRAGMENT_ENTRY",
+                    fragment_id=fid,
+                    current_fragment_id_ctx=fid,
+                    fragment_ids_this_run=frag_ids,
+                    script_run_seq=script_run_seq,
+                    full_app_run_seq=script_run_seq,
+                    diagnostic_run_id=str(
+                        session.get("_solo_stage1_run_id")
+                        or session.get("diagnostic_run_id")
+                        or session.get("application_diagnostic_run_id")
+                        or ""
+                    )[:64],
+                    room_id=str(room.get("draft_room_id") or room.get("room_id") or "")[:16],
+                )
+        except ImportError:
+            pass
         return _paint_control_center_with_live_chat(
             st,
             session,

@@ -97,11 +97,38 @@ def _apply_oob_discovery_to_report(
 
 
 def _wire_from_sibling_step(sibling_step: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    """Extract sibling widget id + authoritative wire fragment from sibling capture.
+
+    When the capture requested target-widget correlation (expected_widget_id set), never fall
+    back to the first decoded rerun_script fragment — that recreates the false-R2A race.
+    """
     tr = dict(sibling_step.get("streamlit_transport") or {})
     strict = dict(tr.get("strict_backmsg") or {})
+    expected = str(
+        sibling_step.get("expected_widget_id")
+        or strict.get("expected_widget_id")
+        or ""
+    ).strip()
+    correlation_requested = bool(expected) or bool(strict.get("target_correlation_requested"))
+
     ids = list(strict.get("activated_widget_ids") or [])
-    wire = str(ids[0] if ids else "")
+    # Prefer the expected registered widget id when present.
+    if expected:
+        wire = expected
+    else:
+        wire = str(ids[0] if ids else "")
+
     wire_target = str(strict.get("wire_rerun_target_fragment_id") or "").strip()
+    if correlation_requested:
+        if not strict.get("target_trigger_backmsg_seen"):
+            wire_target = ""
+        else:
+            wire_target = str(
+                strict.get("target_trigger_fragment_id") or strict.get("wire_rerun_target_fragment_id") or ""
+            ).strip()
+        return wire, wire_target, strict
+
+    # Legacy callers without target correlation: first wire field, then first rerun frame.
     if not wire_target:
         for fr in strict.get("decoded_outbound_frames") or []:
             if not isinstance(fr, dict):
@@ -207,6 +234,8 @@ def main() -> int:
         fetch_oob_snapshot_via_page,
         run_oob_discovery_pipeline,
         wait_for_oob_generation_after,
+        wait_for_oob_pause_evidence_settled_after,
+        wait_for_oob_settled_after,  # retained for historical/regression callers
     )
     from stage1_s3_r3_observability_classify import (
         BUTTON_DISPATCH_S3_R3O0_SERVER_EXPORT_NOT_REFRESHED_AFTER_PAUSE,
@@ -530,8 +559,13 @@ def main() -> int:
         report["pre_click_export_generation"] = pre_sibling_fresh.get("export_generation")
         report["pre_sibling_oob_generation"] = pre_oob_fresh.get("snapshot_generation")
 
-        sibling_step = capture_sibling_pre_pause_transport(page)
+        sibling_expected_widget_id = str(post_reg.get("registered_widget_id") or "").strip()
+        sibling_step = capture_sibling_pre_pause_transport(
+            page,
+            expected_widget_id=sibling_expected_widget_id,
+        )
         report["sibling_strict_transport"] = sibling_step
+        report["sibling_expected_widget_id"] = sibling_expected_widget_id
 
         static_url_path = str(oob_channel.get("static_url_path") or "")
         sibling_oob_wait = wait_for_oob_generation_after(
@@ -576,6 +610,36 @@ def main() -> int:
         report["wire_target_in_preclick_fragment_storage"] = wire_target_in_preclick_storage(wire_target, post_reg)
         report["sibling_user_key"] = f"stage1_pause_sibling_return_{room_id}_diag"
         report["browser_console_fragment_batch"] = sibling_step.get("browser_console_fragment_batch")
+        report["target_backmsg_consistency"] = dict(
+            sibling_step.get("target_backmsg_consistency")
+            or strict_backmsg.get("target_backmsg_consistency")
+            or {}
+        )
+        report["target_trigger_backmsg_seen"] = strict_backmsg.get("target_trigger_backmsg_seen")
+        report["first_rerun_fragment_id"] = strict_backmsg.get("first_rerun_fragment_id")
+
+        # Target-widget correlation requested: do not invent R2A/R2B from an unrelated first frame.
+        if sibling_expected_widget_id and not strict_backmsg.get("target_trigger_backmsg_seen"):
+            from stage1_s3_r3_observability_classify import (
+                BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_INSTRUMENTATION_FAILURE,
+            )
+
+            report["classification"] = BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_INSTRUMENTATION_FAILURE
+            report["classification_note"] = "sibling_target_trigger_backmsg_not_observed"
+            report["observability_evidence"] = {
+                "expected_widget_id": sibling_expected_widget_id,
+                "target_trigger_backmsg_seen": False,
+                "first_rerun_fragment_id": strict_backmsg.get("first_rerun_fragment_id"),
+                "all_rerun_fragment_ids": list(strict_backmsg.get("all_rerun_fragment_ids") or []),
+                "target_backmsg_consistency": report.get("target_backmsg_consistency"),
+                "note": "harness_transport_observability_abort_not_r2_product_diagnosis",
+            }
+            report["ok"] = False
+            report["finished_at"] = time.time()
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
+            return 2
 
         pause_step = _capture_pause_strict(page, room_id=room_id)
         report["pause_positive_control"] = pause_step
@@ -589,23 +653,63 @@ def main() -> int:
         pause_oob_wait: dict[str, Any] = {"ok": False}
         pause_oob_snapshot: dict[str, Any] = {}
         post_pause_oob_fresh: dict[str, Any] = {}
+        pause_evidence_settle: dict[str, Any] = {}
         if pause_step.get("pause_resolved"):
-            pause_oob_wait = wait_for_oob_generation_after(
+            pause_transport = dict(pause_step.get("streamlit_transport") or {})
+            pause_strict = dict(pause_transport.get("strict_backmsg") or {})
+            pause_widget_ids = list(pause_strict.get("activated_widget_ids") or [])
+            pause_widget_id = str(pause_widget_ids[0] if pause_widget_ids else "")
+            pause_evidence_settle = wait_for_oob_pause_evidence_settled_after(
                 page,
                 static_url_path=static_url_path,
                 min_generation=int(report.get("pre_pause_oob_generation") or 0),
-                max_wait_s=30.0,
+                streamlit_session_id=str(report.get("streamlit_session_id") or "")[:64],
+                pause_widget_id=pause_widget_id,
                 connected_server_uri=connected_server_uri,
                 require_connected_server_uri=True,
             )
+            report["s3_oob_pause_evidence_settle_after_pause"] = pause_evidence_settle
+            # Retain prior field name as telemetry alias of the new settle result.
+            report["s3_oob_settle_after_pause"] = {
+                k: pause_evidence_settle.get(k)
+                for k in (
+                    "ok",
+                    "settle_reason",
+                    "min_generation_required",
+                    "first_advanced_generation",
+                    "first_snapshot_generation_after_pause",
+                    "final_generation",
+                    "final_snapshot_generation",
+                    "final_publish_source",
+                    "poll_count",
+                    "wait_s",
+                    "stable_poll_count",
+                    "generations_observed",
+                    "publish_sources_observed",
+                )
+            }
+            pause_oob_wait = pause_evidence_settle
             report["s3_oob_wait_after_pause"] = pause_oob_wait
-            pause_oob_snapshot = dict((pause_oob_wait.get("fetch") or {}).get("snapshot") or {})
+            pause_oob_snapshot = dict(pause_evidence_settle.get("final_snapshot") or {})
             post_pause_oob_fresh = extract_oob_freshness_from_snapshot(pause_oob_snapshot)
             report["s3_oob_freshness_post_pause"] = post_pause_oob_fresh
             report["s3_oob_freshness_pause_delta"] = compare_oob_freshness(
                 post_sibling_oob_fresh if post_sibling_oob_fresh else pre_oob_fresh,
                 post_pause_oob_fresh,
             )
+            if not pause_evidence_settle.get("ok"):
+                from stage1_s3_r3_observability_classify import (
+                    BUTTON_DISPATCH_S3_R3O0_SERVER_OOB_CHANNEL_NOT_REFRESHED_AFTER_PAUSE,
+                )
+
+                report["classification"] = BUTTON_DISPATCH_S3_R3O0_SERVER_OOB_CHANNEL_NOT_REFRESHED_AFTER_PAUSE
+                report["classification_note"] = str(pause_evidence_settle.get("settle_reason") or "pause_evidence_settle_failed")
+                report["ok"] = False
+                report["finished_at"] = time.time()
+                out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+                browser.close()
+                print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
+                return 2
             stale_pause_oob = classify_oob_freshness_after_pause(
                 pause_resolved=True,
                 pre_pause_generation=int(report.get("pre_pause_oob_generation") or 0),
@@ -643,13 +747,22 @@ def main() -> int:
         payload = s3_after.get("payload") if isinstance(s3_after.get("payload"), dict) else {}
         ledger = (payload.get("ledger") or {}) if isinstance(payload, dict) else {}
         oob_authoritative_snapshot = pause_oob_snapshot if pause_oob_snapshot else sibling_oob_snapshot
-        authoritative_rows = authoritative_rows_from_oob_snapshot(oob_authoritative_snapshot)
+        # Authority = rolling accumulated Pause-evidence rows (not the final bounded snapshot alone).
+        if pause_evidence_settle.get("ok") and isinstance(pause_evidence_settle.get("accumulated_rows"), list):
+            authoritative_rows = list(pause_evidence_settle.get("accumulated_rows") or [])
+            auth_source = "oob_pause_evidence_accumulator"
+        else:
+            authoritative_rows = authoritative_rows_from_oob_snapshot(oob_authoritative_snapshot)
+            auth_source = "oob_snapshot"
         auth_evidence = {
-            "source": "oob_snapshot",
+            "source": auth_source,
             "row_count": len(authoritative_rows),
             "authoritative_server_rows": authoritative_rows,
             "snapshot_generation": oob_authoritative_snapshot.get("snapshot_generation"),
             "publish_source": oob_authoritative_snapshot.get("publish_source"),
+            "deepest_target_phase": pause_evidence_settle.get("deepest_target_phase"),
+            "target_relevant_row_count": pause_evidence_settle.get("target_relevant_row_count"),
+            "settle_reason": pause_evidence_settle.get("settle_reason"),
         }
         report["authoritative_server_evidence"] = auth_evidence
         report["s3_oob_authoritative_snapshot"] = oob_authoritative_snapshot
@@ -665,29 +778,62 @@ def main() -> int:
         sib_after = scrape_pause_sibling_probe(page)
         report["sibling_scrape_after"] = sib_after
 
-        reg_result = None
-        reg_value_changed = None
+        # Telemetry only: retain chronological REGISTER_RESULT values (must not drive R5/R6).
+        register_result_telemetry: list[dict[str, Any]] = []
         for r in s3_rows:
-            if r.get("phase") == "REGISTER_RESULT":
-                v = r.get("register_widget_result_value")
-                if isinstance(v, bool):
-                    reg_result = v
-                reg_value_changed = r.get("register_widget_value_changed")
-        st_btn = None
-        if sib_after.get("probe_found"):
+            if r.get("phase") != "REGISTER_RESULT":
+                continue
+            register_result_telemetry.append(
+                {
+                    "event_id": r.get("event_id"),
+                    "ts": r.get("ts"),
+                    "register_widget_result_value": r.get("register_widget_result_value"),
+                    "register_widget_value_changed": r.get("register_widget_value_changed"),
+                    "script_run_seq": r.get("script_run_seq") or r.get("full_app_run_seq"),
+                    "declaration_invocation_id": r.get("declaration_invocation_id"),
+                    "user_key": r.get("user_key"),
+                    "metadata_id": r.get("metadata_id"),
+                }
+            )
+        report["register_result_telemetry"] = register_result_telemetry
+
+        from stage1_s3_same_run_register_correlation import (
+            S3_REGISTER_RESULT_SAME_RUN_NOT_OBSERVED,
+            correlate_sibling_same_run_registration,
+            register_result_for_classifier,
+            st_button_for_classifier,
+        )
+
+        owner_fragment_preview = resolve_sibling_owner_fragment_id(
+            post_reg, list(sibling_oob_snapshot.get("module_ledger_rows") or s3_rows)
+        )
+        same_run_corr = correlate_sibling_same_run_registration(
+            s3_rows,
+            wire_widget_id=str(wire_id or sibling_expected_widget_id or ""),
+            user_key=str(post_reg.get("user_key") or ""),
+            target_fragment_id=str(
+                owner_fragment_preview
+                or ((post_reg.get("widget_metadata") or {}).get("fragment_id") or "")
+                or wire_target
+                or ""
+            ),
+        )
+        report["sibling_same_run_registration_correlation"] = same_run_corr
+        reg_result = register_result_for_classifier(same_run_corr)
+        reg_value_changed = same_run_corr.get("register_widget_value_changed")
+        st_btn = st_button_for_classifier(same_run_corr)
+        # Scrape may supplement C only when same-run button event absent (still not for B).
+        if st_btn is None and sib_after.get("probe_found"):
             sib_payload = sib_after.get("payload") if isinstance(sib_after.get("payload"), dict) else {}
             lr = dict(sib_payload.get("last") or {})
             lr_render = dict(sib_payload.get("last_render") or {})
-            if lr.get("st_button_returned") is not None:
-                st_btn = bool(lr.get("st_button_returned"))
-            elif lr.get("returned_true") is not None:
-                st_btn = bool(lr.get("returned_true"))
-            elif lr_render.get("st_button_returned") is not None:
+            inv = str(same_run_corr.get("declaration_invocation_id") or "")
+            if inv and str(lr_render.get("declaration_invocation_id") or "") == inv and lr_render.get("st_button_returned") is not None:
                 st_btn = bool(lr_render.get("st_button_returned"))
+            elif inv and str(lr.get("declaration_invocation_id") or "") == inv and lr.get("st_button_returned") is not None:
+                st_btn = bool(lr.get("st_button_returned"))
 
-        owner_fragment = resolve_sibling_owner_fragment_id(
-            post_reg, list(sibling_oob_snapshot.get("module_ledger_rows") or s3_rows)
-        )
+        owner_fragment = owner_fragment_preview
         report["sibling_owner_fragment_id"] = owner_fragment
         report["browser_candidate_wire_target_fragment"] = wire_target
         report["browser_candidate_owner_fragment"] = owner_fragment
@@ -711,6 +857,21 @@ def main() -> int:
             print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
             return 2
 
+        # R2 product classification requires proven target-trigger BackMsg for the sibling widget.
+        if sibling_expected_widget_id and not strict_backmsg.get("target_trigger_backmsg_seen"):
+            from stage1_s3_r3_observability_classify import (
+                BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_INSTRUMENTATION_FAILURE,
+            )
+
+            report["classification"] = BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_INSTRUMENTATION_FAILURE
+            report["classification_note"] = "sibling_target_trigger_backmsg_not_observed"
+            report["ok"] = False
+            report["finished_at"] = time.time()
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
+            return 2
+
         sibling_oob_r2 = classify_sibling_oob_r2_from_snapshot(
             oob_snapshot=sibling_oob_snapshot,
             wire_rerun_target_fragment_id=wire_target,
@@ -725,6 +886,18 @@ def main() -> int:
             report["classification"] = case
             report["classification_note"] = note
             report["r2_oob_evidence"] = evidence
+            report["ok"] = False
+            report["finished_at"] = time.time()
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
+            return 2
+
+        # R5/R6 require same-run RegisterWidgetResult — never use pre-click setup false.
+        if same_run_corr.get("server_applied_sibling") and reg_result is None:
+            report["classification"] = S3_REGISTER_RESULT_SAME_RUN_NOT_OBSERVED
+            report["classification_note"] = str(same_run_corr.get("first_missing_boundary") or "register_result_absent")
+            report["register_widget_value_changed"] = reg_value_changed
             report["ok"] = False
             report["finished_at"] = time.time()
             out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")

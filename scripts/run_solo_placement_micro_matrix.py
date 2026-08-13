@@ -97,11 +97,15 @@ def classify_row(row: dict[str, Any]) -> str:
     if row.get("invalid_reason"):
         return "invalid"
     stages = str(row.get("stages") or "")
-    raw = int(row.get("session_state_raw_received") or 0)
-    oc = int(row.get("on_change_callback_entry") or 0)
-    if raw >= 1 and oc >= 1:
+    raw = stages.count("session_state_raw_received")
+    oc = stages.count("on_change_callback_entry")
+    if raw == 1 and oc == 1:
         return "pass"
     if row.get("observation_ready") and row.get("outbound_token_count", 0) >= 1 and raw == 0 and oc == 0:
+        return "fail"
+    if raw >= 1 and oc >= 1:
+        return "pass"
+    if row.get("observation_ready") and row.get("component_key") and row.get("outbound_token_count", 0) >= 1 and raw == 0:
         return "fail"
     return "invalid"
 
@@ -153,8 +157,9 @@ def run_placement(
 
     probe = last_probe or scrape_micro_probe(page) or {}
     key_sub = str(probe.get("key") or f"solo_countdown_wake_micro_{placement.lower()}")
+    slug = placement.lower()
     new_frames = ws_frames[baseline:]
-    mount_wid, send_wid = _widget_ids_from_ws(new_frames, key_sub.split("_")[-1] if key_sub else placement.lower())
+    mount_wid, send_wid = _widget_ids_from_ws(new_frames, f"micro_{slug}")
     if not mount_wid:
         mount_wid, send_wid = _widget_ids_from_ws(new_frames, "solo_countdown_wake_micro")
     tokens = _tokens_from_ws(new_frames, placement)

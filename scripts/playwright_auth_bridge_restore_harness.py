@@ -72,6 +72,263 @@ def resolve_real_accounts_wake(*, bridge_restore_mode: bool) -> bool:
     return _resolve(bridge_restore_mode=bridge_restore_mode)
 
 
+_TIMEOUT_FORENSICS_CHECKPOINTS = (
+    "load_browser_auth_tokens_lookup",
+    "load_browser_auth_tokens",
+    "restore_auth_session_entry",
+    "restore_auth_session_exit",
+    "restore_auth_session_exception",
+    "apply_authenticated_user_exit",
+    "restore_auth_session_after_apply",
+)
+
+_SAFE_CHECKPOINT_FIELDS = (
+    "event_id",
+    "timestamp",
+    "event_ts",
+    "ts",
+    "script_run_seq",
+    "event_index",
+    "diagnostic_run_id",
+    "run_id",
+    "streamlit_session_id",
+    "suite_sid_prefix",
+    "rejection_reason",
+    "skip_or_failure_reason",
+    "exception_class",
+    "auth_status",
+    "auth_code",
+    "message_sanitized",
+    "access_token_present",
+    "refresh_token_present",
+    "browser_tokens_loaded",
+    "token_record_found",
+    "production_row_found",
+    "production_record_complete",
+    "record_status",
+    "status",
+    "row_id_prefix",
+    "matching_row_id_prefix",
+    "readback_row_id_prefix",
+    "created_at",
+    "updated_at",
+    "expires_at",
+    "expiration_state",
+    "environment_fingerprint",
+    "authenticated_before",
+    "authenticated_after",
+    "restore_attempt_seq",
+    "apply_authenticated_user_ok",
+    "apply_return_ok",
+    "hydration_attempted",
+    "persistence_attempted",
+    "persistence_succeeded",
+    "readback_record_complete",
+    "invalid_rows_for_key",
+)
+
+_SECRET_KEY_FRAGMENTS = (
+    "access_token",
+    "refresh_token",
+    "authorization",
+    "cookie",
+    "password",
+    "secret",
+    "bearer",
+    "id_token",
+)
+
+
+def _is_secret_field_name(key: str) -> bool:
+    kl = str(key or "").lower()
+    if kl.endswith("_present") or kl.endswith("_ok") or kl.endswith("_prefix") or kl.endswith("_count"):
+        return False
+    if kl in ("access_token_present", "refresh_token_present", "browser_tokens_loaded"):
+        return False
+    return any(frag in kl for frag in _SECRET_KEY_FRAGMENTS)
+
+
+def sanitize_hydration_checkpoint_snapshot(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Copy safe diagnostic fields only — never token/cookie/secret values."""
+    if not isinstance(row, dict):
+        return None
+    out: dict[str, Any] = {}
+    for key in _SAFE_CHECKPOINT_FIELDS:
+        if key not in row:
+            continue
+        if _is_secret_field_name(key):
+            continue
+        val = row.get(key)
+        if isinstance(val, str) and len(val) > 240:
+            out[key] = val[:240]
+        else:
+            out[key] = val
+    # Boolean presence aliases already covered; never copy raw token-like values.
+    for key, val in row.items():
+        if key in out or _is_secret_field_name(key):
+            continue
+        if key in ("checkpoint", "event"):
+            out[key] = str(val or "")[:120]
+    if "token_record_found" not in out:
+        if row.get("production_row_found") is not None:
+            out["token_record_found"] = bool(row.get("production_row_found"))
+        elif row.get("browser_tokens_loaded") is not None:
+            out["token_record_found"] = bool(row.get("browser_tokens_loaded"))
+    env = row.get("environment_fingerprint") or row.get("environment")
+    if "environment_fingerprint" not in out:
+        if isinstance(env, str) and env:
+            out["environment_fingerprint"] = env[:64]
+        elif isinstance(env, dict):
+            fp = str(env.get("url_fingerprint") or env.get("fingerprint") or "").strip()
+            if fp:
+                out["environment_fingerprint"] = fp[:64]
+    return out
+
+
+def build_auth_restore_boundary_at_timeout(
+    *,
+    load_ok: bool,
+    lookup_row: dict[str, Any] | None,
+    restore_entry: dict[str, Any] | None,
+    restore_exit: dict[str, Any] | None,
+    restore_exception: dict[str, Any] | None,
+    apply_exit: dict[str, Any] | None,
+    after_apply: dict[str, Any] | None,
+    bound: dict[str, Any] | None,
+    start_enabled: bool,
+) -> dict[str, Any]:
+    lookup = lookup_row or {}
+    bound = bound or {}
+    return {
+        "bridge_load_ok": bool(load_ok),
+        "lookup_found": bool(lookup_row),
+        "access_token_present": bool(lookup.get("access_token_present")),
+        "refresh_token_present": bool(lookup.get("refresh_token_present")),
+        "restore_entry_seen": bool(restore_entry),
+        "restore_exit_seen": bool(restore_exit),
+        "restore_exception_seen": bool(restore_exception),
+        "apply_exit_seen": bool(apply_exit),
+        "restore_after_apply_seen": bool(after_apply),
+        "authenticated_at_timeout": bound.get("is_authenticated") is True,
+        "auth_session_complete_at_timeout": bound.get("auth_session_complete") is True,
+        "start_enabled_at_timeout": bool(start_enabled),
+    }
+
+
+def build_hydration_timeout_forensics(
+    ledger: list[dict[str, Any]],
+    *,
+    streamlit_session_id: str,
+    diagnostic_run_id: str,
+    bound: dict[str, Any] | None,
+    load_ok: bool,
+    start_enabled: bool,
+    url_sid: str = "",
+    suite_sid: str = "",
+    checkpoint: dict[str, Any] | None = None,
+    dom: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Observability-only snapshots for AUTH_HYDRATE timeout (no secrets)."""
+    from bridge_hydration_waiter import latest_hydration_checkpoint
+
+    rows: dict[str, dict[str, Any] | None] = {}
+    for cp in _TIMEOUT_FORENSICS_CHECKPOINTS:
+        raw = latest_hydration_checkpoint(
+            ledger,
+            cp,
+            streamlit_session_id=streamlit_session_id,
+            diagnostic_run_id=diagnostic_run_id,
+        )
+        rows[cp] = sanitize_hydration_checkpoint_snapshot(raw)
+
+    bound_safe = {
+        k: (bound or {}).get(k)
+        for k in (
+            "session_flag_present",
+            "is_authenticated",
+            "auth_session_complete",
+            "current_restore_blocked_reason",
+            "apply_authenticated_user_ok",
+            "field_sources",
+        )
+    }
+    boundary = build_auth_restore_boundary_at_timeout(
+        load_ok=load_ok,
+        lookup_row=rows.get("load_browser_auth_tokens_lookup"),
+        restore_entry=rows.get("restore_auth_session_entry"),
+        restore_exit=rows.get("restore_auth_session_exit"),
+        restore_exception=rows.get("restore_auth_session_exception"),
+        apply_exit=rows.get("apply_authenticated_user_exit"),
+        after_apply=rows.get("restore_auth_session_after_apply"),
+        bound=bound,
+        start_enabled=start_enabled,
+    )
+    # Re-derive presence from sanitized lookup (may be None when row absent).
+    lookup = rows.get("load_browser_auth_tokens_lookup") or {}
+    if rows.get("load_browser_auth_tokens_lookup") is None:
+        boundary["access_token_present"] = False
+        boundary["refresh_token_present"] = False
+        boundary["lookup_found"] = False
+    else:
+        boundary["access_token_present"] = bool(lookup.get("access_token_present"))
+        boundary["refresh_token_present"] = bool(lookup.get("refresh_token_present"))
+        boundary["lookup_found"] = True
+
+    cp = checkpoint or {}
+    dom = dom or {}
+    return {
+        "streamlit_session_id": str(streamlit_session_id or "")[:36],
+        "diagnostic_run_id": str(diagnostic_run_id or "")[:64],
+        "url_suite_sid_prefix": str(url_sid or "")[:8],
+        "bridge_suite_sid_prefix": str(suite_sid or "")[:8],
+        "checkpoint_probe": str(cp.get("probe_checkpoint") or "")[:80],
+        "dom_streamlit_session_id": str(dom.get("streamlit_session_id") or "")[:36],
+        "checkpoints": rows,
+        "bound_current_auth_at_timeout": bound_safe,
+        "auth_restore_boundary_at_timeout": boundary,
+    }
+
+
+def attach_hydration_timeout_forensics(
+    out: dict[str, Any],
+    *,
+    ledger: list[dict[str, Any]],
+    streamlit_session_id: str,
+    diagnostic_run_id: str,
+    bound: dict[str, Any] | None,
+    load_ok: bool,
+    start_enabled: bool,
+    url_sid: str = "",
+    suite_sid: str = "",
+    checkpoint: dict[str, Any] | None = None,
+    dom: dict[str, Any] | None = None,
+) -> None:
+    """Mutate timeout result with final-poll scoped evidence (classification unchanged)."""
+    from bridge_hydration_waiter import detect_restore_rerun_anomaly, summarize_hydration_sequence
+
+    st_sid = str(streamlit_session_id or "")[:36]
+    run_id = str(diagnostic_run_id or "")[:64]
+    out["hydration_sequence"] = summarize_hydration_sequence(
+        ledger, streamlit_session_id=st_sid, diagnostic_run_id=run_id
+    )
+    out["rerun_anomaly"] = detect_restore_rerun_anomaly(ledger, streamlit_session_id=st_sid)
+    forensics = build_hydration_timeout_forensics(
+        ledger,
+        streamlit_session_id=st_sid,
+        diagnostic_run_id=run_id,
+        bound=bound,
+        load_ok=load_ok,
+        start_enabled=start_enabled,
+        url_sid=url_sid,
+        suite_sid=suite_sid,
+        checkpoint=checkpoint,
+        dom=dom,
+    )
+    out["bound_current_auth_at_timeout"] = forensics["bound_current_auth_at_timeout"]
+    out["hydration_timeout_forensics"] = forensics
+    out["auth_restore_boundary_at_timeout"] = forensics["auth_restore_boundary_at_timeout"]
+
+
 def wait_bridge_auth_hydrated(
     page,
     suite_sid: str,
@@ -125,6 +382,18 @@ def wait_bridge_auth_hydrated(
     if initial_settle_ms > 0:
         page.wait_for_timeout(initial_settle_ms)
     poll_n = 0
+    last_poll_ctx: dict[str, Any] = {
+        "ledger": [],
+        "bound": {},
+        "dom": {},
+        "checkpoint": {},
+        "start": {},
+        "st_sid": "",
+        "run_id": "",
+        "url_sid": "",
+        "load_ok": False,
+        "start_enabled": False,
+    }
     while time.time() < deadline:
         poll_n += 1
         t_poll = time.time()
@@ -186,6 +455,19 @@ def wait_bridge_auth_hydrated(
         load_ok = bridge_load_succeeded(ledger, streamlit_session_id=st_sid, diagnostic_run_id=run_id)
         start_enabled = bool(cp.get("start_enabled") or start.get("enabled"))
         start_visible = bool(cp.get("start_visible") if cp.get("start_visible") is not None else start.get("visible"))
+
+        last_poll_ctx = {
+            "ledger": ledger,
+            "bound": bound,
+            "dom": dom if isinstance(dom, dict) else {},
+            "checkpoint": cp if isinstance(cp, dict) else {},
+            "start": start if isinstance(start, dict) else {},
+            "st_sid": st_sid,
+            "run_id": run_id,
+            "url_sid": url_sid,
+            "load_ok": load_ok,
+            "start_enabled": start_enabled,
+        }
 
         poll_record = {
             "poll": poll_n,
@@ -287,4 +569,17 @@ def wait_bridge_auth_hydrated(
             out["first_divergence_from_isolated"] = (
                 "timeout_despite_dom_auth_complete_likely_start_enabled_or_apply_predicate"
             )
+    attach_hydration_timeout_forensics(
+        out,
+        ledger=list(last_poll_ctx.get("ledger") or []),
+        streamlit_session_id=str(last_poll_ctx.get("st_sid") or out.get("streamlit_session_id") or ""),
+        diagnostic_run_id=str(last_poll_ctx.get("run_id") or out.get("diagnostic_run_id") or ""),
+        bound=dict(last_poll_ctx.get("bound") or {}),
+        load_ok=bool(last_poll_ctx.get("load_ok")),
+        start_enabled=bool(last_poll_ctx.get("start_enabled")),
+        url_sid=str(last_poll_ctx.get("url_sid") or ""),
+        suite_sid=suite_sid,
+        checkpoint=dict(last_poll_ctx.get("checkpoint") or {}),
+        dom=dict(last_poll_ctx.get("dom") or {}),
+    )
     return out

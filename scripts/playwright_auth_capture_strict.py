@@ -216,8 +216,9 @@ def evaluate_strict_capture(
         elif out["failure"] == PREFLIGHT_FAIL_STREAMLIT_INCOMPLETE and persist.get("persistence_succeeded"):
             if bound_state_passes_observability_resolved(bound):
                 out["failure"] = ""
-            else:
-                out["failure"] = CAPTURE_FAIL_SESSION_FINALIZE
+        elif out["failure"] == PREFLIGHT_FAIL_NO_TOKEN_ROW and persist.get("persistence_succeeded"):
+            if bound_state_passes_observability_resolved(bound) and persist.get("bridge_record_complete"):
+                out["failure"] = ""
         if out["failure"]:
             return out
     elif base.get("failure") and resolved_failure:

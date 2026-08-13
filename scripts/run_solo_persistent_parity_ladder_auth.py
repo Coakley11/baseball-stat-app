@@ -378,6 +378,7 @@ def run_control(browser, control: str, *, deploy: dict[str, Any]) -> dict[str, A
         if control == "P6":
             probe_final = scrape_parity_probe(page)
             decoded = probe_final.get("decoded") if isinstance(probe_final.get("decoded"), dict) else {}
+            rec["probe_decoded"] = decoded
             meta = decoded.get("meta") if isinstance(decoded.get("meta"), dict) else {}
             if meta:
                 rec["meta"] = meta

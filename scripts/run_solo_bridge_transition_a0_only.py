@@ -92,8 +92,10 @@ SCRAPE_JS = """() => {
 }"""
 
 
-def setup_url() -> str:
-    return (
+def setup_url(*, suite_sid: str | None = None) -> str:
+    from playwright_daniel_auth_session import append_suite_sid_to_url
+
+    base = (
         f"{BASE}/?active_page=Live%20Draft%20Room"
         f"&solo_delivery_diag=1"
         f"&solo_bridge_transition=A0"
@@ -101,6 +103,7 @@ def setup_url() -> str:
         f"&solo_diag_timer=10"
         f"&solo_bridge_a0_seconds=90"
     )
+    return append_suite_sid_to_url(base, suite_sid)
 
 
 def _decode_b64_json(b64: str) -> Any:
@@ -322,12 +325,12 @@ def _classify_a0(
     return "INVALID", "observation_incomplete_or_ambiguous"
 
 
-def run_a0(page, ws_frames: list[dict[str, Any]]) -> dict[str, Any]:
+def run_a0(page, ws_frames: list[dict[str, Any]], *, suite_sid: str | None = None) -> dict[str, Any]:
     from cloud_streamlit_wake import goto_and_wake
     from run_solo_clean_verification import clear_stale_solo_draft, scrape_live_sha
     from solo_draft_start_harness import execute_solo_draft_start_workflow
 
-    url = setup_url()
+    url = setup_url(suite_sid=suite_sid)
     ws_baseline = len(ws_frames)
     goto_and_wake(page, url, timeout_s=240)
     deploy_sha = scrape_live_sha(page)

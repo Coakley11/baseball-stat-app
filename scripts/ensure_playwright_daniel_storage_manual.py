@@ -15,24 +15,31 @@ WAIT_S = int(os.environ.get("SOLO_AUTH_MANUAL_WAIT_S", "600"))
 
 
 def _signed_in(page) -> bool:
-    return bool(
-        page.evaluate("() => /Signed in as/i.test(document.body ? document.body.innerText : '')")
-    )
+    text = page.evaluate(_roots_js())
+    return "Signed in as" in text
 
 
 def _workspace_hint(page) -> str:
-    return str(
-        page.evaluate(
-            """() => {
-              const t = document.body ? document.body.innerText : '';
-              const ws = t.match(/Workspace[:\\s]+([A-Za-z0-9_-]+)/i);
-              if (ws) return ws[1];
-              const seat = t.match(/Active workspace[:\\s]+([A-Za-z0-9_-]+)/i);
-              return seat ? seat[1] : '';
-            }"""
-        )
-        or ""
-    ).strip()[:40]
+    text = page.evaluate(_roots_js())
+    import re
+
+    m = re.search(r"Workspace[:\\s]+([A-Za-z0-9_-]+)", text, re.I)
+    if m:
+        return m.group(1)[:40]
+    m = re.search(r"Active workspace[:\\s]+([A-Za-z0-9_-]+)", text, re.I)
+    return (m.group(1) if m else "")[:40]
+
+
+def _roots_js() -> str:
+    return """
+    () => {
+      const roots = [document];
+      for (const f of document.querySelectorAll('iframe')) {
+        try { if (f.contentDocument) roots.push(f.contentDocument); } catch (e) {}
+      }
+      return roots.map(r => (r.body && r.body.innerText) || '').join('\\n');
+    }
+    """
 
 
 def main() -> int:

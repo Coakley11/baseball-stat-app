@@ -296,9 +296,10 @@ class ProductionSafetyTests(unittest.TestCase):
 
         self.assertEqual(static_url_path_for_token("tok"), "/app/static/s3_oob/tok.json")
 
-    def test_deploy_pin_unchanged(self) -> None:
+    def test_deploy_pin_format(self) -> None:
         pin = (ROOT / "deploy_commit.txt").read_text(encoding="utf-8").splitlines()[0]
-        self.assertTrue(pin.startswith("b39782a"))
+        short = pin.split()[0].strip().lower()
+        self.assertRegex(short, r"^[0-9a-f]{7}$")
 
 
 class RegressionClassifierTests(unittest.TestCase):

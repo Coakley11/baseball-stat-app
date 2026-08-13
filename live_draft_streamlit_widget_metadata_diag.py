@@ -182,6 +182,48 @@ def emit_metadata_at_registration(
     )
 
 
+def _sibling_register_run_identity(session: dict[str, Any], metadata: Any, user_key: str) -> dict[str, Any]:
+    """Observational identity for pause-sibling REGISTER_* rows (does not alter RegisterWidgetResult)."""
+    inv = str(session.get("_stage1_pause_sibling_active_declaration_invocation_id") or "")[:64]
+    try:
+        script_run_seq = int(session.get("_solo_stage1_script_run_seq") or 0)
+    except (TypeError, ValueError):
+        script_run_seq = 0
+    diagnostic_run_id = str(
+        session.get("_solo_stage1_run_id")
+        or session.get("diagnostic_run_id")
+        or session.get("application_diagnostic_run_id")
+        or ""
+    )[:64]
+    streamlit_session_id = ""
+    current_fragment_id_ctx = ""
+    fragment_ids_this_run: list[str] = []
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        ctx = get_script_run_ctx()
+        if ctx is not None:
+            streamlit_session_id = str(getattr(ctx, "session_id", "") or "")[:64]
+            current_fragment_id_ctx = str(getattr(ctx, "current_fragment_id", "") or "")[:80]
+            fragment_ids_this_run = [str(x) for x in list(getattr(ctx, "fragment_ids_this_run", None) or [])][:32]
+    except Exception:
+        pass
+    meta_fid = str(getattr(metadata, "fragment_id", "") or "")[:80]
+    return {
+        "declaration_invocation_id": inv,
+        "script_run_seq": script_run_seq,
+        "full_app_run_seq": script_run_seq,
+        "diagnostic_run_id": diagnostic_run_id,
+        "user_key": str(user_key or "")[:160],
+        "metadata_id": str(getattr(metadata, "id", "") or "")[:200],
+        "metadata_fragment_id": meta_fid,
+        "fragment_id": meta_fid or current_fragment_id_ctx,
+        "current_fragment_id_ctx": current_fragment_id_ctx,
+        "fragment_ids_this_run": fragment_ids_this_run,
+        "streamlit_session_id_observed": streamlit_session_id,
+    }
+
+
 def install_streamlit_register_widget_probe(st: Any | None, session: dict[str, Any]) -> None:
     if session.get(REGISTER_WIDGET_PATCHED_KEY):
         return
@@ -202,13 +244,12 @@ def install_streamlit_register_widget_probe(st: Any | None, session: dict[str, A
             from live_draft_stage1_s3_server_diag import append_s3_event, is_pause_sibling_user_key
 
             if is_pause_sibling_user_key(uk):
+                identity = _sibling_register_run_identity(session, metadata, uk)
                 append_s3_event(
                     session,
                     "REGISTER_ENTRY",
-                    user_key=uk,
-                    metadata_id=str(getattr(metadata, "id", "") or ""),
-                    fragment_id=str(getattr(metadata, "fragment_id", "") or ""),
                     value_type=str(getattr(metadata, "value_type", "") or ""),
+                    **identity,
                 )
         except ImportError:
             pass
@@ -223,17 +264,31 @@ def install_streamlit_register_widget_probe(st: Any | None, session: dict[str, A
 
             if is_pause_sibling_user_key(uk):
                 rw_fields = extract_register_widget_result_fields(result)
+                identity = _sibling_register_run_identity(session, metadata, uk)
                 append_s3_event(
                     session,
                     "REGISTER_RESULT",
-                    user_key=uk,
-                    metadata_id=str(getattr(metadata, "id", "") or "")[:200],
-                    metadata_fragment_id=str(getattr(metadata, "fragment_id", "") or "")[:80],
+                    **identity,
                     **rw_fields,
                 )
                 v = rw_fields.get("register_widget_result_value")
+                # Legacy scalar retained for compatibility; not same-run authoritative.
                 if isinstance(v, bool):
                     session["_stage1_pause_sibling_register_result_value"] = v
+                    session["_stage1_pause_sibling_register_result_value_legacy"] = v
+                inv = str(identity.get("declaration_invocation_id") or "")
+                if inv:
+                    by_inv = dict(session.get("_stage1_pause_sibling_register_by_invocation") or {})
+                    by_inv[inv] = {
+                        **rw_fields,
+                        "declaration_invocation_id": inv,
+                        "script_run_seq": identity.get("script_run_seq"),
+                        "diagnostic_run_id": identity.get("diagnostic_run_id"),
+                        "metadata_id": identity.get("metadata_id"),
+                        "user_key": uk,
+                    }
+                    session["_stage1_pause_sibling_register_by_invocation"] = by_inv
+                    session["_stage1_pause_sibling_current_register_result"] = dict(by_inv[inv])
         except ImportError:
             pass
         return result

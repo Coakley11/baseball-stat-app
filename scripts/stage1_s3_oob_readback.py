@@ -545,6 +545,184 @@ def wait_for_oob_generation_after(
     }
 
 
+# Post-Pause OOB settling (harness-only). First advanced generation is not authoritative
+# when runtime may publish further generations asynchronously after Pause.
+OOB_SETTLE_POLL_INTERVAL_MS = 500
+OOB_SETTLE_STABLE_POLLS_REQUIRED = 4
+OOB_SETTLE_MIN_SETTLE_S = 2.0
+OOB_SETTLE_MAX_WAIT_S_BEFORE_ADVANCE = 30.0
+OOB_SETTLE_MAX_SETTLE_S_AFTER_ADVANCE = 12.0
+
+
+def wait_for_oob_settled_after(
+    page,
+    *,
+    static_url_path: str,
+    min_generation: int,
+    poll_interval_ms: int = OOB_SETTLE_POLL_INTERVAL_MS,
+    stable_polls_required: int = OOB_SETTLE_STABLE_POLLS_REQUIRED,
+    min_settle_s: float = OOB_SETTLE_MIN_SETTLE_S,
+    max_wait_s_before_advance: float = OOB_SETTLE_MAX_WAIT_S_BEFORE_ADVANCE,
+    max_settle_s_after_advance: float = OOB_SETTLE_MAX_SETTLE_S_AFTER_ADVANCE,
+    connected_server_uri: str | None = None,
+    require_connected_server_uri: bool = False,
+    sleep_fn: Callable[[float], None] | None = None,
+    time_fn: Callable[[], float] | None = None,
+) -> dict[str, Any]:
+    """Wait until OOB generation advances past min_generation and then becomes quiescent.
+
+    Retains the newest valid snapshot. Does not treat the first advanced generation as final.
+    Quiescence (stable generation across consecutive polls / min settle window) is authoritative;
+    absence of a later publish_source does not block settling.
+    """
+    now = time_fn or time.time
+    sleep = sleep_fn
+    min_gen = int(min_generation or 0)
+    stable_need = max(1, int(stable_polls_required or 1))
+    poll_ms = max(1, int(poll_interval_ms or OOB_SETTLE_POLL_INTERVAL_MS))
+    min_settle = float(min_settle_s or 0.0)
+    max_before = float(max_wait_s_before_advance or 0.0)
+    max_after = float(max_settle_s_after_advance or 0.0)
+
+    def _fail_unresolved() -> dict[str, Any]:
+        return {
+            "ok": False,
+            "min_generation_required": min_gen,
+            "first_advanced_generation": None,
+            "final_generation": None,
+            "final_publish_source": "",
+            "poll_count": 0,
+            "wait_s": 0.0,
+            "settle_reason": "oob_connected_server_uri_unresolved",
+            "stable_poll_count": 0,
+            "generations_observed": [],
+            "publish_sources_observed": [],
+            "fetch": {
+                "ok": False,
+                "reason": "oob_connected_server_uri_unresolved",
+                "http_ok": False,
+                "parse_ok": False,
+                "snapshot_present": False,
+                "http_request_attempted": False,
+            },
+            "freshness": {},
+        }
+
+    if require_connected_server_uri and not str(connected_server_uri or "").strip():
+        return _fail_unresolved()
+
+    started = now()
+    first_advance_ts: float | None = None
+    last_change_ts: float | None = None
+    first_advanced_generation: int | None = None
+    last_fetch: dict[str, Any] = {"ok": False}
+    last_freshness: dict[str, Any] = {}
+    last_ok_fetch: dict[str, Any] = {"ok": False}
+    last_ok_freshness: dict[str, Any] = {}
+    polls = 0
+    stable_polls = 0
+    current_gen = 0
+    generations_observed: list[int] = []
+    publish_sources_observed: list[str] = []
+
+    def _deadline() -> float:
+        if first_advance_ts is None:
+            return started + max_before
+        return first_advance_ts + max_after
+
+    while now() < _deadline():
+        polls += 1
+        last_fetch = fetch_oob_snapshot_via_page(
+            page,
+            static_url_path,
+            cache_bust=True,
+            connected_server_uri=connected_server_uri,
+            require_connected_server_uri=require_connected_server_uri,
+            allow_origin_fallback=not require_connected_server_uri,
+        )
+        snap = last_fetch.get("snapshot") if isinstance(last_fetch.get("snapshot"), dict) else {}
+        last_freshness = extract_oob_freshness_from_snapshot(snap)
+        gen = int(last_freshness.get("snapshot_generation") or 0)
+        pub = str(last_freshness.get("publish_source") or "")[:64]
+
+        if last_fetch.get("ok") and gen > 0:
+            last_ok_fetch = last_fetch
+            last_ok_freshness = last_freshness
+            if not generations_observed or generations_observed[-1] != gen:
+                generations_observed.append(gen)
+            if pub and (not publish_sources_observed or publish_sources_observed[-1] != pub):
+                publish_sources_observed.append(pub)
+
+            if gen > min_gen:
+                if first_advanced_generation is None:
+                    first_advanced_generation = gen
+                    first_advance_ts = now()
+                    last_change_ts = first_advance_ts
+                    current_gen = gen
+                    stable_polls = 1
+                elif gen > current_gen:
+                    current_gen = gen
+                    last_change_ts = now()
+                    stable_polls = 1
+                elif gen == current_gen:
+                    stable_polls += 1
+                else:
+                    # Generation went backwards — treat as a new observation point.
+                    current_gen = gen
+                    last_change_ts = now()
+                    stable_polls = 1
+
+                settle_elapsed = (now() - float(last_change_ts or now())) if last_change_ts is not None else 0.0
+                if (
+                    first_advanced_generation is not None
+                    and stable_polls >= stable_need
+                    and settle_elapsed >= min_settle
+                ):
+                    return {
+                        "ok": True,
+                        "min_generation_required": min_gen,
+                        "first_advanced_generation": first_advanced_generation,
+                        "final_generation": current_gen,
+                        "final_publish_source": str(last_ok_freshness.get("publish_source") or "")[:64],
+                        "poll_count": polls,
+                        "wait_s": now() - started,
+                        "settle_reason": "oob_generation_quiescent",
+                        "stable_poll_count": stable_polls,
+                        "generations_observed": list(generations_observed),
+                        "publish_sources_observed": list(publish_sources_observed),
+                        "fetch": last_ok_fetch,
+                        "freshness": last_ok_freshness,
+                    }
+
+        if sleep is not None:
+            sleep(poll_ms / 1000.0)
+        else:
+            page.wait_for_timeout(poll_ms)
+
+    wait_s = now() - started
+    final_gen = int(last_ok_freshness.get("snapshot_generation") or 0) or None
+    final_pub = str(last_ok_freshness.get("publish_source") or "")[:64]
+    if first_advanced_generation is None:
+        reason = "oob_no_generation_advance"
+    else:
+        reason = "oob_settle_timeout_after_advance"
+    return {
+        "ok": False,
+        "min_generation_required": min_gen,
+        "first_advanced_generation": first_advanced_generation,
+        "final_generation": final_gen if first_advanced_generation is not None else final_gen,
+        "final_publish_source": final_pub,
+        "poll_count": polls,
+        "wait_s": wait_s,
+        "settle_reason": reason,
+        "stable_poll_count": stable_polls,
+        "generations_observed": list(generations_observed),
+        "publish_sources_observed": list(publish_sources_observed),
+        "fetch": last_ok_fetch if last_ok_fetch.get("ok") else last_fetch,
+        "freshness": last_ok_freshness if last_ok_freshness else last_freshness,
+    }
+
+
 def authoritative_rows_from_oob_snapshot(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
     snap = dict(snapshot or {})
     module_rows = list(snap.get("module_ledger_rows") or [])
@@ -560,3 +738,388 @@ def authoritative_rows_from_oob_snapshot(snapshot: dict[str, Any] | None) -> lis
         seen.add(key)
         merged.append(dict(r))
     return sorted(merged, key=lambda r: float(r.get("ts") or 0))
+
+
+# ---------------------------------------------------------------------------
+# Post-Pause TARGET Pause-evidence settle (harness-only).
+# Global snapshot_generation is telemetry; settle on accumulated Pause rows.
+# ---------------------------------------------------------------------------
+
+TARGET_PAUSE_SCHEDULER_PHASES: tuple[str, ...] = (
+    "RUNTIME_BACKMSG_ENTRY",
+    "APPSESSION_BACKMSG_ENTRY",
+    "APPSESSION_REQUEST_RERUN_ENTRY",
+    "SCRIPTRUNNER_REQUEST_RERUN_ENTRY",
+    "SCRIPTRUNNER_REQUEST_RERUN_RESULT",
+    "SCRIPTREQUESTS_REQUEST_RERUN_ENTRY",
+    "SCRIPTREQUESTS_RERUN_STORED",
+    "SCRIPTREQUESTS_RERUN_COALESCED",
+    "SCRIPTREQUESTS_RERUN_CONSUMED",
+    "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
+    "SAFE_SESSIONSTATE_RECEIVE_ENTRY",
+    "SERVER_RECEIVE_ENTRY",
+    "SERVER_STATE_APPLIED",
+)
+
+_TARGET_PHASE_DEPTH: dict[str, int] = {p: i for i, p in enumerate(TARGET_PAUSE_SCHEDULER_PHASES)}
+
+OOB_PAUSE_EVIDENCE_POLL_INTERVAL_MS = 500
+OOB_PAUSE_EVIDENCE_STABLE_POLLS_REQUIRED = 6
+OOB_PAUSE_EVIDENCE_MIN_STABLE_S = 3.0
+OOB_PAUSE_EVIDENCE_MAX_WAIT_S_BEFORE_FIRST = 30.0
+OOB_PAUSE_EVIDENCE_MAX_WAIT_S_AFTER_FIRST = 15.0
+
+SETTLE_REASON_PAUSE_EVIDENCE_QUIESCENT = "oob_pause_evidence_quiescent"
+SETTLE_REASON_PAUSE_EVIDENCE_NOT_OBSERVED = "oob_pause_evidence_not_observed"
+SETTLE_REASON_PAUSE_EVIDENCE_SETTLE_TIMEOUT = "oob_pause_evidence_settle_timeout"
+
+
+def oob_row_identity(row: dict[str, Any]) -> tuple[str, str]:
+    """Stable dedupe key: prefer phase + event_id; fall back to phase + ts."""
+    phase = str(row.get("phase") or "")
+    eid = str(row.get("event_id") or "").strip()
+    if eid:
+        return (phase, eid)
+    return (phase, f"ts:{float(row.get('ts') or 0):.6f}")
+
+
+def _row_streamlit_sid(row: dict[str, Any]) -> str:
+    for key in (
+        "streamlit_session_id",
+        "routing_sid",
+        "appsession_sid",
+        "appsession_id",
+        "runtime_sid",
+    ):
+        sid = str(row.get(key) or "").strip()
+        if sid:
+            return sid[:64]
+    return ""
+
+
+def _pause_widget_ids_from_row(row: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    proto = row.get("pause_proto") if isinstance(row.get("pause_proto"), dict) else {}
+    pid = str(proto.get("id") or "").strip()
+    if pid:
+        ids.add(pid)
+    for trig in list(row.get("activated_triggers") or []):
+        t = str(trig or "").strip()
+        if t:
+            ids.add(t)
+    for key in (
+        "previous_pending_pause",
+        "incoming_pause",
+        "resulting_coalesced_pause",
+        "pause_state",
+    ):
+        blob = row.get(key)
+        if isinstance(blob, dict):
+            bid = str(blob.get("id") or blob.get("widget_id") or "").strip()
+            if bid:
+                ids.add(bid)
+    return ids
+
+
+def is_target_pause_scheduler_row(
+    row: dict[str, Any],
+    *,
+    streamlit_session_id: str = "",
+    pause_widget_id: str = "",
+) -> bool:
+    """True when row is a scheduler-phase Pause-relevant row for the target session/widget."""
+    if not isinstance(row, dict):
+        return False
+    phase = str(row.get("phase") or "")
+    if phase not in _TARGET_PHASE_DEPTH:
+        return False
+    want_sid = str(streamlit_session_id or "").strip()[:64]
+    if want_sid:
+        row_sid = _row_streamlit_sid(row)
+        if row_sid and row_sid[:36] != want_sid[:36]:
+            return False
+    want_wid = str(pause_widget_id or "").strip()
+    has_pause = bool(row.get("pause_present")) or bool(row.get("pause_trigger_from_deserialized"))
+    row_wids = _pause_widget_ids_from_row(row)
+    if want_wid:
+        if want_wid in row_wids:
+            return True
+        # Some early phases only mark pause_present without embedding the widget id.
+        if has_pause and not row_wids:
+            return True
+        return False
+    return has_pause or bool(row_wids)
+
+
+def merge_oob_rows_into_accumulator(
+    accumulator: dict[str, dict[str, Any]],
+    rows: list[dict[str, Any]] | None,
+) -> int:
+    """Merge rows into accumulator keyed by oob_row_identity. Never deletes prior rows. Returns new inserts."""
+    inserted = 0
+    for row in list(rows or []):
+        if not isinstance(row, dict):
+            continue
+        key = oob_row_identity(row)
+        if key in accumulator:
+            continue
+        accumulator[key] = dict(row)
+        inserted += 1
+    return inserted
+
+
+def merge_oob_snapshot_into_accumulator(
+    accumulator: dict[str, dict[str, Any]],
+    snapshot: dict[str, Any] | None,
+) -> dict[str, int]:
+    snap = dict(snapshot or {})
+    module_rows = list(snap.get("module_ledger_rows") or [])
+    critical_rows = list(snap.get("critical_ledger_rows") or [])
+    return {
+        "module_inserted": merge_oob_rows_into_accumulator(accumulator, module_rows),
+        "critical_inserted": merge_oob_rows_into_accumulator(accumulator, critical_rows),
+        "module_row_count_in_snapshot": len(module_rows),
+        "critical_row_count_in_snapshot": len(critical_rows),
+    }
+
+
+def accumulated_rows_sorted(accumulator: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(accumulator.values(), key=lambda r: (float(r.get("ts") or 0), str(r.get("event_id") or "")))
+
+
+def target_pause_evidence_fingerprint(
+    rows: list[dict[str, Any]],
+    *,
+    streamlit_session_id: str = "",
+    pause_widget_id: str = "",
+) -> tuple[tuple[str, str], ...]:
+    ids: list[tuple[str, str]] = []
+    for row in rows:
+        if is_target_pause_scheduler_row(
+            row, streamlit_session_id=streamlit_session_id, pause_widget_id=pause_widget_id
+        ):
+            ids.append(oob_row_identity(row))
+    return tuple(sorted(ids, key=lambda x: (_TARGET_PHASE_DEPTH.get(x[0], 999), x[0], x[1])))
+
+
+def deepest_target_pause_phase(fingerprint: tuple[tuple[str, str], ...]) -> str:
+    deepest = ""
+    deepest_i = -1
+    for phase, _eid in fingerprint:
+        i = _TARGET_PHASE_DEPTH.get(phase, -1)
+        if i > deepest_i:
+            deepest_i = i
+            deepest = phase
+    return deepest
+
+
+def wait_for_oob_pause_evidence_settled_after(
+    page,
+    *,
+    static_url_path: str,
+    min_generation: int,
+    streamlit_session_id: str = "",
+    pause_widget_id: str = "",
+    poll_interval_ms: int = OOB_PAUSE_EVIDENCE_POLL_INTERVAL_MS,
+    stable_polls_required: int = OOB_PAUSE_EVIDENCE_STABLE_POLLS_REQUIRED,
+    min_stable_s: float = OOB_PAUSE_EVIDENCE_MIN_STABLE_S,
+    max_wait_s_before_first_evidence: float = OOB_PAUSE_EVIDENCE_MAX_WAIT_S_BEFORE_FIRST,
+    max_wait_s_after_first_evidence: float = OOB_PAUSE_EVIDENCE_MAX_WAIT_S_AFTER_FIRST,
+    connected_server_uri: str | None = None,
+    require_connected_server_uri: bool = False,
+    sleep_fn: Callable[[float], None] | None = None,
+    time_fn: Callable[[], float] | None = None,
+) -> dict[str, Any]:
+    """Settle when *target Pause evidence* is stable — not when global generation is quiet.
+
+    Every successful fetch merges module+critical rows into a rolling accumulator that never
+    drops earlier identities (bounded ledgers may evict them from later snapshots).
+    """
+    now = time_fn or time.time
+    sleep = sleep_fn
+    min_gen = int(min_generation or 0)
+    stable_need = max(1, int(stable_polls_required or 1))
+    poll_ms = max(1, int(poll_interval_ms or OOB_PAUSE_EVIDENCE_POLL_INTERVAL_MS))
+    min_stable = float(min_stable_s or 0.0)
+    max_before = float(max_wait_s_before_first_evidence or 0.0)
+    max_after = float(max_wait_s_after_first_evidence or 0.0)
+    want_sid = str(streamlit_session_id or "").strip()[:64]
+    want_wid = str(pause_widget_id or "").strip()
+
+    def _fail_unresolved() -> dict[str, Any]:
+        return {
+            "ok": False,
+            "settle_reason": "oob_connected_server_uri_unresolved",
+            "min_generation_required": min_gen,
+            "first_snapshot_generation_after_pause": None,
+            "final_snapshot_generation": None,
+            "generations_observed": [],
+            "publish_sources_observed": [],
+            "poll_count": 0,
+            "wait_s": 0.0,
+            "target_pause_widget_id": want_wid,
+            "target_streamlit_session_id": want_sid,
+            "target_first_seen_poll": None,
+            "target_first_seen_generation": None,
+            "target_last_changed_poll": None,
+            "target_last_changed_generation": None,
+            "target_stable_poll_count": 0,
+            "target_stable_duration_s": 0.0,
+            "target_relevant_row_count": 0,
+            "target_relevant_phases": [],
+            "target_relevant_event_ids": [],
+            "deepest_target_phase": "",
+            "accumulated_authoritative_row_count": 0,
+            "accumulated_critical_row_count": 0,
+            "accumulated_module_row_count": 0,
+            "accumulated_rows": [],
+            "final_fetch": {
+                "ok": False,
+                "reason": "oob_connected_server_uri_unresolved",
+                "http_ok": False,
+                "parse_ok": False,
+                "snapshot_present": False,
+                "http_request_attempted": False,
+            },
+            "final_snapshot": {},
+        }
+
+    if require_connected_server_uri and not str(connected_server_uri or "").strip():
+        return _fail_unresolved()
+
+    started = now()
+    first_target_ts: float | None = None
+    last_target_change_ts: float | None = None
+    first_advanced_generation: int | None = None
+    accumulator: dict[str, dict[str, Any]] = {}
+    last_fingerprint: tuple[tuple[str, str], ...] = ()
+    stable_polls = 0
+    polls = 0
+    generations_observed: list[int] = []
+    publish_sources_observed: list[str] = []
+    last_fetch: dict[str, Any] = {"ok": False}
+    last_ok_fetch: dict[str, Any] = {"ok": False}
+    last_ok_snap: dict[str, Any] = {}
+    target_first_seen_poll: int | None = None
+    target_first_seen_generation: int | None = None
+    target_last_changed_poll: int | None = None
+    target_last_changed_generation: int | None = None
+    module_insert_total = 0
+    critical_insert_total = 0
+
+    def _deadline() -> float:
+        if first_target_ts is None:
+            return started + max_before
+        return float(last_target_change_ts or first_target_ts) + max_after
+
+    def _result(*, ok: bool, settle_reason: str) -> dict[str, Any]:
+        rows = accumulated_rows_sorted(accumulator)
+        fp = target_pause_evidence_fingerprint(
+            rows, streamlit_session_id=want_sid, pause_widget_id=want_wid
+        )
+        phases = sorted({p for p, _ in fp}, key=lambda p: _TARGET_PHASE_DEPTH.get(p, 999))
+        eids = [eid for _p, eid in fp]
+        final_gen = int(last_ok_snap.get("snapshot_generation") or 0) or None
+        stable_duration = 0.0
+        if last_target_change_ts is not None and fp:
+            stable_duration = max(0.0, now() - float(last_target_change_ts))
+        return {
+            "ok": bool(ok),
+            "settle_reason": settle_reason,
+            "min_generation_required": min_gen,
+            "first_snapshot_generation_after_pause": first_advanced_generation,
+            "final_snapshot_generation": final_gen,
+            "generations_observed": list(generations_observed),
+            "publish_sources_observed": list(publish_sources_observed),
+            "poll_count": polls,
+            "wait_s": now() - started,
+            "target_pause_widget_id": want_wid,
+            "target_streamlit_session_id": want_sid,
+            "target_first_seen_poll": target_first_seen_poll,
+            "target_first_seen_generation": target_first_seen_generation,
+            "target_last_changed_poll": target_last_changed_poll,
+            "target_last_changed_generation": target_last_changed_generation,
+            "target_stable_poll_count": stable_polls if fp else 0,
+            "target_stable_duration_s": round(stable_duration, 3),
+            "target_relevant_row_count": len(fp),
+            "target_relevant_phases": phases,
+            "target_relevant_event_ids": eids,
+            "deepest_target_phase": deepest_target_pause_phase(fp),
+            "accumulated_authoritative_row_count": len(rows),
+            "accumulated_critical_row_count": critical_insert_total,
+            "accumulated_module_row_count": module_insert_total,
+            "accumulated_rows": rows,
+            "final_fetch": last_ok_fetch if last_ok_fetch.get("ok") else last_fetch,
+            "final_snapshot": last_ok_snap,
+            # Compatibility aliases used by older gate fields / telemetry.
+            "first_advanced_generation": first_advanced_generation,
+            "final_generation": final_gen,
+            "final_publish_source": str(last_ok_snap.get("publish_source") or "")[:64],
+            "stable_poll_count": stable_polls if fp else 0,
+            "fetch": last_ok_fetch if last_ok_fetch.get("ok") else last_fetch,
+            "freshness": extract_oob_freshness_from_snapshot(last_ok_snap) if last_ok_snap else {},
+        }
+
+    while now() < _deadline():
+        polls += 1
+        last_fetch = fetch_oob_snapshot_via_page(
+            page,
+            static_url_path,
+            cache_bust=True,
+            connected_server_uri=connected_server_uri,
+            require_connected_server_uri=require_connected_server_uri,
+            allow_origin_fallback=not require_connected_server_uri,
+        )
+        snap = last_fetch.get("snapshot") if isinstance(last_fetch.get("snapshot"), dict) else {}
+        gen = int(snap.get("snapshot_generation") or 0)
+        pub = str(snap.get("publish_source") or "")[:64]
+
+        if last_fetch.get("ok"):
+            last_ok_fetch = last_fetch
+            last_ok_snap = dict(snap)
+            if gen > 0 and (not generations_observed or generations_observed[-1] != gen):
+                generations_observed.append(gen)
+            if pub and (not publish_sources_observed or publish_sources_observed[-1] != pub):
+                publish_sources_observed.append(pub)
+            if gen > min_gen and first_advanced_generation is None:
+                first_advanced_generation = gen
+
+            insert_stats = merge_oob_snapshot_into_accumulator(accumulator, snap)
+            module_insert_total += int(insert_stats.get("module_inserted") or 0)
+            critical_insert_total += int(insert_stats.get("critical_inserted") or 0)
+
+            rows = accumulated_rows_sorted(accumulator)
+            fp = target_pause_evidence_fingerprint(
+                rows, streamlit_session_id=want_sid, pause_widget_id=want_wid
+            )
+            if fp:
+                if first_target_ts is None:
+                    first_target_ts = now()
+                    last_target_change_ts = first_target_ts
+                    last_fingerprint = fp
+                    stable_polls = 1
+                    target_first_seen_poll = polls
+                    target_first_seen_generation = gen or None
+                    target_last_changed_poll = polls
+                    target_last_changed_generation = gen or None
+                elif fp != last_fingerprint:
+                    last_fingerprint = fp
+                    last_target_change_ts = now()
+                    stable_polls = 1
+                    target_last_changed_poll = polls
+                    target_last_changed_generation = gen or None
+                else:
+                    stable_polls += 1
+
+                stable_elapsed = now() - float(last_target_change_ts or now())
+                if stable_polls >= stable_need and stable_elapsed >= min_stable:
+                    return _result(ok=True, settle_reason=SETTLE_REASON_PAUSE_EVIDENCE_QUIESCENT)
+
+        if sleep is not None:
+            sleep(poll_ms / 1000.0)
+        else:
+            page.wait_for_timeout(poll_ms)
+
+    if first_target_ts is None:
+        return _result(ok=False, settle_reason=SETTLE_REASON_PAUSE_EVIDENCE_NOT_OBSERVED)
+    return _result(ok=False, settle_reason=SETTLE_REASON_PAUSE_EVIDENCE_SETTLE_TIMEOUT)

@@ -16,7 +16,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
-REQUIRED_SHA = "66f85f6"
+REQUIRED_SHA = (sys.argv[1].strip().lower()[:7] if len(sys.argv) > 1 else "66f85f6")
 EXPECTED_BUILD = f"baseball-dev-{REQUIRED_SHA}"
 DEPLOY_PROBE_URL = (
     f"{BASE}/?active_page=Live%20Draft%20Room&solo_delivery_diag=1&solo_bridge_transition=A0"
@@ -298,6 +298,8 @@ def main() -> int:
 
     summary: dict[str, Any] = {
         "a1_baseline_accepted": True,
+        "official_required_sha": "66f85f6",
+        "official_required_build": "baseball-dev-66f85f6",
         "required_sha": REQUIRED_SHA,
         "required_build": EXPECTED_BUILD,
         "cells": {},
