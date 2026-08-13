@@ -5,6 +5,41 @@ from __future__ import annotations
 from typing import Any, Callable
 
 
+def _safe_emit_sibling_render_exception(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    exc: BaseException,
+) -> None:
+    """Diagnostic only: never mask the original sibling-render exception."""
+    try:
+        from live_draft_stage1_pause_sibling_probe import (
+            emit_sibling_setup_checkpoint,
+            pause_sibling_widget_key,
+        )
+
+        rid = str(room.get("draft_room_id") or room.get("room_id") or "").strip()
+        wk = pause_sibling_widget_key(rid)
+        emit_sibling_setup_checkpoint(
+            st,
+            session,
+            event="SIBLING_RENDER_EXCEPTION",
+            room_id=rid,
+            widget_key=wk,
+            extra={
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc)[:400],
+            },
+        )
+    except Exception as diag_exc:
+        print(f"SIBLING_RENDER_EXCEPTION {type(exc).__name__}: {exc}", flush=True)
+        if not isinstance(diag_exc, ImportError):
+            print(
+                f"SIBLING_RENDER_EXCEPTION_CHECKPOINT_FAILED {type(diag_exc).__name__}: {diag_exc}",
+                flush=True,
+            )
+
+
 def _resolve_commissioner(session: dict[str, Any]) -> tuple[bool, Any]:
     """Shared: exact commissioner_participant_id. Solo: local owner. Never fail-open for Shared."""
     doc = None
@@ -132,30 +167,7 @@ def render_live_draft_control_center(
                 try:
                     render_stage1_pause_sibling_return_probe(st, session, room)
                 except Exception as exc:
-                    try:
-                        from live_draft_stage1_pause_sibling_probe import (
-                            emit_sibling_setup_checkpoint,
-                            pause_sibling_widget_key,
-                        )
-
-                        rid = str(room.get("draft_room_id") or room.get("room_id") or "").strip()
-                        wk = pause_sibling_widget_key(rid)
-                        emit_sibling_setup_checkpoint(
-                            st,
-                            session,
-                            event="SIBLING_RENDER_EXCEPTION",
-                            room_id=rid,
-                            widget_key=wk,
-                            extra={
-                                "exception_type": type(exc).__name__,
-                                "exception_message": str(exc)[:400],
-                            },
-                        )
-                    except ImportError:
-                        print(
-                            f"SIBLING_RENDER_EXCEPTION {type(exc).__name__}: {exc}",
-                            flush=True,
-                        )
+                    _safe_emit_sibling_render_exception(st, session, room, exc)
                     raise
         except ImportError:
             pass

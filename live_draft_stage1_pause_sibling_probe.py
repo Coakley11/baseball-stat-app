@@ -291,7 +291,7 @@ def _emit_sibling_render_entry(
         "SIBLING_RENDER_ENTRY",
         room_id=room_id,
         called=True,
-        **{k: v for k, v in identity.items() if k != "streamlit_session_id"},
+        **{k: v for k, v in identity.items() if k not in ("streamlit_session_id", "room_id")},
     )
     safe = lambda s: str(s or "").replace('"', "'")[:160]
     blob = json.dumps(payload, default=str)[:12000].replace('"', "'")
@@ -336,7 +336,11 @@ def _emit_sibling_declaration(
         session,
         str(phase or "")[:48],
         room_id=room_id,
-        **{k: v for k, v in payload.items() if k not in ("event", "streamlit_session_id") and v is not None},
+        **{
+            k: v
+            for k, v in payload.items()
+            if k not in ("event", "streamlit_session_id", "room_id") and v is not None
+        },
     )
     safe = lambda s: str(s or "").replace('"', "'")[:160]
     blob = json.dumps(payload, default=str)[:8000].replace('"', "'")
@@ -388,7 +392,11 @@ def _emit_setup_checkpoint(
         session,
         str(event or "")[:48],
         room_id=str(room_id or "").strip(),
-        **{k: v for k, v in payload.items() if k not in ("event", "streamlit_session_id", "ts") and v is not None},
+        **{
+            k: v
+            for k, v in payload.items()
+            if k not in ("event", "streamlit_session_id", "ts", "room_id") and v is not None
+        },
     )
     try:
         print(f"SOLO_SIBLING_SETUP_CHECKPOINT {json.dumps(payload, default=str)[:4000]}", flush=True)
