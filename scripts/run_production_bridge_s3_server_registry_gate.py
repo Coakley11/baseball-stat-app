@@ -245,6 +245,7 @@ def main() -> int:
         classify_oob_freshness_after_sibling,
         classify_pause_instrumentation_failure,
         classify_s3_with_observability,
+        S3_SCHEDULER_DOWNSTREAM_EVENT_ROW_NOT_RETAINED,
     )
     from stage1_s3_server_registry_classify import classify_s3_server_registry
     from stage1_s3_server_registry_scrape import (
@@ -937,7 +938,19 @@ def main() -> int:
             st_button_returned=st_btn,
             binding_ok=binding_pre.get("sessionstate_binding_ok"),
             unrouted_rows=unrouted_rows,
+            latest_ingress_summaries=dict((pause_oob_snapshot or {}).get("latest_ingress_summaries") or {}),
+            ingress_discrepancies=list((pause_evidence_settle or {}).get("ingress_row_discrepancies") or []),
         )
+        if obs_case == S3_SCHEDULER_DOWNSTREAM_EVENT_ROW_NOT_RETAINED:
+            report["observability_evidence"] = obs_evidence
+            report["classification"] = obs_case
+            report["classification_note"] = obs_note
+            report["ok"] = False
+            report["finished_at"] = time.time()
+            out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            browser.close()
+            print(json.dumps({"ok": False, "classification": report["classification"], "artifact": str(out_path)}))
+            return 2
         if obs_case == "BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_ABORT":
             report["r3o0_row_inventory"] = {
                 "runtime_rows": [r for r in authoritative_rows if r.get("phase") == "RUNTIME_BACKMSG_ENTRY"],

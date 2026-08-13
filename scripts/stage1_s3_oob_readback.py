@@ -727,9 +727,13 @@ def authoritative_rows_from_oob_snapshot(snapshot: dict[str, Any] | None) -> lis
     snap = dict(snapshot or {})
     module_rows = list(snap.get("module_ledger_rows") or [])
     critical_rows = list(snap.get("critical_ledger_rows") or [])
+    by_phase = snap.get("critical_ledger_by_phase") if isinstance(snap.get("critical_ledger_by_phase"), dict) else {}
+    extra: list[dict[str, Any]] = []
+    for rows in by_phase.values():
+        extra.extend([r for r in list(rows or []) if isinstance(r, dict)])
     seen: set[tuple] = set()
     merged: list[dict[str, Any]] = []
-    for r in module_rows + critical_rows:
+    for r in module_rows + critical_rows + extra:
         if not isinstance(r, dict):
             continue
         key = (r.get("phase"), r.get("ts"), r.get("event_id"))
@@ -754,6 +758,18 @@ TARGET_PAUSE_SCHEDULER_PHASES: tuple[str, ...] = (
     "SCRIPTREQUESTS_REQUEST_RERUN_ENTRY",
     "SCRIPTREQUESTS_RERUN_STORED",
     "SCRIPTREQUESTS_RERUN_COALESCED",
+    "SCRIPTREQUESTS_ON_YIELD_ENTRY",
+    "SCRIPTREQUESTS_ON_YIELD_RESULT",
+    "SCRIPTREQUESTS_ON_READY_ENTRY",
+    "SCRIPTREQUESTS_ON_READY_RESULT",
+    "SCRIPTREQUESTS_RERUN_CONSUMED",
+    "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
+    "SAFE_SESSIONSTATE_RECEIVE_ENTRY",
+    "SERVER_RECEIVE_ENTRY",
+    "SERVER_STATE_APPLIED",
+)
+
+DOWNSTREAM_INGRESS_SETTLE_PHASES: tuple[str, ...] = (
     "SCRIPTREQUESTS_RERUN_CONSUMED",
     "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
     "SAFE_SESSIONSTATE_RECEIVE_ENTRY",
@@ -804,7 +820,10 @@ def _pause_widget_ids_from_row(row: dict[str, Any]) -> set[str]:
     if pid:
         ids.add(pid)
     for trig in list(row.get("activated_triggers") or []):
-        t = str(trig or "").strip()
+        if isinstance(trig, dict):
+            t = str(trig.get("id") or trig.get("widget_id") or "").strip()
+        else:
+            t = str(trig or "").strip()
         if t:
             ids.add(t)
     for key in (
@@ -875,12 +894,111 @@ def merge_oob_snapshot_into_accumulator(
     snap = dict(snapshot or {})
     module_rows = list(snap.get("module_ledger_rows") or [])
     critical_rows = list(snap.get("critical_ledger_rows") or [])
+    by_phase = snap.get("critical_ledger_by_phase") if isinstance(snap.get("critical_ledger_by_phase"), dict) else {}
+    phase_rows: list[dict[str, Any]] = []
+    for rows in by_phase.values():
+        phase_rows.extend([r for r in list(rows or []) if isinstance(r, dict)])
+    crit_inserted = merge_oob_rows_into_accumulator(accumulator, critical_rows)
+    crit_inserted += merge_oob_rows_into_accumulator(accumulator, phase_rows)
     return {
         "module_inserted": merge_oob_rows_into_accumulator(accumulator, module_rows),
-        "critical_inserted": merge_oob_rows_into_accumulator(accumulator, critical_rows),
+        "critical_inserted": crit_inserted,
         "module_row_count_in_snapshot": len(module_rows),
-        "critical_row_count_in_snapshot": len(critical_rows),
+        "critical_row_count_in_snapshot": len(critical_rows) + len(phase_rows),
     }
+
+
+def downstream_ingress_fingerprint(snapshot: dict[str, Any] | None) -> tuple[tuple[str, str, str], ...]:
+    """Stable identity of downstream ingress latest eids/ts — not Pause-authoritative by itself."""
+    snap = dict(snapshot or {})
+    summaries = snap.get("latest_ingress_summaries") if isinstance(snap.get("latest_ingress_summaries"), dict) else {}
+    by_phase: dict[str, dict[str, Any]] = {}
+    for val in summaries.values():
+        if not isinstance(val, dict):
+            continue
+        phase = str(val.get("phase") or "").strip()
+        if phase:
+            by_phase[phase] = val
+    out: list[tuple[str, str, str]] = []
+    for phase in DOWNSTREAM_INGRESS_SETTLE_PHASES:
+        summary = by_phase.get(phase) or {}
+        eid = str(summary.get("latest_event_id") or "").strip()
+        ts = summary.get("latest_server_ts")
+        if not eid and ts is None:
+            continue
+        out.append((phase, eid, f"{float(ts or 0):.6f}"))
+    return tuple(out)
+
+
+def reconcile_ingress_summaries_with_rows(
+    snapshot: dict[str, Any] | None,
+    accumulator_rows: list[dict[str, Any]] | None,
+    *,
+    downstream_phases: tuple[str, ...] = DOWNSTREAM_INGRESS_SETTLE_PHASES,
+) -> list[dict[str, Any]]:
+    """Flag ingress latest events that are not present as rows (export truncation)."""
+    snap = dict(snapshot or {})
+    summaries = snap.get("latest_ingress_summaries") if isinstance(snap.get("latest_ingress_summaries"), dict) else {}
+    acc = list(accumulator_rows or [])
+    acc_ids = {(str(r.get("phase") or ""), str(r.get("event_id") or "").strip()) for r in acc if isinstance(r, dict)}
+    module_ids = {
+        (str(r.get("phase") or ""), str(r.get("event_id") or "").strip())
+        for r in list(snap.get("module_ledger_rows") or [])
+        if isinstance(r, dict)
+    }
+    crit_ids = {
+        (str(r.get("phase") or ""), str(r.get("event_id") or "").strip())
+        for r in list(snap.get("critical_ledger_rows") or [])
+        if isinstance(r, dict)
+    }
+    by_phase = snap.get("critical_ledger_by_phase") if isinstance(snap.get("critical_ledger_by_phase"), dict) else {}
+    for rows in by_phase.values():
+        for r in list(rows or []):
+            if isinstance(r, dict):
+                crit_ids.add((str(r.get("phase") or ""), str(r.get("event_id") or "").strip()))
+    by_summary_phase: dict[str, dict[str, Any]] = {}
+    for val in summaries.values():
+        if isinstance(val, dict) and str(val.get("phase") or "").strip():
+            by_summary_phase[str(val.get("phase"))] = val
+    out: list[dict[str, Any]] = []
+    for phase in downstream_phases:
+        summary = by_summary_phase.get(phase) or {}
+        eid = str(summary.get("latest_event_id") or "").strip()
+        ts = summary.get("latest_server_ts")
+        if not eid:
+            continue
+        key = (phase, eid)
+        row_in_acc = key in acc_ids
+        row_in_crit = key in crit_ids
+        row_in_mod = key in module_ids
+        missing = not (row_in_acc or row_in_crit or row_in_mod)
+        out.append(
+            {
+                "ingress_event_seen_but_row_missing": missing,
+                "phase": phase,
+                "latest_event_id": eid,
+                "latest_ts": ts,
+                "row_present_in_accumulator": row_in_acc,
+                "row_present_in_critical_export": row_in_crit,
+                "row_present_in_module_export": row_in_mod,
+            }
+        )
+    return out
+
+
+def settle_observability_fingerprint(
+    rows: list[dict[str, Any]],
+    snapshot: dict[str, Any] | None,
+    *,
+    streamlit_session_id: str = "",
+    pause_widget_id: str = "",
+) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str, str], ...]]:
+    return (
+        target_pause_evidence_fingerprint(
+            rows, streamlit_session_id=streamlit_session_id, pause_widget_id=pause_widget_id
+        ),
+        downstream_ingress_fingerprint(snapshot),
+    )
 
 
 def accumulated_rows_sorted(accumulator: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -973,6 +1091,8 @@ def wait_for_oob_pause_evidence_settled_after(
             "accumulated_critical_row_count": 0,
             "accumulated_module_row_count": 0,
             "accumulated_rows": [],
+            "ingress_row_discrepancies": [],
+            "ingress_downstream_fingerprint": [],
             "final_fetch": {
                 "ok": False,
                 "reason": "oob_connected_server_uri_unresolved",
@@ -992,7 +1112,7 @@ def wait_for_oob_pause_evidence_settled_after(
     last_target_change_ts: float | None = None
     first_advanced_generation: int | None = None
     accumulator: dict[str, dict[str, Any]] = {}
-    last_fingerprint: tuple[tuple[str, str], ...] = ()
+    last_fingerprint: tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str, str], ...]] = ((), ())
     stable_polls = 0
     polls = 0
     generations_observed: list[int] = []
@@ -1014,14 +1134,16 @@ def wait_for_oob_pause_evidence_settled_after(
 
     def _result(*, ok: bool, settle_reason: str) -> dict[str, Any]:
         rows = accumulated_rows_sorted(accumulator)
-        fp = target_pause_evidence_fingerprint(
+        row_fp = target_pause_evidence_fingerprint(
             rows, streamlit_session_id=want_sid, pause_widget_id=want_wid
         )
-        phases = sorted({p for p, _ in fp}, key=lambda p: _TARGET_PHASE_DEPTH.get(p, 999))
-        eids = [eid for _p, eid in fp]
+        ingress_fp = downstream_ingress_fingerprint(last_ok_snap)
+        discrepancies = reconcile_ingress_summaries_with_rows(last_ok_snap, rows)
+        phases = sorted({p for p, _ in row_fp}, key=lambda p: _TARGET_PHASE_DEPTH.get(p, 999))
+        eids = [eid for _p, eid in row_fp]
         final_gen = int(last_ok_snap.get("snapshot_generation") or 0) or None
         stable_duration = 0.0
-        if last_target_change_ts is not None and fp:
+        if last_target_change_ts is not None and row_fp:
             stable_duration = max(0.0, now() - float(last_target_change_ts))
         return {
             "ok": bool(ok),
@@ -1041,14 +1163,16 @@ def wait_for_oob_pause_evidence_settled_after(
             "target_last_changed_generation": target_last_changed_generation,
             "target_stable_poll_count": stable_polls if fp else 0,
             "target_stable_duration_s": round(stable_duration, 3),
-            "target_relevant_row_count": len(fp),
+            "target_relevant_row_count": len(row_fp),
             "target_relevant_phases": phases,
             "target_relevant_event_ids": eids,
-            "deepest_target_phase": deepest_target_pause_phase(fp),
+            "deepest_target_phase": deepest_target_pause_phase(row_fp),
             "accumulated_authoritative_row_count": len(rows),
             "accumulated_critical_row_count": critical_insert_total,
             "accumulated_module_row_count": module_insert_total,
             "accumulated_rows": rows,
+            "ingress_row_discrepancies": discrepancies,
+            "ingress_downstream_fingerprint": [list(x) for x in ingress_fp],
             "final_fetch": last_ok_fetch if last_ok_fetch.get("ok") else last_fetch,
             "final_snapshot": last_ok_snap,
             # Compatibility aliases used by older gate fields / telemetry.
@@ -1089,10 +1213,16 @@ def wait_for_oob_pause_evidence_settled_after(
             critical_insert_total += int(insert_stats.get("critical_inserted") or 0)
 
             rows = accumulated_rows_sorted(accumulator)
-            fp = target_pause_evidence_fingerprint(
+            row_fp = target_pause_evidence_fingerprint(
                 rows, streamlit_session_id=want_sid, pause_widget_id=want_wid
             )
-            if fp:
+            fp = settle_observability_fingerprint(
+                rows,
+                snap,
+                streamlit_session_id=want_sid,
+                pause_widget_id=want_wid,
+            )
+            if row_fp:
                 if first_target_ts is None:
                     first_target_ts = now()
                     last_target_change_ts = first_target_ts

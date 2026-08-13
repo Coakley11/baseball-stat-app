@@ -25,6 +25,7 @@ BUTTON_DISPATCH_S3_R5_REGISTER_WIDGET_VALUE_LOST = "BUTTON_DISPATCH_S3_R5_REGIST
 BUTTON_DISPATCH_S3_R6_BUTTON_RESULT_PROPAGATION = "BUTTON_DISPATCH_S3_R6_BUTTON_RESULT_PROPAGATION"
 BUTTON_DISPATCH_S3_R7_NONDETERMINISTIC_RECOVERY = "BUTTON_DISPATCH_S3_R7_NONDETERMINISTIC_RECOVERY"
 BUTTON_DISPATCH_S3_R0_INCOMPLETE_EVIDENCE = "BUTTON_DISPATCH_S3_R0_INCOMPLETE_EVIDENCE"
+S3_SCHEDULER_DOWNSTREAM_EVENT_ROW_NOT_RETAINED = "S3_SCHEDULER_DOWNSTREAM_EVENT_ROW_NOT_RETAINED"
 
 
 def _by_phase(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -249,8 +250,21 @@ def classify_s3_with_observability(
     st_button_returned: bool | None,
     binding_ok: bool | None,
     unrouted_rows: list[dict[str, Any]] | None = None,
+    latest_ingress_summaries: dict[str, Any] | None = None,
+    ingress_discrepancies: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
     rows = list(authoritative_rows if authoritative_rows is not None else module_rows)
+    discrepancies = list(ingress_discrepancies or [])
+    if not discrepancies and latest_ingress_summaries:
+        from stage1_s3_oob_readback import reconcile_ingress_summaries_with_rows
+
+        discrepancies = reconcile_ingress_summaries_with_rows(
+            {"latest_ingress_summaries": latest_ingress_summaries},
+            rows,
+        )
+    missing_ingress_rows = [
+        d for d in discrepancies if isinstance(d, dict) and d.get("ingress_event_seen_but_row_missing")
+    ]
     evidence: dict[str, Any] = {
         "classification_history": {
             "prior_d89e94f": "BUTTON_DISPATCH_S3_R2_FRAGMENT_OWNER_MISMATCH",
@@ -272,12 +286,22 @@ def classify_s3_with_observability(
     evidence["pause_observability"] = pause_obs
     evidence["observability_failure_boundary"] = observability_failure_boundary(pause_obs)
     evidence["unrouted_event_count"] = len(list(unrouted_rows or []))
+    evidence["ingress_row_discrepancies"] = discrepancies
+    evidence["ingress_event_seen_but_row_missing"] = bool(missing_ingress_rows)
 
     if sibling_python_effect and st_button_returned:
         return BUTTON_DISPATCH_S3_R7_NONDETERMINISTIC_RECOVERY, "sibling_delivered", evidence
 
     if binding_ok is False:
         evidence["binding_failure"] = True
+
+    if pause_resolved and not pause_obs.get("ok") and missing_ingress_rows:
+        missing_phases = ",".join(str(d.get("phase") or "") for d in missing_ingress_rows)
+        return (
+            S3_SCHEDULER_DOWNSTREAM_EVENT_ROW_NOT_RETAINED,
+            f"ingress_event_seen_but_row_missing:{missing_phases}",
+            evidence,
+        )
 
     if pause_resolved and not pause_obs.get("ok"):
         boundary = evidence["observability_failure_boundary"] or "unknown"

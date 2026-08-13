@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any
 
-S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v5"
+S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v6"
 
 CRITICAL_SERVER_PHASES: frozenset[str] = frozenset(
     {
@@ -19,6 +19,10 @@ CRITICAL_SERVER_PHASES: frozenset[str] = frozenset(
         "SCRIPTREQUESTS_REQUEST_RERUN_ENTRY",
         "SCRIPTREQUESTS_RERUN_STORED",
         "SCRIPTREQUESTS_RERUN_COALESCED",
+        "SCRIPTREQUESTS_ON_YIELD_ENTRY",
+        "SCRIPTREQUESTS_ON_YIELD_RESULT",
+        "SCRIPTREQUESTS_ON_READY_ENTRY",
+        "SCRIPTREQUESTS_ON_READY_RESULT",
         "SCRIPTREQUESTS_RERUN_CONSUMED",
         "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
         "SAFE_SESSIONSTATE_RECEIVE_ENTRY",
@@ -369,15 +373,24 @@ def _append_critical_row_locked(sid: str, phase: str, row: dict[str, Any]) -> No
     by_phase[ph] = bucket[-_CRITICAL_EVENTS_PER_PHASE:]
 
 
+def critical_ledger_by_phase(streamlit_session_id: str) -> dict[str, list[dict[str, Any]]]:
+    """Bounded per-phase critical tails (independent of mixed-row export order)."""
+    sid = str(streamlit_session_id or "").strip()[:64]
+    if not sid:
+        return {}
+    with _LEDGER_LOCK:
+        by_phase = _CRITICAL_LEDGER_BY_SESSION.get(sid) or {}
+        return {str(ph): [dict(r) for r in list(rows or [])] for ph, rows in by_phase.items()}
+
+
 def critical_ledger_rows(streamlit_session_id: str) -> list[dict[str, Any]]:
     sid = str(streamlit_session_id or "").strip()[:64]
     if not sid:
         return []
-    with _LEDGER_LOCK:
-        by_phase = _CRITICAL_LEDGER_BY_SESSION.get(sid) or {}
-        flat: list[dict[str, Any]] = []
-        for ph in sorted(by_phase.keys()):
-            flat.extend(by_phase[ph])
+    by_phase = critical_ledger_by_phase(sid)
+    flat: list[dict[str, Any]] = []
+    for ph in sorted(by_phase.keys()):
+        flat.extend(by_phase[ph])
     return sorted(flat, key=lambda r: float(r.get("ts") or 0))
 
 

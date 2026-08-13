@@ -224,6 +224,66 @@ class OobSnapshotTests(unittest.TestCase):
         )
         self.assertNotEqual(case, BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_ABORT)
 
+    @patch("live_draft_stage1_s3_oob_snapshot.oob_snapshot_root")
+    def test_g_mixed_tail_eviction_preserves_downstream_critical(self, root_fn) -> None:
+        root_fn.return_value = self.tmp
+        from live_draft_stage1_s3_process_global_diag import (
+            _CRITICAL_EVENTS_PER_PHASE,
+            append_module_event,
+            critical_ledger_by_phase,
+        )
+
+        sid = "sid-flood"
+        session: dict = {}
+        channel = register_oob_channel(sid, session)
+        for phase, eid in (
+            ("SCRIPTREQUESTS_RERUN_CONSUMED", "cons-keep"),
+            ("SCRIPTRUNNER_RUN_SCRIPT_ENTRY", "run-keep"),
+            ("SAFE_SESSIONSTATE_RECEIVE_ENTRY", "safe-keep"),
+            ("SERVER_RECEIVE_ENTRY", "recv-keep"),
+            ("SERVER_STATE_APPLIED", "apply-keep"),
+        ):
+            append_module_event(sid, phase, event_id_override=eid, pause_present=True)
+        for i in range(80):
+            append_module_event(
+                sid,
+                "SCRIPTREQUESTS_RERUN_COALESCED",
+                pause_present=False,
+                fragment_id=f"auto-{i}",
+            )
+            append_module_event(sid, "SCRIPTRUNNER_REQUEST_RERUN_RESULT", accepted=True)
+        pub = publish_oob_snapshot(sid, publish_source="runtime_handle_backmsg_finally", session=session, diagnostic_token=channel["diagnostic_token"])
+        snap = read_oob_snapshot_file(channel["diagnostic_token"])
+        crit = list(snap.get("critical_ledger_rows") or [])
+        by_phase = snap.get("critical_ledger_by_phase") or {}
+        crit_phases = {r.get("phase") for r in crit}
+        for ph in (
+            "SCRIPTREQUESTS_RERUN_CONSUMED",
+            "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
+            "SAFE_SESSIONSTATE_RECEIVE_ENTRY",
+            "SERVER_RECEIVE_ENTRY",
+            "SERVER_STATE_APPLIED",
+        ):
+            self.assertIn(ph, crit_phases, (ph, crit_phases, pub))
+            self.assertTrue(by_phase.get(ph), ph)
+        self.assertLessEqual(len(by_phase.get("SCRIPTREQUESTS_RERUN_COALESCED") or []), _CRITICAL_EVENTS_PER_PHASE)
+        live = critical_ledger_by_phase(sid)
+        self.assertLessEqual(len(live.get("SCRIPTREQUESTS_RERUN_COALESCED") or []), _CRITICAL_EVENTS_PER_PHASE)
+
+    def test_m_per_phase_retention_bounded(self) -> None:
+        from live_draft_stage1_s3_process_global_diag import (
+            _CRITICAL_EVENTS_PER_PHASE,
+            append_module_event,
+            critical_ledger_by_phase,
+        )
+
+        sid = "sid-bound"
+        for i in range(20):
+            append_module_event(sid, "SCRIPTREQUESTS_RERUN_CONSUMED", consume_api="on_scriptrunner_ready")
+        by_phase = critical_ledger_by_phase(sid)
+        self.assertLessEqual(len(by_phase.get("SCRIPTREQUESTS_RERUN_CONSUMED") or []), _CRITICAL_EVENTS_PER_PHASE)
+        self.assertEqual(len(by_phase.get("SCRIPTREQUESTS_RERUN_CONSUMED") or []), _CRITICAL_EVENTS_PER_PHASE)
+
 
 if __name__ == "__main__":
     unittest.main()

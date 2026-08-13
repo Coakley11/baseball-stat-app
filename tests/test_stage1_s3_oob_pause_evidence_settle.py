@@ -19,6 +19,7 @@ from stage1_s3_oob_readback import (  # noqa: E402
     wait_for_oob_pause_evidence_settled_after,
 )
 from stage1_s3_r3_observability_classify import (  # noqa: E402
+    S3_SCHEDULER_DOWNSTREAM_EVENT_ROW_NOT_RETAINED,
     classify_s3_with_observability,
     pause_observability_chain,
 )
@@ -89,6 +90,8 @@ def _snap(
     publish_source: str = "runtime_handle_backmsg_finally",
     critical: list[dict] | None = None,
     module: list[dict] | None = None,
+    ingress: dict | None = None,
+    critical_by_phase: dict | None = None,
 ) -> dict:
     return {
         "ok": True,
@@ -103,12 +106,23 @@ def _snap(
             "publish_source": publish_source,
             "module_ledger_rows": list(module or []),
             "critical_ledger_rows": list(critical or []),
+            "critical_ledger_by_phase": dict(critical_by_phase or {}),
             "module_ledger_total_count": len(module or []),
             "critical_ledger_total_count": len(critical or []),
             "unrouted_event_count": 0,
-            "latest_ingress_summaries": {},
+            "latest_ingress_summaries": dict(ingress or {}),
         },
     }
+
+
+def _ingress(**phases: dict) -> dict:
+    out = {}
+    for key, payload in phases.items():
+        phase = str(payload.get("phase") or "")
+        out[key] = dict(payload)
+        if phase:
+            out[key].setdefault("phase", phase)
+    return out
 
 
 class PauseEvidenceSettleTests(unittest.TestCase):
@@ -399,6 +413,216 @@ class PauseEvidenceSettleTests(unittest.TestCase):
         self.assertEqual(len(acc), 1)
         self.assertEqual(next(iter(acc.values())).get("event_id"), "keep")
 
+    def test_h_ccc3a22_ingress_advance_blocks_coalesced_quiescence(self) -> None:
+        coal = _row("SCRIPTREQUESTS_RERUN_COALESCED", event_id="e-coal", ts=1.5)
+        rt = _row("RUNTIME_BACKMSG_ENTRY", event_id="e-rt", ts=1.0)
+        app = _row("APPSESSION_BACKMSG_ENTRY", event_id="e-app", ts=1.1)
+        req = _row("APPSESSION_REQUEST_RERUN_ENTRY", event_id="e-req", ts=1.2)
+        target = [rt, app, req, coal]
+        cons_ing = _ingress(
+            scriptrequests_rerun_consumed={
+                "phase": "SCRIPTREQUESTS_RERUN_CONSUMED",
+                "latest_event_id": "bbddcc1ae216",
+                "latest_server_ts": 2.0,
+                "total_count": 1,
+            }
+        )
+        both_ing = _ingress(
+            scriptrequests_rerun_consumed={
+                "phase": "SCRIPTREQUESTS_RERUN_CONSUMED",
+                "latest_event_id": "bbddcc1ae216",
+                "latest_server_ts": 2.0,
+                "total_count": 1,
+            },
+            scriptrunner_run_script={
+                "phase": "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
+                "latest_event_id": "7882213b65a3",
+                "latest_server_ts": 2.1,
+                "total_count": 1,
+            },
+        )
+        fetches = [
+            _snap(20, critical=target),
+            _snap(22, critical=target),
+            _snap(24, critical=target),
+            _snap(27, critical=target, ingress=cons_ing),
+            _snap(30, critical=target, ingress=both_ing),
+            _snap(33, critical=target, ingress=both_ing),
+            _snap(49, critical=target, ingress=both_ing),
+            _snap(49, critical=target, ingress=both_ing),
+            _snap(49, critical=target, ingress=both_ing),
+            _snap(49, critical=target, ingress=both_ing),
+        ]
+        out = self._run(
+            fetches,
+            stable_polls_required=4,
+            min_stable_s=0.3,
+            max_wait_s_after_first_evidence=5.0,
+            poll_interval_ms=100,
+            hold_last=True,
+        )
+        self.assertTrue(out["ok"], out)
+        self.assertGreaterEqual(int(out["target_last_changed_poll"] or 0), 4)
+        self.assertEqual(out["deepest_target_phase"], "SCRIPTREQUESTS_RERUN_COALESCED")
+        fp = out.get("ingress_downstream_fingerprint") or []
+        phases = {tuple(x)[0] if x else "" for x in fp}
+        self.assertIn("SCRIPTREQUESTS_RERUN_CONSUMED", phases)
+        self.assertIn("SCRIPTRUNNER_RUN_SCRIPT_ENTRY", phases)
+
+    def test_i_ingress_event_row_missing_discrepancy(self) -> None:
+        coal = _row("SCRIPTREQUESTS_RERUN_COALESCED", event_id="e-coal", ts=1.5)
+        rt = _row("RUNTIME_BACKMSG_ENTRY", event_id="e-rt", ts=1.0)
+        app = _row("APPSESSION_BACKMSG_ENTRY", event_id="e-app", ts=1.1)
+        req = _row("APPSESSION_REQUEST_RERUN_ENTRY", event_id="e-req", ts=1.2)
+        target = [rt, app, req, coal]
+        ing = _ingress(
+            scriptrequests_rerun_consumed={
+                "phase": "SCRIPTREQUESTS_RERUN_CONSUMED",
+                "latest_event_id": "bbddcc1ae216",
+                "latest_server_ts": 1786595394.369,
+                "total_count": 2,
+            }
+        )
+        fetches = [
+            _snap(20, critical=target, ingress=ing),
+            _snap(22, critical=target, ingress=ing),
+            _snap(24, critical=target, ingress=ing),
+            _snap(27, critical=target, ingress=ing),
+            _snap(30, critical=target, ingress=ing),
+            _snap(33, critical=target, ingress=ing),
+        ]
+        out = self._run(fetches, max_wait_s_after_first_evidence=5.0)
+        self.assertTrue(out["ok"], out)
+        missing = [
+            d
+            for d in (out.get("ingress_row_discrepancies") or [])
+            if d.get("ingress_event_seen_but_row_missing")
+        ]
+        self.assertTrue(missing, out.get("ingress_row_discrepancies"))
+        self.assertEqual(missing[0]["phase"], "SCRIPTREQUESTS_RERUN_CONSUMED")
+        self.assertEqual(missing[0]["latest_event_id"], "bbddcc1ae216")
+        self.assertFalse(missing[0]["row_present_in_accumulator"])
+        case, note, ev = classify_s3_with_observability(
+            module_rows=[],
+            authoritative_rows=out["accumulated_rows"],
+            pause_resolved=True,
+            strict_backmsg={},
+            wire_widget_id="",
+            sibling_python_effect=False,
+            register_widget_result=None,
+            st_button_returned=None,
+            binding_ok=True,
+            ingress_discrepancies=out.get("ingress_row_discrepancies") or [],
+        )
+        self.assertEqual(case, S3_SCHEDULER_DOWNSTREAM_EVENT_ROW_NOT_RETAINED)
+        self.assertIn("ingress_event_seen_but_row_missing", note)
+        self.assertNotIn("request_to_safe_sessionstate", note)
+        self.assertTrue(ev.get("ingress_event_seen_but_row_missing"))
+
+    def test_j_true_stable_scheduler_boundary(self) -> None:
+        rt = _row("RUNTIME_BACKMSG_ENTRY", event_id="e-rt", ts=1.0)
+        app = _row("APPSESSION_BACKMSG_ENTRY", event_id="e-app", ts=1.1)
+        req = _row("APPSESSION_REQUEST_RERUN_ENTRY", event_id="e-req", ts=1.2)
+        coal = _row("SCRIPTREQUESTS_RERUN_COALESCED", event_id="e-coal", ts=1.3)
+        target = [rt, app, req, coal]
+        fetches = [_snap(90 + i, critical=target) for i in range(8)]
+        out = self._run(fetches, max_wait_s_after_first_evidence=5.0)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["settle_reason"], "oob_pause_evidence_quiescent")
+        self.assertEqual(out["deepest_target_phase"], "SCRIPTREQUESTS_RERUN_COALESCED")
+        self.assertFalse(any(d.get("ingress_event_seen_but_row_missing") for d in (out.get("ingress_row_discrepancies") or [])))
+
+    def test_k_successful_chain_settle(self) -> None:
+        rows = [
+            _row("RUNTIME_BACKMSG_ENTRY", event_id="e-rt", ts=1.0),
+            _row("APPSESSION_BACKMSG_ENTRY", event_id="e-app", ts=1.1),
+            _row("APPSESSION_REQUEST_RERUN_ENTRY", event_id="e-req", ts=1.2),
+            _row("SCRIPTREQUESTS_RERUN_COALESCED", event_id="e-coal", ts=1.3),
+            _row("SCRIPTREQUESTS_RERUN_CONSUMED", event_id="e-cons", ts=1.4),
+            _row("SCRIPTRUNNER_RUN_SCRIPT_ENTRY", event_id="e-run", ts=1.5),
+            _row("SAFE_SESSIONSTATE_RECEIVE_ENTRY", event_id="e-safe", ts=1.6),
+            _row("SERVER_RECEIVE_ENTRY", event_id="e-recv", ts=1.7),
+            _row("SERVER_STATE_APPLIED", event_id="e-appd", ts=1.8, pause_trigger_from_deserialized=True),
+        ]
+        ing = _ingress(
+            scriptrequests_rerun_consumed={
+                "phase": "SCRIPTREQUESTS_RERUN_CONSUMED",
+                "latest_event_id": "e-cons",
+                "latest_server_ts": 1.4,
+                "total_count": 1,
+            },
+            scriptrunner_run_script={
+                "phase": "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
+                "latest_event_id": "e-run",
+                "latest_server_ts": 1.5,
+                "total_count": 1,
+            },
+            safe_sessionstate_receive={
+                "phase": "SAFE_SESSIONSTATE_RECEIVE_ENTRY",
+                "latest_event_id": "e-safe",
+                "latest_server_ts": 1.6,
+                "total_count": 1,
+            },
+            server_receive={
+                "phase": "SERVER_RECEIVE_ENTRY",
+                "latest_event_id": "e-recv",
+                "latest_server_ts": 1.7,
+                "total_count": 1,
+            },
+            server_state_applied={
+                "phase": "SERVER_STATE_APPLIED",
+                "latest_event_id": "e-appd",
+                "latest_server_ts": 1.8,
+                "total_count": 1,
+            },
+        )
+        fetches = [_snap(100 + i, critical=rows, ingress=ing) for i in range(8)]
+        out = self._run(fetches, max_wait_s_after_first_evidence=5.0)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["deepest_target_phase"], "SERVER_STATE_APPLIED")
+        self.assertIn("SCRIPTREQUESTS_RERUN_CONSUMED", out["target_relevant_phases"])
+        self.assertIn("SAFE_SESSIONSTATE_RECEIVE_ENTRY", out["target_relevant_phases"])
+        missing = [d for d in (out.get("ingress_row_discrepancies") or []) if d.get("ingress_event_seen_but_row_missing")]
+        self.assertFalse(missing, missing)
+
+    def test_n_historical_9c5b5aab_chain_still_classifies(self) -> None:
+        rows = [
+            _row("RUNTIME_BACKMSG_ENTRY", event_id="e-rt", ts=1.0),
+            _row("APPSESSION_BACKMSG_ENTRY", event_id="e-app", ts=1.1),
+            _row("APPSESSION_REQUEST_RERUN_ENTRY", event_id="e-req", ts=1.2),
+            _row("SCRIPTREQUESTS_RERUN_COALESCED", event_id="e-coal", ts=1.3),
+            _row("SCRIPTREQUESTS_RERUN_CONSUMED", event_id="e0856f8181bc", ts=1.4),
+            _row("SCRIPTRUNNER_RUN_SCRIPT_ENTRY", event_id="e8a989a3cbc0", ts=1.41),
+            _row("SAFE_SESSIONSTATE_RECEIVE_ENTRY", event_id="e-safe", ts=1.42),
+            _row("SERVER_RECEIVE_ENTRY", event_id="e7f314c1ff75", ts=1.43),
+            _row(
+                "SERVER_STATE_APPLIED",
+                event_id="9205a70f4ef5",
+                ts=1.44,
+                pause_trigger_from_deserialized=True,
+                sibling_present=True,
+                trigger_from_deserialized=True,
+            ),
+        ]
+        fetches = [_snap(110 + i, critical=rows) for i in range(8)]
+        out = self._run(fetches, max_wait_s_after_first_evidence=5.0)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["deepest_target_phase"], "SERVER_STATE_APPLIED")
+        case, _note, ev = classify_s3_with_observability(
+            module_rows=[],
+            authoritative_rows=out["accumulated_rows"],
+            pause_resolved=True,
+            strict_backmsg={"ok": True, "activated_widget_ids": [PAUSE_WID], "activated_widget_state_present": True},
+            wire_widget_id="$$ID-sibling",
+            sibling_python_effect=False,
+            register_widget_result=None,
+            st_button_returned=None,
+            binding_ok=True,
+        )
+        self.assertTrue(ev["pause_observability"]["ok"])
+        self.assertNotEqual(case, "BUTTON_DISPATCH_S3_R3O0_SERVER_OBSERVABILITY_ABORT")
+        self.assertNotEqual(case, "S3_SCHEDULER_DOWNSTREAM_EVENT_ROW_NOT_RETAINED")
+
     def test_gate_wires_pause_evidence_settle(self) -> None:
         import inspect
 
@@ -409,6 +633,8 @@ class PauseEvidenceSettleTests(unittest.TestCase):
         self.assertIn("s3_oob_pause_evidence_settle_after_pause", src)
         self.assertIn("oob_pause_evidence_accumulator", src)
         self.assertIn("wait_for_oob_generation_after", src)
+        self.assertIn("S3_SCHEDULER_DOWNSTREAM_EVENT_ROW_NOT_RETAINED", src)
+        self.assertIn("ingress_row_discrepancies", src)
         # Historical helper retained for regression / import availability.
         self.assertIn("wait_for_oob_settled_after", src)
 

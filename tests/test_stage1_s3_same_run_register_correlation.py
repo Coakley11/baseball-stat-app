@@ -570,6 +570,12 @@ class SameRunRegisterCorrelationTests(unittest.TestCase):
             "SIBLING_BUTTON_DECLARATION_ENTRY",
             "SIBLING_BUTTON_CALL_RETURNED",
             "CONTROL_CENTER_FRAGMENT_ENTRY",
+            "SCRIPTREQUESTS_ON_YIELD_ENTRY",
+            "SCRIPTREQUESTS_ON_YIELD_RESULT",
+            "SCRIPTREQUESTS_ON_READY_ENTRY",
+            "SCRIPTREQUESTS_ON_READY_RESULT",
+            "SCRIPTREQUESTS_RERUN_CONSUMED",
+            "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
         ):
             self.assertIn(ph, CRITICAL_SERVER_PHASES)
 

@@ -40,6 +40,7 @@ def _clear_ledgers() -> None:
     with hd._MAP_LOCK:
         hd._SCRIPTREQUESTS_OID_TO_SID.clear()
         hd._SCRIPTRUNNER_OID_TO_SID.clear()
+        hd._LAST_CONSUME_BY_SQ_OID.clear()
 
 
 def _ws_pause() -> WidgetStates:
@@ -60,6 +61,20 @@ def _ws_unrelated() -> WidgetStates:
 
 def _ws_empty() -> WidgetStates:
     return WidgetStates()
+
+
+SIB_WID = "$$ID-deadbeefcafebabe-stage1_pause_sibling_return_CA330025_diag"
+
+
+def _ws_pause_and_sibling() -> WidgetStates:
+    ws = WidgetStates()
+    p = ws.widgets.add()
+    p.id = "$$ID-a-live_draft_pause"
+    p.trigger_value = True
+    s = ws.widgets.add()
+    s.id = SIB_WID
+    s.trigger_value = True
+    return ws
 
 
 def _phases(sid: str) -> list[str]:
@@ -164,6 +179,106 @@ class ScriptRunnerHandoffTests(unittest.TestCase):
         coal = _last(sid, "SCRIPTREQUESTS_RERUN_COALESCED")
         self.assertEqual(coal.get("fragment_id_queue"), [])
         self.assertTrue(coal.get("pause_present"))
+
+    def test_a_yield_never_called_distinguishable(self) -> None:
+        sid = "sid-no-yield"
+        reqs = ScriptRequests()
+        register_scriptrequests_session(reqs, sid)
+        self.assertTrue(reqs.request_rerun(RerunData(widget_states=_ws_pause())))
+        self.assertIn("SCRIPTREQUESTS_RERUN_STORED", _phases(sid))
+        self.assertNotIn("SCRIPTREQUESTS_ON_YIELD_ENTRY", _phases(sid))
+        self.assertNotIn("SCRIPTREQUESTS_RERUN_CONSUMED", _phases(sid))
+
+    def test_b_yield_called_returns_none(self) -> None:
+        sid = "sid-yield-none"
+        reqs = ScriptRequests()
+        register_scriptrequests_session(reqs, sid)
+        req = reqs.on_scriptrunner_yield()
+        self.assertIsNone(req)
+        entry = _last(sid, "SCRIPTREQUESTS_ON_YIELD_ENTRY")
+        result = _last(sid, "SCRIPTREQUESTS_ON_YIELD_RESULT")
+        self.assertTrue(result.get("returned_none"))
+        self.assertFalse(result.get("returned_is_rerun"))
+        self.assertNotIn("SCRIPTREQUESTS_RERUN_CONSUMED", _phases(sid))
+        self.assertTrue(entry.get("event_id"))
+
+    def test_c_yield_called_returns_rerun_with_triggers(self) -> None:
+        sid = "sid-yield-rerun"
+        reqs = ScriptRequests()
+        register_scriptrequests_session(reqs, sid)
+        self.assertTrue(reqs.request_rerun(RerunData(widget_states=_ws_pause_and_sibling())))
+        req = reqs.on_scriptrunner_yield()
+        self.assertIsNotNone(req)
+        self.assertEqual(req.type, ScriptRequestType.RERUN)
+        result = _last(sid, "SCRIPTREQUESTS_ON_YIELD_RESULT")
+        consumed = _last(sid, "SCRIPTREQUESTS_RERUN_CONSUMED")
+        self.assertTrue(result.get("returned_is_rerun"))
+        self.assertFalse(result.get("returned_none"))
+        self.assertTrue(consumed.get("pause_present"))
+        self.assertTrue(consumed.get("pause_sibling_present"))
+        self.assertTrue(consumed.get("pause_trigger_value"))
+        self.assertTrue(consumed.get("sibling_trigger_value"))
+        self.assertIn("$$ID-a-live_draft_pause", consumed.get("activated_trigger_ids") or [])
+        self.assertIn(SIB_WID, consumed.get("activated_trigger_ids") or [])
+        self.assertEqual(consumed.get("consume_api"), "on_scriptrunner_yield")
+
+    def test_d_ready_called_non_rerun(self) -> None:
+        sid = "sid-ready-stop"
+        reqs = ScriptRequests()
+        register_scriptrequests_session(reqs, sid)
+        req = reqs.on_scriptrunner_ready()
+        self.assertEqual(req.type, ScriptRequestType.STOP)
+        entry = _last(sid, "SCRIPTREQUESTS_ON_READY_ENTRY")
+        result = _last(sid, "SCRIPTREQUESTS_ON_READY_RESULT")
+        self.assertFalse(result.get("returned_is_rerun"))
+        self.assertEqual(result.get("returned_request_type"), "STOP")
+        self.assertNotIn("SCRIPTREQUESTS_RERUN_CONSUMED", _phases(sid))
+        self.assertTrue(entry.get("event_id"))
+
+    def test_e_ready_called_returns_rerun_with_triggers(self) -> None:
+        sid = "sid-ready-rerun"
+        reqs = ScriptRequests()
+        register_scriptrequests_session(reqs, sid)
+        self.assertTrue(reqs.request_rerun(RerunData(widget_states=_ws_pause_and_sibling())))
+        req = reqs.on_scriptrunner_ready()
+        self.assertEqual(req.type, ScriptRequestType.RERUN)
+        result = _last(sid, "SCRIPTREQUESTS_ON_READY_RESULT")
+        consumed = _last(sid, "SCRIPTREQUESTS_RERUN_CONSUMED")
+        self.assertTrue(result.get("returned_is_rerun"))
+        self.assertTrue(consumed.get("pause_present"))
+        self.assertTrue(consumed.get("pause_sibling_present"))
+        self.assertTrue(consumed.get("pause_trigger_value"))
+        self.assertTrue(consumed.get("sibling_trigger_value"))
+        self.assertEqual(consumed.get("consume_api"), "on_scriptrunner_ready")
+
+    def test_f_consume_correlates_to_run_script(self) -> None:
+        sid = "sid-consume-run"
+        runner = self._fake_runner(sid)
+        self.assertTrue(runner._requests.request_rerun(RerunData(widget_states=_ws_pause_and_sibling())))
+        req = runner._requests.on_scriptrunner_ready()
+        self.assertEqual(req.type, ScriptRequestType.RERUN)
+        consumed = _last(sid, "SCRIPTREQUESTS_RERUN_CONSUMED")
+        out = record_scriptrunner_run_script_entry(runner, req.rerun_data)
+        entry = _last(sid, "SCRIPTRUNNER_RUN_SCRIPT_ENTRY")
+        self.assertEqual(entry.get("preceding_consume_event_id"), consumed.get("event_id"))
+        self.assertEqual(entry.get("preceding_consume_correlation"), "same_scriptrequests_last_consume")
+        self.assertTrue(entry.get("pause_present"))
+        self.assertTrue(entry.get("pause_sibling_present"))
+        self.assertTrue(entry.get("sibling_trigger_value"))
+        self.assertTrue(out.get("pause_sibling_present"))
+
+    def test_l_unrelated_autofrag_consume_not_target(self) -> None:
+        sid = "sid-unrel-consume"
+        reqs = ScriptRequests()
+        register_scriptrequests_session(reqs, sid)
+        self.assertTrue(reqs.request_rerun(RerunData(fragment_id="auto-frag", widget_states=_ws_unrelated())))
+        req = reqs.on_scriptrunner_ready()
+        self.assertEqual(req.type, ScriptRequestType.RERUN)
+        consumed = _last(sid, "SCRIPTREQUESTS_RERUN_CONSUMED")
+        self.assertFalse(consumed.get("pause_present"))
+        self.assertFalse(consumed.get("pause_sibling_present"))
+        self.assertNotIn("$$ID-a-live_draft_pause", consumed.get("activated_trigger_ids") or [])
+        self.assertNotIn(SIB_WID, consumed.get("activated_trigger_ids") or [])
 
     def test_consumption_scans_returned_rerun_data(self) -> None:
         sid = "sid-consume"

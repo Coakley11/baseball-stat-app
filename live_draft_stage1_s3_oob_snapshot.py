@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-S3_OOB_IMPL_REV = "stage1_s3_oob_snapshot_v1"
+S3_OOB_IMPL_REV = "stage1_s3_oob_snapshot_v2"
 S3_OOB_TOKEN_SESSION_KEY = "_stage1_s3_oob_diagnostic_token"
 S3_OOB_CHANNEL_SESSION_KEY = "_stage1_s3_oob_channel"
 
@@ -18,7 +18,6 @@ _OOB_LOCK = threading.Lock()
 _OOB_GENERATION_BY_TOKEN: dict[str, int] = {}
 _STREAMLIT_SESSION_TO_TOKEN: dict[str, str] = {}
 _MAX_MODULE_ROWS = 48
-_MAX_CRITICAL_ROWS = 48
 _MAX_UNROUTED_ROWS = 32
 
 
@@ -111,6 +110,7 @@ def build_oob_snapshot_payload(
 ) -> dict[str, Any]:
     from live_draft_stage1_s3_process_global_diag import (
         build_latest_ingress_summaries,
+        critical_ledger_by_phase,
         critical_ledger_rows,
         ledger_totals_for_session,
         module_ledger_rows,
@@ -121,7 +121,10 @@ def build_oob_snapshot_payload(
     sid = str(streamlit_session_id or "").strip()[:64]
     token = str(diagnostic_token or "").strip()[:32]
     module_rows = list(module_ledger_rows(sid))[-_MAX_MODULE_ROWS:]
-    critical_rows = list(critical_ledger_rows(sid))[-_MAX_CRITICAL_ROWS:]
+    # Per-phase critical tails are already memory-bounded. Do not re-truncate with a
+    # mixed 48-row window that request_rerun floods can evict downstream phases from.
+    by_phase = critical_ledger_by_phase(sid)
+    critical_rows = list(critical_ledger_rows(sid))
     unrouted = unrouted_ledger_export()
     unrouted_rows = list(unrouted.get("rows") or [])[-_MAX_UNROUTED_ROWS:]
     totals = ledger_totals_for_session(sid)
@@ -169,6 +172,7 @@ def build_oob_snapshot_payload(
         "unrouted_ledger_total_count": totals.get("unrouted_ledger_total_count"),
         "module_ledger_rows": module_rows,
         "critical_ledger_rows": critical_rows,
+        "critical_ledger_by_phase": by_phase,
         "unrouted_event_count": len(list(unrouted.get("rows") or [])),
         "unrouted_rows": unrouted_rows,
         "latest_ingress_summaries": summaries,

@@ -16,12 +16,14 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-SCRIPTRUNNER_HANDOFF_IMPL_REV = "stage1_scriptrunner_handoff_diag_v1"
+SCRIPTRUNNER_HANDOFF_IMPL_REV = "stage1_scriptrunner_handoff_diag_v2"
 
 _MAP_LOCK = threading.Lock()
 # ScriptRequests instance id → Streamlit session id (authoritative from ScriptRunner)
 _SCRIPTREQUESTS_OID_TO_SID: dict[int, str] = {}
 _SCRIPTRUNNER_OID_TO_SID: dict[int, str] = {}
+# Last SCRIPTREQUESTS_RERUN_CONSUMED row keyed by ScriptRequests oid (diagnostic ancestry only).
+_LAST_CONSUME_BY_SQ_OID: dict[int, dict[str, Any]] = {}
 
 
 def _try_publish_oob(streamlit_session_id: str, publish_source: str) -> None:
@@ -127,6 +129,74 @@ def scan_rerun_data(rerun_data: Any) -> dict[str, Any]:
     }
 
 
+def trigger_bind_fields(scan: dict[str, Any] | None) -> dict[str, Any]:
+    """Exact Pause/sibling trigger identity from a rerun_data scan (diagnostic only)."""
+    src = dict(scan or {})
+    pause_proto = src.get("pause_proto") if isinstance(src.get("pause_proto"), dict) else {}
+    sib_proto = src.get("pause_sibling_proto") if isinstance(src.get("pause_sibling_proto"), dict) else {}
+    ids: list[str] = []
+    for trig in list(src.get("activated_triggers") or []):
+        if isinstance(trig, dict):
+            wid = str(trig.get("id") or trig.get("widget_id") or "").strip()
+        else:
+            wid = str(trig or "").strip()
+        if wid:
+            ids.append(wid)
+    pause_tv = pause_proto.get("trigger_value") if pause_proto else None
+    sib_tv = sib_proto.get("trigger_value") if sib_proto else None
+    return {
+        "pause_present": bool(src.get("pause_present")),
+        "pause_trigger_value": pause_tv,
+        "pause_sibling_present": bool(src.get("pause_sibling_present")),
+        "sibling_present": bool(src.get("pause_sibling_present")),
+        "sibling_trigger_value": sib_tv,
+        "activated_trigger_ids": ids[:16],
+        "incoming_widget_count": src.get("incoming_widget_count"),
+        "fragment_id": src.get("fragment_id"),
+        "fragment_id_queue": list(src.get("fragment_id_queue") or []),
+    }
+
+
+def _request_type_name(request: Any) -> str:
+    if request is None:
+        return ""
+    try:
+        typ = getattr(request, "type", None)
+        return str(getattr(typ, "name", typ) or "")
+    except Exception:
+        return ""
+
+
+def _scriptrequests_internal_scan(script_requests: Any) -> dict[str, Any]:
+    try:
+        state = script_requests._state
+        state_name = str(getattr(state, "name", state) or "")
+    except Exception:
+        state = None
+        state_name = ""
+    try:
+        rerun_data = script_requests._rerun_data
+    except Exception:
+        rerun_data = None
+    scan = scan_rerun_data(rerun_data) if rerun_data is not None else {}
+    out: dict[str, Any] = {
+        "scriptrequests_state": state_name,
+        "prior_state": state_name,
+        "fragment_id": scan.get("fragment_id"),
+        "fragment_id_queue": list(scan.get("fragment_id_queue") or []),
+        "pause_present": bool(scan.get("pause_present")),
+        "pause_sibling_present": bool(scan.get("pause_sibling_present")),
+        "activated_triggers": scan.get("activated_triggers"),
+        "incoming_widget_count": scan.get("incoming_widget_count"),
+    }
+    if state_name == "RERUN" and scan:
+        out.update(scan)
+        out.update(trigger_bind_fields(scan))
+        out["scriptrequests_state"] = state_name
+        out["prior_state"] = state_name
+    return out
+
+
 def _emit_routed_or_unrouted(
     sid: str,
     routing_source: str,
@@ -134,7 +204,7 @@ def _emit_routed_or_unrouted(
     *,
     routing_failure_reason: str,
     **fields: Any,
-) -> None:
+) -> dict[str, Any]:
     from live_draft_stage1_s3_process_global_diag import append_module_event, append_unrouted_event
 
     payload = {
@@ -143,25 +213,39 @@ def _emit_routed_or_unrouted(
         **fields,
     }
     if sid:
-        append_module_event(sid, phase, **payload)
-    else:
-        append_unrouted_event(
-            phase,
-            routing_failure_reason=routing_failure_reason,
-            attempted_sid="",
-            **payload,
-        )
+        return append_module_event(sid, phase, **payload)
+    return append_unrouted_event(
+        phase,
+        routing_failure_reason=routing_failure_reason,
+        attempted_sid="",
+        **payload,
+    )
 
 
 def record_scriptrunner_run_script_entry(script_runner: Any, rerun_data: Any) -> dict[str, Any]:
     """Public recorder for SCRIPTRUNNER_RUN_SCRIPT_ENTRY (also used by tests)."""
     sid, routing_source = resolve_scriptrunner_sid(script_runner)
     scan = scan_rerun_data(rerun_data)
-    fields = {
+    bind = trigger_bind_fields(scan)
+    reqs = getattr(script_runner, "_requests", None)
+    reqs_oid = id(reqs) if reqs is not None else None
+    preceding: dict[str, Any] = {}
+    if reqs_oid is not None:
+        with _MAP_LOCK:
+            preceding = dict(_LAST_CONSUME_BY_SQ_OID.get(reqs_oid) or {})
+    fields: dict[str, Any] = {
         "scriptrunner_object_id": id(script_runner),
+        "scriptrequests_object_id": reqs_oid,
         **scan,
+        **bind,
     }
-    _emit_routed_or_unrouted(
+    if preceding.get("event_id"):
+        # Same ScriptRequests oid last-consume only — not proven causality.
+        fields["preceding_consume_event_id"] = preceding.get("event_id")
+        fields["preceding_consume_api"] = preceding.get("consume_api")
+        fields["preceding_consume_ts"] = preceding.get("ts")
+        fields["preceding_consume_correlation"] = "same_scriptrequests_last_consume"
+    row = _emit_routed_or_unrouted(
         sid,
         routing_source,
         "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
@@ -170,7 +254,7 @@ def record_scriptrunner_run_script_entry(script_runner: Any, rerun_data: Any) ->
     )
     if sid:
         _try_publish_oob(sid, "scriptrunner_run_script_entry")
-    return {"streamlit_session_id": sid, "routing_source": routing_source, **scan}
+    return {"streamlit_session_id": sid, "routing_source": routing_source, "event_id": (row or {}).get("event_id"), **scan, **bind}
 
 
 def _record_rerun_consumed(
@@ -178,30 +262,99 @@ def _record_rerun_consumed(
     request: Any,
     *,
     consume_api: str,
-) -> None:
+) -> dict[str, Any] | None:
     from streamlit.runtime.scriptrunner_utils.script_requests import ScriptRequestType
 
     if request is None:
-        return
+        return None
     try:
         if getattr(request, "type", None) != ScriptRequestType.RERUN:
-            return
+            return None
         rerun_data = request.rerun_data
     except Exception:
-        return
+        return None
     sid, routing_source = resolve_scriptrequests_sid(script_requests)
     scan = scan_rerun_data(rerun_data)
-    _emit_routed_or_unrouted(
+    bind = trigger_bind_fields(scan)
+    payload = {**scan, **bind}
+    row = _emit_routed_or_unrouted(
         sid,
         routing_source,
         "SCRIPTREQUESTS_RERUN_CONSUMED",
         routing_failure_reason="scriptrequests_consume_sid_unresolved",
         scriptrequests_object_id=id(script_requests),
         consume_api=consume_api,
-        **scan,
+        **payload,
     )
+    if isinstance(row, dict) and row.get("event_id"):
+        with _MAP_LOCK:
+            _LAST_CONSUME_BY_SQ_OID[id(script_requests)] = {
+                "event_id": row.get("event_id"),
+                "ts": row.get("ts"),
+                "consume_api": consume_api,
+                "scriptrequests_object_id": id(script_requests),
+                **bind,
+            }
     if sid:
         _try_publish_oob(sid, "scriptrequests_rerun_consumed")
+    return row if isinstance(row, dict) else None
+
+
+def _record_yield_or_ready_entry(script_requests: Any, *, consume_api: str, phase: str) -> None:
+    sid, routing_source = resolve_scriptrequests_sid(script_requests)
+    internal = _scriptrequests_internal_scan(script_requests)
+    _emit_routed_or_unrouted(
+        sid,
+        routing_source,
+        phase,
+        routing_failure_reason="scriptrequests_yield_ready_sid_unresolved",
+        scriptrequests_object_id=id(script_requests),
+        consume_api=consume_api,
+        **internal,
+    )
+
+
+def _record_yield_or_ready_result(
+    script_requests: Any,
+    result: Any,
+    *,
+    consume_api: str,
+    phase: str,
+) -> None:
+    from streamlit.runtime.scriptrunner_utils.script_requests import ScriptRequestType
+
+    sid, routing_source = resolve_scriptrequests_sid(script_requests)
+    returned_none = result is None
+    returned_type = _request_type_name(result)
+    returned_is_rerun = False
+    scan: dict[str, Any] = {}
+    try:
+        returned_is_rerun = getattr(result, "type", None) == ScriptRequestType.RERUN
+        if returned_is_rerun:
+            scan = scan_rerun_data(getattr(result, "rerun_data", None))
+    except Exception:
+        returned_is_rerun = False
+        scan = {}
+    bind = trigger_bind_fields(scan) if scan else trigger_bind_fields({})
+    try:
+        after_state = str(getattr(script_requests._state, "name", script_requests._state) or "")
+    except Exception:
+        after_state = ""
+    payload = {**(scan if scan else {}), **bind}
+    _emit_routed_or_unrouted(
+        sid,
+        routing_source,
+        phase,
+        routing_failure_reason="scriptrequests_yield_ready_sid_unresolved",
+        scriptrequests_object_id=id(script_requests),
+        consume_api=consume_api,
+        returned_none=returned_none,
+        returned_request_type=returned_type,
+        returned_is_rerun=bool(returned_is_rerun),
+        scriptrequests_state_after=after_state,
+        result_state=after_state,
+        **payload,
+    )
 
 
 def ensure_scriptrunner_handoff_wrappers() -> None:
@@ -371,7 +524,22 @@ def ensure_scriptrunner_handoff_wrappers() -> None:
         orig_yield = ScriptRequests.on_scriptrunner_yield
 
         def wrapped_on_scriptrunner_yield(self: Any) -> Any:
+            try:
+                _record_yield_or_ready_entry(
+                    self, consume_api="on_scriptrunner_yield", phase="SCRIPTREQUESTS_ON_YIELD_ENTRY"
+                )
+            except Exception:
+                pass
             result = orig_yield(self)
+            try:
+                _record_yield_or_ready_result(
+                    self,
+                    result,
+                    consume_api="on_scriptrunner_yield",
+                    phase="SCRIPTREQUESTS_ON_YIELD_RESULT",
+                )
+            except Exception:
+                pass
             try:
                 _record_rerun_consumed(self, result, consume_api="on_scriptrunner_yield")
             except Exception:
@@ -387,7 +555,22 @@ def ensure_scriptrunner_handoff_wrappers() -> None:
         orig_ready = ScriptRequests.on_scriptrunner_ready
 
         def wrapped_on_scriptrunner_ready(self: Any) -> Any:
+            try:
+                _record_yield_or_ready_entry(
+                    self, consume_api="on_scriptrunner_ready", phase="SCRIPTREQUESTS_ON_READY_ENTRY"
+                )
+            except Exception:
+                pass
             result = orig_ready(self)
+            try:
+                _record_yield_or_ready_result(
+                    self,
+                    result,
+                    consume_api="on_scriptrunner_ready",
+                    phase="SCRIPTREQUESTS_ON_READY_RESULT",
+                )
+            except Exception:
+                pass
             try:
                 _record_rerun_consumed(self, result, consume_api="on_scriptrunner_ready")
             except Exception:
