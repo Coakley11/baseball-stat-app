@@ -28,16 +28,18 @@ def _streamlit_session_id() -> str:
 
 
 def append_s3_event(session: dict[str, Any] | None, phase: str, **fields: Any) -> dict[str, Any]:
+    from live_draft_stage1_s3_oob_snapshot import _session_mapping
     from live_draft_stage1_s3_process_global_diag import append_module_event, streamlit_session_id_from_ctx
 
     sid = streamlit_session_id_from_ctx()
     extra = dict(fields)
     extra.pop("streamlit_session_id", None)
     row = append_module_event(sid, phase, **extra)
-    if isinstance(session, dict) and sid:
-        book = list(session.get(S3_SESSION_LEDGER_KEY) or [])
+    mapping = _session_mapping(session)
+    if mapping is not None and sid:
+        book = list(mapping.get(S3_SESSION_LEDGER_KEY) or [])
         book.append(dict(row))
-        session[S3_SESSION_LEDGER_KEY] = book[-64:]
+        mapping[S3_SESSION_LEDGER_KEY] = book[-64:]
     return row
 
 
@@ -54,8 +56,11 @@ def s3_ledger_export(session: dict[str, Any] | None = None) -> dict[str, Any]:
     mod_exp = module_ledger_export_for_current_ctx(include_full_module_rows=True)
     module_rows = list(mod_exp.get("module_rows") or [])
     local_rows: list[dict[str, Any]] = []
-    if isinstance(session, dict):
-        local_rows = list(session.get(S3_SESSION_LEDGER_KEY) or [])
+    from live_draft_stage1_s3_oob_snapshot import _session_mapping
+
+    mapping = _session_mapping(session)
+    if mapping is not None:
+        local_rows = list(mapping.get(S3_SESSION_LEDGER_KEY) or [])
     critical_rows = list(critical_ledger_export(sid).get("rows") or [])
     merge = merge_authoritative_server_rows(module_rows=module_rows, local_rows=local_rows, critical_rows=critical_rows)
     merged_rows = list(merge.get("merged_rows") or [])
@@ -103,6 +108,7 @@ _PRESERVE_PHASE_PREFIXES = (
     "SERVER_",
     "RUNTIME_BACKMSG",
     "S3_DIAG_",
+    "S3_OOB_",
     "REGISTER_",
 )
 
@@ -567,6 +573,79 @@ def _ensure_safe_sessionstate_wrappers() -> None:
     mark_global_wrapper("safe_sessionstate_on_script_will_rerun")
 
 
+def _oob_session_type_meta(session: Any, sid: str) -> dict[str, Any]:
+    from live_draft_stage1_s3_oob_snapshot import _session_mapping
+
+    mapping = _session_mapping(session)
+    return {
+        "streamlit_session_id": str(sid or "")[:64],
+        "session_type": type(session).__name__ if session is not None else "",
+        "session_is_mutable_mapping": mapping is not None,
+    }
+
+
+def record_oob_initialization_result(
+    session: Any,
+    sid: str,
+    *,
+    oob: dict[str, Any] | None = None,
+    exc: BaseException | None = None,
+    initialization_stage: str = "publish_initial_oob_snapshot",
+) -> str:
+    """Emit REGISTERED or INIT_FAILURE. Never raises into product UI."""
+    meta = _oob_session_type_meta(session, sid)
+    try:
+        if exc is not None:
+            append_s3_event(
+                session,
+                "S3_OOB_CHANNEL_INIT_FAILURE",
+                exception_type=type(exc).__name__,
+                exception_message=str(exc)[:400],
+                initialization_stage=initialization_stage,
+                registered=False,
+                published=False,
+                **meta,
+            )
+            return "S3_OOB_CHANNEL_INIT_FAILURE"
+        result = dict(oob or {})
+        registered = bool(result.get("registered"))
+        published = bool(result.get("published"))
+        token = str(result.get("diagnostic_token") or "").strip()
+        path = str(result.get("static_url_path") or "").strip()
+        if registered and published and token and path:
+            append_s3_event(
+                session,
+                "S3_OOB_CHANNEL_REGISTERED",
+                **{k: v for k, v in result.items() if k != "module_ledger_rows"},
+            )
+            return "S3_OOB_CHANNEL_REGISTERED"
+        append_s3_event(
+            session,
+            "S3_OOB_CHANNEL_INIT_FAILURE",
+            registered=registered,
+            published=published,
+            reason=str(result.get("reason") or "oob_init_incomplete"),
+            diagnostic_token=token,
+            static_url_path=path,
+            initialization_stage=initialization_stage,
+            **meta,
+        )
+        return "S3_OOB_CHANNEL_INIT_FAILURE"
+    except Exception:
+        return "S3_OOB_CHANNEL_INIT_FAILURE_UNRECORDED"
+
+
+def initialize_oob_channel_safely(session: Any, sid: str) -> str:
+    """Fail-safe OOB init. Never raises into product UI. Returns emitted phase."""
+    try:
+        from live_draft_stage1_s3_oob_snapshot import publish_initial_oob_snapshot
+
+        oob = publish_initial_oob_snapshot(sid, session)
+        return record_oob_initialization_result(session, sid, oob=oob)
+    except Exception as exc:
+        return record_oob_initialization_result(session, sid, exc=exc)
+
+
 def install_s3_server_diagnostics(st: Any | None, session: dict[str, Any]) -> None:
     try:
         from live_draft_stage1_production_ledger import stage1_production_ledger_enabled
@@ -629,13 +708,7 @@ def install_s3_server_diagnostics(st: Any | None, session: dict[str, Any]) -> No
     binding = s3_diag_binding_snapshot(ss_wrapper)
     session[S3_BINDING_KEY] = dict(binding)
     append_s3_event(session, "S3_DIAG_BINDING", **binding)
-    try:
-        from live_draft_stage1_s3_oob_snapshot import publish_initial_oob_snapshot
-
-        oob = publish_initial_oob_snapshot(sid, session)
-        append_s3_event(session, "S3_OOB_CHANNEL_REGISTERED", **{k: v for k, v in oob.items() if k != "module_ledger_rows"})
-    except Exception:
-        pass
+    initialize_oob_channel_safely(session, sid)
     session[S3_PATCHED_KEY] = True
     if not session.get("_stage1_s3_diag_installed_once"):
         append_s3_event(session, "S3_DIAG_INSTALLED", user_key=watch_key)

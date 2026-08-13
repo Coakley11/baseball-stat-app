@@ -576,6 +576,8 @@ class SameRunRegisterCorrelationTests(unittest.TestCase):
             "SCRIPTREQUESTS_ON_READY_RESULT",
             "SCRIPTREQUESTS_RERUN_CONSUMED",
             "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
+            "S3_OOB_CHANNEL_REGISTERED",
+            "S3_OOB_CHANNEL_INIT_FAILURE",
         ):
             self.assertIn(ph, CRITICAL_SERVER_PHASES)
 

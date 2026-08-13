@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import uuid
+from collections.abc import MutableMapping
 from pathlib import Path
 from typing import Any
 
@@ -68,19 +69,27 @@ def current_generation(token: str) -> int:
         return int(_OOB_GENERATION_BY_TOKEN.get(str(token or "").strip()[:32], 0) or 0)
 
 
+def _session_mapping(session: Any) -> MutableMapping[str, Any] | None:
+    """Narrow helper: dict or SessionStateProxy (MutableMapping), not arbitrary objects."""
+    if isinstance(session, MutableMapping):
+        return session
+    return None
+
+
 def register_oob_channel(streamlit_session_id: str, session: dict[str, Any] | None = None) -> dict[str, Any]:
     sid = str(streamlit_session_id or "").strip()[:64]
     if not sid:
         return {"registered": False}
+    mapping = _session_mapping(session)
     token = ""
-    if isinstance(session, dict):
-        token = str(session.get(S3_OOB_TOKEN_SESSION_KEY) or "").strip()[:32]
+    if mapping is not None:
+        token = str(mapping.get(S3_OOB_TOKEN_SESSION_KEY) or "").strip()[:32]
     if not token:
         token = uuid.uuid4().hex[:16]
     with _OOB_LOCK:
         _STREAMLIT_SESSION_TO_TOKEN[sid] = token
-    if isinstance(session, dict):
-        session[S3_OOB_TOKEN_SESSION_KEY] = token
+    if mapping is not None:
+        mapping[S3_OOB_TOKEN_SESSION_KEY] = token
     channel = {
         "registered": True,
         "streamlit_session_id": sid,
@@ -89,8 +98,8 @@ def register_oob_channel(streamlit_session_id: str, session: dict[str, Any] | No
         "snapshot_filename": f"{token}.json",
         "impl_rev": S3_OOB_IMPL_REV,
     }
-    if isinstance(session, dict):
-        session[S3_OOB_CHANNEL_SESSION_KEY] = dict(channel)
+    if mapping is not None:
+        mapping[S3_OOB_CHANNEL_SESSION_KEY] = dict(channel)
     return channel
 
 
@@ -147,16 +156,17 @@ def build_oob_snapshot_payload(
     ][-16:]
     diagnostic_run_id = ""
     script_run_seq = None
-    if isinstance(session, dict):
+    mapping = _session_mapping(session)
+    if mapping is not None:
         diagnostic_run_id = str(
-            session.get("diagnostic_run_id") or session.get("application_diagnostic_run_id") or ""
+            mapping.get("diagnostic_run_id") or mapping.get("application_diagnostic_run_id") or ""
         )[:64]
         try:
             from live_draft_stage1_pause_sibling_probe import _full_app_run_seq
 
-            script_run_seq = int(_full_app_run_seq(session))
+            script_run_seq = int(_full_app_run_seq(mapping))
         except Exception:
-            script_run_seq = session.get("_full_app_run_seq")
+            script_run_seq = mapping.get("_full_app_run_seq")
     return {
         "impl_rev": S3_OOB_IMPL_REV,
         "snapshot_generation": int(snapshot_generation),
@@ -213,10 +223,11 @@ def publish_oob_snapshot(
         "publish_source": publish_source,
         "snapshot_path": str(path),
     }
-    if isinstance(session, dict):
-        channel = dict(session.get(S3_OOB_CHANNEL_SESSION_KEY) or {})
+    mapping = _session_mapping(session)
+    if mapping is not None:
+        channel = dict(mapping.get(S3_OOB_CHANNEL_SESSION_KEY) or {})
         channel.update(out)
-        session[S3_OOB_CHANNEL_SESSION_KEY] = channel
+        mapping[S3_OOB_CHANNEL_SESSION_KEY] = channel
     return out
 
 
@@ -245,8 +256,9 @@ def read_oob_snapshot_file(token: str) -> dict[str, Any] | None:
 
 
 def oob_channel_export(session: dict[str, Any] | None = None) -> dict[str, Any]:
-    if isinstance(session, dict):
-        channel = dict(session.get(S3_OOB_CHANNEL_SESSION_KEY) or {})
+    mapping = _session_mapping(session)
+    if mapping is not None:
+        channel = dict(mapping.get(S3_OOB_CHANNEL_SESSION_KEY) or {})
         if channel:
             token = str(channel.get("diagnostic_token") or "")
             channel["snapshot_generation"] = current_generation(token)

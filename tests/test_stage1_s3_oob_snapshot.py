@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+from collections.abc import MutableMapping
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -15,11 +17,16 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SCRIPTS))
 
 from live_draft_stage1_s3_oob_snapshot import (  # noqa: E402
+    S3_OOB_CHANNEL_SESSION_KEY,
+    S3_OOB_IMPL_REV,
+    S3_OOB_TOKEN_SESSION_KEY,
     current_generation,
+    oob_channel_export,
     publish_initial_oob_snapshot,
     publish_oob_snapshot,
     read_oob_snapshot_file,
     register_oob_channel,
+    resolve_token_for_streamlit_session,
     snapshot_path_for_token,
     static_url_path_for_token,
 )
@@ -270,6 +277,19 @@ class OobSnapshotTests(unittest.TestCase):
         live = critical_ledger_by_phase(sid)
         self.assertLessEqual(len(live.get("SCRIPTREQUESTS_RERUN_COALESCED") or []), _CRITICAL_EVENTS_PER_PHASE)
 
+    @patch("live_draft_stage1_s3_oob_snapshot.oob_snapshot_root")
+    def test_dict_token_reuse_and_process_global(self, root_fn) -> None:
+        root_fn.return_value = self.tmp
+        session: dict = {}
+        first = register_oob_channel("sid-reuse", session)
+        second = register_oob_channel("sid-reuse", session)
+        self.assertTrue(first.get("registered"))
+        self.assertEqual(first["diagnostic_token"], second["diagnostic_token"])
+        self.assertEqual(resolve_token_for_streamlit_session("sid-reuse"), first["diagnostic_token"])
+        pub = publish_oob_snapshot("sid-reuse", publish_source="runtime_handle_backmsg_finally")
+        self.assertTrue(pub.get("published"))
+        self.assertEqual(pub.get("diagnostic_token"), first["diagnostic_token"])
+
     def test_m_per_phase_retention_bounded(self) -> None:
         from live_draft_stage1_s3_process_global_diag import (
             _CRITICAL_EVENTS_PER_PHASE,
@@ -283,6 +303,288 @@ class OobSnapshotTests(unittest.TestCase):
         by_phase = critical_ledger_by_phase(sid)
         self.assertLessEqual(len(by_phase.get("SCRIPTREQUESTS_RERUN_CONSUMED") or []), _CRITICAL_EVENTS_PER_PHASE)
         self.assertEqual(len(by_phase.get("SCRIPTREQUESTS_RERUN_CONSUMED") or []), _CRITICAL_EVENTS_PER_PHASE)
+
+
+class _FakeSessionStateProxy(MutableMapping[str, Any]):
+    """Streamlit SessionStateProxy-like mapping: MutableMapping but not a dict."""
+
+    def __init__(self, initial: dict[str, Any] | None = None) -> None:
+        self._data: dict[str, Any] = dict(initial or {})
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._data[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+def _fresh_streamlit_session_state_proxy() -> MutableMapping[str, Any]:
+    import streamlit.runtime.state.session_state_proxy as ssp
+    from streamlit.runtime.state.safe_session_state import SafeSessionState
+    from streamlit.runtime.state.session_state import SessionState
+    from streamlit.runtime.state.session_state_proxy import SessionStateProxy
+
+    ssp._mock_session_state = SafeSessionState(SessionState(), lambda: None)
+    proxy = SessionStateProxy()
+    assert not isinstance(proxy, dict)
+    assert isinstance(proxy, MutableMapping)
+    return proxy
+
+
+class OobSessionPersistenceFixTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import live_draft_stage1_s3_oob_snapshot as oob
+        import live_draft_stage1_s3_process_global_diag as pg
+
+        self.tmp = ROOT / "static" / "s3_oob" / "_test_tmp"
+        self.tmp.mkdir(parents=True, exist_ok=True)
+        with pg._LEDGER_LOCK:
+            pg._MODULE_LEDGER_BY_STREAMLIT_SESSION.clear()
+            pg._CRITICAL_LEDGER_BY_SESSION.clear()
+            pg._UNROUTED_ORPHAN_LEDGER.clear()
+        with oob._OOB_LOCK:
+            oob._OOB_GENERATION_BY_TOKEN.clear()
+            oob._STREAMLIT_SESSION_TO_TOKEN.clear()
+        self.addCleanup(lambda: [p.unlink(missing_ok=True) for p in self.tmp.glob("*.json")])
+
+    def _assert_channel_ready(self, channel: dict[str, Any], *, sid: str) -> None:
+        self.assertTrue(channel.get("registered"), channel)
+        token = str(channel.get("diagnostic_token") or "")
+        path = str(channel.get("static_url_path") or "")
+        self.assertTrue(token)
+        self.assertTrue(path)
+        self.assertEqual(path, static_url_path_for_token(token))
+        self.assertEqual(channel.get("streamlit_session_id"), sid)
+        self.assertEqual(channel.get("impl_rev"), S3_OOB_IMPL_REV)
+
+    def _assert_session_persisted(self, session: MutableMapping[str, Any], *, sid: str, token: str) -> None:
+        self.assertEqual(session.get(S3_OOB_TOKEN_SESSION_KEY), token)
+        stored = dict(session.get(S3_OOB_CHANNEL_SESSION_KEY) or {})
+        self.assertTrue(stored.get("registered"))
+        self.assertEqual(stored.get("diagnostic_token"), token)
+        self.assertEqual(stored.get("static_url_path"), static_url_path_for_token(token))
+        self.assertEqual(resolve_token_for_streamlit_session(sid), token)
+
+    @patch("live_draft_stage1_s3_oob_snapshot.oob_snapshot_root")
+    def test_proxy_like_register_export_readiness(self, root_fn) -> None:
+        root_fn.return_value = self.tmp
+        sid = "sid-proxy-reg"
+        session = _FakeSessionStateProxy()
+        self.assertFalse(isinstance(session, dict))
+        self.assertTrue(isinstance(session, MutableMapping))
+        channel = register_oob_channel(sid, session)
+        self._assert_channel_ready(channel, sid=sid)
+        token = str(channel["diagnostic_token"])
+        self._assert_session_persisted(session, sid=sid, token=token)
+        exported = oob_channel_export(session)
+        self.assertTrue(exported.get("registered"), exported)
+        self.assertEqual(exported.get("diagnostic_token"), token)
+        self.assertEqual(exported.get("static_url_path"), static_url_path_for_token(token))
+        from live_draft_stage1_s3_server_diag import build_s3_readiness_payload
+
+        readiness = build_s3_readiness_payload(session)
+        oob_ch = dict(readiness.get("oob_channel") or {})
+        self.assertTrue(oob_ch.get("registered"), oob_ch)
+        self.assertEqual(oob_ch.get("diagnostic_token"), token)
+        self.assertTrue(oob_ch.get("static_url_path"))
+        self.assertEqual(oob_ch.get("impl_rev"), S3_OOB_IMPL_REV)
+
+    @patch("live_draft_stage1_s3_oob_snapshot.oob_snapshot_root")
+    def test_real_session_state_proxy_register_export(self, root_fn) -> None:
+        root_fn.return_value = self.tmp
+        sid = "sid-real-proxy"
+        session = _fresh_streamlit_session_state_proxy()
+        channel = register_oob_channel(sid, session)
+        self._assert_channel_ready(channel, sid=sid)
+        token = str(channel["diagnostic_token"])
+        self._assert_session_persisted(session, sid=sid, token=token)
+        exported = oob_channel_export(session)
+        self.assertTrue(exported.get("registered"), exported)
+        self.assertEqual(exported.get("diagnostic_token"), token)
+
+    @patch("live_draft_stage1_s3_oob_snapshot.oob_snapshot_root")
+    def test_dict_register_export_readiness_after_fix(self, root_fn) -> None:
+        root_fn.return_value = self.tmp
+        sid = "sid-dict-reg"
+        session: dict = {}
+        channel = register_oob_channel(sid, session)
+        self._assert_channel_ready(channel, sid=sid)
+        token = str(channel["diagnostic_token"])
+        self._assert_session_persisted(session, sid=sid, token=token)
+        exported = oob_channel_export(session)
+        self.assertTrue(exported.get("registered"), exported)
+        self.assertEqual(exported.get("diagnostic_token"), token)
+        from live_draft_stage1_s3_server_diag import build_s3_readiness_payload
+
+        readiness = build_s3_readiness_payload(session)
+        oob_ch = dict(readiness.get("oob_channel") or {})
+        self.assertTrue(oob_ch.get("registered"), oob_ch)
+        self.assertEqual(oob_ch.get("impl_rev"), S3_OOB_IMPL_REV)
+
+    @patch("live_draft_stage1_s3_oob_snapshot.oob_snapshot_root")
+    def test_proxy_initial_publication_end_to_end(self, root_fn) -> None:
+        root_fn.return_value = self.tmp
+        sid = "sid-proxy-init"
+        session = _FakeSessionStateProxy({"diagnostic_run_id": "run-proxy"})
+        pub = publish_initial_oob_snapshot(sid, session)
+        self.assertTrue(pub.get("registered"), pub)
+        self.assertTrue(pub.get("published"), pub)
+        token = str(pub.get("diagnostic_token") or "")
+        path = str(pub.get("static_url_path") or "")
+        self.assertTrue(token)
+        self.assertTrue(path)
+        self.assertGreaterEqual(int(pub.get("snapshot_generation") or 0), 1)
+        exported = oob_channel_export(session)
+        self.assertTrue(exported.get("registered"), exported)
+        self.assertEqual(exported.get("diagnostic_token"), token)
+        self.assertEqual(exported.get("static_url_path"), path)
+        snap = read_oob_snapshot_file(token)
+        self.assertIsInstance(snap, dict)
+        self.assertEqual(snap.get("diagnostic_token"), token)
+        self.assertEqual(snap.get("snapshot_generation"), pub.get("snapshot_generation"))
+        self.assertEqual(snap.get("impl_rev"), S3_OOB_IMPL_REV)
+        self.assertTrue(snapshot_path_for_token(token).is_file())
+
+    def test_arbitrary_object_not_mutated(self) -> None:
+        obj = SimpleNamespace()
+        channel = register_oob_channel("sid-ns", obj)  # type: ignore[arg-type]
+        self.assertTrue(channel.get("registered"))
+        self.assertFalse(hasattr(obj, S3_OOB_TOKEN_SESSION_KEY))
+        self.assertFalse(hasattr(obj, S3_OOB_CHANNEL_SESSION_KEY))
+        self.assertEqual(resolve_token_for_streamlit_session("sid-ns"), channel["diagnostic_token"])
+        self.assertFalse(oob_channel_export(obj).get("registered"))  # type: ignore[arg-type]
+
+    @patch("live_draft_stage1_s3_oob_snapshot.oob_snapshot_root")
+    def test_yield_flood_keeps_readiness_and_critical_registered(self, root_fn) -> None:
+        root_fn.return_value = self.tmp
+        from live_draft_stage1_s3_process_global_diag import (
+            critical_ledger_by_phase,
+            module_ledger_rows,
+        )
+        from live_draft_stage1_s3_server_diag import (
+            build_s3_readiness_payload,
+            initialize_oob_channel_safely,
+        )
+
+        sid = "sid-yield-flood"
+        session = _FakeSessionStateProxy()
+        with patch("live_draft_stage1_s3_process_global_diag.streamlit_session_id_from_ctx", return_value=sid):
+            phase = initialize_oob_channel_safely(session, sid)
+        self.assertEqual(phase, "S3_OOB_CHANNEL_REGISTERED")
+        readiness_before = build_s3_readiness_payload(session)
+        self.assertTrue(dict(readiness_before.get("oob_channel") or {}).get("registered"))
+        for i in range(60):
+            append_module_event(sid, "SCRIPTREQUESTS_ON_YIELD_ENTRY", n=i)
+            append_module_event(sid, "SCRIPTREQUESTS_ON_YIELD_RESULT", n=i)
+        mixed_phases = {str(r.get("phase") or "") for r in module_ledger_rows(sid)}
+        self.assertNotIn("S3_OOB_CHANNEL_REGISTERED", mixed_phases)
+        by_phase = critical_ledger_by_phase(sid)
+        self.assertTrue(by_phase.get("S3_OOB_CHANNEL_REGISTERED"), by_phase.keys())
+        readiness_after = build_s3_readiness_payload(session)
+        oob_ch = dict(readiness_after.get("oob_channel") or {})
+        self.assertTrue(oob_ch.get("registered"), oob_ch)
+        self.assertTrue(oob_ch.get("diagnostic_token"))
+        self.assertTrue(oob_ch.get("static_url_path"))
+
+    def test_s3_oob_dom_priority_preserves_registered_row(self) -> None:
+        from live_draft_stage1_s3_server_diag import _bound_row_list, _is_priority_row
+
+        self.assertTrue(_is_priority_row({"phase": "S3_OOB_CHANNEL_REGISTERED"}))
+        self.assertTrue(_is_priority_row({"phase": "S3_OOB_CHANNEL_INIT_FAILURE"}))
+        rows = [{"phase": "NOISE", "event_id": f"n{i}"} for i in range(200)]
+        rows.insert(0, {"phase": "S3_OOB_CHANNEL_REGISTERED", "event_id": "oob-keep"})
+        bounded = _bound_row_list(rows, 96, label="ledger.rows", bounds_log=[])
+        self.assertIn("oob-keep", {str(r.get("event_id") or "") for r in bounded})
+
+    @patch("live_draft_stage1_s3_oob_snapshot.oob_snapshot_root")
+    def test_init_exception_emits_failure_not_success(self, root_fn) -> None:
+        root_fn.return_value = self.tmp
+        from live_draft_stage1_s3_process_global_diag import critical_ledger_by_phase
+        from live_draft_stage1_s3_server_diag import (
+            build_s3_readiness_payload,
+            initialize_oob_channel_safely,
+        )
+
+        sid = "sid-init-exc"
+        session = _FakeSessionStateProxy()
+        with (
+            patch("live_draft_stage1_s3_process_global_diag.streamlit_session_id_from_ctx", return_value=sid),
+            patch(
+                "live_draft_stage1_s3_oob_snapshot.publish_initial_oob_snapshot",
+                side_effect=RuntimeError("oob boom"),
+            ),
+        ):
+            phase = initialize_oob_channel_safely(session, sid)
+        self.assertEqual(phase, "S3_OOB_CHANNEL_INIT_FAILURE")
+        by_phase = critical_ledger_by_phase(sid)
+        fail_rows = list(by_phase.get("S3_OOB_CHANNEL_INIT_FAILURE") or [])
+        self.assertTrue(fail_rows, by_phase.keys())
+        self.assertEqual(fail_rows[-1].get("exception_type"), "RuntimeError")
+        self.assertIn("oob boom", str(fail_rows[-1].get("exception_message") or ""))
+        self.assertEqual(fail_rows[-1].get("session_type"), "_FakeSessionStateProxy")
+        self.assertTrue(fail_rows[-1].get("session_is_mutable_mapping"))
+        self.assertFalse(by_phase.get("S3_OOB_CHANNEL_REGISTERED"))
+        readiness = build_s3_readiness_payload(session)
+        self.assertFalse(dict(readiness.get("oob_channel") or {}).get("registered"))
+
+    @patch("live_draft_stage1_s3_oob_snapshot.oob_snapshot_root")
+    def test_non_exception_init_failure_not_classified_success(self, root_fn) -> None:
+        root_fn.return_value = self.tmp
+        from live_draft_stage1_s3_process_global_diag import critical_ledger_by_phase
+        from live_draft_stage1_s3_server_diag import initialize_oob_channel_safely
+
+        sid = "sid-init-false"
+        session = _FakeSessionStateProxy()
+        with (
+            patch("live_draft_stage1_s3_process_global_diag.streamlit_session_id_from_ctx", return_value=sid),
+            patch(
+                "live_draft_stage1_s3_oob_snapshot.publish_initial_oob_snapshot",
+                return_value={"registered": False, "published": False, "reason": "channel_not_registered"},
+            ),
+        ):
+            phase = initialize_oob_channel_safely(session, sid)
+        self.assertEqual(phase, "S3_OOB_CHANNEL_INIT_FAILURE")
+        by_phase = critical_ledger_by_phase(sid)
+        fail_rows = list(by_phase.get("S3_OOB_CHANNEL_INIT_FAILURE") or [])
+        self.assertTrue(fail_rows)
+        self.assertFalse(fail_rows[-1].get("registered"))
+        self.assertFalse(fail_rows[-1].get("published"))
+        self.assertEqual(fail_rows[-1].get("reason"), "channel_not_registered")
+        self.assertFalse(by_phase.get("S3_OOB_CHANNEL_REGISTERED"))
+
+    @patch("live_draft_stage1_s3_oob_snapshot.oob_snapshot_root")
+    def test_published_false_without_raise_is_failure(self, root_fn) -> None:
+        root_fn.return_value = self.tmp
+        from live_draft_stage1_s3_process_global_diag import critical_ledger_by_phase
+        from live_draft_stage1_s3_server_diag import initialize_oob_channel_safely
+
+        sid = "sid-pub-false"
+        session = _FakeSessionStateProxy()
+        with (
+            patch("live_draft_stage1_s3_process_global_diag.streamlit_session_id_from_ctx", return_value=sid),
+            patch(
+                "live_draft_stage1_s3_oob_snapshot.publish_initial_oob_snapshot",
+                return_value={
+                    "registered": True,
+                    "published": False,
+                    "reason": "missing_sid_or_token",
+                    "diagnostic_token": "",
+                    "static_url_path": "",
+                },
+            ),
+        ):
+            phase = initialize_oob_channel_safely(session, sid)
+        self.assertEqual(phase, "S3_OOB_CHANNEL_INIT_FAILURE")
+        self.assertFalse(critical_ledger_by_phase(sid).get("S3_OOB_CHANNEL_REGISTERED"))
 
 
 if __name__ == "__main__":
