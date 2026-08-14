@@ -110,13 +110,30 @@ def render_live_draft_control_center(
 
     top1, top2 = st.columns(2)
     with top1:
-        if st.button(
+        _pause_return = st.button(
             "⏸ Pause Draft",
             disabled=status != "in_progress",
             key="live_draft_pause",
             help="Temporarily stops the timer for everyone in this active room.",
             use_container_width=True,
-        ):
+        )
+        emit_pause_branch_entered = None
+        emit_pause_rerun_request_entry = None
+        try:
+            from live_draft_stage1_pause_preemption_diag import (
+                emit_pause_branch_entered,
+                emit_pause_button_call_returned,
+                emit_pause_rerun_request_entry,
+            )
+
+            emit_pause_button_call_returned(
+                st, session, room, returned=bool(_pause_return), room_status=status
+            )
+        except ImportError:
+            pass
+        if _pause_return:
+            if emit_pause_branch_entered is not None:
+                emit_pause_branch_entered(st, session, room, room_status=status)
             from live_draft_timer_logic import live_draft_pause_timer
 
             live_draft_pause_timer(room)
@@ -136,6 +153,8 @@ def render_live_draft_control_center(
                 )
             except ImportError:
                 pass
+            if emit_pause_rerun_request_entry is not None:
+                emit_pause_rerun_request_entry(st, session, room, room_status=str(room.get("status") or status))
             try:
                 from live_draft_safe_mode import request_live_draft_rerun
 

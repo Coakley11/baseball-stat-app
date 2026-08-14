@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from live_draft_control_center_ui import (
+    _paint_control_center_with_live_chat,
     render_commissioner_draft_actions,
     render_control_center_with_live_chat,
     render_live_draft_control_center,
@@ -38,9 +39,11 @@ class ControlCenterLayoutTests(unittest.TestCase):
 
     def test_control_center_with_chat_is_side_by_side(self) -> None:
         src = inspect.getsource(render_control_center_with_live_chat)
-        self.assertIn("ctrl_col, chat_col = st.columns", src)
-        self.assertIn("render_live_draft_control_center", src)
-        self.assertIn("render_live_draft_chat_panel", src)
+        paint = inspect.getsource(_paint_control_center_with_live_chat)
+        self.assertIn("ctrl_col, chat_col = st.columns", paint)
+        self.assertIn("render_live_draft_control_center", paint)
+        self.assertIn("render_live_draft_chat_panel", paint)
+        self.assertIn("_paint_control_center_with_live_chat", src)
         self.assertNotIn("Save & Continue Later", src)
         self.assertNotIn("End/Delete", src)
 

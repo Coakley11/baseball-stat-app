@@ -578,8 +578,50 @@ class SameRunRegisterCorrelationTests(unittest.TestCase):
             "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
             "S3_OOB_CHANNEL_REGISTERED",
             "S3_OOB_CHANNEL_INIT_FAILURE",
+            "PAUSE_BUTTON_CALL_RETURNED",
+            "PAUSE_BRANCH_ENTERED",
+            "PAUSE_RERUN_REQUEST_ENTRY",
+            "LIVE_DRAFT_ST_RERUN_ABOUT_TO_CALL",
+            "LIVE_DRAFT_RERUN_BLOCKED",
+            "SIBLING_CALLSITE_ENTRY",
         ):
             self.assertIn(ph, CRITICAL_SERVER_PHASES)
+
+    def test_pause_preemption_boundary_does_not_rewrite_r5_missing(self) -> None:
+        rows = [
+            _row(
+                "SCRIPTRUNNER_RUN_SCRIPT_ENTRY",
+                1000.0,
+                script_run_seq=13,
+                pause_sibling_present=True,
+                fragment_id_queue=[FRAG],
+            ),
+            _row(
+                "SERVER_STATE_APPLIED",
+                1000.01,
+                script_run_seq=13,
+                sibling_present=True,
+                trigger_from_deserialized=True,
+                exact_widget_id=WID,
+                pause_present=True,
+            ),
+            _row("CONTROL_CENTER_FRAGMENT_ENTRY", 1000.02, script_run_seq=13, fragment_id=FRAG, fragment_ids_this_run=[FRAG]),
+            _row("PAUSE_BUTTON_CALL_RETURNED", 1000.03, script_run_seq=13, widget_key="live_draft_pause", st_button_returned=True),
+            _row("PAUSE_BRANCH_ENTERED", 1000.04, script_run_seq=13, source="pause_draft", pause_button_returned=True),
+            _row("PAUSE_RERUN_REQUEST_ENTRY", 1000.05, script_run_seq=13, source="pause_draft"),
+            _row("LIVE_DRAFT_ST_RERUN_ABOUT_TO_CALL", 1000.06, script_run_seq=13, source="pause_draft", rerun_allowed=True),
+        ]
+        corr = correlate_sibling_same_run_registration(rows, wire_widget_id=WID, user_key=KEY, target_fragment_id=FRAG)
+        self.assertEqual(corr["first_missing_boundary"], "sibling_render_not_entered")
+        self.assertFalse(corr["correlation_complete"])
+        self.assertTrue(corr["pause_button_call_returned"])
+        self.assertTrue(corr["pause_branch_entered"])
+        self.assertTrue(corr["pause_rerun_request_entry"])
+        self.assertTrue(corr["st_rerun_about_to_call"])
+        self.assertFalse(corr["sibling_callsite_initial"])
+        self.assertFalse(corr["sibling_render_entered"])
+        self.assertEqual(corr["same_run_control_flow_boundary"], "st_rerun_about_to_call_before_sibling_callsite")
+        self.assertIsNone(register_result_for_classifier(corr))
 
     def test_gate_source_no_longer_last_write_wins_authority(self) -> None:
         text = (SCRIPTS / "run_production_bridge_s3_server_registry_gate.py").read_text(encoding="utf-8")

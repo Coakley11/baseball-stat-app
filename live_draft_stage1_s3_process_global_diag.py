@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any
 
-S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v6"
+S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v7"
 
 CRITICAL_SERVER_PHASES: frozenset[str] = frozenset(
     {
@@ -39,6 +39,13 @@ CRITICAL_SERVER_PHASES: frozenset[str] = frozenset(
         "REGISTER_RESULT",
         "S3_OOB_CHANNEL_REGISTERED",
         "S3_OOB_CHANNEL_INIT_FAILURE",
+        # Same-run Pause-preemption / sibling-callsite control-flow (diagnostic retention).
+        "PAUSE_BUTTON_CALL_RETURNED",
+        "PAUSE_BRANCH_ENTERED",
+        "PAUSE_RERUN_REQUEST_ENTRY",
+        "LIVE_DRAFT_ST_RERUN_ABOUT_TO_CALL",
+        "LIVE_DRAFT_RERUN_BLOCKED",
+        "SIBLING_CALLSITE_ENTRY",
     }
 )
 _CRITICAL_EVENTS_PER_PHASE = 8

@@ -123,6 +123,30 @@ def _in_window(r: dict[str, Any], *, start: float, end: float, seq: int | None) 
     return start - 1e-6 <= t < end
 
 
+def _same_run_control_flow_boundary(out: dict[str, Any]) -> str:
+    """Supplemental Pause/sibling control-flow label. Does not affect R5/R6/R7."""
+    if out.get("sibling_render_entered"):
+        return "sibling_render_entered"
+    if out.get("sibling_callsite_import_attempt"):
+        return "sibling_import_attempted"
+    if out.get("sibling_callsite_initial"):
+        return "sibling_callsite_entered"
+    if out.get("st_rerun_about_to_call") and str(out.get("st_rerun_about_to_call_source") or "") in (
+        "",
+        "pause_draft",
+    ):
+        return "st_rerun_about_to_call_before_sibling_callsite"
+    if out.get("pause_rerun_request_entry"):
+        return "pause_rerun_requested"
+    if out.get("pause_branch_entered"):
+        return "pause_branch_entered"
+    if out.get("pause_button_call_returned") is False:
+        return "pause_branch_not_entered"
+    if out.get("pause_button_call_returned") is True:
+        return "pause_branch_not_entered"
+    return "pause_button_return_not_observed"
+
+
 def correlate_sibling_same_run_registration(
     rows: list[dict[str, Any]] | None,
     *,
@@ -159,6 +183,21 @@ def correlate_sibling_same_run_registration(
         "server_applied_sibling": False,
         "window_start_ts": None,
         "window_end_ts": None,
+        "pause_button_call_returned": None,
+        "pause_button_call_returned_event_id": "",
+        "pause_branch_entered": False,
+        "pause_branch_entered_event_id": "",
+        "pause_rerun_request_entry": False,
+        "pause_rerun_request_entry_event_id": "",
+        "st_rerun_about_to_call": False,
+        "st_rerun_about_to_call_event_id": "",
+        "st_rerun_about_to_call_source": "",
+        "live_draft_rerun_blocked": False,
+        "live_draft_rerun_blocked_event_id": "",
+        "sibling_callsite_initial": False,
+        "sibling_callsite_import_attempt": False,
+        "sibling_callsite_import_ok": None,
+        "same_run_control_flow_boundary": "pause_button_return_not_observed",
     }
 
     applied_rows = [r for r in src if _sibling_applied(r, wire_widget_id=wid)]
@@ -260,6 +299,70 @@ def correlate_sibling_same_run_registration(
             out["st_button_returned"] = bool(chosen_b.get("st_button_returned"))
         elif chosen_b.get("returned_value") is not None:
             out["st_button_returned"] = bool(chosen_b.get("returned_value"))
+
+    pause_btn_rows = sorted(
+        [r for r in window if r.get("phase") == "PAUSE_BUTTON_CALL_RETURNED"],
+        key=_ts,
+    )
+    if pause_btn_rows:
+        chosen_p = pause_btn_rows[-1]
+        out["pause_button_call_returned_event_id"] = str(chosen_p.get("event_id") or "")
+        if chosen_p.get("st_button_returned") is not None:
+            out["pause_button_call_returned"] = bool(chosen_p.get("st_button_returned"))
+
+    pause_branch_rows = sorted(
+        [r for r in window if r.get("phase") == "PAUSE_BRANCH_ENTERED"],
+        key=_ts,
+    )
+    if pause_branch_rows:
+        out["pause_branch_entered"] = True
+        out["pause_branch_entered_event_id"] = str(pause_branch_rows[-1].get("event_id") or "")
+
+    pause_rerun_rows = sorted(
+        [r for r in window if r.get("phase") == "PAUSE_RERUN_REQUEST_ENTRY"],
+        key=_ts,
+    )
+    if pause_rerun_rows:
+        out["pause_rerun_request_entry"] = True
+        out["pause_rerun_request_entry_event_id"] = str(pause_rerun_rows[-1].get("event_id") or "")
+
+    about_rows = sorted(
+        [
+            r
+            for r in window
+            if r.get("phase") == "LIVE_DRAFT_ST_RERUN_ABOUT_TO_CALL"
+            and str(r.get("source") or "") in ("", "pause_draft")
+        ],
+        key=_ts,
+    )
+    pause_about_rows = [r for r in about_rows if str(r.get("source") or "") == "pause_draft"] or about_rows
+    if pause_about_rows:
+        chosen_a = pause_about_rows[-1]
+        out["st_rerun_about_to_call"] = True
+        out["st_rerun_about_to_call_event_id"] = str(chosen_a.get("event_id") or "")
+        out["st_rerun_about_to_call_source"] = str(chosen_a.get("source") or "")[:64]
+
+    blocked_rows = sorted(
+        [r for r in window if r.get("phase") == "LIVE_DRAFT_RERUN_BLOCKED"],
+        key=_ts,
+    )
+    if blocked_rows:
+        out["live_draft_rerun_blocked"] = True
+        out["live_draft_rerun_blocked_event_id"] = str(blocked_rows[-1].get("event_id") or "")
+
+    callsite_rows = sorted(
+        [r for r in window if r.get("phase") == "SIBLING_CALLSITE_ENTRY"],
+        key=_ts,
+    )
+    initial_callsite = [r for r in callsite_rows if not bool(r.get("import_attempted"))]
+    import_callsite = [r for r in callsite_rows if bool(r.get("import_attempted"))]
+    out["sibling_callsite_initial"] = bool(initial_callsite)
+    out["sibling_callsite_import_attempt"] = bool(import_callsite)
+    if import_callsite:
+        ok_v = import_callsite[-1].get("import_ok")
+        out["sibling_callsite_import_ok"] = bool(ok_v) if ok_v is not None else None
+
+    out["same_run_control_flow_boundary"] = _same_run_control_flow_boundary(out)
 
     # Boundary resolution (first missing).
     if not out["target_fragment_executed"] and target_fid:

@@ -523,6 +523,14 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
             )
         except ImportError:
             pass
+        try:
+            from live_draft_stage1_pause_preemption_diag import emit_live_draft_rerun_blocked
+
+            emit_live_draft_rerun_blocked(
+                st, session, source=source, room=room, rerun_blocked_reason=reason or ""
+            )
+        except ImportError:
+            pass
         return False
     if source == "timer_fragment_zero":
         try:
@@ -536,6 +544,18 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
                     rerun_allowed=False,
                     rerun_blocked_reason="timer_zero_rerun_claim_failed",
                 )
+                try:
+                    from live_draft_stage1_pause_preemption_diag import emit_live_draft_rerun_blocked
+
+                    emit_live_draft_rerun_blocked(
+                        st,
+                        session,
+                        source=source,
+                        room=room,
+                        rerun_blocked_reason="timer_zero_rerun_claim_failed",
+                    )
+                except ImportError:
+                    pass
                 return False
         except ImportError:
             pass
@@ -609,6 +629,19 @@ def request_live_draft_rerun(st: Any, session: dict[str, Any], source: str, *, r
             reason=str(source),
             page="Live Draft Room",
             st=st,
+        )
+    except ImportError:
+        pass
+    try:
+        from live_draft_stage1_pause_preemption_diag import emit_st_rerun_about_to_call
+
+        emit_st_rerun_about_to_call(
+            st,
+            session,
+            source=source,
+            room=room,
+            rerun_allowed=True,
+            rerun_blocked_reason="",
         )
     except ImportError:
         pass

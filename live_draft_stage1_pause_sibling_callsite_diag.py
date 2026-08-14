@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Any
 
@@ -25,6 +26,15 @@ def _full_app_run_seq(session: dict[str, Any]) -> int:
         return int(session.get("_solo_stage1_script_run_seq") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _diagnostic_run_id(session: dict[str, Any]) -> str:
+    return str(
+        session.get("_solo_stage1_run_id")
+        or session.get("diagnostic_run_id")
+        or session.get("application_diagnostic_run_id")
+        or ""
+    )[:64]
 
 
 def _thread_fragment_id_safe() -> str:
@@ -101,3 +111,27 @@ def emit_sibling_callsite_marker(
         f'data-json="{blob}"></div>',
         unsafe_allow_html=True,
     )
+    try:
+        from live_draft_stage1_s3_process_global_diag import append_module_event
+
+        append_module_event(
+            str(payload.get("streamlit_session_id") or ""),
+            "SIBLING_CALLSITE_ENTRY",
+            diagnostic_run_id=_diagnostic_run_id(session),
+            script_run_seq=payload.get("full_app_run_seq"),
+            full_app_run_seq=payload.get("full_app_run_seq"),
+            room_id=payload.get("room_id"),
+            room_status=payload.get("room_status"),
+            fragment_id=payload.get("thread_fragment_id"),
+            thread_fragment_id=payload.get("thread_fragment_id"),
+            current_fragment_id_ctx="",
+            import_attempted=bool(import_attempted),
+            import_ok=import_ok,
+            import_error=str(import_error or "")[:240] or None,
+            solo_component_diag_raw=q.get("solo_component_diag_raw"),
+            solo_component_diag_qp_flag=q.get("solo_component_diag_qp_flag"),
+            session_solo_component_diag_enabled=q.get("session_solo_component_diag_enabled"),
+            thread_id=int(threading.get_ident()),
+        )
+    except Exception:
+        pass
