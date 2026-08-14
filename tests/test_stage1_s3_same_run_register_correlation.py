@@ -584,6 +584,9 @@ class SameRunRegisterCorrelationTests(unittest.TestCase):
             "LIVE_DRAFT_ST_RERUN_ABOUT_TO_CALL",
             "LIVE_DRAFT_RERUN_BLOCKED",
             "SIBLING_CALLSITE_ENTRY",
+            "FRANCISCO_QUEUE_CALLBACK_PREMUTATION_STOP",
+            "FRANCISCO_QUEUE_CALLBACK_PREMUTATION_MISMATCH",
+            "FRANCISCO_QUEUE_CALLBACK_GATE_CONSUMED_BLOCKED",
         ):
             self.assertIn(ph, CRITICAL_SERVER_PHASES)
 

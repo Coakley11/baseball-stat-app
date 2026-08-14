@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any
 
-S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v7"
+S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v8"
 
 CRITICAL_SERVER_PHASES: frozenset[str] = frozenset(
     {
@@ -46,6 +46,10 @@ CRITICAL_SERVER_PHASES: frozenset[str] = frozenset(
         "LIVE_DRAFT_ST_RERUN_ABOUT_TO_CALL",
         "LIVE_DRAFT_RERUN_BLOCKED",
         "SIBLING_CALLSITE_ENTRY",
+        # Francisco rec-card callback-only pre-mutation fence (diagnostic retention).
+        "FRANCISCO_QUEUE_CALLBACK_PREMUTATION_STOP",
+        "FRANCISCO_QUEUE_CALLBACK_PREMUTATION_MISMATCH",
+        "FRANCISCO_QUEUE_CALLBACK_GATE_CONSUMED_BLOCKED",
     }
 )
 _CRITICAL_EVENTS_PER_PHASE = 8

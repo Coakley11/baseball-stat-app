@@ -1494,6 +1494,151 @@ def render_live_draft_rec_summary_banner(st: Any, rec_df: Any, *, gaps: list[str
     )
 
 
+def execute_rec_card_queue_click(
+    session: dict[str, Any],
+    *,
+    name: str,
+    event_id: str,
+    widget_key: str,
+    room_id: str,
+    pick_idx: int,
+    player_id: str,
+) -> None:
+    """Production rec-card Add-to-Queue callback body (Streamlit on_click)."""
+    before = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+    try:
+        from live_draft_rec_fragment_exec_diag import record_rec_queue_callback_entry
+
+        record_rec_queue_callback_entry(
+            session,
+            event_id=event_id or "",
+            room_id=room_id,
+            pick_index=pick_idx,
+            player_id=player_id,
+            player_name=name,
+            widget_key=widget_key,
+            queue_before=before,
+        )
+    except ImportError:
+        pass
+    try:
+        from live_draft_rec_queue_click_trace import (
+            begin_rec_queue_click_trace,
+            new_rec_queue_event_id,
+        )
+
+        begin_rec_queue_click_trace(
+            session,
+            event_id=event_id or new_rec_queue_event_id(),
+            room_id=room_id,
+            pick_index=pick_idx,
+            player_id=player_id,
+            player_name=name,
+            widget_key=widget_key,
+            queue_before=before,
+        )
+    except ImportError:
+        pass
+    try:
+        from live_draft_queue_survival import begin_queue_action
+
+        begin_queue_action(session, name=name)
+    except ImportError:
+        pass
+    try:
+        from live_draft_ux_latency import ACTION_ADD_QUEUE, note_ux_action
+
+        note_ux_action(
+            session,
+            ACTION_ADD_QUEUE,
+            source="rec_card_add",
+            detail=f"{name}|before={len(before)}",
+        )
+    except ImportError:
+        pass
+    try:
+        from live_draft_francisco_callback_only_gate import maybe_premutation_stop_rec_queue_click
+
+        if maybe_premutation_stop_rec_queue_click(
+            session,
+            event_id=event_id,
+            room_id=room_id,
+            pick_index=pick_idx,
+            player_id=player_id,
+            player_name=name,
+            widget_key=widget_key,
+            queue_before=before,
+        ):
+            return
+    except ImportError:
+        pass
+    added = False
+    after = list(before)
+    mut_exc: str | None = None
+    mutation_entered = False
+    try:
+        from draft_state import add_player_to_draft_queue
+        from live_draft_rerun_scope import mark_live_draft_queue_tick
+
+        # Mutate session immediately; skip recommendation rebuild on the follow-up paint.
+        mark_live_draft_queue_tick(session)
+        mutation_entered = True
+        after, added = add_player_to_draft_queue(session, name)
+    except ImportError:
+        try:
+            from draft_state import add_player_to_draft_queue
+
+            mutation_entered = True
+            after, added = add_player_to_draft_queue(session, name)
+        except ImportError:
+            pass
+    except Exception as exc:
+        mut_exc = f"{type(exc).__name__}: {exc}"
+    try:
+        from live_draft_rec_queue_click_trace import note_rec_queue_mutation_trace
+
+        note_rec_queue_mutation_trace(
+            session,
+            event_id=event_id,
+            mutation_helper_entered=mutation_entered,
+            mutation_result={"added": added, "after_len": len(after)},
+            queue_after=after,
+            added=bool(added),
+            exception=mut_exc,
+        )
+    except ImportError:
+        pass
+    after = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+    try:
+        from live_draft_queue_fragment import record_queue_add_diag
+
+        record_queue_add_diag(
+            session,
+            name=name,
+            before=before,
+            after=after,
+            added=bool(added),
+        )
+    except ImportError:
+        session["_live_draft_queue_add_diag"] = {
+            "name": name,
+            "before_len": len(before),
+            "after_len": len(after),
+            "added": bool(added),
+            "mutated": before != after,
+        }
+    try:
+        from live_draft_queue_survival import note_queue_survival
+
+        note_queue_survival(
+            session,
+            "A",
+            detail=f"after rec_card_add name={name} added={bool(added)}",
+        )
+    except ImportError:
+        pass
+
+
 def render_live_draft_rec_cards(
     st: Any,
     session: dict[str, Any],
@@ -1822,123 +1967,15 @@ def render_live_draft_rec_cards(
                     _pick_idx: int = pick_idx,
                     _player_id: str = player_id,
                 ) -> None:
-                    before = [str(x).strip() for x in (_session.get("draft_queue") or []) if str(x).strip()]
-                    try:
-                        from live_draft_rec_fragment_exec_diag import record_rec_queue_callback_entry
-
-                        record_rec_queue_callback_entry(
-                            _session,
-                            event_id=_event_id or "",
-                            room_id=_room_id,
-                            pick_index=_pick_idx,
-                            player_id=_player_id,
-                            player_name=_name,
-                            widget_key=_widget_key,
-                            queue_before=before,
-                        )
-                    except ImportError:
-                        pass
-                    try:
-                        from live_draft_rec_queue_click_trace import (
-                            begin_rec_queue_click_trace,
-                            new_rec_queue_event_id,
-                            note_rec_queue_mutation_trace,
-                        )
-
-                        begin_rec_queue_click_trace(
-                            _session,
-                            event_id=_event_id or new_rec_queue_event_id(),
-                            room_id=_room_id,
-                            pick_index=_pick_idx,
-                            player_id=_player_id,
-                            player_name=_name,
-                            widget_key=_widget_key,
-                            queue_before=before,
-                        )
-                    except ImportError:
-                        pass
-                    try:
-                        from live_draft_queue_survival import begin_queue_action
-
-                        begin_queue_action(_session, name=_name)
-                    except ImportError:
-                        pass
-                    try:
-                        from live_draft_ux_latency import ACTION_ADD_QUEUE, note_ux_action
-
-                        note_ux_action(
-                            _session,
-                            ACTION_ADD_QUEUE,
-                            source="rec_card_add",
-                            detail=f"{_name}|before={len(before)}",
-                        )
-                    except ImportError:
-                        pass
-                    added = False
-                    after = list(before)
-                    mut_exc: str | None = None
-                    mutation_entered = False
-                    try:
-                        from draft_state import add_player_to_draft_queue
-                        from live_draft_rerun_scope import mark_live_draft_queue_tick
-
-                        # Mutate session immediately; skip recommendation rebuild on the follow-up paint.
-                        mark_live_draft_queue_tick(_session)
-                        mutation_entered = True
-                        after, added = add_player_to_draft_queue(_session, _name)
-                    except ImportError:
-                        try:
-                            from draft_state import add_player_to_draft_queue
-
-                            mutation_entered = True
-                            after, added = add_player_to_draft_queue(_session, _name)
-                        except ImportError:
-                            pass
-                    except Exception as exc:
-                        mut_exc = f"{type(exc).__name__}: {exc}"
-                    try:
-                        from live_draft_rec_queue_click_trace import note_rec_queue_mutation_trace
-
-                        note_rec_queue_mutation_trace(
-                            _session,
-                            event_id=_event_id,
-                            mutation_helper_entered=mutation_entered,
-                            mutation_result={"added": added, "after_len": len(after)},
-                            queue_after=after,
-                            added=bool(added),
-                            exception=mut_exc,
-                        )
-                    except ImportError:
-                        pass
-                    after = [str(x).strip() for x in (_session.get("draft_queue") or []) if str(x).strip()]
-                    try:
-                        from live_draft_queue_fragment import record_queue_add_diag
-
-                        record_queue_add_diag(
-                            _session,
-                            name=_name,
-                            before=before,
-                            after=after,
-                            added=bool(added),
-                        )
-                    except ImportError:
-                        _session["_live_draft_queue_add_diag"] = {
-                            "name": _name,
-                            "before_len": len(before),
-                            "after_len": len(after),
-                            "added": bool(added),
-                            "mutated": before != after,
-                        }
-                    try:
-                        from live_draft_queue_survival import note_queue_survival
-
-                        note_queue_survival(
-                            _session,
-                            "A",
-                            detail=f"after rec_card_add name={_name} added={bool(added)}",
-                        )
-                    except ImportError:
-                        pass
+                    execute_rec_card_queue_click(
+                        _session,
+                        name=_name,
+                        event_id=_event_id,
+                        widget_key=_widget_key,
+                        room_id=_room_id,
+                        pick_idx=_pick_idx,
+                        player_id=_player_id,
+                    )
 
                 if already_queued:
                     st.button(
