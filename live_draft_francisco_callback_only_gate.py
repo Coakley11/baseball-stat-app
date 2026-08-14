@@ -32,7 +32,18 @@ STATE_CONSUMED_LOCKED = "consumed_locked"
 PHASE_PREMUTATION_STOP = "FRANCISCO_QUEUE_CALLBACK_PREMUTATION_STOP"
 PHASE_PREMUTATION_MISMATCH = "FRANCISCO_QUEUE_CALLBACK_PREMUTATION_MISMATCH"
 PHASE_GATE_CONSUMED_BLOCKED = "FRANCISCO_QUEUE_CALLBACK_GATE_CONSUMED_BLOCKED"
+PHASE_ARMED_FROM_RUNTIME_CARD = "FRANCISCO_CALLBACK_ONLY_GATE_ARMED_FROM_RUNTIME_CARD"
+PHASE_ARMING_REFUSED_ALREADY_QUEUED = "FRANCISCO_CALLBACK_ONLY_ARMING_REFUSED_ALREADY_QUEUED"
+PHASE_ARMING_SKIPPED_CONSUMED_LOCKED = "FRANCISCO_CALLBACK_ONLY_ARMING_SKIPPED_CONSUMED_LOCKED"
 REASON_ALREADY_CONSUMED = "diagnostic_gate_already_consumed"
+
+QP_FRANCISCO_CALLBACK_ONLY = "stage1_francisco_callback_only"
+QUERY_LATCH_KEY = "_stage1_francisco_callback_only_query_latch"
+QUERY_LATCH_NOT_REQUESTED = "not_requested"
+QUERY_LATCH_REQUESTED = "requested"
+QUERY_LATCH_ARMED_ONCE = "armed_once"
+QUERY_LATCH_CONSUMED = "consumed"
+QUERY_LATCH_REFUSED_ALREADY_QUEUED = "refused_already_queued"
 
 CLASSIFICATION_PROVEN_PREMUTATION = "FRANCISCO_ADD_TO_QUEUE_CALLBACK_EXECUTION_PROVEN_PREMUTATION"
 CLASSIFICATION_NOT_PROVEN = "FRANCISCO_ADD_TO_QUEUE_CALLBACK_EXECUTION_NOT_PROVEN"
@@ -90,6 +101,47 @@ def _norm(value: Any) -> str:
     return str(value or "").strip()
 
 
+def query_latch_state(session: dict[str, Any]) -> str:
+    raw = str(session.get(QUERY_LATCH_KEY) or "").strip().lower()
+    if raw in (
+        QUERY_LATCH_REQUESTED,
+        QUERY_LATCH_ARMED_ONCE,
+        QUERY_LATCH_CONSUMED,
+        QUERY_LATCH_REFUSED_ALREADY_QUEUED,
+    ):
+        return raw
+    return QUERY_LATCH_NOT_REQUESTED
+
+
+def _francisco_callback_only_query_flag(st: Any | None) -> bool:
+    if st is None:
+        return False
+    try:
+        from live_draft_cloud_diagnostics import _qp_flag
+
+        return bool(_qp_flag(st, QP_FRANCISCO_CALLBACK_ONLY))
+    except Exception:
+        return False
+
+
+def _draft_queue_names(session: dict[str, Any]) -> list[str]:
+    return [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+
+
+def _canonical_queue_names(session: dict[str, Any]) -> list[str]:
+    ds = session.get("draft_state") if isinstance(session.get("draft_state"), dict) else {}
+    return [str(x).strip() for x in (ds.get("queue") or []) if str(x).strip()]
+
+
+def _persist_dirty_value(session: dict[str, Any]) -> Any:
+    try:
+        from live_draft_queue_persist import DRAFT_QUEUE_PERSIST_DIRTY_KEY
+
+        return session.get(DRAFT_QUEUE_PERSIST_DIRTY_KEY)
+    except ImportError:
+        return session.get("_draft_queue_persist_dirty")
+
+
 def gate_lifecycle(session: dict[str, Any]) -> str:
     raw = str(session.get(GATE_STATE_KEY) or "").strip().lower()
     if raw == STATE_CONSUMED_LOCKED:
@@ -141,6 +193,150 @@ def arm_francisco_callback_only_gate(
     session[GATE_STATE_KEY] = STATE_ARMED
     session[GATE_TARGET_KEY] = dict(target)
     return {"armed": True, "state": STATE_ARMED, "target": dict(target)}
+
+
+def maybe_arm_francisco_callback_only_from_runtime_card(
+    st: Any | None,
+    session: dict[str, Any],
+    *,
+    room_id: str,
+    pick_index: int,
+    player_id: str,
+    player_name: str,
+    widget_key: str,
+    already_queued: bool,
+) -> dict[str, Any]:
+    """One-shot diagnostic latch: arm from the live Francisco rec-card identity.
+
+    No-op unless solo/stage-1 diagnostics are enabled AND
+    ``?stage1_francisco_callback_only=1`` is present. Never mutates the queue.
+    Never calls ``clear_francisco_callback_only_gate``. Never re-arms after
+    ``armed_once`` or ``consumed_locked``.
+    """
+    name = _norm(player_name)
+    if name != FRANCISCO_LINDOR_PLAYER_NAME:
+        return {"armed": False, "reason": "not_francisco"}
+    if not _stage1_diag_path_enabled(session):
+        return {"armed": False, "reason": "solo_stage1_diag_path_required"}
+    if not _francisco_callback_only_query_flag(st):
+        return {"armed": False, "reason": "query_absent"}
+
+    latch = query_latch_state(session)
+    if latch == QUERY_LATCH_NOT_REQUESTED:
+        session[QUERY_LATCH_KEY] = QUERY_LATCH_REQUESTED
+        latch = QUERY_LATCH_REQUESTED
+
+    lifecycle = gate_lifecycle(session)
+    queue_before = _draft_queue_names(session)
+    canonical_before = _canonical_queue_names(session)
+    persist_dirty_before = _persist_dirty_value(session)
+    key = _norm(widget_key)
+    pid = _norm(player_id)
+
+    if lifecycle == STATE_CONSUMED_LOCKED:
+        if latch != QUERY_LATCH_CONSUMED:
+            _emit_arming_event(
+                session,
+                phase=PHASE_ARMING_SKIPPED_CONSUMED_LOCKED,
+                room_id=room_id,
+                pick_index=pick_index,
+                player_id=pid,
+                player_name=name,
+                widget_key=key,
+                queue_before=queue_before,
+                canonical_queue_before=canonical_before,
+                persist_dirty_before=persist_dirty_before,
+                already_queued=bool(already_queued),
+                target_match=False,
+                gate_state_before=STATE_CONSUMED_LOCKED,
+                gate_state_after=STATE_CONSUMED_LOCKED,
+            )
+            session[QUERY_LATCH_KEY] = QUERY_LATCH_CONSUMED
+        return {
+            "armed": False,
+            "reason": "consumed_locked",
+            "state": STATE_CONSUMED_LOCKED,
+            "latch": QUERY_LATCH_CONSUMED,
+        }
+
+    if latch == QUERY_LATCH_ARMED_ONCE or lifecycle == STATE_ARMED:
+        session[QUERY_LATCH_KEY] = QUERY_LATCH_ARMED_ONCE
+        return {
+            "armed": True,
+            "reason": "already_armed",
+            "state": STATE_ARMED,
+            "latch": QUERY_LATCH_ARMED_ONCE,
+            "target": dict(session.get(GATE_TARGET_KEY) or {}),
+        }
+
+    if already_queued:
+        if latch != QUERY_LATCH_REFUSED_ALREADY_QUEUED:
+            _emit_arming_event(
+                session,
+                phase=PHASE_ARMING_REFUSED_ALREADY_QUEUED,
+                room_id=room_id,
+                pick_index=pick_index,
+                player_id=pid,
+                player_name=name,
+                widget_key=key,
+                queue_before=queue_before,
+                canonical_queue_before=canonical_before,
+                persist_dirty_before=persist_dirty_before,
+                already_queued=True,
+                target_match=False,
+                gate_state_before=lifecycle,
+                gate_state_after=lifecycle,
+            )
+            session[QUERY_LATCH_KEY] = QUERY_LATCH_REFUSED_ALREADY_QUEUED
+        return {
+            "armed": False,
+            "reason": "already_queued",
+            "state": lifecycle,
+            "latch": QUERY_LATCH_REFUSED_ALREADY_QUEUED,
+        }
+
+    if not key:
+        return {"armed": False, "reason": "widget_key_required", "state": lifecycle, "latch": latch}
+
+    armed = arm_francisco_callback_only_gate(
+        session,
+        room_id=room_id,
+        pick_index=pick_index,
+        player_id=pid,
+        player_name=name,
+        widget_key=key,
+    )
+    if not armed.get("armed"):
+        return {
+            "armed": False,
+            "reason": str(armed.get("reason") or "arm_refused"),
+            "state": gate_lifecycle(session),
+            "latch": latch,
+        }
+    session[QUERY_LATCH_KEY] = QUERY_LATCH_ARMED_ONCE
+    _emit_arming_event(
+        session,
+        phase=PHASE_ARMED_FROM_RUNTIME_CARD,
+        room_id=room_id,
+        pick_index=pick_index,
+        player_id=pid,
+        player_name=name,
+        widget_key=key,
+        queue_before=queue_before,
+        canonical_queue_before=canonical_before,
+        persist_dirty_before=persist_dirty_before,
+        already_queued=False,
+        target_match=True,
+        gate_state_before=STATE_UNARMED,
+        gate_state_after=STATE_ARMED,
+    )
+    return {
+        "armed": True,
+        "reason": "armed_from_runtime_card",
+        "state": STATE_ARMED,
+        "latch": QUERY_LATCH_ARMED_ONCE,
+        "target": dict(armed.get("target") or {}),
+    }
 
 
 def consume_francisco_callback_only_gate(session: dict[str, Any]) -> None:
@@ -208,12 +404,61 @@ def _retain_event(session: dict[str, Any], row: dict[str, Any]) -> dict[str, Any
 
         append_module_event(
             sid,
-            str(row.get("phase") or "")[:48],
+            str(row.get("phase") or "")[:64],
             **{k: v for k, v in row.items() if k not in ("phase", "streamlit_session_id")},
         )
     except ImportError:
         pass
     return row
+
+
+def _emit_arming_event(
+    session: dict[str, Any],
+    *,
+    phase: str,
+    room_id: str,
+    pick_index: int,
+    player_id: str,
+    player_name: str,
+    widget_key: str,
+    queue_before: list[str],
+    canonical_queue_before: list[str],
+    persist_dirty_before: Any,
+    already_queued: bool,
+    target_match: bool,
+    gate_state_before: str,
+    gate_state_after: str,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "event_id": uuid.uuid4().hex[:12],
+        "ts": time.time(),
+        "phase": str(phase or "")[:64],
+        "streamlit_session_id": _streamlit_session_id(),
+        "diagnostic_run_id": _diagnostic_run_id(session),
+        "full_app_run_seq": _full_app_run_seq(session),
+        "recommendation_fragment_run_seq": _recommendation_fragment_run_seq(session),
+        "room_id": _norm(room_id),
+        "pick_index": int(pick_index),
+        "player_id": _norm(player_id),
+        "player_name": _norm(player_name),
+        "widget_key": _norm(widget_key),
+        "callback_id": CALLBACK_ID,
+        "callback_entered": False,
+        "query_latch_requested": True,
+        "already_queued": bool(already_queued),
+        "target_match": bool(target_match),
+        "gate_state_before": str(gate_state_before or "")[:32],
+        "gate_state_after": str(gate_state_after or "")[:32],
+        "lifecycle_state": str(gate_state_after or "")[:32],
+        "queue_before": list(queue_before)[:20],
+        "canonical_queue_before": list(canonical_queue_before)[:20],
+        "persist_dirty_before": persist_dirty_before,
+        "mutation_attempted": False,
+        "mutation_completed": False,
+        "gate_armed": gate_state_after == STATE_ARMED,
+        "gate_consumed": gate_state_after == STATE_CONSUMED_LOCKED,
+    }
+    return _retain_event(session, row)
 
 
 def _emit_gate_event(
@@ -237,7 +482,7 @@ def _emit_gate_event(
     row: dict[str, Any] = {
         "event_id": eid,
         "ts": time.time(),
-        "phase": str(phase or "")[:48],
+        "phase": str(phase or "")[:64],
         "streamlit_session_id": _streamlit_session_id(),
         "diagnostic_run_id": _diagnostic_run_id(session),
         "full_app_run_seq": _full_app_run_seq(session),
@@ -357,11 +602,16 @@ def gate_events(session: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def find_premutation_stop_event(session: dict[str, Any]) -> dict[str, Any]:
+    return find_gate_event_by_phase(session, PHASE_PREMUTATION_STOP)
+
+
+def find_gate_event_by_phase(session: dict[str, Any], phase: str) -> dict[str, Any]:
+    want = str(phase or "")
     for row in reversed(gate_events(session)):
-        if str(row.get("phase") or "") == PHASE_PREMUTATION_STOP:
+        if str(row.get("phase") or "") == want:
             return dict(row)
     last = last_gate_event(session)
-    if str(last.get("phase") or "") == PHASE_PREMUTATION_STOP:
+    if str(last.get("phase") or "") == want:
         return last
     return {}
 

@@ -1958,6 +1958,24 @@ def render_live_draft_rec_cards(
                 except ImportError:
                     pass
 
+                try:
+                    from live_draft_francisco_callback_only_gate import (
+                        maybe_arm_francisco_callback_only_from_runtime_card,
+                    )
+
+                    maybe_arm_francisco_callback_only_from_runtime_card(
+                        st,
+                        session,
+                        room_id=room_id,
+                        pick_index=pick_idx,
+                        player_id=player_id,
+                        player_name=name,
+                        widget_key=queue_widget_key,
+                        already_queued=already_queued,
+                    )
+                except ImportError:
+                    pass
+
                 def _on_rec_queue_click(
                     _session: dict[str, Any] = session,
                     _name: str = name,

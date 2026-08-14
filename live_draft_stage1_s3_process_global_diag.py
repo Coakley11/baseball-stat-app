@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any
 
-S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v8"
+S3_PROCESS_GLOBAL_IMPL_REV = "stage1_s3_process_global_diag_v9"
 
 CRITICAL_SERVER_PHASES: frozenset[str] = frozenset(
     {
@@ -50,9 +50,13 @@ CRITICAL_SERVER_PHASES: frozenset[str] = frozenset(
         "FRANCISCO_QUEUE_CALLBACK_PREMUTATION_STOP",
         "FRANCISCO_QUEUE_CALLBACK_PREMUTATION_MISMATCH",
         "FRANCISCO_QUEUE_CALLBACK_GATE_CONSUMED_BLOCKED",
+        "FRANCISCO_CALLBACK_ONLY_GATE_ARMED_FROM_RUNTIME_CARD",
+        "FRANCISCO_CALLBACK_ONLY_ARMING_REFUSED_ALREADY_QUEUED",
+        "FRANCISCO_CALLBACK_ONLY_ARMING_SKIPPED_CONSUMED_LOCKED",
     }
 )
 _CRITICAL_EVENTS_PER_PHASE = 8
+CRITICAL_PHASE_NAME_MAX = 64
 
 _LEDGER_LOCK = threading.Lock()
 _MODULE_LEDGER_BY_STREAMLIT_SESSION: dict[str, list[dict[str, Any]]] = {}
@@ -357,7 +361,7 @@ def append_unrouted_event(phase: str, *, routing_failure_reason: str = "", **fie
     row: dict[str, Any] = {
         "event_id": uuid.uuid4().hex[:12],
         "ts": time.time(),
-        "phase": str(phase or "")[:48],
+        "phase": str(phase or "")[:CRITICAL_PHASE_NAME_MAX],
         "routing_failure_reason": str(routing_failure_reason or "")[:120],
         "ctx_streamlit_session_id": streamlit_session_id_from_ctx(),
         "thread_id": threading.get_ident(),
@@ -377,7 +381,7 @@ def unrouted_ledger_export() -> dict[str, Any]:
 
 
 def _append_critical_row_locked(sid: str, phase: str, row: dict[str, Any]) -> None:
-    ph = str(phase or "")[:48]
+    ph = str(phase or "")[:CRITICAL_PHASE_NAME_MAX]
     if ph not in CRITICAL_SERVER_PHASES:
         return
     by_phase = _CRITICAL_LEDGER_BY_SESSION.setdefault(sid, {})
@@ -420,7 +424,7 @@ def critical_ledger_export(streamlit_session_id: str | None = None) -> dict[str,
 
 def append_module_event(streamlit_session_id: str, phase: str, **fields: Any) -> dict[str, Any]:
     sid = str(streamlit_session_id or "").strip()[:64]
-    ph = str(phase or "")[:48]
+    ph = str(phase or "")[:CRITICAL_PHASE_NAME_MAX]
     row: dict[str, Any] = {
         "event_id": uuid.uuid4().hex[:12],
         "ts": time.time(),

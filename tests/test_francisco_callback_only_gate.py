@@ -17,9 +17,17 @@ from live_draft_francisco_callback_only_gate import (
     CLASSIFICATION_PROVEN_PREMUTATION,
     FRANCISCO_LINDOR_PLAYER_NAME,
     FRANCISCO_LINDOR_TEST_PLAYER_ID,
+    GATE_TARGET_KEY,
+    PHASE_ARMING_REFUSED_ALREADY_QUEUED,
+    PHASE_ARMING_SKIPPED_CONSUMED_LOCKED,
+    PHASE_ARMED_FROM_RUNTIME_CARD,
     PHASE_GATE_CONSUMED_BLOCKED,
     PHASE_PREMUTATION_MISMATCH,
     PHASE_PREMUTATION_STOP,
+    QP_FRANCISCO_CALLBACK_ONLY,
+    QUERY_LATCH_ARMED_ONCE,
+    QUERY_LATCH_CONSUMED,
+    QUERY_LATCH_REFUSED_ALREADY_QUEUED,
     REASON_ALREADY_CONSUMED,
     STATE_ARMED,
     STATE_CONSUMED_LOCKED,
@@ -27,11 +35,14 @@ from live_draft_francisco_callback_only_gate import (
     arm_francisco_callback_only_gate,
     classify_francisco_callback_only_proof,
     clear_francisco_callback_only_gate,
+    find_gate_event_by_phase,
     find_premutation_stop_event,
+    gate_events,
     gate_is_armed,
     gate_is_consumed_locked,
     gate_lifecycle,
     last_gate_event,
+    query_latch_state,
 )
 from live_draft_queue_fragment import QUEUE_ADD_DIAG_KEY
 from live_draft_queue_persist import DRAFT_QUEUE_PERSIST_DIRTY_KEY
@@ -112,6 +123,9 @@ class FranciscoCallbackOnlyGateTests(unittest.TestCase):
         self.assertIn(PHASE_PREMUTATION_STOP, CRITICAL_SERVER_PHASES)
         self.assertIn(PHASE_PREMUTATION_MISMATCH, CRITICAL_SERVER_PHASES)
         self.assertIn(PHASE_GATE_CONSUMED_BLOCKED, CRITICAL_SERVER_PHASES)
+        self.assertIn(PHASE_ARMED_FROM_RUNTIME_CARD, CRITICAL_SERVER_PHASES)
+        self.assertIn(PHASE_ARMING_REFUSED_ALREADY_QUEUED, CRITICAL_SERVER_PHASES)
+        self.assertIn(PHASE_ARMING_SKIPPED_CONSUMED_LOCKED, CRITICAL_SERVER_PHASES)
 
     def test_arm_refuses_without_solo_diag(self) -> None:
         session: dict[str, Any] = {DRAFT_QUEUE_KEY: []}
@@ -393,5 +407,290 @@ class FranciscoCallbackOnlyGateTests(unittest.TestCase):
         self.assertEqual(gate_lifecycle(session), STATE_CONSUMED_LOCKED)
 
 
+LIVE_RUNTIME_PLAYER_ID = "608370"
+
+
+def _rec_df(*players: tuple[str, str]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "fullName": name,
+                "playerID": pid,
+                "Primary Position": "SS",
+                "Fantasy Edge": 1.0,
+                "Survival Probability": 0.5,
+            }
+            for name, pid in players
+        ]
+    )
+
+
+def _room_for(rec_df: pd.DataFrame) -> dict[str, Any]:
+    return {
+        "draft_room_id": ROOM_ID,
+        "current_pick_index": PICK_INDEX,
+        "status": "paused",
+        "pool": rec_df,
+        "config": {},
+    }
+
+
+def _fake_st(*, arm_query: bool = False) -> MagicMock:
+    st = MagicMock()
+    st.container.return_value.__enter__ = MagicMock(return_value=MagicMock())
+    st.container.return_value.__exit__ = MagicMock(return_value=False)
+    st.columns.return_value = [MagicMock(), MagicMock(), MagicMock()]
+    qp: dict[str, str] = {}
+    if arm_query:
+        qp[QP_FRANCISCO_CALLBACK_ONLY] = "1"
+    st.query_params = qp
+    return st
+
+
+def _queue_add_calls(st: MagicMock) -> list[Any]:
+    return [c for c in st.button.call_args_list if c.args and "Add to Queue" in str(c.args[0])]
+
+
+def _phase_count(session: dict[str, Any], phase: str) -> int:
+    return sum(1 for row in gate_events(session) if str(row.get("phase") or "") == phase)
+
+
+def _render_rec_cards(
+    st: MagicMock,
+    session: dict[str, Any],
+    rec_df: pd.DataFrame,
+) -> MagicMock:
+    room = _room_for(rec_df)
+    with patch("draft_actions.resolve_player_draft_gate", return_value={"allowed": True, "disable_message": ""}):
+        with patch(
+            "draft_actions.resolve_manual_draft_panel_gate",
+            return_value={"draft_enabled": False, "draft_complete": False},
+        ):
+            with patch("draft_actions.draft_action_context", return_value={}):
+                with patch("draft_state.add_player_to_draft_queue") as mut:
+                    render_live_draft_rec_cards(st, session, room, rec_df, max_cards=len(rec_df.index))
+                    return mut
+
+
+class FranciscoCallbackOnlyCloudArmingLatchTests(unittest.TestCase):
+    def test_query_absent_leaves_gate_unarmed_and_product_can_mutate(self) -> None:
+        session = _diag_session()
+        rec_df = _rec_df((FRANCISCO_LINDOR_PLAYER_NAME, LIVE_RUNTIME_PLAYER_ID))
+        st = _fake_st(arm_query=False)
+        dirty_before = session.get(DRAFT_QUEUE_PERSIST_DIRTY_KEY)
+        queue_before = list(session[DRAFT_QUEUE_KEY])
+        ds_before = list(session["draft_state"]["queue"])
+        mut = _render_rec_cards(st, session, rec_df)
+        mut.assert_not_called()
+        self.assertEqual(gate_lifecycle(session), STATE_UNARMED)
+        self.assertEqual(_phase_count(session, PHASE_ARMED_FROM_RUNTIME_CARD), 0)
+        self.assertIsNone(session.get(GATE_TARGET_KEY))
+        self.assertEqual(session[DRAFT_QUEUE_KEY], queue_before)
+        self.assertEqual(session["draft_state"]["queue"], ds_before)
+        self.assertEqual(session.get(DRAFT_QUEUE_PERSIST_DIRTY_KEY), dirty_before)
+        queue_calls = _queue_add_calls(st)
+        self.assertEqual(len(queue_calls), 1)
+        cb = queue_calls[0].kwargs.get("on_click")
+        with patch(
+            "draft_state.add_player_to_draft_queue",
+            wraps=__import__("draft_state").add_player_to_draft_queue,
+        ) as click_mut:
+            cb()
+            self.assertTrue(click_mut.called)
+        self.assertEqual(session[DRAFT_QUEUE_KEY], [FRANCISCO_LINDOR_PLAYER_NAME])
+        self.assertEqual(session["draft_state"]["queue"], [FRANCISCO_LINDOR_PLAYER_NAME])
+
+    def test_query_without_solo_diag_does_not_arm(self) -> None:
+        session: dict[str, Any] = {DRAFT_QUEUE_KEY: [], "draft_state": {"queue": []}}
+        rec_df = _rec_df((FRANCISCO_LINDOR_PLAYER_NAME, LIVE_RUNTIME_PLAYER_ID))
+        st = _fake_st(arm_query=True)
+        _render_rec_cards(st, session, rec_df)
+        self.assertEqual(gate_lifecycle(session), STATE_UNARMED)
+        self.assertEqual(_phase_count(session, PHASE_ARMED_FROM_RUNTIME_CARD), 0)
+
+    def test_query_requested_arms_from_live_runtime_card_zero_mutation(self) -> None:
+        session = _diag_session()
+        rec_df = _rec_df((FRANCISCO_LINDOR_PLAYER_NAME, LIVE_RUNTIME_PLAYER_ID))
+        expected_key = build_rec_card_queue_widget_key(
+            room_id=ROOM_ID,
+            pick_index=PICK_INDEX,
+            stable_key=LIVE_RUNTIME_PLAYER_ID,
+            surface="rec_card",
+        )
+        st = _fake_st(arm_query=True)
+        queue_before = list(session[DRAFT_QUEUE_KEY])
+        ds_before = list(session["draft_state"]["queue"])
+        session[DRAFT_QUEUE_PERSIST_DIRTY_KEY] = False
+        with patch(
+            "live_draft_francisco_callback_only_gate._streamlit_session_id",
+            return_value=TEST_SID + "-arm",
+        ):
+            mut = _render_rec_cards(st, session, rec_df)
+        mut.assert_not_called()
+        self.assertEqual(gate_lifecycle(session), STATE_ARMED)
+        self.assertEqual(query_latch_state(session), QUERY_LATCH_ARMED_ONCE)
+        target = session.get(GATE_TARGET_KEY) or {}
+        self.assertEqual(target.get("player_name"), FRANCISCO_LINDOR_PLAYER_NAME)
+        self.assertEqual(target.get("player_id"), LIVE_RUNTIME_PLAYER_ID)
+        self.assertNotEqual(target.get("player_id"), FRANCISCO_LINDOR_TEST_PLAYER_ID)
+        self.assertEqual(target.get("room_id"), ROOM_ID)
+        self.assertEqual(int(target.get("pick_index")), PICK_INDEX)
+        self.assertEqual(target.get("widget_key"), expected_key)
+        queue_calls = _queue_add_calls(st)
+        self.assertEqual(len(queue_calls), 1)
+        self.assertEqual(queue_calls[0].kwargs.get("key"), expected_key)
+        self.assertEqual(queue_calls[0].kwargs.get("key"), target.get("widget_key"))
+        self.assertFalse(queue_calls[0].kwargs.get("disabled"))
+        armed = find_gate_event_by_phase(session, PHASE_ARMED_FROM_RUNTIME_CARD)
+        self.assertEqual(armed.get("phase"), PHASE_ARMED_FROM_RUNTIME_CARD)
+        self.assertTrue(armed.get("query_latch_requested"))
+        self.assertTrue(armed.get("target_match"))
+        self.assertFalse(armed.get("callback_entered"))
+        self.assertFalse(armed.get("already_queued"))
+        self.assertFalse(armed.get("mutation_attempted"))
+        self.assertFalse(armed.get("mutation_completed"))
+        self.assertEqual(armed.get("gate_state_before"), STATE_UNARMED)
+        self.assertEqual(armed.get("gate_state_after"), STATE_ARMED)
+        self.assertEqual(armed.get("player_id"), LIVE_RUNTIME_PLAYER_ID)
+        self.assertEqual(armed.get("widget_key"), expected_key)
+        self.assertEqual(armed.get("queue_before"), queue_before)
+        self.assertEqual(armed.get("canonical_queue_before"), ds_before)
+        self.assertEqual(session[DRAFT_QUEUE_KEY], queue_before)
+        self.assertEqual(session["draft_state"]["queue"], ds_before)
+        self.assertFalse(session.get(DRAFT_QUEUE_PERSIST_DIRTY_KEY))
+        self.assertEqual(_phase_count(session, PHASE_ARMED_FROM_RUNTIME_CARD), 1)
+        crit = critical_ledger_by_phase(TEST_SID + "-arm")
+        self.assertTrue(crit.get(PHASE_ARMED_FROM_RUNTIME_CARD))
+
+    def test_repeated_render_with_query_does_not_rearm(self) -> None:
+        session = _diag_session()
+        rec_df = _rec_df((FRANCISCO_LINDOR_PLAYER_NAME, LIVE_RUNTIME_PLAYER_ID))
+        first = _fake_st(arm_query=True)
+        _render_rec_cards(first, session, rec_df)
+        target_once = dict(session.get(GATE_TARGET_KEY) or {})
+        self.assertEqual(gate_lifecycle(session), STATE_ARMED)
+        second = _fake_st(arm_query=True)
+        mut = _render_rec_cards(second, session, rec_df)
+        mut.assert_not_called()
+        self.assertEqual(gate_lifecycle(session), STATE_ARMED)
+        self.assertEqual(query_latch_state(session), QUERY_LATCH_ARMED_ONCE)
+        self.assertEqual(session.get(GATE_TARGET_KEY), target_once)
+        self.assertEqual(_phase_count(session, PHASE_ARMED_FROM_RUNTIME_CARD), 1)
+        self.assertEqual(session[DRAFT_QUEUE_KEY], [])
+        self.assertEqual(session["draft_state"]["queue"], [])
+
+    def test_consumed_locked_query_persist_does_not_rearm(self) -> None:
+        session = _diag_session()
+        rec_df = _rec_df((FRANCISCO_LINDOR_PLAYER_NAME, LIVE_RUNTIME_PLAYER_ID))
+        first = _fake_st(arm_query=True)
+        with patch(
+            "live_draft_francisco_callback_only_gate._streamlit_session_id",
+            return_value=TEST_SID + "-lock",
+        ):
+            _render_rec_cards(first, session, rec_df)
+            cb = _queue_add_calls(first)[0].kwargs.get("on_click")
+            with patch("draft_state.add_player_to_draft_queue") as click_mut:
+                cb()
+                click_mut.assert_not_called()
+        self.assertEqual(gate_lifecycle(session), STATE_CONSUMED_LOCKED)
+        self.assertEqual(find_premutation_stop_event(session).get("phase"), PHASE_PREMUTATION_STOP)
+        second = _fake_st(arm_query=True)
+        with patch(
+            "live_draft_francisco_callback_only_gate._streamlit_session_id",
+            return_value=TEST_SID + "-lock",
+        ):
+            mut = _render_rec_cards(second, session, rec_df)
+        mut.assert_not_called()
+        self.assertEqual(gate_lifecycle(session), STATE_CONSUMED_LOCKED)
+        self.assertEqual(query_latch_state(session), QUERY_LATCH_CONSUMED)
+        self.assertEqual(_phase_count(session, PHASE_ARMED_FROM_RUNTIME_CARD), 1)
+        self.assertEqual(_phase_count(session, PHASE_ARMING_SKIPPED_CONSUMED_LOCKED), 1)
+        skip = find_gate_event_by_phase(session, PHASE_ARMING_SKIPPED_CONSUMED_LOCKED)
+        self.assertEqual(skip.get("gate_state_after"), STATE_CONSUMED_LOCKED)
+        third = _fake_st(arm_query=True)
+        _render_rec_cards(third, session, rec_df)
+        self.assertEqual(_phase_count(session, PHASE_ARMING_SKIPPED_CONSUMED_LOCKED), 1)
+        self.assertEqual(session[DRAFT_QUEUE_KEY], [])
+        self.assertEqual(session["draft_state"]["queue"], [])
+
+    def test_other_player_before_francisco_does_not_arm(self) -> None:
+        session = _diag_session()
+        rec_df = _rec_df(
+            ("Aaron Judge", JUDGE_ID),
+            (FRANCISCO_LINDOR_PLAYER_NAME, LIVE_RUNTIME_PLAYER_ID),
+        )
+        st = _fake_st(arm_query=True)
+        _render_rec_cards(st, session, rec_df)
+        self.assertEqual(gate_lifecycle(session), STATE_ARMED)
+        target = session.get(GATE_TARGET_KEY) or {}
+        self.assertEqual(target.get("player_name"), FRANCISCO_LINDOR_PLAYER_NAME)
+        self.assertEqual(target.get("player_id"), LIVE_RUNTIME_PLAYER_ID)
+        self.assertNotEqual(target.get("player_id"), JUDGE_ID)
+        labels = [str(c.args[0]) for c in st.button.call_args_list if c.args]
+        self.assertEqual(sum(1 for lbl in labels if "Add to Queue" in lbl), 2)
+
+    def test_francisco_absent_stays_unarmed(self) -> None:
+        session = _diag_session()
+        rec_df = _rec_df(("Aaron Judge", JUDGE_ID))
+        st = _fake_st(arm_query=True)
+        _render_rec_cards(st, session, rec_df)
+        self.assertEqual(gate_lifecycle(session), STATE_UNARMED)
+        self.assertIsNone(session.get(GATE_TARGET_KEY))
+        self.assertEqual(_phase_count(session, PHASE_ARMED_FROM_RUNTIME_CARD), 0)
+        self.assertEqual(session[DRAFT_QUEUE_KEY], [])
+
+    def test_already_queued_refuses_arm_and_keeps_disabled_queued(self) -> None:
+        session = _diag_session()
+        session[DRAFT_QUEUE_KEY] = [FRANCISCO_LINDOR_PLAYER_NAME]
+        session["draft_state"] = {"queue": [FRANCISCO_LINDOR_PLAYER_NAME]}
+        rec_df = _rec_df((FRANCISCO_LINDOR_PLAYER_NAME, LIVE_RUNTIME_PLAYER_ID))
+        st = _fake_st(arm_query=True)
+        mut = _render_rec_cards(st, session, rec_df)
+        mut.assert_not_called()
+        self.assertEqual(gate_lifecycle(session), STATE_UNARMED)
+        self.assertEqual(query_latch_state(session), QUERY_LATCH_REFUSED_ALREADY_QUEUED)
+        self.assertIsNone(session.get(GATE_TARGET_KEY))
+        refused = find_gate_event_by_phase(session, PHASE_ARMING_REFUSED_ALREADY_QUEUED)
+        self.assertEqual(refused.get("phase"), PHASE_ARMING_REFUSED_ALREADY_QUEUED)
+        self.assertTrue(refused.get("already_queued"))
+        self.assertFalse(refused.get("target_match"))
+        labels = [str(c.args[0]) for c in st.button.call_args_list if c.args]
+        self.assertIn("Queued", labels)
+        self.assertFalse(any("Add to Queue" in lbl for lbl in labels))
+        queued = [c for c in st.button.call_args_list if c.args and str(c.args[0]) == "Queued"]
+        self.assertTrue(queued[0].kwargs.get("disabled"))
+        self.assertEqual(session[DRAFT_QUEUE_KEY], [FRANCISCO_LINDOR_PLAYER_NAME])
+        second = _fake_st(arm_query=True)
+        _render_rec_cards(second, session, rec_df)
+        self.assertEqual(_phase_count(session, PHASE_ARMING_REFUSED_ALREADY_QUEUED), 1)
+        self.assertEqual(gate_lifecycle(session), STATE_UNARMED)
+
+    def test_wrong_player_callback_after_runtime_arm_then_francisco_stop(self) -> None:
+        session = _diag_session()
+        rec_df = _rec_df(
+            ("Aaron Judge", JUDGE_ID),
+            (FRANCISCO_LINDOR_PLAYER_NAME, LIVE_RUNTIME_PLAYER_ID),
+        )
+        st = _fake_st(arm_query=True)
+        _render_rec_cards(st, session, rec_df)
+        self.assertEqual(gate_lifecycle(session), STATE_ARMED)
+        queue_calls = _queue_add_calls(st)
+        self.assertEqual(len(queue_calls), 2)
+        judge_cb = queue_calls[0].kwargs.get("on_click")
+        francisco_cb = queue_calls[1].kwargs.get("on_click")
+        with patch("draft_state.add_player_to_draft_queue") as mut:
+            judge_cb()
+            mut.assert_not_called()
+            self.assertEqual(last_gate_event(session).get("phase"), PHASE_PREMUTATION_MISMATCH)
+            self.assertEqual(gate_lifecycle(session), STATE_ARMED)
+            francisco_cb()
+            mut.assert_not_called()
+        self.assertEqual(find_premutation_stop_event(session).get("phase"), PHASE_PREMUTATION_STOP)
+        self.assertEqual(gate_lifecycle(session), STATE_CONSUMED_LOCKED)
+        self.assertEqual(session[DRAFT_QUEUE_KEY], [])
+        self.assertEqual(session["draft_state"]["queue"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
+
