@@ -319,23 +319,269 @@ def main() -> int:
         )
     )
 
-    # Bridge untouched
-    marker = (ROOT / "data" / "709269b3_reserved_bridge.txt").read_text(encoding="utf-8")
+    # Bridge permanently CONSUMED (production mutation attempt; do not reuse)
+    marker_path = ROOT / "data" / "961e9378_reserved_bridge.txt"
+    consumed_path = ROOT / "data" / "961e9378_consumed_bridge.txt"
+    # Prefer asserting 961e9378 consumed; keep 709269b3 consumed check for history
+    marker_709 = ROOT / "data" / "709269b3_reserved_bridge.txt"
+    consumed_709 = ROOT / "data" / "709269b3_consumed_bridge.txt"
+    marker = marker_709.read_text(encoding="utf-8") if marker_709.is_file() else ""
     results.append(
         _check(
-            "32_709269b3_still_reserved",
-            REAL_BRIDGE in marker and "NOT consumed" in marker and "RESERVED" in marker,
+            "32_709269b3_permanently_consumed",
+            REAL_BRIDGE in marker
+            and consumed_709.is_file()
+            and ("CONSUMED" in marker or "consumed" in marker.lower()),
+        )
+    )
+    results.append(
+        _check(
+            "32b_961e9378_permanently_consumed",
+            consumed_path.is_file()
+            and "961e9378" in consumed_path.read_text(encoding="utf-8"),
+        )
+    )
+
+    # --- Gate / latch asymmetry (production 961e9378 root cause) ---
+    class _St:
+        def __init__(self, params: dict[str, str]):
+            self.query_params = params
+
+        def markdown(self, *a, **k):
+            self.last_md = a[0] if a else ""
+
+    # 33 solo latched, parent NOT latched, but QP has both → enable + latch parent
+    s = {
+        "_solo_component_diag_enabled": True,
+        "draft_queue": [],
+        "draft_state": {"queue": []},
+        "_streamlit_session_id": "0d73852f-400f-4794-af94-7418cd5db4c6",
+        "live_draft_room": {"draft_room_id": "E7FD8786", "current_pick_index": 0},
+    }
+    st = _St({"solo_component_diag": "1", "solo_stage1_parent_boundary": "1"})
+    enabled = d.queue_state_snapshot_diag_enabled(st, s)
+    results.append(
+        _check(
+            "33_solo_latched_parent_qp_enables",
+            enabled is True and bool(s.get("_solo_stage1_parent_boundary_probe")),
+        )
+    )
+
+    # 34 render emits probe id for empty queues
+    s = {
+        "_solo_component_diag_enabled": True,
+        "_solo_stage1_parent_boundary_probe": True,
+        "draft_queue": [],
+        "draft_state": {"queue": []},
+        "_streamlit_session_id": "sid-empty-001",
+        "_solo_stage1_run_id": "run-empty",
+        "live_draft_room": {"draft_room_id": "E7FD8786", "current_pick_index": 0},
+    }
+    st = _St({})
+    d.render_queue_state_snapshot_probe(st, s)
+    md = getattr(st, "last_md", "")
+    results.append(
+        _check(
+            "34_empty_queue_emits_dom_probe",
+            f'id="{d.PROBE_ID}"' in md
+            and "QUEUE_STATE_BASELINE" in md
+            and isinstance(s.get(d.SESSION_BASELINE_KEY), dict)
+            and s[d.SESSION_BASELINE_KEY]["session_queue"] == []
+            and s[d.SESSION_BASELINE_KEY]["canonical_queue"] == []
+            and s[d.SESSION_BASELINE_KEY]["queues_equal"] is True,
+        )
+    )
+
+    # 35 empty is not missing via extract + evaluate
+    empty_sel = r.extract_queues_from_snapshot(s[d.SESSION_BASELINE_KEY])
+    empty_eval = r.evaluate_queue_baseline(
+        session_queue=empty_sel["session_queue"],
+        canonical_queue=empty_sel["canonical_queue"],
+        baseline_known=True,
+    )
+    results.append(
+        _check(
+            "35_empty_not_missing_authorize",
+            empty_sel["baseline_known"] is True
+            and empty_sel["session_queue"] == []
+            and empty_eval.get("ok") is True
+            and empty_eval.get("francisco_absent") is True,
+        )
+    )
+
+    # 36 latch not required / callback-only not required
+    results.append(
+        _check(
+            "36_no_callback_latch_required",
+            s[d.SESSION_BASELINE_KEY].get("francisco_callback_only_required") is False
+            and s[d.SESSION_BASELINE_KEY].get("latch_required") is False,
+        )
+    )
+
+    # 37 solo without parent stays off when no QP
+    s_off = {"_solo_component_diag_enabled": True, "draft_queue": [], "draft_state": {"queue": []}}
+    results.append(
+        _check(
+            "37_solo_only_without_parent_disabled",
+            d.queue_state_snapshot_diag_enabled(None, s_off) is False,
+        )
+    )
+
+    # 38 both session latches enable without st
+    s_both = {
+        "_solo_component_diag_enabled": True,
+        "_solo_stage1_parent_boundary_probe": True,
+        "draft_queue": [],
+        "draft_state": {"queue": []},
+    }
+    results.append(
+        _check(
+            "38_both_latches_enable_without_st",
+            d.queue_state_snapshot_diag_enabled(None, s_both) is True,
+        )
+    )
+
+    # 39 PROBE_ID contract
+    results.append(_check("39_probe_id_exact", d.PROBE_ID == "stage1-queue-state-snapshot"))
+
+    # 40 wait helper exists
+    results.append(
+        _check(
+            "40_wait_helper_present",
+            callable(getattr(d, "wait_and_scrape_queue_state_snapshot_from_page", None)),
+        )
+    )
+
+    # 41 Context-A SID cannot satisfy production baseline
+    ctx = r.select_authoritative_baseline_queues(
+        production_sid="0d73852f-400f-4794-af94-7418cd5db4c6",
+        snapshots=[
+            {
+                "phase": "QUEUE_STATE_BASELINE",
+                "streamlit_session_id": "fc8bab02-c811-417f-b95e-1dbb22e2f598",
+                "room_id": "E7FD8786",
+                "session_queue": [],
+                "canonical_queue": [],
+                "ts": 99.0,
+            }
+        ],
+    )
+    results.append(_check("41_context_a_sid_rejected", ctx.get("baseline_known") is False))
+
+    # 42 bridge UUID cannot satisfy SID
+    br = r.select_authoritative_baseline_queues(
+        production_sid="0d73852f-400f-4794-af94-7418cd5db4c6",
+        snapshots=[
+            {
+                "phase": "QUEUE_STATE_BASELINE",
+                "streamlit_session_id": "961e9378-a05c-4bdf-aba6-316ae518d919",
+                "session_queue": [],
+                "canonical_queue": [],
+                "ts": 99.0,
+            }
+        ],
+    )
+    results.append(_check("42_bridge_uuid_rejected_as_sid", br.get("baseline_known") is False))
+
+    # 43 production-shaped replay: Stage A complete + empty baseline → select ok
+    prod_sid = "0d73852f-400f-4794-af94-7418cd5db4c6"
+    replay_snap = {
+        "phase": "QUEUE_STATE_BASELINE",
+        "streamlit_session_id": prod_sid,
+        "diagnostic_run_id": "ede1517d7c6149e1",
+        "room_id": "E7FD8786",
+        "current_pick_index": 0,
+        "session_queue": [],
+        "canonical_queue": [],
+        "session_queue_length": 0,
+        "canonical_queue_length": 0,
+        "queues_equal": True,
+        "francisco_count_session": 0,
+        "francisco_count_canonical": 0,
+        "ts": 1787005697.0,
+    }
+    replay = r.select_authoritative_baseline_queues(
+        production_sid=prod_sid,
+        room_id="E7FD8786",
+        snapshots=[replay_snap],
+    )
+    replay_eval = r.evaluate_queue_baseline(
+        session_queue=replay.get("session_queue"),
+        canonical_queue=replay.get("canonical_queue"),
+        baseline_known=bool(replay.get("baseline_known")),
+    )
+    results.append(
+        _check(
+            "43_prod_replay_empty_baseline_ok",
+            replay.get("baseline_known") is True
+            and replay.get("session_queue") == []
+            and replay_eval.get("ok") is True
+            and replay_eval.get("francisco_absent") is True,
+        )
+    )
+
+    # 44 runner prefers auth_sid over scrape (source contains auth_sid first)
+    runner_src = RUNNER_PATH.read_text(encoding="utf-8")
+    results.append(
+        _check(
+            "44_collect_baseline_auth_sid_preferred",
+            "wait_and_scrape_queue_state_snapshot_from_page" in runner_src
+            and 'str(state.get("auth_sid") or "").strip()' in runner_src,
+        )
+    )
+
+    # 45 no mutation semantics in diag (already covered; reconfirm append/sync absent)
+    results.append(
+        _check(
+            "45_diag_no_q_append",
+            "q.append" not in src and "add_player_to_draft_queue" not in src.split("record_queue_state_baseline")[0],
+        )
+    )
+
+    # 46 latest current-SID baseline selected
+    multi = r.select_authoritative_baseline_queues(
+        production_sid="sid-multi",
+        snapshots=[
+            {
+                "phase": "QUEUE_STATE_BASELINE",
+                "streamlit_session_id": "sid-multi",
+                "session_queue": ["OLD"],
+                "canonical_queue": ["OLD"],
+                "ts": 1.0,
+            },
+            {
+                "phase": "QUEUE_STATE_BASELINE",
+                "streamlit_session_id": "sid-multi",
+                "session_queue": [],
+                "canonical_queue": [],
+                "ts": 9.0,
+            },
+        ],
+    )
+    results.append(
+        _check(
+            "46_latest_current_sid_baseline",
+            multi.get("session_queue") == [] and multi.get("baseline_known") is True,
         )
     )
 
     failed = [x for x in results if not x.get("ok")]
     by = {x["name"]: x["ok"] for x in results}
     classifications = {
+        "FRANCISCO_QUEUE_MUTATION_BASELINE_DIAGNOSTIC_GATE_DEFECT_CONFIRMED": True,
+        "FRANCISCO_QUEUE_MUTATION_BASELINE_SNAPSHOT_OBSERVABILITY_READY": bool(
+            by.get("33_solo_latched_parent_qp_enables")
+            and by.get("34_empty_queue_emits_dom_probe")
+            and by.get("35_empty_not_missing_authorize")
+            and by.get("43_prod_replay_empty_baseline_ok")
+            and by.get("40_wait_helper_present")
+        ),
         "FRANCISCO_QUEUE_MUTATION_CANONICAL_QUEUE_OBSERVABILITY_PRODUCT_READY": bool(
             by.get("2_diag_on_independent_reads")
             and by.get("13_no_francisco_latch")
             and by.get("31_observability_gate_passes")
             and by.get("19_success_francisco_both")
+            and by.get("34_empty_queue_emits_dom_probe")
         ),
         "FRANCISCO_QUEUE_MUTATION_QUEUE_STATE_SNAPSHOT_DIAGNOSTIC_READY": bool(
             by.get("14_sid_retained")
@@ -343,12 +589,15 @@ def main() -> int:
             and by.get("25_historical_sid_rejected")
             and by.get("27_stale_baseline_not_post")
             and by.get("20_no_add_not_success_phase")
+            and by.get("39_probe_id_exact")
         ),
         "FRANCISCO_QUEUE_MUTATION_CLOUD_QUEUE_STATE_OBSERVABILITY_RUNNER_READY": bool(
             by.get("28_ui_not_canonical_substitute")
             and by.get("29_missing_canonical_fail")
             and by.get("30_missing_session_fail")
             and by.get("31_observability_gate_passes")
+            and by.get("44_collect_baseline_auth_sid_preferred")
+            and by.get("40_wait_helper_present")
         ),
     }
     summary = {
@@ -359,7 +608,11 @@ def main() -> int:
         "classifications": classifications,
         "production": False,
         "browser": False,
-        "bridge_709269b3_reserved": bool(by.get("32_709269b3_still_reserved")),
+        "bridge_709269b3_reserved": False,
+        "bridge_709269b3_consumed": bool(by.get("32_709269b3_permanently_consumed")),
+        "bridge_961e9378_consumed": bool(by.get("32b_961e9378_permanently_consumed")),
+        "product_code_changed": True,
+        "runner_code_changed": True,
     }
     print(json.dumps(summary, indent=2, default=str))
     return 0 if not failed else 1

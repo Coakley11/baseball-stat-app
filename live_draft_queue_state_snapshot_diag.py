@@ -51,10 +51,50 @@ def _qp_flag(st: Any, name: str) -> bool:
         return False
 
 
+def _refresh_queue_state_diag_latches(st: Any | None, session: dict[str, Any]) -> None:
+    """Latch parent_boundary when solo is already on and the query flag is present.
+
+    Sibling Stage-1 card probes (fragment exec / render-trace) enable on solo alone and
+    often rely on a session latch set at bootstrap. Dual-queue snapshots require BOTH
+    solo_component_diag and solo_stage1_parent_boundary. If parent_boundary was never
+    latched into session (while solo was), fragment/rerun contexts that cannot re-read
+    query params would skip the DOM probe entirely — scrape returns {}.
+
+    Observe-only: does not install hooks, mutate queues, or emit canaries.
+    """
+    if st is None or not isinstance(session, dict):
+        return
+    solo_on = bool(session.get("_solo_component_diag_enabled"))
+    if not solo_on:
+        try:
+            from live_draft_solo_component_diagnostics import solo_component_diag_enabled
+
+            solo_on = bool(solo_component_diag_enabled(st, session))
+        except ImportError:
+            solo_on = _qp_flag(st, "solo_component_diag")
+        if solo_on:
+            session["_solo_component_diag_enabled"] = True
+    if not solo_on:
+        return
+    if session.get("_solo_stage1_parent_boundary_probe"):
+        return
+    parent_qp = False
+    try:
+        from live_draft_stage1_parent_boundary import stage1_parent_boundary_probe_enabled
+
+        parent_qp = bool(stage1_parent_boundary_probe_enabled(st, session))
+    except ImportError:
+        parent_qp = _qp_flag(st, "solo_stage1_parent_boundary")
+    if not parent_qp:
+        parent_qp = _qp_flag(st, "solo_stage1_parent_boundary")
+    if parent_qp:
+        session["_solo_stage1_parent_boundary_probe"] = True
+
 def queue_state_snapshot_diag_enabled(st: Any | None, session: dict[str, Any]) -> bool:
     """solo_component_diag AND solo_stage1_parent_boundary. No Francisco latch."""
     if not isinstance(session, dict):
         return False
+    _refresh_queue_state_diag_latches(st, session)
     # Session latches set by existing bootstraps (work in callbacks where st may be absent).
     solo_on = bool(session.get("_solo_component_diag_enabled"))
     parent_on = bool(session.get("_solo_stage1_parent_boundary_probe"))
@@ -73,6 +113,10 @@ def queue_state_snapshot_diag_enabled(st: Any | None, session: dict[str, Any]) -
             parent_on = parent_on or (
                 solo_on and _qp_flag(st, "solo_stage1_parent_boundary")
             )
+        # Direct QP fallback: keep contract (both flags) even if helper import/order fails.
+        if not parent_on and solo_on and _qp_flag(st, "solo_stage1_parent_boundary"):
+            parent_on = True
+            session["_solo_stage1_parent_boundary_probe"] = True
     return bool(solo_on and parent_on)
 
 
@@ -446,13 +490,18 @@ def latest_post_added_for_sid(
 
 def render_queue_state_snapshot_probe(st: Any, session: dict[str, Any]) -> None:
     """Hidden DOM probe for Playwright scrape (diag-gated)."""
+    # Refresh latches before gate so parent_boundary is not dropped when solo
+    # was latched earlier but parent was not (production 961e9378 failure mode).
+    _refresh_queue_state_diag_latches(st, session)
     if not queue_state_snapshot_diag_enabled(st, session):
         return
     # Refresh baseline on render so pre-click evidence stays current.
+    # Empty queues [] are valid and MUST still emit (never treat as missing).
     record_queue_state_baseline_snapshot(st, session)
     baseline = dict(session.get(SESSION_BASELINE_KEY) or {})
     post = dict(session.get(SESSION_POST_KEY) or {})
     last = dict(session.get(SESSION_LAST_KEY) or {})
+    # Prefer last/baseline even when queues are empty lists.
     payload = {
         "impl_rev": IMPL_REV,
         "baseline": baseline,
@@ -461,14 +510,20 @@ def render_queue_state_snapshot_probe(st: Any, session: dict[str, Any]) -> None:
     }
     raw = json.dumps(payload, default=str)[:12000]
     safe = lambda s: str(s or "").replace('"', "'")[:120]
+    # queues_equal: use explicit True check so False and missing stay 0; empty==empty is True.
+    queues_equal_attr = "1" if baseline.get("queues_equal") is True else "0"
     st.markdown(
         f'<div id="{PROBE_ID}" '
         f'data-impl-rev="{safe(IMPL_REV)}" '
         f'data-sid="{safe(baseline.get("streamlit_session_id") or last.get("streamlit_session_id"))}" '
         f'data-run-id="{safe(baseline.get("diagnostic_run_id") or last.get("diagnostic_run_id"))}" '
+        f'data-room-id="{safe(baseline.get("room_id") or last.get("room_id"))}" '
+        f'data-phase="{safe(baseline.get("phase") or PHASE_BASELINE)}" '
         f'data-baseline-ts="{safe(baseline.get("ts"))}" '
         f'data-post-ts="{safe(post.get("ts"))}" '
-        f'data-queues-equal="{1 if baseline.get("queues_equal") else 0}" '
+        f'data-queues-equal="{queues_equal_attr}" '
+        f'data-session-len="{int(baseline.get("session_queue_length") or 0)}" '
+        f'data-canonical-len="{int(baseline.get("canonical_queue_length") or 0)}" '
         f'data-json="{raw.replace(chr(34), chr(39))}"></div>',
         unsafe_allow_html=True,
     )
@@ -487,21 +542,28 @@ def scrape_queue_state_snapshot_from_page(page: Any) -> dict[str, Any]:
               const el = doc.querySelector('#{PROBE_ID}');
               if (!el) continue;
               return {{
+                probe_found: true,
                 sid: el.getAttribute('data-sid') || '',
                 run_id: el.getAttribute('data-run-id') || '',
+                room_id: el.getAttribute('data-room-id') || '',
+                phase: el.getAttribute('data-phase') || '',
                 baseline_ts: el.getAttribute('data-baseline-ts') || '',
                 post_ts: el.getAttribute('data-post-ts') || '',
+                session_len: el.getAttribute('data-session-len') || '',
+                canonical_len: el.getAttribute('data-canonical-len') || '',
                 json: el.getAttribute('data-json') || '',
               }};
             }}
-            return {{}};
+            return {{ probe_found: false }};
           }}"""
         )
     except Exception as exc:
-        return {"error": str(exc)[:200]}
+        return {"error": str(exc)[:200], "probe_found": False}
     if not isinstance(raw, dict):
-        return {}
+        return {"probe_found": False}
     out = dict(raw)
+    if out.get("probe_found") is not True and not out.get("json") and not out.get("sid"):
+        out["probe_found"] = False
     payload = out.get("json")
     if isinstance(payload, str) and payload.strip():
         try:
@@ -509,3 +571,32 @@ def scrape_queue_state_snapshot_from_page(page: Any) -> dict[str, Any]:
         except Exception:
             out["payload_raw"] = payload[:4000]
     return out
+
+
+def wait_and_scrape_queue_state_snapshot_from_page(
+    page: Any,
+    *,
+    timeout_s: float = 20.0,
+    poll_s: float = 0.5,
+) -> dict[str, Any]:
+    """Poll until #stage1-queue-state-snapshot is present, then scrape.
+
+    Empty baseline queues are valid; only absence of the probe element retries.
+    """
+    deadline = time.time() + max(0.5, float(timeout_s))
+    last: dict[str, Any] = {"probe_found": False}
+    while time.time() < deadline:
+        last = scrape_queue_state_snapshot_from_page(page)
+        if last.get("probe_found") is True or (
+            isinstance(last.get("payload"), dict) and last.get("payload")
+        ):
+            last["waited_for_probe"] = True
+            return last
+        try:
+            page.wait_for_timeout(int(max(0.05, float(poll_s)) * 1000))
+        except Exception:
+            time.sleep(max(0.05, float(poll_s)))
+    last = scrape_queue_state_snapshot_from_page(page)
+    last["waited_for_probe"] = True
+    last["probe_wait_timeout"] = True
+    return last

@@ -70,6 +70,8 @@ def _run(
     require_obs=False,
     state=None,
     context_a_sid="context-a-sid-HISTORICAL",
+    required_sha="95b26f9",
+    capture_cloud_runtime_sha="d664924",
 ):
     marker = tmp / "fixture_reserved_bridge.txt"
     _write_reserved(marker, FIXTURE_BRIDGE)
@@ -88,6 +90,7 @@ def _run(
         launch=launch,
         click_ok=click_ok,
         state=st,
+        required_sha=required_sha,
     )
     url = r.build_francisco_mutation_proof_url(FIXTURE_BRIDGE)
     pre = r.evaluate_mutation_url_preflight(url)
@@ -97,6 +100,8 @@ def _run(
         context_a_diagnostic_run_id="context-a-run-HISTORICAL",
         require_canonical_observability=require_obs,
         production_reexecuted=False,
+        required_sha=required_sha,
+        capture_cloud_runtime_sha=capture_cloud_runtime_sha,
     )
     report = r.run_cloud_mutation_orchestration(
         ports,
@@ -159,6 +164,7 @@ def main() -> int:
 
         # 3. invalid bridge (retired) via main
         os.environ["FRANCISCO_MUTATION_PROOF_AUTHORIZE_CLOUD"] = "1"
+        os.environ["REQUIRED_CLOUD_SHA"] = "95b26f9"
         os.environ["FRANCISCO_MUTATION_PROOF_BRIDGE_ID"] = r.RETIRED_BRIDGE_IDS[0]
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -183,7 +189,11 @@ def main() -> int:
         url = r.build_francisco_mutation_proof_url(FIXTURE_BRIDGE)
         rep = r.run_cloud_mutation_orchestration(
             ports,
-            r.MutationCloudConfig(bridge_id=FIXTURE_BRIDGE, require_canonical_observability=False),
+            r.MutationCloudConfig(
+                bridge_id=FIXTURE_BRIDGE,
+                require_canonical_observability=False,
+                required_sha="95b26f9",
+            ),
             url=url,
             observability=_obs_ok(r),
         )
@@ -202,7 +212,11 @@ def main() -> int:
         )
         rep = r.run_cloud_mutation_orchestration(
             ports,
-            r.MutationCloudConfig(bridge_id=FIXTURE_BRIDGE, require_canonical_observability=False),
+            r.MutationCloudConfig(
+                bridge_id=FIXTURE_BRIDGE,
+                require_canonical_observability=False,
+                required_sha="95b26f9",
+            ),
             url=url,
             observability=_obs_ok(r),
         )
@@ -554,7 +568,11 @@ def main() -> int:
         ports = r.build_fixture_mutation_ports(marker_path=consume3, bridge_id=FIXTURE_BRIDGE)
         r.run_cloud_mutation_orchestration(
             ports,
-            r.MutationCloudConfig(bridge_id=FIXTURE_BRIDGE, require_canonical_observability=False),
+            r.MutationCloudConfig(
+                bridge_id=FIXTURE_BRIDGE,
+                require_canonical_observability=False,
+                required_sha="95b26f9",
+            ),
             url=url,
             observability=_obs_ok(r),
         )
@@ -582,17 +600,18 @@ def main() -> int:
             )
         )
 
-        # Real 709269b3 marker untouched / still RESERVED
+        # Real 709269b3 permanently CONSUMED (production mutation attempt; do not reuse)
         real_marker = ROOT / "data" / "709269b3_reserved_bridge.txt"
-        real_text = real_marker.read_text(encoding="utf-8")
+        real_consumed = ROOT / "data" / "709269b3_consumed_bridge.txt"
+        real_text = real_marker.read_text(encoding="utf-8") if real_marker.is_file() else ""
         real_g = r.evaluate_reserved_bridge_marker(real_text, expected_bridge_id=REAL_BRIDGE)
         results.append(
             _check(
-                "46_real_709269b3_still_reserved",
-                real_g.get("eligible") is True
-                and real_g.get("reserved") is True
-                and real_g.get("consumed") is False
-                and "NOT consumed" in real_text,
+                "46_real_709269b3_permanently_consumed",
+                real_g.get("eligible") is False
+                and real_g.get("consumed") is True
+                and real_consumed.is_file()
+                and ("CONSUMED" in real_text or "consumed" in real_text.lower()),
             )
         )
 
@@ -679,8 +698,8 @@ def main() -> int:
         "classifications": classifications,
         "production_main_executed_against_cloud": False,
         "browser_network": False,
-        "real_bridge_709269b3_consumed": False,
-        "real_bridge_709269b3_still_reserved": bool(by.get("46_real_709269b3_still_reserved")),
+        "real_bridge_709269b3_consumed": bool(by.get("46_real_709269b3_permanently_consumed")),
+        "real_bridge_709269b3_still_reserved": False,
         "francisco_click": False,
         "queue_mutation": False,
         "stage_1b": False,

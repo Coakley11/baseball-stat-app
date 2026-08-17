@@ -82,6 +82,12 @@ def bootstrap_solo_component_diag(st: Any | None, session: dict[str, Any]) -> No
                 emit_cloud_ledger_pipeline_canary(st, session)
             except ImportError:
                 pass
+            try:
+                from live_draft_stage1_parent_boundary import bootstrap_stage1_parent_boundary_probe
+
+                bootstrap_stage1_parent_boundary_probe(st, session)
+            except ImportError:
+                pass
             return
     except ImportError:
         pass
@@ -101,6 +107,15 @@ def bootstrap_solo_component_diag(st: Any | None, session: dict[str, Any]) -> No
         from live_draft_solo_p8_focused_binding import bootstrap_solo_p8_focused_binding
 
         bootstrap_solo_p8_focused_binding(st, session)
+    except ImportError:
+        pass
+    # Latch parent_boundary alongside solo when both query flags are present so
+    # dual-queue snapshot probes remain enabled after solo-only session latching
+    # (sibling card probes do not need parent_boundary; queue-state does).
+    try:
+        from live_draft_stage1_parent_boundary import bootstrap_stage1_parent_boundary_probe
+
+        bootstrap_stage1_parent_boundary_probe(st, session)
     except ImportError:
         pass
     try:

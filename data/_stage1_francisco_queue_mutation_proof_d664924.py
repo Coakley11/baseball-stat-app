@@ -31,8 +31,13 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-REQUIRED_SHA = "d664924"
-EXPECTED_BUILD_DISPLAY = "baseball-dev-d664924"
+# Filename retains historical d664924 continuity only.
+# Executable live-runtime authority: resolve_required_cloud_sha() /
+# MutationCloudConfig.required_sha (REQUIRED_CLOUD_SHA for Cloud execution).
+_SHA7_RE = re.compile(r"^[0-9a-f]{7}$")
+_BUILD_DISPLAY_RE = re.compile(r"^baseball-dev-([0-9a-f]{7})$")
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
 FRANCISCO_NAME = "Francisco Lindor"
 FRANCISCO_LATCH_PARAM = "stage1_francisco_callback_only"
 HOST_QUERY_PROBE_PARAM = "stage1_host_query_roundtrip_probe"
@@ -43,6 +48,201 @@ STAGE_A_QUERY_FLAGS = (
 BASE = "https://baseball-stat-app-d4jlymjc4iptaadc3kquwx.streamlit.app"
 
 ARCHITECTURE = "FRANCISCO_QUEUE_MUTATION_EXISTING_SOLO_ROOM_PROOF_ARCHITECTURE_RECOMMENDED"
+
+
+def normalize_required_cloud_sha(value: Any) -> str:
+    """Normalize a required/live Cloud SHA to exactly 7 lowercase hex chars.
+
+    Accepts: ``abcdef0``, ``baseball-dev-abcdef0``, or a full 40-char hex SHA.
+    Returns ``\"\"`` for missing/malformed values (fail-closed callers decide).
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if _SHA7_RE.fullmatch(text):
+        return text
+    matched = _BUILD_DISPLAY_RE.fullmatch(text)
+    if matched:
+        return matched.group(1)
+    if _FULL_SHA_RE.fullmatch(text):
+        return text[:7]
+    return ""
+
+
+def expected_build_display_for(required_sha: Any) -> str:
+    sha = normalize_required_cloud_sha(required_sha)
+    return f"baseball-dev-{sha}" if sha else ""
+
+
+def resolve_required_cloud_sha(
+    *,
+    explicit: Any = None,
+    env: Any = None,
+    cloud_authorized: bool = False,
+) -> dict[str, Any]:
+    """Resolve CURRENT production runtime authority.
+
+    Cloud-authorized mutation runs require non-empty ``REQUIRED_CLOUD_SHA`` (or
+    an explicit override). Missing/empty/malformed → fail closed.
+    Never falls back to a historical d664924 default.
+    Capture-bridge ``cloud_runtime_sha`` is never consulted here.
+    """
+    environ = env if env is not None else os.environ
+    raw_explicit = "" if explicit is None else str(explicit).strip()
+    raw_env = str(environ.get("REQUIRED_CLOUD_SHA") or "").strip()
+    raw = raw_explicit or raw_env
+    normalized = normalize_required_cloud_sha(raw)
+    if not raw:
+        return {
+            "ok": False,
+            "required_sha": "",
+            "expected_build_display": "",
+            "raw": raw,
+            "source": "explicit" if raw_explicit else ("env" if "REQUIRED_CLOUD_SHA" in dict(environ) else "none"),
+            "reason": "missing",
+            "cloud_authorized": bool(cloud_authorized),
+        }
+    if not normalized:
+        return {
+            "ok": False,
+            "required_sha": "",
+            "expected_build_display": "",
+            "raw": raw,
+            "source": "explicit" if raw_explicit else "env",
+            "reason": "malformed",
+            "cloud_authorized": bool(cloud_authorized),
+        }
+    return {
+        "ok": True,
+        "required_sha": normalized,
+        "expected_build_display": expected_build_display_for(normalized),
+        "raw": raw,
+        "source": "explicit" if raw_explicit else "env",
+        "reason": "",
+        "cloud_authorized": bool(cloud_authorized),
+    }
+
+
+def evaluate_live_runtime_against_required(
+    *,
+    required_sha: Any,
+    runtime_sha_raw: Any,
+    deploy_build_raw: Any = None,
+) -> dict[str, Any]:
+    """Compare scraped live identity to an already-resolved required SHA (exact)."""
+    req = normalize_required_cloud_sha(required_sha)
+    live = normalize_required_cloud_sha(runtime_sha_raw)
+    build_src = deploy_build_raw if deploy_build_raw is not None else runtime_sha_raw
+    build = normalize_required_cloud_sha(build_src)
+    expected_display = expected_build_display_for(req)
+    runtime_match = bool(req) and live == req
+    build_match = bool(req) and build == req
+    return {
+        "ok": bool(req) and runtime_match and build_match,
+        "required_sha": req,
+        "expected_build_display": expected_display,
+        "runtime_sha_raw": runtime_sha_raw,
+        "runtime_sha_normalized": live,
+        "deploy_build_raw": deploy_build_raw,
+        "deploy_build_normalized": build,
+        "runtime_match": runtime_match,
+        "build_match": build_match,
+        "reason": (
+            ""
+            if (req and runtime_match and build_match)
+            else ("required_sha_invalid" if not req else "runtime_mismatch")
+        ),
+    }
+
+
+def first_defined(*values: Any) -> Any:
+    """Return the first value that is not None / blank string.
+
+    Integer ``0`` is a valid Stage A ``current_pick_index`` and MUST be preserved.
+    """
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not str(value).strip():
+            continue
+        return value
+    return None
+
+
+def stage_a_identity_field_present(value: Any) -> bool:
+    """True when a Stage A identity field is present (0 is present)."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return True
+    return bool(str(value).strip())
+
+
+def stage_a_identity_complete(stage_a: dict[str, Any] | None) -> bool:
+    row = stage_a if isinstance(stage_a, dict) else {}
+    return all(
+        stage_a_identity_field_present(row.get(k))
+        for k in ("room_id", "current_pick_index", "player_id", "widget_key")
+    )
+
+
+def map_stage_a_authority_fields(
+    *,
+    retained: dict[str, Any] | None,
+    identity: dict[str, Any] | None,
+    fallback_room_id: str = "",
+) -> dict[str, Any]:
+    """Map retained steady + Francisco identity into canonical Stage A fields.
+
+    Aligns with the callback-runner Stage A authority adapter:
+    - ``current_pick_index`` from identity ``pick_index`` (0 preserved; never ``x or y``)
+    - ``recommendation_fragment_run_seq`` from retained primary field, else identity
+      / probe / latest retained generation fields already selected by Stage A
+    Does not parse widget keys or invent pick from recommendation rank.
+    """
+    ret = retained if isinstance(retained, dict) else {}
+    ident = identity if isinstance(identity, dict) else {}
+    auth = ret.get("stage_a_authority") if isinstance(ret.get("stage_a_authority"), dict) else {}
+    if not auth:
+        steady = ret.get("steady_state_result") if isinstance(ret.get("steady_state_result"), dict) else {}
+        auth = steady.get("stage_a_authority") if isinstance(steady.get("stage_a_authority"), dict) else {}
+
+    pick = first_defined(
+        auth.get("authoritative_pick_index"),
+        ident.get("pick_index"),
+        ident.get("current_pick_index"),
+    )
+    frag = first_defined(
+        ret.get("recommendation_fragment_run_seq"),
+        ident.get("recommendation_fragment_run_seq"),
+        ret.get("recommendation_fragment_run_seq_francisco_probe"),
+        ret.get("recommendation_fragment_run_seq_probe"),
+        ret.get("latest_recommendation_fragment_run_seq"),
+        auth.get("latest_recommendation_fragment_run_seq"),
+    )
+    full_app = first_defined(
+        ret.get("full_app_run_seq"),
+        ident.get("full_app_run_seq"),
+        auth.get("global_full_app_run_seq"),
+    )
+    room = first_defined(
+        ident.get("room_id"),
+        auth.get("authoritative_room_id"),
+        fallback_room_id,
+    )
+    return {
+        "current_pick_index": pick,
+        "recommendation_fragment_run_seq": frag,
+        "full_app_run_seq": full_app,
+        "room_id": room,
+        "player_id": ident.get("player_id"),
+        "widget_key": ident.get("widget_key"),
+        "player_name": ident.get("player_name"),
+        "authoritative_pick_source": auth.get("authoritative_pick_source"),
+        "pick_status": auth.get("pick_status") or auth.get("pick_generation_status"),
+    }
 
 CLASSIFICATION_MEMBERSHIP_PROVEN = "FRANCISCO_MEMBERSHIP_MUTATION_PROVEN"
 CLASSIFICATION_PLAYER_A = "PLAYER_A_QUEUE_MUTATION_RESOLVED"
@@ -525,6 +725,7 @@ CLASSIFICATION_CLOUD_NOT_AUTHORIZED = "FRANCISCO_QUEUE_MUTATION_CLOUD_NOT_AUTHOR
 CLASSIFICATION_BRIDGE_INVALID = "FRANCISCO_QUEUE_MUTATION_PROOF_BRIDGE_NOT_BOUND"
 CLASSIFICATION_URL_PREFLIGHT = "FRANCISCO_QUEUE_MUTATION_URL_PREFLIGHT_FAIL"
 CLASSIFICATION_PRODUCT_GAP = "FRANCISCO_QUEUE_MUTATION_CLOUD_OBSERVABILITY_PRODUCT_GAP_CONFIRMED"
+CLASSIFICATION_REQUIRED_CLOUD_SHA_INVALID = "FRANCISCO_QUEUE_MUTATION_REQUIRED_CLOUD_SHA_INVALID"
 CLASSIFICATION_RUNTIME_MISMATCH = "FRANCISCO_QUEUE_MUTATION_RUNTIME_MISMATCH"
 CLASSIFICATION_CLICK_UNAVAILABLE = "FRANCISCO_QUEUE_MUTATION_CLICK_TARGET_UNAVAILABLE"
 CLASSIFICATION_POST_QUEUE_UNKNOWN = "FRANCISCO_QUEUE_MUTATION_POST_QUEUE_NOT_OBSERVED"
@@ -622,7 +823,8 @@ def assess_d664924_unlatched_queue_observability() -> dict[str, Any]:
     ok = session_unlatched and canonical_unlatched
     return {
         "ok": ok,
-        "runtime_sha": REQUIRED_SHA,
+        # Product-source assessment only — not live Cloud runtime authority.
+        "runtime_sha": "unspecified",
         "session_queue_source": (
             "live_draft_queue_state_snapshot_diag.read_session_queue "
             "(session['draft_queue'] / DRAFT_QUEUE_KEY)"
@@ -863,6 +1065,9 @@ class MutationCloudConfig:
     context_a_diagnostic_run_id: str = ""
     require_canonical_observability: bool = True
     production_reexecuted: bool = False
+    # Current live Cloud implementation SHA (normalized 7-char). Required before browser.
+    required_sha: str = ""
+    capture_cloud_runtime_sha: str = ""  # historical metadata only; never runtime authority
 
 
 def _empty_failure_shell(classification: str, **extra: Any) -> dict[str, Any]:
@@ -914,6 +1119,8 @@ def run_cloud_mutation_orchestration(
     bridge = str(cfg.bridge_id or "").strip()
     pre = preflight or evaluate_mutation_url_preflight(url)
     obs = observability or assess_d664924_unlatched_queue_observability()
+    required_sha = normalize_required_cloud_sha(cfg.required_sha)
+    expected_display = expected_build_display_for(required_sha)
     report = _empty_failure_shell(
         "",
         bridge_id=bridge,
@@ -924,11 +1131,25 @@ def run_cloud_mutation_orchestration(
         context_a_sid_recorded=str(cfg.context_a_sid or ""),
         context_a_diagnostic_run_id_recorded=str(cfg.context_a_diagnostic_run_id or ""),
         context_a_not_production_authority=True,
+        required_sha=required_sha,
+        expected_build_display=expected_display,
+        capture_cloud_runtime_sha=str(cfg.capture_cloud_runtime_sha or ""),
+        capture_runtime_equality_required=False,
     )
     if not pre.get("ok"):
         report["classification"] = CLASSIFICATION_URL_PREFLIGHT
         report["browser_launched"] = False
         report["bridge_consumed"] = False
+        return report
+
+    if not required_sha:
+        report["classification"] = CLASSIFICATION_REQUIRED_CLOUD_SHA_INVALID
+        report["browser_launched"] = False
+        report["bridge_consumed"] = False
+        report["note"] = (
+            "Mutation orchestration requires an explicit current-runtime "
+            "required_sha / REQUIRED_CLOUD_SHA before browser launch."
+        )
         return report
 
     if cfg.require_canonical_observability and not obs.get(
@@ -983,14 +1204,29 @@ def run_cloud_mutation_orchestration(
 
         runtime = ports.check_runtime()
         report["runtime"] = runtime
-        runtime_ok = bool(runtime.get("runtime_match")) and str(
-            runtime.get("runtime_sha_normalized") or ""
-        ).startswith(REQUIRED_SHA)
+        live_eval = evaluate_live_runtime_against_required(
+            required_sha=required_sha,
+            runtime_sha_raw=runtime.get("runtime_sha_raw")
+            or runtime.get("runtime_sha_normalized"),
+            deploy_build_raw=runtime.get("deploy_build_raw")
+            or runtime.get("deploy_identity")
+            or runtime.get("runtime_sha_normalized"),
+        )
+        # Prefer port-reported match flags when present; still require exact required_sha.
+        normalized_live = normalize_required_cloud_sha(
+            runtime.get("runtime_sha_normalized") or runtime.get("runtime_sha_raw")
+        )
+        runtime_ok = (
+            normalized_live == required_sha
+            and bool(runtime.get("runtime_match", live_eval.get("runtime_match")))
+            and bool(runtime.get("build_match", live_eval.get("build_match")))
+        )
         report["raw_sha"] = runtime.get("runtime_sha_raw")
-        report["normalized_sha"] = runtime.get("runtime_sha_normalized")
+        report["normalized_sha"] = runtime.get("runtime_sha_normalized") or normalized_live
         report["deploy_identity"] = runtime.get("deploy_identity") or runtime.get(
             "runtime_sha_normalized"
         )
+        report["live_runtime_eval"] = live_eval
         if not runtime_ok:
             report["classification"] = CLASSIFICATION_RUNTIME_MISMATCH
             return report
@@ -1000,10 +1236,7 @@ def run_cloud_mutation_orchestration(
         stage_ok = bool(stage_a.get("steady_authorized")) and bool(
             stage_a.get("heavy_paint_complete")
         )
-        identity_complete = all(
-            str(stage_a.get(k) or "").strip()
-            for k in ("room_id", "current_pick_index", "player_id", "widget_key")
-        )
+        identity_complete = stage_a_identity_complete(stage_a)
         if not stage_ok or not identity_complete:
             report["classification"] = CLASSIFICATION_STAGE_A_FAIL
             return report
@@ -1151,12 +1384,15 @@ def build_fixture_mutation_ports(
     launch: bool = True,
     click_ok: bool = True,
     state: dict[str, Any] | None = None,
+    required_sha: str = "95b26f9",
 ) -> MutationCloudPorts:
     """Deterministic ports for local orchestration tests (no network/browser)."""
     st = state if state is not None else {}
     st.setdefault("click_invocations", 0)
     st.setdefault("launched", False)
     st.setdefault("consumed", False)
+    fixture_sha = normalize_required_cloud_sha(required_sha) or "95b26f9"
+    fixture_display = expected_build_display_for(fixture_sha)
 
     def _launch(_url: str) -> dict[str, Any]:
         st["launched"] = bool(launch)
@@ -1183,9 +1419,10 @@ def build_fixture_mutation_ports(
 
     def _runtime() -> dict[str, Any]:
         base = {
-            "runtime_sha_raw": REQUIRED_SHA,
-            "runtime_sha_normalized": REQUIRED_SHA,
-            "deploy_identity": REQUIRED_SHA,
+            "runtime_sha_raw": fixture_sha,
+            "runtime_sha_normalized": fixture_sha,
+            "deploy_identity": fixture_sha,
+            "deploy_build_raw": fixture_display,
             "runtime_match": True,
             "build_match": True,
         }
@@ -1336,6 +1573,21 @@ def main() -> int:
         print(json.dumps(abort, default=str), flush=True)
         return 2
 
+    sha_res = resolve_required_cloud_sha(cloud_authorized=True)
+    if not sha_res.get("ok"):
+        abort["classification"] = CLASSIFICATION_REQUIRED_CLOUD_SHA_INVALID
+        abort["preflight"] = pre
+        abort["bridge_id"] = bridge
+        abort["required_cloud_sha_resolution"] = sha_res
+        abort["browser_launched"] = False
+        abort["bridge_consumed"] = False
+        abort["note"] = (
+            "Cloud execution requires explicit REQUIRED_CLOUD_SHA matching the "
+            "CURRENT live Cloud implementation (no historical d664924 fallback)."
+        )
+        print(json.dumps(abort, default=str), flush=True)
+        return 2
+
     # Reserved-marker guard (real marker path). Failures stay pre-browser.
     reserved_path = ROOT / "data" / f"{bridge[:8]}_reserved_bridge.txt"
     marker_text = reserved_path.read_text(encoding="utf-8") if reserved_path.is_file() else ""
@@ -1344,6 +1596,7 @@ def main() -> int:
         abort["classification"] = CLASSIFICATION_BRIDGE_INVALID
         abort["bridge_id"] = bridge
         abort["bridge_guard"] = guard
+        abort["required_sha"] = sha_res.get("required_sha")
         abort["browser_launched"] = False
         abort["bridge_consumed"] = False
         print(json.dumps(abort, default=str), flush=True)
@@ -1360,13 +1613,14 @@ def main() -> int:
                 "preflight": pre,
                 "queue_observability": obs,
                 "gap_detail": obs.get("gap_detail"),
+                "required_sha": sha_res.get("required_sha"),
                 "browser_launched": False,
                 "bridge_consumed": False,
                 "cloud_execution_path_wired": True,
                 "cloud_path_blocked_by_product_observability": True,
                 "note": (
-                    "Cloud orchestration is implemented, but d664924 does not expose "
-                    "unlatched canonical draft_state.queue for authoritative baseline. "
+                    "Cloud orchestration is implemented, but unlatched canonical "
+                    "draft_state.queue observability is not available in local product source. "
                     "No browser launch; bridge remains RESERVED."
                 ),
             }
@@ -1375,7 +1629,12 @@ def main() -> int:
         return 2
 
     report = _run_playwright_cloud_mutation(
-        bridge=bridge, url=url, pre=pre, obs=obs, guard=guard
+        bridge=bridge,
+        url=url,
+        pre=pre,
+        obs=obs,
+        guard=guard,
+        required_sha=str(sha_res.get("required_sha") or ""),
     )
     print(json.dumps(report, default=str), flush=True)
     return 0 if report.get("ok") else 1
@@ -1388,17 +1647,19 @@ def _run_playwright_cloud_mutation(
     pre: dict[str, Any],
     obs: dict[str, Any],
     guard: dict[str, Any],
+    required_sha: str,
 ) -> dict[str, Any]:
     """Real Cloud Playwright wiring (shared helpers from callback runner).
 
-    Not exercised on current d664924 because canonical observability gap fails
-    closed in main() before this function. Present so the path is complete.
+    ``required_sha`` is the CURRENT live Cloud implementation authority
+    (from REQUIRED_CLOUD_SHA). Capture-bridge runtime is never used here.
     """
     import time as _time
 
     cb = _load_callback_runner()
     consumed_path = ROOT / "data" / f"{bridge[:8]}_consumed_bridge.txt"
     reserved_path = ROOT / "data" / f"{bridge[:8]}_reserved_bridge.txt"
+    req = normalize_required_cloud_sha(required_sha)
     state: dict[str, Any] = {"page": None, "browser": None, "context": None, "click_count": 0}
 
     def launch_browser(u: str) -> dict[str, Any]:
@@ -1480,18 +1741,30 @@ def _run_playwright_cloud_mutation(
         page = state["page"]
         sha, _src = scrape_deploy_marker_from_page(page)
         build_raw = scrape_deploy_build(page)
+        # Prefer mutation-local exact evaluator so REQUIRED_CLOUD_SHA drives authority
+        # even when the shared callback helper still defaults historically.
+        local_id = evaluate_live_runtime_against_required(
+            required_sha=req,
+            runtime_sha_raw=sha,
+            deploy_build_raw=build_raw,
+        )
         identity = cb.cloud_identity_matches_required(
             runtime_sha_raw=sha,
             deploy_build_raw=build_raw,
-            required_sha=REQUIRED_SHA,
+            required_sha=req,
         )
         return {
             "runtime_sha_raw": identity.get("runtime_sha_raw"),
-            "runtime_sha_normalized": identity.get("runtime_sha_normalized"),
-            "deploy_identity": identity.get("runtime_sha_normalized"),
-            "runtime_match": bool(identity.get("runtime_match")),
-            "build_match": bool(identity.get("build_match")),
+            "runtime_sha_normalized": local_id.get("runtime_sha_normalized")
+            or identity.get("runtime_sha_normalized"),
+            "deploy_identity": local_id.get("runtime_sha_normalized")
+            or identity.get("runtime_sha_normalized"),
+            "runtime_match": bool(local_id.get("runtime_match")),
+            "build_match": bool(local_id.get("build_match")),
             "deploy_build_raw": identity.get("deploy_build_raw"),
+            "required_sha": req,
+            "expected_build_display": expected_build_display_for(req),
+            "ok": bool(local_id.get("ok")),
         }
 
     def wait_stage_a() -> dict[str, Any]:
@@ -1543,17 +1816,30 @@ def _run_playwright_cloud_mutation(
         steady = wait_for_rec_fragment_interactive_steady_state(page, timeout_s=120.0)
         retained = cb.retain_steady_state_result(steady)
         identity = cb._scrape_francisco_identity(page)
+        mapped = map_stage_a_authority_fields(
+            retained=retained, identity=identity, fallback_room_id=room_id
+        )
         return {
             "steady_authorized": bool(retained.get("steady_state_ok")),
             "heavy_paint_complete": bool(retained.get("steady_state_ok")),
-            "recommendation_fragment_run_seq": retained.get("recommendation_fragment_run_seq"),
-            "full_app_run_seq": retained.get("full_app_run_seq"),
-            "room_id": identity.get("room_id") or room_id,
-            "current_pick_index": identity.get("pick_index") or identity.get("current_pick_index"),
-            "player_id": identity.get("player_id"),
-            "widget_key": identity.get("widget_key"),
-            "streamlit_session_id": retained.get("streamlit_session_id"),
-            "diagnostic_run_id": retained.get("diagnostic_run_id"),
+            "recommendation_fragment_run_seq": mapped.get("recommendation_fragment_run_seq"),
+            "full_app_run_seq": mapped.get("full_app_run_seq"),
+            "room_id": mapped.get("room_id") or room_id,
+            "current_pick_index": mapped.get("current_pick_index"),
+            "player_id": mapped.get("player_id"),
+            "widget_key": mapped.get("widget_key"),
+            "streamlit_session_id": first_defined(
+                retained.get("streamlit_session_id"),
+                (identity.get("francisco_probe") or {}).get("streamlit_session_id")
+                if isinstance(identity.get("francisco_probe"), dict)
+                else None,
+                state.get("auth_sid"),
+            ),
+            "diagnostic_run_id": first_defined(
+                retained.get("diagnostic_run_id"), state.get("auth_run")
+            ),
+            "authoritative_pick_source": mapped.get("authoritative_pick_source"),
+            "pick_status": mapped.get("pick_status"),
             "retained": retained,
             "identity": identity,
         }
@@ -1572,34 +1858,42 @@ def _run_playwright_cloud_mutation(
 
     def collect_baseline() -> dict[str, Any]:
         from run_production_stage1_authenticated import scrape_queue_container_state
-        from live_draft_queue_state_snapshot_diag import scrape_queue_state_snapshot_from_page
+        from live_draft_queue_state_snapshot_diag import wait_and_scrape_queue_state_snapshot_from_page
 
         page = state["page"]
         ui = cb._queue_names(scrape_queue_container_state(page))
-        scraped = scrape_queue_state_snapshot_from_page(page)
+        # Stage A paint may complete before the dual-queue DOM probe is visible;
+        # poll for the exact probe id (empty queues are valid once present).
+        scraped = wait_and_scrape_queue_state_snapshot_from_page(page, timeout_s=20.0, poll_s=0.5)
         payload = scraped.get("payload") if isinstance(scraped.get("payload"), dict) else {}
         baseline_snap = payload.get("baseline") if isinstance(payload.get("baseline"), dict) else None
-        prod_sid = str(
-            (state.get("auth_sid") or "")
-            or scraped.get("sid")
-            or (baseline_snap or {}).get("streamlit_session_id")
+        # Prefer AUTH_ONLY production SID — never Context-A / bridge UUID / scrape-only.
+        prod_sid = str(state.get("auth_sid") or "").strip()
+        if not prod_sid:
+            prod_sid = str(
+                scraped.get("sid")
+                or (baseline_snap or {}).get("streamlit_session_id")
+                or ""
+            ).strip()
+        room_hint = str(
+            (baseline_snap or {}).get("room_id")
+            or scraped.get("room_id")
+            or (state.get("stage_a_room_id") if isinstance(state, dict) else "")
             or ""
         )
         selected = select_authoritative_baseline_queues(
             production_sid=prod_sid,
-            room_id=str((baseline_snap or {}).get("room_id") or ""),
+            room_id=room_hint,
             snapshots=[baseline_snap] if baseline_snap else None,
             ui_queue=ui,
         )
         selected["ui_queue"] = ui
         selected["scrape"] = scraped
+        selected["probe_found"] = bool(scraped.get("probe_found"))
         return selected
 
     def resolve_click_target(sa: dict[str, Any]) -> dict[str, Any]:
-        ok = all(
-            str(sa.get(k) or "").strip()
-            for k in ("room_id", "current_pick_index", "player_id", "widget_key")
-        )
+        ok = stage_a_identity_complete(sa)
         return {
             "ok": ok,
             "room_id": sa.get("room_id"),
@@ -1635,7 +1929,7 @@ def _run_playwright_cloud_mutation(
     def collect_post_click(click: dict[str, Any]) -> dict[str, Any]:
         from stage1_rec_queue_click_trace_scrape import scrape_rec_queue_app_trace
         from run_production_stage1_authenticated import scrape_queue_container_state
-        from live_draft_queue_state_snapshot_diag import scrape_queue_state_snapshot_from_page
+        from live_draft_queue_state_snapshot_diag import wait_and_scrape_queue_state_snapshot_from_page
 
         page = state["page"]
         # Bounded settle — no reload / second click / force-save.
@@ -1647,19 +1941,20 @@ def _run_playwright_cloud_mutation(
         payload_app = app_trace.get("payload") if isinstance(app_trace.get("payload"), dict) else {}
         last = payload_app.get("last") if isinstance(payload_app.get("last"), dict) else {}
         ui = cb._queue_names(scrape_queue_container_state(page))
-        scraped = scrape_queue_state_snapshot_from_page(page)
+        scraped = wait_and_scrape_queue_state_snapshot_from_page(page, timeout_s=15.0, poll_s=0.5)
         payload = scraped.get("payload") if isinstance(scraped.get("payload"), dict) else {}
         post_snap = (
             payload.get("post_mutation_added")
             if isinstance(payload.get("post_mutation_added"), dict)
             else None
         )
-        prod_sid = str(
-            (state.get("auth_sid") or "")
-            or scraped.get("sid")
-            or (post_snap or {}).get("streamlit_session_id")
-            or ""
-        )
+        prod_sid = str(state.get("auth_sid") or "").strip()
+        if not prod_sid:
+            prod_sid = str(
+                scraped.get("sid")
+                or (post_snap or {}).get("streamlit_session_id")
+                or ""
+            ).strip()
         click_ts = click.get("timestamp")
         selected = select_authoritative_post_queues(
             production_sid=prod_sid,
@@ -1719,12 +2014,16 @@ def _run_playwright_cloud_mutation(
         bridge_id=bridge,
         require_canonical_observability=False,  # already checked in main
         production_reexecuted=True,
+        required_sha=req,
+        capture_cloud_runtime_sha="",  # never authority for live runtime
     )
     report = run_cloud_mutation_orchestration(
         ports, cfg, url=url, preflight=pre, observability=obs
     )
     report["bridge_guard"] = guard
     report["cloud_execution_path_wired"] = True
+    report["required_sha"] = req
+    report["expected_build_display"] = expected_build_display_for(req)
     return report
 
 
