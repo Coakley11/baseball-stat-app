@@ -1608,6 +1608,20 @@ def execute_rec_card_queue_click(
         )
     except ImportError:
         pass
+    # Dual-queue observability AFTER product add/sync/canonical write (diag-only).
+    try:
+        from live_draft_queue_state_snapshot_diag import record_queue_state_post_mutation_snapshot
+
+        record_queue_state_post_mutation_snapshot(
+            session,
+            added=bool(added),
+            mutation_helper_entered=bool(mutation_entered),
+            player_name=name,
+            event_id=str(event_id or ""),
+            st=None,
+        )
+    except ImportError:
+        pass
     after = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
     try:
         from live_draft_queue_fragment import record_queue_add_diag
@@ -2124,6 +2138,12 @@ def render_live_draft_rec_cards(
 
         render_rec_queue_render_trace_probe(st, session)
         render_rec_queue_click_trace_probe(st, session)
+    except ImportError:
+        pass
+    try:
+        from live_draft_queue_state_snapshot_diag import render_queue_state_snapshot_probe
+
+        render_queue_state_snapshot_probe(st, session)
     except ImportError:
         pass
     try:
