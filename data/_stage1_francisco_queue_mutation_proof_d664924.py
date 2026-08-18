@@ -921,23 +921,103 @@ CLASSIFICATION_POST_QUEUE_UNKNOWN = "FRANCISCO_QUEUE_MUTATION_POST_QUEUE_NOT_OBS
 
 # --- Bridge marker lifecycle (fixture-safe; never touch real 709269b3 in tests) ---
 
+_CONSUMED_FALSE_TOKENS = frozenset({"false", "no", "0", "off"})
+_CONSUMED_TRUE_TOKENS = frozenset({"true", "yes", "1", "on"})
+# Explicit consumed=<value> only. Does not match consumed_at= or bare "consumed".
+_CONSUMED_ASSIGNMENT_RE = re.compile(
+    r"(?mi)^(?:#\s*)?\bconsumed\s*=\s*([^\s#]+)"
+)
+# '# CONSUMED' / '# CONSUMED at ...' — never '# consumed=' assignments.
+_CONSUMED_BARE_DECLARATION_RE = re.compile(
+    r"(?mi)^#\s*CONSUMED\b(?!\s*=)"
+)
+_CONSUMED_SUBSEQUENTLY_RE = re.compile(r"(?mi)subsequently\s+CONSUMED\b")
+_RESERVED_WORD_RE = re.compile(r"(?mi)RESERVED")
+
+
+def _strip_utf8_bom(text: str) -> str:
+    raw = str(text or "")
+    if raw.startswith("\ufeff"):
+        return raw[1:]
+    return raw
+
+
+def _first_identity_line(text: str) -> str:
+    body = _strip_utf8_bom(text)
+    for line in body.splitlines():
+        stripped = line.strip().lstrip("\ufeff")
+        if stripped:
+            return stripped
+    return ""
+
+
+def parse_consumed_assignment_value(text: str) -> bool | None:
+    """Last explicit consumed=<bool> assignment, or None if none present.
+
+    ``consumed=false`` / ``# CONSUMED=false`` parse as False.
+    ``consumed=true`` / ``# CONSUMED=true`` parse as True.
+    ``consumed_at=`` is not an assignment.
+    """
+    last: bool | None = None
+    for match in _CONSUMED_ASSIGNMENT_RE.finditer(_strip_utf8_bom(text)):
+        token = match.group(1).strip().strip("'\"")
+        low = token.lower()
+        if low in _CONSUMED_FALSE_TOKENS:
+            last = False
+        elif low in _CONSUMED_TRUE_TOKENS:
+            last = True
+    return last
+
+
+def text_has_positive_consumed_declaration(text: str) -> bool:
+    """Source-defined positive consumed declarations (not key=value).
+
+    Representations written by this runner:
+    - ``# CONSUMED at <reason> (d664924)``
+    - ``# subsequently CONSUMED — do not treat as RESERVED``
+    Substring ``consumed`` alone is not authority.
+    """
+    body = _strip_utf8_bom(text)
+    if _CONSUMED_SUBSEQUENTLY_RE.search(body):
+        return True
+    return bool(_CONSUMED_BARE_DECLARATION_RE.search(body))
+
 
 def evaluate_reserved_bridge_marker(
     marker_text: str,
     *,
     expected_bridge_id: str,
+    consumed_marker_text: str = "",
+    consumed_marker_exists: bool = False,
 ) -> dict[str, Any]:
-    text = str(marker_text or "")
-    first = (text.splitlines()[0].strip() if text.strip() else "")
-    identity_match = first == str(expected_bridge_id or "").strip()
-    consumed = bool(
-        re.search(r"(?mi)^#\s*CONSUMED\b", text)
-        or re.search(r"(?mi)subsequently\s+CONSUMED", text)
-    )
-    reserved = bool(re.search(r"(?mi)RESERVED", text)) and not consumed
-    if re.search(r"(?mi)NOT\s+consumed", text) and reserved:
-        consumed = False
-    eligible = identity_match and reserved and not consumed
+    """Parse reserved-marker text. Explicit false assignments are false.
+
+    A dedicated ``*_consumed_bridge.txt`` (when ``consumed_marker_exists``)
+    is authoritative and forces consumed=true / eligible=false even if the
+    reserved file still says RESERVED.
+    """
+    text = _strip_utf8_bom(marker_text)
+    expected = str(expected_bridge_id or "").strip()
+    first = _first_identity_line(text)
+    identity_match = bool(expected) and bool(first) and first == expected
+
+    assignment = parse_consumed_assignment_value(text)
+    if assignment is not None:
+        consumed = bool(assignment)
+    else:
+        consumed = text_has_positive_consumed_declaration(text)
+
+    cons_text = _strip_utf8_bom(consumed_marker_text)
+    if consumed_marker_exists:
+        consumed = True
+    elif cons_text.strip() and (
+        parse_consumed_assignment_value(cons_text) is True
+        or text_has_positive_consumed_declaration(cons_text)
+    ):
+        consumed = True
+
+    reserved = bool(_RESERVED_WORD_RE.search(text)) and not consumed
+    eligible = bool(identity_match and reserved and not consumed)
     return {
         "marker_identity": first,
         "identity_match": identity_match,
@@ -945,6 +1025,40 @@ def evaluate_reserved_bridge_marker(
         "consumed": consumed,
         "eligible": eligible,
     }
+
+
+def evaluate_pre_browser_bridge_guard(
+    bridge_id: str,
+    *,
+    data_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Read reserved + consumed marker files and evaluate eligibility.
+
+    Does not launch a browser, rewrite markers, or consume a bridge.
+    """
+    root = Path(data_dir) if data_dir is not None else (ROOT / "data")
+    sid = str(bridge_id or "").strip()
+    prefix = sid[:8] if len(sid) >= 8 else sid
+    reserved_path = root / f"{prefix}_reserved_bridge.txt"
+    consumed_path = root / f"{prefix}_consumed_bridge.txt"
+    marker_text = ""
+    if reserved_path.is_file():
+        marker_text = reserved_path.read_text(encoding="utf-8-sig")
+    consumed_exists = consumed_path.is_file()
+    consumed_text = (
+        consumed_path.read_text(encoding="utf-8-sig") if consumed_exists else ""
+    )
+    out = evaluate_reserved_bridge_marker(
+        marker_text,
+        expected_bridge_id=sid,
+        consumed_marker_text=consumed_text,
+        consumed_marker_exists=consumed_exists,
+    )
+    out["reserved_marker_exists"] = reserved_path.is_file()
+    out["consumed_marker_exists"] = consumed_exists
+    out["reserved_marker_path"] = str(reserved_path)
+    out["consumed_marker_path"] = str(consumed_path)
+    return out
 
 
 def mark_bridge_consumed_at_path(
@@ -1798,9 +1912,8 @@ def main() -> int:
         return 2
 
     # Reserved-marker guard (real marker path). Failures stay pre-browser.
-    reserved_path = ROOT / "data" / f"{bridge[:8]}_reserved_bridge.txt"
-    marker_text = reserved_path.read_text(encoding="utf-8") if reserved_path.is_file() else ""
-    guard = evaluate_reserved_bridge_marker(marker_text, expected_bridge_id=bridge)
+    # Consumed-file existence is authoritative even if reserved text is stale.
+    guard = evaluate_pre_browser_bridge_guard(bridge)
     if not guard.get("eligible"):
         abort["classification"] = CLASSIFICATION_BRIDGE_INVALID
         abort["bridge_id"] = bridge
