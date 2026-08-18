@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -123,22 +124,51 @@ def resolve_required_cloud_sha(
     }
 
 
+REASON_RUNTIME_MISMATCH = "runtime_mismatch"
+REASON_RUNTIME_IDENTITY_NOT_OBSERVED = "runtime_identity_not_observed"
+RUNTIME_IDENTITY_SELECTOR = "#solo-deploy-build"
+RUNTIME_IDENTITY_WAIT_TIMEOUT_S = 30.0
+RUNTIME_IDENTITY_POLL_S = 0.25
+
+
 def evaluate_live_runtime_against_required(
     *,
     required_sha: Any,
     runtime_sha_raw: Any,
     deploy_build_raw: Any = None,
 ) -> dict[str, Any]:
-    """Compare scraped live identity to an already-resolved required SHA (exact)."""
+    """Compare scraped live identity to an already-resolved required SHA (exact).
+
+    Empty / missing marker is an observability failure, not proof of another build.
+    A nonempty different SHA is a true runtime mismatch.
+    When SHA matches, an empty build label is tolerated (display derives from required SHA).
+    """
     req = normalize_required_cloud_sha(required_sha)
     live = normalize_required_cloud_sha(runtime_sha_raw)
     build_src = deploy_build_raw if deploy_build_raw is not None else runtime_sha_raw
     build = normalize_required_cloud_sha(build_src)
     expected_display = expected_build_display_for(req)
-    runtime_match = bool(req) and live == req
-    build_match = bool(req) and build == req
+    runtime_match = False
+    build_match = False
+    ok = False
+    if not req:
+        reason = "required_sha_invalid"
+    elif not live:
+        reason = REASON_RUNTIME_IDENTITY_NOT_OBSERVED
+    elif live != req:
+        reason = REASON_RUNTIME_MISMATCH
+        build_match = bool(build) and build == req
+    else:
+        runtime_match = True
+        # SHA is authority. Empty build is not a second SHA; derive display from required.
+        if not build or build == req:
+            build_match = True
+            ok = True
+            reason = ""
+        else:
+            reason = REASON_RUNTIME_MISMATCH
     return {
-        "ok": bool(req) and runtime_match and build_match,
+        "ok": ok,
         "required_sha": req,
         "expected_build_display": expected_display,
         "runtime_sha_raw": runtime_sha_raw,
@@ -147,12 +177,168 @@ def evaluate_live_runtime_against_required(
         "deploy_build_normalized": build,
         "runtime_match": runtime_match,
         "build_match": build_match,
-        "reason": (
-            ""
-            if (req and runtime_match and build_match)
-            else ("required_sha_invalid" if not req else "runtime_mismatch")
-        ),
+        "reason": reason,
     }
+
+
+def extract_deploy_identity_from_html_fixture(html: str) -> dict[str, str]:
+    """Mirror ``verify_cloud_deploy_playwright.scrape_deploy`` field extraction (no browser)."""
+    text = str(html or "")
+    tag_m = re.search(r"<[^>]*id=[\"']solo-deploy-build[\"'][^>]*>", text, re.I)
+    if tag_m:
+        tag = tag_m.group(0)
+        sha_m = re.search(r"data-sha=[\"']([^\"']*)[\"']", tag, re.I)
+        build_m = re.search(r"data-build=[\"']([^\"']*)[\"']", tag, re.I)
+        sha = str(sha_m.group(1) if sha_m else "").strip().lower()
+        build = str(build_m.group(1) if build_m else "")
+        if sha:
+            return {"sha": sha, "build": build, "source": "dom_#solo-deploy-build"}
+        # Element present with empty data-sha: same as scrape_deploy JS (no comment fallback).
+        return {"sha": "", "build": build, "source": "dom_#solo-deploy-build_empty"}
+    comment = re.search(r"solo-deploy-build sha=([0-9a-f]{7})", text, re.I)
+    if comment:
+        return {"sha": comment.group(1).lower(), "build": "", "source": "html_comment"}
+    caption = re.search(r"baseball-dev-([0-9a-f]{7})", text, re.I)
+    if caption:
+        sha = caption.group(1).lower()
+        return {"sha": sha, "build": f"baseball-dev-{sha}", "source": "visible_build_caption"}
+    return {"sha": "", "build": "", "source": "empty"}
+
+
+def scrape_deploy_identity_from_existing_page(page: Any) -> dict[str, Any]:
+    """Reuse the proven standalone ``scrape_deploy`` on the EXISTING page.
+
+    No second browser, no ``goto``, no refresh, no query-param mutation.
+    """
+    from verify_cloud_deploy_playwright import scrape_deploy
+
+    try:
+        probe = scrape_deploy(page) or {}
+    except Exception:
+        probe = {"sha": "", "build": ""}
+    if not isinstance(probe, dict):
+        probe = {"sha": "", "build": ""}
+    sha_raw = str(probe.get("sha") or "")
+    build_raw = str(probe.get("build") or "")
+    return {
+        "sha": sha_raw,
+        "build": build_raw,
+        "sha_raw": sha_raw,
+        "sha_normalized": normalize_required_cloud_sha(sha_raw),
+        "build_raw": build_raw,
+        "selector": RUNTIME_IDENTITY_SELECTOR,
+        "source": "verify_cloud_deploy_playwright.scrape_deploy",
+    }
+
+
+def wait_for_required_runtime_identity_on_existing_page(
+    page: Any,
+    *,
+    required_sha: Any,
+    timeout_s: float | None = None,
+    poll_s: float | None = None,
+    scrape_fn: Callable[[Any], dict[str, Any]] | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
+    monotonic_fn: Callable[[], float] | None = None,
+) -> dict[str, Any]:
+    """Bounded fail-closed wait for ``#solo-deploy-build`` on the existing page.
+
+    Temporary absence / empty attributes / Streamlit replacement are tolerated
+    until timeout. A stable nonempty SHA that is not the required SHA fails
+    immediately (true mismatch) — the wait does not keep polling hoping it
+    changes.
+    """
+    req = normalize_required_cloud_sha(required_sha)
+    env_timeout = str(os.environ.get("FRANCISCO_MUTATION_RUNTIME_IDENTITY_TIMEOUT_S") or "").strip()
+    timeout = float(
+        timeout_s
+        if timeout_s is not None
+        else (env_timeout or RUNTIME_IDENTITY_WAIT_TIMEOUT_S)
+    )
+    poll = float(poll_s if poll_s is not None else RUNTIME_IDENTITY_POLL_S)
+    if timeout < 0:
+        timeout = 0.0
+    if poll <= 0:
+        poll = RUNTIME_IDENTITY_POLL_S
+    sleeper = sleep_fn or time.sleep
+    clock = monotonic_fn or time.monotonic
+    scraper = scrape_fn or scrape_deploy_identity_from_existing_page
+    started = clock()
+    deadline = started + timeout
+    attempts: list[dict[str, Any]] = []
+    last_eval: dict[str, Any] = evaluate_live_runtime_against_required(
+        required_sha=req, runtime_sha_raw="", deploy_build_raw=""
+    )
+    last_sha_raw = ""
+    last_build_raw = ""
+
+    def _pack(status: str, classification: str) -> dict[str, Any]:
+        elapsed = max(0.0, clock() - started)
+        return {
+            "ok": status == "matched",
+            "status": status,
+            "classification": classification,
+            "required_sha": req,
+            "expected_build_display": expected_build_display_for(req),
+            "runtime_sha_raw": last_sha_raw,
+            "runtime_sha_normalized": last_eval.get("runtime_sha_normalized") or "",
+            "deploy_identity": last_eval.get("runtime_sha_normalized") or "",
+            "deploy_build_raw": last_build_raw,
+            "runtime_match": bool(last_eval.get("runtime_match")),
+            "build_match": bool(last_eval.get("build_match")),
+            "reason": last_eval.get("reason") or (
+                REASON_RUNTIME_IDENTITY_NOT_OBSERVED
+                if status == "not_observed"
+                else REASON_RUNTIME_MISMATCH if status == "mismatch" else ""
+            ),
+            "selector": RUNTIME_IDENTITY_SELECTOR,
+            "second_navigation": False,
+            "page_reloaded": False,
+            "second_browser": False,
+            "set_query_param_sent": False,
+            "wait": {
+                "attempts": len(attempts),
+                "elapsed_s": elapsed,
+                "timeout_s": timeout,
+                "poll_s": poll,
+                "bounded": elapsed <= timeout + poll + 0.05,
+                "samples": attempts,
+            },
+        }
+
+    if not req:
+        return _pack("not_observed", CLASSIFICATION_REQUIRED_CLOUD_SHA_INVALID)
+
+    while True:
+        probe = scraper(page) or {}
+        last_sha_raw = str(probe.get("sha") or probe.get("sha_raw") or "")
+        last_build_raw = str(probe.get("build") or probe.get("build_raw") or "")
+        last_eval = evaluate_live_runtime_against_required(
+            required_sha=req,
+            runtime_sha_raw=last_sha_raw,
+            deploy_build_raw=last_build_raw or last_sha_raw,
+        )
+        attempts.append(
+            {
+                "attempt": len(attempts) + 1,
+                "elapsed_s": max(0.0, clock() - started),
+                "sha_raw": last_sha_raw,
+                "build_raw": last_build_raw,
+                "reason": last_eval.get("reason") or "",
+            }
+        )
+        if last_eval.get("ok"):
+            return _pack("matched", "")
+        live = str(last_eval.get("runtime_sha_normalized") or "")
+        if live and live != req:
+            return _pack("mismatch", CLASSIFICATION_RUNTIME_MISMATCH)
+        now = clock()
+        if now >= deadline:
+            break
+        remaining = deadline - now
+        sleeper(poll if poll <= remaining else remaining)
+
+    return _pack("not_observed", CLASSIFICATION_RUNTIME_IDENTITY_NOT_OBSERVED)
 
 
 def first_defined(*values: Any) -> Any:
@@ -727,6 +913,9 @@ CLASSIFICATION_URL_PREFLIGHT = "FRANCISCO_QUEUE_MUTATION_URL_PREFLIGHT_FAIL"
 CLASSIFICATION_PRODUCT_GAP = "FRANCISCO_QUEUE_MUTATION_CLOUD_OBSERVABILITY_PRODUCT_GAP_CONFIRMED"
 CLASSIFICATION_REQUIRED_CLOUD_SHA_INVALID = "FRANCISCO_QUEUE_MUTATION_REQUIRED_CLOUD_SHA_INVALID"
 CLASSIFICATION_RUNTIME_MISMATCH = "FRANCISCO_QUEUE_MUTATION_RUNTIME_MISMATCH"
+CLASSIFICATION_RUNTIME_IDENTITY_NOT_OBSERVED = (
+    "FRANCISCO_QUEUE_MUTATION_RUNTIME_IDENTITY_NOT_OBSERVED"
+)
 CLASSIFICATION_CLICK_UNAVAILABLE = "FRANCISCO_QUEUE_MUTATION_CLICK_TARGET_UNAVAILABLE"
 CLASSIFICATION_POST_QUEUE_UNKNOWN = "FRANCISCO_QUEUE_MUTATION_POST_QUEUE_NOT_OBSERVED"
 
@@ -1227,8 +1416,22 @@ def run_cloud_mutation_orchestration(
             "runtime_sha_normalized"
         )
         report["live_runtime_eval"] = live_eval
+        report["runtime_identity_wait"] = runtime.get("wait") or runtime.get(
+            "runtime_identity_wait"
+        )
         if not runtime_ok:
-            report["classification"] = CLASSIFICATION_RUNTIME_MISMATCH
+            port_cls = str(runtime.get("runtime_observation_classification") or "")
+            empty_live = not normalized_live
+            not_observed = (
+                port_cls == CLASSIFICATION_RUNTIME_IDENTITY_NOT_OBSERVED
+                or live_eval.get("reason") == REASON_RUNTIME_IDENTITY_NOT_OBSERVED
+                or empty_live
+            )
+            report["classification"] = (
+                CLASSIFICATION_RUNTIME_IDENTITY_NOT_OBSERVED
+                if not_observed
+                else CLASSIFICATION_RUNTIME_MISMATCH
+            )
             return report
 
         stage_a = ports.wait_stage_a()
@@ -1391,6 +1594,9 @@ def build_fixture_mutation_ports(
     st.setdefault("click_invocations", 0)
     st.setdefault("launched", False)
     st.setdefault("consumed", False)
+    st.setdefault("stage_a_invocations", 0)
+    st.setdefault("baseline_invocations", 0)
+    st.setdefault("runtime_invocations", 0)
     fixture_sha = normalize_required_cloud_sha(required_sha) or "95b26f9"
     fixture_display = expected_build_display_for(fixture_sha)
 
@@ -1418,6 +1624,7 @@ def build_fixture_mutation_ports(
         return base
 
     def _runtime() -> dict[str, Any]:
+        st["runtime_invocations"] = int(st.get("runtime_invocations") or 0) + 1
         base = {
             "runtime_sha_raw": fixture_sha,
             "runtime_sha_normalized": fixture_sha,
@@ -1430,6 +1637,7 @@ def build_fixture_mutation_ports(
         return base
 
     def _stage() -> dict[str, Any]:
+        st["stage_a_invocations"] = int(st.get("stage_a_invocations") or 0) + 1
         base = {
             "steady_authorized": True,
             "heavy_paint_complete": True,
@@ -1455,6 +1663,7 @@ def build_fixture_mutation_ports(
         return base
 
     def _baseline() -> dict[str, Any]:
+        st["baseline_invocations"] = int(st.get("baseline_invocations") or 0) + 1
         base = {
             "session_queue": [],
             "canonical_queue": [],
@@ -1735,36 +1944,31 @@ def _run_playwright_cloud_mutation(
         }
 
     def check_runtime() -> dict[str, Any]:
-        from queueui_audit_protocol import scrape_deploy_marker_from_page
-        from run_production_solo_soak import scrape_deploy_build
-
         page = state["page"]
-        sha, _src = scrape_deploy_marker_from_page(page)
-        build_raw = scrape_deploy_build(page)
-        # Prefer mutation-local exact evaluator so REQUIRED_CLOUD_SHA drives authority
-        # even when the shared callback helper still defaults historically.
-        local_id = evaluate_live_runtime_against_required(
-            required_sha=req,
-            runtime_sha_raw=sha,
-            deploy_build_raw=build_raw,
-        )
-        identity = cb.cloud_identity_matches_required(
-            runtime_sha_raw=sha,
-            deploy_build_raw=build_raw,
-            required_sha=req,
+        waited = wait_for_required_runtime_identity_on_existing_page(
+            page, required_sha=req
         )
         return {
-            "runtime_sha_raw": identity.get("runtime_sha_raw"),
-            "runtime_sha_normalized": local_id.get("runtime_sha_normalized")
-            or identity.get("runtime_sha_normalized"),
-            "deploy_identity": local_id.get("runtime_sha_normalized")
-            or identity.get("runtime_sha_normalized"),
-            "runtime_match": bool(local_id.get("runtime_match")),
-            "build_match": bool(local_id.get("build_match")),
-            "deploy_build_raw": identity.get("deploy_build_raw"),
+            "runtime_sha_raw": waited.get("runtime_sha_raw"),
+            "runtime_sha_normalized": waited.get("runtime_sha_normalized"),
+            "deploy_identity": waited.get("deploy_identity")
+            or waited.get("runtime_sha_normalized"),
+            "runtime_match": bool(waited.get("runtime_match")),
+            "build_match": bool(waited.get("build_match")),
+            "deploy_build_raw": waited.get("deploy_build_raw"),
             "required_sha": req,
             "expected_build_display": expected_build_display_for(req),
-            "ok": bool(local_id.get("ok")),
+            "ok": bool(waited.get("ok")),
+            "reason": waited.get("reason"),
+            "status": waited.get("status"),
+            "selector": waited.get("selector") or RUNTIME_IDENTITY_SELECTOR,
+            "runtime_observation_classification": waited.get("classification") or "",
+            "wait": waited.get("wait"),
+            "runtime_identity_wait": waited.get("wait"),
+            "second_navigation": False,
+            "page_reloaded": False,
+            "second_browser": False,
+            "set_query_param_sent": False,
         }
 
     def wait_stage_a() -> dict[str, Any]:

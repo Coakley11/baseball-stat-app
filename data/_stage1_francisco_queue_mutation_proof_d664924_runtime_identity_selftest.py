@@ -414,6 +414,463 @@ def main() -> int:
         )
     )
 
+    class _Clock:
+        def __init__(self) -> None:
+            self.t = 0.0
+
+        def monotonic(self) -> float:
+            return self.t
+
+        def sleep(self, seconds: float) -> None:
+            self.t += float(seconds)
+
+    def _wait(
+        seq: list[tuple[str, str]],
+        *,
+        required: str = "6b3e14b",
+        timeout_s: float = 5.0,
+        poll_s: float = 0.5,
+        clock: _Clock | None = None,
+    ) -> tuple[dict[str, Any], _Clock, dict[str, int]]:
+        clk = clock or _Clock()
+        nav = {"goto": 0, "reload": 0, "browser": 1, "set_qp": 0}
+        idx = {"i": 0}
+        values = list(seq)
+
+        def scrape(_page: Any) -> dict[str, str]:
+            i = idx["i"]
+            idx["i"] += 1
+            item = values[i] if i < len(values) else values[-1]
+            return {"sha": item[0], "build": item[1]}
+
+        out = r.wait_for_required_runtime_identity_on_existing_page(
+            object(),
+            required_sha=required,
+            timeout_s=timeout_s,
+            poll_s=poll_s,
+            scrape_fn=scrape,
+            sleep_fn=clk.sleep,
+            monotonic_fn=clk.monotonic,
+        )
+        out["_nav"] = nav
+        out["_samples"] = idx["i"]
+        return out, clk, nav
+
+    html_ok = (
+        '<div id="solo-deploy-build" data-build="baseball-dev-6b3e14b" '
+        'data-sha="6b3e14b"></div>'
+    )
+    html_rev = (
+        '<div data-sha="6b3e14b" id="solo-deploy-build" '
+        'data-build="baseball-dev-6b3e14b"></div>'
+    )
+    parsed = r.extract_deploy_identity_from_html_fixture(html_ok)
+    parsed_rev = r.extract_deploy_identity_from_html_fixture(html_rev)
+    results.append(
+        _check(
+            "32_parser_fixture_dom_6b3e14b",
+            parsed.get("sha") == "6b3e14b"
+            and parsed.get("build") == "baseball-dev-6b3e14b"
+            and parsed_rev.get("sha") == "6b3e14b",
+            parsed,
+        )
+    )
+    comment_only = "<!-- solo-deploy-build sha=6b3e14b build=baseball-dev-6b3e14b -->"
+    results.append(
+        _check(
+            "33_parser_comment_fallback_6b3e14b",
+            r.extract_deploy_identity_from_html_fixture(comment_only).get("sha")
+            == "6b3e14b",
+        )
+    )
+    empty_el = '<div id="solo-deploy-build" data-build="" data-sha=""></div>'
+    results.append(
+        _check(
+            "34_parser_empty_element_stays_empty",
+            r.extract_deploy_identity_from_html_fixture(empty_el).get("sha") == "",
+        )
+    )
+
+    live_6b = r.evaluate_live_runtime_against_required(
+        required_sha="6b3e14b",
+        runtime_sha_raw="6b3e14b",
+        deploy_build_raw="baseball-dev-6b3e14b",
+    )
+    results.append(
+        _check(
+            "35_immediate_marker_6b3e14b_pass",
+            bool(live_6b.get("ok"))
+            and live_6b.get("runtime_match")
+            and live_6b.get("expected_build_display") == "baseball-dev-6b3e14b",
+            live_6b,
+        )
+    )
+    empty_eval = r.evaluate_live_runtime_against_required(
+        required_sha="6b3e14b", runtime_sha_raw="", deploy_build_raw=""
+    )
+    results.append(
+        _check(
+            "36_empty_is_not_observed_not_mismatch",
+            empty_eval.get("reason") == r.REASON_RUNTIME_IDENTITY_NOT_OBSERVED
+            and empty_eval.get("reason") != r.REASON_RUNTIME_MISMATCH
+            and not empty_eval.get("ok"),
+            empty_eval,
+        )
+    )
+    true_mis = r.evaluate_live_runtime_against_required(
+        required_sha="6b3e14b",
+        runtime_sha_raw="95b26f9",
+        deploy_build_raw="baseball-dev-95b26f9",
+    )
+    results.append(
+        _check(
+            "37_95b26f9_vs_6b3e14b_true_mismatch",
+            true_mis.get("reason") == r.REASON_RUNTIME_MISMATCH
+            and not true_mis.get("ok"),
+            true_mis,
+        )
+    )
+    arb = r.evaluate_live_runtime_against_required(
+        required_sha="6b3e14b", runtime_sha_raw="deadbee", deploy_build_raw="deadbee"
+    )
+    results.append(
+        _check(
+            "38_arbitrary_nonempty_true_mismatch",
+            arb.get("reason") == r.REASON_RUNTIME_MISMATCH and not arb.get("ok"),
+        )
+    )
+
+    w_now, _, _ = _wait([("6b3e14b", "baseball-dev-6b3e14b")])
+    results.append(
+        _check(
+            "39_wait_immediate_6b3e14b_pass",
+            bool(w_now.get("ok"))
+            and w_now.get("status") == "matched"
+            and int((w_now.get("wait") or {}).get("attempts") or 0) == 1,
+            w_now.get("wait"),
+        )
+    )
+    w_abs, _, _ = _wait([("", ""), ("", ""), ("6b3e14b", "baseball-dev-6b3e14b")])
+    results.append(
+        _check(
+            "40_wait_initially_absent_then_6b3e14b",
+            bool(w_abs.get("ok"))
+            and int((w_abs.get("wait") or {}).get("attempts") or 0) >= 3
+            and w_abs.get("runtime_sha_normalized") == "6b3e14b",
+            w_abs.get("wait"),
+        )
+    )
+    w_emp, _, _ = _wait([("", ""), ("6b3e14b", "baseball-dev-6b3e14b")])
+    results.append(
+        _check(
+            "41_wait_initially_empty_then_6b3e14b",
+            bool(w_emp.get("ok")) and w_emp.get("runtime_sha_normalized") == "6b3e14b",
+        )
+    )
+    w_rer, _, _ = _wait(
+        [("", ""), ("", ""), ("6b3e14b", "baseball-dev-6b3e14b")]
+    )
+    results.append(
+        _check(
+            "42_wait_rerender_replacement_then_valid",
+            bool(w_rer.get("ok")) and w_rer.get("status") == "matched",
+        )
+    )
+    w_gone, clk_gone, _ = _wait([("", "")], timeout_s=2.0, poll_s=0.5)
+    results.append(
+        _check(
+            "43_permanently_absent_fail_closed",
+            not w_gone.get("ok")
+            and w_gone.get("status") == "not_observed"
+            and w_gone.get("classification")
+            == r.CLASSIFICATION_RUNTIME_IDENTITY_NOT_OBSERVED
+            and clk_gone.t <= 2.0 + 0.5,
+            {"elapsed": clk_gone.t, "cls": w_gone.get("classification")},
+        )
+    )
+    w_empty_perm, _, _ = _wait([("", "")], timeout_s=1.0, poll_s=0.25)
+    results.append(
+        _check(
+            "44_permanently_empty_fail_closed",
+            not w_empty_perm.get("ok")
+            and w_empty_perm.get("classification")
+            == r.CLASSIFICATION_RUNTIME_IDENTITY_NOT_OBSERVED,
+        )
+    )
+    w_mis, _, _ = _wait(
+        [("95b26f9", "baseball-dev-95b26f9"), ("6b3e14b", "baseball-dev-6b3e14b")],
+        timeout_s=5.0,
+    )
+    results.append(
+        _check(
+            "45_different_sha_fails_immediately_no_hope_wait",
+            not w_mis.get("ok")
+            and w_mis.get("status") == "mismatch"
+            and w_mis.get("classification") == r.CLASSIFICATION_RUNTIME_MISMATCH
+            and int((w_mis.get("wait") or {}).get("attempts") or 0) == 1
+            and w_mis.get("runtime_sha_normalized") == "95b26f9",
+            w_mis.get("wait"),
+        )
+    )
+    clk_late = _Clock()
+
+    def _late(_page: Any) -> dict[str, str]:
+        if clk_late.t >= 1.75:
+            return {"sha": "6b3e14b", "build": "baseball-dev-6b3e14b"}
+        return {"sha": "", "build": ""}
+
+    w_late = r.wait_for_required_runtime_identity_on_existing_page(
+        object(),
+        required_sha="6b3e14b",
+        timeout_s=2.0,
+        poll_s=0.5,
+        scrape_fn=_late,
+        sleep_fn=clk_late.sleep,
+        monotonic_fn=clk_late.monotonic,
+    )
+    results.append(
+        _check(
+            "46_valid_marker_just_before_timeout_succeeds",
+            bool(w_late.get("ok")) and w_late.get("runtime_sha_normalized") == "6b3e14b",
+            {"elapsed": clk_late.t, "wait": w_late.get("wait")},
+        )
+    )
+    results.append(
+        _check(
+            "47_timeout_is_bounded",
+            bool((w_gone.get("wait") or {}).get("bounded"))
+            and float((w_gone.get("wait") or {}).get("timeout_s") or 0) == 2.0
+            and clk_gone.t <= 2.55,
+        )
+    )
+    results.append(
+        _check(
+            "48_wait_never_navigates_or_refreshes",
+            w_now.get("second_navigation") is False
+            and w_now.get("page_reloaded") is False
+            and w_now.get("second_browser") is False
+            and w_now.get("set_query_param_sent") is False,
+        )
+    )
+    # Narrower source check for wait helper: no goto/reload inside the wait function body.
+    wait_src = src.split("def wait_for_required_runtime_identity_on_existing_page", 1)[-1].split(
+        "def first_defined", 1
+    )[0]
+    results.append(
+        _check(
+            "49_wait_helper_has_no_goto_reload_or_query_param",
+            "page.goto" not in wait_src
+            and ".reload(" not in wait_src
+            and "SET_QUERY_PARAM" not in wait_src
+            and "chromium.launch" not in wait_src
+            and "new_page(" not in wait_src
+            and "browser.new_context" not in wait_src,
+            wait_src[:240],
+        )
+    )
+    results.append(
+        _check(
+            "50_production_check_runtime_reuses_scrape_deploy",
+            "wait_for_required_runtime_identity_on_existing_page" in src
+            and "verify_cloud_deploy_playwright" in src
+            and "scrape_deploy" in src
+            and "scrape_deploy_marker_from_page(page)" not in src.split("def check_runtime", 1)[-1].split("def wait_stage_a", 1)[0],
+        )
+    )
+
+    with tempfile.TemporaryDirectory() as td2:
+        tmp2 = Path(td2)
+        url6 = r.build_francisco_mutation_proof_url(FIXTURE_BRIDGE)
+        pre6 = r.evaluate_mutation_url_preflight(url6)
+        cfg6 = r.MutationCloudConfig(
+            bridge_id=FIXTURE_BRIDGE,
+            required_sha="6b3e14b",
+            context_a_sid="context-a-HISTORICAL",
+            require_canonical_observability=False,
+        )
+
+        st_empty: dict[str, Any] = {}
+        empty_ports = r.build_fixture_mutation_ports(
+            marker_path=tmp2 / "empty_runtime.txt",
+            bridge_id=FIXTURE_BRIDGE,
+            required_sha="6b3e14b",
+            runtime={
+                "runtime_sha_raw": "",
+                "runtime_sha_normalized": "",
+                "deploy_identity": "",
+                "deploy_build_raw": "",
+                "runtime_match": False,
+                "build_match": False,
+            },
+            state=st_empty,
+        )
+        empty_rep = r.run_cloud_mutation_orchestration(
+            empty_ports,
+            cfg6,
+            url=url6,
+            preflight=pre6,
+            observability=_obs_ok(),
+        )
+        results.append(
+            _check(
+                "51_empty_runtime_not_mislabeled_mismatch",
+                empty_rep.get("classification")
+                == r.CLASSIFICATION_RUNTIME_IDENTITY_NOT_OBSERVED
+                and empty_rep.get("classification") != r.CLASSIFICATION_RUNTIME_MISMATCH
+                and int(st_empty.get("click_invocations") or 0) == 0
+                and int(st_empty.get("stage_a_invocations") or 0) == 0
+                and int(st_empty.get("baseline_invocations") or 0) == 0,
+                empty_rep.get("classification"),
+            )
+        )
+
+        st_mis: dict[str, Any] = {}
+        mis_ports = r.build_fixture_mutation_ports(
+            marker_path=tmp2 / "true_mismatch.txt",
+            bridge_id=FIXTURE_BRIDGE,
+            required_sha="6b3e14b",
+            runtime={
+                "runtime_sha_raw": "95b26f9",
+                "runtime_sha_normalized": "95b26f9",
+                "deploy_identity": "95b26f9",
+                "deploy_build_raw": "baseball-dev-95b26f9",
+                "runtime_match": False,
+                "build_match": False,
+            },
+            state=st_mis,
+        )
+        mis_rep = r.run_cloud_mutation_orchestration(
+            mis_ports,
+            cfg6,
+            url=url6,
+            preflight=pre6,
+            observability=_obs_ok(),
+        )
+        results.append(
+            _check(
+                "52_nonempty_wrong_sha_still_runtime_mismatch",
+                mis_rep.get("classification") == r.CLASSIFICATION_RUNTIME_MISMATCH
+                and int(st_mis.get("click_invocations") or 0) == 0
+                and int(st_mis.get("stage_a_invocations") or 0) == 0,
+                mis_rep.get("classification"),
+            )
+        )
+
+        # Replay: AUTH_ONLY passed, marker temporarily empty, then 6b3e14b.
+        st_replay: dict[str, Any] = {}
+        clk_replay = _Clock()
+        seq_replay = [("", ""), ("", ""), ("6b3e14b", "baseball-dev-6b3e14b")]
+        idx_replay = {"i": 0, "stage_during_wait": 0}
+
+        def _replay_scrape(_page: Any) -> dict[str, str]:
+            i = idx_replay["i"]
+            idx_replay["i"] += 1
+            item = seq_replay[i] if i < len(seq_replay) else seq_replay[-1]
+            idx_replay["stage_during_wait"] = int(st_replay.get("stage_a_invocations") or 0)
+            return {"sha": item[0], "build": item[1]}
+
+        replay_ports = r.build_fixture_mutation_ports(
+            marker_path=tmp2 / "replay.txt",
+            bridge_id=FIXTURE_BRIDGE,
+            required_sha="6b3e14b",
+            state=st_replay,
+        )
+
+        def _replay_check_runtime() -> dict[str, Any]:
+            waited = r.wait_for_required_runtime_identity_on_existing_page(
+                object(),
+                required_sha="6b3e14b",
+                timeout_s=5.0,
+                poll_s=0.5,
+                scrape_fn=_replay_scrape,
+                sleep_fn=clk_replay.sleep,
+                monotonic_fn=clk_replay.monotonic,
+            )
+            return {
+                "runtime_sha_raw": waited.get("runtime_sha_raw"),
+                "runtime_sha_normalized": waited.get("runtime_sha_normalized"),
+                "deploy_identity": waited.get("deploy_identity"),
+                "deploy_build_raw": waited.get("deploy_build_raw"),
+                "runtime_match": waited.get("runtime_match"),
+                "build_match": waited.get("build_match"),
+                "ok": waited.get("ok"),
+                "wait": waited.get("wait"),
+                "runtime_observation_classification": waited.get("classification") or "",
+                "second_navigation": False,
+                "page_reloaded": False,
+                "second_browser": False,
+                "set_query_param_sent": False,
+            }
+
+        replay_ports.check_runtime = _replay_check_runtime
+        replay_rep = r.run_cloud_mutation_orchestration(
+            replay_ports,
+            cfg6,
+            url=url6,
+            preflight=pre6,
+            observability=_obs_ok(),
+        )
+        replay_wait = (replay_rep.get("runtime") or {}).get("wait") or replay_rep.get(
+            "runtime_identity_wait"
+        ) or {}
+        results.append(
+            _check(
+                "53_replay_auth_only_then_empty_then_6b3e14b_waits",
+                bool(replay_rep.get("ok") or replay_rep.get("normalized_sha") == "6b3e14b")
+                and int(replay_wait.get("attempts") or 0) >= 3
+                and replay_rep.get("normalized_sha") == "6b3e14b"
+                and int(idx_replay["stage_during_wait"]) == 0
+                and int(st_replay.get("stage_a_invocations") or 0) >= 1
+                and replay_rep.get("required_sha") == "6b3e14b"
+                and replay_rep.get("expected_build_display") == "baseball-dev-6b3e14b"
+                and replay_rep.get("production_sid_differs_from_context_a") is True
+                and str(replay_rep.get("production_streamlit_sid") or "").startswith("prod-sid-"),
+                {
+                    "cls": replay_rep.get("classification"),
+                    "attempts": replay_wait.get("attempts"),
+                    "sha": replay_rep.get("normalized_sha"),
+                    "stage_during": idx_replay["stage_during_wait"],
+                    "stage_after": st_replay.get("stage_a_invocations"),
+                },
+            )
+        )
+        results.append(
+            _check(
+                "54_sid_independent_from_runtime_sha",
+                str(replay_rep.get("production_streamlit_sid") or "") != "6b3e14b"
+                and replay_rep.get("required_sha") == "6b3e14b",
+            )
+        )
+        results.append(
+            _check(
+                "55_context_a_not_substituted_for_live_runtime",
+                replay_rep.get("context_a_not_production_authority") is True
+                and replay_rep.get("normalized_sha") == "6b3e14b",
+            )
+        )
+        results.append(
+            _check(
+                "56_no_stage_a_baseline_click_until_runtime_pass_on_empty",
+                int(st_empty.get("stage_a_invocations") or 0) == 0
+                and int(st_empty.get("baseline_invocations") or 0) == 0
+                and int(st_empty.get("click_invocations") or 0) == 0,
+            )
+        )
+
+    consumed_c69 = ROOT / "data" / "c69aa19c_consumed_bridge.txt"
+    reserved_c69 = ROOT / "data" / "c69aa19c_reserved_bridge.txt"
+    c69_text = reserved_c69.read_text(encoding="utf-8") if reserved_c69.is_file() else ""
+    c69_guard = r.evaluate_reserved_bridge_marker(
+        c69_text, expected_bridge_id="c69aa19c-ca1d-4101-ada9-292dbc90ad09"
+    )
+    results.append(
+        _check(
+            "57_c69aa19c_still_consumed_not_reused",
+            consumed_c69.is_file() and c69_guard.get("eligible") is False,
+            c69_guard,
+        )
+    )
+
     # restore env
     for k, v in env_backup.items():
         if v is None:
@@ -440,6 +897,25 @@ def main() -> int:
                 and by.get("6_live_d664924_with_required_95b26f9_fail")
                 and by.get("6b_orchestration_rejects_live_d664924")
                 and by.get("13_valid_required_sha_reaches_browser_boundary")
+            ),
+            "FRANCISCO_QUEUE_MUTATION_RUNTIME_IDENTITY_OBSERVABILITY_RUNNER_READY": bool(
+                by.get("36_empty_is_not_observed_not_mismatch")
+                and by.get("40_wait_initially_absent_then_6b3e14b")
+                and by.get("43_permanently_absent_fail_closed")
+                and by.get("45_different_sha_fails_immediately_no_hope_wait")
+                and by.get("51_empty_runtime_not_mislabeled_mismatch")
+                and by.get("53_replay_auth_only_then_empty_then_6b3e14b_waits")
+            ),
+            "FRANCISCO_QUEUE_MUTATION_RUNNER_6B3E14B_RUNTIME_COMPATIBLE": bool(
+                by.get("35_immediate_marker_6b3e14b_pass")
+                and by.get("37_95b26f9_vs_6b3e14b_true_mismatch")
+                and by.get("39_wait_immediate_6b3e14b_pass")
+                and by.get("52_nonempty_wrong_sha_still_runtime_mismatch")
+            ),
+            "FRANCISCO_QUEUE_MUTATION_SINGLE_CLICK_PROOF_RUNNER_READY": bool(
+                by.get("51_empty_runtime_not_mislabeled_mismatch")
+                and by.get("56_no_stage_a_baseline_click_until_runtime_pass_on_empty")
+                and by.get("49_wait_helper_has_no_goto_reload_or_query_param")
             ),
             "FRANCISCO_QUEUE_MUTATION_RESERVED_BRIDGE_POST_DEPLOY_COMPATIBLE": bool(
                 by.get("15_capture_d664924_required_95b26f9_bridge_accepted")

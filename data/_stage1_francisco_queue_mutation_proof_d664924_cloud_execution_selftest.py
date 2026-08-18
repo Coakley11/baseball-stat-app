@@ -248,6 +248,33 @@ def main() -> int:
             )
         )
 
+        # 6b. empty runtime SHA is observability failure, not proof of another build
+        st = {}
+        rep = _run(
+            r,
+            tmp,
+            runtime={
+                "runtime_sha_raw": "",
+                "runtime_sha_normalized": "",
+                "deploy_identity": "",
+                "deploy_build_raw": "",
+                "runtime_match": False,
+                "build_match": False,
+            },
+            state=st,
+        )
+        results.append(
+            _check(
+                "6b_empty_runtime_not_observed_no_click",
+                rep.get("classification") == r.CLASSIFICATION_RUNTIME_IDENTITY_NOT_OBSERVED
+                and rep.get("classification") != r.CLASSIFICATION_RUNTIME_MISMATCH
+                and int(st.get("click_invocations") or 0) == 0
+                and int(st.get("stage_a_invocations") or 0) == 0
+                and int(st.get("baseline_invocations") or 0) == 0,
+                rep.get("classification"),
+            )
+        )
+
         # 7. auth failure -> no click
         st = {}
         rep = _run(
@@ -675,6 +702,7 @@ def main() -> int:
             and by.get("9_stage_a_fail_no_click")
             and by.get("10_stage_a_pass_continues")
             and by.get("6_runtime_mismatch_no_click")
+            and by.get("6b_empty_runtime_not_observed_no_click")
         ),
         "FRANCISCO_QUEUE_MUTATION_CLOUD_QUEUE_STATE_OBSERVABILITY_RUNNER_READY": bool(
             by.get("45_product_gap_closed_canonical_observable")
