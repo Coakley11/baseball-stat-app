@@ -351,7 +351,7 @@ def render_rec_queue_render_trace_probe(st: Any, session: dict[str, Any], *, pro
 
 _REC_CARD_QUEUE_GATE_EVAL_JS = f"""() => {{
   const el = document.querySelector('#{RENDER_TRACE_PROBE_ELEMENT_ID}');
-  if (!el) return {{ probe_found: false, probe_absent: true }};
+  if (!el) return {{ probe_found: false, probe_absent: true, selector: '#{RENDER_TRACE_PROBE_ELEMENT_ID}' }};
   const flag = (name) => {{
     const v = (el.getAttribute(name) || '').trim().toLowerCase();
     return v === '1' || v === 'true' || v === 'yes' || v === 'on';
@@ -386,49 +386,232 @@ _REC_CARD_QUEUE_GATE_EVAL_JS = f"""() => {{
   }};
 }}"""
 
+_REC_CARD_QUEUE_GATE_CONTENTDOCUMENT_FALLBACK_JS = f"""() => {{
+  const docs = [document];
+  for (const f of document.querySelectorAll('iframe')) {{
+    try {{ if (f.contentDocument) docs.push(f.contentDocument); }} catch (e) {{}}
+  }}
+  const flag = (name, el) => {{
+    const v = (el.getAttribute(name) || '').trim().toLowerCase();
+    return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+  }};
+  for (const doc of docs) {{
+    const el = doc.querySelector('#{RENDER_TRACE_PROBE_ELEMENT_ID}');
+    if (!el) continue;
+    return {{
+      probe_found: true,
+      probe_absent: false,
+      selector: '#{RENDER_TRACE_PROBE_ELEMENT_ID}',
+      sid: el.getAttribute('data-sid') || '',
+      room_id: el.getAttribute('data-room-id') || '',
+      paint_via: el.getAttribute('data-paint-via') || '',
+      solo_qp: el.getAttribute('data-solo-qp') || '',
+      solo_qp_present: flag('data-solo-qp-present', el),
+      solo_qp_flag: flag('data-solo-qp-flag', el),
+      solo_url_present: flag('data-solo-url-present', el),
+      solo_url_flag: flag('data-solo-url-flag', el),
+      solo_enabled: flag('data-solo-enabled', el),
+      parent_qp: el.getAttribute('data-parent-qp') || '',
+      parent_qp_present: flag('data-parent-qp-present', el),
+      parent_qp_flag: flag('data-parent-qp-flag', el),
+      parent_url: el.getAttribute('data-parent-url') || '',
+      parent_url_present: flag('data-parent-url-present', el),
+      parent_url_flag: flag('data-parent-url-flag', el),
+      parent_requested: flag('data-parent-requested', el),
+      parent_probe: flag('data-parent-probe', el),
+      queue_gate: flag('data-queue-gate', el),
+      renderer_call_reached: flag('data-queue-renderer-reached', el),
+      would_render: flag('data-queue-would-render', el),
+      early_return_reason: el.getAttribute('data-queue-early-return-reason') || '',
+      impl_rev: el.getAttribute('data-impl-rev') || '',
+      queue_gate_json: el.getAttribute('data-queue-gate-json') || '',
+    }};
+  }}
+  return {{ probe_found: false, probe_absent: true, selector: '#{RENDER_TRACE_PROBE_ELEMENT_ID}' }};
+}}"""
+
+
+def _decode_rec_card_queue_gate_eval(
+    raw: Any,
+    *,
+    frame_index: int | None = None,
+    frame_url: str = "",
+    frame_strategy: str = "",
+) -> dict[str, Any]:
+    out: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+    out["selector"] = str(out.get("selector") or f"#{RENDER_TRACE_PROBE_ELEMENT_ID}")
+    if frame_index is not None:
+        out["frame_index"] = frame_index
+    if frame_url:
+        out["frame_url"] = frame_url
+    if frame_strategy:
+        out["frame_strategy"] = frame_strategy
+    found = out.get("probe_found") is True
+    out["probe_found"] = bool(found)
+    out["probe_absent"] = not bool(found)
+    out["parse_invalid"] = False
+    if not found:
+        return out
+    # Present element missing all gate attrs is parse-invalid (distinct from absent).
+    gate_keys = (
+        "solo_enabled",
+        "parent_requested",
+        "parent_probe",
+        "queue_gate",
+        "renderer_call_reached",
+        "would_render",
+        "early_return_reason",
+    )
+    has_any_gate = any(k in out and out.get(k) not in (None, "") for k in gate_keys)
+    raw_json = out.get("queue_gate_json")
+    if isinstance(raw_json, str) and raw_json.strip():
+        try:
+            out["queue_gate_payload"] = json.loads(raw_json.replace("'", '"'))
+            has_any_gate = True
+        except Exception as exc:
+            out["parse_invalid"] = True
+            out["parse_error"] = str(exc)[:200]
+            return out
+    if not has_any_gate and not str(out.get("impl_rev") or "").strip():
+        out["parse_invalid"] = True
+        out["parse_error"] = "present_without_gate_fields"
+    return out
+
 
 def scrape_rec_card_queue_gate_state_from_page(page: Any) -> dict[str, Any]:
     """Read-only scrape of #rec-card-queue-render-trace gate-state attrs.
 
-    Does not click, navigate, mutate query params, or consume a bridge.
+    Prefer Playwright page.frames (same contract as deploy / queue-snapshot scrapers),
+    then contentDocument walk. Does not click, navigate, mutate query params, or
+    consume a bridge.
     """
-    last: dict[str, Any] = {
+    last_absent: dict[str, Any] = {
         "probe_found": False,
         "probe_absent": True,
+        "parse_invalid": False,
         "selector": f"#{RENDER_TRACE_PROBE_ELEMENT_ID}",
         "frame_strategy": "page.frames",
+        "frames_searched": 0,
     }
     frames = list(getattr(page, "frames", []) or [])
+    last_absent["frames_searched"] = len(frames)
+    last_invalid: dict[str, Any] | None = None
     for idx, frame in enumerate(frames):
         try:
             raw = frame.evaluate(_REC_CARD_QUEUE_GATE_EVAL_JS)
         except Exception:
             continue
-        if isinstance(raw, dict) and raw.get("probe_found") is True:
-            raw["frame_index"] = idx
-            raw["frame_url"] = str(getattr(frame, "url", "") or "")
-            raw["frame_strategy"] = "page.frames"
-            raw["probe_absent"] = False
-            return raw
-        if isinstance(raw, dict):
-            last = dict(raw)
-            last["frame_index"] = idx
-            last["frame_url"] = str(getattr(frame, "url", "") or "")
-            last["frame_strategy"] = "page.frames"
+        parsed = _decode_rec_card_queue_gate_eval(
+            raw,
+            frame_index=idx,
+            frame_url=str(getattr(frame, "url", "") or ""),
+            frame_strategy="page.frames",
+        )
+        if parsed.get("probe_found") is True and parsed.get("parse_invalid") is not True:
+            return parsed
+        if parsed.get("probe_found") is True and parsed.get("parse_invalid") is True:
+            last_invalid = parsed
+            last_invalid["frames_searched"] = len(frames)
+            continue
+        last_absent = parsed
+        last_absent["frames_searched"] = len(frames)
     try:
-        raw = page.evaluate(_REC_CARD_QUEUE_GATE_EVAL_JS)
+        raw = page.evaluate(_REC_CARD_QUEUE_GATE_CONTENTDOCUMENT_FALLBACK_JS)
     except Exception as exc:
-        last = dict(last)
-        last["error"] = str(exc)[:200]
-        return last
-    if isinstance(raw, dict) and raw.get("probe_found") is True:
-        raw["frame_strategy"] = "top_page_evaluate"
-        raw["probe_absent"] = False
-        return raw
-    if isinstance(raw, dict):
-        raw["frame_strategy"] = "top_page_evaluate"
-        return raw
+        if last_invalid is not None:
+            return last_invalid
+        last_absent = dict(last_absent)
+        last_absent["error"] = str(exc)[:200]
+        last_absent["frame_strategy"] = last_absent.get("frame_strategy") or "contentDocument_fallback"
+        return last_absent
+    parsed = _decode_rec_card_queue_gate_eval(
+        raw,
+        frame_strategy="contentDocument_fallback" if frames else "top_page_evaluate",
+    )
+    if parsed.get("probe_found") is True and parsed.get("parse_invalid") is not True:
+        return parsed
+    if parsed.get("probe_found") is True and parsed.get("parse_invalid") is True:
+        return parsed
+    if last_invalid is not None:
+        return last_invalid
+    if frames:
+        last_absent["contentDocument_fallback_absent"] = True
+        return last_absent
+    return parsed
+
+
+def wait_and_scrape_rec_card_queue_gate_state_from_page(
+    page: Any,
+    *,
+    timeout_s: float = 20.0,
+    poll_s: float = 0.5,
+) -> dict[str, Any]:
+    """Bounded wait for #rec-card-queue-render-trace after auth (no navigation/click).
+
+    Strict auth may precede rec-card paint. Poll page.frames until a current
+    parse-valid probe appears or timeout. Present-but-invalid is retained but
+    does not end the wait early (rerender may replace it).
+    """
+    deadline = time.time() + max(0.5, float(timeout_s))
+    last: dict[str, Any] = {
+        "probe_found": False,
+        "probe_absent": True,
+        "parse_invalid": False,
+        "selector": f"#{RENDER_TRACE_PROBE_ELEMENT_ID}",
+        "frame_strategy": "page.frames",
+    }
+    attempts = 0
+    started = time.time()
+    while time.time() < deadline:
+        attempts += 1
+        last = scrape_rec_card_queue_gate_state_from_page(page)
+        last["attempts"] = attempts
+        last["elapsed_s"] = max(0.0, time.time() - started)
+        last["waited_for_probe"] = True
+        last["probe_wait_timeout"] = False
+        if last.get("probe_found") is True and last.get("parse_invalid") is not True:
+            return last
+        try:
+            page.wait_for_timeout(int(max(0.05, float(poll_s)) * 1000))
+        except Exception:
+            time.sleep(max(0.05, float(poll_s)))
+    last = scrape_rec_card_queue_gate_state_from_page(page)
+    last["attempts"] = attempts + 1
+    last["elapsed_s"] = max(0.0, time.time() - started)
+    last["waited_for_probe"] = True
+    last["probe_wait_timeout"] = True
     return last
+
+
+def evaluate_context_a_live_queue_gate_reservation(gate: dict[str, Any] | None) -> dict[str, Any]:
+    """Strong Context-A reservation gate. Observation success does not imply pass."""
+    row = dict(gate or {})
+    reason = str(row.get("early_return_reason") or "").strip().lower()
+    enabled_reason = reason in ("", "enabled")
+    checks = {
+        "probe_found": row.get("probe_found") is True,
+        "solo_enabled": row.get("solo_enabled") is True,
+        "parent_requested": row.get("parent_requested") is True,
+        "parent_probe": row.get("parent_probe") is True,
+        "queue_gate": row.get("queue_gate") is True,
+        "renderer_call_reached": row.get("renderer_call_reached") is True,
+        "would_render": row.get("would_render") is True,
+        "early_return_reason_enabled": enabled_reason and row.get("probe_found") is True,
+    }
+    failing = [k for k, ok in checks.items() if not ok]
+    return {
+        "ok": not failing,
+        "checks": checks,
+        "failing": failing,
+        "early_return_reason": row.get("early_return_reason") or "",
+        "probe_found": row.get("probe_found") is True,
+        "probe_absent": row.get("probe_absent") is True,
+        "classification": (
+            "CONTEXT_A_LIVE_QUEUE_GATE_RESERVATION_OK"
+            if not failing
+            else "FRANCISCO_QUEUE_MUTATION_LIVE_AUTHENTICATED_QUEUE_GATE_NOT_READY"
+        ),
+    }
 
 
 def register_rec_queue_widget(

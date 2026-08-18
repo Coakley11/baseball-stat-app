@@ -622,16 +622,26 @@ def main() -> int:
             screenshot_labels=[("success", None)],
             browser_surfaces=surface_monitor.diagnostic_blob() if surface_monitor else None,
         )
+        # Auth may succeed before rec-card paint / fragment reemit. Boundedly wait
+        # on the existing page (no refresh/nav/QP/click) for #rec-card-queue-render-trace.
         rec_card_queue_gate = {"probe_found": False, "probe_absent": True, "selector": "#rec-card-queue-render-trace"}
         try:
-            from live_draft_rec_queue_click_trace import scrape_rec_card_queue_gate_state_from_page
+            from live_draft_rec_queue_click_trace import (
+                wait_and_scrape_rec_card_queue_gate_state_from_page,
+            )
 
-            rec_card_queue_gate = scrape_rec_card_queue_gate_state_from_page(page)
+            rec_card_queue_gate = wait_and_scrape_rec_card_queue_gate_state_from_page(
+                page,
+                timeout_s=20.0,
+                poll_s=0.5,
+            )
         except Exception as exc:
             rec_card_queue_gate = {
                 "probe_found": False,
                 "probe_absent": True,
                 "selector": "#rec-card-queue-render-trace",
+                "waited_for_probe": True,
+                "probe_wait_timeout": True,
                 "error": str(exc)[:200],
             }
         success_payload = {

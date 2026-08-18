@@ -110,7 +110,9 @@ def main() -> int:
     )
     from live_draft_rec_queue_click_trace import (
         RENDER_TRACE_PROBE_ELEMENT_ID,
+        evaluate_context_a_live_queue_gate_reservation,
         scrape_rec_card_queue_gate_state_from_page,
+        wait_and_scrape_rec_card_queue_gate_state_from_page,
         render_rec_queue_render_trace_probe,
     )
     from live_draft_stage1_parent_boundary import capture_stage1_diagnostic_intents
@@ -489,6 +491,418 @@ def main() -> int:
         )
     )
 
+    # --- Context-A live gate extractor: bounded wait + frames (harness-only) ---
+    good_gate = {
+        "probe_found": True,
+        "probe_absent": False,
+        "solo_enabled": True,
+        "parent_requested": True,
+        "parent_probe": True,
+        "queue_gate": True,
+        "renderer_call_reached": True,
+        "would_render": True,
+        "early_return_reason": "enabled",
+        "impl_rev": "rec_queue_render_trace_v5_queue_gate",
+        "queue_gate_json": "",
+    }
+    stale_invalid = {
+        "probe_found": True,
+        "probe_absent": False,
+        "solo_enabled": True,
+        "parent_requested": True,
+        "parent_probe": True,
+        "queue_gate": True,
+        "renderer_call_reached": True,
+        "would_render": True,
+        "early_return_reason": "enabled",
+        "impl_rev": "rec_queue_render_trace_v5_queue_gate",
+        "queue_gate_json": "{not-json",
+    }
+
+    class _GateFrame:
+        def __init__(self, result, url="https://app/~/+/"):
+            self.url = url
+            self._result = result
+
+        def evaluate(self, *_a, **_k):
+            return self._result if not callable(self._result) else self._result()
+
+    class _GatePage:
+        def __init__(self, frames, top=None):
+            self.frames = frames
+            self._top = top if top is not None else {"probe_found": False, "probe_absent": True}
+            self.navigated = False
+            self.goto_calls = 0
+            self.reload_calls = 0
+            self.click_calls = 0
+            self.evaluate_urls: list[str] = []
+
+        def evaluate(self, *_a, **_k):
+            return self._top if not callable(self._top) else self._top()
+
+        def wait_for_timeout(self, _ms):
+            return None
+
+        def goto(self, *_a, **_k):
+            self.goto_calls += 1
+            self.navigated = True
+
+        def reload(self, *_a, **_k):
+            self.reload_calls += 1
+            self.navigated = True
+
+        def click(self, *_a, **_k):
+            self.click_calls += 1
+
+    main_hit = scrape_rec_card_queue_gate_state_from_page(
+        _GatePage(frames=[_GateFrame(good_gate, url="https://streamlit.app/")])
+    )
+    results.append(
+        _check(
+            "ex1_main_frame_immediate",
+            main_hit.get("probe_found") is True
+            and main_hit.get("frame_strategy") == "page.frames"
+            and main_hit.get("frame_index") == 0
+            and main_hit.get("parent_requested") is True,
+            main_hit,
+        )
+    )
+
+    child_hit = scrape_rec_card_queue_gate_state_from_page(
+        _GatePage(
+            frames=[
+                _GateFrame({"probe_found": False, "probe_absent": True}, url="https://streamlit.app/"),
+                _GateFrame(good_gate, url="https://app/~/+/"),
+            ],
+            top={"probe_found": False, "probe_absent": True},
+        )
+    )
+    results.append(
+        _check(
+            "ex2_child_frame_immediate",
+            child_hit.get("probe_found") is True
+            and child_hit.get("frame_index") == 1
+            and child_hit.get("frame_strategy") == "page.frames",
+            child_hit,
+        )
+    )
+
+    srcdoc_hit = scrape_rec_card_queue_gate_state_from_page(
+        _GatePage(
+            frames=[
+                _GateFrame({"probe_found": False}, url="https://streamlit.app/"),
+                _GateFrame(good_gate, url="about:srcdoc"),
+            ]
+        )
+    )
+    results.append(
+        _check(
+            "ex3_about_srcdoc_frame",
+            srcdoc_hit.get("probe_found") is True
+            and srcdoc_hit.get("frame_url") == "about:srcdoc"
+            and srcdoc_hit.get("frame_strategy") == "page.frames",
+            srcdoc_hit,
+        )
+    )
+
+    appear_seq = {"i": 0, "rows": [{"probe_found": False}, {"probe_found": False}, good_gate]}
+
+    class _AppearPage(_GatePage):
+        def __init__(self):
+            super().__init__(frames=[])
+
+        def evaluate(self, *_a, **_k):
+            i = appear_seq["i"]
+            appear_seq["i"] += 1
+            return appear_seq["rows"][i] if i < len(appear_seq["rows"]) else appear_seq["rows"][-1]
+
+    appear = wait_and_scrape_rec_card_queue_gate_state_from_page(_AppearPage(), timeout_s=2.0, poll_s=0.05)
+    results.append(
+        _check(
+            "ex4_absent_then_appears",
+            appear.get("probe_found") is True
+            and int(appear.get("attempts") or 0) >= 3
+            and appear.get("waited_for_probe") is True
+            and appear.get("probe_wait_timeout") is False,
+            appear,
+        )
+    )
+
+    repl_seq = [{"probe_found": False}, good_gate]
+    repl_i = {"n": 0}
+
+    class _ReplFrame:
+        url = "https://app/~/+/"
+
+        def evaluate(self, *_a, **_k):
+            n = repl_i["n"]
+            repl_i["n"] += 1
+            return repl_seq[n] if n < len(repl_seq) else repl_seq[-1]
+
+    repl_page = _GatePage(frames=[_ReplFrame()])
+    repl = wait_and_scrape_rec_card_queue_gate_state_from_page(repl_page, timeout_s=2.0, poll_s=0.05)
+    results.append(
+        _check(
+            "ex5_frame_replaced_before_trace",
+            repl.get("probe_found") is True and repl.get("frame_strategy") == "page.frames",
+            repl,
+        )
+    )
+
+    parse_seq = {"i": 0, "rows": [stale_invalid, good_gate]}
+
+    class _ParseThenValidPage(_GatePage):
+        def __init__(self):
+            super().__init__(frames=[])
+
+        def evaluate(self, *_a, **_k):
+            i = parse_seq["i"]
+            parse_seq["i"] += 1
+            return parse_seq["rows"][i] if i < len(parse_seq["rows"]) else parse_seq["rows"][-1]
+
+    parse_then = wait_and_scrape_rec_card_queue_gate_state_from_page(
+        _ParseThenValidPage(), timeout_s=2.0, poll_s=0.05
+    )
+    results.append(
+        _check(
+            "ex6_unparseable_then_valid",
+            parse_then.get("probe_found") is True
+            and parse_then.get("parse_invalid") is not True
+            and int(parse_then.get("attempts") or 0) >= 2,
+            parse_then,
+        )
+    )
+
+    absent = wait_and_scrape_rec_card_queue_gate_state_from_page(
+        _GatePage(frames=[_GateFrame({"probe_found": False})]),
+        timeout_s=0.6,
+        poll_s=0.05,
+    )
+    results.append(
+        _check(
+            "ex7_permanently_absent_fail_closed",
+            absent.get("probe_found") is False
+            and absent.get("probe_absent") is True
+            and absent.get("probe_wait_timeout") is True
+            and int(absent.get("attempts") or 0) >= 2
+            and "elapsed_s" in absent
+            and absent.get("selector") == f"#{RENDER_TRACE_PROBE_ELEMENT_ID}",
+            absent,
+        )
+    )
+
+    bad_only = wait_and_scrape_rec_card_queue_gate_state_from_page(
+        _GatePage(frames=[_GateFrame(stale_invalid)]),
+        timeout_s=0.6,
+        poll_s=0.05,
+    )
+    results.append(
+        _check(
+            "ex8_permanently_parse_invalid_distinct",
+            bad_only.get("probe_found") is True
+            and bad_only.get("parse_invalid") is True
+            and bad_only.get("probe_absent") is False
+            and bad_only.get("probe_wait_timeout") is True,
+            bad_only,
+        )
+    )
+
+    top_absent_child = scrape_rec_card_queue_gate_state_from_page(
+        _GatePage(
+            frames=[
+                _GateFrame({"probe_found": False}, url="https://streamlit.app/"),
+                _GateFrame(good_gate, url="https://app/~/+/"),
+            ],
+            top={"probe_found": False, "probe_absent": True},
+        )
+    )
+    results.append(
+        _check(
+            "ex9_top_absent_child_valid",
+            top_absent_child.get("probe_found") is True and top_absent_child.get("frame_index") == 1,
+            top_absent_child,
+        )
+    )
+
+    prefer_valid = scrape_rec_card_queue_gate_state_from_page(
+        _GatePage(
+            frames=[
+                _GateFrame(stale_invalid, url="about:blank"),
+                _GateFrame(good_gate, url="about:srcdoc"),
+            ]
+        )
+    )
+    results.append(
+        _check(
+            "ex10_stale_then_current_valid",
+            prefer_valid.get("probe_found") is True
+            and prefer_valid.get("parse_invalid") is not True
+            and prefer_valid.get("frame_index") == 1
+            and prefer_valid.get("frame_url") == "about:srcdoc",
+            prefer_valid,
+        )
+    )
+
+    side_effect_page = _GatePage(frames=[_GateFrame(good_gate)])
+    wait_and_scrape_rec_card_queue_gate_state_from_page(side_effect_page, timeout_s=0.5, poll_s=0.05)
+    results.append(
+        _check(
+            "ex11_16_no_nav_refresh_qp_browser_click_mutation",
+            side_effect_page.goto_calls == 0
+            and side_effect_page.reload_calls == 0
+            and side_effect_page.click_calls == 0
+            and side_effect_page.navigated is False,
+        )
+    )
+
+    capture_src = (ROOT / "scripts" / "capture_playwright_daniel_auth_once.py").read_text(encoding="utf-8")
+    capture_scrape = capture_src.split("rec_card_queue_gate", 1)[-1][:1200]
+    results.append(
+        _check(
+            "ex18_19_wait_after_auth_boundary",
+            "wait_and_scrape_rec_card_queue_gate_state_from_page" in capture_src
+            and "strict_auth_passed" in capture_src
+            and capture_src.find("if not last_eval.get(\"strict_auth_passed\")")
+            < capture_src.find("wait_and_scrape_rec_card_queue_gate_state_from_page")
+            and "page.goto" not in capture_scrape
+            and "reload(" not in capture_scrape,
+        )
+    )
+    results.append(
+        _check(
+            "ex_wait_helper_present",
+            "def wait_and_scrape_rec_card_queue_gate_state_from_page" in rec_src
+            and "page.frames" in rec_src
+            and "contentDocument" in rec_src
+            and "probe_wait_timeout" in rec_src,
+        )
+    )
+
+    results.append(
+        _check(
+            "ex20_live_gate_fields_parse",
+            all(
+                k in main_hit
+                for k in (
+                    "solo_enabled",
+                    "parent_requested",
+                    "parent_probe",
+                    "queue_gate",
+                    "renderer_call_reached",
+                    "would_render",
+                    "early_return_reason",
+                )
+            ),
+            main_hit,
+        )
+    )
+
+    def _gate_eval(**over: Any) -> dict[str, Any]:
+        base = dict(good_gate)
+        base.update(over)
+        return evaluate_context_a_live_queue_gate_reservation(base)
+
+    results.append(
+        _check(
+            "ex21_parent_requested_false_gate_fail",
+            _gate_eval(parent_requested=False).get("ok") is False
+            and "parent_requested" in (_gate_eval(parent_requested=False).get("failing") or []),
+        )
+    )
+    results.append(
+        _check(
+            "ex22_parent_probe_false_gate_fail",
+            _gate_eval(parent_probe=False).get("ok") is False
+            and "parent_probe" in (_gate_eval(parent_probe=False).get("failing") or []),
+        )
+    )
+    results.append(
+        _check(
+            "ex23_queue_gate_false_gate_fail",
+            _gate_eval(queue_gate=False).get("ok") is False
+            and "queue_gate" in (_gate_eval(queue_gate=False).get("failing") or []),
+        )
+    )
+    results.append(
+        _check(
+            "ex24_would_render_false_gate_fail",
+            _gate_eval(would_render=False).get("ok") is False
+            and "would_render" in (_gate_eval(would_render=False).get("failing") or []),
+        )
+    )
+    enabled_ok = evaluate_context_a_live_queue_gate_reservation(good_gate)
+    results.append(
+        _check(
+            "ex25_all_true_enabled_passes",
+            enabled_ok.get("ok") is True and not (enabled_ok.get("failing") or []),
+            enabled_ok,
+        )
+    )
+    results.append(
+        _check(
+            "ex_trace_is_markdown_not_components_html",
+            "st.markdown(" in rec_src.split("def render_rec_queue_render_trace_probe", 1)[-1].split("def ", 1)[0]
+            and "components.html" not in rec_src.split("def render_rec_queue_render_trace_probe", 1)[-1].split("def ", 1)[0],
+        )
+    )
+    results.append(
+        _check(
+            "ex_snapshot_dual_emit_vs_trace_markdown",
+            "_emit_queue_state_probe_dom" in diag_src
+            and "components.html" in diag_src.split("def _emit_queue_state_probe_dom", 1)[-1][:400],
+        )
+    )
+
+    # Local 3cb-shaped replay: auth-boundary wait begins; absent then child-frame hit
+    replay_i = {"n": 0}
+    replay_rows = [
+        {"probe_found": False, "probe_absent": True},
+        {"probe_found": False, "probe_absent": True},
+        good_gate,
+    ]
+
+    class _ReplayFrame:
+        url = "about:srcdoc"
+
+        def evaluate(self, *_a, **_k):
+            n = replay_i["n"]
+            replay_i["n"] += 1
+            return replay_rows[n] if n < len(replay_rows) else replay_rows[-1]
+
+    replay_page = _GatePage(
+        frames=[
+            _GateFrame({"probe_found": False}, url="https://streamlit.app/"),
+            _ReplayFrame(),
+        ],
+        top={"probe_found": False, "probe_absent": True},
+    )
+    replay = wait_and_scrape_rec_card_queue_gate_state_from_page(replay_page, timeout_s=2.0, poll_s=0.05)
+    results.append(
+        _check(
+            "ex_3cb_shape_delayed_child_frame",
+            replay.get("probe_found") is True
+            and replay.get("frame_strategy") == "page.frames"
+            and int(replay.get("attempts") or 0) >= 3
+            and replay_page.goto_calls == 0
+            and replay_page.click_calls == 0,
+            replay,
+        )
+    )
+    permanent = wait_and_scrape_rec_card_queue_gate_state_from_page(
+        _GatePage(frames=[_GateFrame({"probe_found": False})], top={"probe_found": False}),
+        timeout_s=0.5,
+        poll_s=0.05,
+    )
+    results.append(
+        _check(
+            "ex_3cb_shape_permanent_absence_not_observed",
+            permanent.get("probe_found") is False
+            and permanent.get("probe_wait_timeout") is True
+            and permanent.get("probe_absent") is True,
+            permanent,
+        )
+    )
+
     failed = [x["name"] for x in results if not x.get("ok")]
     summary = {
         "ok": not failed,
@@ -500,6 +914,10 @@ def main() -> int:
         "context_a": False,
         "click": False,
         "queue_mutation": False,
+        "labels": {
+            "root_cause": "FRANCISCO_QUEUE_MUTATION_CONTEXT_A_GATE_TRACE_WAIT_DEFECT_CONFIRMED+FRANCISCO_QUEUE_MUTATION_CONTEXT_A_GATE_TRACE_PAINT_READINESS_DEFECT_CONFIRMED",
+            "extractor_ready": "FRANCISCO_QUEUE_MUTATION_CONTEXT_A_LIVE_GATE_TRACE_EXTRACTOR_READY",
+        },
     }
     print(json.dumps(summary, indent=2, default=str))
     if failed:
