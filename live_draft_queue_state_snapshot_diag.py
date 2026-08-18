@@ -31,6 +31,9 @@ SESSION_LEDGER_KEY = "_stage1_queue_state_snapshot_ledger"
 SESSION_LAST_KEY = "_stage1_queue_state_snapshot_last"
 SESSION_BASELINE_KEY = "_stage1_queue_state_snapshot_baseline"
 SESSION_POST_KEY = "_stage1_queue_state_snapshot_post"
+SESSION_GATE_OBS_KEY = "_stage1_queue_snapshot_gate_obs"
+SOLO_QP_NAME = "solo_component_diag"
+PARENT_QP_NAME = "solo_stage1_parent_boundary"
 MAX_LEDGER = 32
 
 PHASE_BASELINE = "QUEUE_STATE_BASELINE"
@@ -126,6 +129,203 @@ def queue_state_snapshot_diag_enabled(st: Any | None, session: dict[str, Any]) -
             parent_on = True
             session["_solo_stage1_parent_boundary_probe"] = True
     return bool(solo_on and parent_on)
+
+
+def _truthy_flag(value: Any) -> bool:
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _query_params_raw(st: Any | None, name: str) -> tuple[bool, str]:
+    """Read st.query_params only — no st.context.url fallback."""
+    if st is None:
+        return False, ""
+    try:
+        qp = getattr(st, "query_params", None)
+        if qp is None:
+            return False, ""
+        present = False
+        val: Any = None
+        try:
+            present = name in qp
+        except Exception:
+            present = False
+        try:
+            val = qp.get(name)
+        except Exception:
+            val = None
+        if val is None and not present:
+            return False, ""
+        if isinstance(val, list):
+            text = str(val[0] or "").strip()
+        elif isinstance(val, (str, int, float, bool)):
+            text = str(val).strip()
+        else:
+            text = ""
+        return True, text
+    except Exception:
+        return False, ""
+
+
+def _context_url_raw(st: Any | None, name: str) -> tuple[bool, str]:
+    if st is None:
+        return False, ""
+    try:
+        from live_draft_cloud_diagnostics import _qp_from_context_url
+
+        text = str(_qp_from_context_url(st, name) or "").strip()
+        return bool(text), text
+    except Exception:
+        return False, ""
+
+
+def _paint_via(session: dict[str, Any]) -> str:
+    last = session.get("_solo_stage1_last_recommendation_paint")
+    if isinstance(last, dict):
+        via = str(last.get("via") or "").strip()
+        if via:
+            return via[:48]
+    hint = str(session.get("_solo_stage1_fragment_run_hint") or "").strip()
+    return hint[:48]
+
+
+def classify_queue_snapshot_early_return_reason(
+    *,
+    renderer_call_reached: bool,
+    gate_enabled: bool,
+    solo_enabled: bool,
+    parent_requested: bool,
+    parent_probe: bool,
+    parent_qp_present: bool,
+    parent_url_present: bool,
+) -> str:
+    """Deterministic first-failing predicate from actual gate inputs."""
+    if not renderer_call_reached:
+        return "renderer_not_called"
+    if gate_enabled:
+        return "enabled"
+    if not solo_enabled:
+        return "solo_disabled"
+    if parent_requested and not parent_probe:
+        return "parent_probe_false"
+    if not parent_requested and not parent_probe:
+        if not parent_qp_present and not parent_url_present:
+            return "parent_requested_false"
+        if not parent_qp_present:
+            return "parent_live_flag_not_seen"
+        if not parent_url_present:
+            return "parent_url_flag_not_seen"
+        return "parent_requested_false"
+    if not parent_probe:
+        return "parent_probe_false"
+    return "dual_gate_false"
+
+
+def observe_queue_snapshot_gate_state(
+    st: Any | None,
+    session: dict[str, Any],
+    *,
+    renderer_call_reached: bool = False,
+) -> dict[str, Any]:
+    """Read-only live queue-probe gate inputs. Does not emit the snapshot DOM.
+
+    Does not include queue contents, tokens, cookies, email, or credentials.
+    """
+    if not isinstance(session, dict):
+        session = {}
+    solo_qp_present, solo_qp_value = _query_params_raw(st, SOLO_QP_NAME)
+    parent_qp_present, parent_qp_value = _query_params_raw(st, PARENT_QP_NAME)
+    solo_url_present, solo_url_value = _context_url_raw(st, SOLO_QP_NAME)
+    parent_url_present, parent_url_value = _context_url_raw(st, PARENT_QP_NAME)
+    gate_enabled = bool(queue_state_snapshot_diag_enabled(st, session))
+    solo_enabled = bool(session.get("_solo_component_diag_enabled"))
+    parent_requested = bool(session.get("_solo_stage1_parent_boundary_requested"))
+    parent_probe = bool(session.get("_solo_stage1_parent_boundary_probe"))
+    reason = classify_queue_snapshot_early_return_reason(
+        renderer_call_reached=bool(renderer_call_reached),
+        gate_enabled=gate_enabled,
+        solo_enabled=solo_enabled,
+        parent_requested=parent_requested,
+        parent_probe=parent_probe,
+        parent_qp_present=parent_qp_present and _truthy_flag(parent_qp_value),
+        parent_url_present=parent_url_present and _truthy_flag(parent_url_value),
+    )
+    obs: dict[str, Any] = {
+        "streamlit_session_id": _streamlit_session_id(session),
+        "room_id": _room_id(session),
+        "paint_via": _paint_via(session),
+        "solo_qp_present": bool(solo_qp_present),
+        "solo_qp_value": solo_qp_value[:16],
+        "solo_qp_flag": _truthy_flag(solo_qp_value),
+        "solo_url_present": bool(solo_url_present),
+        "solo_url_value": solo_url_value[:16],
+        "solo_url_flag": _truthy_flag(solo_url_value),
+        "solo_enabled": solo_enabled,
+        "parent_qp_present": bool(parent_qp_present),
+        "parent_qp_value": parent_qp_value[:16],
+        "parent_qp_flag": _truthy_flag(parent_qp_value),
+        "parent_url_present": bool(parent_url_present),
+        "parent_url_value": parent_url_value[:16],
+        "parent_url_flag": _truthy_flag(parent_url_value),
+        "parent_requested": parent_requested,
+        "parent_probe": parent_probe,
+        "queue_state_snapshot_diag_enabled": gate_enabled,
+        "queue_snapshot_renderer_call_reached": bool(renderer_call_reached),
+        "queue_snapshot_renderer_would_render": bool(gate_enabled and renderer_call_reached),
+        "queue_snapshot_early_return_reason": reason,
+    }
+    session[SESSION_GATE_OBS_KEY] = dict(obs)
+    return obs
+
+
+def format_queue_gate_dom_attrs(obs: dict[str, Any] | None) -> str:
+    """data-* attributes for #rec-card-queue-render-trace. No queue contents."""
+    row = dict(obs or {})
+    safe = lambda s: str(s or "").replace('"', "'")[:120]
+    flag = lambda k: "1" if row.get(k) else "0"
+    compact = {
+        "sid": row.get("streamlit_session_id") or "",
+        "room_id": row.get("room_id") or "",
+        "paint_via": row.get("paint_via") or "",
+        "solo_qp_present": bool(row.get("solo_qp_present")),
+        "solo_qp_flag": bool(row.get("solo_qp_flag")),
+        "solo_url_present": bool(row.get("solo_url_present")),
+        "solo_url_flag": bool(row.get("solo_url_flag")),
+        "solo_enabled": bool(row.get("solo_enabled")),
+        "parent_qp_present": bool(row.get("parent_qp_present")),
+        "parent_qp_flag": bool(row.get("parent_qp_flag")),
+        "parent_url_present": bool(row.get("parent_url_present")),
+        "parent_url_flag": bool(row.get("parent_url_flag")),
+        "parent_requested": bool(row.get("parent_requested")),
+        "parent_probe": bool(row.get("parent_probe")),
+        "queue_gate": bool(row.get("queue_state_snapshot_diag_enabled")),
+        "renderer_call_reached": bool(row.get("queue_snapshot_renderer_call_reached")),
+        "would_render": bool(row.get("queue_snapshot_renderer_would_render")),
+        "early_return_reason": row.get("queue_snapshot_early_return_reason") or "",
+    }
+    gate_json = json.dumps(compact, default=str).replace('"', "'")[:2000]
+    return (
+        f'data-sid="{safe(row.get("streamlit_session_id"))}" '
+        f'data-paint-via="{safe(row.get("paint_via"))}" '
+        f'data-solo-qp="{safe(row.get("solo_qp_value"))}" '
+        f'data-solo-qp-present="{flag("solo_qp_present")}" '
+        f'data-solo-qp-flag="{flag("solo_qp_flag")}" '
+        f'data-solo-url-present="{flag("solo_url_present")}" '
+        f'data-solo-url-flag="{flag("solo_url_flag")}" '
+        f'data-solo-enabled="{flag("solo_enabled")}" '
+        f'data-parent-qp="{safe(row.get("parent_qp_value"))}" '
+        f'data-parent-qp-present="{flag("parent_qp_present")}" '
+        f'data-parent-qp-flag="{flag("parent_qp_flag")}" '
+        f'data-parent-url="{safe(row.get("parent_url_value"))}" '
+        f'data-parent-url-present="{flag("parent_url_present")}" '
+        f'data-parent-url-flag="{flag("parent_url_flag")}" '
+        f'data-parent-requested="{flag("parent_requested")}" '
+        f'data-parent-probe="{flag("parent_probe")}" '
+        f'data-queue-gate="{flag("queue_state_snapshot_diag_enabled")}" '
+        f'data-queue-renderer-reached="{flag("queue_snapshot_renderer_call_reached")}" '
+        f'data-queue-would-render="{flag("queue_snapshot_renderer_would_render")}" '
+        f'data-queue-early-return-reason="{safe(row.get("queue_snapshot_early_return_reason"))}" '
+        f'data-queue-gate-json="{gate_json}"'
+    )
 
 
 def _streamlit_session_id(session: dict[str, Any] | None = None) -> str:
@@ -516,10 +716,10 @@ def _emit_queue_state_probe_dom(st: Any, html: str) -> None:
 
 def render_queue_state_snapshot_probe(st: Any, session: dict[str, Any]) -> None:
     """Hidden DOM probe for Playwright scrape (diag-gated)."""
-    # Refresh latches before gate so parent_boundary is not dropped when solo
-    # was latched earlier but parent was not (production 961e9378 failure mode).
-    _refresh_queue_state_diag_latches(st, session)
-    if not queue_state_snapshot_diag_enabled(st, session):
+    # Always stamp live gate-state first so the solo-only rec-card sibling can
+    # expose why this renderer returned. Does not emit this probe when gated off.
+    obs = observe_queue_snapshot_gate_state(st, session, renderer_call_reached=True)
+    if not obs.get("queue_state_snapshot_diag_enabled"):
         return
     # Refresh baseline on render so pre-click evidence stays current.
     # Empty queues [] are valid and MUST still emit (never treat as missing).

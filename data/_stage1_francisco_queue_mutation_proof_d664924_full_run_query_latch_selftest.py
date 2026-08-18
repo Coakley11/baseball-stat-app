@@ -621,6 +621,74 @@ def main() -> int:
         )
     )
 
+    from live_draft_rec_queue_click_trace import (
+        RENDER_TRACE_PROBE_ELEMENT_ID,
+        register_rec_queue_render_trace,
+        render_rec_queue_render_trace_probe,
+    )
+
+    register_rec_queue_render_trace(
+        session_replay,
+        room_id=LOCAL_ROOM,
+        pick_index=0,
+        player_id="231",
+        player_name="Francisco Lindor",
+        widget_key=f"rec_card_queue_{LOCAL_ROOM}_0_231_rec_card",
+    )
+    session_replay["_solo_stage1_last_recommendation_paint"] = {"via": "fragment_interactive_live"}
+    st_trace = _fragment_st(session_replay, url=replay_url)
+    render_rec_queue_render_trace_probe(st_trace, session_replay)
+    d.render_queue_state_snapshot_probe(st_trace, session_replay)
+    success_html = " ".join(st_trace.markdowns)
+    success_obs = session_replay.get(d.SESSION_GATE_OBS_KEY) or {}
+    results.append(
+        _check(
+            "success_shape_rec_card_exposes_enabled_gate",
+            f'id="{RENDER_TRACE_PROBE_ELEMENT_ID}"' in success_html
+            and f'id="{d.PROBE_ID}"' in success_html
+            and success_obs.get("solo_enabled") is True
+            and success_obs.get("parent_requested") is True
+            and success_obs.get("parent_probe") is True
+            and success_obs.get("queue_state_snapshot_diag_enabled") is True
+            and success_obs.get("queue_snapshot_renderer_call_reached") is True
+            and success_obs.get("queue_snapshot_renderer_would_render") is True
+            and success_obs.get("queue_snapshot_early_return_reason") == "enabled",
+            success_obs,
+        )
+    )
+
+    session_fail = _equal_queue_session(LOCAL_SID, LOCAL_ROOM)
+    session_fail["_solo_component_diag_enabled"] = True
+    session_fail["_solo_stage1_last_recommendation_paint"] = {"via": "fragment_interactive_live"}
+    register_rec_queue_render_trace(
+        session_fail,
+        room_id=LOCAL_ROOM,
+        pick_index=0,
+        player_id="231",
+        player_name="Francisco Lindor",
+        widget_key=f"rec_card_queue_{LOCAL_ROOM}_0_231_rec_card",
+    )
+    st_fail = _St({}, url="https://app/")
+    render_rec_queue_render_trace_probe(st_fail, session_fail)
+    d.render_queue_state_snapshot_probe(st_fail, session_fail)
+    fail_html = " ".join(st_fail.markdowns)
+    fail_obs = session_fail.get(d.SESSION_GATE_OBS_KEY) or {}
+    results.append(
+        _check(
+            "failure_shape_rec_card_visible_snapshot_absent_reason",
+            f'id="{RENDER_TRACE_PROBE_ELEMENT_ID}"' in fail_html
+            and f'id="{d.PROBE_ID}"' not in fail_html
+            and fail_obs.get("solo_enabled") is True
+            and fail_obs.get("parent_requested") is not True
+            and fail_obs.get("parent_probe") is not True
+            and fail_obs.get("queue_state_snapshot_diag_enabled") is False
+            and fail_obs.get("queue_snapshot_renderer_call_reached") is True
+            and fail_obs.get("queue_snapshot_renderer_would_render") is False
+            and fail_obs.get("queue_snapshot_early_return_reason") == "parent_requested_false",
+            fail_obs,
+        )
+    )
+
     failed = [x["name"] for x in results if not x.get("ok")]
     summary = {
         "ok": not failed,

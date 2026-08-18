@@ -15,7 +15,7 @@ REC_QUEUE_CALLBACK_ID = "_on_rec_queue_click"
 REC_QUEUE_CALLBACK_VERSION = "live_draft_room_ui_v1"
 RENDER_TRACE_PROBE_ELEMENT_ID = "rec-card-queue-render-trace"
 PER_CARD_RENDER_TRACE_CLASS = "rec-card-queue-render-trace-card"
-REC_QUEUE_RENDER_TRACE_IMPL_REV = "rec_queue_render_trace_v4_help_ab"
+REC_QUEUE_RENDER_TRACE_IMPL_REV = "rec_queue_render_trace_v5_queue_gate"
 WIDGET_LIFECYCLE_KEY = "_live_draft_rec_queue_widget_lifecycle"
 MAX_LEDGER = 24
 MAX_RENDER_REGISTRY = 32
@@ -216,6 +216,20 @@ def _render_trace_build_sha() -> str:
         return ""
 
 
+def _queue_gate_trace_attrs(st: Any | None, session: dict[str, Any]) -> str:
+    """Solo-visible gate-state attrs. Must not depend on the parent/queue gate."""
+    try:
+        from live_draft_queue_state_snapshot_diag import (
+            format_queue_gate_dom_attrs,
+            observe_queue_snapshot_gate_state,
+        )
+
+        obs = observe_queue_snapshot_gate_state(st, session, renderer_call_reached=True)
+        return format_queue_gate_dom_attrs(obs)
+    except Exception:
+        return ""
+
+
 def render_per_card_rec_queue_render_trace_marker(
     st: Any,
     session: dict[str, Any],
@@ -305,6 +319,8 @@ def render_rec_queue_render_trace_probe(st: Any, session: dict[str, Any], *, pro
         default=str,
     )[:12000]
     safe = lambda s: str(s or "").replace('"', "'")[:120]
+    gate_attrs = _queue_gate_trace_attrs(st, session)
+    gate_attr_html = f"{gate_attrs} " if gate_attrs else ""
     st.markdown(
         f'<div id="{RENDER_TRACE_PROBE_ELEMENT_ID}" '
         f'class="{PER_CARD_RENDER_TRACE_CLASS} rec-card-queue-render-trace-global" '
@@ -327,9 +343,92 @@ def render_rec_queue_render_trace_probe(st: Any, session: dict[str, Any], *, pro
         f'data-help-variant="{safe(last.get("help_variant"))}" '
         f'data-help-present="{1 if last.get("help_present") else 0}" '
         f'data-impl-rev="{REC_QUEUE_RENDER_TRACE_IMPL_REV}" '
+        f'{gate_attr_html}'
         f'data-json="{payload.replace(chr(34), chr(39))}"></div>',
         unsafe_allow_html=True,
     )
+
+
+_REC_CARD_QUEUE_GATE_EVAL_JS = f"""() => {{
+  const el = document.querySelector('#{RENDER_TRACE_PROBE_ELEMENT_ID}');
+  if (!el) return {{ probe_found: false, probe_absent: true }};
+  const flag = (name) => {{
+    const v = (el.getAttribute(name) || '').trim().toLowerCase();
+    return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+  }};
+  return {{
+    probe_found: true,
+    probe_absent: false,
+    selector: '#{RENDER_TRACE_PROBE_ELEMENT_ID}',
+    sid: el.getAttribute('data-sid') || '',
+    room_id: el.getAttribute('data-room-id') || '',
+    paint_via: el.getAttribute('data-paint-via') || '',
+    solo_qp: el.getAttribute('data-solo-qp') || '',
+    solo_qp_present: flag('data-solo-qp-present'),
+    solo_qp_flag: flag('data-solo-qp-flag'),
+    solo_url_present: flag('data-solo-url-present'),
+    solo_url_flag: flag('data-solo-url-flag'),
+    solo_enabled: flag('data-solo-enabled'),
+    parent_qp: el.getAttribute('data-parent-qp') || '',
+    parent_qp_present: flag('data-parent-qp-present'),
+    parent_qp_flag: flag('data-parent-qp-flag'),
+    parent_url: el.getAttribute('data-parent-url') || '',
+    parent_url_present: flag('data-parent-url-present'),
+    parent_url_flag: flag('data-parent-url-flag'),
+    parent_requested: flag('data-parent-requested'),
+    parent_probe: flag('data-parent-probe'),
+    queue_gate: flag('data-queue-gate'),
+    renderer_call_reached: flag('data-queue-renderer-reached'),
+    would_render: flag('data-queue-would-render'),
+    early_return_reason: el.getAttribute('data-queue-early-return-reason') || '',
+    impl_rev: el.getAttribute('data-impl-rev') || '',
+    queue_gate_json: el.getAttribute('data-queue-gate-json') || '',
+  }};
+}}"""
+
+
+def scrape_rec_card_queue_gate_state_from_page(page: Any) -> dict[str, Any]:
+    """Read-only scrape of #rec-card-queue-render-trace gate-state attrs.
+
+    Does not click, navigate, mutate query params, or consume a bridge.
+    """
+    last: dict[str, Any] = {
+        "probe_found": False,
+        "probe_absent": True,
+        "selector": f"#{RENDER_TRACE_PROBE_ELEMENT_ID}",
+        "frame_strategy": "page.frames",
+    }
+    frames = list(getattr(page, "frames", []) or [])
+    for idx, frame in enumerate(frames):
+        try:
+            raw = frame.evaluate(_REC_CARD_QUEUE_GATE_EVAL_JS)
+        except Exception:
+            continue
+        if isinstance(raw, dict) and raw.get("probe_found") is True:
+            raw["frame_index"] = idx
+            raw["frame_url"] = str(getattr(frame, "url", "") or "")
+            raw["frame_strategy"] = "page.frames"
+            raw["probe_absent"] = False
+            return raw
+        if isinstance(raw, dict):
+            last = dict(raw)
+            last["frame_index"] = idx
+            last["frame_url"] = str(getattr(frame, "url", "") or "")
+            last["frame_strategy"] = "page.frames"
+    try:
+        raw = page.evaluate(_REC_CARD_QUEUE_GATE_EVAL_JS)
+    except Exception as exc:
+        last = dict(last)
+        last["error"] = str(exc)[:200]
+        return last
+    if isinstance(raw, dict) and raw.get("probe_found") is True:
+        raw["frame_strategy"] = "top_page_evaluate"
+        raw["probe_absent"] = False
+        return raw
+    if isinstance(raw, dict):
+        raw["frame_strategy"] = "top_page_evaluate"
+        return raw
+    return last
 
 
 def register_rec_queue_widget(

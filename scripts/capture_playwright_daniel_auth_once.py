@@ -622,6 +622,18 @@ def main() -> int:
             screenshot_labels=[("success", None)],
             browser_surfaces=surface_monitor.diagnostic_blob() if surface_monitor else None,
         )
+        rec_card_queue_gate = {"probe_found": False, "probe_absent": True, "selector": "#rec-card-queue-render-trace"}
+        try:
+            from live_draft_rec_queue_click_trace import scrape_rec_card_queue_gate_state_from_page
+
+            rec_card_queue_gate = scrape_rec_card_queue_gate_state_from_page(page)
+        except Exception as exc:
+            rec_card_queue_gate = {
+                "probe_found": False,
+                "probe_absent": True,
+                "selector": "#rec-card-queue-render-trace",
+                "error": str(exc)[:200],
+            }
         success_payload = {
             **identity,
             "capture_ended_at": utc_capture_timestamp(),
@@ -630,6 +642,7 @@ def main() -> int:
             "login_boundary": login_state,
             "login_timeline": ledger_login_timeline(ledger),
             "observability_binding": observability_binding,
+            "rec_card_queue_gate_state": rec_card_queue_gate,
             "auth_capture_pass": True,
             "trace": trace_meta,
             "ok": True,
@@ -645,6 +658,7 @@ def main() -> int:
             "trace_dir": trace_meta.get("trace_dir"),
             "strict_capture": _public_summary(last_eval),
             "observability_binding": observability_binding,
+            "rec_card_queue_gate_state": rec_card_queue_gate,
             "auth_capture_pass": True,
         }
         print(json.dumps(stdout, default=str))
