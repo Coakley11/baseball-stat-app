@@ -52,20 +52,26 @@ def _qp_flag(st: Any, name: str) -> bool:
 
 
 def _refresh_queue_state_diag_latches(st: Any | None, session: dict[str, Any]) -> None:
-    """Latch parent_boundary when solo is already on and the query flag is present.
+    """Latch parent_boundary when solo is on and parent QP was seen this session.
 
-    Sibling Stage-1 card probes (fragment exec / render-trace) enable on solo alone and
-    often rely on a session latch set at bootstrap. Dual-queue snapshots require BOTH
-    solo_component_diag and solo_stage1_parent_boundary. If parent_boundary was never
-    latched into session (while solo was), fragment/rerun contexts that cannot re-read
-    query params would skip the DOM probe entirely — scrape returns {}.
+    Sibling Stage-1 card probes (fragment exec / render-trace) enable on solo alone.
+    Dual-queue snapshots require BOTH flags. Remember parent QP even when solo is
+    still off, then convert to the session latch once solo is on — including
+    fragment_interactive_live reruns where query params may already be gone.
 
     Observe-only: does not install hooks, mutate queues, or emit canaries.
     """
-    if st is None or not isinstance(session, dict):
+    if not isinstance(session, dict):
         return
+    try:
+        from live_draft_stage1_parent_boundary import remember_parent_boundary_request
+
+        remember_parent_boundary_request(st, session)
+    except ImportError:
+        if st is not None and _qp_flag(st, "solo_stage1_parent_boundary"):
+            session["_solo_stage1_parent_boundary_requested"] = True
     solo_on = bool(session.get("_solo_component_diag_enabled"))
-    if not solo_on:
+    if not solo_on and st is not None:
         try:
             from live_draft_solo_component_diagnostics import solo_component_diag_enabled
 
@@ -78,17 +84,19 @@ def _refresh_queue_state_diag_latches(st: Any | None, session: dict[str, Any]) -
         return
     if session.get("_solo_stage1_parent_boundary_probe"):
         return
-    parent_qp = False
-    try:
-        from live_draft_stage1_parent_boundary import stage1_parent_boundary_probe_enabled
+    parent_on = bool(session.get("_solo_stage1_parent_boundary_requested"))
+    if not parent_on:
+        try:
+            from live_draft_stage1_parent_boundary import stage1_parent_boundary_probe_enabled
 
-        parent_qp = bool(stage1_parent_boundary_probe_enabled(st, session))
-    except ImportError:
-        parent_qp = _qp_flag(st, "solo_stage1_parent_boundary")
-    if not parent_qp:
-        parent_qp = _qp_flag(st, "solo_stage1_parent_boundary")
-    if parent_qp:
+            parent_on = bool(stage1_parent_boundary_probe_enabled(st, session))
+        except ImportError:
+            parent_on = _qp_flag(st, "solo_stage1_parent_boundary")
+    if not parent_on:
+        parent_on = _qp_flag(st, "solo_stage1_parent_boundary")
+    if parent_on:
         session["_solo_stage1_parent_boundary_probe"] = True
+        session["_solo_stage1_parent_boundary_requested"] = True
 
 def queue_state_snapshot_diag_enabled(st: Any | None, session: dict[str, Any]) -> bool:
     """solo_component_diag AND solo_stage1_parent_boundary. No Francisco latch."""
@@ -488,6 +496,24 @@ def latest_post_added_for_sid(
     return dict(matched[-1])
 
 
+def _emit_queue_state_probe_dom(st: Any, html: str) -> None:
+    """Markdown (app document) + components.html (Playwright page.frames), matching deploy marker."""
+    st.markdown(html, unsafe_allow_html=True)
+    html_fn = getattr(st, "html", None)
+    if callable(html_fn):
+        try:
+            html_fn(html, height=0)
+            return
+        except Exception:
+            pass
+    try:
+        import streamlit.components.v1 as components
+
+        components.html(html, height=0)
+    except Exception:
+        pass
+
+
 def render_queue_state_snapshot_probe(st: Any, session: dict[str, Any]) -> None:
     """Hidden DOM probe for Playwright scrape (diag-gated)."""
     # Refresh latches before gate so parent_boundary is not dropped when solo
@@ -512,7 +538,7 @@ def render_queue_state_snapshot_probe(st: Any, session: dict[str, Any]) -> None:
     safe = lambda s: str(s or "").replace('"', "'")[:120]
     # queues_equal: use explicit True check so False and missing stay 0; empty==empty is True.
     queues_equal_attr = "1" if baseline.get("queues_equal") is True else "0"
-    st.markdown(
+    html = (
         f'<div id="{PROBE_ID}" '
         f'data-impl-rev="{safe(IMPL_REV)}" '
         f'data-sid="{safe(baseline.get("streamlit_session_id") or last.get("streamlit_session_id"))}" '
@@ -524,53 +550,136 @@ def render_queue_state_snapshot_probe(st: Any, session: dict[str, Any]) -> None:
         f'data-queues-equal="{queues_equal_attr}" '
         f'data-session-len="{int(baseline.get("session_queue_length") or 0)}" '
         f'data-canonical-len="{int(baseline.get("canonical_queue_length") or 0)}" '
-        f'data-json="{raw.replace(chr(34), chr(39))}"></div>',
-        unsafe_allow_html=True,
+        f'data-json="{raw.replace(chr(34), chr(39))}"></div>'
     )
+    _emit_queue_state_probe_dom(st, html)
 
 
-def scrape_queue_state_snapshot_from_page(page: Any) -> dict[str, Any]:
-    """Playwright helper — scrape DOM probe (runner-side)."""
-    try:
-        raw = page.evaluate(
-            f"""() => {{
-            const docs = [document];
-            for (const f of document.querySelectorAll('iframe')) {{
-              try {{ if (f.contentDocument) docs.push(f.contentDocument); }} catch (e) {{}}
-            }}
-            for (const doc of docs) {{
-              const el = doc.querySelector('#{PROBE_ID}');
-              if (!el) continue;
-              return {{
-                probe_found: true,
-                sid: el.getAttribute('data-sid') || '',
-                run_id: el.getAttribute('data-run-id') || '',
-                room_id: el.getAttribute('data-room-id') || '',
-                phase: el.getAttribute('data-phase') || '',
-                baseline_ts: el.getAttribute('data-baseline-ts') || '',
-                post_ts: el.getAttribute('data-post-ts') || '',
-                session_len: el.getAttribute('data-session-len') || '',
-                canonical_len: el.getAttribute('data-canonical-len') || '',
-                json: el.getAttribute('data-json') || '',
-              }};
-            }}
-            return {{ probe_found: false }};
-          }}"""
-        )
-    except Exception as exc:
-        return {"error": str(exc)[:200], "probe_found": False}
+_QUEUE_PROBE_EVAL_JS = f"""() => {{
+  const el = document.querySelector('#{PROBE_ID}');
+  if (!el) return {{ probe_found: false, probe_absent: true }};
+  return {{
+    probe_found: true,
+    probe_absent: false,
+    sid: el.getAttribute('data-sid') || '',
+    run_id: el.getAttribute('data-run-id') || '',
+    room_id: el.getAttribute('data-room-id') || '',
+    phase: el.getAttribute('data-phase') || '',
+    baseline_ts: el.getAttribute('data-baseline-ts') || '',
+    post_ts: el.getAttribute('data-post-ts') || '',
+    session_len: el.getAttribute('data-session-len') || '',
+    canonical_len: el.getAttribute('data-canonical-len') || '',
+    json: el.getAttribute('data-json') || '',
+  }};
+}}"""
+
+_QUEUE_PROBE_CONTENTDOCUMENT_FALLBACK_JS = f"""() => {{
+  const docs = [document];
+  for (const f of document.querySelectorAll('iframe')) {{
+    try {{ if (f.contentDocument) docs.push(f.contentDocument); }} catch (e) {{}}
+  }}
+  for (const doc of docs) {{
+    const el = doc.querySelector('#{PROBE_ID}');
+    if (!el) continue;
+    return {{
+      probe_found: true,
+      probe_absent: false,
+      sid: el.getAttribute('data-sid') || '',
+      run_id: el.getAttribute('data-run-id') || '',
+      room_id: el.getAttribute('data-room-id') || '',
+      phase: el.getAttribute('data-phase') || '',
+      baseline_ts: el.getAttribute('data-baseline-ts') || '',
+      post_ts: el.getAttribute('data-post-ts') || '',
+      session_len: el.getAttribute('data-session-len') || '',
+      canonical_len: el.getAttribute('data-canonical-len') || '',
+      json: el.getAttribute('data-json') || '',
+      source: 'contentDocument_fallback',
+    }};
+  }}
+  return {{ probe_found: false, probe_absent: true, source: 'contentDocument_fallback' }};
+}}"""
+
+
+def _decode_queue_probe_eval(raw: Any, *, frame_index: int | None = None, frame_url: str = "") -> dict[str, Any]:
+    """Decode one frame evaluate result. probe_found means the selector existed.
+
+    SID/room/phase filtering is NOT applied here — a present element is reported
+    even when JSON parse fails, so absence vs parse-invalid stay distinct.
+    """
     if not isinstance(raw, dict):
-        return {"probe_found": False}
+        return {
+            "probe_found": False,
+            "probe_absent": True,
+            "parse_invalid": False,
+            "selector": f"#{PROBE_ID}",
+            "frame_index": frame_index,
+            "frame_url": frame_url,
+        }
     out = dict(raw)
-    if out.get("probe_found") is not True and not out.get("json") and not out.get("sid"):
-        out["probe_found"] = False
+    out["selector"] = f"#{PROBE_ID}"
+    if frame_index is not None:
+        out["frame_index"] = frame_index
+    if frame_url:
+        out["frame_url"] = frame_url
+    found = out.get("probe_found") is True or bool(out.get("json") or out.get("sid"))
+    out["probe_found"] = bool(found)
+    out["probe_absent"] = not bool(found)
+    out["parse_invalid"] = False
     payload = out.get("json")
     if isinstance(payload, str) and payload.strip():
         try:
             out["payload"] = json.loads(payload.replace("'", '"'))
         except Exception:
+            out["parse_invalid"] = True
             out["payload_raw"] = payload[:4000]
+    elif found and not str(out.get("sid") or "").strip() and not str(out.get("phase") or "").strip():
+        out["parse_invalid"] = True
     return out
+
+
+def scrape_queue_state_snapshot_from_page(page: Any) -> dict[str, Any]:
+    """Playwright helper — prefer page.frames (same contract as scrape_deploy).
+
+    probe_found=true means #stage1-queue-state-snapshot existed in a searched
+    document. It does NOT mean SID/room/phase were accepted.
+    """
+    last_absent: dict[str, Any] = {
+        "probe_found": False,
+        "probe_absent": True,
+        "parse_invalid": False,
+        "selector": f"#{PROBE_ID}",
+        "frame_strategy": "page.frames",
+    }
+    frames = list(getattr(page, "frames", []) or [])
+    for idx, frame in enumerate(frames):
+        try:
+            raw = frame.evaluate(_QUEUE_PROBE_EVAL_JS)
+        except Exception:
+            continue
+        parsed = _decode_queue_probe_eval(
+            raw,
+            frame_index=idx,
+            frame_url=str(getattr(frame, "url", "") or ""),
+        )
+        parsed["frame_strategy"] = "page.frames"
+        if parsed.get("probe_found") is True:
+            return parsed
+        last_absent = parsed
+    try:
+        raw = page.evaluate(_QUEUE_PROBE_CONTENTDOCUMENT_FALLBACK_JS)
+    except Exception as exc:
+        last_absent = dict(last_absent)
+        last_absent["error"] = str(exc)[:200]
+        last_absent["frame_strategy"] = last_absent.get("frame_strategy") or "contentDocument_fallback"
+        return last_absent
+    parsed = _decode_queue_probe_eval(raw)
+    parsed["frame_strategy"] = "contentDocument_fallback" if frames else "top_page_evaluate"
+    if parsed.get("probe_found") is True:
+        return parsed
+    if frames:
+        last_absent["contentDocument_fallback_absent"] = True
+        return last_absent
+    return parsed
 
 
 def wait_and_scrape_queue_state_snapshot_from_page(
@@ -582,14 +691,18 @@ def wait_and_scrape_queue_state_snapshot_from_page(
     """Poll until #stage1-queue-state-snapshot is present, then scrape.
 
     Empty baseline queues are valid; only absence of the probe element retries.
+    A present element with invalid JSON stops the wait (parse_invalid=true).
     """
     deadline = time.time() + max(0.5, float(timeout_s))
-    last: dict[str, Any] = {"probe_found": False}
+    last: dict[str, Any] = {"probe_found": False, "probe_absent": True, "selector": f"#{PROBE_ID}"}
+    attempts = 0
+    started = time.time()
     while time.time() < deadline:
+        attempts += 1
         last = scrape_queue_state_snapshot_from_page(page)
-        if last.get("probe_found") is True or (
-            isinstance(last.get("payload"), dict) and last.get("payload")
-        ):
+        last["attempts"] = attempts
+        last["elapsed_s"] = max(0.0, time.time() - started)
+        if last.get("probe_found") is True or last.get("parse_invalid") is True:
             last["waited_for_probe"] = True
             return last
         try:
@@ -599,4 +712,7 @@ def wait_and_scrape_queue_state_snapshot_from_page(
     last = scrape_queue_state_snapshot_from_page(page)
     last["waited_for_probe"] = True
     last["probe_wait_timeout"] = True
+    last["attempts"] = attempts + 1
+    last["elapsed_s"] = max(0.0, time.time() - started)
+    last["selector"] = f"#{PROBE_ID}"
     return last

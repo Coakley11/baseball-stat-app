@@ -56,6 +56,12 @@ def render_deferred_heavy_paint_fragment(
             reemit_fragment_callback_ledger_probe(st, session)
         except ImportError:
             pass
+        try:
+            from live_draft_queue_state_snapshot_diag import render_queue_state_snapshot_probe
+
+            render_queue_state_snapshot_probe(st, session)
+        except ImportError:
+            pass
 
     def _invoke_paint_body(*, via: str) -> None:
         try:

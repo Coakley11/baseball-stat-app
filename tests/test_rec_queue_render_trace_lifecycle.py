@@ -69,6 +69,7 @@ class RecQueueRenderTraceLifecycleTests(unittest.TestCase):
 
     def test_heavy_paint_done_reemits_render_trace_only(self) -> None:
         st = MagicMock()
+        st.fragment = None
         session: dict[str, Any] = {HEAVY_PAINT_DONE_KEY: True, "_solo_stage1_script_run_seq": 9}
         row = self._francisco_trace(session)
         note_rec_queue_widget_button_rendered(session, widget_key=row["widget_key"])

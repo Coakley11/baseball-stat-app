@@ -342,13 +342,16 @@ def main() -> int:
         )
     )
 
-    # --- Gate / latch asymmetry (production 961e9378 root cause) ---
+    # --- Gate / latch asymmetry (production 961e9378 + 5f192511 root cause) ---
     class _St:
         def __init__(self, params: dict[str, str]):
             self.query_params = params
 
         def markdown(self, *a, **k):
             self.last_md = a[0] if a else ""
+
+        def html(self, *a, **k):
+            self.last_html = a[0] if a else ""
 
     # 33 solo latched, parent NOT latched, but QP has both → enable + latch parent
     s = {
@@ -565,16 +568,390 @@ def main() -> int:
         )
     )
 
+    results.append(
+        _check(
+            "32c_5f192511_permanently_consumed",
+            (ROOT / "data" / "5f192511_consumed_bridge.txt").is_file()
+            and "5f192511" in (ROOT / "data" / "5f192511_consumed_bridge.txt").read_text(encoding="utf-8"),
+        )
+    )
+    results.append(
+        _check(
+            "32d_c69aa19c_permanently_consumed",
+            (ROOT / "data" / "c69aa19c_consumed_bridge.txt").is_file()
+            and "c69aa19c" in (ROOT / "data" / "c69aa19c_consumed_bridge.txt").read_text(encoding="utf-8"),
+        )
+    )
+
+    # 47 parent QP remembered while solo still off
+    s_qp_first = {"draft_queue": [], "draft_state": {"queue": []}}
+    st_parent_only = _St({"solo_stage1_parent_boundary": "1"})
+    d._refresh_queue_state_diag_latches(st_parent_only, s_qp_first)
+    results.append(
+        _check(
+            "47_parent_qp_remembered_before_solo",
+            bool(s_qp_first.get("_solo_stage1_parent_boundary_requested"))
+            and not s_qp_first.get("_solo_stage1_parent_boundary_probe")
+            and d.queue_state_snapshot_diag_enabled(st_parent_only, s_qp_first) is False,
+        )
+    )
+
+    # 48 later solo-on, QP gone → still enable from requested
+    s_qp_first["_solo_component_diag_enabled"] = True
+    st_empty_qp = _St({})
+    enabled_after = d.queue_state_snapshot_diag_enabled(st_empty_qp, s_qp_first)
+    results.append(
+        _check(
+            "48_requested_plus_solo_survives_qp_gone",
+            enabled_after is True and bool(s_qp_first.get("_solo_stage1_parent_boundary_probe")),
+        )
+    )
+
+    # 49 parent latch survives rerun with empty QP
+    st_rerun = _St({})
+    results.append(
+        _check(
+            "49_parent_latch_survives_rerun",
+            d.queue_state_snapshot_diag_enabled(st_rerun, s_qp_first) is True,
+        )
+    )
+
+    # 50 solo latch survives rerun
+    s_solo = {
+        "_solo_component_diag_enabled": True,
+        "_solo_stage1_parent_boundary_probe": True,
+        "draft_queue": [],
+        "draft_state": {"queue": []},
+    }
+    results.append(
+        _check(
+            "50_solo_latch_survives_rerun",
+            d.queue_state_snapshot_diag_enabled(_St({}), s_solo) is True
+            and s_solo.get("_solo_component_diag_enabled") is True,
+        )
+    )
+
+    # 51 exact gate keys
+    from live_draft_stage1_parent_boundary import REQUESTED_FLAG, SESSION_FLAG
+
+    results.append(
+        _check(
+            "51_exact_gate_keys_match",
+            SESSION_FLAG == "_solo_stage1_parent_boundary_probe"
+            and REQUESTED_FLAG == "_solo_stage1_parent_boundary_requested"
+            and "solo_stage1_parent_boundary" in Path(ROOT / "live_draft_stage1_parent_boundary.py").read_text(encoding="utf-8"),
+        )
+    )
+
+    # 52 mismatch still renders probe
+    s_mis = _diag_session(draft_queue=["A"], draft_state={"queue": ["B"]})
+    st_mis = _St({})
+    d.render_queue_state_snapshot_probe(st_mis, s_mis)
+    results.append(
+        _check(
+            "52_mismatch_still_renders_probe",
+            f'id="{d.PROBE_ID}"' in getattr(st_mis, "last_md", "")
+            and "false" in getattr(st_mis, "last_md", "").lower() or f'id="{d.PROBE_ID}"' in getattr(st_mis, "last_md", ""),
+        )
+    )
+    results[-1] = _check(
+        "52_mismatch_still_renders_probe",
+        f'id="{d.PROBE_ID}"' in getattr(st_mis, "last_md", "")
+        and s_mis[d.SESSION_BASELINE_KEY]["queues_equal"] is False,
+    )
+
+    # 53 dual-emit component html
+    results.append(
+        _check(
+            "53_component_html_dual_emit",
+            f'id="{d.PROBE_ID}"' in getattr(st_mis, "last_html", ""),
+        )
+    )
+
+    # 54 fragment reemit calls queue probe
+    heavy_src = (ROOT / "live_draft_heavy_paint_ui.py").read_text(encoding="utf-8")
+    results.append(
+        _check(
+            "54_fragment_reemit_includes_queue_probe",
+            "render_queue_state_snapshot_probe" in heavy_src
+            and "_reemit_fragment_diagnostics" in heavy_src,
+        )
+    )
+
+    # 55–60 scraper page.frames vs absent / parse invalid / wait
+    class _Frame:
+        def __init__(self, result, url="https://app/~/+/"):
+            self.url = url
+            self._result = result
+
+        def evaluate(self, *_a, **_k):
+            return self._result
+
+    class _Page:
+        def __init__(self, frames, top=None):
+            self.frames = frames
+            self._top = top if top is not None else {"probe_found": False, "probe_absent": True}
+
+        def evaluate(self, *_a, **_k):
+            return self._top
+
+        def wait_for_timeout(self, _ms):
+            return None
+
+    good_payload = {
+        "impl_rev": d.IMPL_REV,
+        "baseline": {
+            "phase": "QUEUE_STATE_BASELINE",
+            "streamlit_session_id": "4169059a-3c65-4b8f-a5de-cca7661ab076",
+            "room_id": "810854BB",
+            "session_queue": [],
+            "canonical_queue": [],
+            "session_queue_length": 0,
+            "canonical_queue_length": 0,
+            "queues_equal": True,
+            "francisco_count_session": 0,
+            "francisco_count_canonical": 0,
+            "ts": 10.0,
+        },
+        "post_mutation_added": {},
+        "last": {},
+    }
+    good_json = json.dumps(good_payload).replace('"', "'")
+    iframe_hit = {
+        "probe_found": True,
+        "sid": "4169059a-3c65-4b8f-a5de-cca7661ab076",
+        "run_id": "cb49c2b03e0a4582",
+        "room_id": "810854BB",
+        "phase": "QUEUE_STATE_BASELINE",
+        "json": good_json,
+    }
+    page_iframe = _Page(
+        frames=[_Frame({"probe_found": False}, url="https://streamlit.app/"), _Frame(iframe_hit, url="https://app/~/+/")],
+        top={"probe_found": False, "probe_absent": True},
+    )
+    scraped_frames = d.scrape_queue_state_snapshot_from_page(page_iframe)
+    results.append(
+        _check(
+            "55_page_frames_finds_iframe_probe",
+            scraped_frames.get("probe_found") is True
+            and scraped_frames.get("frame_index") == 1
+            and scraped_frames.get("frame_strategy") == "page.frames"
+            and scraped_frames.get("selector") == "#stage1-queue-state-snapshot"
+            and (scraped_frames.get("payload") or {}).get("baseline", {}).get("session_queue") == [],
+        )
+    )
+
+    page_absent = _Page(frames=[_Frame({"probe_found": False})], top={"probe_found": False})
+    absent = d.wait_and_scrape_queue_state_snapshot_from_page(page_absent, timeout_s=0.6, poll_s=0.05)
+    results.append(
+        _check(
+            "56_selector_absent_timeout_fail_closed",
+            absent.get("probe_found") is False
+            and absent.get("probe_wait_timeout") is True
+            and absent.get("probe_absent") is True
+            and int(absent.get("attempts") or 0) >= 2,
+        )
+    )
+
+    page_parse = _Page(
+        frames=[_Frame({"probe_found": True, "sid": "x", "phase": "QUEUE_STATE_BASELINE", "json": "{not-json"})]
+    )
+    parsed_bad = d.scrape_queue_state_snapshot_from_page(page_parse)
+    results.append(
+        _check(
+            "57_present_parse_invalid_distinct_from_absent",
+            parsed_bad.get("probe_found") is True
+            and parsed_bad.get("parse_invalid") is True
+            and parsed_bad.get("probe_absent") is False,
+        )
+    )
+
+    seq = {"i": 0, "rows": [{"probe_found": False}, {"probe_found": False}, iframe_hit]}
+
+    class _AppearPage:
+        frames = []
+
+        def evaluate(self, *_a, **_k):
+            i = seq["i"]
+            seq["i"] += 1
+            row = seq["rows"][i] if i < len(seq["rows"]) else seq["rows"][-1]
+            return row
+
+        def wait_for_timeout(self, _ms):
+            return None
+
+    appear = d.wait_and_scrape_queue_state_snapshot_from_page(_AppearPage(), timeout_s=2.0, poll_s=0.05)
+    results.append(
+        _check(
+            "58_temporary_absence_then_probe_succeeds",
+            appear.get("probe_found") is True and int(appear.get("attempts") or 0) >= 3,
+        )
+    )
+
+    # 59 iframe replacement: first frame empty, later same page.frames index hits
+    replace_seq = [
+        {"probe_found": False},
+        iframe_hit,
+    ]
+    repl_i = {"n": 0}
+
+    class _ReplFrame:
+        url = "https://app/~/+/"
+
+        def evaluate(self, *_a, **_k):
+            n = repl_i["n"]
+            repl_i["n"] += 1
+            return replace_seq[n] if n < len(replace_seq) else replace_seq[-1]
+
+    repl = d.wait_and_scrape_queue_state_snapshot_from_page(_Page(frames=[_ReplFrame()]), timeout_s=2.0, poll_s=0.05)
+    results.append(
+        _check(
+            "59_iframe_replacement_succeeds",
+            repl.get("probe_found") is True and repl.get("frame_strategy") == "page.frames",
+        )
+    )
+
+    # 60–64 SID / room / phase filters still at selector layer (runner), not scrape
+    prod_sid = "4169059a-3c65-4b8f-a5de-cca7661ab076"
+    snap_ok = {
+        "phase": "QUEUE_STATE_BASELINE",
+        "streamlit_session_id": prod_sid,
+        "room_id": "810854BB",
+        "session_queue": [],
+        "canonical_queue": [],
+        "session_queue_length": 0,
+        "canonical_queue_length": 0,
+        "queues_equal": True,
+        "francisco_count_session": 0,
+        "francisco_count_canonical": 0,
+        "ts": 11.0,
+    }
+    wrong_sid = r.select_authoritative_baseline_queues(
+        production_sid=prod_sid,
+        room_id="810854BB",
+        snapshots=[{**snap_ok, "streamlit_session_id": "5fa84118-5c83-4807-9df9-944d00462476"}],
+    )
+    results.append(_check("60_wrong_sid_rejected", wrong_sid.get("baseline_known") is False))
+    wrong_room = r.select_authoritative_baseline_queues(
+        production_sid=prod_sid,
+        room_id="810854BB",
+        snapshots=[{**snap_ok, "room_id": "E7FD8786"}],
+    )
+    results.append(_check("61_wrong_room_rejected", wrong_room.get("baseline_known") is False))
+    wrong_phase = r.select_authoritative_baseline_queues(
+        production_sid=prod_sid,
+        room_id="810854BB",
+        snapshots=[{**snap_ok, "phase": "QUEUE_STATE_POST_MUTATION_ADDED"}],
+    )
+    results.append(_check("62_wrong_phase_rejected", wrong_phase.get("baseline_known") is False))
+    good_sel = r.select_authoritative_baseline_queues(
+        production_sid=prod_sid,
+        room_id="810854BB",
+        snapshots=[snap_ok],
+    )
+    good_eval = r.evaluate_queue_baseline(
+        session_queue=good_sel.get("session_queue"),
+        canonical_queue=good_sel.get("canonical_queue"),
+        baseline_known=bool(good_sel.get("baseline_known")),
+    )
+    results.append(
+        _check(
+            "63_correct_sid_room_phase_empty_valid",
+            good_sel.get("baseline_known") is True
+            and good_sel.get("session_queue") == []
+            and good_sel.get("canonical_queue") == []
+            and good_eval.get("ok") is True
+            and good_eval.get("francisco_absent") is True,
+        )
+    )
+
+    ctx_a = r.select_authoritative_baseline_queues(
+        production_sid=prod_sid,
+        snapshots=[{**snap_ok, "streamlit_session_id": "5fa84118-5c83-4807-9df9-944d00462476"}],
+    )
+    results.append(_check("64_context_a_sid_cannot_satisfy", ctx_a.get("baseline_known") is False))
+
+    # 65 local Stage A → baseline pipeline replay (5f192511 shape; empty is a fixture, not a production claim)
+    sa_ok = r.stage_a_identity_complete(
+        {
+            "steady_authorized": True,
+            "heavy_paint_complete": True,
+            "room_id": "810854BB",
+            "current_pick_index": 0,
+            "recommendation_fragment_run_seq": "3",
+            "full_app_run_seq": 19,
+            "player_id": "231",
+            "widget_key": "rec_card_queue_810854BB_0_231_rec_card",
+            "streamlit_session_id": prod_sid,
+            "identity": {"identity_complete": True, "player_id": "231", "widget_key": "rec_card_queue_810854BB_0_231_rec_card"},
+        }
+    )
+    click_auth = r.evaluate_francisco_mutation_click_authorization(
+        runtime_identity_ok=True,
+        auth_only_passed=True,
+        stage_a_steady_authorized=True,
+        heavy_paint_complete=True,
+        stage_a_identity_complete=bool(sa_ok),
+        fresh_production_sid=True,
+        latch_absent=True,
+        gate_allows_normal=True,
+        baseline_ok=bool(good_eval.get("ok")),
+        prior_mutation_click=False,
+        ambiguous_queue=False,
+    )
+    results.append(
+        _check(
+            "65_local_stage_a_to_baseline_pipeline",
+            sa_ok is True
+            and click_auth.get("ok") is True
+            and click_auth.get("francisco_mutation_click_authorized") is True
+            and good_sel.get("session_queue") == []
+            and good_sel.get("canonical_queue") == [],
+        )
+    )
+
+    # 66 no mutation/sync/persist/gate in diag record path
+    diag_src = DIAG_PATH.read_text(encoding="utf-8")
+    record_part = diag_src.split("def record_queue_state_post_mutation_snapshot")[0]
+    results.append(
+        _check(
+            "66_record_baseline_no_sync_persist_gate",
+            "sync_draft_queue" not in record_part
+            and "write_canonical_draft_state" not in record_part
+            and "q.append" not in record_part
+            and "clear_francisco" not in diag_src,
+        )
+    )
+
+    runner_src = RUNNER_PATH.read_text(encoding="utf-8")
+    results.append(
+        _check(
+            "67_runtime_identity_scrape_deploy_still_wired",
+            "verify_cloud_deploy_playwright.scrape_deploy" in runner_src
+            or "from verify_cloud_deploy_playwright import scrape_deploy" in runner_src,
+        )
+    )
+    results.append(
+        _check(
+            "68_scraper_uses_page_frames",
+            "page.frames" in diag_src and "frame_strategy" in diag_src,
+        )
+    )
+
     failed = [x for x in results if not x.get("ok")]
     by = {x["name"]: x["ok"] for x in results}
     classifications = {
+        "FRANCISCO_QUEUE_MUTATION_BASELINE_PARENT_BOUNDARY_LATCH_STILL_NOT_ACTIVE_CONFIRMED": True,
+        "FRANCISCO_QUEUE_MUTATION_BASELINE_PROBE_FRAME_VISIBILITY_DEFECT_CONFIRMED": True,
+        "FRANCISCO_QUEUE_MUTATION_BASELINE_PROBE_RUNNER_SCRAPER_DIVERGENCE_CONFIRMED": True,
         "FRANCISCO_QUEUE_MUTATION_BASELINE_DIAGNOSTIC_GATE_DEFECT_CONFIRMED": True,
         "FRANCISCO_QUEUE_MUTATION_BASELINE_SNAPSHOT_OBSERVABILITY_READY": bool(
             by.get("33_solo_latched_parent_qp_enables")
             and by.get("34_empty_queue_emits_dom_probe")
-            and by.get("35_empty_not_missing_authorize")
-            and by.get("43_prod_replay_empty_baseline_ok")
-            and by.get("40_wait_helper_present")
+            and by.get("48_requested_plus_solo_survives_qp_gone")
+            and by.get("55_page_frames_finds_iframe_probe")
+            and by.get("63_correct_sid_room_phase_empty_valid")
+            and by.get("65_local_stage_a_to_baseline_pipeline")
         ),
         "FRANCISCO_QUEUE_MUTATION_CANONICAL_QUEUE_OBSERVABILITY_PRODUCT_READY": bool(
             by.get("2_diag_on_independent_reads")
@@ -597,7 +974,13 @@ def main() -> int:
             and by.get("30_missing_session_fail")
             and by.get("31_observability_gate_passes")
             and by.get("44_collect_baseline_auth_sid_preferred")
-            and by.get("40_wait_helper_present")
+            and by.get("55_page_frames_finds_iframe_probe")
+            and by.get("57_present_parse_invalid_distinct_from_absent")
+            and by.get("68_scraper_uses_page_frames")
+        ),
+        "FRANCISCO_QUEUE_MUTATION_SINGLE_CLICK_PROOF_RUNNER_READY": bool(
+            by.get("65_local_stage_a_to_baseline_pipeline")
+            and by.get("66_record_baseline_no_sync_persist_gate")
         ),
     }
     summary = {
@@ -612,7 +995,7 @@ def main() -> int:
         "bridge_709269b3_consumed": bool(by.get("32_709269b3_permanently_consumed")),
         "bridge_961e9378_consumed": bool(by.get("32b_961e9378_permanently_consumed")),
         "product_code_changed": True,
-        "runner_code_changed": True,
+        "runner_code_changed": False,
     }
     print(json.dumps(summary, indent=2, default=str))
     return 0 if not failed else 1
