@@ -938,6 +938,52 @@ def main() -> int:
         )
     )
 
+    # 69 URL-only parent flag (empty query_params, flags on context.url)
+    from live_draft_stage1_parent_boundary import capture_stage1_diagnostic_intents
+
+    class _UrlSt:
+        def __init__(self):
+            self.query_params = {}
+            self.context = type(
+                "C",
+                (),
+                {
+                    "url": (
+                        "https://app/?solo_component_diag=1"
+                        "&solo_stage1_parent_boundary=1&suite_sid=sid-local"
+                    )
+                },
+            )()
+
+        def markdown(self, *a, **k):
+            self.last_md = a[0] if a else ""
+
+        def html(self, *a, **k):
+            self.last_html = a[0] if a else ""
+
+    s_url = {"draft_queue": [], "draft_state": {"queue": []}, "_streamlit_session_id": "sid-local"}
+    capture_stage1_diagnostic_intents(_UrlSt(), s_url)
+    st_url = _UrlSt()
+    d.render_queue_state_snapshot_probe(st_url, s_url)
+    results.append(
+        _check(
+            "69_url_only_flags_capture_and_emit_probe",
+            s_url.get("_solo_component_diag_enabled") is True
+            and s_url.get("_solo_stage1_parent_boundary_requested") is True
+            and s_url.get("_solo_stage1_parent_boundary_probe") is True
+            and f'id="{d.PROBE_ID}"' in getattr(st_url, "last_md", ""),
+        )
+    )
+
+    app_src = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+    results.append(
+        _check(
+            "70_shared_ultra_early_capture_before_delivery_diag",
+            app_src.find("capture_stage1_diagnostic_intents")
+            < app_src.find("from live_draft_solo_delivery_diag import enable_delivery_diag_from_query"),
+        )
+    )
+
     failed = [x for x in results if not x.get("ok")]
     by = {x["name"]: x["ok"] for x in results}
     classifications = {
@@ -952,6 +998,8 @@ def main() -> int:
             and by.get("55_page_frames_finds_iframe_probe")
             and by.get("63_correct_sid_room_phase_empty_valid")
             and by.get("65_local_stage_a_to_baseline_pipeline")
+            and by.get("69_url_only_flags_capture_and_emit_probe")
+            and by.get("70_shared_ultra_early_capture_before_delivery_diag")
         ),
         "FRANCISCO_QUEUE_MUTATION_CANONICAL_QUEUE_OBSERVABILITY_PRODUCT_READY": bool(
             by.get("2_diag_on_independent_reads")

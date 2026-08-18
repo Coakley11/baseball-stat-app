@@ -549,6 +549,13 @@ ML_DERIVED_FEATURE_STATS = ["PA_est", "BB_rate", "K_rate", "SB_rate", "XBH", "XB
 st.set_page_config(page_title="⚾ Daniel Cohen Baseball Explorer ⚾", layout="wide")
 
 try:
+    from live_draft_stage1_parent_boundary import capture_stage1_diagnostic_intents
+
+    capture_stage1_diagnostic_intents(st, st.session_state)
+except ImportError:
+    pass
+
+try:
     from cloud_runtime_fs_probe import maybe_render_cloud_runtime_fs_probe
 
     maybe_render_cloud_runtime_fs_probe(st)
@@ -22387,9 +22394,9 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
     try:
-        from live_draft_stage1_parent_boundary import bootstrap_stage1_parent_boundary_probe
+        from live_draft_stage1_parent_boundary import capture_stage1_diagnostic_intents
 
-        bootstrap_stage1_parent_boundary_probe(st, st.session_state)
+        capture_stage1_diagnostic_intents(st, st.session_state)
     except ImportError:
         pass
     try:

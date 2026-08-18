@@ -22,6 +22,31 @@ EXPIRATION_COMMIT_KEY = "_live_draft_expiration_commit_count"
 MAX_LOG = 120
 
 
+def _qp_from_context_url(st: Any, name: str) -> str:
+    """Read a query flag from st.context.url when st.query_params omits it.
+
+    Streamlit fragments and suite_sid writes can leave query_params incomplete
+    while the browser/iframe URL still carries diagnostic intents.
+    """
+    try:
+        from urllib.parse import parse_qs, urlparse
+
+        ctx = getattr(st, "context", None)
+        url = str(getattr(ctx, "url", "") or "")
+        if not url or "=" not in url:
+            return ""
+        parsed = urlparse(url)
+        query = parsed.query
+        if not query and "?" in url:
+            query = url.split("?", 1)[-1].split("#", 1)[0]
+        raw = parse_qs(query, keep_blank_values=True).get(name)
+        if not raw:
+            return ""
+        return str(raw[0] or "").strip()
+    except Exception:
+        return ""
+
+
 def _qp_get(st: Any, name: str) -> str:
     raw = None
     try:
@@ -41,13 +66,13 @@ def _qp_get(st: Any, name: str) -> str:
         raw = legacy.get(name)
     except Exception:
         raw = None
-    if raw is None:
+    if raw is not None:
+        if isinstance(raw, list):
+            return str(raw[0] or "").strip()
+        if isinstance(raw, (str, int, float, bool)):
+            return str(raw).strip()
         return ""
-    if isinstance(raw, list):
-        return str(raw[0] or "").strip()
-    if isinstance(raw, (str, int, float, bool)):
-        return str(raw).strip()
-    return ""
+    return _qp_from_context_url(st, name)
 
 
 def _qp_flag(st: Any, name: str) -> bool:

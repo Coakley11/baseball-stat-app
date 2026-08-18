@@ -56,6 +56,12 @@ def _install_stage1_registration_and_dispatch_probes(st: Any | None, session: di
 def bootstrap_solo_component_diag(st: Any | None, session: dict[str, Any]) -> None:
     """Read ?solo_component_diag=1 and ?solo_diag_timer=10 from URL once per session."""
     try:
+        from live_draft_stage1_parent_boundary import capture_stage1_diagnostic_intents
+
+        capture_stage1_diagnostic_intents(st, session)
+    except ImportError:
+        pass
+    try:
         from live_draft_solo_placement_ladder import current_placement
 
         if st is not None and current_placement(st, session) in ("P2", "P3", "P4", "P5"):

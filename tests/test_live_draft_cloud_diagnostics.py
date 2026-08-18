@@ -50,6 +50,34 @@ def test_control_center_mount_summary():
     assert "mounts=1" in summary
 
 
+def test_qp_get_falls_back_to_context_url_when_query_params_omit_flag():
+    class _Ctx:
+        url = (
+            "https://app/?active_page=Live+Draft+Room&solo_component_diag=1"
+            "&solo_stage1_parent_boundary=1&suite_sid=sid-1"
+        )
+
+    st = _St({})
+    st.context = _Ctx()
+    from live_draft_cloud_diagnostics import _qp_flag, _qp_from_context_url, _qp_get
+
+    assert _qp_from_context_url(st, "solo_stage1_parent_boundary") == "1"
+    assert _qp_get(st, "solo_stage1_parent_boundary") == "1"
+    assert _qp_flag(st, "solo_stage1_parent_boundary") is True
+    assert _qp_flag(st, "solo_component_diag") is True
+
+
+def test_qp_get_prefers_query_params_over_context_url():
+    class _Ctx:
+        url = "https://app/?solo_stage1_parent_boundary=1"
+
+    st = _St({"solo_stage1_parent_boundary": "0"})
+    st.context = _Ctx()
+    from live_draft_cloud_diagnostics import _qp_get
+
+    assert _qp_get(st, "solo_stage1_parent_boundary") == "0"
+
+
 def test_acceptance_snapshot_tracks_mounts_and_expirations():
     session: dict = {}
     note_control_center_mount(session, source="render_live_draft_control_center")

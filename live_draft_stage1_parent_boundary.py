@@ -62,3 +62,24 @@ def bootstrap_stage1_parent_boundary_probe(st: Any | None, session: dict[str, An
     remember_parent_boundary_request(st, session)
     if stage1_parent_boundary_probe_enabled(st, session):
         session[SESSION_FLAG] = True
+
+
+def capture_stage1_diagnostic_intents(st: Any | None, session: dict[str, Any]) -> None:
+    """Latch solo + parent-boundary intents from the initial URL before QP loss.
+
+    Shared bootstrap for ``solo_component_diag`` and ``solo_stage1_parent_boundary``.
+    Reads ``st.query_params`` and ``st.context.url``. Does not clear query params,
+    mutate queues, change picks, or arm/clear Francisco gates.
+    """
+    if not isinstance(session, dict):
+        return
+    remember_parent_boundary_request(st, session)
+    try:
+        from live_draft_cloud_diagnostics import _qp_flag
+
+        if st is not None and bool(_qp_flag(st, "solo_component_diag")):
+            session["_solo_component_diag_enabled"] = True
+    except ImportError:
+        pass
+    if stage1_parent_boundary_probe_enabled(st, session):
+        session[SESSION_FLAG] = True
