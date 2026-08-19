@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from live_draft_solo_expire_chain import is_session_mapping
+
 SESSION_FLAG = "_solo_stage1_parent_boundary_probe"
 REQUESTED_FLAG = "_solo_stage1_parent_boundary_requested"
 
@@ -15,7 +17,7 @@ def remember_parent_boundary_request(st: Any | None, session: dict[str, Any]) ->
     visible on a run where solo is still off, remember it so a later solo-only
     fragment/auth rerun can latch the session flag after the QP disappears.
     """
-    if not isinstance(session, dict) or st is None:
+    if not is_session_mapping(session) or st is None:
         return
     try:
         from live_draft_cloud_diagnostics import _qp_flag
@@ -71,7 +73,7 @@ def capture_stage1_diagnostic_intents(st: Any | None, session: dict[str, Any]) -
     Reads ``st.query_params`` and ``st.context.url``. Does not clear query params,
     mutate queues, change picks, or arm/clear Francisco gates.
     """
-    if not isinstance(session, dict):
+    if not is_session_mapping(session):
         return
     session["_stage1_diagnostic_intents_captured"] = True
     remember_parent_boundary_request(st, session)

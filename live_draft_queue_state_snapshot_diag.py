@@ -25,6 +25,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from live_draft_solo_expire_chain import is_session_mapping
+
 IMPL_REV = "stage1_queue_state_snapshot_diag_v1"
 PROBE_ID = "stage1-queue-state-snapshot"
 PREFLIGHT_PROBE_ID = "stage1-queue-gate-state-preflight"
@@ -66,7 +68,7 @@ def _refresh_queue_state_diag_latches(st: Any | None, session: dict[str, Any]) -
 
     Observe-only: does not install hooks, mutate queues, or emit canaries.
     """
-    if not isinstance(session, dict):
+    if not is_session_mapping(session):
         return
     try:
         from live_draft_stage1_parent_boundary import remember_parent_boundary_request
@@ -105,7 +107,7 @@ def _refresh_queue_state_diag_latches(st: Any | None, session: dict[str, Any]) -
 
 def queue_state_snapshot_diag_enabled(st: Any | None, session: dict[str, Any]) -> bool:
     """solo_component_diag AND solo_stage1_parent_boundary. No Francisco latch."""
-    if not isinstance(session, dict):
+    if not is_session_mapping(session):
         return False
     _refresh_queue_state_diag_latches(st, session)
     # Session latches set by existing bootstraps (work in callbacks where st may be absent).
@@ -232,7 +234,7 @@ def observe_queue_snapshot_gate_state(
 
     Does not include queue contents, tokens, cookies, email, or credentials.
     """
-    if not isinstance(session, dict):
+    if not is_session_mapping(session):
         session = {}
     solo_qp_present, solo_qp_value = _query_params_raw(st, SOLO_QP_NAME)
     parent_qp_present, parent_qp_value = _query_params_raw(st, PARENT_QP_NAME)
@@ -332,7 +334,7 @@ def format_queue_gate_dom_attrs(obs: dict[str, Any] | None) -> str:
 
 def queue_gate_preflight_diag_enabled(st: Any | None, session: dict[str, Any]) -> bool:
     """Pre-draft probe enable: solo diagnostic OR parent intent. Not behind dual gate."""
-    if not isinstance(session, dict):
+    if not is_session_mapping(session):
         return False
     try:
         from live_draft_stage1_parent_boundary import remember_parent_boundary_request
@@ -361,7 +363,7 @@ def queue_gate_preflight_diag_enabled(st: Any | None, session: dict[str, Any]) -
 
 def observe_queue_gate_preflight_state(st: Any | None, session: dict[str, Any]) -> dict[str, Any]:
     """Read-only pre-draft gate inputs. renderer_call_reached stays false by contract."""
-    if not isinstance(session, dict):
+    if not is_session_mapping(session):
         session = {}
     obs = observe_queue_snapshot_gate_state(st, session, renderer_call_reached=False)
     solo = bool(obs.get("solo_enabled"))
@@ -455,7 +457,7 @@ def render_queue_gate_state_preflight_probe(st: Any, session: dict[str, Any]) ->
     Do not emit a separate components.html iframe. Always-on even when readiness
     is false — the deploy renderer reports the values rather than hiding them.
     """
-    if not isinstance(session, dict):
+    if not is_session_mapping(session):
         return
     session["_stage1_ldr_entry_reached"] = True
     from live_draft_solo_expire_chain import render_solo_deploy_probe
@@ -501,7 +503,7 @@ def evaluate_context_a_preflight_reservation(gate: dict[str, Any] | None) -> dic
 
 
 def _streamlit_session_id(session: dict[str, Any] | None = None) -> str:
-    if isinstance(session, dict):
+    if is_session_mapping(session):
         for key in (
             "_streamlit_session_id",
             "streamlit_session_id",

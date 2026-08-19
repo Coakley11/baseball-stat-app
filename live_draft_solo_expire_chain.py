@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import MutableMapping
 from typing import Any
+
+
+def is_session_mapping(session: Any) -> bool:
+    """True for dict and Streamlit SessionStateProxy (MutableMapping, not dict)."""
+    return isinstance(session, MutableMapping)
 
 SOLO_EXPIRE_CHAIN_KEY = "_solo_expire_chain_log"
 SOLO_EXPIRE_OWNER_KEY = "_solo_expire_owner"
@@ -145,9 +151,10 @@ def render_solo_deploy_probe(
 ) -> None:
     """Always-on hidden deploy marker for production soak deploy polling.
 
-    When session is provided, the same components.html document also carries
-    #stage1-queue-gate-state-preflight so Context A can observe preflight in
-    the production-proven deploy iframe. Deploy id/data-sha/comment are unchanged.
+    When session is a mapping (dict or Streamlit SessionStateProxy), the same
+    components.html document also carries #stage1-queue-gate-state-preflight so
+    Context A can observe preflight in the production-proven deploy iframe.
+    Deploy id/data-sha/comment are unchanged. Readiness false still attaches.
     """
     from suite_deploy_marker import format_build_label, resolve_git_commit_short
 
@@ -156,8 +163,8 @@ def render_solo_deploy_probe(
     preflight_div = ""
     phase = str(carrier_phase or "").strip()
     if not phase:
-        phase = "steady" if isinstance(session, dict) else "build_only"
-    if isinstance(session, dict):
+        phase = "steady" if is_session_mapping(session) else "build_only"
+    if is_session_mapping(session):
         try:
             from live_draft_stage1_parent_boundary import capture_stage1_diagnostic_intents
 

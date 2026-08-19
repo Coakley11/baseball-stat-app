@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections import UserDict
 from pathlib import Path
 from typing import Any
 
@@ -380,12 +381,14 @@ def main() -> int:
             return None
 
     instances: list[dict[str, Any]] = []
-    session: dict[str, Any] = {
-        "_streamlit_session_id": "sid-bind",
-        "draft_queue": [],
-        "draft_state": {"queue": []},
-        "_stage1_diagnostic_intents_captured": False,
-    }
+    session: Any = UserDict(
+        {
+            "_streamlit_session_id": "sid-bind",
+            "draft_queue": [],
+            "draft_state": {"queue": []},
+            "_stage1_diagnostic_intents_captured": False,
+        }
+    )
     st = _St()
     capture_stage1_diagnostic_intents(st, session)
     instances.append({"phase": "ultra_early_intents", "intents": bool(session.get("_stage1_diagnostic_intents_captured")), "carriers": 0})
@@ -398,7 +401,9 @@ def main() -> int:
             "data_sha_attr": 'data-sha="' in early_html,
             "carrier_phase": 'data-carrier-phase="early"' in early_html,
             "preflight_attached": 'id="stage1-queue-gate-state-preflight"' in early_html,
+            "attached_attr": 'data-preflight-attached="1"' in early_html,
             "session": True,
+            "session_is_dict": False,
         }
     )
     capture_stage1_diagnostic_intents(st, session)
@@ -421,8 +426,10 @@ def main() -> int:
             "lifecycle_replay_early_plus_later_steady",
             instances[1]["carrier_phase"]
             and instances[1]["preflight_attached"]
+            and instances[1]["attached_attr"]
             and instances[2]["carrier_phase"]
             and instances[2]["preflight_attached"]
+            and 'data-preflight-attached="1"' in steady_html
             and len(st.markdowns) == before_expire,
             instances,
         )
