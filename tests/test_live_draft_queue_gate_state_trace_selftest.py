@@ -760,10 +760,10 @@ def main() -> int:
     results.append(
         _check(
             "ex18_19_wait_after_auth_boundary",
-            "wait_and_scrape_queue_gate_preflight_from_page" in capture_src
+            "wait_and_scrape_same_carrier_deploy_preflight_from_page" in capture_src
             and "strict_auth_passed" in capture_src
             and capture_src.find("if not last_eval.get(\"strict_auth_passed\")")
-            < capture_src.find("wait_and_scrape_queue_gate_preflight_from_page")
+            < capture_src.find("wait_and_scrape_same_carrier_deploy_preflight_from_page")
             and "page.goto" not in capture_scrape
             and "reload(" not in capture_scrape,
         )
@@ -780,7 +780,7 @@ def main() -> int:
     results.append(
         _check(
             "ex_context_a_reservation_uses_preflight_not_rec_card_wait",
-            "wait_and_scrape_queue_gate_preflight_from_page" in capture_src
+            "wait_and_scrape_same_carrier_deploy_preflight_from_page" in capture_src
             and "wait_and_scrape_rec_card_queue_gate_state_from_page" not in capture_src.split("rec_card_queue_gate", 1)[-1][:1800],
         )
     )

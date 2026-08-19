@@ -28,7 +28,7 @@ from typing import Any
 IMPL_REV = "stage1_queue_state_snapshot_diag_v1"
 PROBE_ID = "stage1-queue-state-snapshot"
 PREFLIGHT_PROBE_ID = "stage1-queue-gate-state-preflight"
-PREFLIGHT_IMPL_REV = "stage1_queue_gate_preflight_v3"
+PREFLIGHT_IMPL_REV = "stage1_queue_gate_preflight_v4"
 SESSION_LEDGER_KEY = "_stage1_queue_state_snapshot_ledger"
 SESSION_LAST_KEY = "_stage1_queue_state_snapshot_last"
 SESSION_BASELINE_KEY = "_stage1_queue_state_snapshot_baseline"
@@ -460,7 +460,7 @@ def render_queue_gate_state_preflight_probe(st: Any, session: dict[str, Any]) ->
     session["_stage1_ldr_entry_reached"] = True
     from live_draft_solo_expire_chain import render_solo_deploy_probe
 
-    render_solo_deploy_probe(st, session)
+    render_solo_deploy_probe(st, session, carrier_phase="steady")
 
 
 def evaluate_context_a_preflight_reservation(gate: dict[str, Any] | None) -> dict[str, Any]:
@@ -482,6 +482,8 @@ def evaluate_context_a_preflight_reservation(gate: dict[str, Any] | None) -> dic
             or row.get("queue_state_snapshot_diag_enabled") is True
         ),
         "preflight_ready": row.get("preflight_ready") is True,
+        "authoritative_steady_found": row.get("authoritative_steady_found") is True,
+        "same_carrier_document": row.get("same_carrier_document") is True,
     }
     failing = [k for k, ok in checks.items() if not ok]
     return {
@@ -1293,3 +1295,221 @@ def wait_and_scrape_queue_gate_preflight_from_page(
     last["waited_for_probe"] = True
     last["probe_wait_timeout"] = True
     return last
+
+
+AUTHORITATIVE_CARRIER_PHASE = "steady"
+
+_SAME_CARRIER_EVAL_JS = f"""() => {{
+  const deploy = document.querySelector('#solo-deploy-build');
+  if (!deploy) {{
+    return {{
+      deploy_found: false,
+      probe_found: false,
+      probe_absent: true,
+      selector: '#{PREFLIGHT_PROBE_ID}',
+    }};
+  }}
+  const flag = (el, name) => {{
+    const v = (el.getAttribute(name) || '').trim().toLowerCase();
+    return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+  }};
+  const pre = document.querySelector('#{PREFLIGHT_PROBE_ID}');
+  const out = {{
+    deploy_found: true,
+    data_sha: (deploy.getAttribute('data-sha') || '').toLowerCase(),
+    data_build: deploy.getAttribute('data-build') || '',
+    carrier_phase: deploy.getAttribute('data-carrier-phase') || '',
+    preflight_attached_attr: deploy.getAttribute('data-preflight-attached') || '',
+    probe_found: !!pre,
+    probe_absent: !pre,
+    selector: '#{PREFLIGHT_PROBE_ID}',
+  }};
+  if (!pre) return out;
+  out.sid = pre.getAttribute('data-sid') || '';
+  out.suite_sid = pre.getAttribute('data-suite-sid') || '';
+  out.solo_qp = pre.getAttribute('data-solo-qp') || '';
+  out.solo_qp_present = flag(pre, 'data-solo-qp-present');
+  out.solo_qp_flag = flag(pre, 'data-solo-qp-flag');
+  out.solo_url_present = flag(pre, 'data-solo-url-present');
+  out.solo_url_flag = flag(pre, 'data-solo-url-flag');
+  out.solo_enabled = flag(pre, 'data-solo-enabled');
+  out.preflight_solo_ready = flag(pre, 'data-preflight-solo-ready');
+  out.parent_qp = pre.getAttribute('data-parent-qp') || '';
+  out.parent_qp_present = flag(pre, 'data-parent-qp-present');
+  out.parent_qp_flag = flag(pre, 'data-parent-qp-flag');
+  out.parent_url_present = flag(pre, 'data-parent-url-present');
+  out.parent_url_flag = flag(pre, 'data-parent-url-flag');
+  out.preflight_parent_requested = flag(pre, 'data-preflight-parent-requested');
+  out.preflight_parent_probe = flag(pre, 'data-preflight-parent-probe');
+  out.preflight_dual_gate = flag(pre, 'data-preflight-dual-gate');
+  out.preflight_ready = flag(pre, 'data-preflight-ready');
+  out.intents_reached = flag(pre, 'data-intents-reached');
+  out.ldr_entry_reached = flag(pre, 'data-ldr-entry-reached');
+  out.impl_rev = pre.getAttribute('data-impl-rev') || '';
+  out.preflight_json = pre.getAttribute('data-preflight-json') || '';
+  return out;
+}}"""
+
+
+def _decode_same_carrier_eval(
+    raw: Any,
+    *,
+    frame_index: int | None = None,
+    frame_url: str = "",
+    frame_strategy: str = "",
+) -> dict[str, Any]:
+    out: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+    out["deploy_found"] = out.get("deploy_found") is True
+    if frame_index is not None:
+        out["frame_index"] = frame_index
+    if frame_url:
+        out["frame_url"] = frame_url
+    if frame_strategy:
+        out["frame_strategy"] = frame_strategy
+    decoded = _decode_preflight_eval(
+        out,
+        frame_index=out.get("frame_index"),
+        frame_url=str(out.get("frame_url") or ""),
+        frame_strategy=str(out.get("frame_strategy") or ""),
+    )
+    decoded["deploy_found"] = out.get("deploy_found") is True
+    decoded["data_sha"] = str(out.get("data_sha") or "")[:7]
+    decoded["data_build"] = str(out.get("data_build") or "")
+    decoded["carrier_phase"] = str(out.get("carrier_phase") or "")
+    decoded["preflight_attached_attr"] = str(out.get("preflight_attached_attr") or "")
+    return decoded
+
+
+def select_authoritative_deploy_preflight_carrier(candidates: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Choose the STEADY #solo-deploy-build document; never mix frames."""
+    rows = [dict(c) for c in (candidates or []) if isinstance(c, dict)]
+    deploy_rows = [c for c in rows if c.get("deploy_found") is True]
+    base: dict[str, Any] = {
+        "candidates": [
+            {
+                "frame_index": c.get("frame_index"),
+                "frame_url": c.get("frame_url"),
+                "carrier_phase": c.get("carrier_phase"),
+                "data_sha": c.get("data_sha"),
+                "deploy_found": c.get("deploy_found"),
+                "probe_found": c.get("probe_found"),
+                "preflight_attached_attr": c.get("preflight_attached_attr"),
+            }
+            for c in deploy_rows
+        ],
+        "candidate_count": len(deploy_rows),
+        "selector": f"#{PREFLIGHT_PROBE_ID}",
+        "deploy_selector": "#solo-deploy-build",
+        "same_carrier_document": False,
+        "authoritative_steady_found": False,
+        "probe_found": False,
+        "probe_absent": True,
+        "parse_invalid": False,
+    }
+    if not deploy_rows:
+        base["outcome"] = "DEPLOY_ABSENT"
+        return base
+    steady = [c for c in deploy_rows if str(c.get("carrier_phase") or "") == AUTHORITATIVE_CARRIER_PHASE]
+    if not steady:
+        last = dict(deploy_rows[-1])
+        last.update(base)
+        last["outcome"] = "STEADY_NOT_OBSERVED"
+        last["authoritative_steady_found"] = False
+        last["same_carrier_document"] = False
+        last["probe_found"] = bool(deploy_rows[-1].get("probe_found"))
+        last["probe_absent"] = not last["probe_found"]
+        last["frame_index"] = deploy_rows[-1].get("frame_index")
+        last["frame_url"] = deploy_rows[-1].get("frame_url")
+        last["data_sha"] = deploy_rows[-1].get("data_sha")
+        last["data_build"] = deploy_rows[-1].get("data_build")
+        last["carrier_phase"] = deploy_rows[-1].get("carrier_phase")
+        last["deploy_found"] = True
+        last["candidate_count"] = len(deploy_rows)
+        last["candidates"] = base["candidates"]
+        return last
+    with_pf = [c for c in steady if c.get("probe_found") is True]
+    selected = dict(with_pf[-1] if with_pf else steady[-1])
+    selected["candidates"] = base["candidates"]
+    selected["candidate_count"] = len(deploy_rows)
+    selected["deploy_selector"] = "#solo-deploy-build"
+    selected["authoritative_steady_found"] = True
+    selected["same_carrier_document"] = selected.get("probe_found") is True
+    if selected.get("probe_found") is True and selected.get("parse_invalid") is True:
+        selected["outcome"] = "STEADY_PARSE_INVALID"
+    elif selected.get("probe_found") is True:
+        selected["outcome"] = "STEADY_CARRIER_FOUND"
+    else:
+        selected["outcome"] = "STEADY_PREFLIGHT_MISSING"
+        selected["same_carrier_document"] = False
+    return selected
+
+
+def scrape_same_carrier_deploy_preflight_from_page(page: Any) -> dict[str, Any]:
+    """One evaluate per frame: deploy marker AND preflight sibling in that document."""
+    frames = list(getattr(page, "frames", []) or [])
+    candidates: list[dict[str, Any]] = []
+    for idx, frame in enumerate(frames):
+        try:
+            raw = frame.evaluate(_SAME_CARRIER_EVAL_JS)
+        except Exception:
+            continue
+        parsed = _decode_same_carrier_eval(
+            raw,
+            frame_index=idx,
+            frame_url=str(getattr(frame, "url", "") or ""),
+            frame_strategy="page.frames",
+        )
+        candidates.append(parsed)
+    if not candidates:
+        try:
+            raw = page.evaluate(_SAME_CARRIER_EVAL_JS)
+        except Exception as exc:
+            row = select_authoritative_deploy_preflight_carrier([])
+            row["error"] = str(exc)[:200]
+            row["frame_strategy"] = "top_page_evaluate"
+            return row
+        parsed = _decode_same_carrier_eval(raw, frame_strategy="top_page_evaluate")
+        candidates.append(parsed)
+    selected = select_authoritative_deploy_preflight_carrier(candidates)
+    selected["frames_searched"] = len(frames)
+    selected["frame_strategy"] = str(selected.get("frame_strategy") or "page.frames")
+    return selected
+
+
+def wait_and_scrape_same_carrier_deploy_preflight_from_page(
+    page: Any,
+    *,
+    timeout_s: float = 20.0,
+    poll_s: float = 0.5,
+) -> dict[str, Any]:
+    """Wait for the STEADY carrier. Early/build-only is not failure until timeout."""
+    deadline = time.time() + max(0.5, float(timeout_s))
+    started = time.time()
+    attempts = 0
+    last: dict[str, Any] = {
+        "probe_found": False,
+        "probe_absent": True,
+        "outcome": "DEPLOY_ABSENT",
+        "selector": f"#{PREFLIGHT_PROBE_ID}",
+    }
+    terminal_ok = {"STEADY_CARRIER_FOUND", "STEADY_PARSE_INVALID"}
+    while time.time() < deadline:
+        attempts += 1
+        last = scrape_same_carrier_deploy_preflight_from_page(page)
+        last["attempts"] = attempts
+        last["elapsed_s"] = max(0.0, time.time() - started)
+        last["waited_for_probe"] = True
+        last["probe_wait_timeout"] = False
+        if str(last.get("outcome") or "") in terminal_ok:
+            return last
+        try:
+            page.wait_for_timeout(int(max(0.05, float(poll_s)) * 1000))
+        except Exception:
+            time.sleep(max(0.05, float(poll_s)))
+    last = scrape_same_carrier_deploy_preflight_from_page(page)
+    last["attempts"] = attempts + 1
+    last["elapsed_s"] = max(0.0, time.time() - started)
+    last["waited_for_probe"] = True
+    last["probe_wait_timeout"] = True
+    return last
+

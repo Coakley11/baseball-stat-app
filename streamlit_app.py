@@ -22343,7 +22343,7 @@ elif active_page == "Live Draft Room":
         try:
             from live_draft_solo_expire_chain import render_solo_deploy_probe
 
-            render_solo_deploy_probe(st, st.session_state)
+            render_solo_deploy_probe(st, st.session_state, carrier_phase="early")
             log_deploy_probe_call_end()
         except Exception as _deploy_probe_exc:
             log_deploy_probe_call_failed(_deploy_probe_exc)
@@ -23295,7 +23295,7 @@ elif active_page == "Live Draft Room":
     try:
         from live_draft_solo_expire_chain import render_solo_deploy_probe
 
-        render_solo_deploy_probe(st, st.session_state)
+        render_solo_deploy_probe(st, st.session_state, carrier_phase="steady")
     except ImportError:
         pass
     try:

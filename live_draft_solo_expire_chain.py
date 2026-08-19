@@ -91,21 +91,58 @@ def solo_expire_chain_summary(session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def format_solo_deploy_marker_html(sha: str, build: str) -> str:
-    """Canonical #solo-deploy-build element. SHA poll reads data-sha only."""
-    return f'<div id="solo-deploy-build" data-build="{build}" data-sha="{sha}"></div>'
+def format_solo_deploy_marker_html(
+    sha: str,
+    build: str,
+    *,
+    carrier_phase: str = "",
+    preflight_attached: bool | None = None,
+) -> str:
+    """Canonical #solo-deploy-build element. SHA poll reads data-sha only.
+
+    Optional data-carrier-phase / data-preflight-attached are appended AFTER
+    data-sha so poll_exact_cloud_sha and querySelector('#solo-deploy-build')
+    remain compatible. Two-arg calls emit the historical exact HTML.
+    """
+    html = f'<div id="solo-deploy-build" data-build="{build}" data-sha="{sha}"'
+    phase = str(carrier_phase or "").strip()
+    if phase:
+        html += f' data-carrier-phase="{phase.replace(chr(34), "")}"'
+    if preflight_attached is True:
+        html += ' data-preflight-attached="1"'
+    elif preflight_attached is False:
+        html += ' data-preflight-attached="0"'
+    html += "></div>"
+    return html
 
 
-def format_solo_deploy_carrier_html(sha: str, build: str, preflight_div: str = "") -> str:
+def format_solo_deploy_carrier_html(
+    sha: str,
+    build: str,
+    preflight_div: str = "",
+    *,
+    carrier_phase: str = "",
+    preflight_attached: bool | None = None,
+) -> str:
     """One srcdoc/markdown payload: proven deploy marker plus optional preflight sibling."""
-    carrier = format_solo_deploy_marker_html(sha, build)
+    carrier = format_solo_deploy_marker_html(
+        sha,
+        build,
+        carrier_phase=carrier_phase,
+        preflight_attached=preflight_attached,
+    )
     extra = str(preflight_div or "")
     if extra:
         return carrier + extra
     return carrier
 
 
-def render_solo_deploy_probe(st: Any, session: dict[str, Any] | None = None) -> None:
+def render_solo_deploy_probe(
+    st: Any,
+    session: dict[str, Any] | None = None,
+    *,
+    carrier_phase: str = "",
+) -> None:
     """Always-on hidden deploy marker for production soak deploy polling.
 
     When session is provided, the same components.html document also carries
@@ -117,6 +154,9 @@ def render_solo_deploy_probe(st: Any, session: dict[str, Any] | None = None) -> 
     build = format_build_label()
     sha = resolve_git_commit_short()
     preflight_div = ""
+    phase = str(carrier_phase or "").strip()
+    if not phase:
+        phase = "steady" if isinstance(session, dict) else "build_only"
     if isinstance(session, dict):
         try:
             from live_draft_stage1_parent_boundary import capture_stage1_diagnostic_intents
@@ -138,7 +178,13 @@ def render_solo_deploy_probe(st: Any, session: dict[str, Any] | None = None) -> 
             preflight_div = f'<div id="{PREFLIGHT_PROBE_ID}" {attrs}>&nbsp;</div>'
         except ImportError:
             preflight_div = ""
-    carrier = format_solo_deploy_carrier_html(sha, build, preflight_div)
+    carrier = format_solo_deploy_carrier_html(
+        sha,
+        build,
+        preflight_div,
+        carrier_phase=phase,
+        preflight_attached=bool(preflight_div),
+    )
     st.markdown(
         f"<!-- solo-deploy-build sha={sha} build={build} -->\n{carrier}",
         unsafe_allow_html=True,
@@ -159,8 +205,12 @@ def render_solo_deploy_probe(st: Any, session: dict[str, Any] | None = None) -> 
 
 
 def render_solo_expire_chain_probe(st: Any, session: dict[str, Any], room: dict[str, Any] | None) -> None:
-    """Hidden DOM probes for production soak (no ld_accept required)."""
-    render_solo_deploy_probe(st)
+    """Hidden DOM probes for production soak (no ld_accept required).
+
+    Do not emit another #solo-deploy-build. LDR already renders early+steady
+    session-backed carriers; a session-less call here created a build-only
+    srcdoc with a duplicate id.
+    """
     try:
         from live_draft_solo_component_diagnostics import render_solo_component_mount_probe
 

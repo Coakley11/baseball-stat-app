@@ -329,9 +329,9 @@ def main() -> int:
     results.append(
         _check(
             "19_harness_waits_preflight_after_auth",
-            "wait_and_scrape_queue_gate_preflight_from_page" in capture_src
+            "wait_and_scrape_same_carrier_deploy_preflight_from_page" in capture_src
             and capture_src.find("if not last_eval.get(\"strict_auth_passed\")")
-            < capture_src.find("wait_and_scrape_queue_gate_preflight_from_page"),
+            < capture_src.find("wait_and_scrape_same_carrier_deploy_preflight_from_page"),
         )
     )
 
@@ -343,6 +343,9 @@ def main() -> int:
         "preflight_parent_probe": True,
         "preflight_dual_gate": True,
         "preflight_ready": True,
+        "authoritative_steady_found": True,
+        "same_carrier_document": True,
+        "carrier_phase": "steady",
     }
     results.append(
         _check(
@@ -418,9 +421,11 @@ def main() -> int:
     results.append(
         _check(
             "ldr_steady_reemit_is_second_deploy_probe",
-            ldr_branch.count("render_solo_deploy_probe(st, st.session_state)") >= 2
-            and ldr_branch.find("render_draft_start_progress")
-            < ldr_branch.rfind("render_solo_deploy_probe(st, st.session_state)"),
+            'render_solo_deploy_probe(st, st.session_state, carrier_phase="early")' in ldr_branch
+            and 'render_solo_deploy_probe(st, st.session_state, carrier_phase="steady")' in ldr_branch
+            and ldr_branch.find('carrier_phase="early"')
+            < ldr_branch.find("render_draft_start_progress")
+            < ldr_branch.rfind('carrier_phase="steady"'),
         )
     )
     results.append(

@@ -622,12 +622,14 @@ def main() -> int:
             screenshot_labels=[("success", None)],
             browser_surfaces=surface_monitor.diagnostic_blob() if surface_monitor else None,
         )
-        # Auth-only Context A: wait for pre-draft #stage1-queue-gate-state-preflight
-        # (rec-card #rec-card-queue-render-trace is post-draft paint; not reservation authority).
+        # Auth-only Context A: bind #solo-deploy-build and preflight in ONE frame.
+        # Independent global SHA vs preflight searches cannot prove same-document.
         queue_gate_preflight = {
             "probe_found": False,
             "probe_absent": True,
             "selector": "#stage1-queue-gate-state-preflight",
+            "same_carrier_document": False,
+            "authoritative_steady_found": False,
         }
         rec_card_queue_gate = {
             "probe_found": False,
@@ -637,10 +639,10 @@ def main() -> int:
         }
         try:
             from live_draft_queue_state_snapshot_diag import (
-                wait_and_scrape_queue_gate_preflight_from_page,
+                wait_and_scrape_same_carrier_deploy_preflight_from_page,
             )
 
-            queue_gate_preflight = wait_and_scrape_queue_gate_preflight_from_page(
+            queue_gate_preflight = wait_and_scrape_same_carrier_deploy_preflight_from_page(
                 page,
                 timeout_s=20.0,
                 poll_s=0.5,
