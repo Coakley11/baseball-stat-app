@@ -47,12 +47,22 @@ class _St:
         self.htmls.append(html)
         self.last_html = html
 
+    def caption(self, *_a: Any, **_k: Any) -> None:
+        return None
+
 
 def _check(name: str, ok: bool, detail: Any = None) -> dict[str, Any]:
     row = {"name": name, "ok": bool(ok)}
     if detail is not None and not ok:
         row["detail"] = detail
     return row
+
+
+def _same_carrier(html: str) -> bool:
+    text = str(html or "")
+    deploy_at = text.find('id="solo-deploy-build"')
+    pre_at = text.find('id="stage1-queue-gate-state-preflight"')
+    return deploy_at >= 0 and pre_at >= 0 and "access_token" not in text.lower()
 
 
 def _no_secrets(blob: Any) -> bool:
@@ -84,6 +94,7 @@ def main() -> int:
         wait_and_scrape_queue_gate_preflight_from_page,
         render_queue_state_snapshot_probe,
     )
+    from live_draft_solo_expire_chain import format_solo_deploy_carrier_html, format_solo_deploy_marker_html
     from live_draft_rec_queue_click_trace import (
         RENDER_TRACE_PROBE_ELEMENT_ID,
         render_rec_queue_render_trace_probe,
@@ -168,7 +179,8 @@ def main() -> int:
             "2_auth_only_preflight_present",
             PREFLIGHT_PROBE_ID in (st1.last_md or "")
             and 'data-preflight-ready="1"' in (st1.last_md or "")
-            and bool(s1.get("_stage1_ldr_entry_reached")),
+            and bool(s1.get("_stage1_ldr_entry_reached"))
+            and _same_carrier(st1.last_md or ""),
             st1.last_md,
         )
     )
@@ -199,7 +211,8 @@ def main() -> int:
             "4_parent_requested_false_still_visible",
             PREFLIGHT_PROBE_ID in (st4.last_md or "")
             and 'data-preflight-parent-requested="0"' in (st4.last_md or "")
-            and 'data-preflight-ready="0"' in (st4.last_md or ""),
+            and 'data-preflight-ready="0"' in (st4.last_md or "")
+            and _same_carrier(st4.last_md or ""),
             st4.last_md,
         )
     )
@@ -215,7 +228,8 @@ def main() -> int:
             "5_parent_probe_false_still_visible",
             PREFLIGHT_PROBE_ID in (st5.last_md or "")
             and obs5.get("preflight_parent_probe") is not True
-            and obs5.get("preflight_ready") is not True,
+            and obs5.get("preflight_ready") is not True
+            and _same_carrier(st5.last_md or ""),
             obs5,
         )
     )
@@ -230,7 +244,8 @@ def main() -> int:
             "6_solo_false_parent_requested_visible",
             queue_gate_preflight_diag_enabled(st6, s6) is True
             and PREFLIGHT_PROBE_ID in (st6.last_md or "")
-            and 'data-preflight-solo-ready="0"' in (st6.last_md or ""),
+            and 'data-preflight-solo-ready="0"' in (st6.last_md or "")
+            and _same_carrier(st6.last_md or ""),
             st6.last_md,
         )
     )
@@ -388,42 +403,62 @@ def main() -> int:
         )
     )
     ldr_branch = app_src.split('elif active_page == "Live Draft Room":', 1)[-1]
+    expire_src = (ROOT / "live_draft_solo_expire_chain.py").read_text(encoding="utf-8")
+    deploy_fn = expire_src.split("def render_solo_deploy_probe", 1)[-1].split("\ndef ", 1)[0]
+    carrier_fn = expire_src.split("def format_solo_deploy_carrier_html", 1)[-1].split("\ndef ", 1)[0]
     results.append(
         _check(
-            "ldr_callsite_after_intent_capture",
-            ldr_branch.find("capture_stage1_diagnostic_intents(st, st.session_state)")
-            < ldr_branch.find("render_queue_gate_state_preflight_probe(st, st.session_state)")
-            and ldr_branch.find("render_queue_gate_state_preflight_probe") >= 0,
+            "ldr_deploy_before_or_with_intent_capture",
+            "capture_stage1_diagnostic_intents" in deploy_fn
+            and "format_solo_deploy_carrier_html" in deploy_fn
+            and "PREFLIGHT_PROBE_ID" in deploy_fn
+            and "components.html(carrier" in deploy_fn.replace(" ", ""),
         )
     )
     results.append(
         _check(
-            "ldr_steady_reemit_beside_start_deploy_probe",
-            ldr_branch.count("render_queue_gate_state_preflight_probe(st, st.session_state)") >= 2
+            "ldr_steady_reemit_is_second_deploy_probe",
+            ldr_branch.count("render_solo_deploy_probe(st, st.session_state)") >= 2
             and ldr_branch.find("render_draft_start_progress")
-            < ldr_branch.rfind("render_queue_gate_state_preflight_probe(st, st.session_state)"),
+            < ldr_branch.rfind("render_solo_deploy_probe(st, st.session_state)"),
         )
     )
     results.append(
         _check(
             "preflight_not_at_set_page_config",
-            app_src.split("st.set_page_config", 1)[-1].split("elif active_page == \"Live Draft Room\":", 1)[0].count("render_queue_gate_state_preflight_probe") == 0,
+            app_src.split("st.set_page_config", 1)[-1].split("elif active_page == \"Live Draft Room\":", 1)[0].count("render_queue_gate_state_preflight_probe") == 0
+            and app_src.split("st.set_page_config", 1)[-1].split("elif active_page == \"Live Draft Room\":", 1)[0].count("render_solo_deploy_probe") == 0,
         )
     )
-    emit_src = diag_src.split("def _emit_preflight_probe_dom", 1)[-1].split("\ndef ", 1)[0]
     results.append(
         _check(
-            "preflight_emit_matches_deploy_primitive",
-            "st.markdown(" in emit_src
-            and "unsafe_allow_html=True" in emit_src
-            and "components.html" in emit_src
-            and "st.html" in emit_src,
+            "no_standalone_preflight_streamlit_callsite",
+            "render_queue_gate_state_preflight_probe(st, st.session_state)" not in app_src,
+        )
+    )
+    results.append(
+        _check(
+            "preflight_same_components_html_as_deploy",
+            "components.html(carrier, height=0)" in expire_src
+            and "format_solo_deploy_carrier_html" in deploy_fn
+            and "PREFLIGHT_PROBE_ID" in deploy_fn
+            and "preflight_div" in carrier_fn,
         )
     )
     results.append(
         _check(
             "preflight_render_not_self_gated",
             "queue_gate_preflight_diag_enabled" not in preflight_src,
+        )
+    )
+    poll_src = (ROOT / "scripts" / "poll_exact_cloud_sha.py").read_text(encoding="utf-8")
+    scrape_src = (ROOT / "scripts" / "verify_cloud_deploy_playwright.py").read_text(encoding="utf-8")
+    results.append(
+        _check(
+            "poll_sha_still_reads_data_sha",
+            "from verify_cloud_deploy_playwright import scrape_deploy" in poll_src
+            and "querySelector('#solo-deploy-build')" in scrape_src
+            and "getAttribute('data-sha')" in scrape_src,
         )
     )
 
@@ -460,7 +495,7 @@ def main() -> int:
         _Page(
             frames=[
                 _Frame({"probe_found": False}),
-                _Frame({**good_pre, "probe_absent": False, "impl_rev": "stage1_queue_gate_preflight_v2"}, url="about:srcdoc"),
+                _Frame({**good_pre, "probe_absent": False, "impl_rev": "stage1_queue_gate_preflight_v3"}, url="about:srcdoc"),
             ]
         )
     )
@@ -471,7 +506,7 @@ def main() -> int:
             scraped,
         )
     )
-    delayed = {"i": 0, "rows": [{"probe_found": False}, {**good_pre, "impl_rev": "stage1_queue_gate_preflight_v2"}]}
+    delayed = {"i": 0, "rows": [{"probe_found": False}, {**good_pre, "impl_rev": "stage1_queue_gate_preflight_v3"}]}
 
     class _Appear(_Page):
         def __init__(self):
@@ -499,8 +534,62 @@ def main() -> int:
             "stage1_auth_only_replay",
             PREFLIGHT_PROBE_ID in stage1_html
             and 'data-preflight-ready="1"' in stage1_html
-            and RENDER_TRACE_PROBE_ELEMENT_ID not in stage1_html,
+            and RENDER_TRACE_PROBE_ELEMENT_ID not in stage1_html
+            and _same_carrier(stage1_html),
             stage1_html[-400:],
+        )
+    )
+
+    marker = format_solo_deploy_marker_html("8d82767", "baseball-dev-8d82767")
+    results.append(
+        _check(
+            "deploy_marker_html_contract_unchanged",
+            marker == '<div id="solo-deploy-build" data-build="baseball-dev-8d82767" data-sha="8d82767"></div>',
+            marker,
+        )
+    )
+    st_pf = _St({"solo_component_diag": "1", "solo_stage1_parent_boundary": "1"})
+    s_pf = _auth_only_session(_solo_component_diag_enabled=True, _solo_stage1_parent_boundary_requested=True, _solo_stage1_parent_boundary_probe=True)
+    capture_stage1_diagnostic_intents(st_pf, s_pf)
+    from live_draft_queue_state_snapshot_diag import format_queue_gate_preflight_dom_attrs
+
+    obs_pf = observe_queue_gate_preflight_state(st_pf, s_pf)
+    pf_div = f'<div id="{PREFLIGHT_PROBE_ID}" {format_queue_gate_preflight_dom_attrs(obs_pf)}>&nbsp;</div>'
+    carrier = format_solo_deploy_carrier_html("8d82767", "baseball-dev-8d82767", pf_div)
+    results.append(
+        _check(
+            "same_srcdoc_payload_has_both_ids",
+            carrier.count('id="solo-deploy-build"') == 1
+            and carrier.count(f'id="{PREFLIGHT_PROBE_ID}"') == 1
+            and carrier.startswith(marker)
+            and _same_carrier(carrier)
+            and 'data-sha="8d82767"' in carrier,
+            carrier[:240],
+        )
+    )
+    class _CarrierFrame:
+        def __init__(self, html):
+            self.url = "about:srcdoc"
+            self._html = html
+
+        def evaluate(self, *_a, **_k):
+            if 'id="stage1-queue-gate-state-preflight"' not in self._html:
+                return {"probe_found": False, "probe_absent": True}
+            return {**good_pre, "probe_absent": False, "impl_rev": "stage1_queue_gate_preflight_v3"}
+
+    class _CarrierPage:
+        def __init__(self, html):
+            self.frames = [_CarrierFrame("<div></div>"), _CarrierFrame(html)]
+
+        def evaluate(self, *_a, **_k):
+            return {"probe_found": False, "probe_absent": True}
+
+    scraped_same = scrape_queue_gate_preflight_from_page(_CarrierPage(carrier))
+    results.append(
+        _check(
+            "parser_finds_preflight_in_same_srcdoc_as_deploy",
+            scraped_same.get("probe_found") is True and scraped_same.get("frame_url") == "about:srcdoc",
+            scraped_same,
         )
     )
 
@@ -525,7 +614,10 @@ def main() -> int:
             render_queue_gate_state_preflight_probe(st, session)
             render_queue_gate_state_preflight_probe(st, session)
             row["preflight_called"] = True
-            row["preflight_emitted"] = PREFLIGHT_PROBE_ID in (st.last_md or "") or PREFLIGHT_PROBE_ID in (st.last_html or "")
+            row["preflight_emitted"] = (
+                PREFLIGHT_PROBE_ID in (st.last_md or "")
+                or PREFLIGHT_PROBE_ID in (st.last_html or "")
+            ) and _same_carrier(st.last_md or st.last_html or "")
             row["payload"] = st.last_md or st.last_html or ""
         return row, st, session
 
@@ -628,7 +720,8 @@ def main() -> int:
             "failshape_H_solo_false_parent_false_still_visible",
             PREFLIGHT_PROBE_ID in (st_h.last_md or "")
             and 'data-preflight-solo-ready="0"' in (st_h.last_md or "")
-            and 'data-preflight-parent-requested="0"' in (st_h.last_md or ""),
+            and 'data-preflight-parent-requested="0"' in (st_h.last_md or "")
+            and _same_carrier(st_h.last_md or ""),
             st_h.last_md,
         )
     )

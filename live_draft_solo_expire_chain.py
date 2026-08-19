@@ -91,24 +91,62 @@ def solo_expire_chain_summary(session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def format_solo_deploy_marker_html(sha: str, build: str) -> str:
+    """Canonical #solo-deploy-build element. SHA poll reads data-sha only."""
+    return f'<div id="solo-deploy-build" data-build="{build}" data-sha="{sha}"></div>'
+
+
+def format_solo_deploy_carrier_html(sha: str, build: str, preflight_div: str = "") -> str:
+    """One srcdoc/markdown payload: proven deploy marker plus optional preflight sibling."""
+    carrier = format_solo_deploy_marker_html(sha, build)
+    extra = str(preflight_div or "")
+    if extra:
+        return carrier + extra
+    return carrier
+
+
 def render_solo_deploy_probe(st: Any, session: dict[str, Any] | None = None) -> None:
-    """Always-on hidden deploy marker for production soak deploy polling."""
+    """Always-on hidden deploy marker for production soak deploy polling.
+
+    When session is provided, the same components.html document also carries
+    #stage1-queue-gate-state-preflight so Context A can observe preflight in
+    the production-proven deploy iframe. Deploy id/data-sha/comment are unchanged.
+    """
     from suite_deploy_marker import format_build_label, resolve_git_commit_short
 
     build = format_build_label()
     sha = resolve_git_commit_short()
+    preflight_div = ""
+    if isinstance(session, dict):
+        try:
+            from live_draft_stage1_parent_boundary import capture_stage1_diagnostic_intents
+
+            capture_stage1_diagnostic_intents(st, session)
+        except ImportError:
+            pass
+        try:
+            from live_draft_queue_state_snapshot_diag import (
+                PREFLIGHT_PROBE_ID,
+                format_queue_gate_preflight_dom_attrs,
+                observe_queue_gate_preflight_state,
+            )
+
+            session["_stage1_ldr_entry_reached"] = True
+            obs = observe_queue_gate_preflight_state(st, session)
+            obs["ldr_entry_reached"] = True
+            attrs = format_queue_gate_preflight_dom_attrs(obs)
+            preflight_div = f'<div id="{PREFLIGHT_PROBE_ID}" {attrs}>&nbsp;</div>'
+        except ImportError:
+            preflight_div = ""
+    carrier = format_solo_deploy_carrier_html(sha, build, preflight_div)
     st.markdown(
-        f"<!-- solo-deploy-build sha={sha} build={build} -->\n"
-        f'<div id="solo-deploy-build" data-build="{build}" data-sha="{sha}"></div>',
+        f"<!-- solo-deploy-build sha={sha} build={build} -->\n{carrier}",
         unsafe_allow_html=True,
     )
     try:
         import streamlit.components.v1 as components
 
-        components.html(
-            f'<div id="solo-deploy-build" data-build="{build}" data-sha="{sha}"></div>',
-            height=0,
-        )
+        components.html(carrier, height=0)
     except ImportError:
         pass
     if session is not None:
