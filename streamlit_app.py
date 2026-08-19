@@ -23305,6 +23305,12 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
     try:
+        from live_draft_queue_state_snapshot_diag import render_queue_gate_state_preflight_probe
+
+        render_queue_gate_state_preflight_probe(st, st.session_state)
+    except ImportError:
+        pass
+    try:
         from live_draft_stage1_production_ledger import (
             bump_stage1_script_run_seq,
             note_stage1_event,

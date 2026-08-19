@@ -28,7 +28,7 @@ from typing import Any
 IMPL_REV = "stage1_queue_state_snapshot_diag_v1"
 PROBE_ID = "stage1-queue-state-snapshot"
 PREFLIGHT_PROBE_ID = "stage1-queue-gate-state-preflight"
-PREFLIGHT_IMPL_REV = "stage1_queue_gate_preflight_v1"
+PREFLIGHT_IMPL_REV = "stage1_queue_gate_preflight_v2"
 SESSION_LEDGER_KEY = "_stage1_queue_state_snapshot_ledger"
 SESSION_LAST_KEY = "_stage1_queue_state_snapshot_last"
 SESSION_BASELINE_KEY = "_stage1_queue_state_snapshot_baseline"
@@ -449,18 +449,41 @@ def format_queue_gate_preflight_dom_attrs(obs: dict[str, Any] | None) -> str:
     )
 
 
+def _emit_preflight_probe_dom(st: Any, html: str) -> None:
+    """Match #solo-deploy-build: markdown (main DOM) + components.html (srcdoc).
+
+    Do not prefer st.html-only: Cloud Context-A scrapes page.frames/about:srcdoc
+    the same way as the deploy marker. Keep a non-empty inner node so Streamlit's
+    markdown sanitizer cannot drop an empty diagnostic div.
+    """
+    st.markdown(f"<!-- {PREFLIGHT_PROBE_ID} -->\n{html}", unsafe_allow_html=True)
+    try:
+        import streamlit.components.v1 as components
+
+        components.html(html, height=0)
+    except Exception:
+        html_fn = getattr(st, "html", None)
+        if callable(html_fn):
+            try:
+                html_fn(html, height=0)
+            except Exception:
+                pass
+
+
 def render_queue_gate_state_preflight_probe(st: Any, session: dict[str, Any]) -> None:
-    """LDR-entry pre-draft gate probe. No room/rec-card/heavy-paint/queue writes."""
+    """LDR pre-draft gate probe. Always emits; reports false gates instead of hiding.
+
+    No room/rec-card/heavy-paint/queue writes. Not gated by solo/parent/dual —
+    those values are telemetry, not emission predicates.
+    """
     if not isinstance(session, dict):
         return
     session["_stage1_ldr_entry_reached"] = True
-    if not queue_gate_preflight_diag_enabled(st, session):
-        return
     obs = observe_queue_gate_preflight_state(st, session)
     obs["ldr_entry_reached"] = True
     attrs = format_queue_gate_preflight_dom_attrs(obs)
-    html = f'<div id="{PREFLIGHT_PROBE_ID}" {attrs}></div>'
-    _emit_queue_state_probe_dom(st, html)
+    html = f'<div id="{PREFLIGHT_PROBE_ID}" {attrs}>&nbsp;</div>'
+    _emit_preflight_probe_dom(st, html)
 
 
 def evaluate_context_a_preflight_reservation(gate: dict[str, Any] | None) -> dict[str, Any]:

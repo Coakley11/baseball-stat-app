@@ -398,8 +398,32 @@ def main() -> int:
     )
     results.append(
         _check(
+            "ldr_steady_reemit_beside_start_deploy_probe",
+            ldr_branch.count("render_queue_gate_state_preflight_probe(st, st.session_state)") >= 2
+            and ldr_branch.find("render_draft_start_progress")
+            < ldr_branch.rfind("render_queue_gate_state_preflight_probe(st, st.session_state)"),
+        )
+    )
+    results.append(
+        _check(
             "preflight_not_at_set_page_config",
             app_src.split("st.set_page_config", 1)[-1].split("elif active_page == \"Live Draft Room\":", 1)[0].count("render_queue_gate_state_preflight_probe") == 0,
+        )
+    )
+    emit_src = diag_src.split("def _emit_preflight_probe_dom", 1)[-1].split("\ndef ", 1)[0]
+    results.append(
+        _check(
+            "preflight_emit_matches_deploy_primitive",
+            "st.markdown(" in emit_src
+            and "unsafe_allow_html=True" in emit_src
+            and "components.html" in emit_src
+            and "st.html" in emit_src,
+        )
+    )
+    results.append(
+        _check(
+            "preflight_render_not_self_gated",
+            "queue_gate_preflight_diag_enabled" not in preflight_src,
         )
     )
 
@@ -436,7 +460,7 @@ def main() -> int:
         _Page(
             frames=[
                 _Frame({"probe_found": False}),
-                _Frame({**good_pre, "probe_absent": False, "impl_rev": "stage1_queue_gate_preflight_v1"}, url="about:srcdoc"),
+                _Frame({**good_pre, "probe_absent": False, "impl_rev": "stage1_queue_gate_preflight_v2"}, url="about:srcdoc"),
             ]
         )
     )
@@ -447,7 +471,7 @@ def main() -> int:
             scraped,
         )
     )
-    delayed = {"i": 0, "rows": [{"probe_found": False}, {**good_pre, "impl_rev": "stage1_queue_gate_preflight_v1"}]}
+    delayed = {"i": 0, "rows": [{"probe_found": False}, {**good_pre, "impl_rev": "stage1_queue_gate_preflight_v2"}]}
 
     class _Appear(_Page):
         def __init__(self):
@@ -477,6 +501,135 @@ def main() -> int:
             and 'data-preflight-ready="1"' in stage1_html
             and RENDER_TRACE_PROBE_ELEMENT_ID not in stage1_html,
             stage1_html[-400:],
+        )
+    )
+
+    def _replay_run(params, url, session, *, ldr=True):
+        st = _St(params, url=url)
+        capture_stage1_diagnostic_intents(st, session)
+        row = {
+            "active_page": "Live Draft Room" if ldr else str(session.get("active_page") or ""),
+            "solo_qp": bool(st.query_params.get("solo_component_diag")),
+            "parent_qp": bool(st.query_params.get("solo_stage1_parent_boundary")),
+            "url": url,
+            "session_solo": bool(session.get("_solo_component_diag_enabled")),
+            "session_parent_requested": bool(session.get("_solo_stage1_parent_boundary_requested")),
+            "ldr": ldr,
+            "intents": bool(session.get("_stage1_diagnostic_intents_captured")),
+            "preflight_called": False,
+            "preflight_emitted": False,
+            "payload": "",
+        }
+        if ldr:
+            capture_stage1_diagnostic_intents(st, session)
+            render_queue_gate_state_preflight_probe(st, session)
+            render_queue_gate_state_preflight_probe(st, session)
+            row["preflight_called"] = True
+            row["preflight_emitted"] = PREFLIGHT_PROBE_ID in (st.last_md or "") or PREFLIGHT_PROBE_ID in (st.last_html or "")
+            row["payload"] = st.last_md or st.last_html or ""
+        return row, st, session
+
+    # Full lifecycle: initial URL → auth rerun (QP empty, URL kept) → persistence wipe → QP+URL empty
+    s_life = _auth_only_session()
+    init_url = (
+        "https://app/?active_page=Live+Draft+Room&solo_component_diag=1"
+        "&solo_stage1_parent_boundary=1&suite_sid=aabbccdd-1111-2222-3333-444444444444"
+    )
+    r0, _, s_life = _replay_run(
+        {"active_page": "Live Draft Room", "solo_component_diag": "1", "solo_stage1_parent_boundary": "1", "suite_sid": "aabb"},
+        init_url,
+        s_life,
+    )
+    r1, _, s_life = _replay_run({}, init_url, s_life)
+    persist_wiped = {
+        k: v
+        for k, v in s_life.items()
+        if k not in ("_solo_component_diag_enabled", "_solo_stage1_parent_boundary_requested", "_solo_stage1_parent_boundary_probe")
+    }
+    r2, _, persist_wiped = _replay_run({}, init_url, persist_wiped)
+    r3, st3, s_empty = _replay_run({}, "https://app/", _auth_only_session())
+    results.append(
+        _check(
+            "lifecycle_full_auth_qp_loss_url_keep",
+            r0["preflight_emitted"]
+            and 'data-preflight-ready="1"' in r0["payload"]
+            and r1["preflight_emitted"]
+            and 'data-preflight-ready="1"' in r1["payload"]
+            and r2["preflight_emitted"]
+            and 'data-preflight-ready="1"' in r2["payload"],
+            {"r0": r0["payload"][-120:], "r1": r1["payload"][-120:], "r2": r2["payload"][-120:]},
+        )
+    )
+    results.append(
+        _check(
+            "lifecycle_flags_gone_still_emits_false",
+            r3["preflight_emitted"]
+            and 'data-preflight-ready="0"' in r3["payload"]
+            and 'data-preflight-parent-requested="0"' in r3["payload"]
+            and queue_gate_preflight_diag_enabled(st3, s_empty) is False,
+            r3["payload"][-200:],
+        )
+    )
+
+    # Failure-shape A: QP emptied, URL empty, session latches remain
+    s_a = _auth_only_session(_solo_component_diag_enabled=True, _solo_stage1_parent_boundary_requested=True, _solo_stage1_parent_boundary_probe=True)
+    ra, _, _ = _replay_run({}, "https://app/", s_a)
+    results.append(_check("failshape_A_qp_emptied_session_latch", ra["preflight_emitted"] and 'data-preflight-ready="1"' in ra["payload"], ra["payload"][-160:]))
+
+    # B: URL retains, QP empty, fresh session
+    rb, _, sb = _replay_run({}, init_url, _auth_only_session())
+    results.append(_check("failshape_B_url_only_fresh_session", rb["preflight_emitted"] and 'data-preflight-parent-requested="1"' in rb["payload"], rb["payload"][-160:]))
+
+    # C: both URL/QP gone, session latches remain
+    sc = _auth_only_session(_solo_component_diag_enabled=True, _solo_stage1_parent_boundary_requested=True, _solo_stage1_parent_boundary_probe=True)
+    rc, _, _ = _replay_run({}, "https://app/live", sc)
+    results.append(_check("failshape_C_session_latch_no_url_qp", rc["preflight_emitted"] and 'data-preflight-ready="1"' in rc["payload"]))
+
+    # D: active_page lost → LDR callsite not run (no emit). Product does not rewrite active_page.
+    rd, _, _ = _replay_run(
+        {"solo_component_diag": "1", "solo_stage1_parent_boundary": "1"},
+        init_url,
+        _auth_only_session(),
+        ldr=False,
+    )
+    results.append(_check("failshape_D_no_ldr_no_preflight_callsite", rd["preflight_called"] is False and rd["preflight_emitted"] is False))
+
+    # E/F/G parent/probe/dual false still visible
+    st_e = _St({"solo_component_diag": "1"})
+    s_e = _auth_only_session(_solo_component_diag_enabled=True)
+    capture_stage1_diagnostic_intents(st_e, s_e)
+    render_queue_gate_state_preflight_probe(st_e, s_e)
+    results.append(
+        _check(
+            "failshape_E_parent_requested_false_visible",
+            PREFLIGHT_PROBE_ID in (st_e.last_md or "") and 'data-preflight-parent-requested="0"' in (st_e.last_md or ""),
+        )
+    )
+    obs_f = observe_queue_gate_preflight_state(st_e, s_e)
+    results.append(
+        _check(
+            "failshape_F_parent_probe_false_visible",
+            PREFLIGHT_PROBE_ID in (st_e.last_md or "") and obs_f.get("preflight_parent_probe") is not True,
+        )
+    )
+    results.append(
+        _check(
+            "failshape_G_dual_false_visible",
+            PREFLIGHT_PROBE_ID in (st_e.last_md or "") and 'data-preflight-dual-gate="0"' in (st_e.last_md or ""),
+        )
+    )
+
+    # H: solo=false, parent requested still visible; solo=false+parent=false still visible
+    st_h = _St({})
+    s_h = _auth_only_session()
+    render_queue_gate_state_preflight_probe(st_h, s_h)
+    results.append(
+        _check(
+            "failshape_H_solo_false_parent_false_still_visible",
+            PREFLIGHT_PROBE_ID in (st_h.last_md or "")
+            and 'data-preflight-solo-ready="0"' in (st_h.last_md or "")
+            and 'data-preflight-parent-requested="0"' in (st_h.last_md or ""),
+            st_h.last_md,
         )
     )
 
