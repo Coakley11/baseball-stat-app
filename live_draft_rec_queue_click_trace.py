@@ -584,7 +584,7 @@ def wait_and_scrape_rec_card_queue_gate_state_from_page(
 
 
 def evaluate_context_a_live_queue_gate_reservation(gate: dict[str, Any] | None) -> dict[str, Any]:
-    """Strong Context-A reservation gate. Observation success does not imply pass."""
+    """Post-draft rec-card gate (Stage A / proof). Not Context-A auth-only reservation."""
     row = dict(gate or {})
     reason = str(row.get("early_return_reason") or "").strip().lower()
     enabled_reason = reason in ("", "enabled")

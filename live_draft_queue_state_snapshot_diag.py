@@ -27,6 +27,8 @@ from typing import Any
 
 IMPL_REV = "stage1_queue_state_snapshot_diag_v1"
 PROBE_ID = "stage1-queue-state-snapshot"
+PREFLIGHT_PROBE_ID = "stage1-queue-gate-state-preflight"
+PREFLIGHT_IMPL_REV = "stage1_queue_gate_preflight_v1"
 SESSION_LEDGER_KEY = "_stage1_queue_state_snapshot_ledger"
 SESSION_LAST_KEY = "_stage1_queue_state_snapshot_last"
 SESSION_BASELINE_KEY = "_stage1_queue_state_snapshot_baseline"
@@ -326,6 +328,174 @@ def format_queue_gate_dom_attrs(obs: dict[str, Any] | None) -> str:
         f'data-queue-early-return-reason="{safe(row.get("queue_snapshot_early_return_reason"))}" '
         f'data-queue-gate-json="{gate_json}"'
     )
+
+
+def queue_gate_preflight_diag_enabled(st: Any | None, session: dict[str, Any]) -> bool:
+    """Pre-draft probe enable: solo diagnostic OR parent intent. Not behind dual gate."""
+    if not isinstance(session, dict):
+        return False
+    try:
+        from live_draft_stage1_parent_boundary import remember_parent_boundary_request
+
+        remember_parent_boundary_request(st, session)
+    except ImportError:
+        if st is not None and _qp_flag(st, "solo_stage1_parent_boundary"):
+            session["_solo_stage1_parent_boundary_requested"] = True
+    solo = bool(session.get("_solo_component_diag_enabled"))
+    if not solo and st is not None:
+        try:
+            from live_draft_solo_component_diagnostics import solo_component_diag_enabled
+
+            solo = bool(solo_component_diag_enabled(st, session))
+        except ImportError:
+            solo = _qp_flag(st, "solo_component_diag")
+        if solo:
+            session["_solo_component_diag_enabled"] = True
+    parent_requested = bool(session.get("_solo_stage1_parent_boundary_requested"))
+    if not parent_requested and st is not None:
+        parent_requested = _qp_flag(st, "solo_stage1_parent_boundary")
+        if parent_requested:
+            session["_solo_stage1_parent_boundary_requested"] = True
+    return bool(solo or parent_requested)
+
+
+def observe_queue_gate_preflight_state(st: Any | None, session: dict[str, Any]) -> dict[str, Any]:
+    """Read-only pre-draft gate inputs. renderer_call_reached stays false by contract."""
+    if not isinstance(session, dict):
+        session = {}
+    obs = observe_queue_snapshot_gate_state(st, session, renderer_call_reached=False)
+    solo = bool(obs.get("solo_enabled"))
+    parent_requested = bool(obs.get("parent_requested"))
+    parent_probe = bool(obs.get("parent_probe"))
+    dual = bool(obs.get("queue_state_snapshot_diag_enabled"))
+    obs["preflight_solo_ready"] = solo
+    obs["preflight_parent_requested"] = parent_requested
+    obs["preflight_parent_probe"] = parent_probe
+    obs["preflight_dual_gate"] = dual
+    obs["preflight_ready"] = bool(solo and parent_requested and parent_probe and dual)
+    obs["capture_stage1_diagnostic_intents_reached"] = bool(
+        session.get("_stage1_diagnostic_intents_captured") or solo or parent_requested
+    )
+    obs["ldr_entry_reached"] = bool(session.get("_stage1_ldr_entry_reached"))
+    obs["suite_sid"] = _suite_sid_diagnostic(st, session)
+    # Explicitly not post-draft renderer execution.
+    obs["queue_snapshot_renderer_call_reached"] = False
+    obs["queue_snapshot_renderer_would_render"] = False
+    return obs
+
+
+def _suite_sid_diagnostic(st: Any | None, session: dict[str, Any]) -> str:
+    for key in ("_capture_suite_sid", "suite_sid", "_solo_stage1_suite_sid"):
+        val = str(session.get(key) or "").strip()
+        if val:
+            return val[:64]
+    present, val = _query_params_raw(st, "suite_sid")
+    if present:
+        return str(val or "").strip()[:64]
+    url_present, url_val = _context_url_raw(st, "suite_sid")
+    if url_present:
+        return str(url_val or "").strip()[:64]
+    return ""
+
+
+def format_queue_gate_preflight_dom_attrs(obs: dict[str, Any] | None) -> str:
+    row = dict(obs or {})
+    safe = lambda s: str(s or "").replace('"', "'")[:120]
+    flag = lambda k: "1" if row.get(k) else "0"
+    compact = {
+        "sid": row.get("streamlit_session_id") or "",
+        "suite_sid": row.get("suite_sid") or "",
+        "solo_qp_present": bool(row.get("solo_qp_present")),
+        "solo_qp_flag": bool(row.get("solo_qp_flag")),
+        "solo_url_present": bool(row.get("solo_url_present")),
+        "solo_url_flag": bool(row.get("solo_url_flag")),
+        "preflight_solo_ready": bool(row.get("preflight_solo_ready")),
+        "parent_qp_present": bool(row.get("parent_qp_present")),
+        "parent_qp_flag": bool(row.get("parent_qp_flag")),
+        "parent_url_present": bool(row.get("parent_url_present")),
+        "parent_url_flag": bool(row.get("parent_url_flag")),
+        "preflight_parent_requested": bool(row.get("preflight_parent_requested")),
+        "preflight_parent_probe": bool(row.get("preflight_parent_probe")),
+        "preflight_dual_gate": bool(row.get("preflight_dual_gate")),
+        "preflight_ready": bool(row.get("preflight_ready")),
+        "intents_reached": bool(row.get("capture_stage1_diagnostic_intents_reached")),
+        "ldr_entry_reached": bool(row.get("ldr_entry_reached")),
+    }
+    preflight_json = json.dumps(compact, default=str).replace('"', "'")[:2000]
+    return (
+        f'data-sid="{safe(row.get("streamlit_session_id"))}" '
+        f'data-suite-sid="{safe(row.get("suite_sid"))}" '
+        f'data-solo-qp="{safe(row.get("solo_qp_value"))}" '
+        f'data-solo-qp-present="{flag("solo_qp_present")}" '
+        f'data-solo-qp-flag="{flag("solo_qp_flag")}" '
+        f'data-solo-url-present="{flag("solo_url_present")}" '
+        f'data-solo-url-flag="{flag("solo_url_flag")}" '
+        f'data-solo-enabled="{flag("solo_enabled")}" '
+        f'data-preflight-solo-ready="{flag("preflight_solo_ready")}" '
+        f'data-parent-qp="{safe(row.get("parent_qp_value"))}" '
+        f'data-parent-qp-present="{flag("parent_qp_present")}" '
+        f'data-parent-qp-flag="{flag("parent_qp_flag")}" '
+        f'data-parent-url="{safe(row.get("parent_url_value"))}" '
+        f'data-parent-url-present="{flag("parent_url_present")}" '
+        f'data-parent-url-flag="{flag("parent_url_flag")}" '
+        f'data-preflight-parent-requested="{flag("preflight_parent_requested")}" '
+        f'data-preflight-parent-probe="{flag("preflight_parent_probe")}" '
+        f'data-preflight-dual-gate="{flag("preflight_dual_gate")}" '
+        f'data-preflight-ready="{flag("preflight_ready")}" '
+        f'data-intents-reached="{flag("capture_stage1_diagnostic_intents_reached")}" '
+        f'data-ldr-entry-reached="{flag("ldr_entry_reached")}" '
+        f'data-impl-rev="{safe(PREFLIGHT_IMPL_REV)}" '
+        f'data-preflight-json="{preflight_json}"'
+    )
+
+
+def render_queue_gate_state_preflight_probe(st: Any, session: dict[str, Any]) -> None:
+    """LDR-entry pre-draft gate probe. No room/rec-card/heavy-paint/queue writes."""
+    if not isinstance(session, dict):
+        return
+    session["_stage1_ldr_entry_reached"] = True
+    if not queue_gate_preflight_diag_enabled(st, session):
+        return
+    obs = observe_queue_gate_preflight_state(st, session)
+    obs["ldr_entry_reached"] = True
+    attrs = format_queue_gate_preflight_dom_attrs(obs)
+    html = f'<div id="{PREFLIGHT_PROBE_ID}" {attrs}></div>'
+    _emit_queue_state_probe_dom(st, html)
+
+
+def evaluate_context_a_preflight_reservation(gate: dict[str, Any] | None) -> dict[str, Any]:
+    """Auth-only Context A reservation. Does not require rec-card renderer execution."""
+    row = dict(gate or {})
+    checks = {
+        "probe_found": row.get("probe_found") is True,
+        "parse_valid": row.get("parse_invalid") is not True,
+        "preflight_solo_ready": row.get("preflight_solo_ready") is True or row.get("solo_enabled") is True,
+        "preflight_parent_requested": (
+            row.get("preflight_parent_requested") is True or row.get("parent_requested") is True
+        ),
+        "preflight_parent_probe": (
+            row.get("preflight_parent_probe") is True or row.get("parent_probe") is True
+        ),
+        "preflight_dual_gate": (
+            row.get("preflight_dual_gate") is True
+            or row.get("queue_gate") is True
+            or row.get("queue_state_snapshot_diag_enabled") is True
+        ),
+        "preflight_ready": row.get("preflight_ready") is True,
+    }
+    failing = [k for k, ok in checks.items() if not ok]
+    return {
+        "ok": not failing,
+        "checks": checks,
+        "failing": failing,
+        "probe_found": row.get("probe_found") is True,
+        "probe_absent": row.get("probe_absent") is True,
+        "classification": (
+            "CONTEXT_A_PREFLIGHT_RESERVATION_OK"
+            if not failing
+            else "FRANCISCO_QUEUE_MUTATION_LIVE_AUTHENTICATED_QUEUE_GATE_NOT_READY"
+        ),
+    }
 
 
 def _streamlit_session_id(session: dict[str, Any] | None = None) -> str:
@@ -915,4 +1085,211 @@ def wait_and_scrape_queue_state_snapshot_from_page(
     last["attempts"] = attempts + 1
     last["elapsed_s"] = max(0.0, time.time() - started)
     last["selector"] = f"#{PROBE_ID}"
+    return last
+
+
+_PREFLIGHT_EVAL_JS = f"""() => {{
+  const el = document.querySelector('#{PREFLIGHT_PROBE_ID}');
+  if (!el) return {{ probe_found: false, probe_absent: true, selector: '#{PREFLIGHT_PROBE_ID}' }};
+  const flag = (name) => {{
+    const v = (el.getAttribute(name) || '').trim().toLowerCase();
+    return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+  }};
+  return {{
+    probe_found: true,
+    probe_absent: false,
+    selector: '#{PREFLIGHT_PROBE_ID}',
+    sid: el.getAttribute('data-sid') || '',
+    suite_sid: el.getAttribute('data-suite-sid') || '',
+    solo_qp: el.getAttribute('data-solo-qp') || '',
+    solo_qp_present: flag('data-solo-qp-present'),
+    solo_qp_flag: flag('data-solo-qp-flag'),
+    solo_url_present: flag('data-solo-url-present'),
+    solo_url_flag: flag('data-solo-url-flag'),
+    solo_enabled: flag('data-solo-enabled'),
+    preflight_solo_ready: flag('data-preflight-solo-ready'),
+    parent_qp: el.getAttribute('data-parent-qp') || '',
+    parent_qp_present: flag('data-parent-qp-present'),
+    parent_qp_flag: flag('data-parent-qp-flag'),
+    parent_url_present: flag('data-parent-url-present'),
+    parent_url_flag: flag('data-parent-url-flag'),
+    preflight_parent_requested: flag('data-preflight-parent-requested'),
+    preflight_parent_probe: flag('data-preflight-parent-probe'),
+    preflight_dual_gate: flag('data-preflight-dual-gate'),
+    preflight_ready: flag('data-preflight-ready'),
+    intents_reached: flag('data-intents-reached'),
+    ldr_entry_reached: flag('data-ldr-entry-reached'),
+    impl_rev: el.getAttribute('data-impl-rev') || '',
+    preflight_json: el.getAttribute('data-preflight-json') || '',
+  }};
+}}"""
+
+_PREFLIGHT_CONTENTDOCUMENT_FALLBACK_JS = f"""() => {{
+  const docs = [document];
+  for (const f of document.querySelectorAll('iframe')) {{
+    try {{ if (f.contentDocument) docs.push(f.contentDocument); }} catch (e) {{}}
+  }}
+  const flag = (name, el) => {{
+    const v = (el.getAttribute(name) || '').trim().toLowerCase();
+    return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+  }};
+  for (const doc of docs) {{
+    const el = doc.querySelector('#{PREFLIGHT_PROBE_ID}');
+    if (!el) continue;
+    return {{
+      probe_found: true,
+      probe_absent: false,
+      selector: '#{PREFLIGHT_PROBE_ID}',
+      sid: el.getAttribute('data-sid') || '',
+      suite_sid: el.getAttribute('data-suite-sid') || '',
+      solo_qp: el.getAttribute('data-solo-qp') || '',
+      solo_qp_present: flag('data-solo-qp-present', el),
+      solo_qp_flag: flag('data-solo-qp-flag', el),
+      solo_url_present: flag('data-solo-url-present', el),
+      solo_url_flag: flag('data-solo-url-flag', el),
+      solo_enabled: flag('data-solo-enabled', el),
+      preflight_solo_ready: flag('data-preflight-solo-ready', el),
+      parent_qp: el.getAttribute('data-parent-qp') || '',
+      parent_qp_flag: flag('data-parent-qp-flag', el),
+      parent_qp_present: flag('data-parent-qp-present', el),
+      parent_url_present: flag('data-parent-url-present', el),
+      parent_url_flag: flag('data-parent-url-flag', el),
+      preflight_parent_requested: flag('data-preflight-parent-requested', el),
+      preflight_parent_probe: flag('data-preflight-parent-probe', el),
+      preflight_dual_gate: flag('data-preflight-dual-gate', el),
+      preflight_ready: flag('data-preflight-ready', el),
+      intents_reached: flag('data-intents-reached', el),
+      ldr_entry_reached: flag('data-ldr-entry-reached', el),
+      impl_rev: el.getAttribute('data-impl-rev') || '',
+      preflight_json: el.getAttribute('data-preflight-json') || '',
+    }};
+  }}
+  return {{ probe_found: false, probe_absent: true, selector: '#{PREFLIGHT_PROBE_ID}' }};
+}}"""
+
+
+def _decode_preflight_eval(
+    raw: Any,
+    *,
+    frame_index: int | None = None,
+    frame_url: str = "",
+    frame_strategy: str = "",
+) -> dict[str, Any]:
+    out: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+    out["selector"] = str(out.get("selector") or f"#{PREFLIGHT_PROBE_ID}")
+    if frame_index is not None:
+        out["frame_index"] = frame_index
+    if frame_url:
+        out["frame_url"] = frame_url
+    if frame_strategy:
+        out["frame_strategy"] = frame_strategy
+    found = out.get("probe_found") is True
+    out["probe_found"] = bool(found)
+    out["probe_absent"] = not bool(found)
+    out["parse_invalid"] = False
+    if not found:
+        return out
+    raw_json = out.get("preflight_json")
+    if isinstance(raw_json, str) and raw_json.strip():
+        try:
+            out["preflight_payload"] = json.loads(raw_json.replace("'", '"'))
+        except Exception as exc:
+            out["parse_invalid"] = True
+            out["parse_error"] = str(exc)[:200]
+            return out
+    has_ready_key = "preflight_ready" in out or "preflight_solo_ready" in out
+    if not has_ready_key and not str(out.get("impl_rev") or "").strip():
+        out["parse_invalid"] = True
+        out["parse_error"] = "present_without_preflight_fields"
+    return out
+
+
+def scrape_queue_gate_preflight_from_page(page: Any) -> dict[str, Any]:
+    last_absent: dict[str, Any] = {
+        "probe_found": False,
+        "probe_absent": True,
+        "parse_invalid": False,
+        "selector": f"#{PREFLIGHT_PROBE_ID}",
+        "frame_strategy": "page.frames",
+        "frames_searched": 0,
+    }
+    frames = list(getattr(page, "frames", []) or [])
+    last_absent["frames_searched"] = len(frames)
+    last_invalid: dict[str, Any] | None = None
+    for idx, frame in enumerate(frames):
+        try:
+            raw = frame.evaluate(_PREFLIGHT_EVAL_JS)
+        except Exception:
+            continue
+        parsed = _decode_preflight_eval(
+            raw,
+            frame_index=idx,
+            frame_url=str(getattr(frame, "url", "") or ""),
+            frame_strategy="page.frames",
+        )
+        if parsed.get("probe_found") is True and parsed.get("parse_invalid") is not True:
+            return parsed
+        if parsed.get("probe_found") is True and parsed.get("parse_invalid") is True:
+            last_invalid = parsed
+            continue
+        last_absent = parsed
+        last_absent["frames_searched"] = len(frames)
+    try:
+        raw = page.evaluate(_PREFLIGHT_CONTENTDOCUMENT_FALLBACK_JS)
+    except Exception as exc:
+        if last_invalid is not None:
+            return last_invalid
+        last_absent = dict(last_absent)
+        last_absent["error"] = str(exc)[:200]
+        return last_absent
+    parsed = _decode_preflight_eval(
+        raw,
+        frame_strategy="contentDocument_fallback" if frames else "top_page_evaluate",
+    )
+    if parsed.get("probe_found") is True and parsed.get("parse_invalid") is not True:
+        return parsed
+    if parsed.get("probe_found") is True and parsed.get("parse_invalid") is True:
+        return parsed
+    if last_invalid is not None:
+        return last_invalid
+    if frames:
+        last_absent["contentDocument_fallback_absent"] = True
+        return last_absent
+    return parsed
+
+
+def wait_and_scrape_queue_gate_preflight_from_page(
+    page: Any,
+    *,
+    timeout_s: float = 20.0,
+    poll_s: float = 0.5,
+) -> dict[str, Any]:
+    deadline = time.time() + max(0.5, float(timeout_s))
+    last: dict[str, Any] = {
+        "probe_found": False,
+        "probe_absent": True,
+        "parse_invalid": False,
+        "selector": f"#{PREFLIGHT_PROBE_ID}",
+        "frame_strategy": "page.frames",
+    }
+    attempts = 0
+    started = time.time()
+    while time.time() < deadline:
+        attempts += 1
+        last = scrape_queue_gate_preflight_from_page(page)
+        last["attempts"] = attempts
+        last["elapsed_s"] = max(0.0, time.time() - started)
+        last["waited_for_probe"] = True
+        last["probe_wait_timeout"] = False
+        if last.get("probe_found") is True and last.get("parse_invalid") is not True:
+            return last
+        try:
+            page.wait_for_timeout(int(max(0.05, float(poll_s)) * 1000))
+        except Exception:
+            time.sleep(max(0.05, float(poll_s)))
+    last = scrape_queue_gate_preflight_from_page(page)
+    last["attempts"] = attempts + 1
+    last["elapsed_s"] = max(0.0, time.time() - started)
+    last["waited_for_probe"] = True
+    last["probe_wait_timeout"] = True
     return last

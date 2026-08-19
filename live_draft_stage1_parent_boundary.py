@@ -73,6 +73,7 @@ def capture_stage1_diagnostic_intents(st: Any | None, session: dict[str, Any]) -
     """
     if not isinstance(session, dict):
         return
+    session["_stage1_diagnostic_intents_captured"] = True
     remember_parent_boundary_request(st, session)
     try:
         from live_draft_cloud_diagnostics import _qp_flag

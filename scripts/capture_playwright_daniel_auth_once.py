@@ -622,26 +622,49 @@ def main() -> int:
             screenshot_labels=[("success", None)],
             browser_surfaces=surface_monitor.diagnostic_blob() if surface_monitor else None,
         )
-        # Auth may succeed before rec-card paint / fragment reemit. Boundedly wait
-        # on the existing page (no refresh/nav/QP/click) for #rec-card-queue-render-trace.
-        rec_card_queue_gate = {"probe_found": False, "probe_absent": True, "selector": "#rec-card-queue-render-trace"}
+        # Auth-only Context A: wait for pre-draft #stage1-queue-gate-state-preflight
+        # (rec-card #rec-card-queue-render-trace is post-draft paint; not reservation authority).
+        queue_gate_preflight = {
+            "probe_found": False,
+            "probe_absent": True,
+            "selector": "#stage1-queue-gate-state-preflight",
+        }
+        rec_card_queue_gate = {
+            "probe_found": False,
+            "probe_absent": True,
+            "selector": "#rec-card-queue-render-trace",
+            "note": "optional_supporting_one_shot_not_reservation_authority",
+        }
         try:
-            from live_draft_rec_queue_click_trace import (
-                wait_and_scrape_rec_card_queue_gate_state_from_page,
+            from live_draft_queue_state_snapshot_diag import (
+                wait_and_scrape_queue_gate_preflight_from_page,
             )
 
-            rec_card_queue_gate = wait_and_scrape_rec_card_queue_gate_state_from_page(
+            queue_gate_preflight = wait_and_scrape_queue_gate_preflight_from_page(
                 page,
                 timeout_s=20.0,
                 poll_s=0.5,
             )
         except Exception as exc:
+            queue_gate_preflight = {
+                "probe_found": False,
+                "probe_absent": True,
+                "selector": "#stage1-queue-gate-state-preflight",
+                "waited_for_probe": True,
+                "probe_wait_timeout": True,
+                "error": str(exc)[:200],
+            }
+        try:
+            from live_draft_rec_queue_click_trace import scrape_rec_card_queue_gate_state_from_page
+
+            rec_card_queue_gate = scrape_rec_card_queue_gate_state_from_page(page)
+            rec_card_queue_gate["note"] = "optional_supporting_one_shot_not_reservation_authority"
+        except Exception as exc:
             rec_card_queue_gate = {
                 "probe_found": False,
                 "probe_absent": True,
                 "selector": "#rec-card-queue-render-trace",
-                "waited_for_probe": True,
-                "probe_wait_timeout": True,
+                "note": "optional_supporting_one_shot_not_reservation_authority",
                 "error": str(exc)[:200],
             }
         success_payload = {
@@ -652,6 +675,7 @@ def main() -> int:
             "login_boundary": login_state,
             "login_timeline": ledger_login_timeline(ledger),
             "observability_binding": observability_binding,
+            "queue_gate_preflight_state": queue_gate_preflight,
             "rec_card_queue_gate_state": rec_card_queue_gate,
             "auth_capture_pass": True,
             "trace": trace_meta,
@@ -668,6 +692,7 @@ def main() -> int:
             "trace_dir": trace_meta.get("trace_dir"),
             "strict_capture": _public_summary(last_eval),
             "observability_binding": observability_binding,
+            "queue_gate_preflight_state": queue_gate_preflight,
             "rec_card_queue_gate_state": rec_card_queue_gate,
             "auth_capture_pass": True,
         }
