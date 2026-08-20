@@ -440,8 +440,14 @@ CLASSIFICATION_MULTI_CLICK = "FRANCISCO_QUEUE_MUTATION_MULTIPLE_CLICKS"
 CLASSIFICATION_AUTH_FAIL = "FRANCISCO_QUEUE_MUTATION_AUTH_ONLY_FAILED"
 CLASSIFICATION_STAGE_A_FAIL = "FRANCISCO_QUEUE_MUTATION_STAGE_A_NOT_AUTHORIZED"
 CLASSIFICATION_GATE_BLOCK = "FRANCISCO_QUEUE_MUTATION_GATE_BLOCKS_NORMAL_PATH"
+CLASSIFICATION_CLICK_DELIVERY_FAIL = "FRANCISCO_QUEUE_MUTATION_CLICK_DELIVERY_FAILED"
 
 PHASE_STOP = "FRANCISCO_QUEUE_CALLBACK_PREMUTATION_STOP"
+
+# Production Francisco proofs: playwright_only=True (matches callback / fragment-exec / seed paths).
+FRANCISCO_DELIVERY_PLAYWRIGHT_ONLY = True
+
+PRE_CLICK_CHECKPOINT_PATH = ROOT / "data" / "francisco_queue_mutation_proof_pre_click_checkpoint.json"
 
 # Consumed / retired bridges must never be defaulted.
 RETIRED_BRIDGE_IDS = (
@@ -449,6 +455,8 @@ RETIRED_BRIDGE_IDS = (
     "9c5edc03-1185-4a63-9512-e8de4f2a9d56",
     "f5a742ef-60ae-4092-8412-cbf0e5c12be7",
     "5c734dfd-fb92-4a79-9e71-5c3081f55c02",
+    # Permanently consumed after click-delivery API mismatch on 2444789 (2026-08-19).
+    "7e0ba606-7a10-4958-81f0-3188824af86d",
 )
 
 
@@ -466,6 +474,138 @@ def francisco_count(queue: list[Any] | None) -> int:
 
 def normalize_queue(queue: list[Any] | None) -> list[str]:
     return [_norm_name(x) for x in list(queue or []) if _norm_name(x)]
+
+
+def _norm_room(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _norm_id(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _norm_widget(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _pick_equal(a: Any, b: Any) -> bool:
+    if a in (None, "") or b in (None, ""):
+        return False
+    try:
+        return int(a) == int(b)
+    except (TypeError, ValueError):
+        return str(a).strip() == str(b).strip()
+
+
+def extract_stage_a_delivery_candidate(stage_a: dict[str, Any] | None) -> dict[str, Any]:
+    """Pull DOM delivery candidate from Stage A identity (scrape already discovered it)."""
+    sa = dict(stage_a or {})
+    if isinstance(sa.get("candidate"), dict) and sa.get("candidate"):
+        return dict(sa["candidate"])
+    identity = sa.get("identity") if isinstance(sa.get("identity"), dict) else {}
+    cand = identity.get("candidate") if isinstance(identity.get("candidate"), dict) else {}
+    return dict(cand) if cand else {}
+
+
+def validate_francisco_delivery_candidate(
+    candidate: dict[str, Any] | None,
+    stage_a: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Fail closed when candidate identity disagrees with authorized Stage A fields."""
+    cand = dict(candidate or {})
+    sa = dict(stage_a or {})
+    mismatches: list[str] = []
+    if not cand:
+        mismatches.append("candidate_missing")
+        return {"ok": False, "mismatches": mismatches}
+    if _name_key(cand.get("player_name")) != _name_key(FRANCISCO_NAME):
+        mismatches.append("player_name")
+    if str(cand.get("binding_confidence") or "") != "unique":
+        mismatches.append("binding_confidence")
+    # When candidate carries Stage-A-overlapping fields, they must agree.
+    if cand.get("room_id") not in (None, "") and _norm_room(cand.get("room_id")) != _norm_room(
+        sa.get("room_id")
+    ):
+        mismatches.append("room_id")
+    if cand.get("pick_index") not in (None, "") and not _pick_equal(
+        cand.get("pick_index"), sa.get("current_pick_index")
+    ):
+        mismatches.append("pick_index")
+    if cand.get("current_pick_index") not in (None, "") and not _pick_equal(
+        cand.get("current_pick_index"), sa.get("current_pick_index")
+    ):
+        mismatches.append("current_pick_index")
+    if cand.get("player_id") not in (None, "") and _norm_id(cand.get("player_id")) != _norm_id(
+        sa.get("player_id")
+    ):
+        mismatches.append("player_id")
+    if cand.get("widget_key") not in (None, "") and _norm_widget(cand.get("widget_key")) != _norm_widget(
+        sa.get("widget_key")
+    ):
+        mismatches.append("widget_key")
+    return {"ok": not mismatches, "mismatches": mismatches}
+
+
+def build_authorized_francisco_click_target(stage_a: dict[str, Any] | None) -> dict[str, Any]:
+    """Stage-A-bound click target including current deliver_add_to_queue_click candidate dict."""
+    sa = dict(stage_a or {})
+    identity_ok = stage_a_identity_complete(sa)
+    candidate = extract_stage_a_delivery_candidate(sa)
+    validation = validate_francisco_delivery_candidate(candidate, sa)
+    ok = bool(identity_ok and validation.get("ok") and candidate)
+    return {
+        "ok": ok,
+        "room_id": sa.get("room_id"),
+        "current_pick_index": sa.get("current_pick_index"),
+        "player_id": sa.get("player_id"),
+        "widget_key": sa.get("widget_key"),
+        "player_name": FRANCISCO_NAME,
+        "label": "⭐ Add to Queue",
+        "candidate": candidate,
+        "candidate_validation": validation,
+        "stage_a_identity_complete": identity_ok,
+        "playwright_only": FRANCISCO_DELIVERY_PLAYWRIGHT_ONLY,
+    }
+
+
+def write_pre_click_checkpoint(report: dict[str, Any], path: Path | None = None) -> Path:
+    """Persist read-only pre-click diagnostics. Never claims click/mutation success."""
+    out_path = Path(path) if path is not None else PRE_CLICK_CHECKPOINT_PATH
+    payload = {
+        "pre_click_checkpoint": True,
+        "click_executed": False,
+        "mutation_claimed": False,
+        "FRANCISCO_MEMBERSHIP_MUTATION_PROVEN": False,
+        "PLAYER_A_QUEUE_MUTATION_RESOLVED": False,
+        "bridge_id": report.get("bridge_id"),
+        "bridge_consumed": report.get("bridge_consumed"),
+        "consumed_at": report.get("consumed_at"),
+        "production_streamlit_sid": report.get("production_streamlit_sid"),
+        "production_diagnostic_run_id": report.get("production_diagnostic_run_id"),
+        "raw_sha": report.get("raw_sha"),
+        "normalized_sha": report.get("normalized_sha"),
+        "deploy_identity": report.get("deploy_identity"),
+        "auth": report.get("auth"),
+        "runtime": report.get("runtime"),
+        "stage_a": report.get("stage_a"),
+        "baseline": report.get("baseline"),
+        "click_authorization": report.get("click_authorization"),
+        "francisco_mutation_click_authorized": report.get(
+            "francisco_mutation_click_authorized"
+        ),
+        "click_target": report.get("click_target"),
+        "ts": time.time(),
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    return out_path
+
+
+def obsolete_deliver_kwargs_rejected(call_kwargs: dict[str, Any] | None) -> bool:
+    """True when kwargs match the obsolete widget_key/player_name/binding keyword API."""
+    keys = set((call_kwargs or {}).keys())
+    obsolete = {"widget_key", "player_name", "binding"}
+    return bool(keys & obsolete) and "candidate" not in keys
 
 
 def queues_equal(a: list[Any] | None, b: list[Any] | None) -> bool:
@@ -1618,7 +1758,36 @@ def run_cloud_mutation_orchestration(
             report["classification"] = CLASSIFICATION_CLICK_UNAVAILABLE
             return report
 
-        click = ports.trusted_click(target)
+        # Persist pre-click diagnostics before delivery so a helper exception
+        # cannot erase already-computed auth/runtime/Stage A/baseline evidence.
+        try:
+            ck_path = write_pre_click_checkpoint(report)
+            report["pre_click_checkpoint_path"] = str(ck_path)
+            report["pre_click_checkpoint"] = {
+                "written": True,
+                "click_executed": False,
+                "mutation_claimed": False,
+            }
+        except Exception as exc:
+            report["pre_click_checkpoint"] = {
+                "written": False,
+                "error": f"{type(exc).__name__}:{exc}"[:200],
+                "click_executed": False,
+                "mutation_claimed": False,
+            }
+
+        try:
+            click = ports.trusted_click(target)
+        except Exception as exc:
+            report["click"] = {
+                "click_count": 0,
+                "error": f"{type(exc).__name__}:{exc}"[:400],
+                "exception_type": type(exc).__name__,
+            }
+            report["click_count"] = 0
+            report["classification"] = CLASSIFICATION_CLICK_DELIVERY_FAIL
+            report["FRANCISCO_MEMBERSHIP_MUTATION_PROVEN"] = False
+            return report
         report["click"] = click
         report["click_count"] = int(click.get("click_count") or 0)
         report["click_timestamp"] = click.get("timestamp")
@@ -1626,8 +1795,13 @@ def run_cloud_mutation_orchestration(
             report["classification"] = (
                 CLASSIFICATION_MULTI_CLICK
                 if int(report["click_count"] or 0) > 1
-                else CLASSIFICATION_MUTATION_FAIL
+                else (
+                    CLASSIFICATION_CLICK_DELIVERY_FAIL
+                    if click.get("error")
+                    else CLASSIFICATION_MUTATION_FAIL
+                )
             )
+            report["FRANCISCO_MEMBERSHIP_MUTATION_PROVEN"] = False
             return report
 
         post = ports.collect_post_click(click)
@@ -1752,6 +1926,19 @@ def build_fixture_mutation_ports(
 
     def _stage() -> dict[str, Any]:
         st["stage_a_invocations"] = int(st.get("stage_a_invocations") or 0) + 1
+        fixture_candidate = {
+            "player_name": FRANCISCO_NAME,
+            "binding_confidence": "unique",
+            "binding_via": "ancestor_walk",
+            "frameIndex": 2,
+            "frameUrl": "about:srcdoc",
+            "index_in_frame": 0,
+            "button_text": "⭐ Add to Queue",
+            "visible": True,
+            "enabled": True,
+            "global_index": 0,
+            "bounding_box": {"x": 1, "y": 2, "width": 10, "height": 10},
+        }
         base = {
             "steady_authorized": True,
             "heavy_paint_complete": True,
@@ -1761,6 +1948,12 @@ def build_fixture_mutation_ports(
             "current_pick_index": 3,
             "player_id": "runtime-francisco-id-fixture",
             "widget_key": "rec_queue_ROOMFIXT_3_runtime-francisco-id-fixture",
+            "player_name": FRANCISCO_NAME,
+            "candidate": fixture_candidate,
+            "identity": {
+                "candidate": fixture_candidate,
+                "player_id": "runtime-francisco-id-fixture",
+            },
             "streamlit_session_id": "prod-sid-fixture-0001",
             "diagnostic_run_id": "prod-run-fixture-0001",
         }
@@ -1790,14 +1983,8 @@ def build_fixture_mutation_ports(
         return base
 
     def _target(sa: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "ok": True,
-            "room_id": sa.get("room_id"),
-            "current_pick_index": sa.get("current_pick_index"),
-            "player_id": sa.get("player_id"),
-            "widget_key": sa.get("widget_key"),
-            "label": "⭐ Add to Queue",
-        }
+        # Same builder as production ports — exercises current candidate contract.
+        return build_authorized_francisco_click_target(sa)
 
     def _click(target: dict[str, Any]) -> dict[str, Any]:
         st["click_invocations"] = int(st.get("click_invocations") or 0) + 1
@@ -2145,6 +2332,12 @@ def _run_playwright_cloud_mutation(
             "current_pick_index": mapped.get("current_pick_index"),
             "player_id": mapped.get("player_id"),
             "widget_key": mapped.get("widget_key"),
+            "player_name": mapped.get("player_name") or FRANCISCO_NAME,
+            "candidate": (
+                identity.get("candidate")
+                if isinstance(identity.get("candidate"), dict)
+                else {}
+            ),
             "streamlit_session_id": first_defined(
                 retained.get("streamlit_session_id"),
                 (identity.get("francisco_probe") or {}).get("streamlit_session_id")
@@ -2210,37 +2403,90 @@ def _run_playwright_cloud_mutation(
         return selected
 
     def resolve_click_target(sa: dict[str, Any]) -> dict[str, Any]:
-        ok = stage_a_identity_complete(sa)
-        return {
-            "ok": ok,
-            "room_id": sa.get("room_id"),
-            "current_pick_index": sa.get("current_pick_index"),
-            "player_id": sa.get("player_id"),
-            "widget_key": sa.get("widget_key"),
-            "label": "⭐ Add to Queue",
-        }
+        return build_authorized_francisco_click_target(sa)
 
     def trusted_click(target: dict[str, Any]) -> dict[str, Any]:
-        from stage1_add_to_queue_delivery import BINDING_UNIQUE, deliver_add_to_queue_click
+        from stage1_add_to_queue_delivery import deliver_add_to_queue_click
 
         page = state["page"]
         if int(state.get("click_count") or 0) >= 1:
             return {"click_count": int(state["click_count"]), "error": "second_click_forbidden"}
-        result = deliver_add_to_queue_click(
-            page,
-            widget_key=str(target.get("widget_key") or ""),
-            player_name=FRANCISCO_NAME,
-            binding=BINDING_UNIQUE,
-        )
-        state["click_count"] = 1
-        return {
-            "click_count": 1,
-            "timestamp": _time.time(),
+
+        candidate = target.get("candidate") if isinstance(target.get("candidate"), dict) else {}
+        # Rebuild Stage-A envelope for identity checks (target carries Stage A fields).
+        stage_envelope = {
             "room_id": target.get("room_id"),
             "current_pick_index": target.get("current_pick_index"),
             "player_id": target.get("player_id"),
             "widget_key": target.get("widget_key"),
+        }
+        validation = validate_francisco_delivery_candidate(candidate, stage_envelope)
+        if not validation.get("ok"):
+            return {
+                "click_count": 0,
+                "timestamp": None,
+                "error": "candidate_identity_mismatch",
+                "candidate_validation": validation,
+                "candidate": candidate,
+                "room_id": target.get("room_id"),
+                "current_pick_index": target.get("current_pick_index"),
+                "player_id": target.get("player_id"),
+                "widget_key": target.get("widget_key"),
+            }
+
+        playwright_only = bool(
+            target.get("playwright_only")
+            if target.get("playwright_only") is not None
+            else FRANCISCO_DELIVERY_PLAYWRIGHT_ONLY
+        )
+        try:
+            result = deliver_add_to_queue_click(
+                page,
+                candidate,
+                playwright_only=playwright_only,
+            )
+        except TypeError as exc:
+            # Stale keyword API or unexpected helper signature — zero claimed clicks.
+            return {
+                "click_count": 0,
+                "timestamp": None,
+                "error": f"TypeError:{exc}"[:400],
+                "exception_type": "TypeError",
+                "candidate": candidate,
+                "playwright_only": playwright_only,
+                "room_id": target.get("room_id"),
+                "current_pick_index": target.get("current_pick_index"),
+                "player_id": target.get("player_id"),
+                "widget_key": target.get("widget_key"),
+            }
+        except Exception as exc:
+            return {
+                "click_count": 0,
+                "timestamp": None,
+                "error": f"{type(exc).__name__}:{exc}"[:400],
+                "exception_type": type(exc).__name__,
+                "candidate": candidate,
+                "playwright_only": playwright_only,
+                "room_id": target.get("room_id"),
+                "current_pick_index": target.get("current_pick_index"),
+                "player_id": target.get("player_id"),
+                "widget_key": target.get("widget_key"),
+            }
+
+        dispatched = bool(result.get("click_dispatched"))
+        if dispatched:
+            state["click_count"] = 1
+        return {
+            "click_count": 1 if dispatched else 0,
+            "timestamp": _time.time() if dispatched else None,
+            "room_id": target.get("room_id"),
+            "current_pick_index": target.get("current_pick_index"),
+            "player_id": target.get("player_id"),
+            "widget_key": target.get("widget_key"),
+            "candidate": candidate,
+            "playwright_only": playwright_only,
             "delivery": result,
+            "error": None if dispatched else str(result.get("error") or "click_not_dispatched"),
         }
 
     def collect_post_click(click: dict[str, Any]) -> dict[str, Any]:
