@@ -466,11 +466,18 @@ def render_queue_gate_state_preflight_probe(st: Any, session: dict[str, Any]) ->
 
 
 def evaluate_context_a_preflight_reservation(gate: dict[str, Any] | None) -> dict[str, Any]:
-    """Auth-only Context A reservation. Does not require rec-card renderer execution."""
+    """Auth-only Context A reservation. Does not require rec-card renderer execution.
+
+    ``parse_valid`` requires an actual observed preflight body that decoded
+    successfully. Absence of a probe/body is NOT parse-valid (no vacuous pass).
+    """
     row = dict(gate or {})
+    probe_found = row.get("probe_found") is True
+    # Explicit False only — missing parse_invalid with no body must not pass.
+    parse_valid = probe_found and row.get("parse_invalid") is False
     checks = {
-        "probe_found": row.get("probe_found") is True,
-        "parse_valid": row.get("parse_invalid") is not True,
+        "probe_found": probe_found,
+        "parse_valid": parse_valid,
         "preflight_solo_ready": row.get("preflight_solo_ready") is True or row.get("solo_enabled") is True,
         "preflight_parent_requested": (
             row.get("preflight_parent_requested") is True or row.get("parent_requested") is True
@@ -492,8 +499,10 @@ def evaluate_context_a_preflight_reservation(gate: dict[str, Any] | None) -> dic
         "ok": not failing,
         "checks": checks,
         "failing": failing,
-        "probe_found": row.get("probe_found") is True,
+        "probe_found": probe_found,
         "probe_absent": row.get("probe_absent") is True,
+        "parse_valid": parse_valid,
+        "preflight_body_observed": probe_found,
         "classification": (
             "CONTEXT_A_PREFLIGHT_RESERVATION_OK"
             if not failing

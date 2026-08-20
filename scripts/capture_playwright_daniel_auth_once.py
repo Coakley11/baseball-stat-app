@@ -13,6 +13,11 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = Path(__file__).resolve().parent
+# Repository-root modules (e.g. live_draft_queue_state_snapshot_diag) must resolve
+# from the supported command `python -u scripts/capture_playwright_daniel_auth_once.py`
+# without ambient PYTHONPATH. Mirror run_production_stage1_authenticated bootstrap.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
@@ -705,4 +710,31 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Local import-only dry run (no browser/network). Used by harness selftests.
+    if str(os.environ.get("CAPTURE_IMPORT_ONLY") or "").strip() == "1":
+        from live_draft_queue_state_snapshot_diag import (  # noqa: E402
+            evaluate_context_a_preflight_reservation,
+            wait_and_scrape_same_carrier_deploy_preflight_from_page,
+        )
+
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "import_only": True,
+                    "browser_launched": False,
+                    "root_on_sys_path": str(ROOT) in sys.path,
+                    "scripts_on_sys_path": str(SCRIPTS) in sys.path,
+                    "diag_module": "live_draft_queue_state_snapshot_diag",
+                    "scraper": wait_and_scrape_same_carrier_deploy_preflight_from_page.__name__,
+                    "evaluator": evaluate_context_a_preflight_reservation.__name__,
+                    "diag_file": str(
+                        (ROOT / "live_draft_queue_state_snapshot_diag.py").resolve()
+                    ),
+                },
+                default=str,
+            ),
+            flush=True,
+        )
+        raise SystemExit(0)
     raise SystemExit(main())
