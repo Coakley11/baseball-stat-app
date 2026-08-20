@@ -457,6 +457,8 @@ RETIRED_BRIDGE_IDS = (
     "5c734dfd-fb92-4a79-9e71-5c3081f55c02",
     # Permanently consumed after click-delivery API mismatch on 2444789 (2026-08-19).
     "7e0ba606-7a10-4958-81f0-3188824af86d",
+    # Permanently consumed after post-queue-not-observed on 2444789 (2026-08-19).
+    "7040a7df-0c5a-46cb-be19-182084d9c877",
 )
 
 
@@ -1469,6 +1471,204 @@ def select_authoritative_post_queues(
     return out
 
 
+PHASE_POST_MUTATION_ADDED = "QUEUE_STATE_POST_MUTATION_ADDED"
+PHASE_POST_NO_ADD = "QUEUE_STATE_POST_NO_ADD"
+PHASE_BASELINE = "QUEUE_STATE_BASELINE"
+
+
+def extract_post_candidate_from_queue_scrape(scraped: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Pull post-mutation snapshot candidate from a DOM scrape payload.
+
+    ``data-phase`` on the probe is baseline-oriented by product design; the
+    authoritative post body lives in payload.post_mutation_added (or last when
+    phase is POST_*). Never treat a bare BASELINE scrape as post evidence.
+    """
+    row = scraped if isinstance(scraped, dict) else {}
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    post = payload.get("post_mutation_added") if isinstance(payload.get("post_mutation_added"), dict) else {}
+    if post and str(post.get("phase") or "") == PHASE_POST_MUTATION_ADDED:
+        return dict(post)
+    last = payload.get("last") if isinstance(payload.get("last"), dict) else {}
+    last_phase = str(last.get("phase") or "")
+    if last_phase in (PHASE_POST_MUTATION_ADDED, PHASE_POST_NO_ADD):
+        return dict(last)
+    # Attribute-level post_ts without JSON body is insufficient alone.
+    return None
+
+
+def post_snapshot_identity_ok(
+    snap: dict[str, Any] | None,
+    *,
+    production_sid: str,
+    room_id: str = "",
+    after_ts: float | None = None,
+    require_post_added_phase: bool = True,
+) -> dict[str, Any]:
+    """Deterministic identity/freshness gate for a post snapshot candidate."""
+    failures: list[str] = []
+    row = snap if isinstance(snap, dict) else {}
+    if not row:
+        failures.append("post_snapshot_missing")
+        return {"ok": False, "failures": failures}
+    phase = str(row.get("phase") or "")
+    if phase == PHASE_BASELINE:
+        failures.append("stale_baseline_phase")
+    if require_post_added_phase and phase != PHASE_POST_MUTATION_ADDED:
+        if phase != PHASE_POST_NO_ADD:
+            failures.append("phase_not_post_added")
+        else:
+            failures.append("post_no_add_not_membership")
+    sid = str(production_sid or "").strip()
+    snap_sid = str(row.get("streamlit_session_id") or "").strip()
+    if not sid:
+        failures.append("missing_production_sid")
+    elif snap_sid != sid:
+        failures.append("wrong_sid")
+    want_room = str(room_id or "").strip().upper()
+    got_room = str(row.get("room_id") or "").strip().upper()
+    if want_room and got_room and want_room != got_room:
+        failures.append("wrong_room")
+    if after_ts is not None:
+        try:
+            ts = float(row.get("ts") or 0)
+        except (TypeError, ValueError):
+            ts = 0.0
+        if not (ts > float(after_ts)):
+            failures.append("not_later_than_click")
+    return {"ok": not failures, "failures": failures, "phase": phase}
+
+
+def summarize_queue_scrape_observation(scraped: dict[str, Any] | None) -> dict[str, Any]:
+    """Compact observation row for progressive post-wait reporting."""
+    row = scraped if isinstance(scraped, dict) else {}
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    baseline = payload.get("baseline") if isinstance(payload.get("baseline"), dict) else {}
+    post = payload.get("post_mutation_added") if isinstance(payload.get("post_mutation_added"), dict) else {}
+    last = payload.get("last") if isinstance(payload.get("last"), dict) else {}
+    return {
+        "probe_found": bool(row.get("probe_found")),
+        "parse_invalid": bool(row.get("parse_invalid")),
+        "attr_phase": str(row.get("phase") or ""),
+        "attr_post_ts": str(row.get("post_ts") or ""),
+        "attr_baseline_ts": str(row.get("baseline_ts") or ""),
+        "sid": str(row.get("sid") or baseline.get("streamlit_session_id") or ""),
+        "room_id": str(row.get("room_id") or baseline.get("room_id") or ""),
+        "baseline_phase": str(baseline.get("phase") or ""),
+        "baseline_session_queue": list(baseline.get("session_queue") or [])
+        if isinstance(baseline.get("session_queue"), list)
+        else None,
+        "baseline_canonical_queue": list(baseline.get("canonical_queue") or [])
+        if isinstance(baseline.get("canonical_queue"), list)
+        else None,
+        "post_phase": str(post.get("phase") or ""),
+        "post_ts": post.get("ts"),
+        "post_session_queue": list(post.get("session_queue") or [])
+        if isinstance(post.get("session_queue"), list)
+        else None,
+        "post_canonical_queue": list(post.get("canonical_queue") or [])
+        if isinstance(post.get("canonical_queue"), list)
+        else None,
+        "last_phase": str(last.get("phase") or ""),
+        "frame_index": row.get("frame_index"),
+        "frame_url": row.get("frame_url"),
+    }
+
+
+def wait_for_authoritative_post_queue_scrape(
+    page: Any,
+    *,
+    production_sid: str,
+    room_id: str = "",
+    after_ts: float | None = None,
+    timeout_s: float = 45.0,
+    poll_s: float = 0.5,
+    scrape_once: Callable[[Any], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Poll until a POST snapshot is later than the click for the same SID/room.
+
+    Does NOT treat a present BASELINE-only #stage1-queue-state-snapshot as success.
+    ``scrape_once`` is injectable for local deterministic tests (no browser).
+    """
+    import time as _time
+
+    scrape = scrape_once
+    if scrape is None:
+        from live_draft_queue_state_snapshot_diag import scrape_queue_state_snapshot_from_page
+
+        scrape = scrape_queue_state_snapshot_from_page
+
+    deadline = _time.time() + max(0.5, float(timeout_s))
+    started = _time.time()
+    attempts = 0
+    observations: list[dict[str, Any]] = []
+    last_scraped: dict[str, Any] = {
+        "probe_found": False,
+        "probe_absent": True,
+        "selector": "#stage1-queue-state-snapshot",
+    }
+    accepted: dict[str, Any] | None = None
+    accept_gate: dict[str, Any] | None = None
+
+    while _time.time() < deadline:
+        attempts += 1
+        last_scraped = scrape(page)
+        obs = summarize_queue_scrape_observation(last_scraped)
+        obs["attempt"] = attempts
+        obs["elapsed_s"] = max(0.0, _time.time() - started)
+        candidate = extract_post_candidate_from_queue_scrape(last_scraped)
+        gate = post_snapshot_identity_ok(
+            candidate,
+            production_sid=production_sid,
+            room_id=room_id,
+            after_ts=after_ts,
+            require_post_added_phase=True,
+        )
+        obs["candidate_phase"] = (candidate or {}).get("phase") if candidate else None
+        obs["identity_ok"] = bool(gate.get("ok"))
+        obs["identity_failures"] = list(gate.get("failures") or [])
+        observations.append(obs)
+        if gate.get("ok") and candidate:
+            accepted = dict(candidate)
+            accept_gate = gate
+            break
+        # Non-membership POST_NO_ADD still proves rerun/callback path; surface it
+        # but keep waiting for POST_ADDED until timeout.
+        try:
+            page.wait_for_timeout(int(max(0.05, float(poll_s)) * 1000))
+        except Exception:
+            _time.sleep(max(0.05, float(poll_s)))
+
+    elapsed = max(0.0, _time.time() - started)
+    stale_baseline_only = bool(
+        observations
+        and all(
+            (o.get("post_phase") in ("", None) and o.get("candidate_phase") in ("", None, PHASE_BASELINE))
+            or (not o.get("identity_ok") and "stale_baseline_phase" in (o.get("identity_failures") or []))
+            or (
+                not o.get("identity_ok")
+                and "post_snapshot_missing" in (o.get("identity_failures") or [])
+            )
+            for o in observations
+        )
+    )
+    return {
+        "ok": accepted is not None,
+        "accepted_post": accepted,
+        "accept_gate": accept_gate,
+        "queue_state_scrape": last_scraped,
+        "attempts": attempts,
+        "elapsed_s": elapsed,
+        "timeout_s": float(timeout_s),
+        "poll_s": float(poll_s),
+        "post_wait_timeout": accepted is None,
+        "stale_baseline_only": bool(stale_baseline_only and accepted is None),
+        "observations": observations[-40:],
+        "production_sid": str(production_sid or "").strip(),
+        "room_id": str(room_id or "").strip(),
+        "after_ts": after_ts,
+    }
+
+
 def _load_callback_runner():
     import importlib.util
 
@@ -2323,7 +2523,7 @@ def _run_playwright_cloud_mutation(
         mapped = map_stage_a_authority_fields(
             retained=retained, identity=identity, fallback_room_id=room_id
         )
-        return {
+        out_stage = {
             "steady_authorized": bool(retained.get("steady_state_ok")),
             "heavy_paint_complete": bool(retained.get("steady_state_ok")),
             "recommendation_fragment_run_seq": mapped.get("recommendation_fragment_run_seq"),
@@ -2353,6 +2553,8 @@ def _run_playwright_cloud_mutation(
             "retained": retained,
             "identity": identity,
         }
+        state["stage_a_room_id"] = str(out_stage.get("room_id") or room_id or "").strip()
+        return out_stage
 
     def observe_gate() -> dict[str, Any]:
         page = state["page"]
@@ -2492,41 +2694,62 @@ def _run_playwright_cloud_mutation(
     def collect_post_click(click: dict[str, Any]) -> dict[str, Any]:
         from stage1_rec_queue_click_trace_scrape import scrape_rec_queue_app_trace
         from run_production_stage1_authenticated import scrape_queue_container_state
-        from live_draft_queue_state_snapshot_diag import wait_and_scrape_queue_state_snapshot_from_page
 
         page = state["page"]
-        # Bounded settle — no reload / second click / force-save.
+        # Bounded settle only — post proof requires a later POST snapshot, not
+        # the still-visible BASELINE probe that wait_and_scrape would accept.
         try:
-            page.wait_for_timeout(2500)
+            page.wait_for_timeout(1500)
         except Exception:
             pass
         app_trace = scrape_rec_queue_app_trace(page)
         payload_app = app_trace.get("payload") if isinstance(app_trace.get("payload"), dict) else {}
         last = payload_app.get("last") if isinstance(payload_app.get("last"), dict) else {}
         ui = cb._queue_names(scrape_queue_container_state(page))
-        scraped = wait_and_scrape_queue_state_snapshot_from_page(page, timeout_s=15.0, poll_s=0.5)
-        payload = scraped.get("payload") if isinstance(scraped.get("payload"), dict) else {}
+
+        prod_sid = str(state.get("auth_sid") or "").strip()
+        room_hint = str(click.get("room_id") or state.get("stage_a_room_id") or "").strip()
+        click_ts = click.get("timestamp")
+        after_ts = float(click_ts) if click_ts is not None else None
+
+        post_wait = wait_for_authoritative_post_queue_scrape(
+            page,
+            production_sid=prod_sid,
+            room_id=room_hint,
+            after_ts=after_ts,
+            timeout_s=45.0,
+            poll_s=0.5,
+        )
+        scraped = (
+            post_wait.get("queue_state_scrape")
+            if isinstance(post_wait.get("queue_state_scrape"), dict)
+            else {}
+        )
         post_snap = (
-            payload.get("post_mutation_added")
-            if isinstance(payload.get("post_mutation_added"), dict)
+            post_wait.get("accepted_post")
+            if isinstance(post_wait.get("accepted_post"), dict)
             else None
         )
-        prod_sid = str(state.get("auth_sid") or "").strip()
         if not prod_sid:
             prod_sid = str(
                 scraped.get("sid")
                 or (post_snap or {}).get("streamlit_session_id")
                 or ""
             ).strip()
-        click_ts = click.get("timestamp")
         selected = select_authoritative_post_queues(
             production_sid=prod_sid,
-            room_id=str((post_snap or {}).get("room_id") or click.get("room_id") or ""),
-            after_ts=float(click_ts) if click_ts is not None else None,
+            room_id=str((post_snap or {}).get("room_id") or room_hint or ""),
+            after_ts=after_ts,
             snapshots=[post_snap] if post_snap else None,
             ui_queue=ui,
         )
         stop_observed = False  # unlatched path; STOP would be unexpected if seen in ledger
+        # Surface POST_NO_ADD acknowledgement without claiming membership.
+        no_add_ack = False
+        for obs in list(post_wait.get("observations") or [])[-8:]:
+            if str(obs.get("candidate_phase") or "") == PHASE_POST_NO_ADD:
+                no_add_ack = True
+                break
         return {
             "premutation_stop_observed": stop_observed,
             "mutation_helper_entered": bool(
@@ -2547,6 +2770,20 @@ def _run_playwright_cloud_mutation(
             "app_trace": app_trace,
             "queue_state_scrape": scraped,
             "authoritative_post": selected,
+            "post_wait": {
+                "ok": bool(post_wait.get("ok")),
+                "attempts": post_wait.get("attempts"),
+                "elapsed_s": post_wait.get("elapsed_s"),
+                "timeout_s": post_wait.get("timeout_s"),
+                "post_wait_timeout": bool(post_wait.get("post_wait_timeout")),
+                "stale_baseline_only": bool(post_wait.get("stale_baseline_only")),
+                "accept_gate": post_wait.get("accept_gate"),
+                "observations": post_wait.get("observations"),
+                "post_no_add_acknowledged": no_add_ack,
+                "click_dispatched": bool((click.get("delivery") or {}).get("click_dispatched"))
+                if isinstance(click.get("delivery"), dict)
+                else None,
+            },
         }
 
     def close_browser() -> None:
