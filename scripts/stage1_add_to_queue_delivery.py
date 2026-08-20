@@ -646,10 +646,17 @@ def deliver_add_to_queue_click(
     candidate: dict[str, Any],
     *,
     playwright_only: bool = False,
+    authorized_rec_card_key: str = "",
 ) -> dict[str, Any]:
-    """Delivery hierarchy: scroll → stable visible → Playwright click → optional JS fallback."""
+    """Delivery hierarchy: scroll → stable visible → Playwright click → optional JS fallback.
+
+    ``click_dispatched`` means Playwright completed a browser click only.
+    When ``authorized_rec_card_key`` is provided, post-click consumption ack correlates
+    Streamlit traffic to that exact Stage-A button key (never treats dispatch as callback).
+    """
     name = str(candidate.get("player_name") or "").strip()
     frame_index = int(candidate.get("frameIndex") or 0)
+    expected_key = str(authorized_rec_card_key or candidate.get("widget_key") or "").strip()
     out: dict[str, Any] = {
         "player_name": name,
         "click_dispatched": False,
@@ -660,6 +667,7 @@ def deliver_add_to_queue_click(
         "bounding_box": dict(candidate.get("bounding_box") or {}),
         "frame_index": frame_index,
         "playwright_only": playwright_only,
+        "authorized_rec_card_key": expected_key,
         "pre_click_diagnostics": dict(candidate),
         "streamlit_identity_before": scrape_streamlit_identity(page),
     }
@@ -760,6 +768,28 @@ def deliver_add_to_queue_click(
             out["pre_click_dom_inspection"] = dom_inspection
         out["click_dispatched"] = True
         out["delivery_method"] = method
+        try:
+            from stage1_francisco_native_click_consumption import (
+                evaluate_francisco_native_click_consumption_ack,
+            )
+
+            out["consumption_ack"] = evaluate_francisco_native_click_consumption_ack(
+                click_dispatched=True,
+                authorized_rec_card_key=expected_key,
+                post_click_transport=out.get("post_click_transport")
+                if isinstance(out.get("post_click_transport"), dict)
+                else {},
+                callback_entered_observed=False,
+                trusted_dom_click=bool(out.get("trusted_dom_click")),
+            )
+        except ImportError:
+            out["consumption_ack"] = {
+                "click_dispatched": True,
+                "francisco_widget_consumption_ack": False,
+                "click_dispatch_alone_proves_callback": False,
+                "click_dispatch_alone_proves_mutation": False,
+                "classification": "FRANCISCO_NATIVE_CLICK_DISPATCHED_WITHOUT_WIDGET_ACK",
+            }
         return out
 
     pre_seq = _ledger_seq()
@@ -795,6 +825,53 @@ def deliver_add_to_queue_click(
     try:
         meta = frame.locator(".ld-rec-card-meta").filter(has_text=re.compile(escaped, re.I)).first
         card_scope = meta.locator("xpath=ancestor::div[@data-testid='stVerticalBlock'][1]")
+        # Live reacquisition: bind metadata → real st.button immediately before the one click.
+        if expected_key:
+            try:
+                probe_key = frame.evaluate(
+                    """(args) => {
+                      const name = String(args.playerName || '');
+                      const want = String(args.widgetKey || '');
+                      const esc = name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');
+                      const re = new RegExp(esc, 'i');
+                      const metas = Array.from(document.querySelectorAll('.ld-rec-card-meta'))
+                        .filter((m) => re.test(String(m.innerText || '')));
+                      if (!metas.length) return { found: false };
+                      const scope = metas[0].closest('[data-testid=\"stVerticalBlock\"]') || metas[0].parentElement;
+                      if (!scope) return { found: false };
+                      const probe = scope.querySelector('.rec-fragment-exec-probe-card[data-widget-key]');
+                      const got = probe ? String(probe.getAttribute('data-widget-key') || '') : '';
+                      const native = scope.querySelector(
+                        '[data-testid=\"stButton\"] button[data-testid=\"stBaseButton-secondary\"]'
+                      );
+                      return {
+                        found: true,
+                        probe_widget_key: got,
+                        probe_present: !!probe,
+                        native_st_button_present: !!native,
+                        key_match: !want || !got || got === want,
+                      };
+                    }""",
+                    {"playerName": name, "widgetKey": expected_key},
+                )
+                out["live_reacquisition_probe"] = probe_key if isinstance(probe_key, dict) else {}
+                probe_row = out["live_reacquisition_probe"]
+                if (
+                    isinstance(probe_row, dict)
+                    and probe_row.get("probe_present")
+                    and probe_row.get("key_match") is False
+                ):
+                    out["error"] = "live_exec_probe_widget_key_mismatch"
+                    out["classification"] = "QUEUE1C1"
+                    out["click_dispatched"] = False
+                    return out
+                if isinstance(probe_row, dict) and probe_row.get("native_st_button_present") is False:
+                    out["error"] = "live_native_st_button_missing_after_reacquire"
+                    out["classification"] = "QUEUE1C1"
+                    out["click_dispatched"] = False
+                    return out
+            except Exception as probe_exc:
+                out["live_reacquisition_probe_error"] = str(probe_exc)[:160]
         st_btn = card_scope.locator('[data-testid="stButton"]').filter(has_text=re.compile(r"Add to Queue", re.I)).first
         btn = st_btn.locator('button[data-testid="stBaseButton-secondary"]').first
         btn.wait_for(state="attached", timeout=pw_timeout)
@@ -804,6 +881,7 @@ def deliver_add_to_queue_click(
             out["classification"] = "QUEUE1C1"
             return out
         out["click_start_ts"] = time.time()
+        out["live_reacquired_before_click"] = True
         btn.scroll_into_view_if_needed(timeout=pw_timeout)
         page.wait_for_timeout(350)
         try:

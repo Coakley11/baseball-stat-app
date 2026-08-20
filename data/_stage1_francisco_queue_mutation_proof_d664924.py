@@ -2641,11 +2641,15 @@ def _run_playwright_cloud_mutation(
             if target.get("playwright_only") is not None
             else FRANCISCO_DELIVERY_PLAYWRIGHT_ONLY
         )
+        # Authorized Stage-A button key for live reacquire + consumption ack.
+        # Avoid obsolete deliver kwargs (player_name=/binding=/legacy key kwargs).
+        authorized_key = str(target.get("widget_key") or "")
         try:
             result = deliver_add_to_queue_click(
                 page,
                 candidate,
                 playwright_only=playwright_only,
+                authorized_rec_card_key=authorized_key,
             )
         except TypeError as exc:
             # Stale keyword API or unexpected helper signature — zero claimed clicks.
@@ -2750,6 +2754,30 @@ def _run_playwright_cloud_mutation(
             if str(obs.get("candidate_phase") or "") == PHASE_POST_NO_ADD:
                 no_add_ack = True
                 break
+        callback_entered = bool(last.get("callback_entered") or app_trace.get("callback_entered"))
+        delivery = click.get("delivery") if isinstance(click.get("delivery"), dict) else {}
+        consumption_ack = {}
+        try:
+            from stage1_francisco_native_click_consumption import (
+                evaluate_francisco_native_click_consumption_ack,
+            )
+
+            consumption_ack = evaluate_francisco_native_click_consumption_ack(
+                click_dispatched=bool(delivery.get("click_dispatched")),
+                authorized_rec_card_key=str(click.get("widget_key") or ""),
+                post_click_transport=delivery.get("post_click_transport")
+                if isinstance(delivery.get("post_click_transport"), dict)
+                else {},
+                callback_entered_observed=callback_entered,
+                trusted_dom_click=bool(delivery.get("trusted_dom_click")),
+            )
+        except ImportError:
+            consumption_ack = {
+                "click_dispatched": bool(delivery.get("click_dispatched")),
+                "francisco_widget_consumption_ack": False,
+                "click_dispatch_alone_proves_callback": False,
+                "click_dispatch_alone_proves_mutation": False,
+            }
         return {
             "premutation_stop_observed": stop_observed,
             "mutation_helper_entered": bool(
@@ -2762,7 +2790,7 @@ def _run_playwright_cloud_mutation(
             "canonical_queue": selected.get("canonical_queue"),
             "ui_queue": ui,
             "queue_mutation_visible": FRANCISCO_NAME in ui,
-            "callback_entered": bool(last.get("callback_entered") or app_trace.get("callback_entered")),
+            "callback_entered": callback_entered,
             "callback_ledger_observed": bool(last),
             "persist_dirty": (post_snap or {}).get("persist_dirty")
             if isinstance(post_snap, dict)
@@ -2770,6 +2798,7 @@ def _run_playwright_cloud_mutation(
             "app_trace": app_trace,
             "queue_state_scrape": scraped,
             "authoritative_post": selected,
+            "consumption_ack": consumption_ack,
             "post_wait": {
                 "ok": bool(post_wait.get("ok")),
                 "attempts": post_wait.get("attempts"),
