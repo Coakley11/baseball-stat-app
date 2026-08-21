@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import sys
 import time
@@ -52,6 +53,165 @@ from playwright_daniel_auth_session import (  # noqa: E402
 
 WAIT_S = int(os.environ.get("SOLO_AUTH_MANUAL_WAIT_S", "900"))
 POLL_MS = int(os.environ.get("CAPTURE_STRICT_POLL_MS", "3500"))
+
+# Bootstrap failure reporting (070a20d7 gap): catchable Exception in the Playwright
+# launch→first sign-in-wait window must not leave phase=started / failure="".
+# Does NOT cover hard kill / native crash / OS termination.
+_BOOTSTRAP_SECRET_RE = re.compile(
+    r"(?i)("
+    r"bearer\s+\S+"
+    r"|authorization\s*[:=]\s*\S+"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    r"|(access_token|refresh_token|id_token)\s*[:=]\s*\S+"
+    r")"
+)
+
+
+def sanitize_bootstrap_exception_message(exc: BaseException) -> str:
+    """Safe, truncated exception text — never persist raw tokens/credentials."""
+    raw = str(exc) if exc is not None else ""
+    cleaned = _BOOTSTRAP_SECRET_RE.sub("[redacted]", raw)
+    return cleaned[:240]
+
+
+def classify_bootstrap_failure(exc: BaseException) -> str:
+    """Non-empty failure classifier even when str(exc) is empty."""
+    et = type(exc).__name__ or "Exception"
+    msg = sanitize_bootstrap_exception_message(exc)
+    if msg:
+        out = f"bootstrap_abort:{et}:{msg}"
+    else:
+        out = f"bootstrap_abort:{et}"
+    return out[:220] if out else "bootstrap_abort:Exception"
+
+
+def persist_bootstrap_abort_artifact(
+    identity: dict[str, Any],
+    *,
+    bootstrap_stage: str,
+    exc: BaseException,
+    required_cloud_sha: str = "",
+) -> Path:
+    """Persist bootstrap_abort result via the existing result-writer primitive."""
+    try:
+        ended = str(utc_capture_timestamp() or "")
+    except Exception:
+        ended = ""
+    if not ended:
+        from datetime import datetime, timezone
+
+        ended = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    failure = classify_bootstrap_failure(exc)
+    payload: dict[str, Any] = {
+        **dict(identity or {}),
+        "ok": False,
+        "phase": "bootstrap_abort",
+        "failure": failure,
+        "capture_ended_at": ended,
+        "bootstrap_stage": str(bootstrap_stage or ""),
+        "exception_type": type(exc).__name__,
+        "exception_message": sanitize_bootstrap_exception_message(exc),
+    }
+    sha = (required_cloud_sha or str(os.environ.get("REQUIRED_CLOUD_SHA") or "")).strip()
+    if sha:
+        payload["required_cloud_sha"] = sha[:40]
+    # Prefer persisting diagnostics; if writer fails, still propagate original exc to caller.
+    return write_result_artifact(payload)
+
+
+def _set_bootstrap_stage(identity: dict[str, Any], stage: str) -> str:
+    identity["bootstrap_stage"] = stage
+    return stage
+
+
+def run_playwright_bootstrap_to_sign_in_wait(
+    playwright: Any,
+    *,
+    identity: dict[str, Any],
+    target_sid: str,
+    start_url: str,
+    collector: CaptureTraceCollector,
+    goto_and_wake_fn: Any,
+    surface_monitor_cls: Any = BrowserSurfaceMonitor,
+) -> tuple[Any, Any, Any, Any]:
+    """Launch headed Chromium through first sign-in-wait checkpoint.
+
+    Updates identity['bootstrap_stage'] at each boundary. Caller owns Exception
+    handling / bootstrap_abort persistence for the sync_playwright() enter path.
+    """
+    _set_bootstrap_stage(identity, "browser_launch_start")
+    browser = playwright.chromium.launch(
+        headless=False,
+        args=["--disable-blink-features=AutomationControlled"],
+    )
+    _set_bootstrap_stage(identity, "browser_launched")
+    try:
+        proc = getattr(browser, "process", None)
+        pid = getattr(proc, "pid", None) if proc is not None else None
+        if pid is not None:
+            identity["browser_process_pid"] = int(pid)
+    except Exception:
+        pass
+    _set_bootstrap_stage(identity, "context_create_start")
+    context = browser.new_context(viewport={"width": 1440, "height": 1400})
+    _set_bootstrap_stage(identity, "context_created")
+    _set_bootstrap_stage(identity, "page_create_start")
+    page = context.new_page()
+    _set_bootstrap_stage(identity, "page_created")
+    surface_monitor = surface_monitor_cls(
+        context=context, target_sid=target_sid, collector=collector
+    )
+    surface_monitor.wire(page)
+    _set_bootstrap_stage(identity, "navigation_start")
+    goto_and_wake_fn(page, start_url, timeout_s=240)
+    _set_bootstrap_stage(identity, "navigation_complete")
+    collector.note_url(page.url or "", label="initial_load")
+    TRACE_ROOT.mkdir(parents=True, exist_ok=True)
+    _set_bootstrap_stage(identity, "initial_observation_start")
+    try:
+        page.screenshot(path=str(TRACE_ROOT / f"{target_sid[:8]}_login_start.png"))
+    except Exception:
+        pass
+    _set_bootstrap_stage(identity, "sign_in_wait_entered")
+    write_result_artifact({**identity, "phase": "sign_in_wait"})
+    return browser, context, page, surface_monitor
+
+
+def handle_bootstrap_exception(
+    identity: dict[str, Any],
+    *,
+    bootstrap_stage: str,
+    exc: BaseException,
+    sign_in_wait_entered: bool,
+) -> int:
+    """Persist bootstrap_abort for pre-wait failures. Returns process exit code."""
+    if sign_in_wait_entered:
+        raise exc  # type: ignore[misc]
+    stage = str(identity.get("bootstrap_stage") or bootstrap_stage or "")
+    try:
+        persist_bootstrap_abort_artifact(
+            identity,
+            bootstrap_stage=stage,
+            exc=exc,  # type: ignore[arg-type]
+        )
+    except Exception:
+        pass
+    print(
+        json.dumps(
+            {
+                "ok": False,
+                "phase": "bootstrap_abort",
+                "failure": classify_bootstrap_failure(exc),
+                "bootstrap_stage": stage,
+                "exception_type": type(exc).__name__,
+                "suite_sid": identity.get("suite_sid"),
+            },
+            default=str,
+        ),
+        flush=True,
+    )
+    return 1
+
 
 
 def _status(msg: str) -> None:
@@ -400,93 +560,180 @@ def main() -> int:
     collector = CaptureTraceCollector()
     last_eval: dict[str, Any] = {}
     surface_monitor: BrowserSurfaceMonitor | None = None
+    sign_in_wait_entered = False
+    bootstrap_stage = _set_bootstrap_stage(identity, "pre_playwright")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
-        context = browser.new_context(viewport={"width": 1440, "height": 1400})
-        page = context.new_page()
-        surface_monitor = BrowserSurfaceMonitor(context=context, target_sid=target_sid, collector=collector)
-        surface_monitor.wire(page)
-        goto_and_wake(page, start_url, timeout_s=240)
-        collector.note_url(page.url or "", label="initial_load")
-        TRACE_ROOT.mkdir(parents=True, exist_ok=True)
-        try:
-            page.screenshot(path=str(TRACE_ROOT / f"{target_sid[:8]}_login_start.png"))
-        except Exception:
-            pass
+    try:
+        bootstrap_stage = _set_bootstrap_stage(identity, "playwright_starting")
+        with sync_playwright() as p:
+            bootstrap_stage = _set_bootstrap_stage(identity, "playwright_started")
+            browser, context, page, surface_monitor = run_playwright_bootstrap_to_sign_in_wait(
+                p,
+                identity=identity,
+                target_sid=target_sid,
+                start_url=start_url,
+                collector=collector,
+                goto_and_wake_fn=goto_and_wake,
+            )
+            bootstrap_stage = str(identity.get("bootstrap_stage") or bootstrap_stage)
+            sign_in_wait_entered = True
 
-        deadline = time.time() + WAIT_S
-        _status("complete Daniel sign-in — harness will not reload the page while you type")
-        hydration_announced = False
-        hands_off_announced = False
-        poll_interval_s = max(POLL_MS / 1000.0, 5.0)
+            deadline = time.time() + WAIT_S
+            _status("complete Daniel sign-in — harness will not reload the page while you type")
+            hydration_announced = False
+            hands_off_announced = False
+            poll_interval_s = max(POLL_MS / 1000.0, 5.0)
 
-        while time.time() < deadline:
-            try:
-                surface_monitor.poll()
-            except Exception:
-                pass
-            surface_monitor.sync_identity(identity)
-
-            if surface_monitor.hands_off_user_login():
-                if not hands_off_announced:
-                    hands_off_announced = True
-                    _status("login in progress — no reloads, tab switches, or wake navigation")
-                time.sleep(poll_interval_s)
-                continue
-
-            app_page = surface_monitor.cloud_app_page()
-            if app_page is None:
-                if context.pages and any(not pg.is_closed() for pg in context.pages):
-                    time.sleep(poll_interval_s)
-                    continue
-                stub = page
-                if stub.is_closed():
-                    live = [pg for pg in context.pages if not pg.is_closed()]
-                    stub = live[0] if live else page
-                surfaces = surface_monitor.diagnostic_blob()
-                code = _finalize_exit(
-                    code=1,
-                    identity=identity,
-                    failure="browser_closed_before_capture_complete",
-                    page=stub,
-                    collector=collector,
-                    ledger_rows=[],
-                    strict_capture=last_eval or None,
-                    files_updated=False,
-                    screenshot_phase="browser_closed",
-                    browser_surfaces=surfaces,
-                    sign_in_initiated=surface_monitor.sign_in_initiated,
-                    failure_phase="browser_closed_before_capture_complete",
-                )
+            while time.time() < deadline:
                 try:
-                    context.close()
-                    browser.close()
+                    surface_monitor.poll()
                 except Exception:
                     pass
-                return code
-            url = app_page.url or ""
-            if is_provider_url(url):
-                surface_monitor.record_harness_event("script_navigation_suppressed", detail="app_page_is_provider")
+                surface_monitor.sync_identity(identity)
+
+                if surface_monitor.hands_off_user_login():
+                    if not hands_off_announced:
+                        hands_off_announced = True
+                        _status("login in progress ??? no reloads, tab switches, or wake navigation")
+                    time.sleep(poll_interval_s)
+                    continue
+
+                app_page = surface_monitor.cloud_app_page()
+                if app_page is None:
+                    if context.pages and any(not pg.is_closed() for pg in context.pages):
+                        time.sleep(poll_interval_s)
+                        continue
+                    stub = page
+                    if stub.is_closed():
+                        live = [pg for pg in context.pages if not pg.is_closed()]
+                        stub = live[0] if live else page
+                    surfaces = surface_monitor.diagnostic_blob()
+                    code = _finalize_exit(
+                        code=1,
+                        identity=identity,
+                        failure="browser_closed_before_capture_complete",
+                        page=stub,
+                        collector=collector,
+                        ledger_rows=[],
+                        strict_capture=last_eval or None,
+                        files_updated=False,
+                        screenshot_phase="browser_closed",
+                        browser_surfaces=surfaces,
+                        sign_in_initiated=surface_monitor.sign_in_initiated,
+                        failure_phase="browser_closed_before_capture_complete",
+                    )
+                    try:
+                        context.close()
+                        browser.close()
+                    except Exception:
+                        pass
+                    return code
+                url = app_page.url or ""
+                if is_provider_url(url):
+                    surface_monitor.record_harness_event("script_navigation_suppressed", detail="app_page_is_provider")
+                    time.sleep(poll_interval_s)
+                    continue
+                collector.note_url(url, label="app_page_poll")
+                url_sid = suite_sid_from_url(url)
+                if url_sid and url_sid != target_sid:
+                    ledger = scrape_stage1_ledger_rows(app_page) or []
+                    surfaces = surface_monitor.diagnostic_blob()
+                    code = _finalize_exit(
+                        code=1,
+                        identity=identity,
+                        failure="suite_sid_changed",
+                        page=app_page,
+                        collector=collector,
+                        ledger_rows=ledger,
+                        strict_capture=last_eval or None,
+                        files_updated=False,
+                        sid_drift=True,
+                        screenshot_phase="sid_drift",
+                        extra_stdout={"url_sid": url_sid},
+                        browser_surfaces=surfaces,
+                        sign_in_initiated=surface_monitor.sign_in_initiated,
+                    )
+                    context.close()
+                    browser.close()
+                    return code
+
+                last_eval = _strict_poll(app_page, target_sid=target_sid, scrape_ledger=scrape_stage1_ledger_rows)
+                if last_eval.get("failure") == "browser_page_closed":
+                    page = app_page
+                    continue
+                if last_eval.get("strict_auth_passed"):
+                    page = app_page
+                    break
+
+                if identity.get("signed_in_display") and not hydration_announced:
+                    hydration_announced = True
+                    _status("signed-in UI visible ??? waiting for ledger bridge/apply (not treating as success)")
+                    try:
+                        app_page.screenshot(path=str(TRACE_ROOT / f"{target_sid[:8]}_signed_in_waiting_ledger.png"))
+                    except Exception:
+                        pass
+
                 time.sleep(poll_interval_s)
-                continue
-            collector.note_url(url, label="app_page_poll")
-            url_sid = suite_sid_from_url(url)
-            if url_sid and url_sid != target_sid:
+                if not surface_monitor.hands_off_user_login():
+                    try:
+                        wake = gentle_wake_if_asleep(app_page)
+                        if wake.get("action") == "wake_click":
+                            surface_monitor.record_harness_event("script_wake_click_only", detail="asleep")
+                    except Exception as exc:
+                        surface_monitor.record_harness_event("script_wake_failed", detail=type(exc).__name__)
+            else:
+                app_page = surface_monitor.app_page(page)
                 ledger = scrape_stage1_ledger_rows(app_page) or []
+                identity["cloud_runtime_sha"] = (scrape_deploy_marker_from_page(app_page)[0] or "")
                 surfaces = surface_monitor.diagnostic_blob()
+                fail = str(last_eval.get("failure") or "timeout_strict_capture")
+                login_state_preview = login_transition_state(
+                    target_sid=target_sid,
+                    url_sid=suite_sid_from_url(app_page.url or ""),
+                    provider_seen=surface_monitor.provider_surface_seen,
+                    oauth_callback_seen=surface_monitor.oauth_callback_seen,
+                    returned_to_app=surface_monitor.returned_to_cloud_after_provider,
+                    storage=probe_storage_booleans(app_page),
+                    signed_in_display=surface_monitor.signed_in_display_any_surface,
+                    ledger_rows=ledger,
+                    strict_failure=fail,
+                    sign_in_initiated=surface_monitor.sign_in_initiated,
+                )
+                phase = infer_timeout_failure_phase(login_state_preview, strict_failure=fail)
                 code = _finalize_exit(
                     code=1,
                     identity=identity,
-                    failure="suite_sid_changed",
+                    failure=fail,
                     page=app_page,
                     collector=collector,
                     ledger_rows=ledger,
-                    strict_capture=last_eval or None,
+                    strict_capture=last_eval,
                     files_updated=False,
-                    sid_drift=True,
-                    screenshot_phase="sid_drift",
-                    extra_stdout={"url_sid": url_sid},
+                    screenshot_phase="timeout_hydration",
+                    browser_surfaces=surfaces,
+                    sign_in_initiated=surface_monitor.sign_in_initiated,
+                    failure_phase=phase,
+                )
+                context.close()
+                browser.close()
+                return code
+
+            if not last_eval.get("strict_auth_passed"):
+                app_page = surface_monitor.app_page(page)
+                ledger = scrape_stage1_ledger_rows(app_page) or []
+                identity["cloud_runtime_sha"] = (scrape_deploy_marker_from_page(app_page)[0] or "")
+                surfaces = surface_monitor.diagnostic_blob()
+                fail = str(last_eval.get("failure") or "strict_capture_incomplete")
+                code = _finalize_exit(
+                    code=1,
+                    identity=identity,
+                    failure=fail,
+                    page=app_page,
+                    collector=collector,
+                    ledger_rows=ledger,
+                    strict_capture=last_eval,
+                    files_updated=False,
+                    screenshot_phase="strict_incomplete",
                     browser_surfaces=surfaces,
                     sign_in_initiated=surface_monitor.sign_in_initiated,
                 )
@@ -494,233 +741,158 @@ def main() -> int:
                 browser.close()
                 return code
 
-            last_eval = _strict_poll(app_page, target_sid=target_sid, scrape_ledger=scrape_stage1_ledger_rows)
-            if last_eval.get("failure") == "browser_page_closed":
-                page = app_page
-                continue
-            if last_eval.get("strict_auth_passed"):
-                page = app_page
-                break
+            page = surface_monitor.app_page(page)
+            live_sha, _src = scrape_deploy_marker_from_page(page)
+            identity["cloud_runtime_sha"] = live_sha or ""
+            _status("strict capture passed ??? saving files")
 
-            if identity.get("signed_in_display") and not hydration_announced:
-                hydration_announced = True
-                _status("signed-in UI visible — waiting for ledger bridge/apply (not treating as success)")
-                try:
-                    app_page.screenshot(path=str(TRACE_ROOT / f"{target_sid[:8]}_signed_in_waiting_ledger.png"))
-                except Exception:
-                    pass
+            def _write_storage(path: Path) -> None:
+                context.storage_state(path=str(path))
 
-            time.sleep(poll_interval_s)
-            if not surface_monitor.hands_off_user_login():
-                try:
-                    wake = gentle_wake_if_asleep(app_page)
-                    if wake.get("action") == "wake_click":
-                        surface_monitor.record_harness_event("script_wake_click_only", detail="asleep")
-                except Exception as exc:
-                    surface_monitor.record_harness_event("script_wake_failed", detail=type(exc).__name__)
-        else:
-            app_page = surface_monitor.app_page(page)
-            ledger = scrape_stage1_ledger_rows(app_page) or []
-            identity["cloud_runtime_sha"] = (scrape_deploy_marker_from_page(app_page)[0] or "")
-            surfaces = surface_monitor.diagnostic_blob()
-            fail = str(last_eval.get("failure") or "timeout_strict_capture")
-            login_state_preview = login_transition_state(
-                target_sid=target_sid,
-                url_sid=suite_sid_from_url(app_page.url or ""),
-                provider_seen=surface_monitor.provider_surface_seen,
-                oauth_callback_seen=surface_monitor.oauth_callback_seen,
-                returned_to_app=surface_monitor.returned_to_cloud_after_provider,
-                storage=probe_storage_booleans(app_page),
-                signed_in_display=surface_monitor.signed_in_display_any_surface,
-                ledger_rows=ledger,
-                strict_failure=fail,
-                sign_in_initiated=surface_monitor.sign_in_initiated,
+            meta = {
+                "captured_at": utc_capture_timestamp(),
+                "cloud_runtime_sha": live_sha or "",
+                "strict_auth_passed": True,
+                "bridge_persisted": True,
+                "start_enabled": bool(last_eval.get("start_enabled")),
+                "strict_capture": _public_summary(last_eval),
+            }
+            atomic_write_harness_files(
+                suite_sid=target_sid,
+                storage_writer=_write_storage,
+                capture_metadata=meta,
             )
-            phase = infer_timeout_failure_phase(login_state_preview, strict_failure=fail)
-            code = _finalize_exit(
-                code=1,
-                identity=identity,
-                failure=fail,
-                page=app_page,
-                collector=collector,
-                ledger_rows=ledger,
-                strict_capture=last_eval,
-                files_updated=False,
-                screenshot_phase="timeout_hydration",
-                browser_surfaces=surfaces,
-                sign_in_initiated=surface_monitor.sign_in_initiated,
-                failure_phase=phase,
+            files_updated = (
+                STORAGE_PATH.is_file()
+                and SESSION_PATH.is_file()
+                and STORAGE_PATH.stat().st_mtime > storage_mtime_before
+                and SESSION_PATH.stat().st_mtime > session_mtime_before
             )
-            context.close()
-            browser.close()
-            return code
-
-        if not last_eval.get("strict_auth_passed"):
-            app_page = surface_monitor.app_page(page)
-            ledger = scrape_stage1_ledger_rows(app_page) or []
-            identity["cloud_runtime_sha"] = (scrape_deploy_marker_from_page(app_page)[0] or "")
-            surfaces = surface_monitor.diagnostic_blob()
-            fail = str(last_eval.get("failure") or "strict_capture_incomplete")
-            code = _finalize_exit(
-                code=1,
-                identity=identity,
-                failure=fail,
-                page=app_page,
-                collector=collector,
-                ledger_rows=ledger,
-                strict_capture=last_eval,
-                files_updated=False,
-                screenshot_phase="strict_incomplete",
-                browser_surfaces=surfaces,
-                sign_in_initiated=surface_monitor.sign_in_initiated,
-            )
-            context.close()
-            browser.close()
-            return code
-
-        page = surface_monitor.app_page(page)
-        live_sha, _src = scrape_deploy_marker_from_page(page)
-        identity["cloud_runtime_sha"] = live_sha or ""
-        _status("strict capture passed — saving files")
-
-        def _write_storage(path: Path) -> None:
-            context.storage_state(path=str(path))
-
-        meta = {
-            "captured_at": utc_capture_timestamp(),
-            "cloud_runtime_sha": live_sha or "",
-            "strict_auth_passed": True,
-            "bridge_persisted": True,
-            "start_enabled": bool(last_eval.get("start_enabled")),
-            "strict_capture": _public_summary(last_eval),
-        }
-        atomic_write_harness_files(
-            suite_sid=target_sid,
-            storage_writer=_write_storage,
-            capture_metadata=meta,
-        )
-        files_updated = (
-            STORAGE_PATH.is_file()
-            and SESSION_PATH.is_file()
-            and STORAGE_PATH.stat().st_mtime > storage_mtime_before
-            and SESSION_PATH.stat().st_mtime > session_mtime_before
-        )
-        ledger = scrape_stage1_ledger_rows(page) or []
-        obs_pkg = _observability_package(
-            page,
-            harness_sid=target_sid,
-            ledger_rows=ledger,
-            strict_failure="",
-        )
-        observability_binding = obs_pkg["observability_binding"]
-        ledger = obs_pkg.get("ledger_rows") or ledger
-        identity["files_updated"] = files_updated
-        identity["ok"] = True
-        storage = probe_storage_booleans(page)
-        login_state = login_transition_state(
-            target_sid=target_sid,
-            url_sid=suite_sid_from_url(page.url or ""),
-            provider_seen=bool(identity.get("provider_login_seen")),
-            oauth_callback_seen=bool(identity.get("oauth_callback_seen")),
-            returned_to_app=True,
-            storage=storage,
-            signed_in_display=True,
-            ledger_rows=ledger,
-            strict_failure="",
-            sign_in_initiated=bool(identity.get("sign_in_initiated")),
-        )
-        trace_dir = TRACE_ROOT / f"{target_sid[:8]}_{int(time.time())}_success"
-        trace_meta = save_trace_bundle(
-            trace_dir=trace_dir,
-            page=page,
-            identity=identity,
-            storage_probe=storage,
-            collector=collector,
-            ledger_rows=ledger,
-            screenshot_labels=[("success", None)],
-            browser_surfaces=surface_monitor.diagnostic_blob() if surface_monitor else None,
-        )
-        # Auth-only Context A: bind #solo-deploy-build and preflight in ONE frame.
-        # Independent global SHA vs preflight searches cannot prove same-document.
-        queue_gate_preflight = {
-            "probe_found": False,
-            "probe_absent": True,
-            "selector": "#stage1-queue-gate-state-preflight",
-            "same_carrier_document": False,
-            "authoritative_steady_found": False,
-        }
-        rec_card_queue_gate = {
-            "probe_found": False,
-            "probe_absent": True,
-            "selector": "#rec-card-queue-render-trace",
-            "note": "optional_supporting_one_shot_not_reservation_authority",
-        }
-        try:
-            from live_draft_queue_state_snapshot_diag import (
-                wait_and_scrape_same_carrier_deploy_preflight_from_page,
-            )
-
-            queue_gate_preflight = wait_and_scrape_same_carrier_deploy_preflight_from_page(
+            ledger = scrape_stage1_ledger_rows(page) or []
+            obs_pkg = _observability_package(
                 page,
-                timeout_s=20.0,
-                poll_s=0.5,
+                harness_sid=target_sid,
+                ledger_rows=ledger,
+                strict_failure="",
             )
-        except Exception as exc:
+            observability_binding = obs_pkg["observability_binding"]
+            ledger = obs_pkg.get("ledger_rows") or ledger
+            identity["files_updated"] = files_updated
+            identity["ok"] = True
+            storage = probe_storage_booleans(page)
+            login_state = login_transition_state(
+                target_sid=target_sid,
+                url_sid=suite_sid_from_url(page.url or ""),
+                provider_seen=bool(identity.get("provider_login_seen")),
+                oauth_callback_seen=bool(identity.get("oauth_callback_seen")),
+                returned_to_app=True,
+                storage=storage,
+                signed_in_display=True,
+                ledger_rows=ledger,
+                strict_failure="",
+                sign_in_initiated=bool(identity.get("sign_in_initiated")),
+            )
+            trace_dir = TRACE_ROOT / f"{target_sid[:8]}_{int(time.time())}_success"
+            trace_meta = save_trace_bundle(
+                trace_dir=trace_dir,
+                page=page,
+                identity=identity,
+                storage_probe=storage,
+                collector=collector,
+                ledger_rows=ledger,
+                screenshot_labels=[("success", None)],
+                browser_surfaces=surface_monitor.diagnostic_blob() if surface_monitor else None,
+            )
+            # Auth-only Context A: bind #solo-deploy-build and preflight in ONE frame.
+            # Independent global SHA vs preflight searches cannot prove same-document.
             queue_gate_preflight = {
                 "probe_found": False,
                 "probe_absent": True,
                 "selector": "#stage1-queue-gate-state-preflight",
-                "waited_for_probe": True,
-                "probe_wait_timeout": True,
-                "error": str(exc)[:200],
+                "same_carrier_document": False,
+                "authoritative_steady_found": False,
             }
-        try:
-            from live_draft_rec_queue_click_trace import scrape_rec_card_queue_gate_state_from_page
-
-            rec_card_queue_gate = scrape_rec_card_queue_gate_state_from_page(page)
-            rec_card_queue_gate["note"] = "optional_supporting_one_shot_not_reservation_authority"
-        except Exception as exc:
             rec_card_queue_gate = {
                 "probe_found": False,
                 "probe_absent": True,
                 "selector": "#rec-card-queue-render-trace",
                 "note": "optional_supporting_one_shot_not_reservation_authority",
-                "error": str(exc)[:200],
             }
-        success_payload = {
-            **identity,
-            "capture_ended_at": utc_capture_timestamp(),
-            "failure": "",
-            "strict_capture": _public_summary(last_eval),
-            "login_boundary": login_state,
-            "login_timeline": ledger_login_timeline(ledger),
-            "observability_binding": observability_binding,
-            "queue_gate_preflight_state": queue_gate_preflight,
-            "rec_card_queue_gate_state": rec_card_queue_gate,
-            "auth_capture_pass": True,
-            "trace": trace_meta,
-            "ok": True,
-            "files_updated": files_updated,
-        }
-        write_result_artifact(success_payload)
-        stdout = {
-            "ok": True,
-            "suite_sid": target_sid,
-            "files_updated": files_updated,
-            "cloud_runtime_sha": live_sha,
-            "artifact": str(RESULT_PATH),
-            "trace_dir": trace_meta.get("trace_dir"),
-            "strict_capture": _public_summary(last_eval),
-            "observability_binding": observability_binding,
-            "queue_gate_preflight_state": queue_gate_preflight,
-            "rec_card_queue_gate_state": rec_card_queue_gate,
-            "auth_capture_pass": True,
-        }
-        print(json.dumps(stdout, default=str))
-        context.close()
-        browser.close()
-        return 0
+            try:
+                from live_draft_queue_state_snapshot_diag import (
+                    wait_and_scrape_same_carrier_deploy_preflight_from_page,
+                )
 
+                queue_gate_preflight = wait_and_scrape_same_carrier_deploy_preflight_from_page(
+                    page,
+                    timeout_s=20.0,
+                    poll_s=0.5,
+                )
+            except Exception as exc:
+                queue_gate_preflight = {
+                    "probe_found": False,
+                    "probe_absent": True,
+                    "selector": "#stage1-queue-gate-state-preflight",
+                    "waited_for_probe": True,
+                    "probe_wait_timeout": True,
+                    "error": str(exc)[:200],
+                }
+            try:
+                from live_draft_rec_queue_click_trace import scrape_rec_card_queue_gate_state_from_page
+
+                rec_card_queue_gate = scrape_rec_card_queue_gate_state_from_page(page)
+                rec_card_queue_gate["note"] = "optional_supporting_one_shot_not_reservation_authority"
+            except Exception as exc:
+                rec_card_queue_gate = {
+                    "probe_found": False,
+                    "probe_absent": True,
+                    "selector": "#rec-card-queue-render-trace",
+                    "note": "optional_supporting_one_shot_not_reservation_authority",
+                    "error": str(exc)[:200],
+                }
+            success_payload = {
+                **identity,
+                "capture_ended_at": utc_capture_timestamp(),
+                "failure": "",
+                "strict_capture": _public_summary(last_eval),
+                "login_boundary": login_state,
+                "login_timeline": ledger_login_timeline(ledger),
+                "observability_binding": observability_binding,
+                "queue_gate_preflight_state": queue_gate_preflight,
+                "rec_card_queue_gate_state": rec_card_queue_gate,
+                "auth_capture_pass": True,
+                "trace": trace_meta,
+                "ok": True,
+                "files_updated": files_updated,
+            }
+            write_result_artifact(success_payload)
+            stdout = {
+                "ok": True,
+                "suite_sid": target_sid,
+                "files_updated": files_updated,
+                "cloud_runtime_sha": live_sha,
+                "artifact": str(RESULT_PATH),
+                "trace_dir": trace_meta.get("trace_dir"),
+                "strict_capture": _public_summary(last_eval),
+                "observability_binding": observability_binding,
+                "queue_gate_preflight_state": queue_gate_preflight,
+                "rec_card_queue_gate_state": rec_card_queue_gate,
+                "auth_capture_pass": True,
+            }
+            print(json.dumps(stdout, default=str))
+            context.close()
+            browser.close()
+            return 0
+
+    except Exception as exc:
+        # Catchable bootstrap failures only (not SystemExit/KeyboardInterrupt/BaseException).
+        # Hard/native/OS kills remain unobservable by design.
+        return handle_bootstrap_exception(
+            identity,
+            bootstrap_stage=str(identity.get("bootstrap_stage") or bootstrap_stage or ""),
+            exc=exc,
+            sign_in_wait_entered=sign_in_wait_entered,
+        )
 
 if __name__ == "__main__":
     # Local import-only dry run (no browser/network). Used by harness selftests.
