@@ -27,6 +27,19 @@ QUEUE1E = "QUEUE1E — fewer than required distinct players available/seeded"
 QUEUE1F = "QUEUE1F — queue order cannot be established"
 QUEUE1_8 = "QUEUE1_8 — another exact supported queue-seed boundary"
 
+# Authorized-widget seed delivery boundaries (Stage1 harness; not product codes).
+QUEUE1C3A2K = "QUEUE1C3A2K — authorized rec_card widget key binding failed before click"
+STAGE1_QUEUE_SEED_WIDGET_CONSUMPTION_BOUNDARY = (
+    "STAGE1_QUEUE_SEED_WIDGET_CONSUMPTION_BOUNDARY — click_dispatched without widget_consumption_ack"
+)
+STAGE1_QUEUE_SEED_MEMBERSHIP_BOUNDARY = (
+    "STAGE1_QUEUE_SEED_MEMBERSHIP_BOUNDARY — widget consumed but authoritative +1 membership not proven"
+)
+
+_REC_CARD_QUEUE_KEY = re.compile(
+    r"^rec_card_queue_(?P<room>[A-Za-z0-9]+)_(?P<pick>\d+)_(?P<player_id>\d+)_rec_card$"
+)
+
 _SKIP_LINE = re.compile(
     r"^(Draft queue|Clear Draft Queue|Watchlist|Empty|Tracked players|Recently viewed|"
     r"Command Center|keyboard_arrow|solo-deploy|Stop$|Fork$|✕|×|Saved session|Recommendations)",
@@ -908,14 +921,353 @@ def _finalize_seed_meta(
     return meta
 
 
+def parse_rec_card_queue_widget_key(widget_key: str) -> dict[str, Any]:
+    """Parse ``rec_card_queue_{room}_{pick}_{player_id}_rec_card`` when present."""
+    key = str(widget_key or "").strip()
+    m = _REC_CARD_QUEUE_KEY.match(key)
+    if not m:
+        return {"ok": False, "widget_key": key, "room_id": "", "pick_index": None, "player_id": ""}
+    return {
+        "ok": True,
+        "widget_key": key,
+        "room_id": str(m.group("room") or "").upper(),
+        "pick_index": int(m.group("pick")),
+        "player_id": str(m.group("player_id") or ""),
+    }
+
+
+def _norm_name(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _name_key(value: Any) -> str:
+    return _norm_name(value).lower()
+
+
+def _norm_room(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _pick_equal(a: Any, b: Any) -> bool:
+    if a in (None, "") or b in (None, ""):
+        return False
+    try:
+        return int(a) == int(b)
+    except (TypeError, ValueError):
+        return str(a).strip() == str(b).strip()
+
+
+def authorize_seed_widget_identity(
+    step: dict[str, Any],
+    *,
+    candidate: dict[str, Any] | None = None,
+    expected_room_id: str = "",
+    expected_pick_index: Any = None,
+) -> dict[str, Any]:
+    """Fail closed before click unless render-trace widget key is current and correlated.
+
+    Never authorizes on name/position/button-text alone.
+    """
+    failures: list[str] = []
+    cand = dict(candidate or step.get("pre_click_record") or {})
+    trace = step.get("app_render_trace") if isinstance(step.get("app_render_trace"), dict) else {}
+    intended = _norm_name(step.get("intended_player") or step.get("player_name") or cand.get("player_name"))
+    key = _norm_name(step.get("expected_widget_key") or trace.get("widget_key"))
+    out: dict[str, Any] = {
+        "ok": False,
+        "authorized_rec_card_key": "",
+        "player_name": intended,
+        "player_id": str(trace.get("player_id") or ""),
+        "room_id": _norm_room(trace.get("room_id")),
+        "pick_index": trace.get("pick_index"),
+        "widget_liveness": str(
+            step.get("render_trace_widget_liveness") or trace.get("widget_liveness") or ""
+        ).strip(),
+        "failures": failures,
+        "classification": QUEUE1C3A2K,
+        "paused_compatible": True,
+    }
+    if not step.get("render_trace_present") and not (trace.get("widget_key") or key):
+        failures.append("render_trace_missing")
+    if not key:
+        failures.append("widget_key_missing")
+    if not intended:
+        failures.append("player_name_missing")
+    if _name_key(cand.get("player_name")) and _name_key(cand.get("player_name")) != _name_key(intended):
+        failures.append("candidate_player_mismatch")
+    if _name_key(trace.get("player_name")) and _name_key(trace.get("player_name")) != _name_key(intended):
+        failures.append("trace_player_mismatch")
+    live = str(out["widget_liveness"] or "").strip().lower()
+    if live == "stale_retained_dom":
+        failures.append("stale_widget_liveness")
+    if live and live not in ("live_this_run", "live", ""):
+        # Unknown non-live markers fail closed when explicitly non-live.
+        if "stale" in live or "retained" in live:
+            failures.append("stale_widget_liveness")
+    parsed = parse_rec_card_queue_widget_key(key)
+    if key and not parsed.get("ok"):
+        failures.append("widget_key_unparseable")
+    if parsed.get("ok"):
+        if _norm_room(trace.get("room_id")) and _norm_room(trace.get("room_id")) != parsed["room_id"]:
+            failures.append("widget_key_room_mismatch")
+        if trace.get("pick_index") not in (None, "") and not _pick_equal(
+            trace.get("pick_index"), parsed["pick_index"]
+        ):
+            failures.append("widget_key_pick_mismatch")
+        if str(trace.get("player_id") or "").strip() and str(trace.get("player_id")).strip() != str(
+            parsed["player_id"]
+        ):
+            failures.append("widget_key_player_id_mismatch")
+        out["room_id"] = parsed["room_id"] or out["room_id"]
+        out["pick_index"] = parsed["pick_index"] if parsed.get("pick_index") is not None else out["pick_index"]
+        out["player_id"] = str(parsed["player_id"] or out["player_id"])
+    want_room = _norm_room(expected_room_id)
+    if want_room and out["room_id"] and want_room != out["room_id"]:
+        failures.append("stale_room")
+    if expected_pick_index not in (None, "") and out["pick_index"] not in (None, ""):
+        if not _pick_equal(expected_pick_index, out["pick_index"]):
+            failures.append("stale_pick")
+    # Candidate must map to intended rec card when it already carries a widget_key.
+    cand_key = _norm_name(cand.get("widget_key"))
+    if cand_key and key and cand_key != key:
+        failures.append("candidate_widget_key_mismatch")
+    if failures:
+        out["failures"] = failures
+        return out
+    out["ok"] = True
+    out["authorized_rec_card_key"] = key
+    out["classification"] = ""
+    out["failures"] = []
+    return out
+
+
+def map_widget_consumption_ack(delivery: dict[str, Any] | None) -> dict[str, Any]:
+    """Generic Stage1 semantic over shared Francisco-named consumption evaluator."""
+    detail = dict(delivery or {})
+    ack = detail.get("consumption_ack") if isinstance(detail.get("consumption_ack"), dict) else {}
+    widget_ack = bool(
+        ack.get("francisco_widget_consumption_ack")
+        or ack.get("widget_consumption_ack")
+        or ack.get("ok")
+    )
+    click_dispatched = bool(detail.get("click_dispatched") or ack.get("click_dispatched"))
+    generic_only = bool(ack.get("generic_streamlit_traffic_observed")) and not widget_ack
+    return {
+        "click_dispatched": click_dispatched,
+        "widget_consumption_ack": widget_ack,
+        "francisco_widget_consumption_ack": bool(ack.get("francisco_widget_consumption_ack")),
+        "authorized_rec_card_key": str(
+            ack.get("authorized_rec_card_key") or detail.get("authorized_rec_card_key") or ""
+        ),
+        "generic_streamlit_traffic_observed": bool(ack.get("generic_streamlit_traffic_observed")),
+        "generic_ws_satisfies_ack": False,
+        "generic_only_traffic": generic_only,
+        "classification": str(ack.get("classification") or ""),
+        "ok": bool(click_dispatched and widget_ack),
+    }
+
+
+def evaluate_seed_queue_membership_delta(
+    *,
+    queue_before: list[Any] | None,
+    session_after: list[Any] | None,
+    canonical_after: list[Any] | None,
+    player_name: str,
+) -> dict[str, Any]:
+    """Require authoritative +1 of the intended player with session==canonical and no removals."""
+    before = [_norm_name(x) for x in list(queue_before or []) if _norm_name(x)]
+    session = (
+        [_norm_name(x) for x in list(session_after or []) if _norm_name(x)]
+        if session_after is not None
+        else None
+    )
+    canonical = (
+        [_norm_name(x) for x in list(canonical_after or []) if _norm_name(x)]
+        if canonical_after is not None
+        else None
+    )
+    want = _norm_name(player_name)
+    failures: list[str] = []
+    if session is None or canonical is None:
+        failures.append("authoritative_queues_unavailable")
+    if session is not None and canonical is not None and session != canonical:
+        failures.append("session_canonical_disagreement")
+    after = session if session is not None else canonical
+    if after is None:
+        return {
+            "ok": False,
+            "failures": failures or ["authoritative_queues_unavailable"],
+            "queue_before": before,
+            "session_after": session,
+            "canonical_after": canonical,
+            "expected_after": before + ([want] if want else []),
+        }
+    expected = before + ([want] if want else [])
+    if not want:
+        failures.append("player_name_missing")
+    if len(after) != len(before) + 1:
+        failures.append("length_not_plus_one")
+    added = [n for n in after if _name_key(n) not in {_name_key(x) for x in before}]
+    removed = [n for n in before if _name_key(n) not in {_name_key(x) for x in after}]
+    if removed:
+        failures.append("unexpected_removal")
+    if len(added) != 1 or _name_key(added[0]) != _name_key(want):
+        failures.append("intended_player_not_sole_addition")
+    if after != expected:
+        # Order must preserve prior seed order then append.
+        failures.append("order_not_preserved")
+    # Dedup: sole addition must not already be present.
+    if sum(1 for n in after if _name_key(n) == _name_key(want)) != 1:
+        failures.append("duplicate_or_missing_intended")
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "queue_before": before,
+        "session_after": session,
+        "canonical_after": canonical,
+        "expected_after": expected,
+        "added": added,
+        "removed": removed,
+    }
+
+
+def prove_seed_membership_after_click(
+    page,
+    *,
+    queue_before: list[str],
+    player_name: str,
+    room_id: str = "",
+    production_sid: str = "",
+    click_ts: float | None = None,
+    timeout_s: float = 45.0,
+    scrape_container_fn=None,
+    membership_wait_fn=None,
+) -> dict[str, Any]:
+    """Wait for authoritative later POST (+ session/canonical agreement), not UI-sleep alone."""
+    before = [_norm_name(x) for x in list(queue_before or []) if _norm_name(x)]
+    if membership_wait_fn is not None:
+        waited = membership_wait_fn(
+            page,
+            queue_before=before,
+            player_name=player_name,
+            room_id=room_id,
+            production_sid=production_sid,
+            click_ts=click_ts,
+            timeout_s=timeout_s,
+        )
+        delta = evaluate_seed_queue_membership_delta(
+            queue_before=before,
+            session_after=waited.get("session_queue"),
+            canonical_after=waited.get("canonical_queue"),
+            player_name=player_name,
+        )
+        return {
+            **delta,
+            "post_wait": waited,
+            "stale_baseline_rejected": bool(waited.get("stale_baseline_rejected")),
+            "authoritative": True,
+        }
+
+    # Default: reuse Francisco proof post-wait + selection (shared architecture, not Francisco-only).
+    try:
+        import importlib.util
+        from pathlib import Path
+
+        sid = str(production_sid or "").strip()
+        room = str(room_id or "").strip()
+        if (not sid or not room) and page is not None:
+            try:
+                from live_draft_queue_state_snapshot_diag import scrape_queue_state_snapshot_from_page
+
+                scraped0 = scrape_queue_state_snapshot_from_page(page)
+                payload0 = scraped0.get("payload") if isinstance(scraped0.get("payload"), dict) else {}
+                baseline0 = payload0.get("baseline") if isinstance(payload0.get("baseline"), dict) else {}
+                if not sid:
+                    sid = str(
+                        scraped0.get("sid")
+                        or baseline0.get("streamlit_session_id")
+                        or ""
+                    ).strip()
+                if not room:
+                    room = str(scraped0.get("room_id") or baseline0.get("room_id") or "").strip()
+            except Exception:
+                pass
+
+        root = Path(__file__).resolve().parents[1]
+        path = root / "data" / "_stage1_francisco_queue_mutation_proof_d664924.py"
+        spec = importlib.util.spec_from_file_location("stage1_seed_post_wait_shared", path)
+        if spec is None or spec.loader is None:
+            raise ImportError("francisco_post_wait_module_unavailable")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        post_wait = mod.wait_for_authoritative_post_queue_scrape(
+            page,
+            production_sid=sid,
+            room_id=room,
+            after_ts=click_ts,
+            timeout_s=timeout_s,
+        )
+        selected = mod.select_authoritative_post_queues(
+            production_sid=sid,
+            room_id=room,
+            after_ts=click_ts,
+            snapshots=[post_wait.get("accepted_post")]
+            if isinstance(post_wait.get("accepted_post"), dict)
+            else None,
+            ui_queue=None,
+        )
+        delta = evaluate_seed_queue_membership_delta(
+            queue_before=before,
+            session_after=selected.get("session_queue"),
+            canonical_after=selected.get("canonical_queue"),
+            player_name=player_name,
+        )
+        return {
+            **delta,
+            "post_wait": post_wait,
+            "authoritative_post": selected,
+            "stale_baseline_rejected": bool(post_wait.get("stale_baseline_only"))
+            or str(selected.get("rejection") or "") == "stale_baseline_cannot_act_as_post",
+            "authoritative": True,
+        }
+    except Exception as exc:
+        # Fail closed — do not invent membership from UI-only scrape.
+        ui_names: list[str] = []
+        if scrape_container_fn is not None:
+            try:
+                snap = _snapshot_queue(page, scrape_container_fn)
+                ui_names = list(snap.get("queue_names") or [])
+            except Exception:
+                ui_names = []
+        return {
+            "ok": False,
+            "failures": ["authoritative_post_wait_unavailable", str(exc)[:160]],
+            "queue_before": before,
+            "session_after": None,
+            "canonical_after": None,
+            "ui_queue": ui_names,
+            "stale_baseline_rejected": False,
+            "authoritative": False,
+        }
+
+
 def seed_queue_distinct_players(
     page,
     *,
     scrape_container_fn,
     min_players: int = 3,
     mutation_wait_s: float = 5.0,
+    expected_room_id: str = "",
+    expected_pick_index: Any = None,
+    production_sid: str = "",
+    deliver_fn=None,
+    discover_fn=None,
+    select_fn=None,
+    render_trace_fn=None,
+    membership_wait_fn=None,
+    membership_timeout_s: float = 45.0,
 ) -> dict[str, Any]:
-    """Rediscover → bind player → click → prove mutation; discard bindings after each add."""
+    """Rediscover → authorize widget key → one click → consumption ack → +1 membership."""
     import os
 
     from stage1_add_to_queue_delivery import (
@@ -925,9 +1277,20 @@ def seed_queue_distinct_players(
     )
 
     preferred_player = str(os.environ.get("STAGE1_SEED_PLAYER_NAME") or "").strip()
+    deliver = deliver_fn or deliver_add_to_queue_click
+    discover = discover_fn or discover_bound_add_to_queue_controls
+    select = select_fn or select_next_seed_candidate
     t0 = time.time()
     before_all = _snapshot_queue(page, scrape_container_fn)
-    control_wait = wait_for_min_add_to_queue_controls(page, min_controls=min_players, timeout_s=90.0)
+    # Injectable discovery ports skip the live control wait (browser-free tests / harness probes).
+    if discover_fn is not None:
+        control_wait = {
+            "ok": True,
+            "add_to_queue_button_count": max(min_players, 1),
+            "injected": True,
+        }
+    else:
+        control_wait = wait_for_min_add_to_queue_controls(page, min_controls=min_players, timeout_s=90.0)
     if not control_wait.get("ok"):
         return {
             "ok": False,
@@ -944,9 +1307,10 @@ def seed_queue_distinct_players(
     queued_names: set[str] = set()
     discovery_snapshots: list[dict[str, Any]] = []
     fail_classification = ""
+    proven_order: list[str] = []
 
     while len([s for s in seed_steps if s.get("mutation_proven")]) < min_players:
-        candidates = discover_bound_add_to_queue_controls(page)
+        candidates = discover(page)
         discovery_snapshots.append(
             {
                 "ts": time.time(),
@@ -957,7 +1321,7 @@ def seed_queue_distinct_players(
                 "candidates": candidates[:10],
             }
         )
-        pick, reject = select_next_seed_candidate(
+        pick, reject = select(
             candidates,
             exclude_player_names=queued_names,
             preferred_player_name=preferred_player,
@@ -977,22 +1341,28 @@ def seed_queue_distinct_players(
 
         player_name = str(pick.get("player_name") or "").strip()
         pre = _snapshot_queue(page, scrape_container_fn)
+        # Authoritative baseline for this seed slot is prior proven order (supports []→[A]→…).
+        queue_before = list(proven_order) if proven_order else list(pre.get("queue_names") or [])
         step: dict[str, Any] = {
             "player_name": player_name,
             "intended_player": player_name,
             "pre_click_record": pick,
-            "queue_before": list(pre.get("queue_names") or []),
+            "queue_before": queue_before,
             "started_ts": time.time(),
+            "helper_invocations": 0,
+            "browser_clicks": 0,
+            "retry": 0,
+            "playwright_only": True,
+            "js_fallback_used": False,
         }
         try:
             from stage1_rec_queue_click_trace_scrape import merge_render_trace_into_step, scrape_rec_queue_render_trace
 
-            merge_render_trace_into_step(step, scrape_rec_queue_render_trace(page, player_name=player_name))
+            trace_fn = render_trace_fn or scrape_rec_queue_render_trace
+            merge_render_trace_into_step(step, trace_fn(page, player_name=player_name))
         except ImportError:
             pass
         try:
-            import os
-
             expected_help = str(os.environ.get("STAGE1_REC_QUEUE_HELP_VARIANT") or "").strip().lower()
             if expected_help in ("with_help", "no_help"):
                 trace = step.get("app_render_trace") if isinstance(step.get("app_render_trace"), dict) else {}
@@ -1025,11 +1395,48 @@ def seed_queue_distinct_players(
             seed_steps.append(step)
             fail_classification = "QUEUE1C3A5"
             break
-        delivery = deliver_add_to_queue_click(page, pick, playwright_only=True)
-        step["click_dispatched"] = bool(delivery.get("click_dispatched"))
-        step["delivery_method"] = delivery.get("delivery_method") or ""
+
+        authz = authorize_seed_widget_identity(
+            step,
+            candidate=pick,
+            expected_room_id=expected_room_id,
+            expected_pick_index=expected_pick_index,
+        )
+        step["widget_authorization"] = authz
+        step["authorized_rec_card_key"] = str(authz.get("authorized_rec_card_key") or "")
+        if not authz.get("ok"):
+            step["classification"] = QUEUE1C3A2K
+            step["click_dispatched"] = False
+            step["mutation_proven"] = False
+            step["mutation_observed"] = False
+            step["widget_consumption_ack"] = False
+            step["elapsed_s"] = time.time() - float(step["started_ts"])
+            seed_steps.append(step)
+            fail_classification = QUEUE1C3A2K
+            break
+
+        authorized_key = str(authz["authorized_rec_card_key"])
+        room_for_wait = str(authz.get("room_id") or expected_room_id or "")
+        delivery = deliver(
+            page,
+            pick,
+            playwright_only=True,
+            authorized_rec_card_key=authorized_key,
+        )
+        step["helper_invocations"] = 1
         step["delivery_detail"] = delivery
+        step["delivery_method"] = delivery.get("delivery_method") or ""
+        step["click_dispatched"] = bool(delivery.get("click_dispatched"))
+        step["browser_clicks"] = 1 if step["click_dispatched"] else 0
+        step["js_fallback_used"] = str(step["delivery_method"]).startswith("js_")
         step["pre_click_run_binding"] = delivery.get("pre_click_run_binding")
+        step["live_reacquired_before_click"] = bool(delivery.get("live_reacquired_before_click"))
+        step["live_reacquisition_probe"] = delivery.get("live_reacquisition_probe")
+        ack_map = map_widget_consumption_ack(delivery)
+        step["consumption_ack"] = delivery.get("consumption_ack")
+        step["widget_consumption_ack"] = bool(ack_map.get("widget_consumption_ack"))
+        step["widget_consumption"] = ack_map
+
         pre_bind = step.get("pre_click_run_binding") if isinstance(step.get("pre_click_run_binding"), dict) else {}
         if pre_bind.get("run_binding_consistent") is False:
             step["classification"] = "QUEUE1C3A2O1"
@@ -1055,35 +1462,70 @@ def seed_queue_distinct_players(
             seed_steps.append(step)
             fail_classification = step["classification"]
             break
+        if not step["widget_consumption_ack"]:
+            step["classification"] = STAGE1_QUEUE_SEED_WIDGET_CONSUMPTION_BOUNDARY
+            step["mutation_proven"] = False
+            step["mutation_observed"] = False
+            step["elapsed_s"] = time.time() - float(step["started_ts"])
+            seed_steps.append(step)
+            fail_classification = STAGE1_QUEUE_SEED_WIDGET_CONSUMPTION_BOUNDARY
+            break
 
-        page.wait_for_timeout(600)
-        mut = _poll_queue_mutation(
+        click_ts = delivery.get("click_start_ts") or delivery.get("click_end_ts") or time.time()
+        membership = prove_seed_membership_after_click(
             page,
-            scrape_container_fn,
-            queue_before=step["queue_before"],
+            queue_before=queue_before,
             player_name=player_name,
-            timeout_s=max(mutation_wait_s, 4.0),
+            room_id=room_for_wait,
+            production_sid=production_sid,
+            click_ts=float(click_ts) if click_ts is not None else None,
+            timeout_s=membership_timeout_s,
+            scrape_container_fn=scrape_container_fn,
+            membership_wait_fn=membership_wait_fn,
         )
+        # Keep short UI poll as corroboration only — never sole authority.
+        try:
+            page.wait_for_timeout(400)
+            mut = _poll_queue_mutation(
+                page,
+                scrape_container_fn,
+                queue_before=queue_before,
+                player_name=player_name,
+                timeout_s=max(min(mutation_wait_s, 3.0), 1.0),
+            )
+        except Exception:
+            mut = {"mutation_observed": False, "queue_after": list(queue_before)}
         try:
             from stage1_rec_queue_click_trace_scrape import merge_app_trace_into_step, scrape_rec_queue_app_trace
 
             merge_app_trace_into_step(step, scrape_rec_queue_app_trace(page))
         except ImportError:
             pass
-        step["queue_after"] = list(mut.get("queue_after") or [])
+        step["membership_proof"] = membership
+        step["queue_after"] = list(
+            membership.get("session_after")
+            or membership.get("canonical_after")
+            or mut.get("queue_after")
+            or []
+        )
         step["visible_confirmation"] = bool(mut.get("visible_confirmation"))
         step["structured_confirmation"] = bool(mut.get("structured_confirmation"))
-        step["mutation_observed"] = bool(mut.get("mutation_observed"))
-        step["mutation_proven"] = step["mutation_observed"]
+        step["mutation_observed"] = bool(membership.get("ok"))
+        step["mutation_proven"] = bool(membership.get("ok"))
+        step["stale_baseline_rejected"] = bool(membership.get("stale_baseline_rejected"))
         step["elapsed_s"] = time.time() - float(step["started_ts"])
         if not step["mutation_proven"]:
-            step["classification"] = classify_queue1c_subcode(step)
+            step["classification"] = STAGE1_QUEUE_SEED_MEMBERSHIP_BOUNDARY
             seed_steps.append(step)
-            fail_classification = step["classification"]
+            fail_classification = STAGE1_QUEUE_SEED_MEMBERSHIP_BOUNDARY
             break
+        proven_order = list(step["queue_after"])
         queued_names.add(player_name.lower())
         seed_steps.append(step)
-        page.wait_for_timeout(900)
+        try:
+            page.wait_for_timeout(500)
+        except Exception:
+            pass
 
     extra: dict[str, Any] = {}
     if fail_classification and not seed_steps:
@@ -1107,13 +1549,18 @@ def seed_queue_distinct_players(
         scrape_container_fn=scrape_container_fn,
         control_wait=control_wait,
         discovery_snapshots=discovery_snapshots,
-        seed_source="rediscover_bind_deliver_mutation_loop",
+        seed_source="rediscover_authorize_deliver_ack_membership_loop",
         extra={
             "intended_players_before_clicks": [
-                {"player_name": s.get("player_name"), "pre_click_global_index": (s.get("pre_click_record") or {}).get("global_index")}
+                {
+                    "player_name": s.get("player_name"),
+                    "pre_click_global_index": (s.get("pre_click_record") or {}).get("global_index"),
+                    "authorized_rec_card_key": s.get("authorized_rec_card_key"),
+                }
                 for s in seed_steps
             ],
             "candidates_discovered": discovery_snapshots[-1]["control_count"] if discovery_snapshots else 0,
+            "proven_queue_order_authoritative": list(proven_order),
         },
     )
     if fail_classification and not meta.get("ok"):

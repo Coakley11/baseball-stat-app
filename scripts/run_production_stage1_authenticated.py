@@ -1885,6 +1885,9 @@ def queue_populate_deliberate(
     *,
     min_players: int = 3,
     surface_activation_queue_mutation: bool = False,
+    expected_room_id: str = "",
+    expected_pick_index: Any = 0,
+    production_sid: str = "",
 ) -> dict[str, Any]:
     from stage1_queue_seed_harness import (
         QUEUE1A,
@@ -1900,6 +1903,9 @@ def queue_populate_deliberate(
         page,
         scrape_container_fn=scrape_queue_container_state,
         min_players=min_players,
+        expected_room_id=str(expected_room_id or ""),
+        expected_pick_index=expected_pick_index,
+        production_sid=str(production_sid or ""),
     )
     meta["surface_activation_queue_mutation"] = bool(surface_activation_queue_mutation)
     if meta["surface_activation_queue_mutation"]:
@@ -2716,10 +2722,18 @@ def main() -> int:
                     )
             else:
                 surf_mut = bool((active_gate.get("timing") or {}).get("surface_activation_queue_mutation"))
+                prod_sid = str(
+                    (summary.get("bridge_hydration") or {}).get("streamlit_session_id")
+                    or (summary.get("auth_preflight") or {}).get("streamlit_session_id")
+                    or ""
+                )
                 queue_meta = queue_populate_deliberate(
                     page,
                     min_players=3,
                     surface_activation_queue_mutation=surf_mut,
+                    expected_room_id=str(room_id or ""),
+                    expected_pick_index=0,
+                    production_sid=prod_sid,
                 )
                 queue_meta["stage1a_mode"] = "QUEUE"
                 queue_meta["queue_excerpt_before"] = queue_text(page)
