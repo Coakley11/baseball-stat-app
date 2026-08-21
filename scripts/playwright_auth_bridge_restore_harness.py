@@ -78,8 +78,15 @@ _TIMEOUT_FORENSICS_CHECKPOINTS = (
     "restore_auth_session_entry",
     "restore_auth_session_exit",
     "restore_auth_session_exception",
+    "apply_authenticated_user_entry",
     "apply_authenticated_user_exit",
     "restore_auth_session_after_apply",
+    "bridge_restore_single_flight_acquire",
+    "bridge_restore_single_flight_skip",
+    "bridge_restore_single_flight_release",
+    "bridge_restore_rotation_persist",
+    "bridge_restore_3b_final",
+    "bridge_restore_3b_recovery_retry",
 )
 
 _SAFE_CHECKPOINT_FIELDS = (
@@ -95,9 +102,12 @@ _SAFE_CHECKPOINT_FIELDS = (
     "suite_sid_prefix",
     "rejection_reason",
     "skip_or_failure_reason",
+    "skip_reason",
     "exception_class",
     "auth_status",
     "auth_code",
+    "auth_name",
+    "phase",
     "message_sanitized",
     "access_token_present",
     "refresh_token_present",
@@ -118,6 +128,8 @@ _SAFE_CHECKPOINT_FIELDS = (
     "authenticated_before",
     "authenticated_after",
     "restore_attempt_seq",
+    "restore_attempt_entry_ts",
+    "restore_attempt_exit_ts",
     "apply_authenticated_user_ok",
     "apply_return_ok",
     "hydration_attempted",
@@ -125,6 +137,24 @@ _SAFE_CHECKPOINT_FIELDS = (
     "persistence_succeeded",
     "readback_record_complete",
     "invalid_rows_for_key",
+    "refresh_attempted",
+    "refresh_ok",
+    "auth_hydrate_3b",
+    "recovery_attempted",
+    "recovery_succeeded",
+    "single_flight_owner",
+    "restore_attempt_id",
+    "waiting_skipped_attempt",
+    "release_reason",
+    "write_committed",
+    "write_mode",
+    "prior_generation",
+    "loaded_generation",
+    "applied_generation",
+    "write_key",
+    "session_flag_present",
+    "is_authenticated",
+    "auth_session_complete",
 )
 
 _SECRET_KEY_FRAGMENTS = (
@@ -196,9 +226,14 @@ def build_auth_restore_boundary_at_timeout(
     after_apply: dict[str, Any] | None,
     bound: dict[str, Any] | None,
     start_enabled: bool,
+    apply_entry: dict[str, Any] | None = None,
+    single_flight_skip: dict[str, Any] | None = None,
+    rotation_persist: dict[str, Any] | None = None,
+    hydrate_3b_final: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     lookup = lookup_row or {}
     bound = bound or {}
+    exit_reason = str((restore_exit or {}).get("skip_or_failure_reason") or (restore_exit or {}).get("rejection_reason") or "").strip()
     return {
         "bridge_load_ok": bool(load_ok),
         "lookup_found": bool(lookup_row),
@@ -206,9 +241,21 @@ def build_auth_restore_boundary_at_timeout(
         "refresh_token_present": bool(lookup.get("refresh_token_present")),
         "restore_entry_seen": bool(restore_entry),
         "restore_exit_seen": bool(restore_exit),
+        "restore_exit_skip_or_failure_reason": exit_reason[:120] if exit_reason else "",
         "restore_exception_seen": bool(restore_exception),
+        "restore_exception_class": str((restore_exception or {}).get("exception_class") or "")[:80],
+        "apply_entry_seen": bool(apply_entry),
         "apply_exit_seen": bool(apply_exit),
         "restore_after_apply_seen": bool(after_apply),
+        "single_flight_skip_seen": bool(single_flight_skip),
+        "single_flight_skip_reason": str(
+            (single_flight_skip or {}).get("skip_reason")
+            or (single_flight_skip or {}).get("skip_or_failure_reason")
+            or ""
+        )[:80],
+        "rotation_persist_seen": bool(rotation_persist),
+        "rotation_persist_write_committed": (rotation_persist or {}).get("write_committed"),
+        "auth_hydrate_3b_final_seen": bool(hydrate_3b_final),
         "authenticated_at_timeout": bound.get("is_authenticated") is True,
         "auth_session_complete_at_timeout": bound.get("auth_session_complete") is True,
         "start_enabled_at_timeout": bool(start_enabled),
@@ -262,6 +309,10 @@ def build_hydration_timeout_forensics(
         after_apply=rows.get("restore_auth_session_after_apply"),
         bound=bound,
         start_enabled=start_enabled,
+        apply_entry=rows.get("apply_authenticated_user_entry"),
+        single_flight_skip=rows.get("bridge_restore_single_flight_skip"),
+        rotation_persist=rows.get("bridge_restore_rotation_persist"),
+        hydrate_3b_final=rows.get("bridge_restore_3b_final"),
     )
     # Re-derive presence from sanitized lookup (may be None when row absent).
     lookup = rows.get("load_browser_auth_tokens_lookup") or {}
@@ -347,6 +398,7 @@ def wait_bridge_auth_hydrated(
         bound_bridge_hydration_passes,
         bridge_load_succeeded,
         detect_restore_rerun_anomaly,
+        hydration_fail_fast_from_restore_exception,
         hydration_fail_fast_from_restore_exit,
         latest_hydration_checkpoint,
         summarize_hydration_sequence,
@@ -424,6 +476,16 @@ def wait_bridge_auth_hydrated(
             ledger, "restore_auth_session_exit", streamlit_session_id=st_sid, diagnostic_run_id=run_id
         )
         fail_fast = hydration_fail_fast_from_restore_exit(restore_exit)
+        if not fail_fast:
+            restore_exc = latest_hydration_checkpoint(
+                ledger,
+                "restore_auth_session_exception",
+                streamlit_session_id=st_sid,
+                diagnostic_run_id=run_id,
+            )
+            fail_fast = hydration_fail_fast_from_restore_exception(restore_exc)
+            if fail_fast and restore_exc:
+                restore_exit = restore_exc
         if fail_fast:
             out["failure"] = fail_fast
             out["failure_classification"] = "AUTH_HYDRATE3" if "AuthApiError" in fail_fast else "AUTH_HYDRATE8"

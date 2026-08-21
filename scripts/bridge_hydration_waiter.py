@@ -45,18 +45,20 @@ def latest_hydration_checkpoint(
         if str(r.get("event") or "") == "production_stage1_auth_prestart_hydration"
         and str(r.get("checkpoint") or "") == checkpoint
     ]
+    # Hard current-run correlation: when SID/run filters are supplied, do not
+    # fall back to unscoped/Context-A rows (stale evidence must not satisfy restore boundaries).
     if streamlit_session_id:
-        scoped = [r for r in matches if str(r.get("streamlit_session_id") or "")[:36] == streamlit_session_id[:36]]
-        if scoped:
-            matches = scoped
+        matches = [
+            r
+            for r in matches
+            if str(r.get("streamlit_session_id") or "")[:36] == streamlit_session_id[:36]
+        ]
     if diagnostic_run_id:
-        scoped = [
+        matches = [
             r
             for r in matches
             if str(r.get("diagnostic_run_id") or r.get("run_id") or "")[:64] == diagnostic_run_id[:64]
         ]
-        if scoped:
-            matches = scoped
     if not matches:
         return None
 
@@ -80,6 +82,20 @@ def hydration_fail_fast_from_restore_exit(restore_exit: dict[str, Any] | None) -
         return AUTH_HYDRATE_FAIL_AUTH_API
     if reason.startswith("exception:"):
         return reason[:120]
+    return ""
+
+
+def hydration_fail_fast_from_restore_exception(restore_exception: dict[str, Any] | None) -> str:
+    """Terminal AuthApiError / refresh_token_already_used on exception checkpoint."""
+    if not restore_exception:
+        return ""
+    cls = str(restore_exception.get("exception_class") or "").strip()
+    code = str(restore_exception.get("auth_code") or "").strip().lower()
+    msg = str(restore_exception.get("message_sanitized") or "").lower()
+    if code == "refresh_token_already_used" or "already used" in msg:
+        return "exception:AuthApiError:refresh_token_already_used"
+    if cls == "AuthApiError" or "AuthApiError" in cls:
+        return AUTH_HYDRATE_FAIL_AUTH_API
     return ""
 
 
@@ -174,8 +190,12 @@ def summarize_hydration_sequence(
         "restore_auth_session_entry",
         "restore_auth_session_exit",
         "restore_auth_session_exception",
+        "apply_authenticated_user_entry",
         "apply_authenticated_user_exit",
         "restore_auth_session_after_apply",
+        "bridge_restore_single_flight_skip",
+        "bridge_restore_rotation_persist",
+        "bridge_restore_3b_final",
     )
     seq: list[dict[str, Any]] = []
     for cp in checkpoints:

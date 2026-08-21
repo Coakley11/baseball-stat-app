@@ -42,12 +42,35 @@ def _load_rows() -> list[dict]:
             "auth_user_id_present": True,
             "bridge_record_complete": True,
             "failure_reason": "ok",
+            "handoff_phase": "INTERMEDIATE",
         },
         {
             "event": "production_stage1_auth_prestart_hydration",
             "checkpoint": "apply_authenticated_user_exit",
             "authenticated_after": True,
             "protected_keys": {"session_flag_present": True},
+        },
+        {
+            "event": "production_stage1_auth_prestart_hydration",
+            "checkpoint": "bridge_final_handoff_persist",
+            "handoff_phase": "FINAL_HANDOFF",
+            "persistence_succeeded": True,
+            "suite_sid_prefix": "abcd1234",
+            "refresh_fp": "abcdef0123456789",
+            "refresh_fp_prefix": "abcdef0123456789",
+            "token_generation": 2,
+            "failure_reason": "ok",
+            "event_index": 50,
+        },
+        {
+            "event": "production_stage1_auth_prestart_hydration",
+            "checkpoint": "bridge_final_handoff_invariant",
+            "final_persist_token_fingerprint": "abcdef0123456789",
+            "final_browser_token_fingerprint": "abcdef0123456789",
+            "fingerprint_match": True,
+            "no_auth_refresh_after_final_persist": True,
+            "failure_reason": "ok",
+            "event_index": 51,
         },
     ]
 
@@ -121,6 +144,16 @@ class StrictCaptureTests(unittest.TestCase):
 
     def test_all_strict_true_metadata_safe(self) -> None:
         sid = "abcd1234-0000-0000-0000-000000000001"
+        dom = {
+            "streamlit_session_id": "sess-a",
+            "diagnostic_run_id": "run-a",
+            "session_flag_present": True,
+            "is_authenticated": True,
+            "auth_session_complete": True,
+            "auth_hydration_source": "already_complete",
+            "current_restore_blocked_reason": "",
+            "start_enabled": True,
+        }
         r = evaluate_strict_capture(
             target_sid=sid,
             url_sid=sid,
@@ -128,6 +161,9 @@ class StrictCaptureTests(unittest.TestCase):
             start_enabled=True,
             start_visible=True,
             paired_authenticated=True,
+            current_auth_dom=dom,
+            diagnostic_run_id="run-a",
+            streamlit_session_id="sess-a",
         )
         self.assertTrue(r["strict_auth_passed"])
         meta = {

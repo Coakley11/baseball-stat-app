@@ -983,6 +983,13 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
     if is_authenticated(session_state):
         if auth_session_complete(session_state):
             try:
+                from suite_auth_bridge_handoff import is_handoff_frozen, maybe_finalize_bridge_token_handoff
+
+                if is_handoff_frozen(session_state):
+                    return _finish(True, "handoff_frozen")
+            except ImportError:
+                pass
+            try:
                 _sync_auth_account_identity(session_state, st=st)
             except Exception:
                 pass
@@ -998,6 +1005,16 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
                 pass
             session_state.pop(AUTH_JUST_LOGGED_IN_KEY, None)
             session_state.pop(AUTH_LAST_RESTORE_ERROR_KEY, None)
+            try:
+                from suite_auth_bridge_handoff import maybe_finalize_bridge_token_handoff
+
+                maybe_finalize_bridge_token_handoff(
+                    session_state,
+                    st=st,
+                    auth_user_id=str(session_state.get(AUTH_USER_ID_KEY) or ""),
+                )
+            except ImportError:
+                pass
             return _finish(True, "already_complete")
         # Stale/partial session flag without tokens — fall through to token restore.
         try:
@@ -1006,6 +1023,17 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             trace_auth_key_pop(session_state, AUTH_SESSION_KEY, st=st)
         except ImportError:
             session_state.pop(AUTH_SESSION_KEY, None)
+
+    try:
+        from suite_auth_bridge_handoff import is_handoff_frozen
+
+        if is_handoff_frozen(session_state):
+            # FINAL_HANDOFF already persisted unused refresh — do not set_session again.
+            if auth_session_complete(session_state):
+                return _finish(True, "handoff_frozen")
+            return _finish(False, "handoff_frozen_incomplete")
+    except ImportError:
+        pass
 
     tokens = dict(session_state.get(AUTH_TOKENS_KEY) or {})
     if not tokens.get("access_token") and st is not None:
@@ -1150,6 +1178,16 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             save_browser_auth_tokens(
                 st,
                 dict(session_state.get(AUTH_TOKENS_KEY) or {}),
+                auth_user_id=str(session_state.get(AUTH_USER_ID_KEY) or ""),
+            )
+        except ImportError:
+            pass
+        try:
+            from suite_auth_bridge_handoff import maybe_finalize_bridge_token_handoff
+
+            maybe_finalize_bridge_token_handoff(
+                session_state,
+                st=st,
                 auth_user_id=str(session_state.get(AUTH_USER_ID_KEY) or ""),
             )
         except ImportError:

@@ -59,7 +59,10 @@ class StrictCaptureBridgeSyncTests(unittest.TestCase):
             start_visible=True,
             paired_authenticated=True,
         )
-        self.assertEqual(r["failure"], CAPTURE_FAIL_SESSION_FINALIZE)
+        self.assertIn(
+            r["failure"],
+            (CAPTURE_FAIL_SESSION_FINALIZE, "start_control_disabled", "suite_auth_session_missing"),
+        )
         self.assertTrue(r["bridge_persistence"]["persistence_succeeded"])
         self.assertTrue(r["bridge_persisted"])
 

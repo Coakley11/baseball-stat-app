@@ -141,11 +141,20 @@ def save_browser_auth_tokens(
     tokens: dict[str, Any],
     *,
     auth_user_id: str = "",
+    handoff_phase: str = "",
 ) -> None:
     """Write tokens to Supabase and mirror opaque id in URL query params."""
+    from suite_auth_bridge_handoff import (
+        PHASE_FINAL,
+        PHASE_INTERMEDIATE,
+        is_handoff_frozen,
+    )
+    from suite_auth_bridge_token_meta import token_fingerprint
+
     access = str((tokens or {}).get("access_token") or "").strip()
     refresh = str((tokens or {}).get("refresh_token") or "").strip()
     sid = sync_suite_sid_from_query(st) or str(uuid.uuid4())
+    phase = str(handoff_phase or PHASE_INTERMEDIATE).strip() or PHASE_INTERMEDIATE
     base_extra: dict[str, Any] = {
         "persistence_attempted": True,
         "persistence_succeeded": False,
@@ -155,7 +164,19 @@ def save_browser_auth_tokens(
         "refresh_token_present": bool(refresh),
         "auth_user_id_present": False,
         "bridge_record_complete": False,
+        "handoff_phase": phase,
+        "refresh_fp_prefix": token_fingerprint(refresh)[:16] if refresh else "",
+        "access_fp_prefix": token_fingerprint(access)[:16] if access else "",
     }
+    # After FINAL_HANDOFF freeze, only another FINAL write may proceed (idempotent).
+    try:
+        if is_handoff_frozen(st.session_state) and phase != PHASE_FINAL:
+            base_extra["persistence_attempted"] = False
+            base_extra["failure_reason"] = "handoff_frozen_skip_intermediate"
+            _emit_save_browser_auth_checkpoint(st, extra=base_extra)
+            return
+    except Exception:
+        pass
     if not access or not refresh:
         base_extra["failure_reason"] = "tokens_incomplete"
         base_extra["persistence_attempted"] = False
@@ -178,9 +199,13 @@ def save_browser_auth_tokens(
         from suite_auth_browser_bridge_diag import emit_bridge_storage_checkpoint, readback_after_browser_auth_save
         from suite_storage_supabase import save_browser_auth_session
 
-        write_meta = save_browser_auth_session(sid, user_id=uid, tokens=tokens)
+        payload_tokens = dict(tokens or {})
+        payload_tokens["handoff_phase"] = phase
+        write_meta = save_browser_auth_session(sid, user_id=uid, tokens=payload_tokens)
         base_extra["write_committed"] = bool(write_meta.get("write_committed"))
         base_extra["write_mode"] = str(write_meta.get("write_mode") or "")
+        base_extra["token_generation"] = int(write_meta.get("token_generation") or 0)
+        base_extra["refresh_fp"] = str(write_meta.get("refresh_fp") or "")[:32]
     except Exception as exc:
         base_extra["failure_reason"] = f"save_error:{type(exc).__name__}"
         _emit_save_browser_auth_checkpoint(st, extra=base_extra)
@@ -201,7 +226,7 @@ def save_browser_auth_tokens(
         st.session_state,
         "save_browser_auth_tokens_readback",
         st=st,
-        extra=readback,
+        extra={**readback, "handoff_phase": phase},
     )
 
 

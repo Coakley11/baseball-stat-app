@@ -944,9 +944,11 @@ def save_browser_auth_session_versioned(
         meta["token_generation"] = current_gen
         return meta
     new_gen = max(current_gen, exp) + 1
-    payload = enrich_bridge_payload(tokens, token_generation=new_gen)
+    phase = str((tokens or {}).get("handoff_phase") or "").strip()[:32]
+    payload = enrich_bridge_payload(tokens, token_generation=new_gen, handoff_phase=phase)
     meta["token_generation"] = new_gen
     meta["refresh_fp"] = payload.get("refresh_fp") or meta["refresh_fp"]
+    meta["handoff_phase"] = phase
     row_body = {
         "user_id": uid,
         "app": _AUTH_BROWSER_APP,

@@ -252,6 +252,16 @@ def execute_bridge_set_session_restore(
     if session_state.get(RESTORE_FINAL_3B_KEY):
         return finish(False, "auth_hydrate_3b_final")
 
+    try:
+        from suite_auth_bridge_handoff import is_handoff_frozen
+
+        if is_handoff_frozen(session_state):
+            # Capture FINAL_HANDOFF already sealed the unused refresh for production.
+            # Do not set_session (would consume it) and do not mark a violation — freeze is intentional.
+            return finish(False, "handoff_frozen_no_set_session")
+    except ImportError:
+        pass
+
     loaded_gen = int(token_meta.get("token_generation") or 0)
     loaded_fp = str(token_meta.get("refresh_fp") or token_fingerprint(str(tokens.get("refresh_token") or "")))
     session_state[RESTORE_LOADED_GEN_KEY] = loaded_gen

@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 from playwright_auth_preflight_strict import (
     PREFLIGHT_FAIL_NO_TOKEN_ROW,
@@ -19,6 +25,7 @@ CAPTURE_FAIL_RESTORE_AUTH_REQUIRED = "restore_blocked_auth_required"
 CAPTURE_FAIL_SIGNED_IN_ONLY = "signed_in_display_without_streamlit_auth"
 CAPTURE_FAIL_SESSION_FLAG = "suite_auth_session_missing"
 CAPTURE_FAIL_SESSION_FINALIZE = "auth_session_finalization_incomplete"
+CAPTURE_FAIL_FINAL_HANDOFF = "bridge_final_handoff_not_proven"
 
 
 def _restore_blocked_from_ledger(ledger_rows: list[dict[str, Any]]) -> str:
@@ -238,6 +245,22 @@ def evaluate_strict_capture(
         return out
     if not persist.get("bridge_record_complete"):
         out["failure"] = CAPTURE_FAIL_BRIDGE_PERSIST
+        return out
+
+    from suite_auth_bridge_handoff import evaluate_final_handoff_eligibility
+
+    handoff = evaluate_final_handoff_eligibility(ledger_rows, target_sid=target_sid)
+    out["final_handoff"] = {
+        "final_handoff_seen": handoff.get("final_handoff_seen"),
+        "fingerprint_match": handoff.get("fingerprint_match"),
+        "no_auth_refresh_after_final_persist": handoff.get("no_auth_refresh_after_final_persist"),
+        "eligible": handoff.get("eligible"),
+        "refresh_fp_prefix": str(handoff.get("refresh_fp_prefix") or "")[:16],
+        "token_generation": int(handoff.get("token_generation") or 0),
+        "failure": str(handoff.get("failure") or "")[:80],
+    }
+    if not handoff.get("eligible"):
+        out["failure"] = str(handoff.get("failure") or CAPTURE_FAIL_FINAL_HANDOFF)
         return out
 
     rb = str(out.get("current_restore_blocked_reason") or out.get("restore_blocked_reason") or "").strip().lower()

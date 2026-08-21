@@ -8,6 +8,7 @@ from typing import Any
 GENERATION_KEY = "token_generation"
 REFRESH_FP_KEY = "refresh_fp"
 ACCESS_FP_KEY = "access_fp"
+HANDOFF_PHASE_KEY = "handoff_phase"
 
 
 def token_fingerprint(token: str, *, nbytes: int = 8) -> str:
@@ -29,12 +30,19 @@ def bridge_payload_meta(payload: dict[str, Any] | None) -> dict[str, Any]:
         "token_generation": gen,
         "refresh_fp": str(p.get(REFRESH_FP_KEY) or token_fingerprint(refresh)),
         "access_fp": str(p.get(ACCESS_FP_KEY) or token_fingerprint(access)),
+        "handoff_phase": str(p.get(HANDOFF_PHASE_KEY) or "")[:32],
     }
 
 
-def enrich_bridge_payload(tokens: dict[str, Any], *, token_generation: int) -> dict[str, Any]:
+def enrich_bridge_payload(
+    tokens: dict[str, Any],
+    *,
+    token_generation: int,
+    handoff_phase: str = "",
+) -> dict[str, Any]:
     access = str(tokens.get("access_token") or "").strip()
     refresh = str(tokens.get("refresh_token") or "").strip()
+    phase = str(handoff_phase or tokens.get(HANDOFF_PHASE_KEY) or "").strip()[:32]
     out = {
         "access_token": access,
         "refresh_token": refresh,
@@ -43,4 +51,6 @@ def enrich_bridge_payload(tokens: dict[str, Any], *, token_generation: int) -> d
         REFRESH_FP_KEY: token_fingerprint(refresh),
         ACCESS_FP_KEY: token_fingerprint(access),
     }
+    if phase:
+        out[HANDOFF_PHASE_KEY] = phase
     return out
