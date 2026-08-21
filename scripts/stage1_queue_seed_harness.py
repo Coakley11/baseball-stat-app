@@ -1131,6 +1131,67 @@ def evaluate_seed_queue_membership_delta(
     }
 
 
+STAGE1_SEED_POST_WAIT_MODULE_NAME = "stage1_seed_post_wait_shared"
+
+
+def load_stage1_seed_post_wait_module(*, force_reload: bool = False):
+    """Load Francisco post-wait helpers with sys.modules registration before exec.
+
+    Python 3.13 ``@dataclass`` processing requires ``sys.modules[cls.__module__]``
+    to exist during ``exec_module``. Omitting registration raises
+    ``'NoneType' object has no attribute '__dict__'`` (BD5F1E7C production defect).
+
+    On failed ``exec_module``, remove the just-created ``sys.modules`` entry only when
+    this loader owns that binding (same object we inserted).
+    """
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    name = STAGE1_SEED_POST_WAIT_MODULE_NAME
+    if not force_reload and name in sys.modules:
+        existing = sys.modules[name]
+        if callable(getattr(existing, "wait_for_authoritative_post_queue_scrape", None)) and callable(
+            getattr(existing, "select_authoritative_post_queues", None)
+        ):
+            return existing
+
+    root = Path(__file__).resolve().parents[1]
+    path = root / "data" / "_stage1_francisco_queue_mutation_proof_d664924.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError("francisco_post_wait_module_unavailable")
+    mod = importlib.util.module_from_spec(spec)
+    # Register BEFORE exec_module — required for dataclass-bearing modules (Py3.13).
+    previous = sys.modules.get(name)
+    sys.modules[name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:
+        # Cleanup only the binding we just created/overwrote with this incomplete mod.
+        if sys.modules.get(name) is mod:
+            if previous is None:
+                del sys.modules[name]
+            else:
+                sys.modules[name] = previous
+        raise
+    if not callable(getattr(mod, "wait_for_authoritative_post_queue_scrape", None)):
+        if sys.modules.get(name) is mod:
+            if previous is None:
+                del sys.modules[name]
+            else:
+                sys.modules[name] = previous
+        raise ImportError("wait_for_authoritative_post_queue_scrape_unresolved")
+    if not callable(getattr(mod, "select_authoritative_post_queues", None)):
+        if sys.modules.get(name) is mod:
+            if previous is None:
+                del sys.modules[name]
+            else:
+                sys.modules[name] = previous
+        raise ImportError("select_authoritative_post_queues_unresolved")
+    return mod
+
+
 def prove_seed_membership_after_click(
     page,
     *,
@@ -1170,9 +1231,6 @@ def prove_seed_membership_after_click(
 
     # Default: reuse Francisco proof post-wait + selection (shared architecture, not Francisco-only).
     try:
-        import importlib.util
-        from pathlib import Path
-
         sid = str(production_sid or "").strip()
         room = str(room_id or "").strip()
         if (not sid or not room) and page is not None:
@@ -1193,13 +1251,7 @@ def prove_seed_membership_after_click(
             except Exception:
                 pass
 
-        root = Path(__file__).resolve().parents[1]
-        path = root / "data" / "_stage1_francisco_queue_mutation_proof_d664924.py"
-        spec = importlib.util.spec_from_file_location("stage1_seed_post_wait_shared", path)
-        if spec is None or spec.loader is None:
-            raise ImportError("francisco_post_wait_module_unavailable")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        mod = load_stage1_seed_post_wait_module()
         post_wait = mod.wait_for_authoritative_post_queue_scrape(
             page,
             production_sid=sid,
