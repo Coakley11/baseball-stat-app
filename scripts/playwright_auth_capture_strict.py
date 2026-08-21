@@ -26,6 +26,7 @@ CAPTURE_FAIL_SIGNED_IN_ONLY = "signed_in_display_without_streamlit_auth"
 CAPTURE_FAIL_SESSION_FLAG = "suite_auth_session_missing"
 CAPTURE_FAIL_SESSION_FINALIZE = "auth_session_finalization_incomplete"
 CAPTURE_FAIL_FINAL_HANDOFF = "bridge_final_handoff_not_proven"
+CAPTURE_FAIL_FINAL_HANDOFF_AUTHORITY_MISMATCH = "bridge_final_handoff_authority_mismatch"
 
 
 def _restore_blocked_from_ledger(ledger_rows: list[dict[str, Any]]) -> str:
@@ -291,3 +292,109 @@ def metadata_has_no_secrets(metadata: dict[str, Any]) -> bool:
     if "eyj" in text.lower():
         return False
     return True
+
+
+def evaluate_final_handoff_reservation_from_durable(
+    durable_result: dict[str, Any],
+    *,
+    target_sid: str = "",
+) -> dict[str, Any]:
+    """Post-hoc Stage1A FINAL reservation using the same semantic authority as strict capture.
+
+    Preferred authority is the durable ``strict_capture.final_handoff`` produced by
+    ``evaluate_strict_capture`` (via ``_public_summary``). Filtered ``login_timeline``
+    may corroborate but must not be the sole authority.
+
+    Consistency: ``strict_auth_passed=true`` with ``final_handoff.eligible=false``
+    (or missing) is a fail-closed authority mismatch — never treat as eligible.
+    """
+    sid = str(target_sid or durable_result.get("suite_sid") or "").strip()
+    sc = durable_result.get("strict_capture") if isinstance(durable_result.get("strict_capture"), dict) else {}
+    fh = sc.get("final_handoff") if isinstance(sc.get("final_handoff"), dict) else {}
+    strict_passed = bool(sc.get("strict_auth_passed"))
+    durable_eligible = bool(fh.get("eligible"))
+    durable_seen = bool(fh.get("final_handoff_seen"))
+
+    out: dict[str, Any] = {
+        "eligible": False,
+        "final_handoff_seen": durable_seen,
+        "fingerprint_match": bool(fh.get("fingerprint_match")),
+        "no_auth_refresh_after_final_persist": bool(fh.get("no_auth_refresh_after_final_persist")),
+        "refresh_fp_prefix": str(fh.get("refresh_fp_prefix") or "")[:16],
+        "token_generation": int(fh.get("token_generation") or 0),
+        "failure": "",
+        "authority": "durable_strict_final_handoff",
+        "strict_auth_passed": strict_passed,
+        "timeline_corroborated": False,
+        "authority_mismatch": False,
+    }
+
+    # Fail closed: ok/strict_auth_passed without durable FINAL eligibility is the c900 defect class.
+    if strict_passed and not durable_eligible:
+        out["failure"] = CAPTURE_FAIL_FINAL_HANDOFF_AUTHORITY_MISMATCH
+        out["authority_mismatch"] = True
+        return out
+
+    if not durable_eligible:
+        # Optional corroboration from timeline (presentation view) — never sole pass authority.
+        timeline = durable_result.get("login_timeline") if isinstance(durable_result.get("login_timeline"), list) else []
+        from suite_auth_bridge_handoff import evaluate_final_handoff_eligibility
+
+        timeline_elig = evaluate_final_handoff_eligibility(list(timeline), target_sid=sid)
+        out["timeline_corroborated"] = bool(timeline_elig.get("eligible"))
+        if timeline_elig.get("eligible") and not durable_eligible:
+            # Timeline alone claiming eligible while durable strict lacks FINAL → mismatch fail-closed.
+            out["failure"] = CAPTURE_FAIL_FINAL_HANDOFF_AUTHORITY_MISMATCH
+            out["authority_mismatch"] = True
+            out["final_handoff_seen"] = bool(timeline_elig.get("final_handoff_seen"))
+            return out
+        out["failure"] = str(fh.get("failure") or timeline_elig.get("failure") or CAPTURE_FAIL_FINAL_HANDOFF)
+        out["final_handoff_seen"] = durable_seen or bool(timeline_elig.get("final_handoff_seen"))
+        out["fingerprint_match"] = bool(fh.get("fingerprint_match") or timeline_elig.get("fingerprint_match"))
+        out["no_auth_refresh_after_final_persist"] = bool(
+            fh.get("no_auth_refresh_after_final_persist")
+            or timeline_elig.get("no_auth_refresh_after_final_persist")
+        )
+        out["refresh_fp_prefix"] = str(fh.get("refresh_fp_prefix") or timeline_elig.get("refresh_fp_prefix") or "")[:16]
+        out["token_generation"] = int(fh.get("token_generation") or timeline_elig.get("token_generation") or 0)
+        return out
+
+    # Durable FINAL eligible — optionally require timeline agreement when FINAL rows are present.
+    timeline = durable_result.get("login_timeline") if isinstance(durable_result.get("login_timeline"), list) else []
+    has_final_timeline = any(
+        str(r.get("checkpoint") or "")
+        in (
+            "bridge_final_handoff_persist",
+            "bridge_final_handoff_invariant",
+            "bridge_final_handoff_readback",
+        )
+        or str(r.get("handoff_phase") or "") == "FINAL_HANDOFF"
+        for r in timeline
+        if isinstance(r, dict)
+    )
+    if has_final_timeline:
+        from suite_auth_bridge_handoff import evaluate_final_handoff_eligibility
+
+        timeline_elig = evaluate_final_handoff_eligibility(list(timeline), target_sid=sid)
+        out["timeline_corroborated"] = bool(timeline_elig.get("eligible"))
+        if not timeline_elig.get("eligible"):
+            out["failure"] = CAPTURE_FAIL_FINAL_HANDOFF_AUTHORITY_MISMATCH
+            out["authority_mismatch"] = True
+            return out
+        # Fingerprint / generation disagreement → fail closed.
+        dur_fp = str(fh.get("refresh_fp_prefix") or "")[:16]
+        tl_fp = str(timeline_elig.get("refresh_fp_prefix") or "")[:16]
+        if dur_fp and tl_fp and dur_fp != tl_fp:
+            out["failure"] = CAPTURE_FAIL_FINAL_HANDOFF_AUTHORITY_MISMATCH
+            out["authority_mismatch"] = True
+            return out
+        dur_gen = int(fh.get("token_generation") or 0)
+        tl_gen = int(timeline_elig.get("token_generation") or 0)
+        if dur_gen and tl_gen and dur_gen != tl_gen:
+            out["failure"] = CAPTURE_FAIL_FINAL_HANDOFF_AUTHORITY_MISMATCH
+            out["authority_mismatch"] = True
+            return out
+
+    out["eligible"] = True
+    out["failure"] = ""
+    return out

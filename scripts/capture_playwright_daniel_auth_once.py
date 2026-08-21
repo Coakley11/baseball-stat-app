@@ -183,6 +183,7 @@ def _strict_poll(page, *, target_sid: str, scrape_ledger) -> dict[str, Any]:
 
 def _public_summary(ev: dict[str, Any]) -> dict[str, Any]:
     bp = ev.get("bridge_persistence") if isinstance(ev.get("bridge_persistence"), dict) else {}
+    fh = ev.get("final_handoff") if isinstance(ev.get("final_handoff"), dict) else {}
 
     summary: dict[str, Any] = {
         "sid_stable": bool(ev.get("sid_stable")),
@@ -193,6 +194,8 @@ def _public_summary(ev: dict[str, Any]) -> dict[str, Any]:
         "auth_session_complete": ev.get("auth_session_complete"),
         "start_enabled": bool(ev.get("start_enabled")),
         "restore_blocked_reason": str(ev.get("restore_blocked_reason") or "")[:80],
+        "strict_auth_passed": bool(ev.get("strict_auth_passed")),
+        "failure": str(ev.get("failure") or "")[:80],
         "bridge_persistence": {
             "persistence_attempted": bool(bp.get("persistence_attempted")),
             "persistence_succeeded": bool(bp.get("persistence_succeeded")),
@@ -203,6 +206,16 @@ def _public_summary(ev: dict[str, Any]) -> dict[str, Any]:
             "auth_user_id_present": bool(bp.get("auth_user_id_present")),
             "bridge_record_complete": bool(bp.get("bridge_record_complete")),
             "failure_reason": str(bp.get("failure_reason") or "")[:80],
+        },
+        # Same schema as evaluate_strict_capture.final_handoff (fingerprints only).
+        "final_handoff": {
+            "final_handoff_seen": bool(fh.get("final_handoff_seen")),
+            "fingerprint_match": bool(fh.get("fingerprint_match")),
+            "no_auth_refresh_after_final_persist": bool(fh.get("no_auth_refresh_after_final_persist")),
+            "eligible": bool(fh.get("eligible")),
+            "refresh_fp_prefix": str(fh.get("refresh_fp_prefix") or "")[:16],
+            "token_generation": int(fh.get("token_generation") or 0),
+            "failure": str(fh.get("failure") or "")[:80],
         },
     }
     if ev.get("auth_state_observability"):

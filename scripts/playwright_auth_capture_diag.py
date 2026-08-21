@@ -32,6 +32,29 @@ LOGIN_CHECKPOINTS = (
     "save_browser_auth_tokens_readback",
     "restore_auth_session_exit",
     "apply_authenticated_user_exit",
+    # FINAL_HANDOFF evidence required by evaluate_final_handoff_eligibility
+    "bridge_final_handoff_persist",
+    "bridge_final_handoff_readback",
+    "bridge_final_handoff_invariant",
+)
+
+# Safe identity metadata preserved on durable timeline rows (never raw tokens).
+_LOGIN_TIMELINE_FINAL_SAFE_FIELDS = (
+    "handoff_phase",
+    "token_generation",
+    "refresh_fp_prefix",
+    "access_fp_prefix",
+    "refresh_fp",
+    "access_fp",
+    "fingerprint_match",
+    "final_persist_token_fingerprint",
+    "final_browser_token_fingerprint",
+    "no_auth_refresh_after_final_persist",
+    "persistence_succeeded",
+    "readback_succeeded",
+    "skip_or_failure_reason",
+    "failure_reason",
+    "event_index",
 )
 
 _TOKEN_LIKE = re.compile(r"eyJ[a-zA-Z0-9_-]{10,}")
@@ -255,11 +278,14 @@ def ledger_login_timeline(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if cp not in LOGIN_CHECKPOINTS and ev != "browser_auth_bridge_mutation":
             continue
         entry: dict[str, Any] = {
+            "event": ev,
             "checkpoint": cp or str(r.get("operation") or "")[:40],
             "event_id": str(r.get("event_id") or "")[:80],
             "streamlit_session_id": str(r.get("streamlit_session_id") or "")[:36],
             "suite_sid_prefix": str(r.get("suite_sid_prefix") or "")[:8],
-            "rejection_reason": str(r.get("rejection_reason") or r.get("failure_reason") or "")[:80],
+            "rejection_reason": str(
+                r.get("rejection_reason") or r.get("failure_reason") or r.get("skip_or_failure_reason") or ""
+            )[:80],
             "browser_tokens_loaded": r.get("browser_tokens_loaded"),
             "persistence_attempted": r.get("persistence_attempted"),
             "persistence_succeeded": r.get("persistence_succeeded"),
@@ -267,6 +293,29 @@ def ledger_login_timeline(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "apply_authenticated_user_ok": r.get("apply_authenticated_user_ok"),
             "authenticated_after": r.get("authenticated_after"),
         }
+        # Preserve FINAL_HANDOFF / restore eligibility fields (fingerprints only — no raw tokens).
+        for key in _LOGIN_TIMELINE_FINAL_SAFE_FIELDS:
+            if key not in r or r.get(key) is None:
+                continue
+            val = r.get(key)
+            if key in (
+                "refresh_fp",
+                "access_fp",
+                "refresh_fp_prefix",
+                "access_fp_prefix",
+                "final_persist_token_fingerprint",
+                "final_browser_token_fingerprint",
+            ):
+                entry[key] = str(val or "")[:32]
+            elif key in ("handoff_phase", "skip_or_failure_reason", "failure_reason"):
+                entry[key] = str(val or "")[:80]
+            elif key == "token_generation" or key == "event_index":
+                try:
+                    entry[key] = int(val or 0)
+                except (TypeError, ValueError):
+                    entry[key] = 0
+            else:
+                entry[key] = val
         if r.get("row_id_prefix"):
             entry["row_id_prefix"] = str(r.get("row_id_prefix") or "")[:8]
         if r.get("matching_row_id"):
