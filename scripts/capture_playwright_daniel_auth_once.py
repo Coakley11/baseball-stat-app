@@ -58,16 +58,17 @@ from playwright_daniel_auth_session import (  # noqa: E402
 WAIT_S = int(os.environ.get("SOLO_AUTH_MANUAL_WAIT_S", "900"))
 POLL_MS = int(os.environ.get("CAPTURE_STRICT_POLL_MS", "3500"))
 
-# Streamlit host inbound message that always calls sendRerunBackMsg (full script).
-# Used only to re-enter existing prepare_baseball_auth_session → restore_auth_session
-# already_complete sync/save (_sync_auth_account_identity / maybe_finalize_bridge_token_handoff).
-# Does NOT change ensure_authenticated_session_hydrated ordinary UI semantics.
+# Streamlit host inbound message helpers retained for non-Case-B capture states only.
+# Case B (already-complete + missing current-suite bridge) must NOT use
+# UPDATE_FROM_QUERY_PARAMS → restore/set_session; use non-consuming finalize instead.
 STREAMLIT_HOST_COMM_VERSION = 1
 STREAMLIT_UPDATE_FROM_QUERY_PARAMS = "UPDATE_FROM_QUERY_PARAMS"
 STREAMLIT_CLOUD_GUEST_PATH = "/~/+/"
 FRANCISCO_LATCH_PARAM = "stage1_francisco_callback_only"
 ALREADY_AUTH_BRIDGE_MISSING = "already_authenticated_bridge_missing"
+ALREADY_AUTH_NONCONSUMING_FINALIZE = "already_authenticated_nonconsuming_bridge_finalize"
 BOOTSTRAP_MAX_ATTEMPTS = 1
+NONCONSUMING_FINALIZE_MAX_ATTEMPTS = 1
 
 
 def apply_authenticated_user_observed_from_ledger(ledger_rows: list[dict[str, Any]] | None) -> bool:
@@ -137,17 +138,58 @@ def decide_already_authenticated_bridge_bootstrap(
     eligible: bool,
     attempted_count: int,
 ) -> dict[str, Any]:
-    """At most one bootstrap invoke. Never loops. Independent of sign_in_initiated."""
+    """Legacy decision helper — Case B must use nonconsuming finalize, not UPDATE_FROM_QUERY_PARAMS.
+
+    Returns invoke=False always for the consuming bootstrap path. Kept for import stability.
+    """
     count = int(attempted_count or 0)
     if count >= BOOTSTRAP_MAX_ATTEMPTS:
         return {"invoke": False, "reason": "bootstrap_already_attempted", "attempted_count": count}
     if not eligible:
         return {"invoke": False, "reason": "not_eligible", "attempted_count": count}
+    # Do not invoke UPDATE_FROM_QUERY_PARAMS bootstrap — it can enter set_session (2e4e7).
+    return {
+        "invoke": False,
+        "reason": "replaced_by_nonconsuming_finalize",
+        "attempted_count": count,
+        "use_nonconsuming_finalize": True,
+    }
+
+
+def decide_already_authenticated_nonconsuming_finalize(
+    *,
+    eligible: bool,
+    attempted_count: int,
+) -> dict[str, Any]:
+    """Case B: at most one non-consuming finalize invoke. Never loops. Never set_session."""
+    count = int(attempted_count or 0)
+    if count >= NONCONSUMING_FINALIZE_MAX_ATTEMPTS:
+        return {"invoke": False, "reason": "finalize_already_attempted", "attempted_count": count}
+    if not eligible:
+        return {"invoke": False, "reason": "not_eligible", "attempted_count": count}
     return {
         "invoke": True,
-        "reason": ALREADY_AUTH_BRIDGE_MISSING,
+        "reason": ALREADY_AUTH_NONCONSUMING_FINALIZE,
         "attempted_count": count,
     }
+
+
+def run_already_complete_nonconsuming_bridge_finalize(
+    session_state: dict[str, Any],
+    *,
+    st: Any,
+    expected_suite_sid: str,
+    auth_user_id: str = "",
+) -> dict[str, Any]:
+    """Harness/local orchestration for Case B — reuses auth-bridge non-consuming FINAL path."""
+    from suite_auth_bridge_handoff import finalize_already_complete_missing_bridge
+
+    return finalize_already_complete_missing_bridge(
+        session_state,
+        st=st,
+        expected_suite_sid=expected_suite_sid,
+        auth_user_id=auth_user_id,
+    )
 
 
 def capture_query_string_for_bridge_bootstrap(url: str, *, suite_sid: str) -> str:
@@ -891,28 +933,38 @@ def main() -> int:
                     bridge_record_complete=bool(persist.get("bridge_record_complete")),
                 )
                 last_eval["already_authenticated_bridge_missing"] = eligible
-                decision = decide_already_authenticated_bridge_bootstrap(
+                # Case B: never UPDATE_FROM_QUERY_PARAMS / set_session. Wait for product
+                # already_complete → maybe_finalize (non-consuming) on a gentle wake rerun.
+                decision = decide_already_authenticated_nonconsuming_finalize(
                     eligible=eligible,
-                    attempted_count=int(identity.get("already_authenticated_bridge_bootstrap_count") or 0),
+                    attempted_count=int(identity.get("already_authenticated_nonconsuming_finalize_count") or 0),
                 )
                 if decision["invoke"]:
-                    identity["already_authenticated_bridge_bootstrap_count"] = (
-                        int(identity.get("already_authenticated_bridge_bootstrap_count") or 0) + 1
+                    identity["already_authenticated_nonconsuming_finalize_count"] = (
+                        int(identity.get("already_authenticated_nonconsuming_finalize_count") or 0) + 1
                     )
-                    identity["already_authenticated_bridge_bootstrap_attempted"] = True
+                    identity["already_authenticated_nonconsuming_finalize_attempted"] = True
+                    # Preserve old counters as false/unused for gate eval compatibility.
+                    identity["already_authenticated_bridge_bootstrap_attempted"] = False
+                    identity["already_authenticated_bridge_bootstrap_count"] = 0
                     _status(
-                        "already_authenticated_bridge_missing — one-shot restore_auth_session rebind "
-                        "(existing query host message; not treating as success)"
+                        "already_authenticated_bridge_missing — non-consuming finalize wait "
+                        "(no UPDATE_FROM_QUERY_PARAMS / no set_session; gentle wake only)"
                     )
                     try:
-                        dispatch_already_authenticated_bridge_bootstrap(app_page, suite_sid=target_sid)
                         surface_monitor.record_harness_event(
-                            "already_authenticated_bridge_bootstrap",
-                            detail="restore_auth_session_query_rerun_once",
+                            "already_authenticated_nonconsuming_finalize",
+                            detail="gentle_wake_await_maybe_finalize",
                         )
+                        wake = gentle_wake_if_asleep(app_page)
+                        if wake.get("action") == "wake_click":
+                            surface_monitor.record_harness_event(
+                                "nonconsuming_finalize_wake_click",
+                                detail="asleep",
+                            )
                     except Exception as exc:
                         surface_monitor.record_harness_event(
-                            "already_authenticated_bridge_bootstrap_failed",
+                            "already_authenticated_nonconsuming_finalize_failed",
                             detail=type(exc).__name__,
                         )
 

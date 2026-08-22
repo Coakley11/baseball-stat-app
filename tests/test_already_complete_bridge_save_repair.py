@@ -17,11 +17,12 @@ sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(ROOT))
 
 from capture_playwright_daniel_auth_once import (  # noqa: E402
-    ALREADY_AUTH_BRIDGE_MISSING,
+    ALREADY_AUTH_NONCONSUMING_FINALIZE,
     BOOTSTRAP_MAX_ATTEMPTS,
     already_authenticated_bridge_missing,
     apply_authenticated_user_observed_from_ledger,
     decide_already_authenticated_bridge_bootstrap,
+    decide_already_authenticated_nonconsuming_finalize,
     enforce_current_suite_bridge_authority,
     current_suite_bridge_authority_ok,
 )
@@ -131,18 +132,32 @@ def _final_ok(*, prefix: str, event_index: int = 30, fp: str = FP) -> list[dict]
             suite_sid_prefix=prefix,
             refresh_fp=fp,
             refresh_fp_prefix=fp[:16],
+            session_snapshot_refresh_fp_prefix=fp[:16],
             token_generation=2,
             failure_reason="ok",
             event_index=event_index,
         ),
         _h(
-            "bridge_final_handoff_invariant",
-            final_persist_token_fingerprint=fp[:16],
-            final_browser_token_fingerprint=fp[:16],
-            fingerprint_match=True,
-            no_auth_refresh_after_final_persist=True,
+            "bridge_final_handoff_readback",
+            handoff_phase="FINAL_HANDOFF",
+            readback_succeeded=True,
+            suite_sid_prefix=prefix,
+            refresh_fp_prefix=fp[:16],
+            token_generation=2,
             failure_reason="ok",
             event_index=event_index + 1,
+        ),
+        _h(
+            "bridge_final_handoff_invariant",
+            final_session_snapshot_fingerprint=fp[:16],
+            final_persist_token_fingerprint=fp[:16],
+            final_browser_token_fingerprint=fp[:16],
+            final_readback_token_fingerprint=fp[:16],
+            fingerprint_match=True,
+            no_auth_refresh_after_final_persist=True,
+            no_auth_consumption_since_final_token_snapshot=True,
+            failure_reason="ok",
+            event_index=event_index + 2,
         ),
     ]
 
@@ -231,9 +246,12 @@ class AlreadyCompleteBridgeSaveRepairTests(unittest.TestCase):
             bridge_record_complete=False,
         )
         self.assertTrue(eligible)
-        decision = decide_already_authenticated_bridge_bootstrap(eligible=True, attempted_count=0)
+        decision = decide_already_authenticated_nonconsuming_finalize(eligible=True, attempted_count=0)
         self.assertTrue(decision["invoke"])
-        self.assertEqual(decision["reason"], ALREADY_AUTH_BRIDGE_MISSING)
+        self.assertEqual(decision["reason"], ALREADY_AUTH_NONCONSUMING_FINALIZE)
+        # Consuming UPDATE_FROM_QUERY_PARAMS bootstrap must stay disabled.
+        legacy = decide_already_authenticated_bridge_bootstrap(eligible=True, attempted_count=0)
+        self.assertFalse(legacy["invoke"])
         # After supported sync produces save+readback+FINAL (ledger), strict passes.
         repaired = [
             *rows,
@@ -273,7 +291,7 @@ class AlreadyCompleteBridgeSaveRepairTests(unittest.TestCase):
                 bridge_record_complete=True,
             )
         )
-        decision = decide_already_authenticated_bridge_bootstrap(eligible=False, attempted_count=0)
+        decision = decide_already_authenticated_nonconsuming_finalize(eligible=False, attempted_count=0)
         self.assertFalse(decision["invoke"])
 
     def test_03_existing_current_suite_bridge_skips_bootstrap(self) -> None:
@@ -356,7 +374,7 @@ class AlreadyCompleteBridgeSaveRepairTests(unittest.TestCase):
         self.assertFalse(ev["strict_auth_passed"])
         self.assertFalse(current_suite_bridge_authority_ok(ev["bridge_persistence"]))
 
-    def test_08_sign_in_initiated_false_still_allows_bootstrap(self) -> None:
+    def test_08_sign_in_initiated_false_still_allows_nonconsuming_finalize(self) -> None:
         self.assertTrue(
             already_authenticated_bridge_missing(
                 is_authenticated=True,
@@ -368,8 +386,11 @@ class AlreadyCompleteBridgeSaveRepairTests(unittest.TestCase):
                 bridge_record_complete=False,
             )
         )
-        decision = decide_already_authenticated_bridge_bootstrap(eligible=True, attempted_count=0)
+        decision = decide_already_authenticated_nonconsuming_finalize(eligible=True, attempted_count=0)
         self.assertTrue(decision["invoke"])
+        self.assertEqual(decision["reason"], ALREADY_AUTH_NONCONSUMING_FINALIZE)
+        legacy = decide_already_authenticated_bridge_bootstrap(eligible=True, attempted_count=0)
+        self.assertFalse(legacy["invoke"])
         self.assertEqual(BOOTSTRAP_MAX_ATTEMPTS, 1)
 
     def test_09_timeout_bridge_save_when_ui_authenticated_bridge_missing(self) -> None:
@@ -454,12 +475,15 @@ class AlreadyCompleteBridgeSaveRepairTests(unittest.TestCase):
         self.assertFalse(ev["strict_auth_passed"])
         self.assertFalse((ev.get("final_handoff") or {}).get("eligible"))
 
-    def test_13_bootstrap_at_most_once(self) -> None:
-        first = decide_already_authenticated_bridge_bootstrap(eligible=True, attempted_count=0)
-        second = decide_already_authenticated_bridge_bootstrap(eligible=True, attempted_count=1)
+    def test_13_nonconsuming_finalize_at_most_once(self) -> None:
+        first = decide_already_authenticated_nonconsuming_finalize(eligible=True, attempted_count=0)
+        second = decide_already_authenticated_nonconsuming_finalize(eligible=True, attempted_count=1)
         self.assertTrue(first["invoke"])
         self.assertFalse(second["invoke"])
-        self.assertEqual(second["reason"], "bootstrap_already_attempted")
+        self.assertEqual(second["reason"], "finalize_already_attempted")
+        # Legacy consuming bootstrap never invokes.
+        legacy = decide_already_authenticated_bridge_bootstrap(eligible=True, attempted_count=0)
+        self.assertFalse(legacy["invoke"])
 
 
 if __name__ == "__main__":

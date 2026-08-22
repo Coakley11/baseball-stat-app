@@ -49,7 +49,11 @@ _LOGIN_TIMELINE_FINAL_SAFE_FIELDS = (
     "fingerprint_match",
     "final_persist_token_fingerprint",
     "final_browser_token_fingerprint",
+    "final_session_snapshot_fingerprint",
+    "final_readback_token_fingerprint",
+    "session_snapshot_refresh_fp_prefix",
     "no_auth_refresh_after_final_persist",
+    "no_auth_consumption_since_final_token_snapshot",
     "persistence_succeeded",
     "readback_succeeded",
     "skip_or_failure_reason",
@@ -305,6 +309,9 @@ def ledger_login_timeline(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "access_fp_prefix",
                 "final_persist_token_fingerprint",
                 "final_browser_token_fingerprint",
+                "final_session_snapshot_fingerprint",
+                "final_readback_token_fingerprint",
+                "session_snapshot_refresh_fp_prefix",
             ):
                 entry[key] = str(val or "")[:32]
             elif key in ("handoff_phase", "skip_or_failure_reason", "failure_reason"):
