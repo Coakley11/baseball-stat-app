@@ -1865,19 +1865,78 @@ def queue_setup_pause_for_seeding(page, *, room_id: str = "", latch_completed_ts
     return out
 
 
-def queue_setup_resume_after_seeding(page) -> dict[str, Any]:
-    out: dict[str, Any] = {"attempted": True, "resumed": False}
-    for label in (r"Resume Draft", r"Resume", r"Unpause"):
+def queue_setup_resume_after_seeding(
+    page,
+    *,
+    expected_room_id: str = "",
+    queue_seed_resolved: bool = True,
+    paused: bool = True,
+    authenticated: bool = True,
+    pre_queue: list[str] | None = None,
+    pre_pick_index: Any = 0,
+) -> dict[str, Any]:
+    """Frame-aware Resume Draft after QUEUE_SEED_RESOLVED (app iframe, not main shell)."""
+    from p8_proven_resume_delivery import proven_resume_single_click
+
+    def _scrape_queue_names(p) -> list[str]:
         try:
-            page.get_by_role("button", name=re.compile(label, re.I)).first.click(timeout=4000)
-            page.wait_for_timeout(1500)
-            out["resumed"] = True
-            out["resume_label"] = label
-            return out
+            container = scrape_queue_container_state(p)
+            players = list(container.get("players") or [])
+            return [str(x.get("name") or "") for x in players if str(x.get("name") or "")]
         except Exception:
-            continue
-    out["resume_error"] = "no_resume_control"
-    return out
+            return list(pre_queue or [])
+
+    def _scrape_pre(p) -> dict[str, Any]:
+        from run_production_solo_soak import all_frames_text
+
+        text = all_frames_text(p)
+        return {
+            "room_id": room_id_from_text(text) or expected_room_id,
+            "pick_index": pre_pick_index,
+            "paused": True,
+        }
+
+    def _scrape_post(p) -> dict[str, Any]:
+        from run_production_solo_soak import scrape_state, dom_counts
+        from p8_proven_resume_delivery import inventory_resume_controls
+
+        st = scrape_state(p) or {}
+        counts = dom_counts(p) or {}
+        inv = inventory_resume_controls(p)
+        text = ""
+        try:
+            from run_production_solo_soak import all_frames_text
+
+            text = all_frames_text(p)
+        except Exception:
+            text = ""
+        pause_n = int(counts.get("Pause Draft") or 0)
+        resume_en = int(inv.get("resume_enabled_total") or 0)
+        return {
+            "room_id": room_id_from_text(text) or expected_room_id,
+            "pick_index": st.get("pick") if st.get("pick") is not None else pre_pick_index,
+            "timer": st.get("timer"),
+            "timer_running": bool(st.get("timer")),
+            "countdown_or_timer_present": bool(st.get("timer")),
+            "resume_enabled": resume_en,
+            "pause_enabled": pause_n,
+            "paused": resume_en >= 1 and pause_n == 0,
+            "status": "in_progress" if pause_n >= 1 else ("paused" if resume_en >= 1 else ""),
+            "require_timer": True,
+        }
+
+    return proven_resume_single_click(
+        page,
+        expected_room_id=str(expected_room_id or ""),
+        queue_seed_resolved=bool(queue_seed_resolved),
+        paused=bool(paused),
+        authenticated=bool(authenticated),
+        pre_queue=list(pre_queue) if pre_queue is not None else None,
+        pre_pick_index=pre_pick_index,
+        scrape_pre_state=_scrape_pre,
+        scrape_post_state=_scrape_post,
+        scrape_queue=_scrape_queue_names,
+    )
 
 
 def queue_populate_deliberate(
@@ -2798,15 +2857,44 @@ def main() -> int:
                         queue_meta=queue_meta,
                         stage1a_mode=stage1a_mode,
                     )
-                queue_meta["queue_setup_resume"] = queue_setup_resume_after_seeding(page)
+                proven_order = list(
+                    queue_meta.get("proven_queue_order_authoritative")
+                    or queue_meta.get("proven_queue_order")
+                    or []
+                )
+                queue_meta["queue_setup_resume"] = queue_setup_resume_after_seeding(
+                    page,
+                    expected_room_id=str(room_id or ""),
+                    queue_seed_resolved=bool(
+                        (queue_meta.get("queue_evidence") or {}).get("queue_seed_resolved")
+                        or queue_meta.get("classification") == QUEUE_SEED_RESOLVED
+                    ),
+                    paused=bool(queue_meta.get("paused_state_maintained", True)),
+                    authenticated=bool(
+                        summary.get("authenticated_restored")
+                        or summary.get("authenticated_at_start")
+                        or pre.get("authenticated_restored")
+                    ),
+                    pre_queue=proven_order,
+                    pre_pick_index=0,
+                )
                 if not queue_meta["queue_setup_resume"].get("resumed"):
                     context.close()
                     browser.close()
                     summary["finished_at"] = time.time()
                     OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+                    resume_row = queue_meta["queue_setup_resume"] or {}
+                    # Resume-specific boundary — never stale QUEUEUI1 after active gate passed
+                    resume_boundary = str(
+                        resume_row.get("resume_boundary")
+                        or resume_row.get("resume_error")
+                        or "resume_control_not_found"
+                    )
+                    if resume_boundary == QUEUEUI1:
+                        resume_boundary = "resume_control_not_found"
                     return _abort_queue_precondition(
                         summary,
-                        first_boundary=QUEUEUI1,
+                        first_boundary=resume_boundary,
                         reason="resume_after_queue_setup_failed",
                         active_live_page_gate=active_gate,
                         queue_meta=queue_meta,
