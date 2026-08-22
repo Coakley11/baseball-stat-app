@@ -10,7 +10,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = Path(__file__).resolve().parent
@@ -41,7 +41,11 @@ from playwright_auth_capture_diag import (  # noqa: E402
     write_result_artifact,
 )
 from playwright_auth_surface_monitor import BrowserSurfaceMonitor  # noqa: E402
-from playwright_auth_capture_strict import evaluate_strict_capture  # noqa: E402
+from playwright_auth_capture_strict import (  # noqa: E402
+    CAPTURE_FAIL_BRIDGE_PERSIST,
+    CAPTURE_FAIL_BRIDGE_PERSIST_SID,
+    evaluate_strict_capture,
+)
 from playwright_auth_preflight_strict import inspect_start_control, paired_transition_authenticated, suite_sid_from_url  # noqa: E402
 from playwright_daniel_auth_session import (  # noqa: E402
     SESSION_PATH,
@@ -53,6 +57,206 @@ from playwright_daniel_auth_session import (  # noqa: E402
 
 WAIT_S = int(os.environ.get("SOLO_AUTH_MANUAL_WAIT_S", "900"))
 POLL_MS = int(os.environ.get("CAPTURE_STRICT_POLL_MS", "3500"))
+
+# Streamlit host inbound message that always calls sendRerunBackMsg (full script).
+# Used only to re-enter existing prepare_baseball_auth_session → restore_auth_session
+# already_complete sync/save (_sync_auth_account_identity / maybe_finalize_bridge_token_handoff).
+# Does NOT change ensure_authenticated_session_hydrated ordinary UI semantics.
+STREAMLIT_HOST_COMM_VERSION = 1
+STREAMLIT_UPDATE_FROM_QUERY_PARAMS = "UPDATE_FROM_QUERY_PARAMS"
+STREAMLIT_CLOUD_GUEST_PATH = "/~/+/"
+FRANCISCO_LATCH_PARAM = "stage1_francisco_callback_only"
+ALREADY_AUTH_BRIDGE_MISSING = "already_authenticated_bridge_missing"
+BOOTSTRAP_MAX_ATTEMPTS = 1
+
+
+def apply_authenticated_user_observed_from_ledger(ledger_rows: list[dict[str, Any]] | None) -> bool:
+    """True only when apply_authenticated_user_exit is present. Absence is not an apply failure."""
+    for row in ledger_rows or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("checkpoint") or "") == "apply_authenticated_user_exit":
+            return True
+    return False
+
+
+def already_authenticated_bridge_missing(
+    *,
+    is_authenticated: Any,
+    auth_session_complete: Any,
+    signed_in_display: bool,
+    token_record_missing: bool,
+    persistence_succeeded: bool,
+    readback_succeeded: bool,
+    bridge_record_complete: bool,
+) -> bool:
+    """Harness request-to-bootstrap state: session complete but current-suite bridge absent.
+
+    Not success. Does not require sign_in_initiated. Does not fabricate tokens.
+    """
+    if is_authenticated is not True:
+        return False
+    if auth_session_complete is not True:
+        return False
+    if not signed_in_display:
+        return False
+    if not token_record_missing:
+        return False
+    if persistence_succeeded or readback_succeeded or bridge_record_complete:
+        return False
+    return True
+
+
+def current_suite_bridge_authority_ok(persist: dict[str, Any] | None) -> bool:
+    """Current-suite save + readback + complete remain mandatory."""
+    proof = persist if isinstance(persist, dict) else {}
+    return bool(
+        proof.get("persistence_attempted")
+        and proof.get("persistence_succeeded")
+        and proof.get("readback_succeeded")
+        and proof.get("suite_sid_prefix_match")
+        and proof.get("bridge_record_complete")
+    )
+
+
+def enforce_current_suite_bridge_authority(ev: dict[str, Any]) -> dict[str, Any]:
+    """Do not treat signed-in or save-without-readback as capture success."""
+    out = dict(ev)
+    persist = out.get("bridge_persistence") if isinstance(out.get("bridge_persistence"), dict) else {}
+    if out.get("strict_auth_passed") and not current_suite_bridge_authority_ok(persist):
+        out["strict_auth_passed"] = False
+        if persist.get("persistence_attempted") and not persist.get("suite_sid_prefix_match"):
+            out["failure"] = CAPTURE_FAIL_BRIDGE_PERSIST_SID
+        else:
+            out["failure"] = str(out.get("failure") or CAPTURE_FAIL_BRIDGE_PERSIST) or CAPTURE_FAIL_BRIDGE_PERSIST
+    return out
+
+
+def decide_already_authenticated_bridge_bootstrap(
+    *,
+    eligible: bool,
+    attempted_count: int,
+) -> dict[str, Any]:
+    """At most one bootstrap invoke. Never loops. Independent of sign_in_initiated."""
+    count = int(attempted_count or 0)
+    if count >= BOOTSTRAP_MAX_ATTEMPTS:
+        return {"invoke": False, "reason": "bootstrap_already_attempted", "attempted_count": count}
+    if not eligible:
+        return {"invoke": False, "reason": "not_eligible", "attempted_count": count}
+    return {
+        "invoke": True,
+        "reason": ALREADY_AUTH_BRIDGE_MISSING,
+        "attempted_count": count,
+    }
+
+
+def capture_query_string_for_bridge_bootstrap(url: str, *, suite_sid: str) -> str:
+    """Reuse the current capture query. Never adds a Francisco latch."""
+    parsed = urlparse(str(url or ""))
+    pairs = [
+        (k, v)
+        for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k != FRANCISCO_LATCH_PARAM
+    ]
+    keys = {k for k, _ in pairs}
+    sid = str(suite_sid or "").strip()
+    if sid and "suite_sid" not in keys:
+        pairs.append(("suite_sid", sid))
+    return urlencode(pairs)
+
+
+def build_already_authenticated_bridge_bootstrap_message(query_string: str) -> dict[str, str | int]:
+    """Exact Streamlit host UPDATE_FROM_QUERY_PARAMS payload. No extra fields."""
+    return {
+        "stCommVersion": STREAMLIT_HOST_COMM_VERSION,
+        "type": STREAMLIT_UPDATE_FROM_QUERY_PARAMS,
+        "queryParams": str(query_string or "").lstrip("?"),
+    }
+
+
+def select_streamlit_guest_frame_index(frame_urls: list[Any] | None) -> dict[str, Any]:
+    urls = [str(u or "") for u in list(frame_urls or [])]
+    if not urls:
+        return {"index": 0, "url": "", "kind": "main_frame", "reason": "no_frames_default_main"}
+    for idx, url in enumerate(urls):
+        if STREAMLIT_CLOUD_GUEST_PATH in url:
+            return {
+                "index": idx,
+                "url": url,
+                "kind": "streamlit_guest_iframe",
+                "reason": "cloud_guest_path_~/+/",
+            }
+    return {
+        "index": 0,
+        "url": urls[0],
+        "kind": "main_frame",
+        "reason": "no_guest_iframe_use_main",
+    }
+
+
+def invoke_already_authenticated_bridge_bootstrap(
+    *,
+    query_string: str,
+    frame_urls: list[Any] | None,
+    evaluate_fn: Any,
+) -> dict[str, Any]:
+    """Dispatch one host query update so existing restore_auth_session can sync/save."""
+    msg = build_already_authenticated_bridge_bootstrap_message(query_string)
+    if FRANCISCO_LATCH_PARAM in str(msg.get("queryParams") or ""):
+        return {
+            "dispatched": False,
+            "native_message": msg,
+            "reason": "francisco_latch_forbidden",
+        }
+    target = select_streamlit_guest_frame_index(frame_urls)
+    eval_result = evaluate_fn(int(target.get("index") or 0), msg)
+    return {
+        "dispatched": True,
+        "native_message": msg,
+        "target": target,
+        "evaluate_result": eval_result,
+        "mechanism": "prepare_baseball_auth_session_restore_auth_session_already_complete",
+    }
+
+
+_BOOTSTRAP_POSTMESSAGE_JS = (
+    "(msg) => {"
+    "  window.postMessage(msg, window.location.origin);"
+    "  return {"
+    "    origin: window.location.origin,"
+    "    href: window.location.href,"
+    "    search: window.location.search"
+    "  };"
+    "}"
+)
+
+
+def dispatch_already_authenticated_bridge_bootstrap(page: Any, *, suite_sid: str) -> dict[str, Any]:
+    """Playwright one-shot: same Streamlit session, no reload, no click, no new login."""
+    url = ""
+    try:
+        url = str(page.url or "")
+    except Exception:
+        url = ""
+    qs = capture_query_string_for_bridge_bootstrap(url, suite_sid=suite_sid)
+    frames: list[Any] = []
+    urls: list[str] = []
+    try:
+        frames = list(page.frames)
+        urls = [str(getattr(fr, "url", "") or "") for fr in frames]
+    except Exception:
+        frames = []
+        urls = [url]
+
+    def _evaluate(index: int, msg: dict[str, Any]) -> Any:
+        frame = frames[index] if 0 <= index < len(frames) else page
+        return frame.evaluate(_BOOTSTRAP_POSTMESSAGE_JS, msg)
+
+    return invoke_already_authenticated_bridge_bootstrap(
+        query_string=qs,
+        frame_urls=urls,
+        evaluate_fn=_evaluate,
+    )
 
 # Bootstrap failure reporting (070a20d7 gap): catchable Exception in the Playwright
 # launch→first sign-in-wait window must not leave phase=started / failure="".
@@ -338,7 +542,8 @@ def _strict_poll(page, *, target_sid: str, scrape_ledger) -> dict[str, Any]:
             "checkpoint": obs.get("checkpoint"),
             "start_surface": obs.get("start_surface"),
         }
-    return ev
+    ev["apply_authenticated_user_observed"] = apply_authenticated_user_observed_from_ledger(ledger)
+    return enforce_current_suite_bridge_authority(ev)
 
 
 def _public_summary(ev: dict[str, Any]) -> dict[str, Any]:
@@ -349,6 +554,8 @@ def _public_summary(ev: dict[str, Any]) -> dict[str, Any]:
         "sid_stable": bool(ev.get("sid_stable")),
         "bridge_lookup": ev.get("bridge_lookup"),
         "apply_authenticated_user_ok": bool(ev.get("apply_authenticated_user_ok")),
+        "apply_authenticated_user_observed": bool(ev.get("apply_authenticated_user_observed")),
+        "already_authenticated_bridge_missing": bool(ev.get("already_authenticated_bridge_missing")),
         "session_flag_present": ev.get("session_flag_present"),
         "is_authenticated": ev.get("is_authenticated"),
         "auth_session_complete": ev.get("auth_session_complete"),
@@ -672,6 +879,42 @@ def main() -> int:
                         app_page.screenshot(path=str(TRACE_ROOT / f"{target_sid[:8]}_signed_in_waiting_ledger.png"))
                     except Exception:
                         pass
+
+                persist = last_eval.get("bridge_persistence") if isinstance(last_eval.get("bridge_persistence"), dict) else {}
+                eligible = already_authenticated_bridge_missing(
+                    is_authenticated=last_eval.get("is_authenticated"),
+                    auth_session_complete=last_eval.get("auth_session_complete"),
+                    signed_in_display=bool(identity.get("signed_in_display")),
+                    token_record_missing=str(last_eval.get("bridge_lookup") or "") == "record_missing",
+                    persistence_succeeded=bool(persist.get("persistence_succeeded")),
+                    readback_succeeded=bool(persist.get("readback_succeeded")),
+                    bridge_record_complete=bool(persist.get("bridge_record_complete")),
+                )
+                last_eval["already_authenticated_bridge_missing"] = eligible
+                decision = decide_already_authenticated_bridge_bootstrap(
+                    eligible=eligible,
+                    attempted_count=int(identity.get("already_authenticated_bridge_bootstrap_count") or 0),
+                )
+                if decision["invoke"]:
+                    identity["already_authenticated_bridge_bootstrap_count"] = (
+                        int(identity.get("already_authenticated_bridge_bootstrap_count") or 0) + 1
+                    )
+                    identity["already_authenticated_bridge_bootstrap_attempted"] = True
+                    _status(
+                        "already_authenticated_bridge_missing — one-shot restore_auth_session rebind "
+                        "(existing query host message; not treating as success)"
+                    )
+                    try:
+                        dispatch_already_authenticated_bridge_bootstrap(app_page, suite_sid=target_sid)
+                        surface_monitor.record_harness_event(
+                            "already_authenticated_bridge_bootstrap",
+                            detail="restore_auth_session_query_rerun_once",
+                        )
+                    except Exception as exc:
+                        surface_monitor.record_harness_event(
+                            "already_authenticated_bridge_bootstrap_failed",
+                            detail=type(exc).__name__,
+                        )
 
                 time.sleep(poll_interval_s)
                 if not surface_monitor.hands_off_user_login():

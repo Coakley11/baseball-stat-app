@@ -132,6 +132,11 @@ class StrictPreflightTests(unittest.TestCase):
         self.assertIn(r["failure"], (PREFLIGHT_FAIL_STREAMLIT_INCOMPLETE, "paired_transition_authenticated_false"))
 
     def test_already_complete_without_apply_transition_passes(self) -> None:
+        """UI/preflight already_complete may ignore paired=false.
+
+        Does NOT imply STRICT BRIDGE READY: evaluate_strict_capture still requires
+        a durable current-suite token row (see test_already_complete_bridge_save_repair).
+        """
         rows = [
             {
                 "event": "production_stage1_auth_state_before_start_control",

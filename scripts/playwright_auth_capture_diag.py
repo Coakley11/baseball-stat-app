@@ -427,8 +427,24 @@ def infer_timeout_failure_phase(
     """Map first missing ordered step to a deterministic harness failure code."""
     if strict_failure in ("start_control_disabled", "auth_session_finalization_incomplete"):
         return "session_finalization_after_apply"
+    steps = login_state.get("steps") or {}
+    # 2967 shape: UI/session already authenticated but durable bridge never saved.
+    # Prefer bridge-save timeout over misleading login-never-initiated.
+    if strict_failure in (
+        "browser_token_record_missing",
+        "bridge_persistence_not_proven",
+        "bridge_persistence_sid_mismatch",
+    ):
+        load_or_hydrate = bool(
+            steps.get("6_auth_hydration_ledger_started") or steps.get("8_load_browser_auth_tokens_invoked")
+        )
+        save_ok = bool(steps.get("7_bridge_save_committed_or_readback_ok"))
+        save_attempted = bool(login_state.get("bridge_save_attempted"))
+        if load_or_hydrate and not save_ok and not save_attempted:
+            return "timeout_bridge_save_never_invoked"
+        if load_or_hydrate and save_attempted and not save_ok:
+            return "timeout_bridge_save_never_invoked"
     if strict_failure == "streamlit_auth_incomplete":
-        steps = login_state.get("steps") or {}
         if login_state.get("misleading_signed_in_only"):
             return "timeout_signed_in_ui_without_provider_or_ledger"
         if steps.get("9_apply_authenticated_user_invoked"):
@@ -439,7 +455,6 @@ def infer_timeout_failure_phase(
             return "timeout_bridge_save_never_invoked"
         if steps.get("5_suite_sid_matches_target") and not steps.get("6_auth_hydration_ledger_started"):
             return "timeout_ledger_hydration_unavailable"
-    steps = login_state.get("steps") or {}
     missing = str(login_state.get("first_missing_transition") or "")
     if missing == "1_sign_in_initiated":
         return "timeout_login_never_initiated"
