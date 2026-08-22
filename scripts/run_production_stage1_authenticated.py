@@ -1890,10 +1890,7 @@ def queue_populate_deliberate(
     production_sid: str = "",
 ) -> dict[str, Any]:
     from stage1_queue_seed_harness import (
-        QUEUE1A,
-        QUEUE_SEED_RESOLVED,
-        build_queue_seed_evidence,
-        classify_queue_seed_boundary,
+        apply_queue_seed_evidence,
         seed_queue_distinct_players,
     )
     from stage1_queue_harness_flow import pick_index_zero_from_observation
@@ -1908,24 +1905,13 @@ def queue_populate_deliberate(
         production_sid=str(production_sid or ""),
     )
     meta["surface_activation_queue_mutation"] = bool(surface_activation_queue_mutation)
-    if meta["surface_activation_queue_mutation"]:
-        meta["classification"] = QUEUE1A
-        meta["ok"] = False
-        meta["queue_contains_player"] = False
+    # Provisional pick0 observation (empty start_val) — may be non-authoritative.
+    # Final pick0 authority + evidence rebuild happen in the runner gate.
     obs_after = scrape_active_live_page_observation(page, start_val={})
     meta["pick_index_zero_after_setup"] = pick_index_zero_from_observation(obs_after)
+    meta["pick_index_zero_observation_provisional"] = True
     meta["paused_state_maintained"] = True
-    evidence = build_queue_seed_evidence(meta, min_players=min_players)
-    meta["queue_evidence"] = evidence
-    meta["queue_contains_player"] = bool(evidence.get("queue_seed_resolved"))
-    meta["queue_setup_proven"] = bool(evidence.get("queue_setup_proven"))
-    if meta["surface_activation_queue_mutation"]:
-        pass
-    elif evidence.get("queue_seed_resolved"):
-        meta["classification"] = QUEUE_SEED_RESOLVED
-        meta["ok"] = True
-    elif not meta.get("classification"):
-        meta["classification"] = classify_queue_seed_boundary(meta, min_players=min_players)
+    apply_queue_seed_evidence(meta, min_players=min_players)
     top_name = str((meta.get("top_queued_player") or {}).get("name") or "")
     if not top_name and meta.get("proven_queue_order"):
         top_name = str(meta["proven_queue_order"][0])
@@ -2737,27 +2723,30 @@ def main() -> int:
                 )
                 queue_meta["stage1a_mode"] = "QUEUE"
                 queue_meta["queue_excerpt_before"] = queue_text(page)
-                if not queue_meta.get("queue_evidence"):
-                    from stage1_queue_harness_flow import build_queue_evidence_hierarchy
-
-                    queue_meta["queue_evidence"] = build_queue_evidence_hierarchy(queue_meta, min_players=3)
-                queue_meta["queue_contains_player"] = bool(
-                    queue_meta["queue_evidence"].get("queue_seed_resolved")
-                    or queue_meta["queue_evidence"].get("queue_setup_proven")
+                pick_after = freeze_pick0_transaction(page, room_id=room_id)
+                queue_meta["pick_index_after_queue_setup"] = pick_after
+                # Final authoritative pick0 observation (bound start_val) — rebuild evidence
+                # from THIS generation before any precondition gate uses queue_contains_player.
+                from stage1_queue_seed_harness import (
+                    QUEUE_SEED_RESOLVED,
+                    apply_queue_seed_evidence,
+                    queue_seed_unresolved_boundary,
                 )
+
+                obs_after = scrape_active_live_page_observation(page, start_val=start_val)
+                queue_meta["pick_index_zero_after_setup"] = pick_index_zero_from_observation(obs_after)
+                queue_meta["pick_index_zero_observation_provisional"] = False
+                queue_meta["paused_state_maintained"] = True
+                apply_queue_seed_evidence(queue_meta, min_players=3)
                 queue_meta["grading"] = (
                     "QUEUE_SEED_RESOLVED"
-                    if queue_meta["queue_evidence"].get("queue_seed_resolved")
+                    if (queue_meta.get("queue_evidence") or {}).get("queue_seed_resolved")
                     else (
                         "HARNESS_SCRAPER_GAP"
-                        if queue_meta["queue_evidence"].get("harness_scraper_observation_gap")
+                        if (queue_meta.get("queue_evidence") or {}).get("harness_scraper_observation_gap")
                         else "QUEUE_NOT_PROVEN"
                     )
                 )
-                pick_after = freeze_pick0_transaction(page, room_id=room_id)
-                queue_meta["pick_index_after_queue_setup"] = pick_after
-                obs_after = scrape_active_live_page_observation(page, start_val=start_val)
-                queue_meta["pick_index_zero_after_setup"] = pick_index_zero_from_observation(obs_after)
                 if not queue_meta.get("pick_index_zero_after_setup"):
                     context.close()
                     browser.close()
@@ -2766,7 +2755,7 @@ def main() -> int:
                     OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
                     return _abort_queue_precondition(
                         summary,
-                        first_boundary=QUEUEUI1,
+                        first_boundary="pick_index_zero_after_setup",
                         reason="pick_index_advanced_during_paused_queue_setup",
                         active_live_page_gate=active_gate,
                         queue_meta=queue_meta,
@@ -2777,10 +2766,9 @@ def main() -> int:
                     browser.close()
                     summary["finished_at"] = time.time()
                     OUT_SUMMARY.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
-                    from stage1_harness_observability import QUEUE1 as QUEUE1_UMBRELLA
-
-                    narrow = str(queue_meta.get("classification") or "").strip()
-                    first_b = narrow if narrow and narrow != QUEUE1_UMBRELLA else QUEUE1_UMBRELLA
+                    first_b = queue_seed_unresolved_boundary(queue_meta, min_players=3)
+                    if first_b == QUEUE_SEED_RESOLVED:
+                        first_b = "queue_seed_evidence_unresolved"
                     return _abort_queue_precondition(
                         summary,
                         first_boundary=first_b,

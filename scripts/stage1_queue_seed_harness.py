@@ -195,9 +195,73 @@ def classify_queue_seed_boundary(meta: dict[str, Any], *, min_players: int = 3) 
         return QUEUE1E
     if len(proven) >= min_players and not meta.get("queue_order_established"):
         return QUEUE1F
-    if meta.get("classification") == QUEUE_SEED_RESOLVED:
-        return QUEUE_SEED_RESOLVED
+    # Success is evidence-derived only via apply_queue_seed_evidence — never from a
+    # stale meta["classification"] string left behind by a prior resolved generation.
     return QUEUE1_8
+
+
+def queue_seed_unresolved_boundary(meta: dict[str, Any], *, min_players: int = 3) -> str:
+    """First failed predicate label for precondition abort reporting (never a success label)."""
+    steps = list(meta.get("seed_steps") or [])
+    proven_order: list[str] = []
+    for step in steps:
+        if step.get("mutation_proven") and step.get("player_name"):
+            name = str(step["player_name"]).strip()
+            if name.lower() not in {n.lower() for n in proven_order}:
+                proven_order.append(name)
+    deliberate_clicks = sum(1 for s in steps if s.get("click_dispatched"))
+    if deliberate_clicks < min_players:
+        return "insufficient_deliberate_seed_clicks"
+    if len(proven_order) < min_players:
+        return "insufficient_distinct_seed_players"
+    if not bool(meta.get("queue_order_established")):
+        return "queue_order_not_established"
+    if not bool(meta.get("pick_index_zero_after_setup", True)):
+        return "pick_index_zero_after_setup"
+    if not bool(meta.get("paused_state_maintained", True)):
+        return "paused_state_maintained"
+    classified = classify_queue_seed_boundary(meta, min_players=min_players)
+    if classified == QUEUE_SEED_RESOLVED:
+        return "queue_seed_evidence_unresolved"
+    return str(classified or "queue_seed_evidence_unresolved")
+
+
+def apply_queue_seed_evidence(
+    meta: dict[str, Any],
+    *,
+    min_players: int = 3,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Rebuild queue_evidence and synchronize derived fields to ONE evidence generation.
+
+    Guarantees classification/ok/queue_contains_player match the returned evidence.
+    Never retains QUEUE_SEED_RESOLVED when queue_seed_resolved is false.
+    """
+    if bool(meta.get("surface_activation_queue_mutation")):
+        if evidence is None:
+            evidence = build_queue_seed_evidence(meta, min_players=min_players)
+        meta["queue_evidence"] = evidence
+        meta["queue_setup_proven"] = bool(evidence.get("queue_setup_proven"))
+        meta["queue_contains_player"] = False
+        meta["classification"] = QUEUE1A
+        meta["ok"] = False
+        return evidence
+
+    if evidence is None:
+        evidence = build_queue_seed_evidence(meta, min_players=min_players)
+    meta["queue_evidence"] = evidence
+    meta["queue_setup_proven"] = bool(evidence.get("queue_setup_proven"))
+    meta["queue_contains_player"] = bool(evidence.get("queue_seed_resolved"))
+    if evidence.get("queue_seed_resolved"):
+        meta["classification"] = QUEUE_SEED_RESOLVED
+        meta["ok"] = True
+    else:
+        meta["ok"] = False
+        # Drop any prior success label before failure classification.
+        if meta.get("classification") == QUEUE_SEED_RESOLVED:
+            meta["classification"] = ""
+        meta["classification"] = queue_seed_unresolved_boundary(meta, min_players=min_players)
+    return evidence
 
 
 def build_queue_seed_evidence(
@@ -614,15 +678,7 @@ def _seed_via_global_button_hints(
         "queue_order": proven_order,
         "elapsed_s": time.time() - t0,
     }
-    evidence = build_queue_seed_evidence(meta, min_players=min_players)
-    meta["queue_evidence"] = evidence
-    meta["queue_contains_player"] = bool(evidence.get("queue_seed_resolved"))
-    if evidence.get("queue_seed_resolved"):
-        meta["classification"] = QUEUE_SEED_RESOLVED
-        meta["ok"] = True
-    else:
-        meta["ok"] = False
-        meta["classification"] = classify_queue_seed_boundary(meta, min_players=min_players)
+    apply_queue_seed_evidence(meta, min_players=min_players)
     return meta
 
 
@@ -719,15 +775,7 @@ def _seed_via_global_indices_with_queue_diff(
         "classification_hint": QUEUE1B,
         "elapsed_s": time.time() - t0,
     }
-    evidence = build_queue_seed_evidence(meta, min_players=min_players)
-    meta["queue_evidence"] = evidence
-    meta["queue_contains_player"] = bool(evidence.get("queue_seed_resolved"))
-    if evidence.get("queue_seed_resolved"):
-        meta["classification"] = QUEUE_SEED_RESOLVED
-        meta["ok"] = True
-    else:
-        meta["ok"] = False
-        meta["classification"] = classify_queue_seed_boundary(meta, min_players=min_players)
+    apply_queue_seed_evidence(meta, min_players=min_players)
     return meta
 
 
@@ -825,15 +873,7 @@ def _seed_unnamed_via_queue_diff(
         "queue_order": proven_order,
         "elapsed_s": time.time() - t0,
     }
-    evidence = build_queue_seed_evidence(meta, min_players=min_players)
-    meta["queue_evidence"] = evidence
-    meta["queue_contains_player"] = bool(evidence.get("queue_seed_resolved"))
-    if evidence.get("queue_seed_resolved"):
-        meta["classification"] = QUEUE_SEED_RESOLVED
-        meta["ok"] = True
-    else:
-        meta["ok"] = False
-        meta["classification"] = classify_queue_seed_boundary(meta, min_players=min_players)
+    apply_queue_seed_evidence(meta, min_players=min_players)
     return meta
 
 
@@ -909,15 +949,7 @@ def _finalize_seed_meta(
     }
     if extra:
         meta.update(extra)
-    evidence = build_queue_seed_evidence(meta, min_players=min_players)
-    meta["queue_evidence"] = evidence
-    meta["queue_contains_player"] = bool(evidence.get("queue_seed_resolved"))
-    if evidence.get("queue_seed_resolved"):
-        meta["classification"] = QUEUE_SEED_RESOLVED
-        meta["ok"] = True
-    else:
-        meta["ok"] = False
-        meta["classification"] = classify_queue_seed_boundary(meta, min_players=min_players)
+    apply_queue_seed_evidence(meta, min_players=min_players)
     return meta
 
 
