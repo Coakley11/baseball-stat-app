@@ -41,6 +41,8 @@ def extract_player_names_from_lines(lines: list[str]) -> list[str]:
             name = ln
         else:
             continue
+        if is_recommendation_badge_label(name) or not is_valid_seed_player_name(name):
+            continue
         key = name.lower()
         if key in seen:
             continue
@@ -73,10 +75,23 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
     }
     return r.filter(Boolean);
   }
+  function isRecBadgeLabel(name) {
+    const n = String(name || '').trim();
+    if (!n) return true;
+    // Known recommendation badge/chip labels (live_draft_rec_badges.py) that match
+    // the two-word name heuristic and must never become seed player identity.
+    if (/^(Why Recommended|Draft Player|Draft|Queued|Available Players|Watchlist|Recommendations|On Clock|keyboard_arrow|Clear Draft Queue|Draft Queue|Empty|Tracked players)$/i.test(n)) return true;
+    if (/^(Best Value|Best Overall|Second Best|Third Best|Market Discount|ADP Bargain|Scarcity Rising|Power Upgrade|Speed Upgrade|Average Stabilizer|Run Production Boost|Runs Boost|On-Base Boost|Contact Boost)$/i.test(n)) return true;
+    if (/^Best Remaining\\s+\\S+/i.test(n)) return true;
+    if (/^Fills\\s+\\d+\\s+OF\\s+Slots$/i.test(n)) return true;
+    if (/^Fills\\s+\\S+\\s+Slot$/i.test(n)) return true;
+    if (/\\bScarcity Rising$/i.test(n)) return true;
+    if (/^Category Boost:/i.test(n)) return true;
+    return false;
+  }
   function extractNames(lines) {
     const names = [];
     const seen = new Set();
-    const rejectName = /^(Why Recommended|Draft Player|Draft|Queued|Available Players|Watchlist|Recommendations|On Clock|keyboard_arrow|Clear Draft Queue|Draft Queue|Empty|Tracked players)/i;
     const posRe = /^([A-Za-z][A-Za-z .\\'-]{2,60})\\s+[—\\-–]\\s+(UTIL|SS|OF|1B|2B|3B|SP|RP|C|DH|P)\\b/;
     const twoRe = /^([A-Z][a-z]+(?: [A-Z][a-z'.\\-]+){1,3})$/;
     const oneRe = /^[A-Z][A-Za-z .\\'-]{2,48}$/;
@@ -91,7 +106,7 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
       else if (twoRe.test(ln)) name = ln;
       else if (oneRe.test(ln)) name = ln;
       if (!name) continue;
-      if (rejectName.test(name)) continue;
+      if (isRecBadgeLabel(name)) continue;
       const k = name.toLowerCase();
       if (seen.has(k)) continue;
       seen.add(k);
@@ -501,12 +516,144 @@ _REJECT_PLAYER_NAME = re.compile(
     re.I,
 )
 
+# Badge / chip labels from live_draft_rec_badges.py that match the two-word name heuristic.
+REC_SEED_BADGE_LABELS = frozenset(
+    {
+        "best value",
+        "best overall",
+        "second best",
+        "third best",
+        "market discount",
+        "adp bargain",
+        "scarcity rising",
+        "power upgrade",
+        "speed upgrade",
+        "average stabilizer",
+        "run production boost",
+        "runs boost",
+        "on-base boost",
+        "contact boost",
+    }
+)
+
+_REC_BADGE_DYNAMIC_RE = (
+    re.compile(r"^best remaining\s+\S+", re.I),
+    re.compile(r"^fills\s+\d+\s+of\s+slots$", re.I),
+    re.compile(r"^fills\s+\S+\s+slot$", re.I),
+    re.compile(r"\bscarcity rising$", re.I),
+    re.compile(r"^category boost:", re.I),
+)
+
+# Binding vias that may authorize a deliberate seed once player_id is also present.
+STRUCTURED_SEED_BINDING_VIAS = frozenset(
+    {
+        "ld_rec_card_meta",
+        "button_help_title",
+        "stButton_help_title",
+        "render_trace",
+    }
+)
+
+# Visible-text / shallow-ancestor vias: observability only — never sufficient alone for seed delivery.
+VISIBLE_TEXT_ONLY_SEED_BINDING_VIAS = frozenset(
+    {
+        "single_visible_add_ancestor",
+        "ancestor_walk",
+        "row_text_before_add_button",
+        "stColumn_left",
+        "horizontal_previous_column",
+        "horizontal_column",
+        "previous_sibling_block",
+        "ld_rec_card_header",
+    }
+)
+
+
+def is_recommendation_badge_label(name: str) -> bool:
+    """True when text is a recommendation badge/chip, not a player identity."""
+    n = str(name or "").strip()
+    if not n:
+        return True
+    if n.lower() in REC_SEED_BADGE_LABELS:
+        return True
+    return any(pat.search(n) for pat in _REC_BADGE_DYNAMIC_RE)
+
 
 def is_valid_seed_player_name(name: str) -> bool:
     n = str(name or "").strip()
-    if not n or _REJECT_PLAYER_NAME.match(n):
+    if not n or _REJECT_PLAYER_NAME.match(n) or is_recommendation_badge_label(n):
         return False
     return bool(_NAME_TWO.match(n) or _NAME_ONLY.match(n))
+
+
+def _seed_player_id(value: Any) -> str:
+    pid = str(value or "").strip()
+    return pid if pid.isdigit() else ""
+
+
+def has_structured_seed_identity(candidate: dict[str, Any] | None) -> bool:
+    """Deliberate seed delivery requires real player_name + player_id from structured authority.
+
+    Visible-text-only bindings (e.g. single_visible_add_ancestor) never authorize alone.
+    Render-trace enrichment that attaches player_id counts as structured authority.
+    """
+    c = dict(candidate or {})
+    name = str(c.get("player_name") or "").strip()
+    if not is_valid_seed_player_name(name):
+        return False
+    pid = _seed_player_id(c.get("player_id"))
+    if not pid:
+        return False
+    via = str(c.get("binding_via") or "").strip()
+    source = str(c.get("structured_identity_source") or "").strip().lower()
+    if via in VISIBLE_TEXT_ONLY_SEED_BINDING_VIAS and "render_trace" not in source and via not in STRUCTURED_SEED_BINDING_VIAS:
+        # Shallow/visible-text binding is ineligible unless render-trace enrichment supplied player_id.
+        if "render_trace" not in source:
+            return False
+    if via in STRUCTURED_SEED_BINDING_VIAS:
+        return True
+    if "render_trace" in source or source in {"ld_rec_card_meta", "ld_rec_card_meta+render_trace"}:
+        return True
+    if via in VISIBLE_TEXT_ONLY_SEED_BINDING_VIAS:
+        return False
+    # Unknown via: still require player_id (already checked) and treat as structured if marked.
+    return bool(source)
+
+
+def enrich_seed_candidates_from_render_traces(
+    candidates: list[dict[str, Any]],
+    traces: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Attach player_id / widget_key from render-trace rows matched by player_name."""
+    by_name: dict[str, dict[str, Any]] = {}
+    for raw in traces or []:
+        if not isinstance(raw, dict) or raw.get("error"):
+            continue
+        key = str(raw.get("player_name") or "").strip().lower()
+        if not key:
+            continue
+        by_name[key] = raw
+    out: list[dict[str, Any]] = []
+    for cand in candidates:
+        c = dict(cand)
+        name_key = str(c.get("player_name") or "").strip().lower()
+        trace = by_name.get(name_key)
+        if trace:
+            tid = _seed_player_id(trace.get("player_id"))
+            if tid:
+                c["player_id"] = tid
+            wk = str(trace.get("widget_key") or "").strip()
+            if wk:
+                c["widget_key"] = wk
+            via = str(c.get("binding_via") or "").strip()
+            if via == "ld_rec_card_meta":
+                c["structured_identity_source"] = "ld_rec_card_meta+render_trace"
+            else:
+                c["structured_identity_source"] = "render_trace"
+            c["render_trace_player_name"] = str(trace.get("player_name") or "")
+            c["render_trace_player_id"] = str(trace.get("player_id") or "")
+        out.append(c)
+    return out
 
 
 def select_next_seed_candidate(
@@ -516,9 +663,15 @@ def select_next_seed_candidate(
     exclude_global_indices: set[int] | None = None,
     preferred_player_name: str = "",
 ) -> tuple[dict[str, Any] | None, str]:
-    """Pick next uniquely-bound player not yet queued. Returns (candidate, reject_reason)."""
+    """Pick next uniquely-bound structured player not yet queued.
+
+    Rejects badge labels and visible-text-only identities that lack player_id /
+    structured card/render-trace authority. Returns (candidate, reject_reason).
+    """
     exclude_global_indices = exclude_global_indices or set()
     viable: list[dict[str, Any]] = []
+    saw_unique_name = False
+    saw_structured_gap = False
     for c in candidates:
         if c.get("error"):
             continue
@@ -535,14 +688,20 @@ def select_next_seed_candidate(
             continue
         if name.lower() in {n.lower() for n in exclude_player_names}:
             continue
+        saw_unique_name = True
+        if not has_structured_seed_identity(c):
+            saw_structured_gap = True
+            continue
         viable.append(c)
     if not viable:
         ambiguous = [c for c in candidates if c.get("binding_confidence") == BINDING_AMBIGUOUS]
-        if ambiguous:
+        if ambiguous and not saw_unique_name:
             return None, "ambiguous_binding"
         unnamed = [c for c in candidates if c.get("binding_confidence") == BINDING_MISSING]
-        if unnamed and not viable:
+        if unnamed and not saw_unique_name:
             return None, "missing_binding"
+        if saw_structured_gap:
+            return None, "missing_structured_identity"
         return None, "no_viable_candidate"
     want = str(preferred_player_name or "").strip().lower()
     if want:

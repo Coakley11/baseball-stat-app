@@ -284,7 +284,7 @@ def test_click_dispatched_false_fails() -> None:
         scrape_container_fn=lambda _p: {"found": True, "empty": True, "players": [], "excerpt": "Draft queue\n"},
         min_players=1,
         discover_fn=lambda _p: [
-            {"player_name": "Francisco Lindor", "binding_confidence": "unique", "global_index": 0}
+            {"player_name": "Francisco Lindor", "binding_confidence": "unique", "global_index": 0, "player_id": "231", "binding_via": "ld_rec_card_meta", "structured_identity_source": "ld_rec_card_meta+render_trace", "widget_key": "rec_card_queue_TESTROOM_0_231_rec_card", "visible": True}
         ],
         deliver_fn=deliver,
         render_trace_fn=lambda _p, player_name="": _trace(player_name="Francisco Lindor", player_id="231"),
@@ -328,7 +328,7 @@ def test_click_dispatched_true_consumption_ack_false_fails() -> None:
         scrape_container_fn=lambda _p: {"found": True, "empty": True, "players": [], "excerpt": "Draft queue\n"},
         min_players=1,
         discover_fn=lambda _p: [
-            {"player_name": "Francisco Lindor", "binding_confidence": "unique", "global_index": 0}
+            {"player_name": "Francisco Lindor", "binding_confidence": "unique", "global_index": 0, "player_id": "231", "binding_via": "ld_rec_card_meta", "structured_identity_source": "ld_rec_card_meta+render_trace", "widget_key": "rec_card_queue_TESTROOM_0_231_rec_card", "visible": True}
         ],
         deliver_fn=deliver,
         render_trace_fn=lambda _p, player_name="": _trace(player_name="Francisco Lindor", player_id="231"),
@@ -396,7 +396,7 @@ def test_membership_absent_after_ack_fails_before_next_player() -> None:
         }
 
     players = [
-        {"player_name": "Francisco Lindor", "binding_confidence": "unique", "global_index": 0},
+        {"player_name": "Francisco Lindor", "binding_confidence": "unique", "global_index": 0, "player_id": "231", "binding_via": "ld_rec_card_meta", "structured_identity_source": "ld_rec_card_meta+render_trace", "widget_key": "rec_card_queue_TESTROOM_0_231_rec_card", "visible": True},
         {"player_name": "Pete Alonso", "binding_confidence": "unique", "global_index": 1},
     ]
 
@@ -552,9 +552,33 @@ def test_duplicate_candidate_not_used_as_second_distinct_seed() -> None:
     from stage1_add_to_queue_delivery import select_next_seed_candidate
 
     candidates = [
-        {"player_name": "Francisco Lindor", "binding_confidence": "unique", "global_index": 0},
-        {"player_name": "Francisco Lindor", "binding_confidence": "unique", "global_index": 1},
-        {"player_name": "Pete Alonso", "binding_confidence": "unique", "global_index": 2},
+        {
+            "player_name": "Francisco Lindor",
+            "binding_confidence": "unique",
+            "global_index": 0,
+            "player_id": "231",
+            "binding_via": "ld_rec_card_meta",
+            "structured_identity_source": "ld_rec_card_meta+render_trace",
+            "widget_key": "rec_card_queue_TESTROOM_0_231_rec_card",
+        },
+        {
+            "player_name": "Francisco Lindor",
+            "binding_confidence": "unique",
+            "global_index": 1,
+            "player_id": "231",
+            "binding_via": "ld_rec_card_meta",
+            "structured_identity_source": "ld_rec_card_meta+render_trace",
+            "widget_key": "rec_card_queue_TESTROOM_0_231_rec_card",
+        },
+        {
+            "player_name": "Pete Alonso",
+            "binding_confidence": "unique",
+            "global_index": 2,
+            "player_id": "592789",
+            "binding_via": "ld_rec_card_meta",
+            "structured_identity_source": "ld_rec_card_meta+render_trace",
+            "widget_key": "rec_card_queue_TESTROOM_0_592789_rec_card",
+        },
     ]
     pick, _ = select_next_seed_candidate(candidates, exclude_player_names={"francisco lindor"})
     assert pick is not None

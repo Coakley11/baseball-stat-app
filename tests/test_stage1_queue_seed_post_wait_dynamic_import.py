@@ -221,7 +221,7 @@ def test_seed_loop_default_membership_reaches_real_post_wait_callable() -> None:
     wait_hits = {"n": 0}
 
     def discover(_page):
-        return [{"player_name": "Francisco Lindor", "binding_confidence": "unique", "global_index": 0}]
+        return [{"player_name": "Francisco Lindor", "binding_confidence": "unique", "global_index": 0, "player_id": "231", "binding_via": "ld_rec_card_meta", "structured_identity_source": "ld_rec_card_meta+render_trace", "widget_key": "rec_card_queue_TESTROOM_0_231_rec_card", "visible": True}]
 
     def deliver(_page, pick, *, playwright_only=False, authorized_rec_card_key=""):
         assert playwright_only is True

@@ -25,6 +25,29 @@ from stage1_queue_seed_harness import (  # noqa: E402
 )
 
 
+def _cand(
+    name: str,
+    *,
+    gi: int,
+    player_id: str,
+    visible: bool = True,
+    via: str = "ld_rec_card_meta",
+    **extra,
+):
+    row = {
+        "global_index": gi,
+        "player_name": name,
+        "player_id": str(player_id),
+        "binding_confidence": "unique",
+        "binding_via": via,
+        "visible": visible,
+        "widget_key": f"rec_card_queue_TESTROOM_0_{player_id}_rec_card",
+        "structured_identity_source": "ld_rec_card_meta+render_trace",
+    }
+    row.update(extra)
+    return row
+
+
 def test_extract_names_from_player_card_lines() -> None:
     lines = ["Francisco Lindor", "SS — UTIL", "⭐ Add to Queue"]
     assert extract_player_names_from_lines(lines) == ["Francisco Lindor"]
@@ -39,9 +62,9 @@ def test_classify_unique_vs_ambiguous_binding() -> None:
 
 def test_select_next_skips_already_queued() -> None:
     candidates = [
-        {"global_index": 0, "player_name": "Francisco Lindor", "binding_confidence": "unique"},
-        {"global_index": 1, "player_name": "Pete Alonso", "binding_confidence": "unique"},
-        {"global_index": 2, "player_name": "Juan Soto", "binding_confidence": "unique"},
+        _cand("Francisco Lindor", gi=0, player_id="231"),
+        _cand("Pete Alonso", gi=1, player_id="592789"),
+        _cand("Juan Soto", gi=2, player_id="665742"),
     ]
     pick, _ = select_next_seed_candidate(candidates, exclude_player_names={"francisco lindor"})
     assert pick and pick["player_name"] == "Pete Alonso"
@@ -64,8 +87,8 @@ def test_select_next_rejects_ambiguous_binding() -> None:
 
 def test_select_preferred_francisco_over_lower_index() -> None:
     candidates = [
-        {"global_index": 0, "player_name": "Pete Alonso", "binding_confidence": "unique"},
-        {"global_index": 1, "player_name": "Francisco Lindor", "binding_confidence": "unique"},
+        _cand("Pete Alonso", gi=0, player_id="592789"),
+        _cand("Francisco Lindor", gi=1, player_id="231"),
     ]
     pick, reason = select_next_seed_candidate(
         candidates,
@@ -84,8 +107,8 @@ def test_select_preferred_francisco_over_lower_index() -> None:
 
 def test_identical_add_labels_distinct_player_cards() -> None:
     candidates = [
-        {"global_index": 0, "player_name": "Francisco Lindor", "binding_confidence": "unique", "button_text": "⭐ Add to Queue"},
-        {"global_index": 1, "player_name": "Pete Alonso", "binding_confidence": "unique", "button_text": "⭐ Add to Queue"},
+        _cand("Francisco Lindor", gi=0, player_id="231", button_text="⭐ Add to Queue"),
+        _cand("Pete Alonso", gi=1, player_id="592789", button_text="⭐ Add to Queue"),
     ]
     first, _ = select_next_seed_candidate(candidates, exclude_player_names=set())
     second, _ = select_next_seed_candidate(candidates, exclude_player_names={first["player_name"].lower()})  # type: ignore[index]
@@ -155,7 +178,7 @@ def test_rejects_why_recommended_as_player() -> None:
     assert is_valid_seed_player_name("Francisco Lindor") is True
     candidates = [
         {"global_index": 0, "player_name": "Why Recommended", "binding_confidence": "unique"},
-        {"global_index": 1, "player_name": "Pete Alonso", "binding_confidence": "unique"},
+        _cand("Pete Alonso", gi=1, player_id="592789"),
     ]
     pick, _ = select_next_seed_candidate(candidates, exclude_player_names=set())
     assert pick and pick["player_name"] == "Pete Alonso"
@@ -168,9 +191,9 @@ def test_parse_player_from_queue_help_title() -> None:
 
 def test_select_next_skips_invisible_duplicate_controls() -> None:
     candidates = [
-        {"global_index": 0, "player_name": "Francisco Lindor", "binding_confidence": "unique", "visible": False},
-        {"global_index": 1, "player_name": "Francisco Lindor", "binding_confidence": "unique", "visible": True},
-        {"global_index": 2, "player_name": "Pete Alonso", "binding_confidence": "unique", "visible": True},
+        _cand("Francisco Lindor", gi=0, player_id="231", visible=False),
+        _cand("Francisco Lindor", gi=1, player_id="231", visible=True),
+        _cand("Pete Alonso", gi=2, player_id="592789", visible=True),
     ]
     pick, _ = select_next_seed_candidate(candidates, exclude_player_names=set())
     assert pick and pick["global_index"] == 1

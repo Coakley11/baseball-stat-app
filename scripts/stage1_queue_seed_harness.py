@@ -1395,12 +1395,60 @@ def seed_queue_distinct_players(
 
     while len([s for s in seed_steps if s.get("mutation_proven")]) < min_players:
         candidates = discover(page)
+        traces: list[dict[str, Any]] = []
+        try:
+            from stage1_add_to_queue_delivery import enrich_seed_candidates_from_render_traces
+            from stage1_rec_queue_click_trace_scrape import scrape_rec_queue_render_trace_nodes
+
+            scraped = scrape_rec_queue_render_trace_nodes(page, player_name="")
+            if isinstance(scraped, list):
+                traces.extend(
+                    [
+                        t
+                        for t in scraped
+                        if isinstance(t, dict) and not t.get("error") and (t.get("player_name") or t.get("player_id"))
+                    ]
+                )
+        except Exception:
+            pass
+        if not traces and render_trace_fn is not None:
+            # Test/harness injectables: enrich from the same render-trace authority used post-select.
+            seen_names: set[str] = set()
+            for c in candidates:
+                name = str(c.get("player_name") or "").strip()
+                if not name or name.lower() in seen_names:
+                    continue
+                seen_names.add(name.lower())
+                try:
+                    row = render_trace_fn(page, player_name=name)
+                except TypeError:
+                    try:
+                        row = render_trace_fn(page)
+                    except Exception:
+                        row = None
+                except Exception:
+                    row = None
+                if isinstance(row, dict) and row and not row.get("error"):
+                    traces.append(row)
+        try:
+            from stage1_add_to_queue_delivery import enrich_seed_candidates_from_render_traces
+
+            candidates = enrich_seed_candidates_from_render_traces(candidates, traces)
+        except Exception:
+            pass
         discovery_snapshots.append(
             {
                 "ts": time.time(),
                 "control_count": len(candidates),
                 "named_unique": sum(
                     1 for c in candidates if c.get("binding_confidence") == "unique" and c.get("player_name")
+                ),
+                "structured_eligible": sum(
+                    1
+                    for c in candidates
+                    if c.get("binding_confidence") == "unique"
+                    and str(c.get("player_id") or "").strip().isdigit()
+                    and str(c.get("player_name") or "").strip()
                 ),
                 "candidates": candidates[:10],
             }
