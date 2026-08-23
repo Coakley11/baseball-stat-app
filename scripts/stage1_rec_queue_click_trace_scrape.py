@@ -6,16 +6,7 @@ import json
 from typing import Any
 
 
-def scrape_rec_queue_render_trace(page, *, player_name: str = "") -> dict[str, Any]:
-    try:
-        raw = page.evaluate(
-            """(playerName) => {
-            const docs = [document];
-            for (const f of document.querySelectorAll('iframe')) {
-              try { if (f.contentDocument) docs.push(f.contentDocument); } catch (e) {}
-            }
-            const want = String(playerName || '').trim().toLowerCase();
-            function rowFromEl(el) {
+_RENDER_TRACE_ROW_FROM_EL_JS = """
               return {
                 room_id: el.getAttribute('data-room-id') || '',
                 player_name: el.getAttribute('data-player-name') || '',
@@ -41,6 +32,27 @@ def scrape_rec_queue_render_trace(page, *, player_name: str = "") -> dict[str, A
                 help_present: el.getAttribute('data-help-present') || '',
                 json: el.getAttribute('data-json') || '',
               };
+"""
+
+
+def scrape_rec_queue_render_trace_nodes(page, *, player_name: str = "") -> list[dict[str, Any]]:
+    """Collect all solo-diag render-trace rows (per-card + global) for seed enrichment.
+
+    Stage1 queue seed imports this symbol; a missing implementation previously
+    silently skipped enrichment and left structured_eligible at 0.
+    """
+    try:
+        raw = page.evaluate(
+            """(playerName) => {
+            const docs = [document];
+            for (const f of document.querySelectorAll('iframe')) {
+              try { if (f.contentDocument) docs.push(f.contentDocument); } catch (e) {}
+            }
+            const want = String(playerName || '').trim().toLowerCase();
+            function rowFromEl(el) {
+"""
+            + _RENDER_TRACE_ROW_FROM_EL_JS
+            + """
             }
             function matchesPlayer(row) {
               if (!want) return true;
@@ -52,6 +64,8 @@ def scrape_rec_queue_render_trace(page, *, player_name: str = "") -> dict[str, A
               '#rec-card-queue-render-trace',
               '.rec-card-queue-render-trace-card',
             ];
+            const out = [];
+            const seen = new Set();
             for (const doc of docs) {
               for (const sel of selectors) {
                 const nodes = sel.startsWith('#')
@@ -59,26 +73,49 @@ def scrape_rec_queue_render_trace(page, *, player_name: str = "") -> dict[str, A
                   : Array.from(doc.querySelectorAll(sel));
                 for (const el of nodes) {
                   const row = rowFromEl(el);
-                  if (!row.widget_key && !row.json && !row.player_name) continue;
-                  if (matchesPlayer(row)) return row;
+                  if (!row.widget_key && !row.json && !row.player_name && !row.player_id) continue;
+                  if (!matchesPlayer(row)) continue;
+                  const dedupe = [row.widget_key, row.player_id, row.player_name].join('|');
+                  if (seen.has(dedupe)) continue;
+                  seen.add(dedupe);
+                  out.push(row);
                 }
               }
             }
-            return {};
+            return out;
           }""",
             player_name,
         )
     except Exception as exc:
-        return {"error": str(exc)[:200]}
-    if not isinstance(raw, dict):
+        return [{"error": str(exc)[:200]}]
+    if not isinstance(raw, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        out = dict(item)
+        if out.get("json"):
+            try:
+                out["payload"] = json.loads(str(out["json"]).replace("'", '"'))
+            except Exception:
+                pass
+        rows.append(out)
+    return rows
+
+
+def scrape_rec_queue_render_trace(page, *, player_name: str = "") -> dict[str, Any]:
+    nodes = scrape_rec_queue_render_trace_nodes(page, player_name=player_name)
+    if not nodes:
         return {}
-    out = dict(raw)
-    if out.get("json"):
-        try:
-            out["payload"] = json.loads(str(out["json"]).replace("'", '"'))
-        except Exception:
-            pass
-    return out
+    if nodes and nodes[0].get("error"):
+        return dict(nodes[0])
+    want = str(player_name or "").strip().lower()
+    if want:
+        for row in nodes:
+            if str(row.get("player_name") or "").strip().lower() == want:
+                return dict(row)
+    return dict(nodes[0])
 
 
 def merge_render_trace_into_step(step: dict[str, Any], trace: dict[str, Any]) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import time
 from typing import Any
 
@@ -10,6 +11,22 @@ import pandas as pd
 
 LIVE_DRAFT_REC_DIAG_KEY = "_live_draft_rec_diag"
 VISIBLE_REC_RENDER_INPUT_KEY = "_live_draft_visible_rec_render_input"
+
+
+def build_ld_rec_card_meta_open_tag(*, player_id: str = "", player_name: str = "") -> str:
+    """Always-on structured identity boundary for recommendation cards.
+
+    Stage1 queue seeding reads ``data-player-id`` / ``data-player-name`` from
+    ``.ld-rec-card-meta``. Display text alone is not sufficient identity proof.
+    """
+    pid = str(player_id or "").strip()
+    pname = str(player_name or "").strip()
+    attrs = ['class="ld-rec-card-meta"']
+    if pid:
+        attrs.append(f'data-player-id="{html.escape(pid, quote=True)}"')
+    if pname:
+        attrs.append(f'data-player-name="{html.escape(pname, quote=True)}"')
+    return "<div " + " ".join(attrs) + ">"
 
 
 def record_rec_card_diagnostics(session: dict[str, Any], **fields: Any) -> dict[str, Any]:
@@ -1837,8 +1854,11 @@ def render_live_draft_rec_cards(
                 except ImportError:
                     pass
                 meta_line = f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}' if not badges else f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}'
+                meta_open = build_ld_rec_card_meta_open_tag(
+                    player_id=player_id, player_name=name
+                )
                 st.markdown(
-                    f'<div class="ld-rec-card-header">{photo_html}<div class="ld-rec-card-meta">'
+                    f'<div class="ld-rec-card-header">{photo_html}{meta_open}'
                     f'<div style="font-size:1.05rem;font-weight:800;line-height:1.25;">{name}</div>'
                     f'<div style="font-size:0.88rem;color:#475569;">{meta_line}</div>'
                     f"{stat_html}{metrics_html}{strength_txt}{confidence_txt}"

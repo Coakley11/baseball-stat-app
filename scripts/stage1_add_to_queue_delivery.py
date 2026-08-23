@@ -174,11 +174,13 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
       if (countVisibleAddQueueIn(walk) !== 1) continue;
       const meta = walk.querySelector('.ld-rec-card-meta');
       if (meta) {
+        const attrPid = String(meta.getAttribute('data-player-id') || '').trim();
+        const attrName = String(meta.getAttribute('data-player-name') || '').trim();
         const nameEl = meta.querySelector('div');
-        const raw = nameEl ? String(nameEl.innerText || '').trim() : String(meta.innerText || '').split('\\n')[0].trim();
+        const raw = attrName || (nameEl ? String(nameEl.innerText || '').trim() : String(meta.innerText || '').split('\\n')[0].trim());
         const names = extractNames([raw]);
         if (names.length === 1) {
-          return {
+          const out = {
             confidence: 'unique',
             player_name: names[0],
             names,
@@ -186,6 +188,11 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
             container_sample: raw.slice(0, 280),
             binding_via: 'ld_rec_card_meta',
           };
+          if (/^\\d+$/.test(attrPid)) {
+            out.player_id = attrPid;
+            out.structured_identity_source = 'ld_rec_card_meta';
+          }
+          return out;
         }
       }
       const header = walk.querySelector('.ld-rec-card-header');
@@ -415,7 +422,7 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
           covered = topEl && topEl !== btn && !btn.contains(topEl);
         }
       } catch (e) {}
-      out.push({
+      const row = {
         global_index: globalIndex,
         frameIndex,
         frameUrl: frameUrl.slice(0, 220),
@@ -436,7 +443,14 @@ _DISCOVER_BOUND_CONTROLS_JS = """() => {
         enabled: !btn.disabled,
         possibly_covered: covered,
         dom_generation_ts: Date.now(),
-      });
+      };
+      if (bind.player_id) {
+        row.player_id = String(bind.player_id);
+      }
+      if (bind.structured_identity_source) {
+        row.structured_identity_source = String(bind.structured_identity_source);
+      }
+      out.push(row);
       globalIndex += 1;
       indexInFrame += 1;
     }
