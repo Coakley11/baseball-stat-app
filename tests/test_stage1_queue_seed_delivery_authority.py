@@ -89,10 +89,22 @@ def _deliver(*, key: str, callback: bool) -> dict[str, Any]:
 
 
 def test_c82_client_transport_without_callback_entry() -> None:
+    membership_calls = {"n": 0}
+
     def deliver(_page, pick, *, playwright_only=False, authorized_rec_card_key=""):
         out = _deliver(key=authorized_rec_card_key, callback=False)
         out["playwright_only"] = playwright_only
         return out
+
+    def membership_wait(*_a, **_k):
+        membership_calls["n"] += 1
+        return {
+            "session_queue": None,
+            "canonical_queue": None,
+            "stale_baseline_rejected": True,
+            "stale_baseline_only": True,
+            "accepted_post": None,
+        }
 
     meta = seed_queue_distinct_players(
         _FakePage(),
@@ -106,13 +118,7 @@ def test_c82_client_transport_without_callback_entry() -> None:
         discover_fn=lambda _p: [_cand()],
         deliver_fn=deliver,
         render_trace_fn=lambda _p, player_name="": _trace(),
-        membership_wait_fn=lambda *_a, **_k: {
-            "session_queue": None,
-            "canonical_queue": None,
-            "stale_baseline_rejected": True,
-            "stale_baseline_only": True,
-            "accepted_post": None,
-        },
+        membership_wait_fn=membership_wait,
         expected_room_id=C82_ROOM,
         expected_pick_index=0,
     )
@@ -123,17 +129,130 @@ def test_c82_client_transport_without_callback_entry() -> None:
     assert step["post_mutation_snapshot_observed"] is False
     assert step["delivery_authority"] == DELIVERY_AUTHORITY_CLIENT_TRANSPORT_ONLY
     assert step["mutation_proven"] is False
+    assert step.get("membership_skipped_fail_fast") is True
+    assert membership_calls["n"] == 0
     assert str(meta["classification"]).startswith(
         "STAGE1_QUEUE_SEED_CLIENT_TRANSPORT_WITHOUT_CALLBACK_ENTRY"
     )
     assert "widget consumed" not in str(meta["classification"]).lower()
     assert "widget consumed" not in str(step.get("delivery_authority_summary") or "").lower()
+    assert "insufficient_deliberate_seed_clicks" not in str(meta["classification"])
     assert step.get("queue_after") is None
     assert step.get("queue_after_unavailable") is True
     summary = str(step.get("delivery_authority_summary") or "")
     assert "client transport" in summary.lower()
     assert "callback entry not observed" in summary.lower()
     assert step.get("widget_consumption_ack") is True  # legacy retained, not success gate
+    diag = step.get("attempt_diagnostics") or {}
+    assert diag.get("player_id") == "231"
+    assert diag.get("attempt_number") == 1
+
+
+def test_c50832_transport_only_click1_continues_to_three_structured_seeds() -> None:
+    """Regression for production c50832d5: transport-only click #1 must not abort the 3-click loop.
+
+    First structured candidate emits client transport without server progress; harness fail-fasts
+    (no long membership wait), rediscovers, and deliberately seeds three distinct player_ids.
+    """
+    roster = [
+        ("Francisco Lindor", "231"),
+        ("Pete Alonso", "592789"),
+        ("Juan Soto", "665742"),
+        ("Mookie Betts", "605141"),
+    ]
+    state = {"queue": [], "deliveries": [], "discovers": 0, "membership_calls": 0}
+
+    def discover(_page):
+        state["discovers"] += 1
+        return [
+            {
+                "player_name": n,
+                "binding_confidence": "unique",
+                "global_index": i,
+                "player_id": pid,
+                "binding_via": "ld_rec_card_meta",
+                "structured_identity_source": "ld_rec_card_meta+render_trace",
+                "widget_key": f"rec_card_queue_{C82_ROOM}_0_{pid}_rec_card",
+                "visible": True,
+            }
+            for i, (n, pid) in enumerate(roster)
+        ]
+
+    def deliver(_page, pick, *, playwright_only=False, authorized_rec_card_key=""):
+        name = str(pick.get("player_name") or "")
+        state["deliveries"].append(name)
+        # Click #1: client transport only (production c50832d5 Lindor pattern).
+        callback = len(state["deliveries"]) > 1
+        out = _deliver(key=authorized_rec_card_key, callback=callback)
+        if callback:
+            # Server progress signal so membership wait is entered for proven seeds.
+            out["post_click_transport"] = {
+                "ws_log_sample": [{"payload_text": authorized_rec_card_key}],
+                "streamlit_backmsg_sent": True,
+                "script_run_seq_changed": True,
+                "python_rerun_started": True,
+            }
+        out["playwright_only"] = playwright_only
+        return out
+
+    def membership_wait(_page, **kwargs):
+        state["membership_calls"] += 1
+        player = kwargs["player_name"]
+        before = list(kwargs.get("queue_before") or [])
+        after = before + [player]
+        state["queue"] = after
+        return {
+            "session_queue": list(after),
+            "canonical_queue": list(after),
+            "stale_baseline_rejected": True,
+            "accepted_post": {
+                "phase": "QUEUE_STATE_POST_MUTATION_ADDED",
+                "session_queue": list(after),
+                "canonical_queue": list(after),
+            },
+            "post_mutation_snapshot_observed": True,
+        }
+
+    def render_trace(_page, player_name=""):
+        for n, pid in roster:
+            if n == player_name:
+                return _trace(player_name=n, player_id=pid)
+        raise AssertionError(f"unexpected player {player_name}")
+
+    meta = seed_queue_distinct_players(
+        _FakePage(),
+        scrape_container_fn=lambda _p: {
+            "found": True,
+            "empty": not state["queue"],
+            "players": [{"name": n} for n in state["queue"]],
+            "excerpt": "Draft queue\n" + ("\n".join(state["queue"]) + "\n" if state["queue"] else ""),
+        },
+        min_players=3,
+        discover_fn=discover,
+        deliver_fn=deliver,
+        render_trace_fn=render_trace,
+        membership_wait_fn=membership_wait,
+        expected_room_id=C82_ROOM,
+        expected_pick_index=0,
+    )
+    assert state["deliveries"][0] == "Francisco Lindor"
+    assert state["deliveries"][1:] == ["Pete Alonso", "Juan Soto", "Mookie Betts"]
+    assert state["discovers"] >= 4  # rediscovery after each attempt
+    assert state["membership_calls"] == 3  # fail-fast skipped membership for click #1
+    assert meta.get("ok") is True
+    proven = [s for s in meta["seed_steps"] if s.get("mutation_proven")]
+    assert len(proven) == 3
+    assert [s["player_name"] for s in proven] == ["Pete Alonso", "Juan Soto", "Mookie Betts"]
+    assert all(
+        str((s.get("pre_click_record") or {}).get("player_id") or "").isdigit() for s in proven
+    )
+    fail_step = meta["seed_steps"][0]
+    assert fail_step.get("membership_skipped_fail_fast") is True
+    assert fail_step.get("delivery_authority") == DELIVERY_AUTHORITY_CLIENT_TRANSPORT_ONLY
+    assert state["queue"] == ["Pete Alonso", "Juan Soto", "Mookie Betts"]
+    # No display-name-only path: every proven step carries structured player_id.
+    for s in proven:
+        assert str((s.get("attempt_diagnostics") or {}).get("player_id") or "").isdigit()
 
 
 def test_historical_callback_and_post_success() -> None:

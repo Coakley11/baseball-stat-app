@@ -386,6 +386,14 @@ def queue_seed_unresolved_boundary(meta: dict[str, Any], *, min_players: int = 3
             name = str(step["player_name"]).strip()
             if name.lower() not in {n.lower() for n in proven_order}:
                 proven_order.append(name)
+    # Prefer the first precise delivery-authority failure over the generic click-count label.
+    # Production c50832d5: one transport-only click aborted the loop; outer reporting must not
+    # collapse that into insufficient_deliberate_seed_clicks alone.
+    for step in steps:
+        detail = step.get("delivery_authority_detail") if isinstance(step.get("delivery_authority_detail"), dict) else {}
+        boundary = str(detail.get("first_boundary") or step.get("classification") or "").strip()
+        if boundary.startswith("STAGE1_QUEUE_SEED_") or boundary.startswith("QUEUE1C"):
+            return boundary
     deliberate_clicks = sum(1 for s in steps if s.get("click_dispatched"))
     if deliberate_clicks < min_players:
         return "insufficient_deliberate_seed_clicks"
@@ -401,6 +409,72 @@ def queue_seed_unresolved_boundary(meta: dict[str, Any], *, min_players: int = 3
     if classified == QUEUE_SEED_RESOLVED:
         return "queue_seed_evidence_unresolved"
     return str(classified or "queue_seed_evidence_unresolved")
+
+
+def _post_click_server_progress(delivery: dict[str, Any] | None, step: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Detect whether a dispatched click produced any server-side progress signal.
+
+    Client transport alone is not progress. Missing progress => fail-fast before a long
+    membership wait (c50832d5 burned ~45s on stale baseline after transport-only click #1).
+    """
+    detail = dict(delivery or {})
+    transport = detail.get("post_click_transport") if isinstance(detail.get("post_click_transport"), dict) else {}
+    ack = detail.get("consumption_ack") if isinstance(detail.get("consumption_ack"), dict) else {}
+    if not transport and isinstance(ack.get("post_click_transport"), dict):
+        transport = dict(ack.get("post_click_transport") or {})
+    seq_changed = bool(transport.get("script_run_seq_changed"))
+    rerun_started = bool(transport.get("python_rerun_started"))
+    callback = (
+        callback_entry_observed_from_step(step)
+        if step is not None
+        else bool(ack.get("callback_entered_observed"))
+    )
+    return {
+        "script_run_seq_changed": seq_changed,
+        "python_rerun_started": rerun_started,
+        "callback_entry_observed": callback,
+        "server_progress": bool(seq_changed or rerun_started or callback),
+    }
+
+
+def _seed_attempt_diagnostics(
+    *,
+    attempt_number: int,
+    pick: dict[str, Any] | None,
+    queue_before: list[str],
+    queue_after: list[str] | None,
+    click_dispatched: bool,
+    delivery_authority: str,
+    rediscovery_control_count: int,
+    structured_eligible: int,
+    remaining_eligible: int,
+    elapsed_s: float,
+    deadline_remaining_s: float | None,
+    server_progress: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Per-attempt seed diagnostics (player_id is authority; name is human-readable only)."""
+    cand = dict(pick or {})
+    return {
+        "attempt_number": int(attempt_number),
+        "player_id": str(cand.get("player_id") or "").strip(),
+        "player_name": str(cand.get("player_name") or "").strip(),
+        "structured_identity_source": str(
+            cand.get("structured_identity_source") or cand.get("binding_via") or ""
+        ).strip(),
+        "locator_resolution_ok": bool(cand.get("player_id") and cand.get("player_name")),
+        "queue_before_count": len(list(queue_before or [])),
+        "queue_before": list(queue_before or []),
+        "click_dispatched": bool(click_dispatched),
+        "queue_after_count": (len(queue_after) if isinstance(queue_after, list) else None),
+        "queue_after": (list(queue_after) if isinstance(queue_after, list) else None),
+        "delivery_authority": str(delivery_authority or ""),
+        "rediscovery_control_count": int(rediscovery_control_count),
+        "structured_eligible": int(structured_eligible),
+        "remaining_eligible_after_exclusions": int(remaining_eligible),
+        "elapsed_s": float(elapsed_s),
+        "deadline_remaining_s": deadline_remaining_s,
+        "server_progress": dict(server_progress or {}),
+    }
 
 
 def apply_queue_seed_evidence(
@@ -1585,11 +1659,28 @@ def seed_queue_distinct_players(
 
     seed_steps: list[dict[str, Any]] = []
     queued_names: set[str] = set()
+    # Exclude players already clicked this seed session so a transport-only miss
+    # (c50832d5 click #1) does not spin forever on the same candidate.
+    attempted_names: set[str] = set()
     discovery_snapshots: list[dict[str, Any]] = []
     fail_classification = ""
     proven_order: list[str] = []
+    attempt_number = 0
+    max_attempts = max(int(min_players) * 4, 8)
+    try:
+        deadline_s = float(os.environ.get("STAGE1_QUEUE_SEED_DEADLINE_S") or "180")
+    except ValueError:
+        deadline_s = 180.0
+    seed_deadline_ts = t0 + max(deadline_s, 30.0)
 
     while len([s for s in seed_steps if s.get("mutation_proven")]) < min_players:
+        if time.time() >= seed_deadline_ts:
+            fail_classification = fail_classification or "seed_deadline_exhausted"
+            break
+        if attempt_number >= max_attempts:
+            fail_classification = fail_classification or "seed_attempt_budget_exhausted"
+            break
+        attempt_number += 1
         candidates = discover(page)
         traces: list[dict[str, Any]] = []
         try:
@@ -1635,6 +1726,7 @@ def seed_queue_distinct_players(
         discovery_snapshots.append(
             {
                 "ts": time.time(),
+                "attempt_number": attempt_number,
                 "control_count": len(candidates),
                 "named_unique": sum(
                     1 for c in candidates if c.get("binding_confidence") == "unique" and c.get("player_name")
@@ -1649,11 +1741,23 @@ def seed_queue_distinct_players(
                 "candidates": candidates[:10],
             }
         )
+        structured_eligible = int(discovery_snapshots[-1]["structured_eligible"])
+        exclude_names = {n.lower() for n in queued_names} | {n.lower() for n in attempted_names}
         pick, reject = select(
             candidates,
-            exclude_player_names=queued_names,
+            exclude_player_names=exclude_names,
             preferred_player_name=preferred_player,
         )
+        remaining_eligible = 0
+        for c in candidates:
+            if c.get("binding_confidence") != "unique":
+                continue
+            if not str(c.get("player_id") or "").strip().isdigit():
+                continue
+            name = str(c.get("player_name") or "").strip()
+            if not name or name.lower() in exclude_names:
+                continue
+            remaining_eligible += 1
         if not pick:
             if reject == "ambiguous_binding":
                 fail_classification = QUEUE1B
@@ -1808,9 +1912,72 @@ def seed_queue_distinct_players(
             step["mutation_proven"] = False
             step["mutation_observed"] = False
             step["elapsed_s"] = time.time() - float(step["started_ts"])
+            if player_name:
+                attempted_names.add(player_name.lower())
             seed_steps.append(step)
             fail_classification = STAGE1_QUEUE_SEED_WIDGET_CONSUMPTION_BOUNDARY
             break
+
+        if player_name:
+            attempted_names.add(player_name.lower())
+
+        # Early app-trace scrape + server-progress gate (fail-fast before long membership wait).
+        try:
+            from stage1_rec_queue_click_trace_scrape import merge_app_trace_into_step, scrape_rec_queue_app_trace
+
+            merge_app_trace_into_step(step, scrape_rec_queue_app_trace(page))
+        except ImportError:
+            pass
+        server_progress = _post_click_server_progress(delivery, step)
+        step["server_progress"] = server_progress
+        step["attempt_diagnostics"] = _seed_attempt_diagnostics(
+            attempt_number=attempt_number,
+            pick=pick,
+            queue_before=queue_before,
+            queue_after=None,
+            click_dispatched=True,
+            delivery_authority=DELIVERY_AUTHORITY_CLIENT_TRANSPORT_ONLY,
+            rediscovery_control_count=len(candidates),
+            structured_eligible=structured_eligible,
+            remaining_eligible=remaining_eligible,
+            elapsed_s=time.time() - t0,
+            deadline_remaining_s=max(0.0, seed_deadline_ts - time.time()),
+            server_progress=server_progress,
+        )
+        if not server_progress.get("server_progress"):
+            # c50832d5: transport-only click #1 → 45s stale baseline wait → abort before click #2.
+            # Fail-fast, record the precise boundary, rediscover, and continue attempting.
+            authority = evaluate_seed_delivery_authority(
+                click_dispatched=True,
+                client_widget_transport_emitted=True,
+                callback_entry_observed=False,
+                post_mutation_snapshot_observed=False,
+                membership_ok=False,
+                membership_failures=["server_progress_absent_fail_fast"],
+                post_no_add_observed=False,
+            )
+            step["callback_entry_observed"] = False
+            step["post_mutation_snapshot_observed"] = False
+            step["delivery_authority"] = authority["delivery_authority"]
+            step["delivery_authority_detail"] = authority
+            step["delivery_authority_summary"] = format_delivery_authority_summary(
+                authority, click_dispatched=True
+            )
+            step["classification"] = STAGE1_QUEUE_SEED_CLIENT_TRANSPORT_WITHOUT_CALLBACK_ENTRY
+            step["mutation_observed"] = False
+            step["mutation_proven"] = False
+            step["queue_after"] = None
+            step["queue_after_unavailable"] = True
+            step["membership_skipped_fail_fast"] = True
+            step["elapsed_s"] = time.time() - float(step["started_ts"])
+            step["attempt_diagnostics"]["delivery_authority"] = authority["delivery_authority"]
+            seed_steps.append(step)
+            fail_classification = STAGE1_QUEUE_SEED_CLIENT_TRANSPORT_WITHOUT_CALLBACK_ENTRY
+            try:
+                page.wait_for_timeout(300)
+            except Exception:
+                pass
+            continue
 
         click_ts = delivery.get("click_start_ts") or delivery.get("click_end_ts") or time.time()
         membership = prove_seed_membership_after_click(
@@ -1879,11 +2046,27 @@ def seed_queue_distinct_players(
         step["mutation_observed"] = bool(authority.get("seed_mutation_proven"))
         step["mutation_proven"] = bool(authority.get("seed_mutation_proven"))
         step["elapsed_s"] = time.time() - float(step["started_ts"])
+        step["attempt_diagnostics"] = _seed_attempt_diagnostics(
+            attempt_number=attempt_number,
+            pick=pick,
+            queue_before=queue_before,
+            queue_after=step.get("queue_after") if isinstance(step.get("queue_after"), list) else None,
+            click_dispatched=True,
+            delivery_authority=str(authority.get("delivery_authority") or ""),
+            rediscovery_control_count=len(candidates),
+            structured_eligible=structured_eligible,
+            remaining_eligible=remaining_eligible,
+            elapsed_s=time.time() - t0,
+            deadline_remaining_s=max(0.0, seed_deadline_ts - time.time()),
+            server_progress=server_progress,
+        )
         if not step["mutation_proven"]:
             boundary = str(authority.get("first_boundary") or STAGE1_QUEUE_SEED_MEMBERSHIP_BOUNDARY)
             step["classification"] = boundary
             seed_steps.append(step)
             fail_classification = boundary
+            # Only transport-without-callback continues (fail-fast path above). Other
+            # STAGE1_QUEUE_SEED_* membership/callback misses remain abortive for this seed run.
             break
         proven_order = list(step["queue_after"])
         queued_names.add(player_name.lower())
@@ -1929,6 +2112,14 @@ def seed_queue_distinct_players(
             "proven_queue_order_authoritative": list(proven_order),
         },
     )
-    if fail_classification and not meta.get("ok"):
-        meta["classification"] = fail_classification
+    if not meta.get("ok"):
+        unresolved = queue_seed_unresolved_boundary(meta, min_players=min_players)
+        # Prefer precise STAGE1_QUEUE_SEED_* / QUEUE1C* from steps over generic click-count
+        # labels and over late budget/deadline strings that overwrite the first failure.
+        if unresolved.startswith("STAGE1_QUEUE_SEED_") or unresolved.startswith("QUEUE1C"):
+            meta["classification"] = unresolved
+        elif fail_classification:
+            meta["classification"] = fail_classification
+        else:
+            meta["classification"] = unresolved
     return meta
