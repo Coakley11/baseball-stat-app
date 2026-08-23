@@ -33,8 +33,185 @@ STAGE1_QUEUE_SEED_WIDGET_CONSUMPTION_BOUNDARY = (
     "STAGE1_QUEUE_SEED_WIDGET_CONSUMPTION_BOUNDARY — click_dispatched without widget_consumption_ack"
 )
 STAGE1_QUEUE_SEED_MEMBERSHIP_BOUNDARY = (
-    "STAGE1_QUEUE_SEED_MEMBERSHIP_BOUNDARY — widget consumed but authoritative +1 membership not proven"
+    "STAGE1_QUEUE_SEED_MEMBERSHIP_BOUNDARY — post mutation snapshot present but authoritative +1 membership not proven"
 )
+
+
+STAGE1_QUEUE_SEED_CLIENT_TRANSPORT_WITHOUT_CALLBACK_ENTRY = (
+    "STAGE1_QUEUE_SEED_CLIENT_TRANSPORT_WITHOUT_CALLBACK_ENTRY — exact widget key in client transport without product callback-entry ledger"
+)
+STAGE1_QUEUE_SEED_CALLBACK_ENTERED_WITHOUT_POST_MUTATION_SNAPSHOT = (
+    "STAGE1_QUEUE_SEED_CALLBACK_ENTERED_WITHOUT_POST_MUTATION_SNAPSHOT — callback entry observed without QUEUE_STATE_POST_* snapshot"
+)
+STAGE1_QUEUE_SEED_POST_NO_ADD = (
+    "STAGE1_QUEUE_SEED_POST_NO_ADD — QUEUE_STATE_POST_NO_ADD observed; membership not added"
+)
+
+DELIVERY_AUTHORITY_NONE = "none"
+DELIVERY_AUTHORITY_CLIENT_TRANSPORT_ONLY = "client_transport_only"
+DELIVERY_AUTHORITY_CALLBACK_ENTRY = "callback_entry"
+DELIVERY_AUTHORITY_POST_MUTATION_SNAPSHOT = "post_mutation_snapshot"
+
+
+def callback_entry_observed_from_step(step: dict[str, Any] | None) -> bool:
+    """Product click-trace ledger authority only — never outbound WS key / seq."""
+    s = dict(step or {})
+    if s.get("callback_entry_observed") is True or s.get("app_callback_entered") is True:
+        return True
+    app_class = str(s.get("app_classification") or "").strip()
+    token = app_class.split(" ")[0] if app_class else ""
+    if token.startswith("QUEUE1C3D") or token in {"QUEUE1C3D", "QUEUE1C3E", "QUEUE1C3F"}:
+        return True
+    trace = s.get("app_queue_trace") if isinstance(s.get("app_queue_trace"), dict) else {}
+    payload = trace.get("payload") if isinstance(trace.get("payload"), dict) else {}
+    last = payload.get("last") if isinstance(payload.get("last"), dict) else {}
+    if last.get("callback_entered") and (last.get("event_id") or True):
+        return bool(last.get("callback_entered"))
+    ack = s.get("consumption_ack") if isinstance(s.get("consumption_ack"), dict) else {}
+    if ack.get("callback_entered_observed") is True:
+        return True
+    mapped = s.get("widget_consumption") if isinstance(s.get("widget_consumption"), dict) else {}
+    if mapped.get("callback_entered_observed") is True:
+        return True
+    return False
+
+
+def _post_phases_from_membership(membership: dict[str, Any] | None) -> list[str]:
+    m = dict(membership or {})
+    phases: list[str] = []
+    pw = m.get("post_wait") if isinstance(m.get("post_wait"), dict) else {}
+    accepted = pw.get("accepted_post")
+    if isinstance(accepted, dict) and accepted:
+        phases.append(str(accepted.get("phase") or ""))
+    for obs in list(pw.get("observations") or []):
+        if not isinstance(obs, dict):
+            continue
+        phases.append(str(obs.get("post_phase") or ""))
+        phases.append(str(obs.get("candidate_phase") or ""))
+    auth = m.get("authoritative_post") if isinstance(m.get("authoritative_post"), dict) else {}
+    snap = auth.get("snapshot") if isinstance(auth.get("snapshot"), dict) else auth
+    if isinstance(snap, dict):
+        phases.append(str(snap.get("phase") or ""))
+    if m.get("post_no_add_acknowledged") or pw.get("post_no_add_acknowledged"):
+        phases.append("QUEUE_STATE_POST_NO_ADD")
+    return [p for p in phases if p]
+
+
+def post_mutation_snapshot_observed_from_membership(membership: dict[str, Any] | None) -> bool:
+    """True when QUEUE_STATE_POST_* authority or injectable POST-selected queues exist."""
+    m = dict(membership or {})
+    if m.get("post_mutation_snapshot_observed") is True:
+        return True
+    pw = m.get("post_wait") if isinstance(m.get("post_wait"), dict) else {}
+    if pw.get("post_mutation_snapshot_observed") is True:
+        return True
+    accepted = pw.get("accepted_post")
+    if isinstance(accepted, dict) and accepted:
+        phase = str(accepted.get("phase") or "")
+        if "QUEUE_STATE_POST" in phase or "session_queue" in accepted or "canonical_queue" in accepted:
+            return True
+    for phase in _post_phases_from_membership(m):
+        if "QUEUE_STATE_POST" in phase:
+            return True
+    # Injectable membership_wait_fn path: list queues (incl. empty) mean POST-selected.
+    if m.get("session_after") is not None or m.get("canonical_after") is not None:
+        return True
+    return False
+
+
+def post_no_add_observed_from_membership(membership: dict[str, Any] | None) -> bool:
+    return any("POST_NO_ADD" in p for p in _post_phases_from_membership(membership))
+
+
+def evaluate_seed_delivery_authority(
+    *,
+    click_dispatched: bool,
+    client_widget_transport_emitted: bool,
+    callback_entry_observed: bool,
+    post_mutation_snapshot_observed: bool,
+    membership_ok: bool = False,
+    membership_failures: list[Any] | None = None,
+    post_no_add_observed: bool = False,
+) -> dict[str, Any]:
+    """Classify delivery authority ladder; weaker boundaries never masquerade as stronger."""
+    if post_mutation_snapshot_observed:
+        authority = DELIVERY_AUTHORITY_POST_MUTATION_SNAPSHOT
+    elif callback_entry_observed:
+        authority = DELIVERY_AUTHORITY_CALLBACK_ENTRY
+    elif client_widget_transport_emitted:
+        authority = DELIVERY_AUTHORITY_CLIENT_TRANSPORT_ONLY
+    else:
+        authority = DELIVERY_AUTHORITY_NONE
+
+    failures = [str(x) for x in list(membership_failures or [])]
+    first_boundary = ""
+    if not click_dispatched:
+        first_boundary = ""
+    elif not client_widget_transport_emitted:
+        first_boundary = STAGE1_QUEUE_SEED_WIDGET_CONSUMPTION_BOUNDARY
+    elif not post_mutation_snapshot_observed and not callback_entry_observed:
+        first_boundary = STAGE1_QUEUE_SEED_CLIENT_TRANSPORT_WITHOUT_CALLBACK_ENTRY
+    elif not post_mutation_snapshot_observed and callback_entry_observed:
+        first_boundary = STAGE1_QUEUE_SEED_CALLBACK_ENTERED_WITHOUT_POST_MUTATION_SNAPSHOT
+    elif post_mutation_snapshot_observed and not membership_ok:
+        if post_no_add_observed:
+            first_boundary = STAGE1_QUEUE_SEED_POST_NO_ADD
+        else:
+            first_boundary = STAGE1_QUEUE_SEED_MEMBERSHIP_BOUNDARY
+    else:
+        first_boundary = ""
+
+    return {
+        "delivery_authority": authority,
+        "first_boundary": first_boundary,
+        "client_widget_transport_emitted": bool(client_widget_transport_emitted),
+        "callback_entry_observed": bool(callback_entry_observed),
+        "post_mutation_snapshot_observed": bool(post_mutation_snapshot_observed),
+        "membership_proven": bool(membership_ok),
+        "seed_mutation_proven": bool(membership_ok and post_mutation_snapshot_observed),
+        "authoritative_queues_unavailable": "authoritative_queues_unavailable" in failures,
+        "membership_failures": failures,
+    }
+
+
+def format_delivery_authority_summary(
+    authority: dict[str, Any] | None,
+    *,
+    click_dispatched: bool = False,
+) -> str:
+    """Human-readable delivery ladder; never says 'widget consumed' for transport-only."""
+    a = dict(authority or {})
+    da = str(a.get("delivery_authority") or DELIVERY_AUTHORITY_NONE)
+    if not click_dispatched:
+        return "trusted click not dispatched"
+    if da == DELIVERY_AUTHORITY_CLIENT_TRANSPORT_ONLY:
+        return (
+            "trusted click dispatched; exact widget key emitted in client transport; "
+            "product callback entry not observed"
+        )
+    if da == DELIVERY_AUTHORITY_CALLBACK_ENTRY:
+        return (
+            "trusted click dispatched; client transport emitted; product callback entry "
+            "observed; post mutation snapshot not observed"
+        )
+    if da == DELIVERY_AUTHORITY_POST_MUTATION_SNAPSHOT:
+        if a.get("seed_mutation_proven"):
+            return (
+                "trusted click dispatched; callback/server path past transport; "
+                "post mutation snapshot observed; authoritative membership +1 proven"
+            )
+        if a.get("authoritative_queues_unavailable"):
+            return (
+                "post mutation snapshot observed but authoritative session/canonical "
+                "queues unavailable"
+            )
+        return (
+            "post mutation snapshot observed but authoritative membership +1 not proven"
+        )
+    if a.get("client_widget_transport_emitted"):
+        return "trusted click dispatched; client transport state indeterminate"
+    return "trusted click dispatched; exact widget key not observed in client transport"
+
 
 _REC_CARD_QUEUE_KEY = re.compile(
     r"^rec_card_queue_(?P<room>[A-Za-z0-9]+)_(?P<pick>\d+)_(?P<player_id>\d+)_rec_card$"
@@ -1074,20 +1251,39 @@ def authorize_seed_widget_identity(
 
 
 def map_widget_consumption_ack(delivery: dict[str, Any] | None) -> dict[str, Any]:
-    """Generic Stage1 semantic over shared Francisco-named consumption evaluator."""
+    """Map delivery ack fields; expose transport vs legacy consumption separately.
+
+    ``widget_consumption_ack`` remains for historical readers as legacy
+    transport-correlated ack. Current seed gating uses
+    ``client_widget_transport_emitted`` — never treats legacy ack as server proof.
+    """
     detail = dict(delivery or {})
     ack = detail.get("consumption_ack") if isinstance(detail.get("consumption_ack"), dict) else {}
-    widget_ack = bool(
+    click_dispatched = bool(detail.get("click_dispatched") or ack.get("click_dispatched"))
+    key_in_transport = bool(ack.get("expected_widget_key_present_in_transport"))
+    client_transport = bool(
+        ack.get("client_widget_transport_emitted")
+        or ack.get("widget_transport_ack")
+        or (click_dispatched and key_in_transport)
+    )
+    legacy_ack = bool(
         ack.get("francisco_widget_consumption_ack")
         or ack.get("widget_consumption_ack")
+        or ack.get("legacy_transport_correlated_ack")
         or ack.get("ok")
     )
-    click_dispatched = bool(detail.get("click_dispatched") or ack.get("click_dispatched"))
-    generic_only = bool(ack.get("generic_streamlit_traffic_observed")) and not widget_ack
+    generic_only = bool(ack.get("generic_streamlit_traffic_observed")) and not client_transport
     return {
         "click_dispatched": click_dispatched,
-        "widget_consumption_ack": widget_ack,
+        # Legacy field retained for historical reports (NOT server/callback proof).
+        "widget_consumption_ack": legacy_ack,
         "francisco_widget_consumption_ack": bool(ack.get("francisco_widget_consumption_ack")),
+        "legacy_transport_correlated_ack": legacy_ack,
+        "legacy_ack_proves_callback_entry": False,
+        "legacy_ack_proves_server_consumption": False,
+        "client_widget_transport_emitted": client_transport,
+        "widget_transport_ack": client_transport,
+        "callback_entered_observed": bool(ack.get("callback_entered_observed")),
         "authorized_rec_card_key": str(
             ack.get("authorized_rec_card_key") or detail.get("authorized_rec_card_key") or ""
         ),
@@ -1095,9 +1291,9 @@ def map_widget_consumption_ack(delivery: dict[str, Any] | None) -> dict[str, Any
         "generic_ws_satisfies_ack": False,
         "generic_only_traffic": generic_only,
         "classification": str(ack.get("classification") or ""),
-        "ok": bool(click_dispatched and widget_ack),
+        # Gate-oriented ok: click + client transport (not legacy consumption semantics).
+        "ok": bool(click_dispatched and client_transport),
     }
-
 
 def evaluate_seed_queue_membership_delta(
     *,
@@ -1566,7 +1762,10 @@ def seed_queue_distinct_players(
         step["live_reacquisition_probe"] = delivery.get("live_reacquisition_probe")
         ack_map = map_widget_consumption_ack(delivery)
         step["consumption_ack"] = delivery.get("consumption_ack")
+        # Legacy field retained for historical readers — NOT server/callback proof.
         step["widget_consumption_ack"] = bool(ack_map.get("widget_consumption_ack"))
+        step["client_widget_transport_emitted"] = bool(ack_map.get("client_widget_transport_emitted"))
+        step["widget_transport_ack"] = bool(ack_map.get("widget_transport_ack"))
         step["widget_consumption"] = ack_map
 
         pre_bind = step.get("pre_click_run_binding") if isinstance(step.get("pre_click_run_binding"), dict) else {}
@@ -1594,7 +1793,17 @@ def seed_queue_distinct_players(
             seed_steps.append(step)
             fail_classification = step["classification"]
             break
-        if not step["widget_consumption_ack"]:
+        if not step["client_widget_transport_emitted"]:
+            step["delivery_authority"] = DELIVERY_AUTHORITY_NONE
+            step["callback_entry_observed"] = False
+            step["post_mutation_snapshot_observed"] = False
+            step["delivery_authority_summary"] = format_delivery_authority_summary(
+                {
+                    "delivery_authority": DELIVERY_AUTHORITY_NONE,
+                    "client_widget_transport_emitted": False,
+                },
+                click_dispatched=True,
+            )
             step["classification"] = STAGE1_QUEUE_SEED_WIDGET_CONSUMPTION_BOUNDARY
             step["mutation_proven"] = False
             step["mutation_observed"] = False
@@ -1634,22 +1843,47 @@ def seed_queue_distinct_players(
         except ImportError:
             pass
         step["membership_proof"] = membership
-        step["queue_after"] = list(
-            membership.get("session_after")
-            or membership.get("canonical_after")
-            or mut.get("queue_after")
-            or []
-        )
+        # Never render unobserved post-state as [] / "still empty".
+        if membership.get("session_after") is not None:
+            step["queue_after"] = list(membership.get("session_after") or [])
+            step["queue_after_unavailable"] = False
+        elif membership.get("canonical_after") is not None:
+            step["queue_after"] = list(membership.get("canonical_after") or [])
+            step["queue_after_unavailable"] = False
+        else:
+            step["queue_after"] = None
+            step["queue_after_unavailable"] = True
         step["visible_confirmation"] = bool(mut.get("visible_confirmation"))
         step["structured_confirmation"] = bool(mut.get("structured_confirmation"))
-        step["mutation_observed"] = bool(membership.get("ok"))
-        step["mutation_proven"] = bool(membership.get("ok"))
         step["stale_baseline_rejected"] = bool(membership.get("stale_baseline_rejected"))
+        callback_obs = callback_entry_observed_from_step(step)
+        post_obs = post_mutation_snapshot_observed_from_membership(membership)
+        post_no_add = post_no_add_observed_from_membership(membership)
+        authority = evaluate_seed_delivery_authority(
+            click_dispatched=True,
+            client_widget_transport_emitted=bool(step.get("client_widget_transport_emitted")),
+            callback_entry_observed=callback_obs,
+            post_mutation_snapshot_observed=post_obs,
+            membership_ok=bool(membership.get("ok")),
+            membership_failures=list(membership.get("failures") or []),
+            post_no_add_observed=post_no_add,
+        )
+        step["callback_entry_observed"] = callback_obs
+        step["post_mutation_snapshot_observed"] = post_obs
+        step["delivery_authority"] = authority["delivery_authority"]
+        step["delivery_authority_detail"] = authority
+        step["delivery_authority_summary"] = format_delivery_authority_summary(
+            authority, click_dispatched=True
+        )
+        # Membership +1 only counts after POST authority.
+        step["mutation_observed"] = bool(authority.get("seed_mutation_proven"))
+        step["mutation_proven"] = bool(authority.get("seed_mutation_proven"))
         step["elapsed_s"] = time.time() - float(step["started_ts"])
         if not step["mutation_proven"]:
-            step["classification"] = STAGE1_QUEUE_SEED_MEMBERSHIP_BOUNDARY
+            boundary = str(authority.get("first_boundary") or STAGE1_QUEUE_SEED_MEMBERSHIP_BOUNDARY)
+            step["classification"] = boundary
             seed_steps.append(step)
-            fail_classification = STAGE1_QUEUE_SEED_MEMBERSHIP_BOUNDARY
+            fail_classification = boundary
             break
         proven_order = list(step["queue_after"])
         queued_names.add(player_name.lower())

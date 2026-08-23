@@ -65,11 +65,15 @@ def evaluate_francisco_native_click_consumption_ack(
     callback_entered_observed: bool = False,
     trusted_dom_click: bool = False,
 ) -> dict[str, Any]:
-    """Separate browser dispatch from Francisco-widget Streamlit consumption.
+    """Separate browser dispatch, client transport, and callback-entry authorities.
 
     ``click_dispatched`` alone never proves callback entry or membership mutation.
-    Generic ``native_widget_event_observed*`` / seq advance is supporting traffic only
-    unless the exact ``authorized_rec_card_key`` is correlated or callback entry is observed.
+    Exact ``authorized_rec_card_key`` in outbound WS samples proves *client transport
+    emission only* — never server/callback consumption.
+
+    Legacy ``francisco_widget_consumption_ack`` remains readable for historical
+    reports as a transport-correlated (or callback-OR) ack, but must not be used
+    as server/callback proof by current decision logic.
     """
     transport = dict(post_click_transport or {})
     widget_key = _norm(authorized_rec_card_key)
@@ -82,11 +86,15 @@ def evaluate_francisco_native_click_consumption_ack(
     seq_changed = bool(transport.get("script_run_seq_changed"))
     generic_traffic = bool(generic_native or seq_changed or transport.get("streamlit_backmsg_sent"))
     callback_obs = bool(callback_entered_observed)
+    # Client-transport signal: click + exact authorized key in outbound samples only.
+    client_transport = bool(click_dispatched and key_in_ws)
+    # Legacy OR formula (overstates consumption when key_in_ws alone is true).
     francisco_ack = bool(key_in_ws or callback_obs)
 
     if not click_dispatched:
         classification = _CLASS_NOT_DISPATCHED
-    elif francisco_ack:
+    elif client_transport or callback_obs:
+        # ACK_OK retained for historical readers; means transport and/or explicit callback signal.
         classification = _CLASS_ACK_OK
     else:
         classification = _CLASS_DISPATCH_NO_ACK
@@ -97,22 +105,29 @@ def evaluate_francisco_native_click_consumption_ack(
         "expected_widget_key": widget_key,
         "authorized_rec_card_key": widget_key,
         "expected_widget_key_present_in_transport": key_in_ws,
+        "client_widget_transport_emitted": client_transport,
+        "widget_transport_ack": client_transport,
         "generic_streamlit_traffic_observed": generic_traffic,
         "native_widget_event_observed_strict": bool(
             transport.get("native_widget_event_observed_strict")
         ),
         "script_run_seq_changed": seq_changed,
         "callback_entered_observed": callback_obs,
+        # Legacy transport-correlated ack (historical field; not server-consumption proof).
         "francisco_widget_consumption_ack": francisco_ack,
-        # Hard semantic fence — dispatch never implies these:
+        "legacy_transport_correlated_ack": francisco_ack,
+        "legacy_ack_proves_callback_entry": False,
+        "legacy_ack_proves_server_consumption": False,
+        # Hard semantic fence — dispatch / outbound key never imply these:
         "click_dispatch_alone_proves_callback": False,
         "click_dispatch_alone_proves_mutation": False,
+        "outbound_widget_key_alone_proves_callback": False,
         "callback_entered_from_dispatch_alone": False,
         "mutation_proven_from_dispatch_alone": False,
         "classification": classification,
+        # Legacy ok: retained for historical readers (transport OR callback).
         "ok": bool(click_dispatched and francisco_ack),
     }
-
 
 def evaluate_live_stbutton_target_binding(
     dom_inspection: dict[str, Any] | None,
@@ -330,7 +345,7 @@ def parity_replay_dispatch_once(
             trusted_dom_click=True,
         )
 
-    callback_entered = bool(ack.get("callback_entered_observed") or ack.get("francisco_widget_consumption_ack"))
+    callback_entered = bool(ack.get("callback_entered_observed"))
     # Membership still requires POST authority elsewhere — never from dispatch alone.
     mutation_proven = bool(ack.get("mutation_proven")) if "mutation_proven" in ack else False
 
