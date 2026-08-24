@@ -90,7 +90,9 @@ def rec_fragment_interactive_steady(lifecycle: dict[str, Any]) -> bool:
     if hpd not in ("1", "true"):
         return False
     via = str(lifecycle.get("paint_via_probe") or "").strip()
-    return via == "fragment_interactive_live"
+    # CASE_II fix: interactive Add-to-Queue lives on ScriptRun (full_page_interactive_live).
+    # fragment_interactive_live remains accepted for transitional/legacy probes.
+    return via in ("full_page_interactive_live", "fragment_interactive_live")
 
 
 def wait_for_rec_fragment_interactive_steady_state(
@@ -275,7 +277,7 @@ def click_francisco_add_to_queue(
     lifecycle_live = str(lifecycle.get("widget_liveness") or "") == "live_this_run"
     lifecycle_heavy_done = str(lifecycle.get("heavy_paint_done") or "").strip().lower() in ("1", "true")
     paint_via = str(lifecycle.get("paint_via_francisco") or lifecycle.get("paint_via_probe") or "")
-    if paint_via != "fragment_interactive_live":
+    if paint_via not in ("full_page_interactive_live", "fragment_interactive_live"):
         out["classification"] = "ABORTED_FRANCISCO_NOT_FRAGMENT_INTERACTIVE_LIVE"
         out["click_dispatched"] = False
         return out

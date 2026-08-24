@@ -136,7 +136,8 @@ def main() -> int:
         _check(
             "lifecycle_heavy_reemit_after_heavy_paint",
             "_reemit_fragment_diagnostics" in heavy_src
-            and "fragment_interactive_live" in heavy_src
+            and "full_page_interactive_live" in heavy_src
+            and "script_run_no_run_every" in heavy_src
             and "HEAVY_PAINT_DONE_KEY" in heavy_src,
         )
     )

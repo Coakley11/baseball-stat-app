@@ -37,8 +37,8 @@ def render_deferred_heavy_paint_fragment(
     """Defer expensive recommendation paint; keep interactive widgets on a live render path.
 
     ``paint_body`` runs once for heavy compute + initial paint. After ``HEAVY_PAINT_DONE_KEY``,
-    ``paint_interactive`` runs on each applicable fragment/full-page pass so ``st.button`` widgets
-    stay registered for callbacks (F4 fix).
+    ``paint_interactive`` runs on the owning ScriptRun (not under ``run_every``) so ``st.button``
+    widgets stay registered for callbacks without timer remount races (F4 + CASE_II fix).
     """
     def _reemit_rec_queue_render_trace() -> None:
         try:
@@ -97,7 +97,8 @@ def render_deferred_heavy_paint_fragment(
 
     def _heavy_paint_fragment() -> None:
         if session.get(HEAVY_PAINT_DONE_KEY):
-            _invoke_paint_interactive(via="fragment_interactive_live")
+            # Do not re-register Add-to-Queue under run_every — ScriptRun owns them
+            # after HEAVY_PAINT_DONE_KEY (see outer branch below). Diagnostics only.
             _reemit_fragment_diagnostics()
             return
         note_heavy_fragment_mount(session, phase="tick")
@@ -120,14 +121,19 @@ def render_deferred_heavy_paint_fragment(
         _invoke_paint_body(via="fragment")
         session[HEAVY_PAINT_DONE_KEY] = True
         note_start_stage(session, "heavy_content_rendered", via="fragment")
+        # Hand interactive ownership to the next ScriptRun (outer DONE branch).
+        session["_live_draft_rec_queue_interactive_owner"] = "pending_script_run_handoff"
 
     if session.get(HEAVY_PAINT_DONE_KEY):
-        if fragment is None:
-            _invoke_paint_interactive(via="full_page_interactive_live")
-            _reemit_fragment_diagnostics()
-            return
-        note_heavy_fragment_mount(session, phase="mount")
-        fragment(run_every=1)(_heavy_paint_fragment)()
+        # After first heavy paint, Add-to-Queue must register on the owning ScriptRun.
+        # Keeping these buttons under fragment(run_every=1) remounts them every second:
+        # the browser can still emit the widget key (WS transport) while Streamlit never
+        # dispatches on_click — FRAGMENT_MATRIX_CASE_II / production c50733b1 (0/3 callbacks).
+        # Timer refresh stays in dedicated timer/heartbeat fragments, not this surface.
+        note_heavy_fragment_mount(session, phase="interactive_script_run")
+        _invoke_paint_interactive(via="full_page_interactive_live")
+        _reemit_fragment_diagnostics()
+        session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
         return
 
     defer = should_defer_heavy_first_paint(session)

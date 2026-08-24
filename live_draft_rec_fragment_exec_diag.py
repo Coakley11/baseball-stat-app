@@ -137,6 +137,13 @@ def record_rec_queue_callback_entry(
         "recommendation_fragment_run_seq": recommendation_fragment_run_seq(session),
         "streamlit_session_id": _streamlit_session_id(),
         "queue_before_mutation": list(queue_before)[:20],
+        "interactive_owner": str(session.get("_live_draft_rec_queue_interactive_owner") or "").strip(),
+        "paint_via": str(
+            (session.get("_solo_stage1_last_recommendation_paint") or {}).get("via") or ""
+        ).strip()
+        if isinstance(session.get("_solo_stage1_last_recommendation_paint"), dict)
+        else "",
+        "callback_registered_expected": True,
     }
     append_fragment_callback_ledger(session, row)
 

@@ -83,6 +83,11 @@ def note_rec_queue_widget_button_rendered(session: dict[str, Any], *, widget_key
     now = time.time()
     seq = _script_run_seq(session)
     prev = dict(reg.get(wk) or {})
+    owner = str(session.get("_live_draft_rec_queue_interactive_owner") or "").strip()
+    paint = session.get("_solo_stage1_last_recommendation_paint")
+    paint_via = ""
+    if isinstance(paint, dict):
+        paint_via = str(paint.get("via") or "").strip()
     reg[wk] = {
         **prev,
         "widget_key": wk,
@@ -93,6 +98,10 @@ def note_rec_queue_widget_button_rendered(session: dict[str, Any], *, widget_key
         "probe_source": "actual_card_render",
         "current_script_run_seq_at_render": seq,
         "heavy_paint_done_at_render": _heavy_paint_done(session),
+        "interactive_owner": owner,
+        "paint_via_at_render": paint_via,
+        "callback_id": REC_QUEUE_CALLBACK_ID,
+        "server_registered": True,
     }
     session["_live_draft_rec_queue_render_trace_last_lifecycle"] = dict(reg[wk])
 

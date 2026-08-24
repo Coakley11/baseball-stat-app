@@ -351,7 +351,8 @@ def main() -> int:
             probe_ledger = bool(probe_step.get("ledger_dom_observable"))
             if (
                 steady.get("ok")
-                and str(steady_lifecycle.get("paint_via_probe") or "") == "fragment_interactive_live"
+                and str(steady_lifecycle.get("paint_via_probe") or "")
+                in ("full_page_interactive_live", "fragment_interactive_live")
                 and probe_trusted
                 and probe_ledger
                 and not probe_step.get("callback_entered")

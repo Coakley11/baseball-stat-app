@@ -56,22 +56,55 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
         )
         self.assertIn("full_page_interactive_live", via_log)
 
-    def test_heavy_done_with_fragment_invokes_interactive_inside_fragment_not_full_page(self) -> None:
+    def test_heavy_done_does_not_mount_run_every_fragment_for_interactive_widgets(self) -> None:
+        """CASE_II: after heavy paint, Add-to-Queue must not live under fragment(run_every=1)."""
         st = MagicMock()
-        fragment_calls: list[str] = []
+        fragment_kwargs: list[dict[str, Any]] = []
+        fragment_invocations = {"n": 0}
 
         def _fragment_decorator(**kwargs):
+            fragment_kwargs.append(dict(kwargs))
+
             def _wrap(fn):
                 def _run():
-                    fragment_calls.append("run")
+                    fragment_invocations["n"] += 1
                     fn()
 
-                st._heavy_frag_fn = _run
                 return _run
 
             return _wrap
 
         st.fragment = _fragment_decorator
+        session: dict[str, Any] = {HEAVY_PAINT_DONE_KEY: True}
+        via_log: list[str] = []
+        interactive = {"n": 0}
+
+        def paint_interactive() -> None:
+            interactive["n"] += 1
+
+        with patch("live_draft_fast_solo_start.should_defer_heavy_first_paint", return_value=False):
+            with patch("live_draft_fast_solo_start.note_start_stage"):
+                with patch(
+                    "live_draft_rec_fragment_exec_diag.enter_recommendation_paint_invocation",
+                    side_effect=lambda session, st, via="": via_log.append(str(via)),
+                ):
+                    render_deferred_heavy_paint_fragment(
+                        st,
+                        session,
+                        lambda: None,
+                        paint_interactive=paint_interactive,
+                    )
+        self.assertEqual(interactive["n"], 1)
+        self.assertIn("full_page_interactive_live", via_log)
+        self.assertNotIn("fragment_interactive_live", via_log)
+        self.assertEqual(fragment_kwargs, [], "must not mount fragment(run_every=…) after heavy paint")
+        self.assertEqual(fragment_invocations["n"], 0)
+        self.assertEqual(session.get("_live_draft_rec_queue_interactive_owner"), "script_run_no_run_every")
+
+    def test_heavy_done_with_fragment_api_still_registers_on_script_run(self) -> None:
+        """Even when st.fragment exists, post-done interactive path stays on ScriptRun."""
+        st = MagicMock()
+        st.fragment = MagicMock(side_effect=AssertionError("run_every fragment must not be used after done"))
         session: dict[str, Any] = {HEAVY_PAINT_DONE_KEY: True}
         via_log: list[str] = []
 
@@ -90,13 +123,11 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
                         lambda: None,
                         paint_interactive=paint_interactive,
                     )
-        self.assertIn("fragment_interactive_live", via_log)
-        self.assertNotIn("full_page_interactive_live", via_log)
-        self.assertGreaterEqual(len(fragment_calls), 1)
+        self.assertIn("full_page_interactive_live", via_log)
+        st.fragment.assert_not_called()
 
-    def test_first_fragment_paint_runs_expensive_once_then_interactive_on_later_tick(self) -> None:
+    def test_first_fragment_paint_runs_expensive_once_then_interactive_on_script_run(self) -> None:
         st = MagicMock()
-        fragment = MagicMock()
 
         def _fragment_decorator(**kwargs):
             def _wrap(fn):
@@ -112,7 +143,6 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
 
         def paint_body() -> None:
             expensive["n"] += 1
-            session[HEAVY_PAINT_DONE_KEY] = True
 
         def paint_interactive() -> None:
             interactive["n"] += 1
@@ -136,7 +166,25 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
                     if hasattr(st, "_heavy_frag_fn"):
                         st._heavy_frag_fn()
         self.assertEqual(expensive["n"], 1)
+        self.assertEqual(
+            interactive["n"],
+            0,
+            "post-done fragment ticks must not re-register Add-to-Queue under run_every",
+        )
+        self.assertTrue(session.get(HEAVY_PAINT_DONE_KEY))
+        self.assertEqual(session.get("_live_draft_rec_queue_interactive_owner"), "pending_script_run_handoff")
+
+        with patch("live_draft_fast_solo_start.should_defer_heavy_first_paint", return_value=False):
+            with patch("live_draft_fast_solo_start.note_start_stage"):
+                render_deferred_heavy_paint_fragment(
+                    st,
+                    session,
+                    paint_body,
+                    paint_interactive=paint_interactive,
+                )
+        self.assertEqual(expensive["n"], 1)
         self.assertGreaterEqual(interactive["n"], 1)
+        self.assertEqual(session.get("_live_draft_rec_queue_interactive_owner"), "script_run_no_run_every")
 
     def test_render_rec_interactive_uses_prepared_cache_not_empty(self) -> None:
         import pandas as pd
