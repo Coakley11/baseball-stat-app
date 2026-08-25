@@ -83,6 +83,7 @@ def capture_streamlit_click_transport(
         after_out,
         pre_script_run_seq=str(pre_script_run_seq or ""),
         post_script_run_seq=str(post_script_run_seq or ""),
+        expected_widget_key=str(expected_widget_id or ""),
     )
 
     strict: dict[str, Any] = {}
@@ -95,6 +96,16 @@ def capture_streamlit_click_transport(
             relaxed_ws_sample=after_out,
             expected_widget_id=str(expected_widget_id or ""),
         )
+
+    # Protobuf trigger authority upgrades heuristic strict (component_value_hint + wrong hook key).
+    if strict.get("target_trigger_backmsg_seen") or (
+        expected_widget_id
+        and strict.get("activated_widget_state_present")
+        and any(str(expected_widget_id) in str(i) for i in (strict.get("activated_widget_ids") or []))
+    ):
+        classified["native_widget_event_observed_strict"] = True
+        classified["native_widget_event_observed"] = True
+        classified["protobuf_target_trigger_observed"] = True
 
     backmsg: bool | None
     if strict:

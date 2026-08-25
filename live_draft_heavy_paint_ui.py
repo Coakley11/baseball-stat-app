@@ -72,16 +72,29 @@ def render_deferred_heavy_paint_fragment(
             pass
         paint_body()
 
-    def _invoke_paint_interactive(*, via: str) -> None:
+    def _invoke_paint_interactive(*, via: str) -> bool:
         if paint_interactive is None:
-            return
+            session["_live_draft_rec_interactive_invoke"] = {
+                "via": via,
+                "ok": False,
+                "fail_reason": "paint_interactive_none",
+            }
+            return False
         try:
             from live_draft_rec_fragment_exec_diag import enter_recommendation_paint_invocation
 
             enter_recommendation_paint_invocation(session, st, via=via)
         except ImportError:
             pass
-        paint_interactive()
+        result = paint_interactive()
+        ok = True if result is None else bool(result)
+        session["_live_draft_rec_interactive_invoke"] = {
+            "via": via,
+            "ok": ok,
+            "fail_reason": "" if ok else "paint_interactive_returned_false",
+            "status": dict(session.get("_live_draft_rec_interactive_paint_status") or {}),
+        }
+        return ok
 
     try:
         from live_draft_fast_solo_start import (
@@ -143,7 +156,16 @@ def render_deferred_heavy_paint_fragment(
         # pending owner label because finalization previously ran after registration).
         note_heavy_fragment_mount(session, phase="interactive_script_run")
         session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
-        _invoke_paint_interactive(via="full_page_interactive_live")
+        painted = _invoke_paint_interactive(via="full_page_interactive_live")
+        if not painted:
+            # Consuming full rerun after trigger must still instantiate buttons. If the
+            # interactive path cannot paint (cache cleared while DONE), re-run paint_body
+            # once to restore prepared+cache, then register widgets again.
+            session["_live_draft_rec_interactive_fallback_paint_body"] = True
+            _invoke_paint_body(via="full_page_interactive_fallback")
+            session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
+            painted = _invoke_paint_interactive(via="full_page_interactive_live_after_fallback")
+            session["_live_draft_rec_interactive_fallback_ok"] = bool(painted)
         _reemit_fragment_diagnostics()
         return
 

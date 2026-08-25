@@ -2131,6 +2131,24 @@ def render_live_draft_rec_cards(
                         **_queue_help,
                     )
                     try:
+                        from live_draft_rec_button_consumption_diag import (
+                            note_rec_queue_button_consumption,
+                        )
+
+                        note_rec_queue_button_consumption(
+                            st,
+                            session,
+                            widget_key=queue_widget_key,
+                            player_id=player_id,
+                            player_name=name,
+                            room_id=room_id,
+                            pick_index=pick_idx,
+                            button_return_value=bool(_rec_queue_clicked),
+                            phase="post_button",
+                        )
+                    except ImportError:
+                        pass
+                    try:
                         from live_draft_rec_queue_click_trace import (
                             note_rec_queue_dispatch_layer,
                             note_rec_queue_widget_button_rendered,

@@ -755,6 +755,7 @@ def scrape_click_transport_evidence(
     pre_script_run_seq: str = "",
     pre_run_binding: dict[str, Any] | None = None,
     frame_url_hint: str = "",
+    expected_widget_key: str = "",
 ) -> dict[str, Any]:
     try:
         from stage1_native_widget_transport import scrape_native_widget_transport_evidence
@@ -765,29 +766,46 @@ def scrape_click_transport_evidence(
             pre_script_run_seq=pre_script_run_seq,
             pre_run_binding=pre_run_binding,
             frame_url_hint=frame_url_hint,
+            expected_widget_key=expected_widget_key,
         )
     except ImportError:
         pass
     try:
         from p8_proven_start_delivery import aggregate_ws_boundary_log
+        from stage1_native_widget_transport import classify_transport_from_ws_samples
 
         raw_log = aggregate_ws_boundary_log(page)
         outbound = [e for e in raw_log if isinstance(e, dict) and e.get("direction") == "outbound"]
         after = [e for e in outbound if float(e.get("wall_ts_ms") or 0) >= (click_ts * 1000.0 - 50.0)]
-        backmsg_sent = False
-        for entry in after[:16]:
-            hint = str(entry.get("frame_type_hint") or "").lower()
-            if hint == "widget_state_backmsg_hint" or entry.get("widget_key_bytes_present"):
-                backmsg_sent = True
-        return {
-            "outbound_frames_after_click": len(after),
-            "streamlit_backmsg_sent": backmsg_sent,
-            "python_rerun_started": False,
-            "native_widget_event_observed": backmsg_sent,
-            "ws_log_sample": after[:5],
-        }
+        return classify_transport_from_ws_samples(
+            after,
+            expected_widget_key=expected_widget_key,
+        )
     except Exception as exc:
         return {"error": str(exc)[:160]}
+
+
+def _set_ws_correlation_widget_key(page, widget_key: str) -> None:
+    """Point the in-page WS hook at the Add-to-Queue key (not solo countdown default)."""
+    key = str(widget_key or "").strip()
+    if not key:
+        return
+    try:
+        from p8_boundary_instrumentation import WebSocketBoundaryCapture
+
+        WebSocketBoundaryCapture().set_page_correlation_meta(
+            page,
+            expected_token="",
+            widget_key=key,
+        )
+    except Exception:
+        try:
+            page.evaluate(
+                """(m) => { window.__p8WsCorrelationMeta = Object.assign(window.__p8WsCorrelationMeta || {}, m); }""",
+                {"widget_key": key},
+            )
+        except Exception:
+            pass
 
 
 def scrape_streamlit_identity(page) -> dict[str, Any]:
@@ -930,10 +948,11 @@ def deliver_add_to_queue_click(
             out["dom_capture_observability_failed"] = True
         out["post_click_transport"] = scrape_click_transport_evidence(
             page,
-            click_ts=float(out.get("click_start_ts") or out["click_end_ts"]),
+            click_ts=float(out.get("click_end_ts") or out.get("click_start_ts") or 0.0),
             pre_script_run_seq=pre_seq,
             pre_run_binding=pre_binding if isinstance(pre_binding, dict) else None,
             frame_url_hint=str(candidate.get("frameUrl") or ""),
+            expected_widget_key=expected_key,
         )
         if out.get("dom_capture_observability_failed"):
             out["post_click_transport"]["dom_capture_observability_failed"] = True
@@ -1055,6 +1074,7 @@ def deliver_add_to_queue_click(
             return out
         out["click_start_ts"] = time.time()
         out["live_reacquired_before_click"] = True
+        _set_ws_correlation_widget_key(page, expected_key)
         btn.scroll_into_view_if_needed(timeout=pw_timeout)
         page.wait_for_timeout(350)
         try:
@@ -1174,7 +1194,11 @@ def deliver_add_to_queue_click(
             out["click_dispatched"] = True
             out["delivery_method"] = str(js.get("method") or "js_bound_exact_element")
             out["js_delivery"] = js
-            out["post_click_transport"] = scrape_click_transport_evidence(page, click_ts=float(out["click_end_ts"]))
+            out["post_click_transport"] = scrape_click_transport_evidence(
+                page,
+                click_ts=float(out["click_end_ts"]),
+                expected_widget_key=expected_key,
+            )
             out["streamlit_identity_after"] = scrape_streamlit_identity(page)
             return out
         out["js_delivery"] = js

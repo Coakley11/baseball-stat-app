@@ -65,6 +65,28 @@ def _frame_fragment_id(row: dict[str, Any]) -> str:
     return str(cs.get("fragment_id") or "").strip()
 
 
+def widget_id_matches_expected(widget_id: str, expected_widget_id: str) -> bool:
+    """Match full ``$$ID-hash-user_key`` or the Python ``key=`` / user-key suffix alone.
+
+    Streamlit wire IDs are ``$$ID-<hash>-<user_key>``. Stage1 often only knows ``user_key``
+    (e.g. ``rec_card_queue_<room>_<pick>_<player>_rec_card``). Exact equality still works
+    when the caller passes the full wire id.
+    """
+    got = str(widget_id or "").strip()
+    want = str(expected_widget_id or "").strip()
+    if not got or not want:
+        return False
+    if got == want:
+        return True
+    if got.endswith("-" + want) or got.endswith(want):
+        return True
+    # Accept want that is already a suffix of a $$ID- form without requiring leading dash
+    # when want itself starts with $$ID- (handled by equality above) or is a bare key.
+    if want.startswith("$$ID-") and want in got:
+        return True
+    return False
+
+
 def _frame_has_expected_trigger(row: dict[str, Any], expected_widget_id: str) -> bool:
     want = str(expected_widget_id or "").strip()
     if not want:
@@ -75,7 +97,7 @@ def _frame_has_expected_trigger(row: dict[str, Any], expected_widget_id: str) ->
     for ws in dec.get("widget_states") or []:
         if not isinstance(ws, dict):
             continue
-        if str(ws.get("id") or "").strip() == want and ws.get("trigger_value") is True:
+        if widget_id_matches_expected(str(ws.get("id") or ""), want) and ws.get("trigger_value") is True:
             return True
     return False
 
@@ -88,7 +110,7 @@ def _target_widget_state(row: dict[str, Any], expected_widget_id: str) -> dict[s
     for ws in dec.get("widget_states") or []:
         if not isinstance(ws, dict):
             continue
-        if str(ws.get("id") or "").strip() == want and ws.get("trigger_value") is True:
+        if widget_id_matches_expected(str(ws.get("id") or ""), want) and ws.get("trigger_value") is True:
             return dict(ws)
     return None
 

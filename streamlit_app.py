@@ -27274,19 +27274,21 @@ elif active_page == "Live Draft Room":
                                                 key_suffix="live",
                                             )
 
-                def _paint_live_recommendation_interactive_only() -> None:
+                def _paint_live_recommendation_interactive_only() -> bool:
                     try:
                         from live_draft_rec_live_paint import render_rec_interactive_widgets
 
-                        render_rec_interactive_widgets(
-                            st,
-                            st.session_state,
-                            room,
-                            fmt_rate_4=fmt_rate_4,
-                            fmt_int=fmt_int,
+                        return bool(
+                            render_rec_interactive_widgets(
+                                st,
+                                st.session_state,
+                                room,
+                                fmt_rate_4=fmt_rate_4,
+                                fmt_int=fmt_int,
+                            )
                         )
                     except ImportError:
-                        pass
+                        return False
 
                 try:
                     from live_draft_heavy_paint_ui import render_deferred_heavy_paint_fragment
