@@ -86,14 +86,39 @@ def render_deferred_heavy_paint_fragment(
             enter_recommendation_paint_invocation(session, st, via=via)
         except ImportError:
             pass
-        result = paint_interactive()
-        ok = True if result is None else bool(result)
+        try:
+            from live_draft_rec_live_paint import note_rec_run_stage
+
+            note_rec_run_stage(session, "interactive_invoke_enter", via=via)
+        except ImportError:
+            pass
+        try:
+            result = paint_interactive()
+            ok = True if result is None else bool(result)
+            fail_reason = "" if ok else "paint_interactive_returned_false"
+        except Exception as exc:
+            ok = False
+            fail_reason = f"paint_interactive_exception:{type(exc).__name__}"
+            session["_live_draft_rec_interactive_invoke_error"] = f"{type(exc).__name__}: {exc}"[:240]
+            result = False
         session["_live_draft_rec_interactive_invoke"] = {
             "via": via,
             "ok": ok,
-            "fail_reason": "" if ok else "paint_interactive_returned_false",
+            "fail_reason": fail_reason,
             "status": dict(session.get("_live_draft_rec_interactive_paint_status") or {}),
         }
+        try:
+            from live_draft_rec_live_paint import note_rec_run_stage
+
+            note_rec_run_stage(
+                session,
+                "interactive_invoke_exit",
+                via=via,
+                ok=ok,
+                fail_reason=fail_reason,
+            )
+        except ImportError:
+            pass
         return ok
 
     try:
@@ -156,16 +181,41 @@ def render_deferred_heavy_paint_fragment(
         # pending owner label because finalization previously ran after registration).
         note_heavy_fragment_mount(session, phase="interactive_script_run")
         session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
+        # Recovery + st.button registration must complete on THIS ScriptRun.
+        # Never st.rerun() here — an extra run discards the incoming trigger_value.
         painted = _invoke_paint_interactive(via="full_page_interactive_live")
         if not painted:
             # Consuming full rerun after trigger must still instantiate buttons. If the
             # interactive path cannot paint (cache cleared while DONE), re-run paint_body
-            # once to restore prepared+cache, then register widgets again.
+            # once to restore prepared+cache, then register widgets again — same run.
             session["_live_draft_rec_interactive_fallback_paint_body"] = True
-            _invoke_paint_body(via="full_page_interactive_fallback")
+            try:
+                from live_draft_rec_live_paint import note_rec_run_stage
+
+                note_rec_run_stage(session, "fallback_started")
+            except ImportError:
+                pass
+            try:
+                _invoke_paint_body(via="full_page_interactive_fallback")
+                session["_live_draft_rec_interactive_fallback_body_ok"] = True
+            except Exception as exc:
+                session["_live_draft_rec_interactive_fallback_body_ok"] = False
+                session["_live_draft_rec_interactive_fallback_body_error"] = (
+                    f"{type(exc).__name__}: {exc}"[:240]
+                )
             session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
             painted = _invoke_paint_interactive(via="full_page_interactive_live_after_fallback")
             session["_live_draft_rec_interactive_fallback_ok"] = bool(painted)
+            try:
+                from live_draft_rec_live_paint import note_rec_run_stage
+
+                note_rec_run_stage(
+                    session,
+                    "fallback_succeeded" if painted else "fallback_failed",
+                    painted=bool(painted),
+                )
+            except ImportError:
+                pass
         _reemit_fragment_diagnostics()
         return
 

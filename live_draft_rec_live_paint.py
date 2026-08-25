@@ -8,6 +8,20 @@ from typing import Any
 PREPARED_REC_INTERACTIVE_KEY = "_live_draft_rec_interactive_paint_v1"
 HEAVY_REC_COMPUTE_DONE_KEY = "_live_draft_heavy_rec_compute_done"
 INTERACTIVE_PAINT_STATUS_KEY = "_live_draft_rec_interactive_paint_status"
+# Survives REC_CACHE invalidation so the consuming ScriptRun can re-register st.button
+# without waiting for a second rerun (production 19ea13e / 31f2a299: lifecycle stuck at 21).
+INTERACTIVE_TOP_REC_SNAPSHOT_KEY = "_live_draft_rec_interactive_top_rec_snapshot"
+RUN_STAGE_LEDGER_KEY = "_live_draft_rec_run_stage_ledger"
+
+
+def note_rec_run_stage(session: dict[str, Any], stage: str, **extra: Any) -> None:
+    """Append a narrow per-ScriptRun stage marker for consumption forensics."""
+    seq = int(session.get("_solo_stage1_script_run_seq") or session.get("_live_draft_cloud_diag_run_seq") or 0)
+    row = {"ts": time.time(), "run_seq": seq, "stage": str(stage), **extra}
+    log = list(session.get(RUN_STAGE_LEDGER_KEY) or [])
+    log.append(row)
+    session[RUN_STAGE_LEDGER_KEY] = log[-80:]
+    session["_live_draft_rec_run_stage_last"] = row
 
 
 def store_prepared_rec_interactive(
@@ -27,6 +41,26 @@ def store_prepared_rec_interactive(
         "max_cards": int(max_cards),
         "multiplayer": bool(multiplayer),
         "prepared_ts": time.time(),
+    }
+
+
+def store_interactive_top_rec_snapshot(
+    session: dict[str, Any],
+    top_rec: Any,
+    *,
+    room_id: str,
+) -> None:
+    """Keep last-good recommendation rows for same-run button re-registration after cache clear."""
+    if top_rec is None or getattr(top_rec, "empty", True):
+        return
+    try:
+        snap_df = top_rec.copy()
+    except Exception:
+        snap_df = top_rec
+    session[INTERACTIVE_TOP_REC_SNAPSHOT_KEY] = {
+        "room_id": str(room_id or "").strip(),
+        "top_rec": snap_df,
+        "snap_ts": time.time(),
     }
 
 
@@ -50,6 +84,40 @@ def _top_rec_from_cache(session: dict[str, Any]) -> Any:
     return None
 
 
+def _top_rec_from_snapshot(session: dict[str, Any], room: dict[str, Any]) -> Any:
+    snap = session.get(INTERACTIVE_TOP_REC_SNAPSHOT_KEY)
+    if not isinstance(snap, dict):
+        return None
+    rid = str(room.get("draft_room_id") or "").strip()
+    snap_rid = str(snap.get("room_id") or "").strip()
+    if rid and snap_rid and snap_rid != rid:
+        return None
+    return snap.get("top_rec")
+
+
+def _republish_top_rec_into_cache(session: dict[str, Any], room: dict[str, Any], top_rec: Any) -> None:
+    """Ensure REC_CACHE_KEY is populated from snapshot/rebuild so later paint_body defer paths see rows."""
+    if top_rec is None or getattr(top_rec, "empty", True):
+        return
+    try:
+        from live_draft_ui_cache import REC_CACHE_KEY
+
+        entry = session.get(REC_CACHE_KEY)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry = dict(entry)
+        entry["top_rec"] = top_rec
+        entry["restored_for_interactive"] = True
+        entry["restored_ts"] = time.time()
+        session[REC_CACHE_KEY] = entry
+    except ImportError:
+        session["_live_draft_rec_cache"] = {
+            "top_rec": top_rec,
+            "restored_for_interactive": True,
+            "restored_ts": time.time(),
+        }
+
+
 def _rebuild_top_rec_into_cache(
     session: dict[str, Any],
     room: dict[str, Any],
@@ -61,6 +129,7 @@ def _rebuild_top_rec_into_cache(
     ``REC_CACHE_KEY`` was cleared (poll/pick/invalidate), the consuming ScriptRun would
     otherwise skip ``st.button`` and drop the incoming ``trigger_value=true``.
     """
+    note_rec_run_stage(session, "rebuild_started")
     max_cards = int(prep.get("max_cards") or 6)
     cfg = dict(room.get("config") or {})
     team = str(
@@ -94,9 +163,16 @@ def _rebuild_top_rec_into_cache(
             "rebuilt_for_interactive": True,
             "rebuilt_ts": time.time(),
         }
+        ok = top_rec is not None and not getattr(top_rec, "empty", True)
+        note_rec_run_stage(
+            session,
+            "rebuild_succeeded" if ok else "rebuild_empty",
+            top_rec_count=int(len(top_rec)) if ok else 0,
+        )
         return top_rec
     except Exception as exc:
         session["_live_draft_rec_interactive_rebuild_error"] = f"{type(exc).__name__}: {exc}"[:240]
+        note_rec_run_stage(session, "rebuild_failed", error=str(exc)[:160])
         return None
 
 
@@ -109,31 +185,49 @@ def render_rec_interactive_widgets(
     fmt_int=None,
 ) -> bool:
     """Render recommendation card Streamlit widgets from prepared cache (live path)."""
+    note_rec_run_stage(session, "interactive_invoked")
     status: dict[str, Any] = {
         "ts": time.time(),
         "ok": False,
         "fail_reason": "",
+        "cache_hit": False,
         "cache_rebuilt": False,
+        "snapshot_used": False,
         "script_run_seq": int(session.get("_solo_stage1_script_run_seq") or 0),
     }
     prep = session.get(PREPARED_REC_INTERACTIVE_KEY)
     if not isinstance(prep, dict):
         status["fail_reason"] = "prepared_interactive_missing"
         session[INTERACTIVE_PAINT_STATUS_KEY] = status
+        note_rec_run_stage(session, "interactive_failed", fail_reason=status["fail_reason"])
         return False
     rid = str(room.get("draft_room_id") or "").strip()
     if rid and str(prep.get("room_id") or "").strip() not in ("", rid):
         status["fail_reason"] = "prepared_room_mismatch"
         session[INTERACTIVE_PAINT_STATUS_KEY] = status
+        note_rec_run_stage(session, "interactive_failed", fail_reason=status["fail_reason"])
         return False
     top_rec = _top_rec_from_cache(session)
-    if top_rec is None or getattr(top_rec, "empty", True):
-        top_rec = _rebuild_top_rec_into_cache(session, room, prep)
-        status["cache_rebuilt"] = top_rec is not None and not getattr(top_rec, "empty", True)
-        if top_rec is None or getattr(top_rec, "empty", True):
-            status["fail_reason"] = "top_rec_missing_after_rebuild"
-            session[INTERACTIVE_PAINT_STATUS_KEY] = status
-            return False
+    if top_rec is not None and not getattr(top_rec, "empty", True):
+        status["cache_hit"] = True
+        note_rec_run_stage(session, "cache_hit", top_rec_count=int(len(top_rec)))
+    else:
+        note_rec_run_stage(session, "cache_miss")
+        # Prefer last-good snapshot over expensive rebuild so the consuming ScriptRun
+        # re-registers the same buttons without requiring an extra rerun.
+        top_rec = _top_rec_from_snapshot(session, room)
+        if top_rec is not None and not getattr(top_rec, "empty", True):
+            status["snapshot_used"] = True
+            _republish_top_rec_into_cache(session, room, top_rec)
+            note_rec_run_stage(session, "snapshot_restored", top_rec_count=int(len(top_rec)))
+        else:
+            top_rec = _rebuild_top_rec_into_cache(session, room, prep)
+            status["cache_rebuilt"] = top_rec is not None and not getattr(top_rec, "empty", True)
+            if top_rec is None or getattr(top_rec, "empty", True):
+                status["fail_reason"] = "top_rec_missing_after_rebuild"
+                session[INTERACTIVE_PAINT_STATUS_KEY] = status
+                note_rec_run_stage(session, "interactive_failed", fail_reason=status["fail_reason"])
+                return False
     gaps = list(prep.get("gaps") or [])
     category_needs = list(prep.get("category_needs") or [])
     max_cards = int(prep.get("max_cards") or 6)
@@ -154,13 +248,31 @@ def render_rec_interactive_widgets(
             gaps=gaps,
             category_needs=category_needs,
         )
+        store_interactive_top_rec_snapshot(session, top_rec, room_id=rid)
         status["ok"] = True
         status["fail_reason"] = ""
+        status["top_rec_count"] = int(len(top_rec)) if hasattr(top_rec, "__len__") else 0
         session[INTERACTIVE_PAINT_STATUS_KEY] = status
+        note_rec_run_stage(
+            session,
+            "interactive_ok",
+            top_rec_count=status["top_rec_count"],
+            cache_hit=status["cache_hit"],
+            snapshot_used=status["snapshot_used"],
+            cache_rebuilt=status["cache_rebuilt"],
+        )
         return True
     except ImportError:
         status["fail_reason"] = "room_ui_import_error"
         session[INTERACTIVE_PAINT_STATUS_KEY] = status
+        note_rec_run_stage(session, "interactive_failed", fail_reason=status["fail_reason"])
+        return False
+    except Exception as exc:
+        status["fail_reason"] = f"interactive_exception:{type(exc).__name__}"
+        status["exception"] = str(exc)[:200]
+        session[INTERACTIVE_PAINT_STATUS_KEY] = status
+        session["_live_draft_rec_interactive_paint_error"] = f"{type(exc).__name__}: {exc}"[:240]
+        note_rec_run_stage(session, "interactive_failed", fail_reason=status["fail_reason"])
         return False
 
 

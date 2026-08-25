@@ -133,6 +133,12 @@ def note_rec_queue_widget_button_rendered(
     wk = str(widget_key or "").strip()
     if not wk:
         return
+    try:
+        from live_draft_rec_live_paint import note_rec_run_stage
+
+        note_rec_run_stage(session, "target_button_registered", widget_key=wk, dispatch_kind=dispatch_kind)
+    except ImportError:
+        pass
     reg = _lifecycle_map(session)
     now = time.time()
     seq = _script_run_seq(session)

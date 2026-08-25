@@ -26652,44 +26652,53 @@ elif active_page == "Live Draft Room":
             except ImportError:
                 pass
             _manual_recovery = bool(_reconcile is not None and _reconcile.manual_recovery_available)
-            if not _draft_is_complete and slot is None:
+            _heavy_paint_done = bool(st.session_state.get("_live_draft_heavy_paint_done"))
+            if not _draft_is_complete and slot is None and not _heavy_paint_done:
                 if picks_done < total_picks:
                     st.warning("Pick slot unavailable — use Manual Draft below to continue this pick.")
             elif not _draft_is_complete:
+                # slot may be None while HEAVY_PAINT_DONE: still enter so consuming
+                # ScriptRuns re-register Add-to-Queue (button-trigger consumption).
                 next_user_pick = live_draft_next_pick_for_team(room, user_team)
-                try:
-                    from live_draft_on_clock_ui import render_live_on_clock_banner
+                if isinstance(slot, dict):
+                    try:
+                        from live_draft_on_clock_ui import render_live_on_clock_banner
 
-                    render_live_on_clock_banner(
-                        st,
-                        st.session_state,
-                        room,
-                        slot,
-                        next_pick=next_user_pick,
-                    )
-                    if developer_mode_enabled():
-                        try:
-                            from live_draft_solo_timer import VISIBLE_TIMER_COUNT_KEY
+                        render_live_on_clock_banner(
+                            st,
+                            st.session_state,
+                            room,
+                            slot,
+                            next_pick=next_user_pick,
+                        )
+                        if developer_mode_enabled():
+                            try:
+                                from live_draft_solo_timer import VISIBLE_TIMER_COUNT_KEY
 
-                            _vtc = int(st.session_state.get(VISIBLE_TIMER_COUNT_KEY) or 0)
-                            assert _vtc == 1, f"visible_timer_count == {_vtc}, expected 1"
-                            st.caption(f"Dev assert: visible_timer_count == {_vtc}")
-                            _apc = int(st.session_state.get("visible_auto_picking_status_count") or 0)
-                            # Count may be 0 while time remains; when expired must be 1.
-                            if st.session_state.get("_live_draft_timer_autopick_ui"):
-                                assert _apc == 1, (
-                                    f"visible_auto_picking_status_count == {_apc}, expected 1"
-                                )
-                                st.caption(f"Dev assert: visible_auto_picking_status_count == {_apc}")
-                        except AssertionError as _vtc_err:
-                            st.error(str(_vtc_err))
-                        except ImportError:
-                            pass
-                except ImportError:
-                    remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
-                    _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
+                                _vtc = int(st.session_state.get(VISIBLE_TIMER_COUNT_KEY) or 0)
+                                assert _vtc == 1, f"visible_timer_count == {_vtc}, expected 1"
+                                st.caption(f"Dev assert: visible_timer_count == {_vtc}")
+                                _apc = int(st.session_state.get("visible_auto_picking_status_count") or 0)
+                                # Count may be 0 while time remains; when expired must be 1.
+                                if st.session_state.get("_live_draft_timer_autopick_ui"):
+                                    assert _apc == 1, (
+                                        f"visible_auto_picking_status_count == {_apc}, expected 1"
+                                    )
+                                    st.caption(f"Dev assert: visible_auto_picking_status_count == {_apc}")
+                            except AssertionError as _vtc_err:
+                                st.error(str(_vtc_err))
+                            except ImportError:
+                                pass
+                    except ImportError:
+                        remaining = live_draft_seconds_remaining(room) if room.get("status") == "in_progress" else int(room.get("paused_remaining_seconds") or 0)
+                        _render_live_draft_on_clock_banner(slot, remaining, next_pick=next_user_pick)
+                elif _heavy_paint_done:
+                    st.caption("Pick slot unavailable — recommendation controls remain active.")
                 def _paint_heavy_recommendations_body() -> None:
-                                _rec_team = str(on_clock_team or slot.get("Team") or "").strip() or None
+                                _slot_team = ""
+                                if isinstance(slot, dict):
+                                    _slot_team = str(slot.get("Team") or "").strip()
+                                _rec_team = str(on_clock_team or _slot_team or "").strip() or None
                                 _LIVE_REC_TOP_N = 10
                                 _skip_for_setup = False
                                 try:
@@ -27077,6 +27086,7 @@ elif active_page == "Live Draft Room":
                                                 "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
                                             )
                                         from live_draft_rec_live_paint import (
+                                            store_interactive_top_rec_snapshot,
                                             store_prepared_rec_interactive,
                                         )
 
@@ -27087,6 +27097,11 @@ elif active_page == "Live Draft Room":
                                             category_needs=_category_needs,
                                             max_cards=6,
                                             multiplayer=_multiplayer_draft,
+                                        )
+                                        store_interactive_top_rec_snapshot(
+                                            st.session_state,
+                                            top_rec,
+                                            room_id=str(room.get("draft_room_id") or ""),
                                         )
                                         # Add-to-Queue buttons are owned exclusively by
                                         # paint_interactive (ScriptRun / full_page_interactive_live).
@@ -27288,6 +27303,11 @@ elif active_page == "Live Draft Room":
                             )
                         )
                     except ImportError:
+                        return False
+                    except Exception as _paint_interactive_exc:
+                        st.session_state["_live_draft_rec_interactive_wiring_error"] = (
+                            f"{type(_paint_interactive_exc).__name__}: {_paint_interactive_exc}"
+                        )[:240]
                         return False
 
                 try:

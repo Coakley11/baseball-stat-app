@@ -15,14 +15,41 @@ DA_SCORING_CACHE_KEY = "_draft_assistant_scoring_cache"
 DA_WHY_CACHE_KEY = "_draft_assistant_why_cache"
 
 
-def invalidate_live_draft_ui_caches(session: dict[str, Any] | None) -> None:
-    """Clear recommendation, pool, and decision-panel caches after a pick or poll change."""
+def invalidate_live_draft_ui_caches(
+    session: dict[str, Any] | None,
+    *,
+    keep_interactive_snapshot: bool = False,
+) -> None:
+    """Clear recommendation, pool, and decision-panel caches after a pick or poll change.
+
+    When ``keep_interactive_snapshot`` is True (deferred full-pool upgrade while
+    HEAVY_PAINT_DONE), REC_CACHE is still cleared for freshness, but the interactive
+    top_rec snapshot is retained so the next full ScriptRun can re-register Add-to-Queue
+    buttons on the *same* consuming run as an incoming button trigger.
+    """
     if not session:
         return
     session.pop(REC_CACHE_KEY, None)
     session.pop(AVAILABLE_CACHE_KEY, None)
     session.pop(DECISION_CACHE_KEY, None)
     session.pop(WHY_COLUMN_CACHE_KEY, None)
+    if not keep_interactive_snapshot:
+        try:
+            from live_draft_rec_live_paint import INTERACTIVE_TOP_REC_SNAPSHOT_KEY
+
+            session.pop(INTERACTIVE_TOP_REC_SNAPSHOT_KEY, None)
+        except ImportError:
+            session.pop("_live_draft_rec_interactive_top_rec_snapshot", None)
+    try:
+        from live_draft_rec_live_paint import note_rec_run_stage
+
+        note_rec_run_stage(
+            session,
+            "cache_invalidated",
+            keep_interactive_snapshot=bool(keep_interactive_snapshot),
+        )
+    except ImportError:
+        pass
 
 
 def _fold_player_name(name: Any) -> str:

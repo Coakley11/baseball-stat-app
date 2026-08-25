@@ -147,4 +147,16 @@ def note_rec_queue_button_consumption(
     book.append(row)
     session[CONSUMPTION_LEDGER_KEY] = book[-MAX_LEDGER:]
     session[CONSUMPTION_LAST_KEY] = dict(row)
+    try:
+        from live_draft_rec_live_paint import note_rec_run_stage
+
+        note_rec_run_stage(
+            session,
+            "button_return_value",
+            widget_key=wk,
+            button_return_value=bool(button_return_value),
+            incoming_trigger_seen=bool(incoming.get("incoming_trigger_seen")),
+        )
+    except ImportError:
+        pass
     return row

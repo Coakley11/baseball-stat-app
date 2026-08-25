@@ -160,7 +160,11 @@ def maybe_build_deferred_full_pool(session: dict[str, Any]) -> bool:
     try:
         from live_draft_ui_cache import invalidate_live_draft_ui_caches
 
-        invalidate_live_draft_ui_caches(session)
+        # Pool upgrade must not wipe the interactive top_rec snapshot while DONE:
+        # the next full ScriptRun may be a button-trigger consumer that must
+        # re-register Add-to-Queue on that same run (not a later recovery rerun).
+        keep_snap = bool(session.get("_live_draft_heavy_paint_done"))
+        invalidate_live_draft_ui_caches(session, keep_interactive_snapshot=keep_snap)
     except ImportError:
         session.pop("_live_draft_rec_cache", None)
     return True
