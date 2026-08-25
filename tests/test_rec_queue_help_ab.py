@@ -155,7 +155,8 @@ class RecQueueHelpAbCardRenderTests(unittest.TestCase):
         render_live_draft_rec_cards(st, session, _room(), _francisco_rec_df(), max_cards=1)
         _args, kwargs = self._queue_button_call(st)
         self.assertEqual(_args[0], "⭐ Add to Queue")
-        self.assertTrue(kwargs.get("on_click"))
+        # Return-value dispatch (Pause contract) — no nested on_click closure.
+        self.assertIsNone(kwargs.get("on_click"))
         self.assertEqual(kwargs.get("help"), "Add Francisco Lindor to your draft queue.")
         self.assertEqual(kwargs.get("key"), "rec_card_queue_C9A3CB70_0_231_rec_card")
 
@@ -172,7 +173,7 @@ class RecQueueHelpAbCardRenderTests(unittest.TestCase):
         render_live_draft_rec_cards(st, session, _room(), _francisco_rec_df(), max_cards=1)
         _args, kwargs = self._queue_button_call(st)
         self.assertEqual(_args[0], "⭐ Add to Queue")
-        self.assertTrue(kwargs.get("on_click"))
+        self.assertIsNone(kwargs.get("on_click"))
         self.assertNotIn("help", kwargs)
         self.assertEqual(kwargs.get("key"), "rec_card_queue_C9A3CB70_0_231_rec_card")
 

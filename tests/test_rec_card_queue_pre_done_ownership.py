@@ -41,13 +41,23 @@ class PreDoneQueueClickOwnershipTests(unittest.TestCase):
             session["_live_draft_rec_queue_interactive_owner"] = "deferred_to_script_run_handoff"
 
         def paint_interactive() -> None:
+            # heavy_paint_ui must claim ScriptRun ownership before registration.
+            self.assertEqual(
+                session.get("_live_draft_rec_queue_interactive_owner"),
+                "script_run_no_run_every",
+            )
             interactive["n"] += 1
-            session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
             enter_recommendation_paint_invocation(session, st, via="full_page_interactive_live")
             key = build_rec_card_queue_widget_key(
                 room_id=ROOM, pick_index=0, stable_key="231", surface="rec_card"
             )
             note_rec_queue_widget_button_rendered(session, widget_key=key)
+            lc = lifecycle_for_widget(session, key)
+            self.assertEqual(lc.get("interactive_owner"), "script_run_no_run_every")
+            self.assertNotEqual(lc.get("interactive_owner"), "pending_script_run_handoff")
+            self.assertFalse(lc.get("inside_fragment"))
+            self.assertEqual(lc.get("paint_via_at_render"), "full_page_interactive_live")
+            self.assertTrue(lc.get("heavy_paint_done_at_render"))
 
         with patch("live_draft_fast_solo_start.should_defer_heavy_first_paint", return_value=False):
             with patch("live_draft_fast_solo_start.note_start_stage"):
@@ -130,6 +140,19 @@ class PreDoneQueueClickOwnershipTests(unittest.TestCase):
         self.assertGreaterEqual(tick.call_count, 3)
         ledger = session.get("_live_draft_rec_fragment_callback_ledger") or []
         self.assertEqual([r.get("player_id") for r in ledger], ["231", "414", "576"])
+        layers = session.get("_live_draft_rec_queue_dispatch_layers") or []
+        self.assertTrue(
+            any(r.get("layer") == "execute_rec_card_queue_click_body" for r in layers),
+            layers,
+        )
+        self.assertTrue(
+            all(
+                r.get("interactive_owner") != "pending_script_run_handoff"
+                for r in layers
+                if r.get("layer") == "execute_rec_card_queue_click_body"
+            ),
+            layers,
+        )
 
     def test_fragment_registration_is_flagged_as_bad_owner_if_it_happens(self) -> None:
         session: dict[str, Any] = {

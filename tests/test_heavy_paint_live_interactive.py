@@ -178,17 +178,27 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
         if st.rerun.call_args is not None:
             self.assertEqual(st.rerun.call_args.kwargs.get("scope"), "app")
 
+        owner_at_interactive: list[str] = []
+
+        def paint_interactive_claim_order() -> None:
+            owner_at_interactive.append(
+                str(session.get("_live_draft_rec_queue_interactive_owner") or "")
+            )
+            interactive["n"] += 1
+
         with patch("live_draft_fast_solo_start.should_defer_heavy_first_paint", return_value=False):
             with patch("live_draft_fast_solo_start.note_start_stage"):
                 render_deferred_heavy_paint_fragment(
                     st,
                     session,
                     paint_body,
-                    paint_interactive=paint_interactive,
+                    paint_interactive=paint_interactive_claim_order,
                 )
         self.assertEqual(expensive["n"], 1)
         self.assertGreaterEqual(interactive["n"], 1)
         self.assertEqual(session.get("_live_draft_rec_queue_interactive_owner"), "script_run_no_run_every")
+        self.assertTrue(owner_at_interactive)
+        self.assertEqual(owner_at_interactive[0], "script_run_no_run_every")
 
     def test_pre_done_fragment_path_does_not_invoke_paint_interactive(self) -> None:
         """Production-equivalent: first visible cards must not register under run_every."""

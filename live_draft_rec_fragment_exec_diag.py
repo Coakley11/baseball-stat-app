@@ -53,7 +53,7 @@ def execution_context_map() -> dict[str, str]:
         "recommendation_paint_entry": "streamlit_app._paint_heavy_recommendations_body",
         "recommendation_fragment_wrapper": "live_draft_heavy_paint_ui.render_deferred_heavy_paint_fragment",
         "recommendation_cards": "live_draft_room_ui.render_live_draft_rec_cards",
-        "francisco_callback": "live_draft_room_ui._on_rec_queue_click",
+        "francisco_callback": "live_draft_room_ui.execute_rec_card_queue_click",
         "fragment_probe_callback": "live_draft_rec_fragment_exec_diag.on_recommendation_fragment_probe_click",
         "full_app_run_seq_source": "live_draft_stage1_production_ledger STAGE1_SCRIPT_SEQ_KEY",
         "fragment_run_seq_source": RECOMMENDATION_FRAGMENT_RUN_SEQ_KEY,
@@ -119,7 +119,7 @@ def record_rec_queue_callback_entry(
     player_name: str,
     widget_key: str,
     queue_before: list[str],
-    callback_callable_name: str = "_on_rec_queue_click",
+    callback_callable_name: str = "execute_rec_card_queue_click",
 ) -> None:
     """Durable ledger entry — survives fragment reruns without outer DOM repaint."""
     row = {

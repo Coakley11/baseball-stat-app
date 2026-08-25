@@ -11,8 +11,9 @@ TRACE_LEDGER_KEY = "_live_draft_rec_queue_click_trace_ledger"
 TRACE_LAST_KEY = "_live_draft_rec_queue_click_trace_last"
 WIDGET_REGISTRY_KEY = "_live_draft_rec_queue_widget_registry"
 RENDER_TRACE_REGISTRY_KEY = "_live_draft_rec_queue_render_trace_registry"
-REC_QUEUE_CALLBACK_ID = "_on_rec_queue_click"
-REC_QUEUE_CALLBACK_VERSION = "live_draft_room_ui_v1"
+REC_QUEUE_CALLBACK_ID = "execute_rec_card_queue_click"
+REC_QUEUE_CALLBACK_VERSION = "v2_return_value"
+DISPATCH_LAYER_KEY = "_live_draft_rec_queue_dispatch_layers"
 RENDER_TRACE_PROBE_ELEMENT_ID = "rec-card-queue-render-trace"
 PER_CARD_RENDER_TRACE_CLASS = "rec-card-queue-render-trace-card"
 REC_QUEUE_RENDER_TRACE_IMPL_REV = "rec_queue_render_trace_v5_queue_gate"
@@ -88,11 +89,46 @@ def _merge_lifecycle_dom_attrs(session: dict[str, Any], widget_key: str, *, prob
         "server_registered": bool(lc.get("server_registered")),
         "callback_attached": bool(lc.get("callback_attached") or lc.get("server_registered")),
         "callback_id": lc.get("callback_id") or REC_QUEUE_CALLBACK_ID,
+        "dispatch_kind": lc.get("dispatch_kind") or "button_return_value",
     }
     return out
 
 
-def note_rec_queue_widget_button_rendered(session: dict[str, Any], *, widget_key: str) -> None:
+def note_rec_queue_dispatch_layer(
+    session: dict[str, Any],
+    *,
+    layer: str,
+    widget_key: str = "",
+    player_id: str = "",
+    player_name: str = "",
+) -> None:
+    """Record which callable layer entered (return-value branch vs execute body)."""
+    row = {
+        "ts": time.time(),
+        "layer": str(layer or "").strip(),
+        "widget_key": str(widget_key or "").strip(),
+        "player_id": str(player_id or "").strip(),
+        "player_name": str(player_name or "").strip(),
+        "script_run_seq": _script_run_seq(session),
+        "interactive_owner": str(session.get("_live_draft_rec_queue_interactive_owner") or "").strip(),
+        "paint_via": str(
+            (session.get("_solo_stage1_last_recommendation_paint") or {}).get("via") or ""
+        ).strip()
+        if isinstance(session.get("_solo_stage1_last_recommendation_paint"), dict)
+        else "",
+    }
+    book = list(session.get(DISPATCH_LAYER_KEY) or [])
+    book.append(row)
+    session[DISPATCH_LAYER_KEY] = book[-48:]
+    session["_live_draft_rec_queue_dispatch_layer_last"] = dict(row)
+
+
+def note_rec_queue_widget_button_rendered(
+    session: dict[str, Any],
+    *,
+    widget_key: str,
+    dispatch_kind: str = "button_return_value",
+) -> None:
     """Call immediately after st.button(...) for Add-to-Queue — proves widget ran this script pass."""
     wk = str(widget_key or "").strip()
     if not wk:
@@ -131,6 +167,7 @@ def note_rec_queue_widget_button_rendered(session: dict[str, Any], *, widget_key
         "callback_id": REC_QUEUE_CALLBACK_ID,
         "callback_attached": True,
         "server_registered": True,
+        "dispatch_kind": str(dispatch_kind or "button_return_value").strip(),
     }
     session["_live_draft_rec_queue_render_trace_last_lifecycle"] = dict(reg[wk])
 

@@ -56,7 +56,8 @@ class RecCardQueueClickCallbackContractTests(unittest.TestCase):
         self.assertTrue(lc.get("server_registered"))
         self.assertEqual(lc.get("interactive_owner"), "script_run_no_run_every")
         self.assertEqual(lc.get("paint_via_at_render"), "full_page_interactive_live")
-        self.assertEqual(lc.get("callback_id"), "_on_rec_queue_click")
+        self.assertEqual(lc.get("callback_id"), "execute_rec_card_queue_click")
+        self.assertEqual(lc.get("dispatch_kind"), "button_return_value")
         self.assertTrue(lc.get("widget_rendered_this_run"))
 
     def test_execute_callback_adds_exactly_one_and_marks_rerun_tick(self) -> None:

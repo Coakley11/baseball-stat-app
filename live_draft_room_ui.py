@@ -1521,7 +1521,19 @@ def execute_rec_card_queue_click(
     pick_idx: int,
     player_id: str,
 ) -> None:
-    """Production rec-card Add-to-Queue callback body (Streamlit on_click)."""
+    """Production rec-card Add-to-Queue mutation body (return-value or on_click)."""
+    try:
+        from live_draft_rec_queue_click_trace import note_rec_queue_dispatch_layer
+
+        note_rec_queue_dispatch_layer(
+            session,
+            layer="execute_rec_card_queue_click_body",
+            widget_key=widget_key,
+            player_id=player_id,
+            player_name=name,
+        )
+    except ImportError:
+        pass
     before = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
     try:
         from live_draft_rec_fragment_exec_diag import record_rec_queue_callback_entry
@@ -1535,6 +1547,7 @@ def execute_rec_card_queue_click(
             player_name=name,
             widget_key=widget_key,
             queue_before=before,
+            callback_callable_name="execute_rec_card_queue_click",
         )
     except ImportError:
         pass
@@ -2010,25 +2023,6 @@ def render_live_draft_rec_cards(
                 except ImportError:
                     pass
 
-                def _on_rec_queue_click(
-                    _session: dict[str, Any] = session,
-                    _name: str = name,
-                    _event_id: str = queue_click_event_id,
-                    _widget_key: str = queue_widget_key,
-                    _room_id: str = room_id,
-                    _pick_idx: int = pick_idx,
-                    _player_id: str = player_id,
-                ) -> None:
-                    execute_rec_card_queue_click(
-                        _session,
-                        name=_name,
-                        event_id=_event_id,
-                        widget_key=_widget_key,
-                        room_id=_room_id,
-                        pick_idx=_pick_idx,
-                        player_id=_player_id,
-                    )
-
                 if already_queued:
                     st.button(
                         "Queued",
@@ -2037,6 +2031,16 @@ def render_live_draft_rec_cards(
                         use_container_width=True,
                         help=f"{name} is already in your draft queue.",
                     )
+                    try:
+                        from live_draft_rec_queue_click_trace import note_rec_queue_widget_button_rendered
+
+                        note_rec_queue_widget_button_rendered(
+                            session,
+                            widget_key=queue_widget_key,
+                            dispatch_kind="disabled_queued",
+                        )
+                    except ImportError:
+                        pass
                 else:
                     try:
                         from live_draft_rec_queue_help_ab import rec_queue_add_button_help_kwargs
@@ -2049,6 +2053,9 @@ def render_live_draft_rec_cards(
                         from live_draft_rec_queue_help_ab import resolve_rec_queue_help_variant
 
                         _hv, _hp = resolve_rec_queue_help_variant(st, session)
+                        # Dispatch matches Pause: return-value in the owning ScriptRun.
+                        # Nested on_click closures (production f166ce6c) produced native WS
+                        # triggers without Python entry; Pause return-value on the same page works.
                         emit_rec_card_widget_exec_probe(
                             st,
                             session,
@@ -2057,9 +2064,9 @@ def render_live_draft_rec_cards(
                             player_id=player_id,
                             player_name=name,
                             widget_key=queue_widget_key,
-                            callback_id="_on_rec_queue_click",
+                            callback_id="execute_rec_card_queue_click",
                             widget_kind="francisco_add_to_queue",
-                            callback_fn=_on_rec_queue_click,
+                            callback_fn=execute_rec_card_queue_click,
                             disabled=False,
                             help_present=_hp,
                             help_variant=_hv,
@@ -2116,19 +2123,59 @@ def render_live_draft_rec_cards(
                                 )
                         except ImportError:
                             pass
-                    st.button(
+                    # Same ScriptRun return-value contract as Pause Draft (control center).
+                    _rec_queue_clicked = st.button(
                         "⭐ Add to Queue",
                         key=queue_widget_key,
                         use_container_width=True,
-                        on_click=_on_rec_queue_click,
                         **_queue_help,
                     )
-                try:
-                    from live_draft_rec_queue_click_trace import note_rec_queue_widget_button_rendered
+                    try:
+                        from live_draft_rec_queue_click_trace import (
+                            note_rec_queue_dispatch_layer,
+                            note_rec_queue_widget_button_rendered,
+                        )
 
-                    note_rec_queue_widget_button_rendered(session, widget_key=queue_widget_key)
-                except ImportError:
-                    pass
+                        note_rec_queue_widget_button_rendered(
+                            session,
+                            widget_key=queue_widget_key,
+                            dispatch_kind="button_return_value",
+                        )
+                        if _rec_queue_clicked:
+                            note_rec_queue_dispatch_layer(
+                                session,
+                                layer="button_return_value",
+                                widget_key=queue_widget_key,
+                                player_id=player_id,
+                                player_name=name,
+                            )
+                            note_rec_queue_dispatch_layer(
+                                session,
+                                layer="execute_rec_card_queue_click",
+                                widget_key=queue_widget_key,
+                                player_id=player_id,
+                                player_name=name,
+                            )
+                            execute_rec_card_queue_click(
+                                session,
+                                name=name,
+                                event_id=queue_click_event_id,
+                                widget_key=queue_widget_key,
+                                room_id=room_id,
+                                pick_idx=pick_idx,
+                                player_id=player_id,
+                            )
+                    except ImportError:
+                        if _rec_queue_clicked:
+                            execute_rec_card_queue_click(
+                                session,
+                                name=name,
+                                event_id=queue_click_event_id,
+                                widget_key=queue_widget_key,
+                                room_id=room_id,
+                                pick_idx=pick_idx,
+                                player_id=player_id,
+                            )
                 try:
                     from live_draft_rec_queue_click_trace import render_per_card_rec_queue_render_trace_marker
 

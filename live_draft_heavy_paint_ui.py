@@ -137,10 +137,14 @@ def render_deferred_heavy_paint_fragment(
         # the browser can still emit the widget key (WS transport) while Streamlit never
         # dispatches on_click — FRAGMENT_MATRIX_CASE_II / production c50733b1 / 47712472.
         # Timer refresh stays in dedicated timer/heartbeat fragments, not this surface.
+        #
+        # Claim ownership BEFORE paint_interactive so registration diagnostics cannot
+        # stamp pending_script_run_handoff (production f166ce6c: full_page path with
+        # pending owner label because finalization previously ran after registration).
         note_heavy_fragment_mount(session, phase="interactive_script_run")
+        session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
         _invoke_paint_interactive(via="full_page_interactive_live")
         _reemit_fragment_diagnostics()
-        session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
         return
 
     defer = should_defer_heavy_first_paint(session)
