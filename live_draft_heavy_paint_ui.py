@@ -121,14 +121,21 @@ def render_deferred_heavy_paint_fragment(
         _invoke_paint_body(via="fragment")
         session[HEAVY_PAINT_DONE_KEY] = True
         note_start_stage(session, "heavy_content_rendered", via="fragment")
-        # Hand interactive ownership to the next ScriptRun (outer DONE branch).
+        # paint_body must not register Add-to-Queue under this run_every fragment
+        # (production 47712472: heavy_paint_done=0 at click, transport without callback).
+        # Force a full-app ScriptRun so the outer DONE branch owns interactive widgets.
         session["_live_draft_rec_queue_interactive_owner"] = "pending_script_run_handoff"
+        try:
+            st.rerun(scope="app")
+        except TypeError:
+            st.rerun()
+        return
 
     if session.get(HEAVY_PAINT_DONE_KEY):
         # After first heavy paint, Add-to-Queue must register on the owning ScriptRun.
         # Keeping these buttons under fragment(run_every=1) remounts them every second:
         # the browser can still emit the widget key (WS transport) while Streamlit never
-        # dispatches on_click — FRAGMENT_MATRIX_CASE_II / production c50733b1 (0/3 callbacks).
+        # dispatches on_click — FRAGMENT_MATRIX_CASE_II / production c50733b1 / 47712472.
         # Timer refresh stays in dedicated timer/heartbeat fragments, not this surface.
         note_heavy_fragment_mount(session, phase="interactive_script_run")
         _invoke_paint_interactive(via="full_page_interactive_live")
@@ -142,10 +149,14 @@ def render_deferred_heavy_paint_fragment(
     if not defer and not loading:
         _invoke_paint_body(via="full_page")
         session[HEAVY_PAINT_DONE_KEY] = True
+        session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
         try:
             note_start_stage(session, "heavy_content_rendered", via="full_page")
         except ImportError:
             pass
+        # Ensure interactive path is the dedicated ScriptRun registrar (not only paint_body).
+        _invoke_paint_interactive(via="full_page_interactive_live")
+        _reemit_fragment_diagnostics()
         return
 
     if fragment is None:
@@ -160,6 +171,8 @@ def render_deferred_heavy_paint_fragment(
             return
         _invoke_paint_body(via="full_page_no_fragment_api")
         session[HEAVY_PAINT_DONE_KEY] = True
+        session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
+        _invoke_paint_interactive(via="full_page_interactive_live")
         return
 
     note_heavy_fragment_mount(session, phase="mount")

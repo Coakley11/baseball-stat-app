@@ -58,6 +58,16 @@ def _merge_lifecycle_dom_attrs(session: dict[str, Any], widget_key: str, *, prob
     last_render_seq = int(lc.get("widget_last_rendered_run_seq") or lc.get("actual_card_render_run_seq") or 0)
     rendered_this_run = bool(lc.get("widget_rendered_this_run"))
     stale_vs_current = bool(last_render_seq and current_seq and last_render_seq < current_seq and not rendered_this_run)
+    paint = session.get("_solo_stage1_last_recommendation_paint")
+    paint_via = ""
+    if isinstance(paint, dict):
+        paint_via = str(paint.get("via") or "").strip()
+    paint_via = str(lc.get("paint_via_at_render") or paint_via or "").strip()
+    owner = str(
+        lc.get("interactive_owner")
+        or session.get("_live_draft_rec_queue_interactive_owner")
+        or ""
+    ).strip()
     out: dict[str, Any] = {
         "actual_card_render_run_seq": lc.get("actual_card_render_run_seq"),
         "actual_card_render_ts": lc.get("actual_card_render_ts"),
@@ -67,9 +77,17 @@ def _merge_lifecycle_dom_attrs(session: dict[str, Any], widget_key: str, *, prob
         "current_script_run_seq": current_seq,
         "current_fragment_run_seq": lc.get("current_fragment_run_seq"),
         "heavy_paint_done": _heavy_paint_done(session),
+        "heavy_paint_done_at_render": lc.get("heavy_paint_done_at_render"),
         "widget_rendered_this_run": rendered_this_run,
         "widget_last_rendered_run_seq": last_render_seq or lc.get("widget_last_rendered_run_seq"),
         "widget_liveness": "live_this_run" if rendered_this_run else ("stale_retained_dom" if stale_vs_current else "unknown"),
+        "interactive_owner": owner,
+        "paint_via": paint_via,
+        "inside_fragment": bool(lc.get("inside_fragment")),
+        "fragment_run_every": lc.get("fragment_run_every"),
+        "server_registered": bool(lc.get("server_registered")),
+        "callback_attached": bool(lc.get("callback_attached") or lc.get("server_registered")),
+        "callback_id": lc.get("callback_id") or REC_QUEUE_CALLBACK_ID,
     }
     return out
 
@@ -88,6 +106,12 @@ def note_rec_queue_widget_button_rendered(session: dict[str, Any], *, widget_key
     paint_via = ""
     if isinstance(paint, dict):
         paint_via = str(paint.get("via") or "").strip()
+    inside_fragment = bool(session.get("_solo_stage1_in_fragment_run"))
+    # run_every only applies when this registration happened under the heavy-paint fragment path
+    fragment_run_every: int | None = 1 if (inside_fragment and paint_via == "fragment") else None
+    if owner in ("script_run_no_run_every",) or paint_via == "full_page_interactive_live":
+        fragment_run_every = None
+        inside_fragment = False
     reg[wk] = {
         **prev,
         "widget_key": wk,
@@ -98,9 +122,14 @@ def note_rec_queue_widget_button_rendered(session: dict[str, Any], *, widget_key
         "probe_source": "actual_card_render",
         "current_script_run_seq_at_render": seq,
         "heavy_paint_done_at_render": _heavy_paint_done(session),
-        "interactive_owner": owner,
+        "interactive_owner": owner or (
+            "fragment_run_every" if fragment_run_every else "script_run_unknown"
+        ),
         "paint_via_at_render": paint_via,
+        "inside_fragment": inside_fragment,
+        "fragment_run_every": fragment_run_every,
         "callback_id": REC_QUEUE_CALLBACK_ID,
+        "callback_attached": True,
         "server_registered": True,
     }
     session["_live_draft_rec_queue_render_trace_last_lifecycle"] = dict(reg[wk])
@@ -272,6 +301,13 @@ def render_per_card_rec_queue_render_trace_marker(
         f'data-probe-source="{safe(probe_source)}" '
         f'data-current-script-run-seq="{int(lc.get("current_script_run_seq") or 0)}" '
         f'data-heavy-paint-done="{1 if lc.get("heavy_paint_done") else 0}" '
+        f'data-heavy-paint-done-at-render="{1 if lc.get("heavy_paint_done_at_render") else 0}" '
+        f'data-interactive-owner="{safe(lc.get("interactive_owner"))}" '
+        f'data-paint-via="{safe(lc.get("paint_via"))}" '
+        f'data-inside-fragment="{1 if lc.get("inside_fragment") else 0}" '
+        f'data-fragment-run-every="{safe(lc.get("fragment_run_every"))}" '
+        f'data-server-registered="{1 if lc.get("server_registered") else 0}" '
+        f'data-callback-attached="{1 if lc.get("callback_attached") else 0}" '
         f'data-widget-rendered-this-run="{1 if lc.get("widget_rendered_this_run") else 0}" '
         f'data-widget-last-rendered-run-seq="{int(lc.get("widget_last_rendered_run_seq") or 0)}" '
         f'data-widget-liveness="{safe(lc.get("widget_liveness"))}" '
@@ -345,6 +381,13 @@ def render_rec_queue_render_trace_probe(st: Any, session: dict[str, Any], *, pro
         f'data-actual-card-render-run-seq="{int(lc.get("actual_card_render_run_seq") or 0)}" '
         f'data-current-script-run-seq="{int(lc.get("current_script_run_seq") or 0)}" '
         f'data-heavy-paint-done="{1 if lc.get("heavy_paint_done") else 0}" '
+        f'data-heavy-paint-done-at-render="{1 if lc.get("heavy_paint_done_at_render") else 0}" '
+        f'data-interactive-owner="{safe(lc.get("interactive_owner"))}" '
+        f'data-paint-via="{safe(lc.get("paint_via"))}" '
+        f'data-inside-fragment="{1 if lc.get("inside_fragment") else 0}" '
+        f'data-fragment-run-every="{safe(lc.get("fragment_run_every"))}" '
+        f'data-server-registered="{1 if lc.get("server_registered") else 0}" '
+        f'data-callback-attached="{1 if lc.get("callback_attached") else 0}" '
         f'data-widget-rendered-this-run="{1 if lc.get("widget_rendered_this_run") else 0}" '
         f'data-widget-last-rendered-run-seq="{int(lc.get("widget_last_rendered_run_seq") or 0)}" '
         f'data-widget-liveness="{safe(lc.get("widget_liveness"))}" '

@@ -27077,7 +27077,6 @@ elif active_page == "Live Draft Room":
                                                 "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
                                             )
                                         from live_draft_rec_live_paint import (
-                                            render_rec_interactive_widgets,
                                             store_prepared_rec_interactive,
                                         )
 
@@ -27089,21 +27088,24 @@ elif active_page == "Live Draft Room":
                                             max_cards=6,
                                             multiplayer=_multiplayer_draft,
                                         )
-                                        try:
-                                            render_rec_interactive_widgets(
-                                                st,
-                                                st.session_state,
-                                                room,
-                                                fmt_rate_4=fmt_rate_4,
-                                                fmt_int=fmt_int,
-                                            )
-                                        except Exception as _rec_card_exc:
-                                            st.error(
-                                                f"Recommendation cards failed to paint: "
-                                                f"{type(_rec_card_exc).__name__}: {_rec_card_exc}"
-                                            )
+                                        # Add-to-Queue buttons are owned exclusively by
+                                        # paint_interactive (ScriptRun / full_page_interactive_live).
+                                        # Never register them from heavy paint_body — when this runs
+                                        # under fragment(run_every=1) Streamlit accepts WS transport
+                                        # without dispatching on_click (production 47712472).
+                                        if bool(st.session_state.get("_solo_stage1_in_fragment_run")):
+                                            st.session_state[
+                                                "_live_draft_rec_queue_interactive_owner"
+                                            ] = "deferred_to_script_run_handoff"
+                                        else:
+                                            # Non-fragment paint_body (via=full_page): still defer
+                                            # widget registration to paint_interactive below/outer.
+                                            st.session_state[
+                                                "_live_draft_rec_queue_interactive_owner"
+                                            ] = "pending_paint_interactive"
                                 except ImportError:
-                                    _render_live_draft_rec_cards(top_rec, max_cards=6)
+                                    if not bool(st.session_state.get("_solo_stage1_in_fragment_run")):
+                                        _render_live_draft_rec_cards(top_rec, max_cards=6)
 
                                 rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
                                 rec_cols = [

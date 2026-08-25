@@ -162,17 +162,21 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
                         paint_interactive=paint_interactive,
                     )
                     if hasattr(st, "_heavy_frag_fn"):
-                        st._heavy_frag_fn()
+                        st._heavy_frag_fn()  # defer caption
                     if hasattr(st, "_heavy_frag_fn"):
-                        st._heavy_frag_fn()
+                        st._heavy_frag_fn()  # paint_body + DONE + st.rerun(scope=app)
         self.assertEqual(expensive["n"], 1)
         self.assertEqual(
             interactive["n"],
             0,
-            "post-done fragment ticks must not re-register Add-to-Queue under run_every",
+            "fragment path must not register Add-to-Queue under run_every",
         )
         self.assertTrue(session.get(HEAVY_PAINT_DONE_KEY))
         self.assertEqual(session.get("_live_draft_rec_queue_interactive_owner"), "pending_script_run_handoff")
+        st.rerun.assert_called()
+        # Prefer app-scope rerun so fragment ownership does not stick.
+        if st.rerun.call_args is not None:
+            self.assertEqual(st.rerun.call_args.kwargs.get("scope"), "app")
 
         with patch("live_draft_fast_solo_start.should_defer_heavy_first_paint", return_value=False):
             with patch("live_draft_fast_solo_start.note_start_stage"):
@@ -185,6 +189,46 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
         self.assertEqual(expensive["n"], 1)
         self.assertGreaterEqual(interactive["n"], 1)
         self.assertEqual(session.get("_live_draft_rec_queue_interactive_owner"), "script_run_no_run_every")
+
+    def test_pre_done_fragment_path_does_not_invoke_paint_interactive(self) -> None:
+        """Production-equivalent: first visible cards must not register under run_every."""
+        st = MagicMock()
+
+        def _fragment_decorator(**kwargs):
+            self.assertEqual(kwargs.get("run_every"), 1)
+
+            def _wrap(fn):
+                st._heavy_frag_fn = fn
+                return fn
+
+            return _wrap
+
+        st.fragment = _fragment_decorator
+        session: dict[str, Any] = {}
+        interactive = {"n": 0}
+        body_via: list[str] = []
+
+        def paint_body() -> None:
+            body_via.append("body")
+
+        def paint_interactive() -> None:
+            interactive["n"] += 1
+
+        with patch("live_draft_fast_solo_start.should_defer_heavy_first_paint", return_value=False):
+            with patch("live_draft_fast_solo_start.note_start_stage"):
+                with patch("live_draft_fast_solo_start.clear_defer_heavy_first_paint"):
+                    session["_live_draft_defer_heavy_loading"] = True
+                    render_deferred_heavy_paint_fragment(
+                        st,
+                        session,
+                        paint_body,
+                        paint_interactive=paint_interactive,
+                    )
+                    st._heavy_frag_fn()
+        self.assertEqual(body_via, ["body"])
+        self.assertEqual(interactive["n"], 0)
+        self.assertTrue(session.get(HEAVY_PAINT_DONE_KEY))
+        st.rerun.assert_called()
 
     def test_render_rec_interactive_uses_prepared_cache_not_empty(self) -> None:
         import pandas as pd
