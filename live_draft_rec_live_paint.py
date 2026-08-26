@@ -14,7 +14,7 @@ INTERACTIVE_TOP_REC_SNAPSHOT_KEY = "_live_draft_rec_interactive_top_rec_snapshot
 RUN_STAGE_LEDGER_KEY = "_live_draft_rec_run_stage_ledger"
 RUN_STAGE_BY_SEQ_KEY = "_live_draft_rec_run_stage_by_seq"
 RUN_STAGE_PROBE_ELEMENT_ID = "rec-queue-run-stage-ledger"
-RUN_STAGE_PROBE_IMPL_REV = "rec_run_stage_ledger_v1"
+RUN_STAGE_PROBE_IMPL_REV = "rec_run_stage_ledger_v2"
 
 
 def _room_id_for_stage(session: dict[str, Any]) -> str:
@@ -148,7 +148,7 @@ def render_rec_run_stage_ledger_probe(st: Any, session: dict[str, Any]) -> None:
         f'data-fallback-started="{1 if flags.get("fallback_started") else 0}" '
         f'data-fallback-succeeded="{1 if flags.get("fallback_succeeded") else 0}" '
         f'data-fallback-failed="{1 if flags.get("fallback_failed") else 0}" '
-        f'data-interactive-invoked="{1 if flags.get("interactive_invoked") else 0}" '
+        f'data-interactive-invoked="{1 if (flags.get("interactive_invoked") or flags.get("interactive_invoke_enter") or flags.get("interactive_invoke_exit")) else 0}" '
         f'data-target-button-registered="{1 if flags.get("target_button_registered") else 0}" '
         f'data-button-return-value="{1 if (isinstance(current, dict) and current.get("button_return_value")) else 0}" '
         f'data-dispatch-entered="{1 if flags.get("dispatch_entered") else 0}" '

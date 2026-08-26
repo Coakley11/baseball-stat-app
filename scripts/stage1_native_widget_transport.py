@@ -371,6 +371,7 @@ def scrape_native_widget_transport_evidence(
                 or ""
             ),
             widget_key=want,
+            wait_for_probe_s=3.0,
         )
     except ImportError:
         out["consuming_run_stage_ledger"] = {"ok": False, "fail_reason": "scrape_module_missing"}

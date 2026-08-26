@@ -257,6 +257,7 @@ def render_deferred_heavy_paint_fragment(
         session[HEAVY_PAINT_DONE_KEY] = True
         session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
         _invoke_paint_interactive(via="full_page_interactive_live")
+        _reemit_fragment_diagnostics()
         return
 
     note_heavy_fragment_mount(session, phase="mount")

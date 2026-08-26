@@ -31,7 +31,9 @@ from live_draft_rec_live_paint import (  # noqa: E402
 )
 from stage1_native_widget_transport import wait_for_post_click_app_diag_advance  # noqa: E402
 from stage1_rec_run_stage_scrape import (  # noqa: E402
+    first_missing_consumption_stage,
     select_run_stage_rollup_for_seq,
+    wait_for_rec_run_stage_probe,
 )
 
 
@@ -277,3 +279,120 @@ def test_dispatch_layer_notes_execute_stages() -> None:
     by_seq = session[RUN_STAGE_BY_SEQ_KEY]["22"]
     assert by_seq["flags"].get("dispatch_entered") is True
     assert by_seq["flags"].get("execute_entered") is True
+
+
+def test_production_ledger_boundary_emits_run_stage_probe() -> None:
+    """Same unconditional boundary as #solo-stage1-current-run-diag (not heavy_paint _reemit)."""
+    session = _session_run(22)
+    session["_solo_component_diag_enabled"] = True
+    note_rec_run_stage(session, "cache_miss")
+    st = MagicMock()
+    from live_draft_stage1_production_ledger import render_stage1_production_ledger_probe
+
+    render_stage1_production_ledger_probe(st, session, probe_checkpoint="early_script")
+    html = " ".join(str(c[0][0]) for c in st.markdown.call_args_list if c[0])
+    assert f'id="{RUN_STAGE_PROBE_ELEMENT_ID}"' in html
+    assert "data-b64=" in html
+
+
+def test_failed_consuming_run_without_button_registration_emits_and_selects_run22() -> None:
+    """Production 48117734 shape: run 22 never re-registers Add-to-Queue; probe must still emit."""
+    room = "BBE0C5A3"
+    wk = "rec_card_queue_BBE0C5A3_0_231_rec_card"
+    session = _session_run(21, room)
+    note_rec_run_stage(
+        session,
+        "interactive_invoke_enter",
+        via="full_page_interactive_live",
+        widget_key=wk,
+        player_id="231",
+    )
+    note_rec_run_stage(session, "target_button_registered", widget_key=wk, player_id="231")
+
+    session["_solo_stage1_script_run_seq"] = 22
+    note_rec_run_stage(session, "interactive_invoke_enter", via="full_page_interactive_live")
+    note_rec_run_stage(session, "cache_miss")
+    note_rec_run_stage(
+        session,
+        "interactive_invoke_exit",
+        via="full_page_interactive_live",
+        ok=False,
+        fail_reason="paint_interactive_returned_false",
+    )
+    note_rec_run_stage(session, "fallback_started")
+    note_rec_run_stage(session, "fallback_failed", painted=False)
+    # No target_button_registered on consuming run 22.
+
+    session["_solo_stage1_script_run_seq"] = 23
+    note_rec_run_stage(session, "fragment_tick")
+
+    session["_solo_component_diag_enabled"] = True
+    st = MagicMock()
+    from live_draft_stage1_production_ledger import render_stage1_production_ledger_probe
+
+    render_stage1_production_ledger_probe(st, session, probe_checkpoint="late_active_draft")
+    probe_html = ""
+    for call in st.markdown.call_args_list:
+        chunk = str(call[0][0]) if call[0] else ""
+        if f'id="{RUN_STAGE_PROBE_ELEMENT_ID}"' in chunk:
+            probe_html = chunk
+            break
+    assert probe_html
+    assert "data-b64=" in probe_html
+
+    marker = 'data-b64="'
+    start = probe_html.index(marker) + len(marker)
+    end = probe_html.index('"', start)
+    payload = json.loads(base64.b64decode(probe_html[start:end]).decode("utf-8"))
+    roll = select_run_stage_rollup_for_seq(
+        [{"probe_found": True, "payload": payload}],
+        run_seq=22,
+        room_id=room,
+        widget_key=wk,
+    )
+    assert roll["ok"] is True
+    assert int(roll["run_seq"]) == 22
+    assert roll["target_button_registered"] is False
+    assert roll["cache_miss"] is True
+    assert roll["fallback_failed"] is True
+    assert roll["diagnostic_class"] == "run_present_stage_missing"
+    assert roll["first_missing_stage"]
+    assert roll["flags"].get("fragment_tick") is not True
+    assert 21 in [int(r["run_seq"]) for r in payload["recent_by_seq"]]
+    assert 22 in [int(r["run_seq"]) for r in payload["recent_by_seq"]]
+
+
+def test_scraper_diagnostic_class_probe_absent_run_not_retained_stage_missing() -> None:
+    absent = select_run_stage_rollup_for_seq([], run_seq=22)
+    assert absent["diagnostic_class"] == "probe_absent"
+    assert absent["fail_reason"] == "run_stage_probe_absent"
+
+    not_retained = select_run_stage_rollup_for_seq(
+        [{"probe_found": True, "payload": {"recent_by_seq": [{"run_seq": 21, "flags": {}}]}}],
+        run_seq=22,
+    )
+    assert not_retained["diagnostic_class"] == "run_not_retained"
+
+    partial = {
+        "run_seq": 22,
+        "room_id": "BBE0C5A3",
+        "stages": ["interactive_invoke_enter", "cache_miss"],
+        "flags": {"interactive_invoke_enter": True, "cache_miss": True},
+        "snapshot_available": False,
+    }
+    assert first_missing_consumption_stage(partial) == "snapshot_restored"
+
+
+def test_wait_for_rec_run_stage_probe_polls_until_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    def fake_scrape(page):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return [{"probe_found": False, "probe_absent": True}]
+        return [{"probe_found": True, "payload": {"recent_by_seq": []}}]
+
+    monkeypatch.setattr("stage1_rec_run_stage_scrape.scrape_rec_run_stage_ledger_probes", fake_scrape)
+    result = wait_for_rec_run_stage_probe(MagicMock(), timeout_s=1.0, poll_s=0.01)
+    assert result["probe_available"] is True
+    assert result["polls"] >= 3

@@ -27334,6 +27334,16 @@ elif active_page == "Live Draft Room":
                         _paint_heavy_recommendations_body,
                         paint_interactive=_paint_live_recommendation_interactive_only,
                     )
+                    try:
+                        from live_draft_stage1_production_ledger import (
+                            render_stage1_run_stage_ledger_late_probe,
+                            stage1_production_ledger_enabled,
+                        )
+
+                        if stage1_production_ledger_enabled(st, st.session_state):
+                            render_stage1_run_stage_ledger_late_probe(st, st.session_state)
+                    except ImportError:
+                        pass
                 except ImportError:
                     if not _defer_heavy_paint:
                         _paint_heavy_recommendations_body()

@@ -421,3 +421,24 @@ def render_stage1_production_ledger_probe(
         f"}}catch(e){{}}</script>",
         unsafe_allow_html=True,
     )
+    _render_run_stage_ledger_boundary_probe(st, session)
+
+
+def _render_run_stage_ledger_boundary_probe(st: Any, session: dict[str, Any]) -> None:
+    """Emit ``#rec-queue-run-stage-ledger`` at the same app-level boundary as current-run-diag.
+
+    Must not depend on recommendation-card rendering or heavy-paint ``_reemit`` paths.
+    """
+    try:
+        from live_draft_rec_live_paint import render_rec_run_stage_ledger_probe
+
+        render_rec_run_stage_ledger_probe(st, session)
+    except ImportError:
+        pass
+
+
+def render_stage1_run_stage_ledger_late_probe(st: Any, session: dict[str, Any]) -> None:
+    """Re-emit consumption ledger after interactive/heavy paint work on this ScriptRun."""
+    if not stage1_production_ledger_enabled(st, session):
+        return
+    _render_run_stage_ledger_boundary_probe(st, session)
