@@ -62,6 +62,14 @@ def render_deferred_heavy_paint_fragment(
             render_queue_state_snapshot_probe(st, session)
         except ImportError:
             pass
+        try:
+            from live_draft_rec_live_paint import render_rec_run_stage_ledger_probe
+
+            # Persist per-run consumption stages for Stage1 scrape (not overwritten by
+            # later fragment ticks — payload keeps recent_by_seq history).
+            render_rec_run_stage_ledger_probe(st, session)
+        except ImportError:
+            pass
 
     def _invoke_paint_body(*, via: str) -> None:
         try:

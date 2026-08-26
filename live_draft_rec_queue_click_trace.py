@@ -103,9 +103,10 @@ def note_rec_queue_dispatch_layer(
     player_name: str = "",
 ) -> None:
     """Record which callable layer entered (return-value branch vs execute body)."""
+    layer_s = str(layer or "").strip()
     row = {
         "ts": time.time(),
-        "layer": str(layer or "").strip(),
+        "layer": layer_s,
         "widget_key": str(widget_key or "").strip(),
         "player_id": str(player_id or "").strip(),
         "player_name": str(player_name or "").strip(),
@@ -121,6 +122,28 @@ def note_rec_queue_dispatch_layer(
     book.append(row)
     session[DISPATCH_LAYER_KEY] = book[-48:]
     session["_live_draft_rec_queue_dispatch_layer_last"] = dict(row)
+    # Same-run consumption ledger (Stage1 DOM scrape): map layers → durable stages.
+    try:
+        from live_draft_rec_live_paint import note_rec_run_stage
+
+        stage = ""
+        if layer_s in ("button_return_value", "dispatch_entered"):
+            stage = "dispatch_entered"
+        elif layer_s in (
+            "execute_rec_card_queue_click",
+            "execute_rec_card_queue_click_body",
+            "execute_entered",
+        ):
+            stage = "execute_entered"
+        if stage:
+            note_rec_run_stage(
+                session,
+                stage,
+                widget_key=str(widget_key or "").strip(),
+                player_id=str(player_id or "").strip(),
+            )
+    except ImportError:
+        pass
 
 
 def note_rec_queue_widget_button_rendered(

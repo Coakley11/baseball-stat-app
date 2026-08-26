@@ -187,6 +187,86 @@ def apply_strict_backmsg_authority(
     return out
 
 
+def wait_for_post_click_app_diag_advance(
+    page,
+    *,
+    pre_script_run_seq: str | int | None,
+    frame_url_hint: str = "",
+    timeout_s: float = 5.0,
+    poll_s: float = 0.15,
+) -> dict[str, Any]:
+    """Wait briefly for ``#solo-stage1-current-run-diag`` seq to exceed pre-click seq.
+
+    Production 392ba87/131d99b2: Lindor post-click scrape at +0.21s still saw seq 21 while
+    a ``full_run`` seq-22 probe was stamped ~40ms later — causing false
+    ``script_run_seq_changed=false`` despite an actual consuming ScriptRun.
+    """
+    import time as _time
+
+    from stage1_run_binding import capture_run_binding_snapshot
+
+    try:
+        pre_i = int(pre_script_run_seq) if pre_script_run_seq not in (None, "") else None
+    except (TypeError, ValueError):
+        pre_i = None
+
+    deadline = _time.time() + max(0.5, float(timeout_s))
+    last: dict[str, Any] = {}
+    polls = 0
+    while _time.time() < deadline:
+        polls += 1
+        last = capture_run_binding_snapshot(page, frame_url_hint=frame_url_hint, phase="post_click")
+        cur = last.get("current_app_diag_seq")
+        try:
+            cur_i = int(cur) if cur is not None else None
+        except (TypeError, ValueError):
+            cur_i = None
+        if pre_i is not None and cur_i is not None and cur_i > pre_i:
+            return {
+                "advanced": True,
+                "polls": polls,
+                "pre_seq": pre_i,
+                "post_seq": cur_i,
+                "binding": last,
+                "waited_s": round(float(timeout_s) - max(0.0, deadline - _time.time()), 3),
+            }
+        # Also accept any candidate full_run probe with higher seq (stale DOM siblings).
+        for cand in last.get("current_app_diag_candidates") or []:
+            if not isinstance(cand, dict):
+                continue
+            try:
+                cseq = int(cand.get("script_run_seq"))
+            except (TypeError, ValueError):
+                continue
+            if pre_i is not None and cseq > pre_i and str(cand.get("fragment_run_hint") or "") == "full_run":
+                # Re-select by recapturing — selection prefers highest seq.
+                last = capture_run_binding_snapshot(page, frame_url_hint=frame_url_hint, phase="post_click")
+                cur2 = last.get("current_app_diag_seq")
+                try:
+                    if cur2 is not None and int(cur2) > pre_i:
+                        return {
+                            "advanced": True,
+                            "polls": polls,
+                            "pre_seq": pre_i,
+                            "post_seq": int(cur2),
+                            "binding": last,
+                            "via": "candidate_full_run",
+                            "waited_s": round(float(timeout_s) - max(0.0, deadline - _time.time()), 3),
+                        }
+                except (TypeError, ValueError):
+                    pass
+        _time.sleep(max(0.05, float(poll_s)))
+    return {
+        "advanced": False,
+        "polls": polls,
+        "pre_seq": pre_i,
+        "post_seq": last.get("current_app_diag_seq") if last else None,
+        "binding": last,
+        "waited_s": float(timeout_s),
+        "timeout": True,
+    }
+
+
 def scrape_native_widget_transport_evidence(
     page,
     *,
@@ -195,6 +275,7 @@ def scrape_native_widget_transport_evidence(
     pre_run_binding: dict[str, Any] | None = None,
     frame_url_hint: str = "",
     expected_widget_key: str = "",
+    wait_for_seq_advance_s: float = 5.0,
 ) -> dict[str, Any]:
     """Distinguish native st.button widget traffic from solo timer/component SCV."""
     try:
@@ -206,19 +287,33 @@ def scrape_native_widget_transport_evidence(
     outbound = [e for e in raw_log if isinstance(e, dict) and e.get("direction") == "outbound"]
     after = [e for e in outbound if float(e.get("wall_ts_ms") or 0) >= (click_ts * 1000.0 - 50.0)]
 
+    pre_binding = dict(pre_run_binding) if isinstance(pre_run_binding, dict) else {}
+    pre_grade = pre_binding.get("current_app_diag_seq")
+    if pre_grade is None:
+        pre_grade = pre_binding.get("ledger_transport_grade_script_run_seq")
+    if pre_grade is None and pre_script_run_seq:
+        pre_grade = pre_script_run_seq
+
+    wait_meta: dict[str, Any] = {}
     try:
         from stage1_run_binding import capture_run_binding_snapshot, merge_run_binding_into_transport
 
-        post_binding = capture_run_binding_snapshot(page, frame_url_hint=frame_url_hint, phase="post_click")
+        wait_meta = wait_for_post_click_app_diag_advance(
+            page,
+            pre_script_run_seq=pre_grade,
+            frame_url_hint=frame_url_hint,
+            timeout_s=float(wait_for_seq_advance_s),
+        )
+        post_binding = dict(wait_meta.get("binding") or {})
+        if not post_binding:
+            post_binding = capture_run_binding_snapshot(page, frame_url_hint=frame_url_hint, phase="post_click")
     except ImportError:
         post_binding = {}
         merge_run_binding_into_transport = None  # type: ignore[assignment,misc]
 
-    pre_binding = dict(pre_run_binding) if isinstance(pre_run_binding, dict) else {}
-    pre_grade = pre_binding.get("ledger_transport_grade_script_run_seq")
-    if pre_grade is None and pre_script_run_seq:
-        pre_grade = pre_script_run_seq
-    post_grade = post_binding.get("ledger_transport_grade_script_run_seq")
+    post_grade = post_binding.get("current_app_diag_seq")
+    if post_grade is None:
+        post_grade = post_binding.get("ledger_transport_grade_script_run_seq")
     want = str(expected_widget_key or "").strip()
 
     out = classify_transport_from_ws_samples(
@@ -229,6 +324,11 @@ def scrape_native_widget_transport_evidence(
     )
     out["click_ts"] = click_ts
     out["legacy_pre_script_run_seq_arg"] = pre_script_run_seq
+    out["post_click_seq_wait"] = {
+        k: wait_meta.get(k)
+        for k in ("advanced", "polls", "pre_seq", "post_seq", "waited_s", "timeout", "via")
+        if k in wait_meta
+    }
     out = apply_strict_backmsg_authority(
         out,
         raw_log=raw_log,
@@ -238,19 +338,44 @@ def scrape_native_widget_transport_evidence(
     if merge_run_binding_into_transport and pre_binding:
         combined_pre = {**pre_binding, "phase": "pre_click"}
         out["run_binding_pre"] = combined_pre
-        out["run_binding_post"] = post_binding
+        out["run_binding_post"] = {**post_binding, "phase": "post_click"} if post_binding else {}
+        # Grade seq change from post snapshot (not pre-only merge).
         out = merge_run_binding_into_transport(out, combined_pre)
         if post_grade is not None:
             out["ledger_script_run_seq_after"] = str(post_grade)
-            if out.get("run_binding_consistent"):
+            if out.get("run_binding_consistent") is not False:
                 try:
                     out["script_run_seq_changed"] = int(post_grade) > int(pre_grade or 0)
                 except (TypeError, ValueError):
-                    pass
+                    out["script_run_seq_changed"] = str(post_grade) != str(pre_grade or "")
                 out["python_rerun_started"] = bool(out.get("script_run_seq_changed"))
+                out["python_rerun_observability_blocked"] = False
             else:
                 out["python_rerun_started"] = False
                 out["python_rerun_observability_blocked"] = True
+        # Prefer post binding as authoritative run_binding when phase is post_click.
+        if post_binding:
+            out["run_binding"] = dict(out.get("run_binding_post") or post_binding)
+
+    # Attach same-run consumption ledger scrape correlated to post seq / widget key.
+    try:
+        from stage1_rec_run_stage_scrape import scrape_rec_run_stage_for_consuming_run
+
+        consume_seq = post_grade if post_grade is not None else None
+        out["consuming_run_stage_ledger"] = scrape_rec_run_stage_for_consuming_run(
+            page,
+            run_seq=consume_seq,
+            room_id=str(
+                (post_binding or {}).get("lifecycle_room_id")
+                or (pre_binding or {}).get("lifecycle_room_id")
+                or ""
+            ),
+            widget_key=want,
+        )
+    except ImportError:
+        out["consuming_run_stage_ledger"] = {"ok": False, "fail_reason": "scrape_module_missing"}
+    except Exception as exc:
+        out["consuming_run_stage_ledger"] = {"ok": False, "fail_reason": f"scrape_error:{type(exc).__name__}", "error": str(exc)[:160]}
     return out
 
 

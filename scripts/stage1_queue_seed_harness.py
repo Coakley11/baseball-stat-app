@@ -1930,6 +1930,10 @@ def seed_queue_distinct_players(
             pass
         server_progress = _post_click_server_progress(delivery, step)
         step["server_progress"] = server_progress
+        # Same-run consumption ledger (DOM) correlated to post-click ScriptRun.
+        tr = delivery.get("post_click_transport") if isinstance(delivery.get("post_click_transport"), dict) else {}
+        step["consuming_run_stage_ledger"] = tr.get("consuming_run_stage_ledger") or {}
+        step["post_click_seq_wait"] = tr.get("post_click_seq_wait") or {}
         step["attempt_diagnostics"] = _seed_attempt_diagnostics(
             attempt_number=attempt_number,
             pick=pick,

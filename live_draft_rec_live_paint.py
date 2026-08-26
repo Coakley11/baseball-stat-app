@@ -12,16 +12,150 @@ INTERACTIVE_PAINT_STATUS_KEY = "_live_draft_rec_interactive_paint_status"
 # without waiting for a second rerun (production 19ea13e / 31f2a299: lifecycle stuck at 21).
 INTERACTIVE_TOP_REC_SNAPSHOT_KEY = "_live_draft_rec_interactive_top_rec_snapshot"
 RUN_STAGE_LEDGER_KEY = "_live_draft_rec_run_stage_ledger"
+RUN_STAGE_BY_SEQ_KEY = "_live_draft_rec_run_stage_by_seq"
+RUN_STAGE_PROBE_ELEMENT_ID = "rec-queue-run-stage-ledger"
+RUN_STAGE_PROBE_IMPL_REV = "rec_run_stage_ledger_v1"
+
+
+def _room_id_for_stage(session: dict[str, Any]) -> str:
+    live = session.get("live_draft_room")
+    if isinstance(live, dict):
+        return str(live.get("draft_room_id") or live.get("draft_id") or "").strip().upper()[:32]
+    return str(session.get("draft_room_id") or "").strip().upper()[:32]
 
 
 def note_rec_run_stage(session: dict[str, Any], stage: str, **extra: Any) -> None:
-    """Append a narrow per-ScriptRun stage marker for consumption forensics."""
+    """Append a narrow per-ScriptRun stage marker for consumption forensics.
+
+    Maintains both an append-only event log and a per-``run_seq`` rollup so Stage1 can
+    scrape a durable DOM probe without losing earlier consuming-run stages to later
+    fragment/timer activity.
+    """
     seq = int(session.get("_solo_stage1_script_run_seq") or session.get("_live_draft_cloud_diag_run_seq") or 0)
-    row = {"ts": time.time(), "run_seq": seq, "stage": str(stage), **extra}
+    stage_s = str(stage or "").strip()
+    row = {"ts": time.time(), "run_seq": seq, "stage": stage_s, **extra}
     log = list(session.get(RUN_STAGE_LEDGER_KEY) or [])
     log.append(row)
     session[RUN_STAGE_LEDGER_KEY] = log[-80:]
     session["_live_draft_rec_run_stage_last"] = row
+
+    by_seq = dict(session.get(RUN_STAGE_BY_SEQ_KEY) or {})
+    key = str(seq)
+    roll = dict(by_seq.get(key) or {})
+    roll["run_seq"] = seq
+    roll["room_id"] = str(roll.get("room_id") or _room_id_for_stage(session) or "")
+    stages = list(roll.get("stages") or [])
+    if stage_s:
+        stages.append(stage_s)
+    roll["stages"] = stages[-48:]
+    flags = dict(roll.get("flags") or {})
+    if stage_s:
+        flags[stage_s] = True
+    roll["flags"] = flags
+    roll["ts"] = float(row["ts"])
+    for k in (
+        "widget_key",
+        "player_id",
+        "button_return_value",
+        "incoming_trigger_seen",
+        "via",
+        "ok",
+        "fail_reason",
+        "top_rec_count",
+        "cache_hit",
+        "snapshot_used",
+        "cache_rebuilt",
+        "dispatch_kind",
+        "error",
+        "painted",
+    ):
+        if k in extra and extra.get(k) is not None:
+            roll[k] = extra.get(k)
+    # Snapshot availability at this moment (for Stage1 consuming-run forensics).
+    snap = session.get(INTERACTIVE_TOP_REC_SNAPSHOT_KEY)
+    roll["snapshot_available"] = bool(
+        isinstance(snap, dict) and snap.get("top_rec") is not None and not getattr(snap.get("top_rec"), "empty", True)
+    )
+    by_seq[key] = roll
+    # Retain a bounded window of recent ScriptRun rollups (do not keep only "last").
+    try:
+        ordered = sorted(by_seq.items(), key=lambda kv: int(kv[0]))
+    except Exception:
+        ordered = list(by_seq.items())
+    session[RUN_STAGE_BY_SEQ_KEY] = dict(ordered[-16:])
+
+
+def build_rec_run_stage_ledger_payload(session: dict[str, Any]) -> dict[str, Any]:
+    """Compact Stage1-scrapeable payload: recent per-run rollups + raw tail events."""
+    by_seq = dict(session.get(RUN_STAGE_BY_SEQ_KEY) or {})
+    recent = []
+    try:
+        keys = sorted(by_seq.keys(), key=lambda k: int(k))
+    except Exception:
+        keys = list(by_seq.keys())
+    for k in keys[-8:]:
+        row = by_seq.get(k)
+        if isinstance(row, dict):
+            recent.append(dict(row))
+    last = dict(session.get("_live_draft_rec_run_stage_last") or {})
+    events = [
+        dict(e)
+        for e in (session.get(RUN_STAGE_LEDGER_KEY) or [])[-24:]
+        if isinstance(e, dict)
+    ]
+    return {
+        "impl_rev": RUN_STAGE_PROBE_IMPL_REV,
+        "current_run_seq": int(session.get("_solo_stage1_script_run_seq") or 0),
+        "room_id": _room_id_for_stage(session),
+        "recent_by_seq": recent,
+        "last_event": last,
+        "events_tail": events,
+    }
+
+
+def render_rec_run_stage_ledger_probe(st: Any, session: dict[str, Any]) -> None:
+    """DOM probe ``#rec-queue-run-stage-ledger`` for Stage1 (solo_component_diag only)."""
+    try:
+        from live_draft_stage1_production_ledger import stage1_production_ledger_enabled
+
+        if not stage1_production_ledger_enabled(st, session):
+            return
+    except ImportError:
+        return
+    import base64
+    import json
+
+    payload = build_rec_run_stage_ledger_payload(session)
+    recent = list(payload.get("recent_by_seq") or [])
+    current = recent[-1] if recent else {}
+    flags = dict(current.get("flags") or {}) if isinstance(current, dict) else {}
+    safe = lambda s: str(s or "").replace('"', "'")[:160]
+    raw_json = json.dumps(payload, default=str, separators=(",", ":"))[:16000]
+    b64 = base64.b64encode(raw_json.encode("utf-8")).decode("ascii")
+    st.markdown(
+        f'<div id="{RUN_STAGE_PROBE_ELEMENT_ID}" '
+        f'data-impl-rev="{RUN_STAGE_PROBE_IMPL_REV}" '
+        f'data-run-seq="{int(payload.get("current_run_seq") or 0)}" '
+        f'data-room-id="{safe(payload.get("room_id"))}" '
+        f'data-widget-key="{safe(current.get("widget_key") if isinstance(current, dict) else "")}" '
+        f'data-player-id="{safe(current.get("player_id") if isinstance(current, dict) else "")}" '
+        f'data-cache-miss="{1 if flags.get("cache_miss") else 0}" '
+        f'data-snapshot-available="{1 if (isinstance(current, dict) and current.get("snapshot_available")) else 0}" '
+        f'data-snapshot-restored="{1 if flags.get("snapshot_restored") else 0}" '
+        f'data-rebuild-started="{1 if flags.get("rebuild_started") else 0}" '
+        f'data-rebuild-succeeded="{1 if flags.get("rebuild_succeeded") else 0}" '
+        f'data-rebuild-failed="{1 if flags.get("rebuild_failed") else 0}" '
+        f'data-fallback-started="{1 if flags.get("fallback_started") else 0}" '
+        f'data-fallback-succeeded="{1 if flags.get("fallback_succeeded") else 0}" '
+        f'data-fallback-failed="{1 if flags.get("fallback_failed") else 0}" '
+        f'data-interactive-invoked="{1 if flags.get("interactive_invoked") else 0}" '
+        f'data-target-button-registered="{1 if flags.get("target_button_registered") else 0}" '
+        f'data-button-return-value="{1 if (isinstance(current, dict) and current.get("button_return_value")) else 0}" '
+        f'data-dispatch-entered="{1 if flags.get("dispatch_entered") else 0}" '
+        f'data-execute-entered="{1 if flags.get("execute_entered") else 0}" '
+        f'data-b64="{b64}"></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def store_prepared_rec_interactive(
