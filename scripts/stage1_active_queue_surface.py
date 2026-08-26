@@ -62,6 +62,11 @@ _ACTIVE_FRAME_PROBE_JS = """() => {
     }
     const hasLedger = !!doc.querySelector('#solo-stage1-production-ledger, #solo-production-ledger-diag');
     const isAppFrame = String(frameUrl || '').includes('/~/+/');
+    const postCreateActiveDraftRenderFailed =
+      /active page did not open within|failed_step=active_draft_render/i.test(text);
+    const recommendationCardsHint =
+      /\\bRecommendations\\b/i.test(text) &&
+      (/Add to Queue/i.test(text) || /ld-rec-card-meta|rec_card_queue_/i.test(text));
     return {
       frameIndex,
       frameUrl: frameUrl || '',
@@ -77,6 +82,8 @@ _ACTIVE_FRAME_PROBE_JS = """() => {
       hasLedger,
       isAppFrame,
       textLen: text.length,
+      postCreateActiveDraftRenderFailed,
+      recommendationCardsHint,
     };
   }
   const out = [];
@@ -167,6 +174,17 @@ def scrape_frame_aware_active_observation(
     ledger_room = str(ledger.get("room_id") or "").upper()
     ledger_pick = ledger.get("pick_index")
 
+    post_create_fail = any(
+        bool(p.get("postCreateActiveDraftRenderFailed"))
+        for p in probes
+        if isinstance(p, dict)
+    )
+    recommendation_cards_hint = any(
+        bool(p.get("recommendationCardsHint"))
+        for p in probes
+        if isinstance(p, dict)
+    )
+
     return {
         "frame_probes": probes,
         "preferred_frame_index": preferred.get("frameIndex"),
@@ -188,12 +206,16 @@ def scrape_frame_aware_active_observation(
         "server_expected_token": expected_tok,
         "ledger_room_id": ledger_room,
         "ledger_pick_index": ledger_pick,
+        "post_create_active_draft_render_failed": post_create_fail,
+        "recommendation_cards_hint": recommendation_cards_hint,
         "signal_sources": {
             "visible_room_id": "preferred_frame" if preferred.get("roomId") else ("ledger" if ledger_room else "start_val"),
             "pick_index": "preferred_frame"
             if preferred.get("pickIndex") not in (None, "")
             else ("expected_token" if expected_tok else "start_val"),
             "add_to_queue_button_count": "any_frame_sum",
+            "post_create_active_draft_render_failed": "any_frame_or",
+            "recommendation_cards_hint": "any_frame_or",
         },
     }
 
@@ -327,8 +349,18 @@ def classify_active_page_boundary(
     if any_frame_queue and not preferred_queue:
         return QUEUE_ACTIVE_PAGE1A
     if server_eval.get("ready") and not queue_eval.get("ready"):
+        if obs.get("post_create_active_draft_render_failed"):
+            return QUEUE_ACTIVE_PAGE1F
         if ledger_room == latched and not visible_room:
             return QUEUE_ACTIVE_PAGE1C
+        if (
+            surface_activation_attempted
+            and not any_frame_queue
+            and int(obs.get("board_rows") or 0) > 0
+            and not obs.get("recommendation_cards_hint")
+        ):
+            # Board/player dataframe visible but recommendation Add-to-Queue never registered.
+            return QUEUE_ACTIVE_PAGE1F
         if surface_activation_attempted and not any_frame_queue:
             return QUEUE_ACTIVE_PAGE1D
         if int(obs.get("resume_draft_count") or 0) >= 1 and not any_frame_queue:
@@ -492,7 +524,11 @@ def wait_for_active_queue_surface(
         "first_room_pick_evidence_ts": None,
         "first_board_row_ts": None,
         "first_add_to_queue_ts": None,
+        "first_recommendation_cards_hint_ts": None,
+        "first_post_create_render_failure_ts": None,
         "surface_activation": None,
+        "wait_timeout_s": (timeout_s if timeout_s is not None else default_active_surface_wait_s()),
+        "poll_interval_s": 2.0,
     }
     surface_done = False
     last_eval: dict[str, Any] = {"passed": False}
@@ -540,6 +576,21 @@ def wait_for_active_queue_surface(
             timing["first_board_row_ts"] = now
         if timing["first_add_to_queue_ts"] is None and int(obs.get("add_to_queue_button_count") or 0) > 0:
             timing["first_add_to_queue_ts"] = now
+        if timing["first_recommendation_cards_hint_ts"] is None and obs.get("recommendation_cards_hint"):
+            timing["first_recommendation_cards_hint_ts"] = now
+        if timing["first_post_create_render_failure_ts"] is None and obs.get(
+            "post_create_active_draft_render_failed"
+        ):
+            timing["first_post_create_render_failure_ts"] = now
+            last_eval = evaluate_active_live_page_gate(
+                obs,
+                start_val=start_val,
+                while_paused=while_paused,
+                auth_complete=auth_complete,
+                surface_activation_attempted=surface_done,
+            )
+            last_eval["timing"] = timing
+            return last_eval
         last_eval = evaluate_active_live_page_gate(
             obs,
             start_val=start_val,

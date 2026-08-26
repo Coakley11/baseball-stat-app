@@ -10,9 +10,13 @@ sys.path.insert(0, str(SCRIPTS))
 
 from stage1_active_queue_surface import (  # noqa: E402
     ACTIVE_QUEUE_SURFACE_RESOLVED,
+    QUEUE_ACTIVE_PAGE1A,
     QUEUE_ACTIVE_PAGE1B,
+    QUEUE_ACTIVE_PAGE1D,
     QUEUE_ACTIVE_PAGE1E,
+    QUEUE_ACTIVE_PAGE1F,
     QUEUE_SURFACE_NAV_LABELS,
+    classify_active_page_boundary,
     evaluate_active_live_page_gate,
     evaluate_queue_ui_ready,
     evaluate_server_active_draft_ready,
@@ -116,3 +120,170 @@ def test_surface_activation_queue_mutation_detection_new_names_only() -> None:
     post_reorder = ["Francisco Lindor"]
     post_reorder_set = {n.lower() for n in post_reorder}
     assert bool(post_reorder_set - pre_set) is False
+
+
+def _prod_start_val(room: str, token: str) -> dict:
+    return {
+        "latched_room_id": room,
+        "in_progress": True,
+        "room_latch_pass": True,
+        "expected_token": token,
+        "pick_index": 0,
+    }
+
+
+def test_d3a2141_fixture_resolves_when_add_to_queue_present() -> None:
+    """48117734 gate snapshot: server ready, add-to-queue=2, board_rows=0."""
+    obs = {
+        "visible_room_id": "",
+        "pick_index": 0,
+        "pick0_token_ui": "BBE0C5A3|0|1787716581.354",
+        "pick0_deadline_ui": "1787716581.3538802",
+        "pause_draft_count": 2,
+        "resume_draft_count": 2,
+        "board_rows": 0,
+        "add_to_queue_button_count": 2,
+        "frames_with_add_to_queue": 1,
+        "server_latched_room_id": "BBE0C5A3",
+        "server_expected_token": "BBE0C5A3|0|1787716581.354",
+        "frame_probes": [{"frameIndex": 1, "isAppFrame": True, "addToQueue": 2, "hasLedger": True}],
+        "post_create_active_draft_render_failed": False,
+        "recommendation_cards_hint": True,
+    }
+    ev = evaluate_active_live_page_gate(
+        obs, start_val=_prod_start_val("BBE0C5A3", "BBE0C5A3|0|1787716581.354"), while_paused=True
+    )
+    assert ev["passed"] is True
+    assert ev["classification"] == ACTIVE_QUEUE_SURFACE_RESOLVED
+
+
+def test_3713de5_fixture_board_only_without_rec_classifies_1f_not_1d() -> None:
+    """2cd42978 final gate: board_rows=10 but no Add-to-Queue anywhere after tab activation."""
+    obs = {
+        "visible_room_id": "FB60F59B",
+        "pick_index": 0,
+        "pick0_token_ui": "FB60F59B|0|1787750384.450",
+        "pick0_deadline_ui": "1787750384.4504023",
+        "pause_draft_count": 2,
+        "resume_draft_count": 2,
+        "board_rows": 10,
+        "add_to_queue_button_count": 0,
+        "frames_with_add_to_queue": 0,
+        "server_latched_room_id": "FB60F59B",
+        "server_expected_token": "FB60F59B|0|1787750384.450",
+        "frame_probes": [{"frameIndex": 1, "isAppFrame": True, "boardRows": 10, "addToQueue": 0, "hasLedger": True}],
+        "post_create_active_draft_render_failed": False,
+        "recommendation_cards_hint": False,
+    }
+    server = evaluate_server_active_draft_ready(
+        obs, start_val=_prod_start_val("FB60F59B", "FB60F59B|0|1787750384.450"), while_paused=True
+    )
+    queue = evaluate_queue_ui_ready(obs)
+    assert server["ready"] is True
+    assert queue["ready"] is False
+    assert (
+        classify_active_page_boundary(
+            observation=obs,
+            server_eval=server,
+            queue_eval=queue,
+            surface_activation_attempted=True,
+        )
+        == QUEUE_ACTIVE_PAGE1F
+    )
+
+
+def test_post_create_active_draft_render_failure_classifies_1f() -> None:
+    obs = {
+        "visible_room_id": "FB60F59B",
+        "pick_index": 0,
+        "pick0_token_ui": "FB60F59B|0|1787750384.450",
+        "pick0_deadline_ui": "1787750384.4504023",
+        "pause_draft_count": 2,
+        "resume_draft_count": 2,
+        "board_rows": 0,
+        "add_to_queue_button_count": 0,
+        "frames_with_add_to_queue": 0,
+        "server_latched_room_id": "FB60F59B",
+        "server_expected_token": "FB60F59B|0|1787750384.450",
+        "frame_probes": [
+            {
+                "frameIndex": 1,
+                "isAppFrame": True,
+                "postCreateActiveDraftRenderFailed": True,
+                "hasLedger": True,
+            }
+        ],
+        "post_create_active_draft_render_failed": True,
+        "recommendation_cards_hint": False,
+    }
+    ev = evaluate_active_live_page_gate(
+        obs,
+        start_val=_prod_start_val("FB60F59B", "FB60F59B|0|1787750384.450"),
+        while_paused=True,
+        surface_activation_attempted=True,
+    )
+    assert ev["passed"] is False
+    assert ev["classification"] == QUEUE_ACTIVE_PAGE1F
+
+
+def test_board_visible_still_computing_classifies_1b_before_activation() -> None:
+    obs = {
+        "visible_room_id": "FB60F59B",
+        "pick_index": 0,
+        "pick0_token_ui": "FB60F59B|0|1787750384.450",
+        "pick0_deadline_ui": "1787750384.4504023",
+        "pause_draft_count": 1,
+        "resume_draft_count": 0,
+        "board_rows": 10,
+        "add_to_queue_button_count": 0,
+        "frames_with_add_to_queue": 0,
+        "server_latched_room_id": "FB60F59B",
+        "server_expected_token": "FB60F59B|0|1787750384.450",
+        "frame_probes": [{"frameIndex": 1, "isAppFrame": True, "boardRows": 10, "hasLedger": True}],
+        "post_create_active_draft_render_failed": False,
+        "recommendation_cards_hint": False,
+    }
+    server = evaluate_server_active_draft_ready(
+        obs, start_val=_prod_start_val("FB60F59B", "FB60F59B|0|1787750384.450"), while_paused=True
+    )
+    queue = evaluate_queue_ui_ready(obs)
+    assert (
+        classify_active_page_boundary(
+            observation=obs,
+            server_eval=server,
+            queue_eval=queue,
+            surface_activation_attempted=False,
+        )
+        == QUEUE_ACTIVE_PAGE1B
+    )
+
+
+def test_buttons_on_non_preferred_frame_classifies_1a() -> None:
+    obs = {
+        "visible_room_id": "FB60F59B",
+        "pick_index": 0,
+        "pick0_token_ui": "FB60F59B|0|1787750384.450",
+        "board_rows": 0,
+        "add_to_queue_button_count": 0,
+        "frames_with_add_to_queue": 1,
+        "server_latched_room_id": "FB60F59B",
+        "server_expected_token": "FB60F59B|0|1787750384.450",
+        "frame_probes": [
+            {"frameIndex": 0, "isAppFrame": False, "addToQueue": 2},
+            {"frameIndex": 1, "isAppFrame": True, "addToQueue": 0, "hasLedger": True},
+        ],
+        "post_create_active_draft_render_failed": False,
+    }
+    server = evaluate_server_active_draft_ready(
+        obs, start_val=_prod_start_val("FB60F59B", "FB60F59B|0|1787750384.450"), while_paused=True
+    )
+    queue = evaluate_queue_ui_ready(obs)
+    assert (
+        classify_active_page_boundary(
+            observation=obs,
+            server_eval=server,
+            queue_eval=queue,
+            surface_activation_attempted=True,
+        )
+        == QUEUE_ACTIVE_PAGE1A
+    )
