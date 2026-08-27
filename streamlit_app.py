@@ -23185,9 +23185,13 @@ elif active_page == "Live Draft Room":
                     st.stop()
                 if _poll_changed:
                     try:
-                        from live_draft_ui_cache import invalidate_live_draft_ui_caches
+                        from live_draft_ui_cache import (
+                            invalidate_live_draft_ui_caches_after_board_change,
+                        )
 
-                        invalidate_live_draft_ui_caches(st.session_state)
+                        invalidate_live_draft_ui_caches_after_board_change(
+                            st.session_state, reason="poll_changed"
+                        )
                     except ImportError:
                         st.session_state.pop("_live_draft_rec_cache", None)
                     try:

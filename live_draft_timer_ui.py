@@ -612,9 +612,13 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                     _render_timer_static(st, session, tick_room, source="fragment_tick")
                 if poll_changed:
                     try:
-                        from live_draft_ui_cache import invalidate_live_draft_ui_caches
+                        from live_draft_ui_cache import (
+                            invalidate_live_draft_ui_caches_after_board_change,
+                        )
 
-                        invalidate_live_draft_ui_caches(session)
+                        invalidate_live_draft_ui_caches_after_board_change(
+                            session, reason="timer_fragment_poll_changed"
+                        )
                     except ImportError:
                         session.pop("_live_draft_rec_cache", None)
                     try:

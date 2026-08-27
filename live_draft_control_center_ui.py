@@ -248,10 +248,12 @@ def render_live_draft_control_center(
                 try:
                     from live_draft_ui_cache import (
                         invalidate_draft_assistant_scoring_cache,
-                        invalidate_live_draft_ui_caches,
+                        invalidate_live_draft_ui_caches_after_board_change,
                     )
 
-                    invalidate_live_draft_ui_caches(session)
+                    invalidate_live_draft_ui_caches_after_board_change(
+                        session, reason="auto_pick_now"
+                    )
                     invalidate_draft_assistant_scoring_cache(session)
                 except ImportError:
                     session.pop("_live_draft_rec_cache", None)
