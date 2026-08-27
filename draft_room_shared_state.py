@@ -31,6 +31,7 @@ PARTICIPANT_MEMBERSHIP_KEY = "draft_room_participant_membership"
 SHARED_DOC_SOFT_CACHE_KEY = "_shared_room_doc_soft_cache"
 LEFT_PARTICIPANTS_KEY = "left_participants"
 REJOINED_PARTICIPANTS_KEY = "rejoined_participants"
+LEAVE_REJOIN_GENERATION_KEY = "leave_rejoin_generation"
 
 _PRIVATE_DOCUMENT_KEYS = frozenset(
     {
@@ -332,6 +333,42 @@ def _left_participant_ids(*maps: Any) -> set[str]:
     return ids
 
 
+def _int_generation(raw: Any) -> int:
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def document_leave_rejoin_generation(document: dict[str, Any] | None) -> int:
+    """Highest causal leave/rejoin generation present on a document."""
+    if not isinstance(document, dict):
+        return 0
+    n = _int_generation(document.get(LEAVE_REJOIN_GENERATION_KEY))
+    for rec in normalize_left_participants(document.get(LEFT_PARTICIPANTS_KEY)).values():
+        n = max(n, _int_generation((rec or {}).get("leave_generation")))
+    for rec in normalize_left_participants(document.get(REJOINED_PARTICIPANTS_KEY)).values():
+        n = max(n, _int_generation((rec or {}).get("rejoin_generation")))
+    return n
+
+
+def next_leave_rejoin_generation(document: dict[str, Any] | None) -> int:
+    return document_leave_rejoin_generation(document) + 1
+
+
+def merge_left_ledgers(*maps: Any) -> dict[str, dict[str, Any]]:
+    """Union leave ledgers, keeping the higher leave_generation per id."""
+    combined: dict[str, dict[str, Any]] = {}
+    for raw in maps:
+        for pid, rec in normalize_left_participants(raw).items():
+            prev = combined.get(pid)
+            if prev is None or _int_generation((rec or {}).get("leave_generation")) >= _int_generation(
+                (prev or {}).get("leave_generation")
+            ):
+                combined[pid] = rec
+    return combined
+
+
 def record_shared_room_participant_left(
     document: dict[str, Any],
     participant_id: str,
@@ -347,6 +384,7 @@ def record_shared_room_participant_left(
     if not pid:
         return document
     stamp = str(left_at or "").strip() or _utc_now_iso()
+    generation = next_leave_rejoin_generation(document)
     left = normalize_left_participants(document.get(LEFT_PARTICIPANTS_KEY))
     tokens = {pid}
     for raw in aliases or ():
@@ -357,10 +395,12 @@ def record_shared_room_participant_left(
         rec = dict(left.get(token) or {})
         rec["participant_id"] = pid
         rec["left_at"] = stamp
+        rec["leave_generation"] = generation
         if released_team:
             rec["released_team"] = str(released_team).strip()
         left[token] = rec
     document[LEFT_PARTICIPANTS_KEY] = left
+    document[LEAVE_REJOIN_GENERATION_KEY] = generation
     # A later leave supersedes any prior rejoin marker for these ids.
     rejoined = normalize_left_participants(document.get(REJOINED_PARTICIPANTS_KEY))
     token_l = {t.lower() for t in tokens}
@@ -383,6 +423,8 @@ def clear_shared_room_participant_left(
 
     Merge honors this stamp — not mere presence of the participant on an
     arbitrary outgoing save — so a stale host document cannot resurrect a seat.
+    The marker carries a monotonic generation greater than the leave it cleared,
+    so a replayed prior-rejoin document cannot beat a later leave.
     """
     if not isinstance(document, dict):
         return {}
@@ -394,6 +436,7 @@ def clear_shared_room_participant_left(
             tokens.add(token)
     tokens.discard("")
     left = normalize_left_participants(document.get(LEFT_PARTICIPANTS_KEY))
+    generation_floor = document_leave_rejoin_generation(document)
     cleared_any = False
     for key in list(left.keys()):
         rec = left.get(key) or {}
@@ -405,14 +448,17 @@ def clear_shared_room_participant_left(
     if not cleared_any:
         # First join is not a rejoin — do not stamp a marker that can beat a later leave.
         return document
+    generation = generation_floor + 1
     stamp = _utc_now_iso()
     rejoined = normalize_left_participants(document.get(REJOINED_PARTICIPANTS_KEY))
     for token in {pid, *[str(a).strip() for a in (aliases or ()) if str(a).strip()]}:
         rec = dict(rejoined.get(token) or {})
         rec["participant_id"] = pid
         rec["rejoined_at"] = stamp
+        rec["rejoin_generation"] = generation
         rejoined[token] = rec
     document[REJOINED_PARTICIPANTS_KEY] = rejoined
+    document[LEAVE_REJOIN_GENERATION_KEY] = generation
     return document
 
 
@@ -432,8 +478,9 @@ def preserve_shared_room_participants(
 
     A later save that still lists the guest is **not** a rejoin. Only
     ``clear_shared_room_participant_left`` (the registration path) stamps
-    ``rejoined_participants``; that marker must be newer than ``left_at``
-    before the seat can return.
+    ``rejoined_participants``. That marker wins only when its monotonic
+    ``rejoin_generation`` is strictly greater than the leave it would clear.
+    A replayed prior-rejoin document cannot beat a later leave.
     """
     if not isinstance(outgoing, dict):
         return {}
@@ -450,19 +497,20 @@ def preserve_shared_room_participants(
 
     existing_parts = dict(existing.get("participants") or {})
     outgoing_parts = dict(outgoing.get("participants") or {})
-    left = normalize_left_participants(existing.get(LEFT_PARTICIPANTS_KEY))
-    left.update(normalize_left_participants(outgoing.get(LEFT_PARTICIPANTS_KEY)))
+    left = merge_left_ledgers(existing.get(LEFT_PARTICIPANTS_KEY), outgoing.get(LEFT_PARTICIPANTS_KEY))
     # Only the writer that called clear_shared_room_participant_left may
     # resurrect a seat. Existing rejoin markers are stale-host/first-join noise.
+    # Outgoing markers still lose when their generation is not strictly later
+    # than the current leave (replayed prior-rejoin after a second leave).
     rejoined = normalize_left_participants(outgoing.get(REJOINED_PARTICIPANTS_KEY))
 
-    def _rejoin_stamp_for(pid: str, rec: dict[str, Any]) -> str:
+    def _rejoin_generation_for(pid: str, rec: dict[str, Any]) -> int:
         target = {
             str(pid or "").strip().lower(),
             str((rec or {}).get("participant_id") or "").strip().lower(),
         }
         target.discard("")
-        latest = ""
+        latest = 0
         for rpid, rrec in rejoined.items():
             aliases = {
                 str(rpid or "").strip().lower(),
@@ -470,18 +518,16 @@ def preserve_shared_room_participants(
             }
             aliases.discard("")
             if target & aliases:
-                stamp = str((rrec or {}).get("rejoined_at") or "")
-                if stamp > latest:
-                    latest = stamp
+                latest = max(latest, _int_generation((rrec or {}).get("rejoin_generation")))
         return latest
 
-    # Explicit rejoin wins only when its stamp is newer than the leave.
-    # Presence on outgoing_parts alone must not drop the ledger.
+    # Explicit rejoin wins only when its generation is strictly later than the leave.
+    # Presence on outgoing_parts or a replayed older rejoin marker must not drop it.
     for pid in list(left.keys()):
         rec = left.get(pid) or {}
-        leave_at = str(rec.get("left_at") or "")
-        rejoin_at = _rejoin_stamp_for(pid, rec)
-        if rejoin_at and (not leave_at or rejoin_at >= leave_at):
+        leave_gen = _int_generation((rec or {}).get("leave_generation"))
+        rejoin_gen = _rejoin_generation_for(pid, rec)
+        if rejoin_gen > leave_gen:
             left.pop(pid, None)
 
     left_ids = {str(pid).strip().lower() for pid in _left_participant_ids(left)}
@@ -490,6 +536,11 @@ def preserve_shared_room_participants(
         if str(rpid).strip().lower() in left_ids:
             rejoined.pop(rpid, None)
     merged[REJOINED_PARTICIPANTS_KEY] = rejoined
+    merged[LEAVE_REJOIN_GENERATION_KEY] = max(
+        document_leave_rejoin_generation(existing),
+        document_leave_rejoin_generation(outgoing),
+        document_leave_rejoin_generation(merged),
+    )
 
     combined: dict[str, Any] = {}
     for pid, meta in existing_parts.items():

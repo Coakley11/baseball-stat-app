@@ -247,6 +247,52 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         self.assertIn("user:coakley11", dict((after_rejoin or {}).get("participants") or {}))
         self.assertNotIn("user:coakley11", (after_rejoin or {}).get(LEFT_PARTICIPANTS_KEY) or {})
 
+    def test_stale_prior_rejoin_marker_cannot_beat_later_leave(self) -> None:
+        from draft_room_shared_state import REJOINED_PARTICIPANTS_KEY
+
+        code = self._create_and_join()
+        leave_shared_draft_room(self.guest)
+        self.guest[AUTH_USER_ID_KEY] = "user:coakley11"
+        self.guest["draft_room_participant_id"] = "user:coakley11"
+        ok, msg, _ = join_shared_draft_room(
+            self.guest, code, requested_team="Team B", store=self.store
+        )
+        self.assertTrue(ok, msg)
+        after_rejoin = load_shared_room(code)
+        self.assertIn("user:coakley11", dict((after_rejoin or {}).get("participants") or {}))
+        self.assertIn("user:coakley11", (after_rejoin or {}).get(REJOINED_PARTICIPANTS_KEY) or {})
+        stale_prior_rejoin = copy.deepcopy(after_rejoin or {})
+
+        leave_shared_draft_room(self.guest)
+        after_second_leave = load_shared_room(code)
+        self.assertNotIn("user:coakley11", dict((after_second_leave or {}).get("participants") or {}))
+        self.assertIn("user:coakley11", (after_second_leave or {}).get(LEFT_PARTICIPANTS_KEY) or {})
+        self.assertNotIn("user:coakley11", (after_second_leave or {}).get(REJOINED_PARTICIPANTS_KEY) or {})
+
+        # Replay the captured prior-rejoin document (has guest + older rejoin marker).
+        self.assertIn("user:coakley11", dict(stale_prior_rejoin.get("participants") or {}))
+        self.assertIn("user:coakley11", stale_prior_rejoin.get(REJOINED_PARTICIPANTS_KEY) or {})
+        self.store.save(stale_prior_rejoin)
+
+        stored = load_shared_room(code)
+        self.assertNotIn("user:coakley11", dict((stored or {}).get("participants") or {}))
+        self.assertNotIn("user:coakley11", dict((stored or {}).get("joined_participants") or {}))
+        self.assertIn("user:coakley11", (stored or {}).get(LEFT_PARTICIPANTS_KEY) or {})
+        open_teams, _ = list_available_shared_room_teams(stored, "late-guest")
+        self.assertIn("Team B", open_teams)
+
+        # A genuinely later registration rejoin still succeeds.
+        self.guest[AUTH_USER_ID_KEY] = "user:coakley11"
+        self.guest["draft_room_participant_id"] = "user:coakley11"
+        ok2, msg2, _ = join_shared_draft_room(
+            self.guest, code, requested_team="Team B", store=self.store
+        )
+        self.assertTrue(ok2, msg2)
+        self.assertEqual(self.guest.get(ACTIVE_PARTICIPANT_TEAM_KEY), "Team B")
+        after_later_rejoin = load_shared_room(code)
+        self.assertIn("user:coakley11", dict((after_later_rejoin or {}).get("participants") or {}))
+        self.assertNotIn("user:coakley11", (after_later_rejoin or {}).get(LEFT_PARTICIPANTS_KEY) or {})
+
     def test_guest_leave_releases_team_and_blocks_host_steal(self) -> None:
         code = self._create_and_join()
         leave_shared_draft_room(self.guest)

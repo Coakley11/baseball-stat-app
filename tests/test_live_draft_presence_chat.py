@@ -209,6 +209,26 @@ class PresenceJoinTests(unittest.TestCase):
         self.assertIn("user:coakley11", rejoined["participants"])
         self.assertNotIn("user:coakley11", rejoined.get(LEFT_PARTICIPANTS_KEY) or {})
 
+        # Second leave, then replay the prior-rejoin document. Later leave wins.
+        later_leave = {
+            "participants": {
+                "user:daniel": {"assigned_team": "Team 1", "display_name": "Daniel"},
+            },
+            JOINED_PARTICIPANTS_KEY: {
+                "user:daniel": {"user_id": "user:daniel", "team_name": "Team 1"},
+            },
+            "leave_rejoin_generation": rejoined.get("leave_rejoin_generation"),
+        }
+        record_shared_room_participant_left(
+            later_leave,
+            "user:coakley11",
+            aliases=("user:coakley11",),
+            released_team="Team 2",
+        )
+        replayed = preserve_shared_room_participants(rejoin, later_leave)
+        self.assertNotIn("user:coakley11", replayed["participants"])
+        self.assertIn("user:coakley11", replayed.get(LEFT_PARTICIPANTS_KEY) or {})
+
     def test_cpu_placeholder_does_not_block_start(self) -> None:
         set_live_draft_setup_mode(self.daniel, SETUP_MODE_SHARED)
         room = _room(teams=["Team 1", "Team 2", "CPU Bot"])
