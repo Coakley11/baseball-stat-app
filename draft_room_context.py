@@ -1656,6 +1656,14 @@ def leave_shared_draft_room(session: dict[str, Any]) -> None:
             doc = load_shared_room(room_code)
             if isinstance(doc, dict):
                 parts = dict(doc.get("participants") or {})
+                leave_meta = parts.get(leave_pid) if isinstance(parts.get(leave_pid), dict) else {}
+                released_team = str((leave_meta or {}).get("assigned_team") or "").strip()
+                aliases = {leave_pid}
+                if isinstance(leave_meta, dict):
+                    for key in ("user_id", "account_user_id", "participant_id"):
+                        alias = str(leave_meta.get(key) or "").strip()
+                        if alias:
+                            aliases.add(alias)
                 parts.pop(leave_pid, None)
                 # Also drop case-insensitive aliases.
                 for key in list(parts.keys()):
@@ -1664,11 +1672,27 @@ def leave_shared_draft_room(session: dict[str, Any]) -> None:
                 doc["participants"] = parts
                 joined = doc.get("joined_participants")
                 if isinstance(joined, dict):
-                    joined.pop(leave_pid, None)
-                    for key in list(joined.keys()):
-                        if str(key).strip().lower() == leave_pid.lower():
-                            joined.pop(key, None)
+                    for alias in aliases:
+                        joined.pop(alias, None)
+                        for key in list(joined.keys()):
+                            if str(key).strip().lower() == str(alias).strip().lower():
+                                joined.pop(key, None)
                     doc["joined_participants"] = joined
+                claims = doc.get("team_claims")
+                if isinstance(claims, dict) and released_team:
+                    claims.pop(released_team, None)
+                    doc["team_claims"] = claims
+                try:
+                    from draft_room_shared_state import record_shared_room_participant_left
+
+                    record_shared_room_participant_left(
+                        doc,
+                        leave_pid,
+                        aliases=aliases,
+                        released_team=released_team,
+                    )
+                except ImportError:
+                    pass
                 updated = bump_revision(doc)
                 get_shared_room_store().save(updated)
                 try:

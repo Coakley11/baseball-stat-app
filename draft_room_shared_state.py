@@ -29,6 +29,7 @@ SHARED_ROOM_META_KEY = "draft_room_shared_meta"
 ACTIVE_SHARED_ROOM_CODE_KEY = "active_shared_draft_room_code"
 PARTICIPANT_MEMBERSHIP_KEY = "draft_room_participant_membership"
 SHARED_DOC_SOFT_CACHE_KEY = "_shared_room_doc_soft_cache"
+LEFT_PARTICIPANTS_KEY = "left_participants"
 
 _PRIVATE_DOCUMENT_KEYS = frozenset(
     {
@@ -298,6 +299,95 @@ def preserve_shared_room_chat(
     return outgoing
 
 
+def normalize_left_participants(raw: Any) -> dict[str, dict[str, Any]]:
+    """Normalize the durable leave ledger that blocks seat resurrection on merge."""
+    out: dict[str, dict[str, Any]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, val in raw.items():
+        pid = str(key or "").strip()
+        if not pid:
+            continue
+        if isinstance(val, dict):
+            rec = dict(val)
+            rec.setdefault("participant_id", pid)
+            out[pid] = rec
+        else:
+            out[pid] = {"participant_id": pid, "left_at": str(val or "")}
+    return out
+
+
+def _left_participant_ids(*maps: Any) -> set[str]:
+    ids: set[str] = set()
+    for raw in maps:
+        for pid, rec in normalize_left_participants(raw).items():
+            ids.add(str(pid).strip())
+            if isinstance(rec, dict):
+                for key in ("participant_id", "user_id", "account_user_id"):
+                    alias = str(rec.get(key) or "").strip()
+                    if alias:
+                        ids.add(alias)
+    ids.discard("")
+    return ids
+
+
+def record_shared_room_participant_left(
+    document: dict[str, Any],
+    participant_id: str,
+    *,
+    aliases: Any = (),
+    released_team: str = "",
+    left_at: str = "",
+) -> dict[str, Any]:
+    """Stamp an explicit leave so later stale saves cannot resurrect the seat."""
+    if not isinstance(document, dict):
+        return {}
+    pid = str(participant_id or "").strip()
+    if not pid:
+        return document
+    stamp = str(left_at or "").strip() or _utc_now_iso()
+    left = normalize_left_participants(document.get(LEFT_PARTICIPANTS_KEY))
+    tokens = {pid}
+    for raw in aliases or ():
+        token = str(raw or "").strip()
+        if token:
+            tokens.add(token)
+    for token in tokens:
+        rec = dict(left.get(token) or {})
+        rec["participant_id"] = pid
+        rec["left_at"] = stamp
+        if released_team:
+            rec["released_team"] = str(released_team).strip()
+        left[token] = rec
+    document[LEFT_PARTICIPANTS_KEY] = left
+    return document
+
+
+def clear_shared_room_participant_left(
+    document: dict[str, Any],
+    participant_id: str,
+    *,
+    aliases: Any = (),
+) -> dict[str, Any]:
+    """Clear leave ledger entries so a later rejoin can reclaim a released team."""
+    if not isinstance(document, dict):
+        return {}
+    tokens = {str(participant_id or "").strip().lower()}
+    for raw in aliases or ():
+        token = str(raw or "").strip().lower()
+        if token:
+            tokens.add(token)
+    tokens.discard("")
+    left = normalize_left_participants(document.get(LEFT_PARTICIPANTS_KEY))
+    for key in list(left.keys()):
+        rec = left.get(key) or {}
+        rec_pid = str((rec or {}).get("participant_id") or "").strip().lower()
+        if str(key).strip().lower() in tokens or rec_pid in tokens:
+            left.pop(key, None)
+    document[LEFT_PARTICIPANTS_KEY] = left
+    return document
+
+
 def preserve_shared_room_participants(
     outgoing: dict[str, Any],
     existing: dict[str, Any] | None,
@@ -308,6 +398,10 @@ def preserve_shared_room_participants(
     participant wipe. Merging existing seats back was the deployed End/Delete
     failure mode — status became deleted while memberships stayed alive, and
     local clients kept drafting against the resurrected seat map.
+
+    Explicit leaves are a second exception: ``left_participants`` is a durable
+    ledger so a guest Leave is not undone by the stale-host merge. Rejoin writes
+    the participant back onto ``outgoing`` and clears the ledger entry.
     """
     if not isinstance(outgoing, dict):
         return {}
@@ -324,7 +418,21 @@ def preserve_shared_room_participants(
 
     existing_parts = dict(existing.get("participants") or {})
     outgoing_parts = dict(outgoing.get("participants") or {})
-    combined: dict[str, Any] = copy.deepcopy(existing_parts)
+    left = normalize_left_participants(existing.get(LEFT_PARTICIPANTS_KEY))
+    left.update(normalize_left_participants(outgoing.get(LEFT_PARTICIPANTS_KEY)))
+    # Rejoin wins: anyone present on the outgoing seat map is no longer left.
+    for pid in list(left.keys()):
+        if pid in outgoing_parts:
+            left.pop(pid, None)
+    left_ids = {str(pid).strip().lower() for pid in _left_participant_ids(left)}
+    merged[LEFT_PARTICIPANTS_KEY] = left
+
+    combined: dict[str, Any] = {}
+    for pid, meta in existing_parts.items():
+        if str(pid).strip().lower() in left_ids:
+            continue
+        if isinstance(meta, dict):
+            combined[str(pid)] = copy.deepcopy(meta)
     for pid, meta in outgoing_parts.items():
         if not isinstance(meta, dict):
             continue
@@ -344,13 +452,21 @@ def preserve_shared_room_participants(
     try:
         from live_draft_presence import JOINED_PARTICIPANTS_KEY, merge_joined_participants
 
-        merged[JOINED_PARTICIPANTS_KEY] = merge_joined_participants(outgoing, existing)
+        joined = merge_joined_participants(outgoing, existing)
+        for uid in list(joined.keys()):
+            if str(uid).strip().lower() in left_ids:
+                joined.pop(uid, None)
+        merged[JOINED_PARTICIPANTS_KEY] = joined
     except ImportError:
         existing_joined = existing.get("joined_participants")
         if isinstance(existing_joined, dict) and existing_joined:
             out_joined = outgoing.get("joined_participants")
             if not isinstance(out_joined, dict) or not out_joined:
-                merged["joined_participants"] = copy.deepcopy(existing_joined)
+                merged["joined_participants"] = {
+                    uid: copy.deepcopy(meta)
+                    for uid, meta in existing_joined.items()
+                    if str(uid).strip().lower() not in left_ids
+                }
 
     return merged
 

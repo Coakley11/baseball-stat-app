@@ -1089,6 +1089,16 @@ def register_participant_in_shared_document(
             "email": resolved_email,
         }
     out["participants"] = participants
+    try:
+        from draft_room_shared_state import clear_shared_room_participant_left
+
+        clear_shared_room_participant_left(
+            out,
+            pid,
+            aliases=(resolved_user, resolved_account, resolved_external),
+        )
+    except ImportError:
+        pass
     out["revision"] = int(out.get("revision") or 0) + 1
     out["updated_at"] = _utc_now_iso()
     return out

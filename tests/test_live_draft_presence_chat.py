@@ -151,6 +151,38 @@ class PresenceJoinTests(unittest.TestCase):
         self.assertIn("user:coakley11", merged["participants"])
         self.assertIn("user:coakley11", merged[JOINED_PARTICIPANTS_KEY])
 
+    def test_explicit_leave_is_not_resurrected_by_stale_host_merge(self) -> None:
+        from draft_room_shared_state import LEFT_PARTICIPANTS_KEY, record_shared_room_participant_left
+
+        existing = {
+            "participants": {
+                "user:daniel": {"assigned_team": "Team 1", "display_name": "Daniel"},
+                "user:coakley11": {"assigned_team": "Team 2", "display_name": "Coakley11"},
+            },
+            JOINED_PARTICIPANTS_KEY: {
+                "user:daniel": {"user_id": "user:daniel", "team_name": "Team 1"},
+                "user:coakley11": {"user_id": "user:coakley11", "team_name": "Team 2"},
+            },
+        }
+        outgoing = {
+            "participants": {
+                "user:daniel": {"assigned_team": "Team 1", "display_name": "Daniel"},
+            },
+            JOINED_PARTICIPANTS_KEY: {
+                "user:daniel": {"user_id": "user:daniel", "team_name": "Team 1"},
+            },
+        }
+        record_shared_room_participant_left(
+            outgoing,
+            "user:coakley11",
+            aliases=("user:coakley11",),
+            released_team="Team 2",
+        )
+        merged = preserve_shared_room_participants(outgoing, existing)
+        self.assertNotIn("user:coakley11", merged["participants"])
+        self.assertNotIn("user:coakley11", merged[JOINED_PARTICIPANTS_KEY])
+        self.assertIn("user:coakley11", merged.get(LEFT_PARTICIPANTS_KEY) or {})
+
     def test_cpu_placeholder_does_not_block_start(self) -> None:
         set_live_draft_setup_mode(self.daniel, SETUP_MODE_SHARED)
         room = _room(teams=["Team 1", "Team 2", "CPU Bot"])
