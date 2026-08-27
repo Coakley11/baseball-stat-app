@@ -863,7 +863,8 @@ def discard_live_draft_and_start_over(
     except ImportError:
         pass
     result = permanently_delete_live_draft(session, st=st, reason=reason)
-    result["operation"] = "discard"
+    if result.get("operation") != "leave":
+        result["operation"] = "discard"
     return result
 
 

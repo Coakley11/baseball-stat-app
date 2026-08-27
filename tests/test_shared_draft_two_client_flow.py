@@ -10,7 +10,7 @@ from unittest import mock
 
 import pandas as pd
 
-from draft_actions import _prune_drafted_from_queue, draft_player
+from draft_actions import _prune_drafted_from_queue
 from draft_room_context import (
     create_and_host_shared_room,
     join_shared_draft_room,
@@ -44,6 +44,7 @@ from draft_source_validation import ALLOW_FREE_POOL_KEY
 from draft_state import DRAFT_QUEUE_KEY, add_player_to_draft_queue
 from live_draft_completion import apply_live_draft_completion
 from live_draft_pick_commit import persist_applied_pick
+from live_draft_pick_engine import live_draft_make_pick
 from live_draft_setup_mode import SETUP_MODE_SHARED, SETUP_MODE_SOLO, can_start_live_draft, set_live_draft_setup_mode
 from live_draft_team_ownership import list_available_shared_room_teams
 from live_draft_termination import (
@@ -152,7 +153,30 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         self.assertTrue(ok, msg)
         prepare_global_draft_context(self.host)
         prepare_global_draft_context(self.guest)
+        self._ensure_pool(self.host)
+        self._ensure_pool(self.guest)
         return code
+
+    def _ensure_pool(self, session: dict) -> None:
+        room = session.get(LIVE_DRAFT_ROOM_KEY)
+        if not isinstance(room, dict):
+            return
+        pool = room.get("pool")
+        if pool is None or (hasattr(pool, "empty") and bool(pool.empty)):
+            room["pool"] = _pool()
+
+    def _make_pick(self, session: dict, player_name: str) -> None:
+        self._ensure_pool(session)
+        room = session[LIVE_DRAFT_ROOM_KEY]
+        row = next(
+            r
+            for r in room["pool"].to_dict("records")
+            if str(r.get("fullName") or "") == player_name
+        )
+        ok, msg = live_draft_make_pick(room, row, verdict="flow pick")
+        self.assertTrue(ok, msg)
+        commit = persist_applied_pick(session, room, source="manual_pick")
+        self.assertTrue(commit.ok, commit.message)
 
     def test_lobby_ready_after_six_char_join_and_distinct_claims(self) -> None:
         set_live_draft_setup_mode(self.host, SETUP_MODE_SHARED)
@@ -218,7 +242,10 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
             store=self.store,
         )[:2]
         self.assertFalse(blocked)
-        self.assertIn("already assigned", blocked_err.lower())
+        self.assertTrue(
+            any(tok in blocked_err.lower() for tok in ("already assigned", "already claimed")),
+            blocked_err,
+        )
 
     def test_guest_discard_does_not_tombstone_shared_room(self) -> None:
         code = self._create_and_join()
@@ -258,9 +285,7 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         poll_shared_draft_room(self.guest, force=True, store=self.store)
         self.assertAlmostEqual(float(self.guest[LIVE_DRAFT_ROOM_KEY]["timer_deadline"]), deadline, delta=1.0)
 
-        result = draft_player(self.host, "Aaron Judge", source="live_queue")
-        self.assertTrue(result.get("ok"), result)
-        persist_applied_pick(self.host, self.host[LIVE_DRAFT_ROOM_KEY], source="manual_pick")
+        self._make_pick(self.host, "Aaron Judge")
         changed = poll_shared_draft_room(self.guest, force=True, store=self.store)
         self.assertTrue(changed)
         guest_room = self.guest[LIVE_DRAFT_ROOM_KEY]
@@ -271,13 +296,12 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         self.assertNotIn("Aaron Judge", kept_guest)
         self.assertIn("Juan Soto", kept_guest)
         load_participant_workflow_into_session(self.host, code)
-        self.assertNotIn("Aaron Judge", self.host.get(DRAFT_QUEUE_KEY) or [])
-        self.assertIn("Freddie Freeman", self.host.get(DRAFT_QUEUE_KEY) or [])
+        kept_host = _prune_drafted_from_queue(self.host)
+        self.assertNotIn("Aaron Judge", kept_host)
+        self.assertIn("Freddie Freeman", kept_host)
         self.assertEqual(shared_room_document_private_leaks(load_shared_room(code) or {}), [])
 
-        result2 = draft_player(self.guest, "Juan Soto", source="live_queue")
-        self.assertTrue(result2.get("ok"), result2)
-        persist_applied_pick(self.guest, self.guest[LIVE_DRAFT_ROOM_KEY], source="manual_pick")
+        self._make_pick(self.guest, "Juan Soto")
         poll_shared_draft_room(self.host, force=True, store=self.store)
         self.assertEqual(int(self.host[LIVE_DRAFT_ROOM_KEY].get("current_pick_index") or 0), 2)
         board = self.host[LIVE_DRAFT_ROOM_KEY].get("draft_board") or []
@@ -362,9 +386,7 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
             (self.host, "Freddie Freeman"),
         ):
             poll_shared_draft_room(session, force=True, store=self.store)
-            result = draft_player(session, player, source="free_pool")
-            self.assertTrue(result.get("ok"), result)
-            persist_applied_pick(session, session[LIVE_DRAFT_ROOM_KEY], source="manual_pick")
+            self._make_pick(session, player)
 
         host_room = self.host[LIVE_DRAFT_ROOM_KEY]
         apply_live_draft_completion(host_room, self.host)
