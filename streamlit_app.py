@@ -22872,6 +22872,20 @@ elif active_page == "Live Draft Room":
         pass
     _early_room = st.session_state.get("live_draft_room")
     if isinstance(_early_room, dict):
+        # Post-create contract: first ScriptRun that resolves active_draft/lobby
+        # marks active_page_entered before placement st.stop() or the 5s watchdog.
+        try:
+            from live_draft_completion import resolve_live_draft_lifecycle
+            from live_draft_creation_trace import maybe_mark_active_draft_page_entered
+
+            maybe_mark_active_draft_page_entered(
+                st.session_state,
+                lifecycle=str(
+                    resolve_live_draft_lifecycle(st.session_state, room=_early_room) or ""
+                ),
+            )
+        except ImportError:
+            pass
         try:
             from live_draft_queueui_instrumentation_build import emit_raw_canary
 
