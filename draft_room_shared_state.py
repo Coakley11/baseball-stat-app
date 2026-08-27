@@ -394,12 +394,17 @@ def clear_shared_room_participant_left(
             tokens.add(token)
     tokens.discard("")
     left = normalize_left_participants(document.get(LEFT_PARTICIPANTS_KEY))
+    cleared_any = False
     for key in list(left.keys()):
         rec = left.get(key) or {}
         rec_pid = str((rec or {}).get("participant_id") or "").strip().lower()
         if str(key).strip().lower() in tokens or rec_pid in tokens:
             left.pop(key, None)
+            cleared_any = True
     document[LEFT_PARTICIPANTS_KEY] = left
+    if not cleared_any:
+        # First join is not a rejoin — do not stamp a marker that can beat a later leave.
+        return document
     stamp = _utc_now_iso()
     rejoined = normalize_left_participants(document.get(REJOINED_PARTICIPANTS_KEY))
     for token in {pid, *[str(a).strip() for a in (aliases or ()) if str(a).strip()]}:
@@ -447,8 +452,9 @@ def preserve_shared_room_participants(
     outgoing_parts = dict(outgoing.get("participants") or {})
     left = normalize_left_participants(existing.get(LEFT_PARTICIPANTS_KEY))
     left.update(normalize_left_participants(outgoing.get(LEFT_PARTICIPANTS_KEY)))
-    rejoined = normalize_left_participants(existing.get(REJOINED_PARTICIPANTS_KEY))
-    rejoined.update(normalize_left_participants(outgoing.get(REJOINED_PARTICIPANTS_KEY)))
+    # Only the writer that called clear_shared_room_participant_left may
+    # resurrect a seat. Existing rejoin markers are stale-host/first-join noise.
+    rejoined = normalize_left_participants(outgoing.get(REJOINED_PARTICIPANTS_KEY))
 
     def _rejoin_stamp_for(pid: str, rec: dict[str, Any]) -> str:
         target = {

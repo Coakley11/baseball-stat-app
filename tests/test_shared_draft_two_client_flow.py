@@ -235,6 +235,9 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         self.assertNotIn("Team A", open_teams)
 
         # Rejoin uses register → clear_shared_room_participant_left, not a stale save.
+        # Leave cleared runtime ids; a returning guest still has the same account identity.
+        self.guest[AUTH_USER_ID_KEY] = "user:coakley11"
+        self.guest["draft_room_participant_id"] = "user:coakley11"
         ok, msg, _ = join_shared_draft_room(
             self.guest, code, requested_team="Team B", store=self.store
         )
