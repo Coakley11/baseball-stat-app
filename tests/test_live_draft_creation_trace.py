@@ -162,6 +162,39 @@ class CreationTraceTests(unittest.TestCase):
         self.assertFalse(session["_live_draft_creation_receipt"].get("active_page_entered"))
         self.assertIn("active page did not open", str((first or {}).get("detail") or ""))
 
+    def test_second_create_watchdog_still_fails_after_prior_active_entry(self) -> None:
+        from live_draft_creation_trace import (
+            ACTIVE_PAGE_ENTERED_KEY,
+            POST_CREATE_DEADLINE_KEY,
+            POST_CREATE_FAIL_KEY,
+            evaluate_post_create_watchdog,
+            mark_active_draft_page_entered,
+        )
+
+        session = _armed_post_create_session()
+        mark_active_draft_page_entered(session, lifecycle="active_draft")
+        self.assertTrue(session.get(ACTIVE_PAGE_ENTERED_KEY))
+        self.assertTrue(session["_live_draft_creation_receipt"].get("active_page_entered"))
+
+        session["live_draft_room"] = {
+            "draft_room_id": "SOLO-2",
+            "status": "in_progress",
+            "draft_board": [],
+            "teams": ["Team B"],
+            "pick_order": [{"Pick": 1, "Team": "Team B"}],
+            "config": {"draft_setup_mode": "solo", "timer_seconds": 30},
+        }
+        init_creation_trace(session, mode="new")
+        finalize_creation_receipt(session, success=True, lifecycle="active_draft")
+        self.assertFalse(session.get(ACTIVE_PAGE_ENTERED_KEY))
+        self.assertFalse(session["_live_draft_creation_receipt"].get("active_page_entered"))
+        session[POST_CREATE_DEADLINE_KEY] = 0.0
+        fail = evaluate_post_create_watchdog(session)
+        self.assertIsNotNone(fail)
+        self.assertIsNotNone(session.get(POST_CREATE_FAIL_KEY))
+        self.assertFalse(session["_live_draft_creation_receipt"].get("active_page_entered"))
+        self.assertIn("active page did not open", str((fail or {}).get("detail") or ""))
+
     def test_streamlit_marks_active_page_before_watchdog_and_placement_stops(self) -> None:
         from pathlib import Path
 

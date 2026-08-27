@@ -99,6 +99,8 @@ def init_creation_trace(session: dict[str, Any], *, mode: str, attempt_id: str =
         "failure_summary": "",
     }
     session.pop(POST_CREATE_FAIL_KEY, None)
+    # New attempt must not inherit a prior ScriptRun's active-page latch.
+    session.pop(ACTIVE_PAGE_ENTERED_KEY, None)
     return trace
 
 
@@ -258,10 +260,13 @@ def arm_post_create_open(session: dict[str, Any], *, lifecycle: str = "") -> Non
     """After Draft ready: next full run must enter active/lobby within ~5s."""
     session[POST_CREATE_OPEN_KEY] = True
     session[POST_CREATE_DEADLINE_KEY] = _now() + float(POST_CREATE_WATCHDOG_SEC)
+    # This attempt has not entered the active page yet — drop any prior latch.
+    session.pop(ACTIVE_PAGE_ENTERED_KEY, None)
     receipt = dict(session.get(CREATION_RECEIPT_KEY) or {})
     receipt["post_create_armed"] = True
     receipt["post_create_deadline"] = session[POST_CREATE_DEADLINE_KEY]
     receipt["lifecycle_at_arm"] = str(lifecycle or "")
+    receipt.pop("active_page_entered", None)
     session[CREATION_RECEIPT_KEY] = receipt
     # Stale queue-fast-paint must not st.stop() the first active render.
     try:
