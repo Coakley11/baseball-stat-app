@@ -201,6 +201,49 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         ok_start, start_reason = can_start_live_draft(self.host)
         self.assertTrue(ok_start, start_reason)
 
+    def test_stale_host_save_after_guest_leave_does_not_resurrect_seat(self) -> None:
+        code = self._create_and_join()
+        stale_host_doc = copy.deepcopy(load_shared_room(code) or {})
+        self.assertIn("user:coakley11", dict(stale_host_doc.get("participants") or {}))
+
+        leave_shared_draft_room(self.guest)
+        after_leave = load_shared_room(code)
+        self.assertIsInstance(after_leave, dict)
+        self.assertNotIn("user:coakley11", dict((after_leave or {}).get("participants") or {}))
+        self.assertIn("user:coakley11", (after_leave or {}).get(LEFT_PARTICIPANTS_KEY) or {})
+
+        # Stale host still lists the guest and has no leave ledger — the real race.
+        self.assertIn("user:coakley11", dict(stale_host_doc.get("participants") or {}))
+        self.assertNotIn("user:coakley11", stale_host_doc.get(LEFT_PARTICIPANTS_KEY) or {})
+        self.store.save(stale_host_doc)
+
+        stored = load_shared_room(code)
+        self.assertIsInstance(stored, dict)
+        self.assertNotIn("user:coakley11", dict((stored or {}).get("participants") or {}))
+        self.assertNotIn("user:coakley11", dict((stored or {}).get("joined_participants") or {}))
+        claims = (stored or {}).get("team_claims") or {}
+        claim_owners = []
+        for raw in claims.values():
+            if isinstance(raw, dict):
+                claim_owners.append(str(raw.get("participant_id") or raw.get("user_id") or ""))
+            else:
+                claim_owners.append(str(raw or ""))
+        self.assertNotIn("user:coakley11", claim_owners)
+        self.assertIn("user:coakley11", (stored or {}).get(LEFT_PARTICIPANTS_KEY) or {})
+        open_teams, _ = list_available_shared_room_teams(stored, "late-guest")
+        self.assertIn("Team B", open_teams)
+        self.assertNotIn("Team A", open_teams)
+
+        # Rejoin uses register → clear_shared_room_participant_left, not a stale save.
+        ok, msg, _ = join_shared_draft_room(
+            self.guest, code, requested_team="Team B", store=self.store
+        )
+        self.assertTrue(ok, msg)
+        self.assertEqual(self.guest.get(ACTIVE_PARTICIPANT_TEAM_KEY), "Team B")
+        after_rejoin = load_shared_room(code)
+        self.assertIn("user:coakley11", dict((after_rejoin or {}).get("participants") or {}))
+        self.assertNotIn("user:coakley11", (after_rejoin or {}).get(LEFT_PARTICIPANTS_KEY) or {})
+
     def test_guest_leave_releases_team_and_blocks_host_steal(self) -> None:
         code = self._create_and_join()
         leave_shared_draft_room(self.guest)
