@@ -264,6 +264,14 @@ def _rebuild_top_rec_into_cache(
     otherwise skip ``st.button`` and drop the incoming ``trigger_value=true``.
     """
     note_rec_run_stage(session, "rebuild_started")
+    try:
+        from live_draft_setup_mode import is_shared_multiplayer_intent
+        from shared_draft_local_pool import ensure_local_shared_player_pool
+
+        if is_shared_multiplayer_intent(session, room=room):
+            ensure_local_shared_player_pool(session, room)
+    except ImportError:
+        pass
     max_cards = int(prep.get("max_cards") or 6)
     cfg = dict(room.get("config") or {})
     team = str(

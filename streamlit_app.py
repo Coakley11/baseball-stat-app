@@ -10478,6 +10478,14 @@ def live_draft_recommendations(room, top_n=8, team=None, session=None):
 
 def cached_live_draft_recommendations(session, room, top_n=8, team=None):
     """Reuse recommendation tables within the same pick when the board has not changed."""
+    try:
+        from live_draft_setup_mode import is_shared_multiplayer_intent
+        from shared_draft_local_pool import ensure_local_shared_player_pool
+
+        if is_shared_multiplayer_intent(session, room=room):
+            ensure_local_shared_player_pool(session, room)
+    except ImportError:
+        pass
     from live_draft_ui_cache import (
         REC_CACHE_KEY,
         filter_recommendation_tables_for_drafted,
@@ -10486,7 +10494,11 @@ def cached_live_draft_recommendations(session, room, top_n=8, team=None):
 
     cache_key = live_draft_ui_cache_key(session, room, top_n=top_n, team=team)
     entry = session.get(REC_CACHE_KEY)
-    if isinstance(entry, dict) and entry.get("key") == cache_key:
+    if (
+        isinstance(entry, dict)
+        and entry.get("key") == cache_key
+        and not getattr(entry.get("top_rec"), "empty", True)
+    ):
         try:
             from live_draft_perf import PHASE_RECOMMENDATIONS, record_cache_action
 
