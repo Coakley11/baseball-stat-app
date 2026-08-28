@@ -7,6 +7,7 @@ Command Center owns the active workspace. Apps inherit via query param or persis
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -73,8 +74,21 @@ def workspace_dir(workspace_id: str | None = None) -> Path:
     return DATA_DIR / "workspaces" / ws
 
 
+def env_workspace_id_override() -> str:
+    """Process-level workspace for local two-browser QA.
+
+    A second Streamlit on the same machine otherwise shares
+    ``suite_active_workspace.json`` and restores the host profile.
+    """
+    raw = str(os.environ.get("SUITE_WORKSPACE_ID") or os.environ.get("BASEBALL_WORKSPACE_ID") or "").strip()
+    return normalize_workspace_id(raw) if raw else ""
+
+
 def _load_legacy_persisted_workspace_id() -> str:
     """Legacy global workspace path — no account awareness, never delegates."""
+    env_ws = env_workspace_id_override()
+    if env_ws:
+        return env_ws
     raw = _read_json(_PERSISTED_FILE)
     if isinstance(raw, dict):
         return normalize_workspace_id(str(raw.get("workspace_id") or raw.get("active_workspace_id") or ""))
@@ -89,6 +103,9 @@ def load_persisted_workspace_id(*, session_state: dict[str, Any] | None = None) 
     account file directly and does NOT call back here). Unauthenticated/demo:
     resolves the legacy global workspace file with no delegation.
     """
+    env_ws = env_workspace_id_override()
+    if env_ws:
+        return env_ws
     try:
         from suite_auth import is_auth_enabled, is_authenticated
 
@@ -111,6 +128,9 @@ def load_persisted_workspace_id(*, session_state: dict[str, Any] | None = None) 
 
 
 def persist_active_workspace_id(workspace_id: str, *, session_state: dict[str, Any] | None = None) -> bool:
+    if env_workspace_id_override():
+        # Keep the shared pointer untouched so a guest process cannot flip the host.
+        return True
     ws = normalize_workspace_id(workspace_id)
     try:
         from suite_workspace_registry import persist_active_workspace_for_account

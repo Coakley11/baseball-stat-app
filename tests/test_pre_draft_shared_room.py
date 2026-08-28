@@ -260,11 +260,14 @@ class PreDraftSharedRoomAppTestLifecycle(unittest.TestCase):
         self._patch = mock.patch("draft_room_shared_state.get_shared_room_store", return_value=self.store)
         self._patch_ctx = mock.patch("draft_room_context.get_shared_room_store", return_value=self.store)
         self._auth = mock.patch("draft_room_membership.shared_room_requires_auth", return_value=False)
+        self._save_patch = mock.patch("baseball_persistent_state.force_save_baseball_state")
         self._patch.start()
         self._patch_ctx.start()
         self._auth.start()
+        self._save_mock = self._save_patch.start()
 
     def tearDown(self) -> None:
+        self._save_patch.stop()
         self._auth.stop()
         self._patch_ctx.stop()
         self._patch.stop()
@@ -474,6 +477,31 @@ class PreDraftSharedRoomAppTestLifecycle(unittest.TestCase):
         self.assertTrue(join_diag.get("room_lookup_attempted"))
         self.assertTrue(join_diag.get("claim_attempted"))
         self.assertTrue(join_diag.get("claim_ok"))
+
+    def test_setup_join_force_saves_workspace_membership(self) -> None:
+        import streamlit as st
+
+        from live_draft_setup_ui import render_guest_join_from_setup
+
+        code, _host = self._seed_host_room(guest_team="Team B")
+        session: dict = {
+            "draft_room_participant_id": "coakley-user",
+            AUTH_USER_ID_KEY: "coakley-user",
+            "_join_shared_draft_from_setup": True,
+            "_join_requested_code": code,
+            "_join_requested_team": "Team B",
+            "live_draft_join_code_input": code,
+            "live_draft_join_team_pick": "Team B",
+        }
+        with mock.patch.object(st, "session_state", session):
+            joined = render_guest_join_from_setup(st, session)
+        self.assertTrue(joined)
+        self.assertTrue(
+            any(call.kwargs.get("reason") == "shared_draft_join" for call in self._save_mock.call_args_list),
+            self._save_mock.call_args_list,
+        )
+        self.assertEqual(session.get(ACTIVE_SHARED_ROOM_CODE_KEY), code)
+        self.assertTrue(session.get("draft_room_participant_membership"))
 
 
 if __name__ == "__main__":

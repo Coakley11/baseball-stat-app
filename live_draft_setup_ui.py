@@ -591,7 +591,24 @@ def render_guest_join_from_setup(st: Any, session: dict[str, Any]) -> bool:
     )
     if ok:
         # Mode preference is persisted inside join_shared_draft_room (no widget key write).
-        session["_draft_join_flash"] = display
+        # Compact setup join must also force-save workspace membership — the
+        # legacy multiplayer panel already does this; without it a guest
+        # refresh lands on empty Solo setup.
+        try:
+            from draft_ui_multiplayer import _finalize_successful_join
+
+            _finalize_successful_join(session, display)
+        except ImportError:
+            session["_draft_join_flash"] = display
+            try:
+                from baseball_persistent_state import force_save_baseball_state
+
+                force_save_baseball_state(
+                    type("S", (), {"session_state": session})(),
+                    reason="shared_draft_join",
+                )
+            except ImportError:
+                pass
         return True
     session["_draft_join_error"] = display
     # Keep structured failure details for Developer Mode + non-silent UI.
