@@ -260,12 +260,17 @@ def live_draft_clear_timer(room: dict[str, Any]) -> None:
     room["timer_deadline"] = None
 
 
-def ensure_live_draft_timer_for_pick(room: dict[str, Any]) -> bool:
+def ensure_live_draft_timer_for_pick(
+    room: dict[str, Any],
+    *,
+    live_board_ready: bool = False,
+) -> bool:
     """Reset timer when a new pick is on the clock but timer state is missing or stale.
 
-    Pick 0 of a just-started empty board waits for this live-board paint. A
-    Start-armed clock that already expired before that paint is re-armed once.
-    Later genuine expiries (live-ready stamped, or a non-empty board) stay expired.
+    Pick 0 of a just-started empty board waits for the interactive live board
+    (recommendation cards / Add-to-Queue). Sidebar and timer-bar paints must
+    not arm that first clock. A Start-armed deadline that already expired
+    before the board is ready is re-armed once. Later genuine expiries stay expired.
     """
     if room.get("status") != "in_progress":
         return False
@@ -274,6 +279,8 @@ def ensure_live_draft_timer_for_pick(room: dict[str, Any]) -> bool:
     deadline = room.get("timer_deadline")
     started = room.get("timer_started_at")
     if first_pick_awaiting_live_ready(room):
+        if not live_board_ready:
+            return False
         live_draft_reset_timer(room)
         room[TIMER_LIVE_READY_AT_KEY] = time.time()
         return True

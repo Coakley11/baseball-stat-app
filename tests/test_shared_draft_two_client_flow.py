@@ -601,7 +601,8 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         host_room["timer_deadline"] = __import__("time").time() - 15
         host_room["timer_handled_index"] = -1
         self.assertEqual(live_draft_seconds_remaining(host_room), 0)
-        self.assertTrue(ensure_live_draft_timer_for_pick(host_room))
+        self.assertFalse(ensure_live_draft_timer_for_pick(host_room))
+        self.assertTrue(ensure_live_draft_timer_for_pick(host_room, live_board_ready=True))
         remaining = live_draft_seconds_remaining(host_room)
         self.assertGreaterEqual(remaining, 58)
         self.assertLessEqual(remaining, 60)

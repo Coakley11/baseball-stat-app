@@ -204,6 +204,26 @@ class LiveDraftTimerLogicTests(unittest.TestCase):
 
 
 class LiveDraftTimerLiveReadyTests(unittest.TestCase):
+    def test_sidebar_ensure_does_not_arm_first_pick_before_rec_cards(self) -> None:
+        from live_draft_timer_logic import (
+            ensure_live_draft_timer_for_pick,
+            first_pick_awaiting_live_ready,
+        )
+
+        room = {
+            "status": "in_progress",
+            "current_pick_index": 0,
+            "draft_board": [],
+            "config": {"timer_seconds": 30},
+            "timer_started_at": None,
+            "timer_deadline": None,
+        }
+        self.assertTrue(first_pick_awaiting_live_ready(room))
+        self.assertFalse(ensure_live_draft_timer_for_pick(room))
+        self.assertIsNone(room.get("timer_deadline"))
+        self.assertTrue(ensure_live_draft_timer_for_pick(room, live_board_ready=True))
+        self.assertIsNotNone(room.get("timer_deadline"))
+
     def test_reconstruct_does_not_arm_unstarted_first_pick(self) -> None:
         from live_draft_timer_logic import reconstruct_timer_deadline
 
@@ -240,7 +260,9 @@ class LiveDraftTimerLiveReadyTests(unittest.TestCase):
         }
         self.assertTrue(first_pick_awaiting_live_ready(room))
         self.assertEqual(live_draft_seconds_remaining(room), 0)
-        self.assertTrue(ensure_live_draft_timer_for_pick(room))
+        self.assertFalse(ensure_live_draft_timer_for_pick(room))
+        self.assertEqual(live_draft_seconds_remaining(room), 0)
+        self.assertTrue(ensure_live_draft_timer_for_pick(room, live_board_ready=True))
         remaining = live_draft_seconds_remaining(room)
         self.assertGreaterEqual(remaining, 28)
         self.assertLessEqual(remaining, 30)
