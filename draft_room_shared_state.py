@@ -1193,6 +1193,11 @@ def publish_shared_room_runtime(
 
     if isinstance(existing, dict):
         _merge_runtime_pool(existing, runtime)
+    incoming_pool = runtime.get("pool")
+    if incoming_pool is None or getattr(incoming_pool, "empty", True):
+        fallback = session.get("draft_room_player_pool")
+        if fallback is not None and not getattr(fallback, "empty", True):
+            runtime["pool"] = fallback
 
     session.pop("_draft_room_publish_error", None)
     session[LIVE_DRAFT_ROOM_KEY] = runtime

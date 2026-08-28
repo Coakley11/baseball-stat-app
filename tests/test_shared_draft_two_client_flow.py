@@ -37,6 +37,7 @@ from draft_room_shared_state import (
     SHARED_ROOM_META_KEY,
     LocalFileSharedRoomStore,
     load_shared_room,
+    publish_shared_room_runtime,
     reset_shared_room_store_for_tests,
     shared_document_room_blob,
     shared_room_document_private_leaks,
@@ -606,6 +607,32 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         remaining = live_draft_seconds_remaining(host_room)
         self.assertGreaterEqual(remaining, 58)
         self.assertLessEqual(remaining, 60)
+
+    def test_start_and_publish_keep_create_time_session_pool(self) -> None:
+        set_live_draft_setup_mode(self.host, SETUP_MODE_SHARED)
+        empty = _room(status="not_started")
+        empty["pool"] = pd.DataFrame()
+        code, _ = create_and_host_shared_room(
+            self.host, empty, host_team="Team A", store=self.store
+        )
+        self.host["draft_room_player_pool"] = _pool()
+        self.host[LIVE_DRAFT_ROOM_KEY]["status"] = "not_started"
+        self.host[LIVE_DRAFT_ROOM_KEY]["pool"] = pd.DataFrame()
+        with mock.patch("live_draft_state.commit_live_draft_room"):
+            started = start_prepared_shared_room(self.host, None)
+        self.assertTrue(started.get("ok"), started)
+        host_pool = self.host[LIVE_DRAFT_ROOM_KEY].get("pool")
+        self.assertIsNotNone(host_pool)
+        self.assertFalse(getattr(host_pool, "empty", True))
+        self.assertGreaterEqual(len(host_pool), 4)
+
+        stored = load_shared_room(code)
+        self.host[LIVE_DRAFT_ROOM_KEY]["pool"] = pd.DataFrame()
+        published = publish_shared_room_runtime(self.host, stored, reason="shared_room_pick")
+        self.assertIsInstance(published, dict)
+        kept = published.get("pool")
+        self.assertFalse(getattr(kept, "empty", True))
+        self.assertGreaterEqual(len(kept), 4)
 
     def test_unchanged_revision_still_syncs_timer_deadline(self) -> None:
         code = self._create_and_join()

@@ -627,6 +627,13 @@ def start_prepared_shared_room(session: dict[str, Any], st_obj: Any) -> dict[str
         room["timer_deadline"] = None
     room.pop("timer_live_ready_at", None)
     room["timer_handled_index"] = -1
+    pool = room.get("pool")
+    if pool is None or getattr(pool, "empty", True):
+        # Shared Start skips pool rebuild; keep the create-time session pool
+        # so persist/publish cannot open an empty live board.
+        fallback = session.get("draft_room_player_pool")
+        if fallback is not None and not getattr(fallback, "empty", True):
+            room["pool"] = fallback
     session["live_draft_room"] = room
     user_team = str((room.get("config") or {}).get("your_team") or (room.get("config") or {}).get("user_team") or "")
     if user_team:
