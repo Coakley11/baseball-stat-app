@@ -18,6 +18,25 @@ from live_draft_setup_mode import SETUP_MODE_SHARED, SETUP_MODE_SOLO
 from live_draft_timer_logic import ensure_full_pick_order, live_draft_current_slot
 
 
+def _valid_solo_setup_slots() -> dict:
+    """Explicit widgets so fail_closed_setup_check does not apply 8-starter defaults.
+
+    Product defaults are C/1B/2B/3B/SS/OF×3/DH = 8 required starters. This isolation
+    fixture keeps 4 picks/team (2×4 pick_order); slots must therefore total 4 starters.
+    """
+    return {
+        "live_slot_c": 1,
+        "live_slot_1b": 1,
+        "live_slot_2b": 1,
+        "live_slot_3b": 1,
+        "live_slot_ss": 0,
+        "live_slot_of": 0,
+        "live_slot_dh": 0,
+        "live_slot_p": 0,
+        "live_slot_bench": 0,
+    }
+
+
 def _shared_slot() -> dict:
     room = {
         "draft_room_id": "OLDSHARED",
@@ -77,6 +96,7 @@ class DisregardSavedStartsSoloTests(unittest.TestCase):
             "live_draft_team_count": 2,
             "live_draft_picks_per_team": 4,
             "live_draft_timer_seconds": 30,
+            **_valid_solo_setup_slots(),
             "resumable_live_draft_slot": _shared_slot(),
             "active_shared_draft_room_code": "ABC123",
         }

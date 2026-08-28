@@ -539,6 +539,15 @@ def can_start_live_draft(session: dict[str, Any]) -> tuple[bool, str]:
             else:
                 document = None
 
+            if isinstance(document, dict):
+                try:
+                    from shared_draft_permissions import session_may_use_commissioner_draft_controls
+
+                    if not session_may_use_commissioner_draft_controls(session, document=document):
+                        return False, "Only the commissioner can start this shared draft."
+                except ImportError:
+                    pass
+
             from live_draft_team_ownership import list_required_human_teams
 
             teams = list_required_human_teams(room, document=document if isinstance(document, dict) else None)
@@ -594,13 +603,42 @@ def start_prepared_shared_room(session: dict[str, Any], st_obj: Any) -> dict[str
         return result
     result["handled"] = True
     try:
-        from live_draft_timer_logic import live_draft_reset_timer
-    except ImportError:
-        result["error"] = "Live draft timer helpers unavailable."
-        return result
+        from draft_room_shared_state import load_shared_room
+        from shared_draft_permissions import session_may_use_commissioner_draft_controls
 
+        document = load_shared_room(code)
+        if isinstance(document, dict) and not session_may_use_commissioner_draft_controls(
+            session, document=document
+        ):
+            result["error"] = "Only the commissioner can start this shared draft."
+            return result
+    except ImportError:
+        pass
     room["status"] = "in_progress"
-    live_draft_reset_timer(room)
+    # Do not arm the pick clock here. First live-board paint is the readiness
+    # boundary — a 30s/60s Start-armed clock expires during a slow first render
+    # and immediately autopicks before Add-to-Queue / pick controls exist.
+    try:
+        from live_draft_timer_logic import live_draft_clear_timer
+
+        live_draft_clear_timer(room)
+    except ImportError:
+        room["timer_started_at"] = None
+        room["timer_deadline"] = None
+    room.pop("timer_live_ready_at", None)
+    room["timer_handled_index"] = -1
+    # Shared documents strip pool_records. Reattach the create-time stash or
+    # rebuild locally so Start cannot open an empty live board.
+    try:
+        from shared_draft_local_pool import ensure_local_shared_player_pool
+
+        ensure_local_shared_player_pool(session, room, force_rebuild=True)
+    except ImportError:
+        pool = room.get("pool")
+        if pool is None or getattr(pool, "empty", True):
+            fallback = session.get("draft_room_player_pool")
+            if fallback is not None and not getattr(fallback, "empty", True):
+                room["pool"] = fallback
     session["live_draft_room"] = room
     user_team = str((room.get("config") or {}).get("your_team") or (room.get("config") or {}).get("user_team") or "")
     if user_team:

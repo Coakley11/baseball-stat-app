@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
 from baseball_persistent_state import (
+    _get_device_id,
     _workspace_restore_cloud_first,
     apply_baseball_disk_state,
     build_baseball_disk_state,
@@ -185,6 +187,46 @@ class TestSettingsCloudSaveNotBlocked(unittest.TestCase):
                 st, "baseball", {"active_page": "Draft Room Simulator"}, save_reason=reason
             )
             self.assertIsNone(blocked, msg=f"{reason} should not be cloud-blocked")
+
+
+class TestDeviceIdEnvOverride(unittest.TestCase):
+    def test_env_override_wins_over_session_and_does_not_read_disk(self) -> None:
+        st = MagicMock()
+        st.session_state = {"_suite_device_id": "stale-session-id"}
+        with (
+            patch.dict(os.environ, {"BASEBALL_DEVICE_ID": "guest-two-browser-qa"}),
+            patch("baseball_persistent_state._DEVICE_ID_FILE") as mock_file,
+        ):
+            mock_file.is_file.return_value = True
+            mock_file.read_text.return_value = "disk-device-id\n"
+            self.assertEqual(_get_device_id(st), "guest-two-browser-qa")
+            self.assertEqual(st.session_state["_suite_device_id"], "guest-two-browser-qa")
+            mock_file.read_text.assert_not_called()
+            mock_file.write_text.assert_not_called()
+
+
+class TestSharedDraftJoinBypassesAutosaveBlock(unittest.TestCase):
+    def test_shared_draft_join_writes_disk_while_restore_block_is_set(self) -> None:
+        from suite_user_persistence import _autosave_block_key, force_autosave
+
+        st = MagicMock()
+        st.session_state = {_autosave_block_key("baseball"): True}
+        built = {"active_shared_draft_room_code": "BKQ98B"}
+        with (
+            patch("suite_user_persistence.save_user_state", return_value=True) as save,
+            patch("suite_user_persistence._cloud_autosave_blocked_reason", return_value="skip"),
+            patch("suite_cloud_state.session_page_summary", return_value=("Live Draft Room", {})),
+        ):
+            blocked = force_autosave(
+                st, "baseball", build_state=lambda _st: built, reason="autosave"
+            )
+            self.assertFalse(blocked)
+            save.assert_not_called()
+            ok = force_autosave(
+                st, "baseball", build_state=lambda _st: built, reason="shared_draft_join"
+            )
+        self.assertTrue(ok)
+        save.assert_called()
 
 
 if __name__ == "__main__":

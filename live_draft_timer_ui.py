@@ -103,7 +103,12 @@ def _resolve_live_room(session: dict[str, Any], room: dict[str, Any]) -> dict[st
     return room
 
 
-def sync_live_draft_timer_state(session: dict[str, Any], room: dict[str, Any]) -> dict[str, Any]:
+def sync_live_draft_timer_state(
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    live_board_ready: bool = False,
+) -> dict[str, Any]:
     """Keep timer deadline authoritative in multiplayer; host publishes repairs."""
     live_room = _resolve_live_room(session, room)
     try:
@@ -123,7 +128,7 @@ def sync_live_draft_timer_state(session: dict[str, Any], room: dict[str, Any]) -
             except Exception:
                 pass
 
-    if ensure_live_draft_timer_for_pick(live_room):
+    if ensure_live_draft_timer_for_pick(live_room, live_board_ready=live_board_ready):
         try:
             from live_draft_ux_latency import ACTION_TIMER_RESET, mark_ux_milestone, note_ux_action
 
@@ -612,9 +617,13 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                     _render_timer_static(st, session, tick_room, source="fragment_tick")
                 if poll_changed:
                     try:
-                        from live_draft_ui_cache import invalidate_live_draft_ui_caches
+                        from live_draft_ui_cache import (
+                            invalidate_live_draft_ui_caches_after_board_change,
+                        )
 
-                        invalidate_live_draft_ui_caches(session)
+                        invalidate_live_draft_ui_caches_after_board_change(
+                            session, reason="timer_fragment_poll_changed"
+                        )
                     except ImportError:
                         session.pop("_live_draft_rec_cache", None)
                     try:

@@ -12,7 +12,10 @@ PROTECT_ROOM_UNTIL_KEY = "_live_draft_protect_new_room_until"
 POST_CREATE_OPEN_KEY = "_live_draft_post_create_open"
 POST_CREATE_DEADLINE_KEY = "_live_draft_post_create_deadline"
 POST_CREATE_FAIL_KEY = "_live_draft_post_create_transition_fail"
+ACTIVE_PAGE_ENTERED_KEY = "_live_draft_active_page_entered"
 POST_CREATE_WATCHDOG_SEC = 5.0
+ACTIVE_PAGE_LIFECYCLES = frozenset({"active_draft", "waiting_shared_lobby"})
+_WATCHDOG_FAIL_DETAIL_PREFIX = "Draft ready but active page did not open"
 
 # Soft thresholds are per-step duration (not total create elapsed).
 STEP_SOFT_TIMEOUT_SEC: dict[str, float] = {
@@ -96,6 +99,8 @@ def init_creation_trace(session: dict[str, Any], *, mode: str, attempt_id: str =
         "failure_summary": "",
     }
     session.pop(POST_CREATE_FAIL_KEY, None)
+    # New attempt must not inherit a prior ScriptRun's active-page latch.
+    session.pop(ACTIVE_PAGE_ENTERED_KEY, None)
     return trace
 
 
@@ -255,10 +260,13 @@ def arm_post_create_open(session: dict[str, Any], *, lifecycle: str = "") -> Non
     """After Draft ready: next full run must enter active/lobby within ~5s."""
     session[POST_CREATE_OPEN_KEY] = True
     session[POST_CREATE_DEADLINE_KEY] = _now() + float(POST_CREATE_WATCHDOG_SEC)
+    # This attempt has not entered the active page yet — drop any prior latch.
+    session.pop(ACTIVE_PAGE_ENTERED_KEY, None)
     receipt = dict(session.get(CREATION_RECEIPT_KEY) or {})
     receipt["post_create_armed"] = True
     receipt["post_create_deadline"] = session[POST_CREATE_DEADLINE_KEY]
     receipt["lifecycle_at_arm"] = str(lifecycle or "")
+    receipt.pop("active_page_entered", None)
     session[CREATION_RECEIPT_KEY] = receipt
     # Stale queue-fast-paint must not st.stop() the first active render.
     try:
@@ -272,8 +280,28 @@ def arm_post_create_open(session: dict[str, Any], *, lifecycle: str = "") -> Non
     session.pop("_live_draft_skip_queue_flush_this_run", None)
 
 
+def _clear_watchdog_failure_summary(payload: dict[str, Any]) -> None:
+    summary = str(payload.get("failure_summary") or "")
+    if _WATCHDOG_FAIL_DETAIL_PREFIX in summary:
+        payload["failure_summary"] = ""
+
+
+def maybe_mark_active_draft_page_entered(session: dict[str, Any], *, lifecycle: str = "") -> bool:
+    """Mark as soon as this ScriptRun legitimately resolves active_draft / lobby."""
+    life = str(lifecycle or "").strip()
+    if life not in ACTIVE_PAGE_LIFECYCLES:
+        return False
+    mark_active_draft_page_entered(session, lifecycle=life)
+    return True
+
+
 def mark_active_draft_page_entered(session: dict[str, Any], *, lifecycle: str = "") -> None:
-    """Call when the active-draft / lobby renderer is entered after create."""
+    """Call when the active-draft / lobby renderer is entered after create.
+
+    The first ScriptRun that resolves active_draft must call this before
+    evaluate_post_create_watchdog. If the watchdog already fired, recover the
+    receipt so a later legitimate active render is not stuck failed.
+    """
     # Always clear leftover queue fast-paint — never abort active page for it.
     try:
         from live_draft_rerun_scope import clear_live_draft_queue_fast_paint
@@ -281,10 +309,35 @@ def mark_active_draft_page_entered(session: dict[str, Any], *, lifecycle: str = 
         clear_live_draft_queue_fast_paint(session, reason="active_page_entered")
     except ImportError:
         session.pop("_live_draft_queue_fast_paint", None)
-    if not session.pop(POST_CREATE_OPEN_KEY, None) and not session.get(POST_CREATE_DEADLINE_KEY):
+
+    had_open = bool(session.pop(POST_CREATE_OPEN_KEY, None))
+    had_deadline = session.pop(POST_CREATE_DEADLINE_KEY, None) is not None
+    had_fail = session.pop(POST_CREATE_FAIL_KEY, None)
+    receipt = dict(session.get(CREATION_RECEIPT_KEY) or {})
+    already_entered = bool(receipt.get("active_page_entered") or session.get(ACTIVE_PAGE_ENTERED_KEY))
+    watchdog_failed = bool(had_fail or receipt.get("post_create_failed_step"))
+    create_ok_pending = receipt.get("creation_success") is True and not already_entered
+    if not (had_open or had_deadline or watchdog_failed or create_ok_pending):
+        if already_entered:
+            session[ACTIVE_PAGE_ENTERED_KEY] = True
         return
-    session.pop(POST_CREATE_DEADLINE_KEY, None)
-    session.pop(POST_CREATE_FAIL_KEY, None)
+
+    session[ACTIVE_PAGE_ENTERED_KEY] = True
+    if watchdog_failed:
+        trace = dict(session.get(CREATION_TRACE_KEY) or {})
+        if trace:
+            trace["success"] = True
+            _clear_watchdog_failure_summary(trace)
+            session[CREATION_TRACE_KEY] = trace
+
+    if already_entered and not watchdog_failed:
+        receipt["active_page_entered"] = True
+        receipt["lifecycle_on_active_enter"] = str(
+            lifecycle or receipt.get("lifecycle_on_active_enter") or ""
+        )
+        session[CREATION_RECEIPT_KEY] = receipt
+        return
+
     note_creation_step(
         session,
         "active_page_entered",
@@ -294,18 +347,34 @@ def mark_active_draft_page_entered(session: dict[str, Any], *, lifecycle: str = 
     receipt = dict(session.get(CREATION_RECEIPT_KEY) or {})
     receipt["active_page_entered"] = True
     receipt["lifecycle_on_active_enter"] = str(lifecycle or "")
+    receipt["creation_success"] = True
+    receipt.pop("post_create_failed_step", None)
+    _clear_watchdog_failure_summary(receipt)
     session[CREATION_RECEIPT_KEY] = receipt
+    trace = dict(session.get(CREATION_TRACE_KEY) or {})
+    if trace:
+        trace["success"] = True
+        _clear_watchdog_failure_summary(trace)
+        session[CREATION_TRACE_KEY] = trace
 
 
 def evaluate_post_create_watchdog(session: dict[str, Any]) -> dict[str, Any] | None:
-    """If Draft ready but active page never opened within ~5s, return failure payload."""
+    """If Draft ready but active page never opened within ~5s, return failure payload.
+
+    Once a legitimate active render has been observed, the watchdog is
+    non-terminal. A stored fail stays visible until that recovery so genuine
+    never-entered cases remain detectable across later ScriptRuns.
+    """
     receipt = session.get(CREATION_RECEIPT_KEY)
-    if not isinstance(receipt, dict) or receipt.get("creation_success") is not True:
+    receipt_d = receipt if isinstance(receipt, dict) else {}
+    if receipt_d.get("active_page_entered") or session.get(ACTIVE_PAGE_ENTERED_KEY):
+        session.pop(POST_CREATE_FAIL_KEY, None)
         return None
-    if receipt.get("active_page_entered"):
+    stored = session.get(POST_CREATE_FAIL_KEY)
+    if isinstance(stored, dict):
+        return dict(stored)
+    if not receipt_d or receipt_d.get("creation_success") is not True:
         return None
-    if session.get(POST_CREATE_FAIL_KEY):
-        return dict(session[POST_CREATE_FAIL_KEY])
     deadline = session.get(POST_CREATE_DEADLINE_KEY)
     if not isinstance(deadline, (int, float)):
         return None
@@ -322,7 +391,7 @@ def evaluate_post_create_watchdog(session: dict[str, Any]) -> dict[str, Any] | N
     has_room = isinstance(room, dict)
     draft_id = str(
         (room or {}).get("draft_room_id")
-        or receipt.get("draft_id")
+        or receipt_d.get("draft_id")
         or ""
     ).strip()
     failed_step = "active_draft_render"
@@ -338,14 +407,14 @@ def evaluate_post_create_watchdog(session: dict[str, Any]) -> dict[str, Any] | N
         failed_step = "start_in_flight_stuck"
 
     detail = (
-        f"Draft ready but active page did not open within {int(POST_CREATE_WATCHDOG_SEC)}s "
+        f"{_WATCHDOG_FAIL_DETAIL_PREFIX} within {int(POST_CREATE_WATCHDOG_SEC)}s "
         f"(failed_step={failed_step}, lifecycle={life}, has_room={has_room}, draft_id={draft_id or '—'})."
     )
     payload = {
         "failed_step": failed_step,
         "lifecycle": life,
         "draft_id": draft_id,
-        "attempt_id": receipt.get("attempt_id"),
+        "attempt_id": receipt_d.get("attempt_id"),
         "detail": detail,
         "start_in_flight": bool(session.get("_live_draft_start_in_flight")),
         "force_setup_after_delete": bool(session.get("_live_draft_force_setup_after_delete")),

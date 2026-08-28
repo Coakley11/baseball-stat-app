@@ -178,6 +178,44 @@ def store_prepared_rec_interactive(
     }
 
 
+def ensure_prepared_rec_interactive(
+    session: dict[str, Any],
+    room: dict[str, Any],
+) -> dict[str, Any]:
+    """Return a usable prepared payload, synthesizing defaults when paint_body skipped.
+
+    Shared Start can finish ``paint_body`` on the empty/loading path before the
+    local pool is attached. The owning ScriptRun must still be able to rebuild
+    ``top_rec`` and register Add-to-Queue — fail-closed on a missing prep left
+    HEAVY_PAINT_DONE set with zero card buttons.
+    """
+    rid = str(room.get("draft_room_id") or "").strip()
+    prep = session.get(PREPARED_REC_INTERACTIVE_KEY)
+    if isinstance(prep, dict):
+        prep_rid = str(prep.get("room_id") or "").strip()
+        if not rid or not prep_rid or prep_rid == rid:
+            return prep
+    multiplayer = False
+    try:
+        from live_draft_setup_mode import is_shared_multiplayer_intent
+
+        multiplayer = bool(is_shared_multiplayer_intent(session, room=room))
+    except ImportError:
+        multiplayer = bool(session.get("active_shared_draft_room_code"))
+    store_prepared_rec_interactive(
+        session,
+        room_id=rid,
+        gaps=[],
+        category_needs=[],
+        max_cards=6,
+        multiplayer=multiplayer,
+    )
+    synthesized = dict(session[PREPARED_REC_INTERACTIVE_KEY])
+    synthesized["synthesized"] = True
+    session[PREPARED_REC_INTERACTIVE_KEY] = synthesized
+    return synthesized
+
+
 def store_interactive_top_rec_snapshot(
     session: dict[str, Any],
     top_rec: Any,
@@ -264,6 +302,14 @@ def _rebuild_top_rec_into_cache(
     otherwise skip ``st.button`` and drop the incoming ``trigger_value=true``.
     """
     note_rec_run_stage(session, "rebuild_started")
+    try:
+        from live_draft_setup_mode import is_shared_multiplayer_intent
+        from shared_draft_local_pool import ensure_local_shared_player_pool
+
+        if is_shared_multiplayer_intent(session, room=room):
+            ensure_local_shared_player_pool(session, room)
+    except ImportError:
+        pass
     max_cards = int(prep.get("max_cards") or 6)
     cfg = dict(room.get("config") or {})
     team = str(
@@ -327,20 +373,13 @@ def render_rec_interactive_widgets(
         "cache_hit": False,
         "cache_rebuilt": False,
         "snapshot_used": False,
+        "prepared_synthesized": False,
         "script_run_seq": int(session.get("_solo_stage1_script_run_seq") or 0),
     }
-    prep = session.get(PREPARED_REC_INTERACTIVE_KEY)
-    if not isinstance(prep, dict):
-        status["fail_reason"] = "prepared_interactive_missing"
-        session[INTERACTIVE_PAINT_STATUS_KEY] = status
-        note_rec_run_stage(session, "interactive_failed", fail_reason=status["fail_reason"])
-        return False
     rid = str(room.get("draft_room_id") or "").strip()
-    if rid and str(prep.get("room_id") or "").strip() not in ("", rid):
-        status["fail_reason"] = "prepared_room_mismatch"
-        session[INTERACTIVE_PAINT_STATUS_KEY] = status
-        note_rec_run_stage(session, "interactive_failed", fail_reason=status["fail_reason"])
-        return False
+    had_prep = isinstance(session.get(PREPARED_REC_INTERACTIVE_KEY), dict)
+    prep = ensure_prepared_rec_interactive(session, room)
+    status["prepared_synthesized"] = bool(prep.get("synthesized")) and not had_prep
     top_rec = _top_rec_from_cache(session)
     if top_rec is not None and not getattr(top_rec, "empty", True):
         status["cache_hit"] = True
@@ -361,6 +400,14 @@ def render_rec_interactive_widgets(
                 status["fail_reason"] = "top_rec_missing_after_rebuild"
                 session[INTERACTIVE_PAINT_STATUS_KEY] = status
                 note_rec_run_stage(session, "interactive_failed", fail_reason=status["fail_reason"])
+                try:
+                    st.caption(
+                        "Recommendation cards are still building the player pool. "
+                        "Add to Queue appears on this page when scoring finishes — "
+                        "no refresh should be required."
+                    )
+                except Exception:
+                    pass
                 return False
     gaps = list(prep.get("gaps") or [])
     category_needs = list(prep.get("category_needs") or [])

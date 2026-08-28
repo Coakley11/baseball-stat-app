@@ -29,6 +29,9 @@ SHARED_ROOM_META_KEY = "draft_room_shared_meta"
 ACTIVE_SHARED_ROOM_CODE_KEY = "active_shared_draft_room_code"
 PARTICIPANT_MEMBERSHIP_KEY = "draft_room_participant_membership"
 SHARED_DOC_SOFT_CACHE_KEY = "_shared_room_doc_soft_cache"
+LEFT_PARTICIPANTS_KEY = "left_participants"
+REJOINED_PARTICIPANTS_KEY = "rejoined_participants"
+LEAVE_REJOIN_GENERATION_KEY = "leave_rejoin_generation"
 
 _PRIVATE_DOCUMENT_KEYS = frozenset(
     {
@@ -298,6 +301,167 @@ def preserve_shared_room_chat(
     return outgoing
 
 
+def normalize_left_participants(raw: Any) -> dict[str, dict[str, Any]]:
+    """Normalize the durable leave ledger that blocks seat resurrection on merge."""
+    out: dict[str, dict[str, Any]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, val in raw.items():
+        pid = str(key or "").strip()
+        if not pid:
+            continue
+        if isinstance(val, dict):
+            rec = dict(val)
+            rec.setdefault("participant_id", pid)
+            out[pid] = rec
+        else:
+            out[pid] = {"participant_id": pid, "left_at": str(val or "")}
+    return out
+
+
+def _left_participant_ids(*maps: Any) -> set[str]:
+    ids: set[str] = set()
+    for raw in maps:
+        for pid, rec in normalize_left_participants(raw).items():
+            ids.add(str(pid).strip())
+            if isinstance(rec, dict):
+                for key in ("participant_id", "user_id", "account_user_id"):
+                    alias = str(rec.get(key) or "").strip()
+                    if alias:
+                        ids.add(alias)
+    ids.discard("")
+    return ids
+
+
+def _int_generation(raw: Any) -> int:
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def document_leave_rejoin_generation(document: dict[str, Any] | None) -> int:
+    """Highest causal leave/rejoin generation present on a document."""
+    if not isinstance(document, dict):
+        return 0
+    n = _int_generation(document.get(LEAVE_REJOIN_GENERATION_KEY))
+    for rec in normalize_left_participants(document.get(LEFT_PARTICIPANTS_KEY)).values():
+        n = max(n, _int_generation((rec or {}).get("leave_generation")))
+    for rec in normalize_left_participants(document.get(REJOINED_PARTICIPANTS_KEY)).values():
+        n = max(n, _int_generation((rec or {}).get("rejoin_generation")))
+    return n
+
+
+def next_leave_rejoin_generation(document: dict[str, Any] | None) -> int:
+    return document_leave_rejoin_generation(document) + 1
+
+
+def merge_left_ledgers(*maps: Any) -> dict[str, dict[str, Any]]:
+    """Union leave ledgers, keeping the higher leave_generation per id."""
+    combined: dict[str, dict[str, Any]] = {}
+    for raw in maps:
+        for pid, rec in normalize_left_participants(raw).items():
+            prev = combined.get(pid)
+            if prev is None or _int_generation((rec or {}).get("leave_generation")) >= _int_generation(
+                (prev or {}).get("leave_generation")
+            ):
+                combined[pid] = rec
+    return combined
+
+
+def record_shared_room_participant_left(
+    document: dict[str, Any],
+    participant_id: str,
+    *,
+    aliases: Any = (),
+    released_team: str = "",
+    left_at: str = "",
+) -> dict[str, Any]:
+    """Stamp an explicit leave so later stale saves cannot resurrect the seat."""
+    if not isinstance(document, dict):
+        return {}
+    pid = str(participant_id or "").strip()
+    if not pid:
+        return document
+    stamp = str(left_at or "").strip() or _utc_now_iso()
+    generation = next_leave_rejoin_generation(document)
+    left = normalize_left_participants(document.get(LEFT_PARTICIPANTS_KEY))
+    tokens = {pid}
+    for raw in aliases or ():
+        token = str(raw or "").strip()
+        if token:
+            tokens.add(token)
+    for token in tokens:
+        rec = dict(left.get(token) or {})
+        rec["participant_id"] = pid
+        rec["left_at"] = stamp
+        rec["leave_generation"] = generation
+        if released_team:
+            rec["released_team"] = str(released_team).strip()
+        left[token] = rec
+    document[LEFT_PARTICIPANTS_KEY] = left
+    document[LEAVE_REJOIN_GENERATION_KEY] = generation
+    # A later leave supersedes any prior rejoin marker for these ids.
+    rejoined = normalize_left_participants(document.get(REJOINED_PARTICIPANTS_KEY))
+    token_l = {t.lower() for t in tokens}
+    for key in list(rejoined.keys()):
+        rec = rejoined.get(key) or {}
+        rec_pid = str((rec or {}).get("participant_id") or "").strip().lower()
+        if str(key).strip().lower() in token_l or rec_pid in token_l or rec_pid == pid.lower():
+            rejoined.pop(key, None)
+    document[REJOINED_PARTICIPANTS_KEY] = rejoined
+    return document
+
+
+def clear_shared_room_participant_left(
+    document: dict[str, Any],
+    participant_id: str,
+    *,
+    aliases: Any = (),
+) -> dict[str, Any]:
+    """Explicit rejoin: clear leave ledger entries and stamp a rejoin marker.
+
+    Merge honors this stamp — not mere presence of the participant on an
+    arbitrary outgoing save — so a stale host document cannot resurrect a seat.
+    The marker carries a monotonic generation greater than the leave it cleared,
+    so a replayed prior-rejoin document cannot beat a later leave.
+    """
+    if not isinstance(document, dict):
+        return {}
+    pid = str(participant_id or "").strip()
+    tokens = {pid.lower()}
+    for raw in aliases or ():
+        token = str(raw or "").strip().lower()
+        if token:
+            tokens.add(token)
+    tokens.discard("")
+    left = normalize_left_participants(document.get(LEFT_PARTICIPANTS_KEY))
+    generation_floor = document_leave_rejoin_generation(document)
+    cleared_any = False
+    for key in list(left.keys()):
+        rec = left.get(key) or {}
+        rec_pid = str((rec or {}).get("participant_id") or "").strip().lower()
+        if str(key).strip().lower() in tokens or rec_pid in tokens:
+            left.pop(key, None)
+            cleared_any = True
+    document[LEFT_PARTICIPANTS_KEY] = left
+    if not cleared_any:
+        # First join is not a rejoin — do not stamp a marker that can beat a later leave.
+        return document
+    generation = generation_floor + 1
+    stamp = _utc_now_iso()
+    rejoined = normalize_left_participants(document.get(REJOINED_PARTICIPANTS_KEY))
+    for token in {pid, *[str(a).strip() for a in (aliases or ()) if str(a).strip()]}:
+        rec = dict(rejoined.get(token) or {})
+        rec["participant_id"] = pid
+        rec["rejoined_at"] = stamp
+        rec["rejoin_generation"] = generation
+        rejoined[token] = rec
+    document[REJOINED_PARTICIPANTS_KEY] = rejoined
+    document[LEAVE_REJOIN_GENERATION_KEY] = generation
+    return document
+
+
 def preserve_shared_room_participants(
     outgoing: dict[str, Any],
     existing: dict[str, Any] | None,
@@ -308,6 +472,15 @@ def preserve_shared_room_participants(
     participant wipe. Merging existing seats back was the deployed End/Delete
     failure mode — status became deleted while memberships stayed alive, and
     local clients kept drafting against the resurrected seat map.
+
+    Explicit leaves are a second exception: ``left_participants`` is a durable
+    ledger so a guest Leave is not undone by the stale-host merge.
+
+    A later save that still lists the guest is **not** a rejoin. Only
+    ``clear_shared_room_participant_left`` (the registration path) stamps
+    ``rejoined_participants``. That marker wins only when its monotonic
+    ``rejoin_generation`` is strictly greater than the leave it would clear.
+    A replayed prior-rejoin document cannot beat a later leave.
     """
     if not isinstance(outgoing, dict):
         return {}
@@ -324,9 +497,61 @@ def preserve_shared_room_participants(
 
     existing_parts = dict(existing.get("participants") or {})
     outgoing_parts = dict(outgoing.get("participants") or {})
-    combined: dict[str, Any] = copy.deepcopy(existing_parts)
+    left = merge_left_ledgers(existing.get(LEFT_PARTICIPANTS_KEY), outgoing.get(LEFT_PARTICIPANTS_KEY))
+    # Only the writer that called clear_shared_room_participant_left may
+    # resurrect a seat. Existing rejoin markers are stale-host/first-join noise.
+    # Outgoing markers still lose when their generation is not strictly later
+    # than the current leave (replayed prior-rejoin after a second leave).
+    rejoined = normalize_left_participants(outgoing.get(REJOINED_PARTICIPANTS_KEY))
+
+    def _rejoin_generation_for(pid: str, rec: dict[str, Any]) -> int:
+        target = {
+            str(pid or "").strip().lower(),
+            str((rec or {}).get("participant_id") or "").strip().lower(),
+        }
+        target.discard("")
+        latest = 0
+        for rpid, rrec in rejoined.items():
+            aliases = {
+                str(rpid or "").strip().lower(),
+                str((rrec or {}).get("participant_id") or "").strip().lower(),
+            }
+            aliases.discard("")
+            if target & aliases:
+                latest = max(latest, _int_generation((rrec or {}).get("rejoin_generation")))
+        return latest
+
+    # Explicit rejoin wins only when its generation is strictly later than the leave.
+    # Presence on outgoing_parts or a replayed older rejoin marker must not drop it.
+    for pid in list(left.keys()):
+        rec = left.get(pid) or {}
+        leave_gen = _int_generation((rec or {}).get("leave_generation"))
+        rejoin_gen = _rejoin_generation_for(pid, rec)
+        if rejoin_gen > leave_gen:
+            left.pop(pid, None)
+
+    left_ids = {str(pid).strip().lower() for pid in _left_participant_ids(left)}
+    merged[LEFT_PARTICIPANTS_KEY] = left
+    for rpid in list(rejoined.keys()):
+        if str(rpid).strip().lower() in left_ids:
+            rejoined.pop(rpid, None)
+    merged[REJOINED_PARTICIPANTS_KEY] = rejoined
+    merged[LEAVE_REJOIN_GENERATION_KEY] = max(
+        document_leave_rejoin_generation(existing),
+        document_leave_rejoin_generation(outgoing),
+        document_leave_rejoin_generation(merged),
+    )
+
+    combined: dict[str, Any] = {}
+    for pid, meta in existing_parts.items():
+        if str(pid).strip().lower() in left_ids:
+            continue
+        if isinstance(meta, dict):
+            combined[str(pid)] = copy.deepcopy(meta)
     for pid, meta in outgoing_parts.items():
         if not isinstance(meta, dict):
+            continue
+        if str(pid).strip().lower() in left_ids:
             continue
         prev = combined.get(str(pid))
         if isinstance(prev, dict):
@@ -341,16 +566,43 @@ def preserve_shared_room_participants(
             combined[str(pid)] = copy.deepcopy(meta)
     merged["participants"] = combined
 
+    claims = merged.get("team_claims")
+    if isinstance(claims, dict):
+        released = {
+            str((rec or {}).get("released_team") or "").strip()
+            for rec in left.values()
+            if isinstance(rec, dict)
+        }
+        released.discard("")
+        for team in list(claims.keys()):
+            owner = claims.get(team)
+            owner_id = (
+                str(owner).strip()
+                if not isinstance(owner, dict)
+                else str(owner.get("participant_id") or owner.get("user_id") or "").strip()
+            )
+            if team in released or owner_id.lower() in left_ids:
+                claims.pop(team, None)
+        merged["team_claims"] = claims
+
     try:
         from live_draft_presence import JOINED_PARTICIPANTS_KEY, merge_joined_participants
 
-        merged[JOINED_PARTICIPANTS_KEY] = merge_joined_participants(outgoing, existing)
+        joined = merge_joined_participants(outgoing, existing)
+        for uid in list(joined.keys()):
+            if str(uid).strip().lower() in left_ids:
+                joined.pop(uid, None)
+        merged[JOINED_PARTICIPANTS_KEY] = joined
     except ImportError:
         existing_joined = existing.get("joined_participants")
         if isinstance(existing_joined, dict) and existing_joined:
             out_joined = outgoing.get("joined_participants")
             if not isinstance(out_joined, dict) or not out_joined:
-                merged["joined_participants"] = copy.deepcopy(existing_joined)
+                merged["joined_participants"] = {
+                    uid: copy.deepcopy(meta)
+                    for uid, meta in existing_joined.items()
+                    if str(uid).strip().lower() not in left_ids
+                }
 
     return merged
 
@@ -941,6 +1193,16 @@ def publish_shared_room_runtime(
 
     if isinstance(existing, dict):
         _merge_runtime_pool(existing, runtime)
+    try:
+        from shared_draft_local_pool import ensure_local_shared_player_pool
+
+        ensure_local_shared_player_pool(session, runtime)
+    except ImportError:
+        incoming_pool = runtime.get("pool")
+        if incoming_pool is None or getattr(incoming_pool, "empty", True):
+            fallback = session.get("draft_room_player_pool")
+            if fallback is not None and not getattr(fallback, "empty", True):
+                runtime["pool"] = fallback
 
     session.pop("_draft_room_publish_error", None)
     session[LIVE_DRAFT_ROOM_KEY] = runtime

@@ -34,13 +34,15 @@ def _participant_id(session: dict[str, Any]) -> str:
         return str(session.get("auth_user_id") or session.get("_suite_auth_user_id") or "").strip()
 
 
-def _terminal_status(status: str) -> bool:
+def _ended_or_deleted_status(status: str) -> bool:
+    """Hard-end statuses that must not render an active shared draft.
+
+    Natural ``complete`` / ``completed`` stays reviewable after refresh.
+    """
     return str(status or "").strip().lower() in {
         "deleted",
         "ended",
         "closed",
-        "complete",
-        "completed",
     }
 
 
@@ -129,7 +131,7 @@ def can_render_shared_live_draft(
     room_blob = doc.get("room") if isinstance(doc.get("room"), dict) else {}
     if not status:
         status = str((room_blob or {}).get("status") or "").strip().lower()
-    if _terminal_status(status):
+    if _ended_or_deleted_status(status):
         return False, f"terminal:{status or 'unknown'}"
 
     pid = _participant_id(session)

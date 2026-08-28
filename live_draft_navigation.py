@@ -538,8 +538,12 @@ def _try_hydrate_shared_room(session: dict[str, Any], room_code: str) -> dict[st
         except ImportError:
             sync = room.get("sync") if isinstance(room.get("sync"), dict) else {}
             existing_code = str(
-                sync.get("room_code") or room.get("room_code") or room.get("draft_room_id") or ""
+                sync.get("room_code") or room.get("room_code") or ""
             ).strip().upper()
+            rid = str(room.get("draft_room_id") or "").strip().upper()
+            # Never treat a long internal draft_room_id as the 6-char share code.
+            if not existing_code and len(rid) == 6 and rid.isalnum():
+                existing_code = rid
         if existing_code == code:
             return room
         # Stale local blob from another room — do not advertise as this resume target.

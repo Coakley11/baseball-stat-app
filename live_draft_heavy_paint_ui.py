@@ -129,6 +129,43 @@ def render_deferred_heavy_paint_fragment(
             pass
         return ok
 
+    def _paint_interactive_or_recover(*, via: str) -> bool:
+        painted = _invoke_paint_interactive(via=via)
+        if painted:
+            return True
+        # Same-run recovery: Shared Start often finishes paint_body on the
+        # empty/loading path. HEAVY_PAINT_DONE then sticks, and fragment ticks
+        # never retry interactive registration. Rebuild prepared+cache here.
+        session["_live_draft_rec_interactive_fallback_paint_body"] = True
+        try:
+            from live_draft_rec_live_paint import note_rec_run_stage
+
+            note_rec_run_stage(session, "fallback_started")
+        except ImportError:
+            pass
+        try:
+            _invoke_paint_body(via="full_page_interactive_fallback")
+            session["_live_draft_rec_interactive_fallback_body_ok"] = True
+        except Exception as exc:
+            session["_live_draft_rec_interactive_fallback_body_ok"] = False
+            session["_live_draft_rec_interactive_fallback_body_error"] = (
+                f"{type(exc).__name__}: {exc}"[:240]
+            )
+        session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
+        painted = _invoke_paint_interactive(via="full_page_interactive_live_after_fallback")
+        session["_live_draft_rec_interactive_fallback_ok"] = bool(painted)
+        try:
+            from live_draft_rec_live_paint import note_rec_run_stage
+
+            note_rec_run_stage(
+                session,
+                "fallback_succeeded" if painted else "fallback_failed",
+                painted=bool(painted),
+            )
+        except ImportError:
+            pass
+        return painted
+
     try:
         from live_draft_fast_solo_start import (
             clear_defer_heavy_first_paint,
@@ -191,39 +228,7 @@ def render_deferred_heavy_paint_fragment(
         session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
         # Recovery + st.button registration must complete on THIS ScriptRun.
         # Never st.rerun() here — an extra run discards the incoming trigger_value.
-        painted = _invoke_paint_interactive(via="full_page_interactive_live")
-        if not painted:
-            # Consuming full rerun after trigger must still instantiate buttons. If the
-            # interactive path cannot paint (cache cleared while DONE), re-run paint_body
-            # once to restore prepared+cache, then register widgets again — same run.
-            session["_live_draft_rec_interactive_fallback_paint_body"] = True
-            try:
-                from live_draft_rec_live_paint import note_rec_run_stage
-
-                note_rec_run_stage(session, "fallback_started")
-            except ImportError:
-                pass
-            try:
-                _invoke_paint_body(via="full_page_interactive_fallback")
-                session["_live_draft_rec_interactive_fallback_body_ok"] = True
-            except Exception as exc:
-                session["_live_draft_rec_interactive_fallback_body_ok"] = False
-                session["_live_draft_rec_interactive_fallback_body_error"] = (
-                    f"{type(exc).__name__}: {exc}"[:240]
-                )
-            session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
-            painted = _invoke_paint_interactive(via="full_page_interactive_live_after_fallback")
-            session["_live_draft_rec_interactive_fallback_ok"] = bool(painted)
-            try:
-                from live_draft_rec_live_paint import note_rec_run_stage
-
-                note_rec_run_stage(
-                    session,
-                    "fallback_succeeded" if painted else "fallback_failed",
-                    painted=bool(painted),
-                )
-            except ImportError:
-                pass
+        _paint_interactive_or_recover(via="full_page_interactive_live")
         _reemit_fragment_diagnostics()
         return
 
@@ -238,8 +243,10 @@ def render_deferred_heavy_paint_fragment(
             note_start_stage(session, "heavy_content_rendered", via="full_page")
         except ImportError:
             pass
-        # Ensure interactive path is the dedicated ScriptRun registrar (not only paint_body).
-        _invoke_paint_interactive(via="full_page_interactive_live")
+        # Same-run registrar. If paint_body skipped prepared (empty shared pool),
+        # recover immediately — do not wait for a later full ScriptRun that may
+        # never arrive while only timer/poll fragments tick.
+        _paint_interactive_or_recover(via="full_page_interactive_live")
         _reemit_fragment_diagnostics()
         return
 
@@ -256,7 +263,7 @@ def render_deferred_heavy_paint_fragment(
         _invoke_paint_body(via="full_page_no_fragment_api")
         session[HEAVY_PAINT_DONE_KEY] = True
         session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
-        _invoke_paint_interactive(via="full_page_interactive_live")
+        _paint_interactive_or_recover(via="full_page_interactive_live")
         _reemit_fragment_diagnostics()
         return
 

@@ -527,7 +527,19 @@ def room_to_persist_dict(room: dict[str, Any] | None, *, compact_pool: bool = Fa
         if deadline is not None:
             out["timer_deadline"] = float(deadline)
         else:
-            out["_resume_timer_on_load"] = True
+            # First pick of a just-started empty board waits for live-board paint.
+            # Do not persist a resume-arm flag that would start the clock at Start.
+            awaiting_live_ready = False
+            try:
+                from live_draft_timer_logic import first_pick_awaiting_live_ready
+
+                awaiting_live_ready = first_pick_awaiting_live_ready(room)
+            except ImportError:
+                awaiting_live_ready = False
+            if awaiting_live_ready:
+                out["timer_deadline"] = None
+            else:
+                out["_resume_timer_on_load"] = True
     else:
         out["timer_deadline"] = None
     out["_persist_schema"] = LIVE_DRAFT_PERSIST_SCHEMA
@@ -571,11 +583,13 @@ def room_from_persist_dict(data: dict[str, Any] | None) -> dict[str, Any] | None
             timer_secs = int(out.get("config", {}).get("timer_seconds", 60))
             out["timer_started_at"] = deadline - timer_secs
         elif resume_timer:
-            import time
+            from live_draft_timer_logic import first_pick_awaiting_live_ready, live_draft_reset_timer
 
-            from live_draft_timer_logic import live_draft_reset_timer
-
-            live_draft_reset_timer(out)
+            if first_pick_awaiting_live_ready(out):
+                out["timer_deadline"] = None
+                out["timer_started_at"] = None
+            else:
+                live_draft_reset_timer(out)
     try:
         from live_draft_roster_slots import ensure_room_slot_config
 

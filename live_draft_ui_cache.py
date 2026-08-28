@@ -52,6 +52,41 @@ def invalidate_live_draft_ui_caches(
         pass
 
 
+def invalidate_live_draft_ui_caches_after_board_change(
+    session: dict[str, Any] | None,
+    *,
+    reason: str = "",
+) -> None:
+    """Poll/timer/autopick invalidation that must not drop the consuming-run snapshot.
+
+    After heavy paint is done, Add-to-Queue buttons are owned by the next full
+    ScriptRun. Board-change invalidation still clears REC_CACHE for freshness,
+    but keeps the interactive top_rec snapshot so run N+1 can re-register
+    buttons on the same consuming run as the incoming click.
+    """
+    if not session:
+        return
+    try:
+        from live_draft_heavy_paint_ui import HEAVY_PAINT_DONE_KEY
+
+        keep_snap = bool(session.get(HEAVY_PAINT_DONE_KEY))
+    except ImportError:
+        keep_snap = bool(session.get("_live_draft_heavy_paint_done"))
+    invalidate_live_draft_ui_caches(session, keep_interactive_snapshot=keep_snap)
+    if reason:
+        try:
+            from live_draft_rec_live_paint import note_rec_run_stage
+
+            note_rec_run_stage(
+                session,
+                "board_change_invalidate",
+                reason=str(reason)[:64],
+                keep_interactive_snapshot=bool(keep_snap),
+            )
+        except ImportError:
+            pass
+
+
 def _fold_player_name(name: Any) -> str:
     """Lower + accent-folded name so José Ramírez matches Jose Ramirez."""
     raw = str(name or "").strip()

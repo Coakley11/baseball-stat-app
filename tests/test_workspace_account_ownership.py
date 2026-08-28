@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -478,6 +479,26 @@ class TestWorkspaceAccountOwnership(unittest.TestCase):
         ), patch("suite_workspace.persist_active_workspace_id", return_value=True):
             enforce_workspace_ownership(st.session_state)
             self.assertEqual(get_active_workspace_id(st), "guest")
+
+
+class TestWorkspaceEnvOverride(unittest.TestCase):
+    def test_env_wins_over_persisted_file_and_skips_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            persist = data / "suite_active_workspace.json"
+            persist.write_text(
+                json.dumps({"workspace_id": "daniel", "label": "Daniel"}),
+                encoding="utf-8",
+            )
+            with (
+                patch.dict(os.environ, {"SUITE_WORKSPACE_ID": "guest"}),
+                patch("suite_workspace.DATA_DIR", data),
+                patch("suite_workspace._PERSISTED_FILE", persist),
+            ):
+                self.assertEqual(load_persisted_workspace_id(), "guest")
+                persist_active_workspace_id("ariel")
+                written = json.loads(persist.read_text(encoding="utf-8"))
+                self.assertEqual(written.get("workspace_id"), "daniel")
 
 
 if __name__ == "__main__":

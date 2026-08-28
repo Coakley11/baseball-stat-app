@@ -151,6 +151,84 @@ class PresenceJoinTests(unittest.TestCase):
         self.assertIn("user:coakley11", merged["participants"])
         self.assertIn("user:coakley11", merged[JOINED_PARTICIPANTS_KEY])
 
+    def test_explicit_leave_is_not_resurrected_by_stale_host_merge(self) -> None:
+        from draft_room_shared_state import (
+            LEFT_PARTICIPANTS_KEY,
+            clear_shared_room_participant_left,
+            record_shared_room_participant_left,
+        )
+
+        # Real race: store already has the leave; stale host outgoing still lists the guest.
+        existing = {
+            "participants": {
+                "user:daniel": {"assigned_team": "Team 1", "display_name": "Daniel"},
+            },
+            JOINED_PARTICIPANTS_KEY: {
+                "user:daniel": {"user_id": "user:daniel", "team_name": "Team 1"},
+            },
+            "team_claims": {"Team 2": "user:coakley11"},
+        }
+        record_shared_room_participant_left(
+            existing,
+            "user:coakley11",
+            aliases=("user:coakley11",),
+            released_team="Team 2",
+            left_at="2026-08-27T21:00:00+00:00",
+        )
+        stale_host = {
+            "participants": {
+                "user:daniel": {"assigned_team": "Team 1", "display_name": "Daniel"},
+                "user:coakley11": {"assigned_team": "Team 2", "display_name": "Coakley11"},
+            },
+            JOINED_PARTICIPANTS_KEY: {
+                "user:daniel": {"user_id": "user:daniel", "team_name": "Team 1"},
+                "user:coakley11": {"user_id": "user:coakley11", "team_name": "Team 2"},
+            },
+            "team_claims": {"Team 2": "user:coakley11"},
+        }
+        merged = preserve_shared_room_participants(stale_host, existing)
+        self.assertNotIn("user:coakley11", merged["participants"])
+        self.assertNotIn("user:coakley11", merged[JOINED_PARTICIPANTS_KEY])
+        self.assertNotIn("Team 2", merged.get("team_claims") or {})
+        self.assertIn("user:coakley11", merged.get(LEFT_PARTICIPANTS_KEY) or {})
+
+        # Legitimate rejoin is the registration clear, not mere outgoing presence.
+        rejoin = {
+            "participants": {
+                "user:daniel": {"assigned_team": "Team 1", "display_name": "Daniel"},
+                "user:coakley11": {"assigned_team": "Team 2", "display_name": "Coakley11"},
+            },
+            JOINED_PARTICIPANTS_KEY: {
+                "user:daniel": {"user_id": "user:daniel", "team_name": "Team 1"},
+                "user:coakley11": {"user_id": "user:coakley11", "team_name": "Team 2"},
+            },
+            LEFT_PARTICIPANTS_KEY: dict(existing.get(LEFT_PARTICIPANTS_KEY) or {}),
+        }
+        clear_shared_room_participant_left(rejoin, "user:coakley11", aliases=("user:coakley11",))
+        rejoined = preserve_shared_room_participants(rejoin, existing)
+        self.assertIn("user:coakley11", rejoined["participants"])
+        self.assertNotIn("user:coakley11", rejoined.get(LEFT_PARTICIPANTS_KEY) or {})
+
+        # Second leave, then replay the prior-rejoin document. Later leave wins.
+        later_leave = {
+            "participants": {
+                "user:daniel": {"assigned_team": "Team 1", "display_name": "Daniel"},
+            },
+            JOINED_PARTICIPANTS_KEY: {
+                "user:daniel": {"user_id": "user:daniel", "team_name": "Team 1"},
+            },
+            "leave_rejoin_generation": rejoined.get("leave_rejoin_generation"),
+        }
+        record_shared_room_participant_left(
+            later_leave,
+            "user:coakley11",
+            aliases=("user:coakley11",),
+            released_team="Team 2",
+        )
+        replayed = preserve_shared_room_participants(rejoin, later_leave)
+        self.assertNotIn("user:coakley11", replayed["participants"])
+        self.assertIn("user:coakley11", replayed.get(LEFT_PARTICIPANTS_KEY) or {})
+
     def test_cpu_placeholder_does_not_block_start(self) -> None:
         set_live_draft_setup_mode(self.daniel, SETUP_MODE_SHARED)
         room = _room(teams=["Team 1", "Team 2", "CPU Bot"])

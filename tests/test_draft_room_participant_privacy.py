@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -283,6 +284,37 @@ class DraftRoomParticipantPrivacyTests(unittest.TestCase):
             self.assertTrue(reconcile_auth_scoped_draft_workflow(session))
             self.assertEqual(session.get(DRAFT_QUEUE_KEY), ["Mike Trout"])
             self.assertEqual(load_workflow_for_participant_id(session, daniel_id)["queue"], ["Aaron Judge"])
+
+
+class TestParticipantIdEnvOverride(unittest.TestCase):
+    def test_env_wins_when_auth_off_and_is_inert_when_unset(self) -> None:
+        session = {ACTIVE_PARTICIPANT_ID_KEY: "stale-session"}
+        with (
+            patch("suite_auth.is_auth_enabled", return_value=False),
+            patch.dict(os.environ, {"BASEBALL_PARTICIPANT_ID": "qa-guest"}, clear=False),
+        ):
+            self.assertEqual(resolve_participant_id(session), "qa-guest")
+            self.assertEqual(session.get(ACTIVE_PARTICIPANT_ID_KEY), "qa-guest")
+
+        leftover = {k: v for k, v in os.environ.items() if k != "BASEBALL_PARTICIPANT_ID"}
+        session_unset = {ACTIVE_PARTICIPANT_ID_KEY: "session-id"}
+        with (
+            patch("suite_auth.is_auth_enabled", return_value=False),
+            patch.dict(os.environ, leftover, clear=True),
+        ):
+            self.assertEqual(resolve_participant_id(session_unset), "session-id")
+
+    def test_env_does_not_override_authenticated_user(self) -> None:
+        session = {
+            ACTIVE_PARTICIPANT_ID_KEY: "legacy-id",
+            AUTH_USER_ID_KEY: "auth-uuid-123",
+            AUTH_SESSION_KEY: {"access_token": "x"},
+        }
+        with (
+            patch("suite_auth.is_auth_enabled", return_value=True),
+            patch.dict(os.environ, {"BASEBALL_PARTICIPANT_ID": "qa-guest"}, clear=False),
+        ):
+            self.assertEqual(resolve_participant_id(session), "auth-uuid-123")
 
 
 if __name__ == "__main__":

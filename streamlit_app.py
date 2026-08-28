@@ -10478,6 +10478,14 @@ def live_draft_recommendations(room, top_n=8, team=None, session=None):
 
 def cached_live_draft_recommendations(session, room, top_n=8, team=None):
     """Reuse recommendation tables within the same pick when the board has not changed."""
+    try:
+        from live_draft_setup_mode import is_shared_multiplayer_intent
+        from shared_draft_local_pool import ensure_local_shared_player_pool
+
+        if is_shared_multiplayer_intent(session, room=room):
+            ensure_local_shared_player_pool(session, room)
+    except ImportError:
+        pass
     from live_draft_ui_cache import (
         REC_CACHE_KEY,
         filter_recommendation_tables_for_drafted,
@@ -10486,7 +10494,11 @@ def cached_live_draft_recommendations(session, room, top_n=8, team=None):
 
     cache_key = live_draft_ui_cache_key(session, room, top_n=top_n, team=team)
     entry = session.get(REC_CACHE_KEY)
-    if isinstance(entry, dict) and entry.get("key") == cache_key:
+    if (
+        isinstance(entry, dict)
+        and entry.get("key") == cache_key
+        and not getattr(entry.get("top_rec"), "empty", True)
+    ):
         try:
             from live_draft_perf import PHASE_RECOMMENDATIONS, record_cache_action
 
@@ -22872,6 +22884,20 @@ elif active_page == "Live Draft Room":
         pass
     _early_room = st.session_state.get("live_draft_room")
     if isinstance(_early_room, dict):
+        # Post-create contract: first ScriptRun that resolves active_draft/lobby
+        # marks active_page_entered before placement st.stop() or the 5s watchdog.
+        try:
+            from live_draft_completion import resolve_live_draft_lifecycle
+            from live_draft_creation_trace import maybe_mark_active_draft_page_entered
+
+            maybe_mark_active_draft_page_entered(
+                st.session_state,
+                lifecycle=str(
+                    resolve_live_draft_lifecycle(st.session_state, room=_early_room) or ""
+                ),
+            )
+        except ImportError:
+            pass
         try:
             from live_draft_queueui_instrumentation_build import emit_raw_canary
 
@@ -23171,9 +23197,13 @@ elif active_page == "Live Draft Room":
                     st.stop()
                 if _poll_changed:
                     try:
-                        from live_draft_ui_cache import invalidate_live_draft_ui_caches
+                        from live_draft_ui_cache import (
+                            invalidate_live_draft_ui_caches_after_board_change,
+                        )
 
-                        invalidate_live_draft_ui_caches(st.session_state)
+                        invalidate_live_draft_ui_caches_after_board_change(
+                            st.session_state, reason="poll_changed"
+                        )
                     except ImportError:
                         st.session_state.pop("_live_draft_rec_cache", None)
                     try:
@@ -25499,6 +25529,15 @@ elif active_page == "Live Draft Room":
             except Exception:
                 pass
             ldr_post_rerun_checkpoint(st, st.session_state, "after_room_body_enter")
+            try:
+                from live_draft_setup_mode import is_shared_multiplayer_intent
+                from shared_draft_local_pool import ensure_local_shared_player_pool
+
+                if is_shared_multiplayer_intent(st.session_state, room=room):
+                    ensure_local_shared_player_pool(st.session_state, room)
+                    st.session_state["live_draft_room"] = room
+            except ImportError:
+                pass
         except Exception as _ldr_room_body_exc:
             try:
                 from live_draft_render_trace import ldr_exception
@@ -27068,6 +27107,19 @@ elif active_page == "Live Draft Room":
                                             st, st.session_state, _rec_paint_diag
                                         )
 
+                                    from live_draft_rec_live_paint import (
+                                        store_interactive_top_rec_snapshot,
+                                        store_prepared_rec_interactive,
+                                    )
+
+                                    store_prepared_rec_interactive(
+                                        st.session_state,
+                                        room_id=str(room.get("draft_room_id") or ""),
+                                        gaps=_gaps,
+                                        category_needs=_category_needs,
+                                        max_cards=6,
+                                        multiplayer=_multiplayer_draft,
+                                    )
                                     if _defer_recs and (top_rec is None or getattr(top_rec, "empty", True)):
                                         st.caption("Loading recommendations…")
                                     else:
@@ -27085,39 +27137,26 @@ elif active_page == "Live Draft Room":
                                                 "**Fantasy Edge** shows value vs market; **Roster Fit** adjusts for your open slots. "
                                                 "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
                                             )
-                                        from live_draft_rec_live_paint import (
-                                            store_interactive_top_rec_snapshot,
-                                            store_prepared_rec_interactive,
-                                        )
-
-                                        store_prepared_rec_interactive(
-                                            st.session_state,
-                                            room_id=str(room.get("draft_room_id") or ""),
-                                            gaps=_gaps,
-                                            category_needs=_category_needs,
-                                            max_cards=6,
-                                            multiplayer=_multiplayer_draft,
-                                        )
                                         store_interactive_top_rec_snapshot(
                                             st.session_state,
                                             top_rec,
                                             room_id=str(room.get("draft_room_id") or ""),
                                         )
-                                        # Add-to-Queue buttons are owned exclusively by
-                                        # paint_interactive (ScriptRun / full_page_interactive_live).
-                                        # Never register them from heavy paint_body — when this runs
-                                        # under fragment(run_every=1) Streamlit accepts WS transport
-                                        # without dispatching on_click (production 47712472).
-                                        if bool(st.session_state.get("_solo_stage1_in_fragment_run")):
-                                            st.session_state[
-                                                "_live_draft_rec_queue_interactive_owner"
-                                            ] = "deferred_to_script_run_handoff"
-                                        else:
-                                            # Non-fragment paint_body (via=full_page): still defer
-                                            # widget registration to paint_interactive below/outer.
-                                            st.session_state[
-                                                "_live_draft_rec_queue_interactive_owner"
-                                            ] = "pending_paint_interactive"
+                                    # Add-to-Queue buttons are owned exclusively by
+                                    # paint_interactive (ScriptRun / full_page_interactive_live).
+                                    # Never register them from heavy paint_body — when this runs
+                                    # under fragment(run_every=1) Streamlit accepts WS transport
+                                    # without dispatching on_click (production 47712472).
+                                    if bool(st.session_state.get("_solo_stage1_in_fragment_run")):
+                                        st.session_state[
+                                            "_live_draft_rec_queue_interactive_owner"
+                                        ] = "deferred_to_script_run_handoff"
+                                    else:
+                                        # Non-fragment paint_body (via=full_page): still defer
+                                        # widget registration to paint_interactive below/outer.
+                                        st.session_state[
+                                            "_live_draft_rec_queue_interactive_owner"
+                                        ] = "pending_paint_interactive"
                                 except ImportError:
                                     if not bool(st.session_state.get("_solo_stage1_in_fragment_run")):
                                         _render_live_draft_rec_cards(top_rec, max_cards=6)

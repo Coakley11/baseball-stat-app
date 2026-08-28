@@ -57,6 +57,14 @@ def resolve_participant_id(session: dict[str, Any]) -> str:
                 return anon
     except ImportError:
         pass
+    import os
+
+    env_pid = str(os.environ.get("BASEBALL_PARTICIPANT_ID") or "").strip()
+    if env_pid:
+        # Local two-process QA: distinct seats without Real Accounts.
+        # Inert unless set; do not write a shared default identity file.
+        session[ACTIVE_PARTICIPANT_ID_KEY] = env_pid
+        return env_pid
     explicit = str(session.get(ACTIVE_PARTICIPANT_ID_KEY) or "").strip()
     if explicit:
         return explicit
@@ -1089,6 +1097,16 @@ def register_participant_in_shared_document(
             "email": resolved_email,
         }
     out["participants"] = participants
+    try:
+        from draft_room_shared_state import clear_shared_room_participant_left
+
+        clear_shared_room_participant_left(
+            out,
+            pid,
+            aliases=(resolved_user, resolved_account, resolved_external),
+        )
+    except ImportError:
+        pass
     out["revision"] = int(out.get("revision") or 0) + 1
     out["updated_at"] = _utc_now_iso()
     return out
@@ -1151,6 +1169,22 @@ def clear_participant_left_room(session: dict[str, Any], room_code: str) -> None
     slot["joined_at"] = _utc_now_iso()
 
 
+# Ended / parked rooms must not auto-hydrate as an active draft.
+# Natural complete/completed is reviewable and must restore after refresh.
+_SHARED_RESTORE_BLOCKED_STATUSES = frozenset(
+    {
+        "closed",
+        "cancelled",
+        "canceled",
+        "expired",
+        "ended",
+        "deleted",
+        "saved_for_later",
+        "parked",
+    }
+)
+
+
 def _shared_room_restore_blocked(session: dict[str, Any], room_code: str) -> str:
     """Return a short reason when a room code must not auto-restore as active runtime."""
     code = str(room_code or "").strip().upper()
@@ -1178,30 +1212,11 @@ def _shared_room_restore_blocked(session: dict[str, Any], room_code: str) -> str
         document = load_shared_room(code)
         if isinstance(document, dict):
             status = str(document.get("status") or "").strip().lower()
-            if status in (
-                "closed",
-                "complete",
-                "completed",
-                "cancelled",
-                "canceled",
-                "expired",
-                "ended",
-                "deleted",
-                "saved_for_later",
-                "parked",
-            ):
+            if status in _SHARED_RESTORE_BLOCKED_STATUSES:
                 return f"document_{status or 'terminal'}"
             room_blob = document.get("room") if isinstance(document.get("room"), dict) else {}
             room_status = str((room_blob or {}).get("status") or "").strip().lower()
-            if room_status in (
-                "complete",
-                "completed",
-                "closed",
-                "ended",
-                "deleted",
-                "saved_for_later",
-                "parked",
-            ):
+            if room_status in _SHARED_RESTORE_BLOCKED_STATUSES:
                 return f"room_{room_status}"
             draft_id = str(document.get("draft_room_id") or (room_blob or {}).get("draft_room_id") or "").strip()
             if draft_id:

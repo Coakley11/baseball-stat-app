@@ -434,9 +434,14 @@ def _mark_autopick_success(session: dict[str, Any], room: dict[str, Any], messag
         player_id = str((room.get("draft_board") or [{}])[-1].get("playerID") or message)
         set_live_draft_pick_notice(session, "success", message, pick_key=f"{board_len}:{player_id}")
         try:
-            from live_draft_ui_cache import invalidate_draft_assistant_scoring_cache, invalidate_live_draft_ui_caches
+            from live_draft_ui_cache import (
+                invalidate_draft_assistant_scoring_cache,
+                invalidate_live_draft_ui_caches_after_board_change,
+            )
 
-            invalidate_live_draft_ui_caches(session)
+            invalidate_live_draft_ui_caches_after_board_change(
+                session, reason="expired_autopick"
+            )
             invalidate_draft_assistant_scoring_cache(session)
         except ImportError:
             session.pop("_live_draft_rec_cache", None)

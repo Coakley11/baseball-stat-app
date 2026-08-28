@@ -203,5 +203,124 @@ class LiveDraftTimerLogicTests(unittest.TestCase):
         self.assertGreater(int(session[SIDEBAR_TIMER_REMAINING_KEY]), 0)
 
 
+class LiveDraftTimerLiveReadyTests(unittest.TestCase):
+    def test_sidebar_ensure_does_not_arm_first_pick_before_rec_cards(self) -> None:
+        from live_draft_timer_logic import (
+            ensure_live_draft_timer_for_pick,
+            first_pick_awaiting_live_ready,
+        )
+
+        room = {
+            "status": "in_progress",
+            "current_pick_index": 0,
+            "draft_board": [],
+            "config": {"timer_seconds": 30},
+            "timer_started_at": None,
+            "timer_deadline": None,
+        }
+        self.assertTrue(first_pick_awaiting_live_ready(room))
+        self.assertFalse(ensure_live_draft_timer_for_pick(room))
+        self.assertIsNone(room.get("timer_deadline"))
+        self.assertTrue(ensure_live_draft_timer_for_pick(room, live_board_ready=True))
+        self.assertIsNotNone(room.get("timer_deadline"))
+
+    def test_reconstruct_does_not_arm_unstarted_first_pick(self) -> None:
+        from live_draft_timer_logic import reconstruct_timer_deadline
+
+        room = {
+            "status": "in_progress",
+            "current_pick_index": 0,
+            "draft_board": [],
+            "config": {"timer_seconds": 30},
+            "timer_started_at": None,
+            "timer_deadline": None,
+        }
+        self.assertFalse(reconstruct_timer_deadline(room))
+        self.assertIsNone(room.get("timer_deadline"))
+        self.assertIsNone(room.get("timer_started_at"))
+
+    def test_first_live_paint_rearms_start_armed_expired_clock(self) -> None:
+        import time
+
+        from live_draft_timer_logic import (
+            TIMER_LIVE_READY_AT_KEY,
+            ensure_live_draft_timer_for_pick,
+            first_pick_awaiting_live_ready,
+            live_draft_seconds_remaining,
+        )
+
+        room = {
+            "status": "in_progress",
+            "current_pick_index": 0,
+            "draft_board": [],
+            "config": {"timer_seconds": 30},
+            "timer_started_at": time.time() - 45,
+            "timer_deadline": time.time() - 15,
+            "timer_handled_index": -1,
+        }
+        self.assertTrue(first_pick_awaiting_live_ready(room))
+        self.assertEqual(live_draft_seconds_remaining(room), 0)
+        self.assertFalse(ensure_live_draft_timer_for_pick(room))
+        self.assertEqual(live_draft_seconds_remaining(room), 0)
+        self.assertTrue(ensure_live_draft_timer_for_pick(room, live_board_ready=True))
+        remaining = live_draft_seconds_remaining(room)
+        self.assertGreaterEqual(remaining, 28)
+        self.assertLessEqual(remaining, 30)
+        self.assertTrue(room.get(TIMER_LIVE_READY_AT_KEY))
+
+        room["timer_deadline"] = time.time() - 1
+        room["timer_started_at"] = time.time() - 31
+        self.assertFalse(first_pick_awaiting_live_ready(room))
+        self.assertFalse(ensure_live_draft_timer_for_pick(room))
+        self.assertEqual(live_draft_seconds_remaining(room), 0)
+
+    def test_mid_draft_expired_clock_is_not_rearmed(self) -> None:
+        import time
+
+        from live_draft_timer_logic import (
+            ensure_live_draft_timer_for_pick,
+            live_draft_seconds_remaining,
+        )
+
+        room = {
+            "status": "in_progress",
+            "current_pick_index": 1,
+            "draft_board": [{"playerID": "p1", "fullName": "Aaron Judge"}],
+            "config": {"timer_seconds": 30},
+            "timer_started_at": time.time() - 31,
+            "timer_deadline": time.time() - 1,
+            "timer_handled_index": -1,
+        }
+        self.assertFalse(ensure_live_draft_timer_for_pick(room))
+        self.assertEqual(live_draft_seconds_remaining(room), 0)
+
+    def test_persist_roundtrip_does_not_arm_first_pick_before_live_ready(self) -> None:
+        from live_draft_state import room_from_persist_dict, room_to_persist_dict
+        from live_draft_timer_logic import live_draft_seconds_remaining
+
+        room = {
+            "status": "in_progress",
+            "current_pick_index": 0,
+            "draft_board": [],
+            "config": {"timer_seconds": 30},
+            "timer_started_at": None,
+            "timer_deadline": None,
+            "timer_handled_index": -1,
+            "teams": ["Team A", "Team B"],
+            "pick_order": [
+                {"Pick": 1, "Round": 1, "Team": "Team A"},
+                {"Pick": 2, "Round": 1, "Team": "Team B"},
+            ],
+        }
+        blob = room_to_persist_dict(room)
+        self.assertFalse(blob.get("_resume_timer_on_load"))
+        self.assertIsNone(blob.get("timer_deadline"))
+        restored = room_from_persist_dict(blob)
+        assert restored is not None
+        self.assertIsNone(restored.get("timer_deadline"))
+        self.assertIsNone(restored.get("timer_started_at"))
+        self.assertEqual(live_draft_seconds_remaining(restored), 30)
+
+
 if __name__ == "__main__":
     unittest.main()

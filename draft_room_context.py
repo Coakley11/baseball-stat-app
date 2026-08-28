@@ -361,6 +361,38 @@ def reset_shared_draft_sync_gate(session: dict[str, Any]) -> None:
     session.pop(_SHARED_DRAFT_SYNC_RUN_KEY, None)
 
 
+def _shared_head_live_fields_diverge(head: dict[str, Any], local_room: dict[str, Any] | None) -> bool:
+    """True when revision is unchanged but timer / pick / live status still drifted.
+
+    Compare room-blob status, not the document wrapper (often ``waiting`` while
+    the live room is ``in_progress``).
+    """
+    if not isinstance(head, dict) or not isinstance(local_room, dict):
+        return False
+    remote_status = str(head.get("room_status") or "").strip().lower()
+    local_status = str(local_room.get("status") or "").strip().lower()
+    if remote_status and local_status and remote_status != local_status:
+        return True
+    try:
+        remote_idx = int(head.get("current_pick_index") or 0)
+        local_idx = int(local_room.get("current_pick_index") or 0)
+    except (TypeError, ValueError):
+        remote_idx = head.get("current_pick_index")
+        local_idx = local_room.get("current_pick_index")
+    if remote_idx != local_idx:
+        return True
+    remote_dl = head.get("timer_deadline")
+    local_dl = local_room.get("timer_deadline")
+    if remote_dl is None and local_dl is None:
+        return False
+    if remote_dl is None or local_dl is None:
+        return True
+    try:
+        return abs(float(remote_dl) - float(local_dl)) > 0.05
+    except (TypeError, ValueError):
+        return remote_dl != local_dl
+
+
 def sync_shared_draft_room(
     session: dict[str, Any],
     *,
@@ -410,6 +442,7 @@ def sync_shared_draft_room(
             room_id=str(local_room.get("draft_room_id") or ""),
         )
 
+    head_diverged = False
     if not force:
         load_head = getattr(backend, "load_head", None)
         if callable(load_head):
@@ -417,7 +450,10 @@ def sync_shared_draft_room(
             if isinstance(head, dict):
                 remote_rev = int(head.get("revision") or 0)
                 _trace(remote_revision=remote_rev, last_seen_remote_revision=remote_rev)
-                if remote_rev <= local_rev:
+                head_diverged = _shared_head_live_fields_diverge(
+                    head, local_room if isinstance(local_room, dict) else None
+                )
+                if remote_rev <= local_rev and not head_diverged:
                     session[_SHARED_DRAFT_SYNC_RUN_KEY] = True
                     _trace(
                         last_poll_finished_at=time.time(),
@@ -475,7 +511,7 @@ def sync_shared_draft_room(
         return False
 
     remote_is_newer = remote_rev > local_rev
-    if not remote_is_newer and not force:
+    if not remote_is_newer and not force and not head_diverged:
         _trace(
             last_poll_finished_at=time.time(),
             last_poll_result="no_change",
@@ -762,6 +798,16 @@ def create_and_host_shared_room(
         record_shared_room_supabase_error = None  # type: ignore[assignment]
 
     code = generate_room_code(exists=backend.exists)
+    try:
+        from shared_draft_local_pool import remember_local_shared_player_pool
+
+        remember_local_shared_player_pool(
+            session,
+            live_room.get("pool"),
+            room_code=str(code or ""),
+        )
+    except ImportError:
+        pass
     merge_create_flow_diagnostics(session, generated_share_code=code)
     document = shared_room_document(
         room_code=code,
@@ -1656,6 +1702,14 @@ def leave_shared_draft_room(session: dict[str, Any]) -> None:
             doc = load_shared_room(room_code)
             if isinstance(doc, dict):
                 parts = dict(doc.get("participants") or {})
+                leave_meta = parts.get(leave_pid) if isinstance(parts.get(leave_pid), dict) else {}
+                released_team = str((leave_meta or {}).get("assigned_team") or "").strip()
+                aliases = {leave_pid}
+                if isinstance(leave_meta, dict):
+                    for key in ("user_id", "account_user_id", "participant_id"):
+                        alias = str(leave_meta.get(key) or "").strip()
+                        if alias:
+                            aliases.add(alias)
                 parts.pop(leave_pid, None)
                 # Also drop case-insensitive aliases.
                 for key in list(parts.keys()):
@@ -1664,11 +1718,27 @@ def leave_shared_draft_room(session: dict[str, Any]) -> None:
                 doc["participants"] = parts
                 joined = doc.get("joined_participants")
                 if isinstance(joined, dict):
-                    joined.pop(leave_pid, None)
-                    for key in list(joined.keys()):
-                        if str(key).strip().lower() == leave_pid.lower():
-                            joined.pop(key, None)
+                    for alias in aliases:
+                        joined.pop(alias, None)
+                        for key in list(joined.keys()):
+                            if str(key).strip().lower() == str(alias).strip().lower():
+                                joined.pop(key, None)
                     doc["joined_participants"] = joined
+                claims = doc.get("team_claims")
+                if isinstance(claims, dict) and released_team:
+                    claims.pop(released_team, None)
+                    doc["team_claims"] = claims
+                try:
+                    from draft_room_shared_state import record_shared_room_participant_left
+
+                    record_shared_room_participant_left(
+                        doc,
+                        leave_pid,
+                        aliases=aliases,
+                        released_team=released_team,
+                    )
+                except ImportError:
+                    pass
                 updated = bump_revision(doc)
                 get_shared_room_store().save(updated)
                 try:

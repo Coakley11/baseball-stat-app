@@ -367,6 +367,44 @@ def _clear_query_room_params(st: Any | None) -> None:
         pass
 
 
+def session_may_close_backend_shared_room(
+    session: dict[str, Any],
+    room_code: str,
+    *,
+    document: dict[str, Any] | None = None,
+) -> bool:
+    """True when this session may tombstone the authoritative shared room.
+
+    Commissioner-only once a host is stamped. Guests must leave locally without
+    deleting the room for everyone. Sessions with no stamped commissioner
+    (legacy/unit fixtures) keep the prior close behavior.
+    """
+    code = str(room_code or "").strip().upper()
+    if not code:
+        return True
+    doc = document if isinstance(document, dict) else None
+    if doc is None:
+        try:
+            from draft_room_shared_state import load_shared_room
+
+            loaded = load_shared_room(code)
+            doc = loaded if isinstance(loaded, dict) else None
+        except Exception:
+            doc = None
+    if not isinstance(doc, dict):
+        return True
+    try:
+        from shared_draft_permissions import commissioner_participant_id, is_canonical_commissioner
+
+        if is_canonical_commissioner(session, doc):
+            return True
+        if commissioner_participant_id(doc):
+            return False
+    except ImportError:
+        pass
+    return True
+
+
 def _close_backend_room(
     session: dict[str, Any],
     *,
@@ -387,7 +425,15 @@ def _close_backend_room(
 
         document = load_shared_room(code)
         if isinstance(document, dict):
-            # Always mark the authoritative room deleted — do not require host-only.
+            if not session_may_close_backend_shared_room(session, code, document=document):
+                # Guest/non-commissioner: release this seat only — never tombstone.
+                try:
+                    from draft_room_context import leave_shared_draft_room
+
+                    leave_shared_draft_room(session)
+                except Exception:
+                    pass
+                return
             updated = bump_revision(document)
             updated["status"] = terminal_status
             updated["terminated_at"] = _utc_now_iso()
@@ -553,6 +599,32 @@ def permanently_delete_live_draft(
     draft_id = str(draft_id or d_id or "").strip()
     room_id = str(room_id or r_id or "").strip()
     room_code = str(room_code or code or "").strip().upper()
+
+    # Guest End/Delete is leave-only. Never write a durable tombstone or
+    # mark the authoritative shared document deleted — that would end the
+    # draft for the commissioner and block later guest rejoin.
+    if room_code and not session_may_close_backend_shared_room(session, room_code):
+        try:
+            from draft_room_context import leave_shared_draft_room
+
+            leave_shared_draft_room(session)
+        except Exception:
+            pass
+        _mark_membership_left(session, room_code)
+        cleared = _clear_runtime_pointers(session, clear_queues=True)
+        clear_last_draft_board_snapshot(session)
+        session[DELETING_STATUS_KEY] = "done"
+        session.pop("_live_draft_controls_locked", None)
+        _clear_query_room_params(st)
+        return {
+            "ok": True,
+            "operation": "leave",
+            "backend_closed": False,
+            "draft_id": draft_id or None,
+            "room_id": room_id or None,
+            "room_code": room_code or None,
+            "cleared_keys": cleared,
+        }
 
     # Snapshot sticky setup BEFORE clearing runtime so Shared/2/4 survive End/Delete.
     setup_snapshot: dict[str, Any] = {}
@@ -791,7 +863,8 @@ def discard_live_draft_and_start_over(
     except ImportError:
         pass
     result = permanently_delete_live_draft(session, st=st, reason=reason)
-    result["operation"] = "discard"
+    if result.get("operation") != "leave":
+        result["operation"] = "discard"
     return result
 
 

@@ -240,6 +240,38 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
         self.assertTrue(session.get(HEAVY_PAINT_DONE_KEY))
         st.rerun.assert_called()
 
+    def test_full_page_same_run_recovers_when_first_interactive_fails(self) -> None:
+        """Shared Start: first paint_body can skip prepared; recover before returning."""
+        st = MagicMock()
+        st.fragment = None
+        session: dict[str, Any] = {}
+        body_n = {"n": 0}
+        interactive_n = {"n": 0}
+
+        def paint_body() -> None:
+            body_n["n"] += 1
+            if body_n["n"] >= 2:
+                store_prepared_rec_interactive(
+                    session, room_id="SHARED1", gaps=[], category_needs=[], max_cards=1
+                )
+
+        def paint_interactive() -> bool:
+            interactive_n["n"] += 1
+            return isinstance(session.get(PREPARED_REC_INTERACTIVE_KEY), dict)
+
+        with patch("live_draft_fast_solo_start.should_defer_heavy_first_paint", return_value=False):
+            with patch("live_draft_fast_solo_start.note_start_stage"):
+                render_deferred_heavy_paint_fragment(
+                    st,
+                    session,
+                    paint_body,
+                    paint_interactive=paint_interactive,
+                )
+        self.assertGreaterEqual(body_n["n"], 2)
+        self.assertGreaterEqual(interactive_n["n"], 2)
+        self.assertTrue(session.get(HEAVY_PAINT_DONE_KEY))
+        self.assertTrue(session.get("_live_draft_rec_interactive_fallback_ok"))
+
     def test_render_rec_interactive_uses_prepared_cache_not_empty(self) -> None:
         import pandas as pd
 
@@ -271,6 +303,36 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
         ts2 = session[PREPARED_REC_INTERACTIVE_KEY]["prepared_ts"]
         self.assertGreaterEqual(ts2, ts1)
         self.assertEqual(session[PREPARED_REC_INTERACTIVE_KEY]["gaps"], ["C"])
+
+    def test_missing_prepared_synthesizes_and_rebuilds_cards(self) -> None:
+        import pandas as pd
+
+        st = MagicMock()
+        session: dict[str, Any] = {
+            "active_shared_draft_room_code": "ZZZZ99",
+        }
+        room = {
+            "draft_room_id": "ROOM9",
+            "current_pick_index": 0,
+            "status": "in_progress",
+            "config": {"draft_setup_mode": "shared"},
+        }
+        rebuilt = pd.DataFrame(
+            [{"fullName": "Aaron Judge", "Primary Position": "OF", "playerID": "592450"}]
+        )
+        self.assertNotIn(PREPARED_REC_INTERACTIVE_KEY, session)
+        with patch(
+            "live_draft_rec_live_paint._rebuild_top_rec_into_cache",
+            return_value=rebuilt,
+        ) as rebuild:
+            with patch("live_draft_room_ui.render_live_draft_rec_cards") as cards:
+                with patch("live_draft_room_ui.render_live_draft_rec_summary_banner"):
+                    ok = render_rec_interactive_widgets(st, session, room)
+        self.assertTrue(ok)
+        rebuild.assert_called_once()
+        cards.assert_called_once()
+        self.assertTrue(session[PREPARED_REC_INTERACTIVE_KEY].get("synthesized"))
+        self.assertTrue(session["_live_draft_rec_interactive_paint_status"].get("prepared_synthesized"))
 
 
 if __name__ == "__main__":

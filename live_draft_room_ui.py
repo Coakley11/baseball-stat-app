@@ -1706,6 +1706,20 @@ def render_live_draft_rec_cards(
         st.caption("No recommendations available.")
         return
 
+    # First interactive paint: arm the pick clock here, not from the sidebar.
+    try:
+        from live_draft_timer_ui import sync_live_draft_timer_state
+
+        room = sync_live_draft_timer_state(session, room, live_board_ready=True)
+        session["live_draft_room"] = room
+    except ImportError:
+        try:
+            from live_draft_timer_logic import ensure_live_draft_timer_for_pick
+
+            ensure_live_draft_timer_for_pick(room, live_board_ready=True)
+        except ImportError:
+            pass
+
     pick_idx = int(room.get("current_pick_index") or 0)
     room_id = str(room.get("draft_room_id") or "").strip()
     layout_mode = "stacked" if layout == "stacked" else "compact_horizontal"
