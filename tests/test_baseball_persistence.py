@@ -205,5 +205,29 @@ class TestDeviceIdEnvOverride(unittest.TestCase):
             mock_file.write_text.assert_not_called()
 
 
+class TestSharedDraftJoinBypassesAutosaveBlock(unittest.TestCase):
+    def test_shared_draft_join_writes_disk_while_restore_block_is_set(self) -> None:
+        from suite_user_persistence import _autosave_block_key, force_autosave
+
+        st = MagicMock()
+        st.session_state = {_autosave_block_key("baseball"): True}
+        built = {"active_shared_draft_room_code": "BKQ98B"}
+        with (
+            patch("suite_user_persistence.save_user_state", return_value=True) as save,
+            patch("suite_user_persistence._cloud_autosave_blocked_reason", return_value="skip"),
+            patch("suite_cloud_state.session_page_summary", return_value=("Live Draft Room", {})),
+        ):
+            blocked = force_autosave(
+                st, "baseball", build_state=lambda _st: built, reason="autosave"
+            )
+            self.assertFalse(blocked)
+            save.assert_not_called()
+            ok = force_autosave(
+                st, "baseball", build_state=lambda _st: built, reason="shared_draft_join"
+            )
+        self.assertTrue(ok)
+        save.assert_called()
+
+
 if __name__ == "__main__":
     unittest.main()

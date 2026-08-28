@@ -1369,6 +1369,8 @@ def force_autosave(
             "music_coach_send",
             "team_change",
             "nba_settings_change",
+            "shared_draft_join",
+            "shared_draft_room_create",
         )
         if st.session_state.get(block_key) and not bypass_block:
             st.session_state["_suite_autosave_blocked_after_restore"] = True
