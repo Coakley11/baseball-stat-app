@@ -798,6 +798,16 @@ def create_and_host_shared_room(
         record_shared_room_supabase_error = None  # type: ignore[assignment]
 
     code = generate_room_code(exists=backend.exists)
+    try:
+        from shared_draft_local_pool import remember_local_shared_player_pool
+
+        remember_local_shared_player_pool(
+            session,
+            live_room.get("pool"),
+            room_code=str(code or ""),
+        )
+    except ImportError:
+        pass
     merge_create_flow_diagnostics(session, generated_share_code=code)
     document = shared_room_document(
         room_code=code,

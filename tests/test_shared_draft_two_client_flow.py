@@ -69,6 +69,11 @@ from live_draft_timer_logic import (
     live_draft_reset_timer,
     live_draft_seconds_remaining,
 )
+from shared_draft_local_pool import (
+    DRAFT_ROOM_PLAYER_POOL_CODE_KEY,
+    DRAFT_ROOM_PLAYER_POOL_KEY,
+    ensure_local_shared_player_pool,
+)
 from shared_draft_permissions import is_canonical_commissioner
 from shared_room_membership_gate import can_render_shared_live_draft
 from suite_auth import AUTH_USER_ID_KEY
@@ -633,6 +638,73 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         kept = published.get("pool")
         self.assertFalse(getattr(kept, "empty", True))
         self.assertGreaterEqual(len(kept), 4)
+
+    def test_create_stashes_pool_so_start_survives_persist_wipe(self) -> None:
+        set_live_draft_setup_mode(self.host, SETUP_MODE_SHARED)
+        code, _ = create_and_host_shared_room(
+            self.host, _room(status="not_started"), host_team="Team A", store=self.store
+        )
+        self.assertTrue(is_plausible_share_code(code), code)
+        stashed = self.host.get(DRAFT_ROOM_PLAYER_POOL_KEY)
+        self.assertFalse(getattr(stashed, "empty", True))
+        self.assertEqual(str(self.host.get(DRAFT_ROOM_PLAYER_POOL_CODE_KEY) or ""), code)
+        stored = load_shared_room(code)
+        stored_blob = shared_document_room_blob(stored) or {}
+        self.assertTrue(getattr(pd.DataFrame(stored_blob.get("pool_records") or []), "empty", True))
+        self.assertNotIn("pool", stored_blob)
+
+        self.host[LIVE_DRAFT_ROOM_KEY]["pool"] = pd.DataFrame()
+        with mock.patch("live_draft_state.commit_live_draft_room"):
+            started = start_prepared_shared_room(self.host, None)
+        self.assertTrue(started.get("ok"), started)
+        recovered = self.host[LIVE_DRAFT_ROOM_KEY].get("pool")
+        self.assertFalse(getattr(recovered, "empty", True))
+        self.assertGreaterEqual(len(recovered), 4)
+
+    def test_guest_join_rebuilds_local_pool_when_document_stripped(self) -> None:
+        set_live_draft_setup_mode(self.host, SETUP_MODE_SHARED)
+        code, _ = create_and_host_shared_room(
+            self.host, _room(status="not_started"), host_team="Team A", store=self.store
+        )
+        stored = load_shared_room(code)
+        stored_blob = shared_document_room_blob(stored) or {}
+        self.assertNotIn("pool_records", stored_blob)
+        self.assertNotIn("pool", stored_blob)
+
+        rebuilt = _pool()
+        with mock.patch(
+            "shared_draft_local_pool.rebuild_shared_room_player_pool",
+            return_value=rebuilt,
+        ) as builder:
+            ok, msg, _ = join_shared_draft_room(
+                self.guest, code, requested_team="Team B", store=self.store
+            )
+        self.assertTrue(ok, msg)
+        builder.assert_called()
+        guest_pool = (self.guest.get(LIVE_DRAFT_ROOM_KEY) or {}).get("pool")
+        self.assertFalse(getattr(guest_pool, "empty", True))
+        self.assertGreaterEqual(len(guest_pool), 4)
+        self.assertIn("Aaron Judge", list(guest_pool["fullName"]))
+        after_join = shared_document_room_blob(load_shared_room(code)) or {}
+        self.assertNotIn("pool_records", after_join)
+        self.assertNotIn("pool", after_join)
+
+    def test_later_leave_room_does_not_reuse_prior_room_pool_stash(self) -> None:
+        first = _pool()
+        self.host[DRAFT_ROOM_PLAYER_POOL_KEY] = first
+        self.host[DRAFT_ROOM_PLAYER_POOL_CODE_KEY] = "AAAA11"
+        self.host[ACTIVE_SHARED_ROOM_CODE_KEY] = "BBBB22"
+        empty = _room(status="not_started")
+        empty["pool"] = pd.DataFrame()
+        empty["room_code"] = "BBBB22"
+        rebuilt = _pool()
+        rebuilt.loc[0, "fullName"] = "Juan Soto"
+        attached = ensure_local_shared_player_pool(
+            self.host, empty, builder=lambda _session, _room: rebuilt
+        )
+        self.assertFalse(getattr(attached, "empty", True))
+        self.assertEqual(str(attached.iloc[0]["fullName"]), "Juan Soto")
+        self.assertEqual(str(self.host.get(DRAFT_ROOM_PLAYER_POOL_CODE_KEY) or ""), "BBBB22")
 
     def test_unchanged_revision_still_syncs_timer_deadline(self) -> None:
         code = self._create_and_join()
