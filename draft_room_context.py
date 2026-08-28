@@ -362,12 +362,16 @@ def reset_shared_draft_sync_gate(session: dict[str, Any]) -> None:
 
 
 def _shared_head_live_fields_diverge(head: dict[str, Any], local_room: dict[str, Any] | None) -> bool:
-    """True when revision is unchanged but timer / pick / status still drifted."""
+    """True when revision is unchanged but timer / pick / live status still drifted.
+
+    Compare room-blob status, not the document wrapper (often ``waiting`` while
+    the live room is ``in_progress``).
+    """
     if not isinstance(head, dict) or not isinstance(local_room, dict):
         return False
-    remote_status = str(head.get("status") or "").strip().lower()
+    remote_status = str(head.get("room_status") or "").strip().lower()
     local_status = str(local_room.get("status") or "").strip().lower()
-    if remote_status and remote_status != local_status:
+    if remote_status and local_status and remote_status != local_status:
         return True
     try:
         remote_idx = int(head.get("current_pick_index") or 0)
@@ -438,6 +442,7 @@ def sync_shared_draft_room(
             room_id=str(local_room.get("draft_room_id") or ""),
         )
 
+    head_diverged = False
     if not force:
         load_head = getattr(backend, "load_head", None)
         if callable(load_head):
@@ -445,9 +450,10 @@ def sync_shared_draft_room(
             if isinstance(head, dict):
                 remote_rev = int(head.get("revision") or 0)
                 _trace(remote_revision=remote_rev, last_seen_remote_revision=remote_rev)
-                if remote_rev <= local_rev and not _shared_head_live_fields_diverge(
+                head_diverged = _shared_head_live_fields_diverge(
                     head, local_room if isinstance(local_room, dict) else None
-                ):
+                )
+                if remote_rev <= local_rev and not head_diverged:
                     session[_SHARED_DRAFT_SYNC_RUN_KEY] = True
                     _trace(
                         last_poll_finished_at=time.time(),
@@ -505,7 +511,7 @@ def sync_shared_draft_room(
         return False
 
     remote_is_newer = remote_rev > local_rev
-    if not remote_is_newer and not force:
+    if not remote_is_newer and not force and not head_diverged:
         _trace(
             last_poll_finished_at=time.time(),
             last_poll_result="no_change",

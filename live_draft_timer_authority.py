@@ -277,6 +277,7 @@ def extract_live_head_fields(document: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "room_revision": int(document.get("revision") or 0),
         "status": str(document.get("status") or (room or {}).get("status") or ""),
+        "room_status": str((room or {}).get("status") or ""),
         "current_pick_index": idx,
         "current_team": team,
         "timer_deadline": deadline_f,
