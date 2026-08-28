@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -180,6 +181,13 @@ def _utc_now_iso() -> str:
 def _get_device_id(st: Any) -> str:
     ss = st.session_state
     key = "_suite_device_id"
+    env_did = os.environ.get("BASEBALL_DEVICE_ID", "").strip()
+    if env_did:
+        # Local two-browser QA: a second Streamlit process can share
+        # draft_rooms/ without inheriting this device's workspace restore.
+        # Do not write the override to the shared device-id file.
+        ss[key] = env_did
+        return env_did
     existing = ss.get(key)
     if existing:
         return str(existing)
