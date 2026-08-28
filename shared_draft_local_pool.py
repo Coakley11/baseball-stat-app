@@ -11,7 +11,6 @@ from typing import Any, Callable
 
 DRAFT_ROOM_PLAYER_POOL_KEY = "draft_room_player_pool"
 DRAFT_ROOM_PLAYER_POOL_CODE_KEY = "draft_room_player_pool_room_code"
-_REBUILD_ATTEMPTED_CODE_KEY = "_shared_local_pool_rebuild_attempted_code"
 
 
 def pool_is_empty(pool: Any) -> bool:
@@ -121,12 +120,15 @@ def ensure_local_shared_player_pool(
     """Attach a non-empty local pool onto ``room`` without writing the shared doc.
 
     Order: current room pool → same-room session stash → local rebuild.
+
+    Workspace persist drops DataFrame pools. Retry rebuild whenever both the
+    room and stash are empty — ``get_cached_unified_projection_pool`` is cheap
+    after the first warm build. ``force_rebuild`` is kept for Start callers.
     """
+    del force_rebuild
     if not isinstance(session, dict) or not isinstance(room, dict):
         return None
     code = _room_code(session, room)
-    if force_rebuild:
-        session.pop(_REBUILD_ATTEMPTED_CODE_KEY, None)
     pool = room.get("pool")
     if not pool_is_empty(pool):
         remember_local_shared_player_pool(session, pool, room_code=code)
@@ -138,17 +140,6 @@ def ensure_local_shared_player_pool(
         remember_local_shared_player_pool(session, fallback, room_code=code)
         return fallback
 
-    attempted = str(session.get(_REBUILD_ATTEMPTED_CODE_KEY) or "").strip().upper()
-    if (
-        not force_rebuild
-        and code
-        and attempted == code
-        and pool_is_empty(session.get(DRAFT_ROOM_PLAYER_POOL_KEY))
-    ):
-        return None
-
-    if code:
-        session[_REBUILD_ATTEMPTED_CODE_KEY] = code
     build = builder or rebuild_shared_room_player_pool
     try:
         rebuilt = build(session, room)

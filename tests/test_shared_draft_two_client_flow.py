@@ -706,6 +706,26 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         self.assertEqual(str(attached.iloc[0]["fullName"]), "Juan Soto")
         self.assertEqual(str(self.host.get(DRAFT_ROOM_PLAYER_POOL_CODE_KEY) or ""), "BBBB22")
 
+    def test_persist_wipe_retries_local_pool_rebuild(self) -> None:
+        empty = _room(status="in_progress")
+        empty["pool"] = pd.DataFrame()
+        empty["room_code"] = "CCCC33"
+        self.host[ACTIVE_SHARED_ROOM_CODE_KEY] = "CCCC33"
+        calls = {"n": 0}
+
+        def builder(_session: dict, _room: dict) -> pd.DataFrame:
+            calls["n"] += 1
+            return _pool()
+
+        first = ensure_local_shared_player_pool(self.host, empty, builder=builder)
+        self.assertFalse(getattr(first, "empty", True))
+        empty["pool"] = pd.DataFrame()
+        self.host.pop(DRAFT_ROOM_PLAYER_POOL_KEY, None)
+        second = ensure_local_shared_player_pool(self.host, empty, builder=builder)
+        self.assertFalse(getattr(second, "empty", True))
+        self.assertGreaterEqual(len(second), 4)
+        self.assertGreaterEqual(calls["n"], 2)
+
     def test_unchanged_revision_still_syncs_timer_deadline(self) -> None:
         code = self._create_and_join()
         host_room = self.host[LIVE_DRAFT_ROOM_KEY]

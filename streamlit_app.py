@@ -25517,6 +25517,15 @@ elif active_page == "Live Draft Room":
             except Exception:
                 pass
             ldr_post_rerun_checkpoint(st, st.session_state, "after_room_body_enter")
+            try:
+                from live_draft_setup_mode import is_shared_multiplayer_intent
+                from shared_draft_local_pool import ensure_local_shared_player_pool
+
+                if is_shared_multiplayer_intent(st.session_state, room=room):
+                    ensure_local_shared_player_pool(st.session_state, room)
+                    st.session_state["live_draft_room"] = room
+            except ImportError:
+                pass
         except Exception as _ldr_room_body_exc:
             try:
                 from live_draft_render_trace import ldr_exception
