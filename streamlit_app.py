@@ -27107,6 +27107,19 @@ elif active_page == "Live Draft Room":
                                             st, st.session_state, _rec_paint_diag
                                         )
 
+                                    from live_draft_rec_live_paint import (
+                                        store_interactive_top_rec_snapshot,
+                                        store_prepared_rec_interactive,
+                                    )
+
+                                    store_prepared_rec_interactive(
+                                        st.session_state,
+                                        room_id=str(room.get("draft_room_id") or ""),
+                                        gaps=_gaps,
+                                        category_needs=_category_needs,
+                                        max_cards=6,
+                                        multiplayer=_multiplayer_draft,
+                                    )
                                     if _defer_recs and (top_rec is None or getattr(top_rec, "empty", True)):
                                         st.caption("Loading recommendations…")
                                     else:
@@ -27124,39 +27137,26 @@ elif active_page == "Live Draft Room":
                                                 "**Fantasy Edge** shows value vs market; **Roster Fit** adjusts for your open slots. "
                                                 "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
                                             )
-                                        from live_draft_rec_live_paint import (
-                                            store_interactive_top_rec_snapshot,
-                                            store_prepared_rec_interactive,
-                                        )
-
-                                        store_prepared_rec_interactive(
-                                            st.session_state,
-                                            room_id=str(room.get("draft_room_id") or ""),
-                                            gaps=_gaps,
-                                            category_needs=_category_needs,
-                                            max_cards=6,
-                                            multiplayer=_multiplayer_draft,
-                                        )
                                         store_interactive_top_rec_snapshot(
                                             st.session_state,
                                             top_rec,
                                             room_id=str(room.get("draft_room_id") or ""),
                                         )
-                                        # Add-to-Queue buttons are owned exclusively by
-                                        # paint_interactive (ScriptRun / full_page_interactive_live).
-                                        # Never register them from heavy paint_body — when this runs
-                                        # under fragment(run_every=1) Streamlit accepts WS transport
-                                        # without dispatching on_click (production 47712472).
-                                        if bool(st.session_state.get("_solo_stage1_in_fragment_run")):
-                                            st.session_state[
-                                                "_live_draft_rec_queue_interactive_owner"
-                                            ] = "deferred_to_script_run_handoff"
-                                        else:
-                                            # Non-fragment paint_body (via=full_page): still defer
-                                            # widget registration to paint_interactive below/outer.
-                                            st.session_state[
-                                                "_live_draft_rec_queue_interactive_owner"
-                                            ] = "pending_paint_interactive"
+                                    # Add-to-Queue buttons are owned exclusively by
+                                    # paint_interactive (ScriptRun / full_page_interactive_live).
+                                    # Never register them from heavy paint_body — when this runs
+                                    # under fragment(run_every=1) Streamlit accepts WS transport
+                                    # without dispatching on_click (production 47712472).
+                                    if bool(st.session_state.get("_solo_stage1_in_fragment_run")):
+                                        st.session_state[
+                                            "_live_draft_rec_queue_interactive_owner"
+                                        ] = "deferred_to_script_run_handoff"
+                                    else:
+                                        # Non-fragment paint_body (via=full_page): still defer
+                                        # widget registration to paint_interactive below/outer.
+                                        st.session_state[
+                                            "_live_draft_rec_queue_interactive_owner"
+                                        ] = "pending_paint_interactive"
                                 except ImportError:
                                     if not bool(st.session_state.get("_solo_stage1_in_fragment_run")):
                                         _render_live_draft_rec_cards(top_rec, max_cards=6)
