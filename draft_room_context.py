@@ -361,6 +361,34 @@ def reset_shared_draft_sync_gate(session: dict[str, Any]) -> None:
     session.pop(_SHARED_DRAFT_SYNC_RUN_KEY, None)
 
 
+def _shared_head_live_fields_diverge(head: dict[str, Any], local_room: dict[str, Any] | None) -> bool:
+    """True when revision is unchanged but timer / pick / status still drifted."""
+    if not isinstance(head, dict) or not isinstance(local_room, dict):
+        return False
+    remote_status = str(head.get("status") or "").strip().lower()
+    local_status = str(local_room.get("status") or "").strip().lower()
+    if remote_status and remote_status != local_status:
+        return True
+    try:
+        remote_idx = int(head.get("current_pick_index") or 0)
+        local_idx = int(local_room.get("current_pick_index") or 0)
+    except (TypeError, ValueError):
+        remote_idx = head.get("current_pick_index")
+        local_idx = local_room.get("current_pick_index")
+    if remote_idx != local_idx:
+        return True
+    remote_dl = head.get("timer_deadline")
+    local_dl = local_room.get("timer_deadline")
+    if remote_dl is None and local_dl is None:
+        return False
+    if remote_dl is None or local_dl is None:
+        return True
+    try:
+        return abs(float(remote_dl) - float(local_dl)) > 0.05
+    except (TypeError, ValueError):
+        return remote_dl != local_dl
+
+
 def sync_shared_draft_room(
     session: dict[str, Any],
     *,
@@ -417,7 +445,9 @@ def sync_shared_draft_room(
             if isinstance(head, dict):
                 remote_rev = int(head.get("revision") or 0)
                 _trace(remote_revision=remote_rev, last_seen_remote_revision=remote_rev)
-                if remote_rev <= local_rev:
+                if remote_rev <= local_rev and not _shared_head_live_fields_diverge(
+                    head, local_room if isinstance(local_room, dict) else None
+                ):
                     session[_SHARED_DRAFT_SYNC_RUN_KEY] = True
                     _trace(
                         last_poll_finished_at=time.time(),

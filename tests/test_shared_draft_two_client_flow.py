@@ -34,6 +34,7 @@ from draft_room_shared_state import (
     ACTIVE_SHARED_ROOM_CODE_KEY,
     LEFT_PARTICIPANTS_KEY,
     LIVE_DRAFT_ROOM_KEY,
+    SHARED_ROOM_META_KEY,
     LocalFileSharedRoomStore,
     load_shared_room,
     reset_shared_room_store_for_tests,
@@ -45,7 +46,15 @@ from draft_state import DRAFT_QUEUE_KEY, add_player_to_draft_queue
 from live_draft_completion import apply_live_draft_completion
 from live_draft_pick_commit import persist_applied_pick
 from live_draft_pick_engine import live_draft_make_pick
-from live_draft_setup_mode import SETUP_MODE_SHARED, SETUP_MODE_SOLO, can_start_live_draft, set_live_draft_setup_mode
+from live_draft_resume_lobby import all_required_participants_rejoined, continue_draft_from_resume_lobby
+from live_draft_resumable_slot import continue_saved_draft, save_and_continue_later
+from live_draft_setup_mode import (
+    SETUP_MODE_SHARED,
+    SETUP_MODE_SOLO,
+    can_start_live_draft,
+    set_live_draft_setup_mode,
+    start_prepared_shared_room,
+)
 from live_draft_team_ownership import list_available_shared_room_teams
 from live_draft_termination import (
     discard_live_draft_and_start_over,
@@ -55,6 +64,7 @@ from live_draft_termination import (
 )
 from live_draft_timer_logic import live_draft_current_slot, live_draft_reset_timer
 from shared_draft_permissions import is_canonical_commissioner
+from shared_room_membership_gate import can_render_shared_live_draft
 from suite_auth import AUTH_USER_ID_KEY
 
 
@@ -200,6 +210,9 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         self.assertIn("already assigned", steal_err.lower())
         ok_start, start_reason = can_start_live_draft(self.host)
         self.assertTrue(ok_start, start_reason)
+        ok_guest, guest_reason = can_start_live_draft(self.guest)
+        self.assertFalse(ok_guest)
+        self.assertIn("commissioner", guest_reason.lower())
 
     def test_stale_host_save_after_guest_leave_does_not_resurrect_seat(self) -> None:
         code = self._create_and_join()
@@ -491,6 +504,181 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         self.assertEqual(str(guest_room.get("status") or "").lower(), "complete")
         self.assertEqual(self.guest.get(ACTIVE_SHARED_ROOM_CODE_KEY), code)
         self.assertEqual(shared_document_room_blob(stored).get("status") if stored else "", "complete")
+
+    def test_completed_draft_refresh_restores_review_for_both_clients(self) -> None:
+        code = self._create_and_join()
+        for session, player in (
+            (self.host, "Aaron Judge"),
+            (self.guest, "Juan Soto"),
+            (self.guest, "Mookie Betts"),
+            (self.host, "Freddie Freeman"),
+        ):
+            poll_shared_draft_room(session, force=True, store=self.store)
+            self._make_pick(session, player)
+
+        host_room = self.host[LIVE_DRAFT_ROOM_KEY]
+        apply_live_draft_completion(host_room, self.host)
+        persist_applied_pick(self.host, host_room, source="complete")
+        poll_shared_draft_room(self.guest, force=True, store=self.store)
+        save_participant_workflow_from_session(self.host, code)
+        save_participant_workflow_from_session(self.guest, code)
+
+        for session, uid in ((self.host, "user:daniel"), (self.guest, "user:coakley11")):
+            refreshed = {
+                AUTH_USER_ID_KEY: uid,
+                "draft_room_participant_id": uid,
+                ALLOW_FREE_POOL_KEY: True,
+                ACTIVE_SHARED_ROOM_CODE_KEY: code,
+                MEMBERSHIP_KEY: copy.deepcopy(session.get(MEMBERSHIP_KEY) or {}),
+                PARTICIPANT_STATE_KEY: copy.deepcopy(session.get(PARTICIPANT_STATE_KEY) or {}),
+            }
+            restored = restore_persisted_shared_room_membership(refreshed)
+            self.assertEqual(restored, code, refreshed.get("_live_draft_restore_blocked_reason"))
+            prepare_global_draft_context(refreshed)
+            room = refreshed.get(LIVE_DRAFT_ROOM_KEY) or {}
+            self.assertEqual(str(room.get("status") or "").lower(), "complete")
+            self.assertEqual(len(room.get("draft_board") or []), 4)
+            self.assertEqual(refreshed.get(ACTIVE_SHARED_ROOM_CODE_KEY), code)
+            ok, reason = can_render_shared_live_draft(refreshed, require_team_claim=False)
+            self.assertTrue(ok, reason)
+
+        late_ok, late_msg, _ = join_shared_draft_room(
+            {"draft_room_participant_id": "late", AUTH_USER_ID_KEY: "late"},
+            code,
+            store=self.store,
+        )
+        self.assertFalse(late_ok)
+        self.assertTrue(
+            any(tok in late_msg.lower() for tok in ("finished", "complete", "joinable")),
+            late_msg,
+        )
+
+    def test_guest_cannot_start_shared_draft(self) -> None:
+        set_live_draft_setup_mode(self.host, SETUP_MODE_SHARED)
+        code, _ = create_and_host_shared_room(
+            self.host, _room(status="not_started"), host_team="Team A", store=self.store
+        )
+        ok, msg, _ = join_shared_draft_room(
+            self.guest, code, requested_team="Team B", store=self.store
+        )
+        self.assertTrue(ok, msg)
+        prepare_global_draft_context(self.host)
+        prepare_global_draft_context(self.guest)
+
+        ok_host, host_reason = can_start_live_draft(self.host)
+        self.assertTrue(ok_host, host_reason)
+        ok_guest, guest_reason = can_start_live_draft(self.guest)
+        self.assertFalse(ok_guest)
+        self.assertIn("commissioner", guest_reason.lower())
+
+        blocked = start_prepared_shared_room(self.guest, None)
+        self.assertTrue(blocked.get("handled"))
+        self.assertFalse(blocked.get("ok"))
+        self.assertIn("commissioner", str(blocked.get("error") or "").lower())
+        self.assertEqual(str((self.guest.get(LIVE_DRAFT_ROOM_KEY) or {}).get("status") or ""), "not_started")
+        self.assertEqual(str((load_shared_room(code) or {}).get("status") or "").lower(), "not_started")
+
+        with mock.patch("live_draft_state.commit_live_draft_room"):
+            started = start_prepared_shared_room(self.host, None)
+        self.assertTrue(started.get("ok"), started)
+        self.assertEqual(str((self.host.get(LIVE_DRAFT_ROOM_KEY) or {}).get("status") or ""), "in_progress")
+        stored = load_shared_room(code)
+        self.assertEqual(str((stored or {}).get("status") or "").lower(), "in_progress")
+
+    def test_unchanged_revision_still_syncs_timer_deadline(self) -> None:
+        code = self._create_and_join()
+        host_room = self.host[LIVE_DRAFT_ROOM_KEY]
+        live_draft_reset_timer(host_room)
+        persist_applied_pick(self.host, host_room, source="timer_reset")
+        poll_shared_draft_room(self.guest, force=True, store=self.store)
+        first = float(self.guest[LIVE_DRAFT_ROOM_KEY]["timer_deadline"])
+        local_rev = int((self.guest.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
+
+        stored = load_shared_room(code)
+        self.assertIsInstance(stored, dict)
+        blob = dict(shared_document_room_blob(stored) or {})
+        drifted = first + 17.0
+        blob["timer_deadline"] = drifted
+        stored["room"] = blob
+        self.store.save(stored)
+        self.assertEqual(int((load_shared_room(code) or {}).get("revision") or 0), local_rev)
+
+        self.guest.pop("_shared_draft_sync_run", None)
+        changed = sync_shared_draft_room(self.guest, force=False, store=self.store)
+        self.assertTrue(changed)
+        self.assertAlmostEqual(
+            float(self.guest[LIVE_DRAFT_ROOM_KEY]["timer_deadline"]), drifted, delta=0.2
+        )
+
+    def test_save_continue_two_client_rejoin_without_injected_markers(self) -> None:
+        code = self._create_and_join()
+        self._make_pick(self.host, "Aaron Judge")
+        poll_shared_draft_room(self.guest, force=True, store=self.store)
+        save_participant_workflow_from_session(self.host, code)
+        save_participant_workflow_from_session(self.guest, code)
+        guest_membership = copy.deepcopy(self.guest.get(MEMBERSHIP_KEY) or {})
+        guest_pstate = copy.deepcopy(self.guest.get(PARTICIPANT_STATE_KEY) or {})
+
+        saved = save_and_continue_later(self.host, st=None, replace_existing=True)
+        self.assertTrue(saved.get("ok"), saved)
+        parked = load_shared_room(code)
+        self.assertEqual(str((parked or {}).get("status") or "").lower(), "saved_for_later")
+
+        parked_refresh = {
+            AUTH_USER_ID_KEY: "user:coakley11",
+            "draft_room_participant_id": "user:coakley11",
+            ALLOW_FREE_POOL_KEY: True,
+            ACTIVE_SHARED_ROOM_CODE_KEY: code,
+            MEMBERSHIP_KEY: guest_membership,
+            PARTICIPANT_STATE_KEY: guest_pstate,
+        }
+        restored = restore_persisted_shared_room_membership(parked_refresh)
+        self.assertEqual(restored, "")
+        self.assertIn("saved_for_later", str(parked_refresh.get("_live_draft_restore_blocked_reason") or ""))
+
+        cont = continue_saved_draft(self.host, st=None)
+        self.assertTrue(cont.get("ok"), cont)
+        self.assertTrue(cont.get("resume_lobby") or self.host.get("_live_draft_resume_lobby"))
+
+        ok, msg, _ = join_shared_draft_room(
+            self.guest, code, requested_team="Team B", store=self.store
+        )
+        self.assertTrue(ok, msg)
+        doc = load_shared_room(code)
+        ready, ready_n, total_n = all_required_participants_rejoined(self.host, doc)
+        self.assertTrue(
+            ready,
+            (ready_n, total_n, (doc or {}).get("resume_rejoined"), (doc or {}).get("resume_reserved_teams")),
+        )
+        resumed = continue_draft_from_resume_lobby(self.host, st=None, document=doc)
+        self.assertTrue(resumed.get("ok"), resumed)
+        self.assertEqual(int((self.host.get(LIVE_DRAFT_ROOM_KEY) or {}).get("current_pick_index") or 0), 1)
+        self.assertFalse(self.host.get("_live_draft_resume_lobby"))
+
+    def test_host_leave_mid_draft_is_leave_only(self) -> None:
+        code = self._create_and_join()
+        leave_shared_draft_room(self.host)
+        stored = load_shared_room(code)
+        self.assertIsInstance(stored, dict)
+        self.assertEqual(str((stored or {}).get("status") or "").lower(), "in_progress")
+        self.assertNotIn("user:daniel", dict((stored or {}).get("participants") or {}))
+        self.assertIn("user:coakley11", dict((stored or {}).get("participants") or {}))
+        self.assertFalse(session_may_close_backend_shared_room(self.guest, code))
+
+        deleted = permanently_delete_live_draft(self.guest, st=None)
+        self.assertTrue(deleted.get("ok"), deleted)
+        self.assertEqual(deleted.get("operation"), "leave")
+        after_guest = load_shared_room(code)
+        self.assertEqual(str((after_guest or {}).get("status") or "").lower(), "in_progress")
+        self.assertNotEqual(str((after_guest or {}).get("status") or "").lower(), "deleted")
+
+        self.host = _host()
+        ok, msg, _ = join_shared_draft_room(
+            self.host, code, requested_team="Team A", store=self.store
+        )
+        self.assertTrue(ok, msg)
+        self.assertEqual(self.host.get(ACTIVE_PARTICIPANT_TEAM_KEY), "Team A")
+        self.assertTrue(is_canonical_commissioner(self.host, load_shared_room(code)))
 
 
 if __name__ == "__main__":

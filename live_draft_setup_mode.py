@@ -539,6 +539,15 @@ def can_start_live_draft(session: dict[str, Any]) -> tuple[bool, str]:
             else:
                 document = None
 
+            if isinstance(document, dict):
+                try:
+                    from shared_draft_permissions import session_may_use_commissioner_draft_controls
+
+                    if not session_may_use_commissioner_draft_controls(session, document=document):
+                        return False, "Only the commissioner can start this shared draft."
+                except ImportError:
+                    pass
+
             from live_draft_team_ownership import list_required_human_teams
 
             teams = list_required_human_teams(room, document=document if isinstance(document, dict) else None)
@@ -593,6 +602,18 @@ def start_prepared_shared_room(session: dict[str, Any], st_obj: Any) -> dict[str
     if not code or not isinstance(room, dict) or str(room.get("status") or "") != "not_started":
         return result
     result["handled"] = True
+    try:
+        from draft_room_shared_state import load_shared_room
+        from shared_draft_permissions import session_may_use_commissioner_draft_controls
+
+        document = load_shared_room(code)
+        if isinstance(document, dict) and not session_may_use_commissioner_draft_controls(
+            session, document=document
+        ):
+            result["error"] = "Only the commissioner can start this shared draft."
+            return result
+    except ImportError:
+        pass
     try:
         from live_draft_timer_logic import live_draft_reset_timer
     except ImportError:

@@ -112,9 +112,13 @@ def render_live_draft_control_center(
     with top1:
         _pause_return = st.button(
             "⏸ Pause Draft",
-            disabled=status != "in_progress",
+            disabled=status != "in_progress" or not is_commissioner,
             key="live_draft_pause",
-            help="Temporarily stops the timer for everyone in this active room.",
+            help=(
+                "Commissioner only: temporarily stops the timer for everyone in this active room."
+                if session.get("active_shared_draft_room_code")
+                else "Temporarily stops the timer for this draft."
+            ),
             use_container_width=True,
         )
         emit_pause_branch_entered = None
@@ -131,7 +135,7 @@ def render_live_draft_control_center(
             )
         except ImportError:
             pass
-        if _pause_return:
+        if _pause_return and is_commissioner:
             if emit_pause_branch_entered is not None:
                 emit_pause_branch_entered(st, session, room, room_status=status)
             from live_draft_timer_logic import live_draft_pause_timer
@@ -193,12 +197,16 @@ def render_live_draft_control_center(
     with top2:
         if st.button(
             "▶ Resume Draft",
-            disabled=status != "paused",
+            disabled=status != "paused" or not is_commissioner,
             key="live_draft_resume",
             type="primary",
-            help="Continues a normally paused active draft (not a saved-for-later park).",
+            help=(
+                "Commissioner only: continues a normally paused active draft (not a saved-for-later park)."
+                if session.get("active_shared_draft_room_code")
+                else "Continues a normally paused active draft (not a saved-for-later park)."
+            ),
             use_container_width=True,
-        ):
+        ) and is_commissioner:
             from live_draft_timer_logic import live_draft_resume_timer
 
             room["status"] = "in_progress"
