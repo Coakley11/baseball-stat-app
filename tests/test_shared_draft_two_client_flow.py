@@ -62,7 +62,12 @@ from live_draft_termination import (
     permanently_delete_live_draft,
     session_may_close_backend_shared_room,
 )
-from live_draft_timer_logic import live_draft_current_slot, live_draft_reset_timer
+from live_draft_timer_logic import (
+    ensure_live_draft_timer_for_pick,
+    live_draft_current_slot,
+    live_draft_reset_timer,
+    live_draft_seconds_remaining,
+)
 from shared_draft_permissions import is_canonical_commissioner
 from shared_room_membership_gate import can_render_shared_live_draft
 from suite_auth import AUTH_USER_ID_KEY
@@ -584,6 +589,22 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         self.assertEqual(str((self.host.get(LIVE_DRAFT_ROOM_KEY) or {}).get("status") or ""), "in_progress")
         stored = load_shared_room(code)
         self.assertEqual(str((stored or {}).get("status") or "").lower(), "in_progress")
+        host_room = self.host[LIVE_DRAFT_ROOM_KEY]
+        self.assertIsNone(host_room.get("timer_deadline"))
+        self.assertIsNone(host_room.get("timer_started_at"))
+        stored_blob = shared_document_room_blob(stored) or {}
+        self.assertIsNone(stored_blob.get("timer_deadline"))
+        self.assertIsNone(stored_blob.get("timer_started_at"))
+
+        # Simulate a Start-armed 30s clock that already expired during a slow first paint.
+        host_room["timer_started_at"] = __import__("time").time() - 45
+        host_room["timer_deadline"] = __import__("time").time() - 15
+        host_room["timer_handled_index"] = -1
+        self.assertEqual(live_draft_seconds_remaining(host_room), 0)
+        self.assertTrue(ensure_live_draft_timer_for_pick(host_room))
+        remaining = live_draft_seconds_remaining(host_room)
+        self.assertGreaterEqual(remaining, 58)
+        self.assertLessEqual(remaining, 60)
 
     def test_unchanged_revision_still_syncs_timer_deadline(self) -> None:
         code = self._create_and_join()

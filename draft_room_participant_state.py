@@ -57,6 +57,14 @@ def resolve_participant_id(session: dict[str, Any]) -> str:
                 return anon
     except ImportError:
         pass
+    import os
+
+    env_pid = str(os.environ.get("BASEBALL_PARTICIPANT_ID") or "").strip()
+    if env_pid:
+        # Local two-process QA: distinct seats without Real Accounts.
+        # Inert unless set; do not write a shared default identity file.
+        session[ACTIVE_PARTICIPANT_ID_KEY] = env_pid
+        return env_pid
     explicit = str(session.get(ACTIVE_PARTICIPANT_ID_KEY) or "").strip()
     if explicit:
         return explicit

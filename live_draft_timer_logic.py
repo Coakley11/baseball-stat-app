@@ -8,6 +8,23 @@ from typing import Any
 
 # Persisted on the room after a deadline expiration has successfully produced a pick.
 LAST_PROCESSED_EXPIRATION_TOKEN_KEY = "last_processed_expiration_token"
+# Stamped on first live-board paint so a Start-armed clock that expired during
+# a slow first render is re-armed once, and genuine later expiries stay expired.
+TIMER_LIVE_READY_AT_KEY = "timer_live_ready_at"
+
+
+def first_pick_awaiting_live_ready(room: dict[str, Any]) -> bool:
+    """True until the first live-board paint arms pick 0 of an empty board."""
+    if not isinstance(room, dict):
+        return False
+    if int(room.get("current_pick_index") or 0) != 0:
+        return False
+    if room.get(TIMER_LIVE_READY_AT_KEY):
+        return False
+    board = room.get("draft_board")
+    if isinstance(board, list) and board:
+        return False
+    return True
 
 
 def ensure_full_pick_order(room: dict[str, Any]) -> list[dict[str, Any]]:
@@ -141,6 +158,10 @@ def reconstruct_timer_deadline(room: dict[str, Any]) -> bool:
     if paused is not None:
         live_draft_resume_timer(room, int(paused))
         return True
+    # Start leaves the first pick unarmed so a slow first paint cannot expire
+    # the clock before Add-to-Queue / pick controls exist. Arm on live paint.
+    if first_pick_awaiting_live_ready(room):
+        return False
     live_draft_reset_timer(room)
     return True
 
@@ -240,13 +261,22 @@ def live_draft_clear_timer(room: dict[str, Any]) -> None:
 
 
 def ensure_live_draft_timer_for_pick(room: dict[str, Any]) -> bool:
-    """Reset timer when a new pick is on the clock but timer state is missing or stale."""
+    """Reset timer when a new pick is on the clock but timer state is missing or stale.
+
+    Pick 0 of a just-started empty board waits for this live-board paint. A
+    Start-armed clock that already expired before that paint is re-armed once.
+    Later genuine expiries (live-ready stamped, or a non-empty board) stay expired.
+    """
     if room.get("status") != "in_progress":
         return False
     idx = int(room.get("current_pick_index", 0))
     handled = room.get("timer_handled_index")
     deadline = room.get("timer_deadline")
     started = room.get("timer_started_at")
+    if first_pick_awaiting_live_ready(room):
+        live_draft_reset_timer(room)
+        room[TIMER_LIVE_READY_AT_KEY] = time.time()
+        return True
     if deadline is None and started is None:
         live_draft_reset_timer(room)
         return True

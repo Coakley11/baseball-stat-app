@@ -614,14 +614,19 @@ def start_prepared_shared_room(session: dict[str, Any], st_obj: Any) -> dict[str
             return result
     except ImportError:
         pass
-    try:
-        from live_draft_timer_logic import live_draft_reset_timer
-    except ImportError:
-        result["error"] = "Live draft timer helpers unavailable."
-        return result
-
     room["status"] = "in_progress"
-    live_draft_reset_timer(room)
+    # Do not arm the pick clock here. First live-board paint is the readiness
+    # boundary — a 30s/60s Start-armed clock expires during a slow first render
+    # and immediately autopicks before Add-to-Queue / pick controls exist.
+    try:
+        from live_draft_timer_logic import live_draft_clear_timer
+
+        live_draft_clear_timer(room)
+    except ImportError:
+        room["timer_started_at"] = None
+        room["timer_deadline"] = None
+    room.pop("timer_live_ready_at", None)
+    room["timer_handled_index"] = -1
     session["live_draft_room"] = room
     user_team = str((room.get("config") or {}).get("your_team") or (room.get("config") or {}).get("user_team") or "")
     if user_team:
