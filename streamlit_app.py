@@ -27535,7 +27535,18 @@ elif active_page == "Live Draft Room":
                     st.json(serialize_live_draft_room(room))
 
         # Compact commissioner park/delete — near Team Rosters, not in Control Center.
-        if _draft_in_progress and not _pending_manual_pick:
+        # Also show when status claims active but total_expected_picks is 0 (corrupt stub
+        # rooms like "Pick 1 of 0") so End/Delete remains reachable and Create is not trapped.
+        _show_commissioner_draft_actions = bool(not _pending_manual_pick) and (
+            bool(_draft_in_progress)
+            or (
+                isinstance(room, dict)
+                and int(total_picks or 0) <= 0
+                and str(room.get("status") or "").strip().lower()
+                in {"in_progress", "paused", "active"}
+            )
+        )
+        if _show_commissioner_draft_actions:
             try:
                 from live_draft_control_center_ui import render_commissioner_draft_actions
 

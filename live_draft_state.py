@@ -1439,6 +1439,58 @@ def _clear_blocked_completed_runtime(session: dict[str, Any], *, reason: str) ->
             block.pop(LIVE_DRAFT_ROOM_KEY, None)
 
 
+def is_uninhabitable_in_progress_stub(room: Any) -> bool:
+    """True for corrupt active rooms that cannot progress (e.g. Pick 1 of 0).
+
+    These stubs block Create/setup because room_body mounts while
+    ``live_draft_is_in_progress`` is false (total_expected_picks == 0), which
+    previously hid End/Delete commissioner actions.
+    """
+    if not isinstance(room, dict):
+        return False
+    if not str(room.get("draft_room_id") or "").strip():
+        return False
+    status = str(room.get("status") or "").strip().lower()
+    if status not in {"in_progress", "paused", "active"}:
+        return False
+    try:
+        from live_draft_safe_mode import total_expected_picks
+
+        if int(total_expected_picks(room) or 0) > 0:
+            return False
+    except ImportError:
+        teams = [t for t in (room.get("teams") or []) if str(t).strip()]
+        cfg = dict(room.get("config") or {})
+        n_teams = len(teams) or int(cfg.get("num_teams") or 0)
+        rounds = int(cfg.get("picks_per_team") or cfg.get("rounds") or 0)
+        if n_teams and rounds:
+            return False
+    return True
+
+
+def clear_uninhabitable_in_progress_stub(
+    session: dict[str, Any],
+    *,
+    reason: str = "uninhabitable_in_progress_stub",
+) -> bool:
+    """Drop a non-progressable active stub so Live Draft returns to setup."""
+    room = session.get(LIVE_DRAFT_ROOM_KEY)
+    if not is_uninhabitable_in_progress_stub(room):
+        return False
+    _clear_blocked_completed_runtime(session, reason=reason)
+    ws = session.get("baseball_workspace_state")
+    if isinstance(ws, dict) and isinstance(ws.get("live_draft"), dict):
+        stub = ws.get("live_draft") or {}
+        rid = str((room or {}).get("draft_room_id") or "")
+        if not rid or str(stub.get("draft_room_id") or "") == rid:
+            ws.pop("live_draft", None)
+    session["_live_draft_cleared_uninhabitable_stub"] = {
+        "reason": reason,
+        "draft_room_id": str((room or {}).get("draft_room_id") or ""),
+    }
+    return True
+
+
 def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | None:
     try:
         import streamlit as st_mod  # noqa: WPS433
@@ -1486,6 +1538,10 @@ def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | 
     )
     if blocked:
         _clear_blocked_completed_runtime(session, reason=f"prepare_skip_runtime:{blocked}")
+    # Corrupt "in_progress" stubs with zero expected picks trap room_body without
+    # End/Delete (Pick 1 of 0). Clear so Shared/Solo Create setup can render.
+    if clear_uninhabitable_in_progress_stub(session, reason="prepare_uninhabitable_stub"):
+        runtime_probe = session.get(LIVE_DRAFT_ROOM_KEY)
     short = _try_short_circuit_prepare(session)
     if short is not None:
         return short

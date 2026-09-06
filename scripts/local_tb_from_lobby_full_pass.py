@@ -223,6 +223,23 @@ def main() -> int:
         report["checks"]["host_start_click"] = started
         snap(host, "FL03_host_after_start_click")
 
+        # Require authoritative disk transition — lobby can show Add-to-Queue before Start.
+        started_disk = False
+        for i in range(90):
+            stt = str(room_raw(code).get("status") or "")
+            if stt == "in_progress":
+                started_disk = True
+                break
+            host.wait_for_timeout(2000)
+        report["checks"]["host_start_disk_in_progress"] = started_disk
+        if not started_disk:
+            report["defects"].append("Start click did not move room disk status to in_progress")
+            report["verdict"] = "LOCAL SHARED DRAFT BLOCKED — HOST_START"
+            REPORT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            print(json.dumps({k: report[k] for k in ("verdict", "code", "checks", "defects") if k in report}, indent=2))
+            browser.close()
+            return 3
+
         host_i = wait_interactive(host, "host", report, timeout_s=300)
         guest.bring_to_front()
         # Soft nudge guest poll
