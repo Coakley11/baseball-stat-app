@@ -417,11 +417,18 @@ def render_rec_interactive_widgets(
                 except ImportError:
                     pass
                 try:
-                    st.caption(
-                        "Recommendation cards are still building the player pool. "
-                        "Add to Queue appears on this page when scoring finishes — "
-                        "no refresh should be required."
-                    )
+                    rebuild_err = str(session.get("_shared_local_pool_rebuild_error") or "").strip()
+                    if rebuild_err:
+                        st.caption(
+                            "Recommendation cards are still building the player pool. "
+                            f"Local pool rebuild: `{rebuild_err[:180]}`"
+                        )
+                    else:
+                        st.caption(
+                            "Recommendation cards are still building the player pool. "
+                            "Add to Queue appears on this page when scoring finishes — "
+                            "no refresh should be required."
+                        )
                 except Exception:
                     pass
                 return False

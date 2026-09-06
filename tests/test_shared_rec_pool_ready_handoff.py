@@ -206,6 +206,19 @@ class SharedRecPoolReadyHandoffTests(unittest.TestCase):
         self.assertFalse(shared_rec_pool_pending(session))
         clear_shared_rec_pool_pending(session)
 
+    def test_force_rebuild_clears_empty_frame_and_reattaches(self) -> None:
+        session: dict[str, Any] = {"active_shared_draft_room_code": "ABCD12"}
+        room = _shared_room()
+        room["pool"] = pd.DataFrame()
+        attached = ensure_local_shared_player_pool(
+            session,
+            room,
+            builder=lambda _s, _r: _pool(),
+            force_rebuild=True,
+        )
+        self.assertFalse(getattr(attached, "empty", True))
+        self.assertEqual(len(room["pool"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

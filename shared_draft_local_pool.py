@@ -72,11 +72,13 @@ def rebuild_shared_room_player_pool(
     """Rebuild the projection/market pool using this client's local cache."""
     cfg = dict((room or {}).get("config") or {}) if isinstance(room, dict) else {}
     kw: dict[str, Any] = {}
+    errors: list[str] = []
     try:
         from shared_draft_context import draft_pool_kwargs_from_session
 
         kw = draft_pool_kwargs_from_session(session)
-    except Exception:
+    except Exception as exc:
+        errors.append(f"draft_pool_kwargs:{type(exc).__name__}")
         kw = {}
 
     def _first(*values: Any, default: Any = None) -> Any:
@@ -85,23 +87,51 @@ def rebuild_shared_room_player_pool(
                 return value
         return default
 
+    lahman_year = int(session.get("_lahman_max_year") or cfg.get("lahman_max_year") or 0)
+    draft_window = int(_first(cfg.get("projection_window"), kw.get("draft_window"), 3) or 3)
+    fantasy_format = str(
+        _first(cfg.get("fantasy_format"), kw.get("fantasy_format"), "5x5 Roto") or "5x5 Roto"
+    )
+    projection_style = str(
+        _first(cfg.get("projection_style"), kw.get("projection_style"), "Balanced") or "Balanced"
+    )
+    use_ml_blend = bool(_first(cfg.get("use_ml_blend"), kw.get("use_ml_blend"), False))
+    ml_blend_weight = float(_first(cfg.get("ml_blend_weight"), kw.get("ml_blend_weight"), 0) or 0)
+    ml_min_games = int(
+        _first(cfg.get("ml_min_games_for_signal"), kw.get("ml_min_games_for_signal"), 50) or 50
+    )
+
     try:
         import importlib
 
         app_mod = importlib.import_module("streamlit_app")
-        pool = app_mod.get_cached_unified_projection_pool(
-            int(session.get("_lahman_max_year") or cfg.get("lahman_max_year") or 0),
-            int(_first(cfg.get("projection_window"), kw.get("draft_window"), 3) or 3),
-            str(_first(cfg.get("fantasy_format"), kw.get("fantasy_format"), "5x5 Roto") or "5x5 Roto"),
-            str(_first(cfg.get("projection_style"), kw.get("projection_style"), "Balanced") or "Balanced"),
-            bool(_first(cfg.get("use_ml_blend"), kw.get("use_ml_blend"), False)),
-            float(_first(cfg.get("ml_blend_weight"), kw.get("ml_blend_weight"), 0) or 0),
-            int(_first(cfg.get("ml_min_games_for_signal"), kw.get("ml_min_games_for_signal"), 50) or 50),
-        )
+        # Prefer the live wrapper when available — same kwargs the app uses elsewhere.
+        live_fn = getattr(app_mod, "get_cached_unified_projection_pool_live", None)
+        pool = None
+        if callable(live_fn):
+            try:
+                pool = live_fn()
+            except Exception as exc:
+                errors.append(f"cached_pool_live:{type(exc).__name__}:{exc}"[:160])
+                pool = None
+        if pool_is_empty(pool):
+            pool = app_mod.get_cached_unified_projection_pool(
+                lahman_year,
+                draft_window,
+                fantasy_format,
+                projection_style,
+                use_ml_blend,
+                ml_blend_weight,
+                ml_min_games,
+            )
         if not pool_is_empty(pool):
+            if isinstance(session, dict):
+                session.pop("_shared_local_pool_rebuild_error", None)
+                session["_shared_local_pool_rebuild_rows"] = int(len(pool))
             return pool
-    except Exception:
-        pass
+        errors.append("cached_unified_pool_empty")
+    except Exception as exc:
+        errors.append(f"cached_unified:{type(exc).__name__}:{exc}"[:160])
 
     try:
         from live_draft_fast_solo_start import build_fast_market_pool
@@ -109,12 +139,34 @@ def rebuild_shared_room_player_pool(
         market = session.get("market_df_live")
         if market is None:
             market = session.get("market_df")
+        if market is None:
+            # Last-resort: load market the same way the cached pool builder does.
+            try:
+                import importlib
+
+                app_mod = importlib.import_module("streamlit_app")
+                loader = getattr(app_mod, "load_fantasypros_market_data", None)
+                if callable(loader):
+                    market = loader()
+            except Exception as exc:
+                errors.append(f"market_loader:{type(exc).__name__}")
+                market = None
         if market is not None and not getattr(market, "empty", True):
             rebuilt = build_fast_market_pool(market)
             if not pool_is_empty(rebuilt):
+                if isinstance(session, dict):
+                    session.pop("_shared_local_pool_rebuild_error", None)
+                    session["_shared_local_pool_rebuild_rows"] = int(len(rebuilt))
+                    session["_shared_local_pool_rebuild_source"] = "fast_market"
                 return rebuilt
-    except Exception:
-        pass
+            errors.append("fast_market_pool_empty")
+        else:
+            errors.append("market_df_missing")
+    except Exception as exc:
+        errors.append(f"fast_market:{type(exc).__name__}:{exc}"[:160])
+
+    if isinstance(session, dict) and errors:
+        session["_shared_local_pool_rebuild_error"] = " | ".join(errors)[:400]
     return None
 
 
@@ -131,12 +183,17 @@ def ensure_local_shared_player_pool(
 
     Workspace persist drops DataFrame pools. Retry rebuild whenever both the
     room and stash are empty — ``get_cached_unified_projection_pool`` is cheap
-    after the first warm build. ``force_rebuild`` is kept for Start callers.
+    after the first warm build. ``force_rebuild`` clears a stale empty/non-usable
+    room pool so Start cannot open an empty live board.
     """
-    del force_rebuild
     if not isinstance(session, dict) or not isinstance(room, dict):
         return None
     code = _room_code(session, room)
+    if force_rebuild:
+        # Shared wire never carries pool; Start must not trust a leftover empty frame.
+        if pool_is_empty(room.get("pool")):
+            room.pop("pool", None)
+
     pool = room.get("pool")
     if not pool_is_empty(pool):
         remember_local_shared_player_pool(session, pool, room_code=code)
@@ -151,7 +208,8 @@ def ensure_local_shared_player_pool(
     build = builder or rebuild_shared_room_player_pool
     try:
         rebuilt = build(session, room)
-    except Exception:
+    except Exception as exc:
+        session["_shared_local_pool_rebuild_error"] = f"builder:{type(exc).__name__}:{exc}"[:240]
         rebuilt = None
     if pool_is_empty(rebuilt):
         return None
