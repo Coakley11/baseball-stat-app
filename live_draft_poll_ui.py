@@ -243,6 +243,17 @@ def render_live_draft_poll_fragment(st: Any, session: dict[str, Any]) -> None:
             except ImportError:
                 pass
             _rerun_after_poll(st, session)
+            return
+        # Shared wire omits pool. Local rebuild can become ready without a revision
+        # bump — still request a full ScriptRun so recommendation cards register.
+        try:
+            from shared_draft_local_pool import maybe_request_full_rerun_when_shared_pool_ready
+
+            maybe_request_full_rerun_when_shared_pool_ready(
+                st, session, session.get("live_draft_room")
+            )
+        except ImportError:
+            pass
 
     _poll_tick()
 

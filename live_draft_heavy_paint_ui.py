@@ -214,6 +214,28 @@ def render_deferred_heavy_paint_fragment(
             st.rerun()
         return
 
+    def _mount_shared_pool_ready_watcher_if_needed(*, painted: bool) -> None:
+        if painted or fragment is None:
+            return
+        try:
+            from shared_draft_local_pool import (
+                maybe_request_full_rerun_when_shared_pool_ready,
+                shared_rec_pool_pending,
+            )
+
+            if not shared_rec_pool_pending(session):
+                return
+
+            def _shared_pool_ready_watcher() -> None:
+                room = session.get("live_draft_room")
+                if maybe_request_full_rerun_when_shared_pool_ready(st, session, room):
+                    return
+                _reemit_fragment_diagnostics()
+
+            fragment(run_every=1)(_shared_pool_ready_watcher)()
+        except ImportError:
+            pass
+
     if session.get(HEAVY_PAINT_DONE_KEY):
         # After first heavy paint, Add-to-Queue must register on the owning ScriptRun.
         # Keeping these buttons under fragment(run_every=1) remounts them every second:
@@ -228,8 +250,12 @@ def render_deferred_heavy_paint_fragment(
         session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
         # Recovery + st.button registration must complete on THIS ScriptRun.
         # Never st.rerun() here — an extra run discards the incoming trigger_value.
-        _paint_interactive_or_recover(via="full_page_interactive_live")
+        painted = _paint_interactive_or_recover(via="full_page_interactive_live")
         _reemit_fragment_diagnostics()
+        # Shared: interactive can fail while the local pool is still empty. After DONE,
+        # only poll/timer fragments tick — mount a readiness watcher that requests a
+        # full-app ScriptRun when the pool attaches (no widget registration under run_every).
+        _mount_shared_pool_ready_watcher_if_needed(painted=painted)
         return
 
     defer = should_defer_heavy_first_paint(session)
@@ -246,8 +272,9 @@ def render_deferred_heavy_paint_fragment(
         # Same-run registrar. If paint_body skipped prepared (empty shared pool),
         # recover immediately — do not wait for a later full ScriptRun that may
         # never arrive while only timer/poll fragments tick.
-        _paint_interactive_or_recover(via="full_page_interactive_live")
+        painted = _paint_interactive_or_recover(via="full_page_interactive_live")
         _reemit_fragment_diagnostics()
+        _mount_shared_pool_ready_watcher_if_needed(painted=painted)
         return
 
     if fragment is None:
@@ -263,7 +290,7 @@ def render_deferred_heavy_paint_fragment(
         _invoke_paint_body(via="full_page_no_fragment_api")
         session[HEAVY_PAINT_DONE_KEY] = True
         session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
-        _paint_interactive_or_recover(via="full_page_interactive_live")
+        painted = _paint_interactive_or_recover(via="full_page_interactive_live")
         _reemit_fragment_diagnostics()
         return
 

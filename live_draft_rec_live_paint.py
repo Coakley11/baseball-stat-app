@@ -401,6 +401,22 @@ def render_rec_interactive_widgets(
                 session[INTERACTIVE_PAINT_STATUS_KEY] = status
                 note_rec_run_stage(session, "interactive_failed", fail_reason=status["fail_reason"])
                 try:
+                    from shared_draft_local_pool import (
+                        mark_shared_rec_pool_pending,
+                        pool_is_empty,
+                    )
+
+                    if pool_is_empty(room.get("pool")):
+                        mark_shared_rec_pool_pending(session, reason="empty_local_pool")
+                        status["shared_rec_pool_pending"] = True
+                    else:
+                        # Pool is present; empty top_rec is not a pool-handoff issue.
+                        from shared_draft_local_pool import clear_shared_rec_pool_pending
+
+                        clear_shared_rec_pool_pending(session)
+                except ImportError:
+                    pass
+                try:
                     st.caption(
                         "Recommendation cards are still building the player pool. "
                         "Add to Queue appears on this page when scoring finishes — "
@@ -434,6 +450,12 @@ def render_rec_interactive_widgets(
         status["fail_reason"] = ""
         status["top_rec_count"] = int(len(top_rec)) if hasattr(top_rec, "__len__") else 0
         session[INTERACTIVE_PAINT_STATUS_KEY] = status
+        try:
+            from shared_draft_local_pool import clear_shared_rec_pool_pending
+
+            clear_shared_rec_pool_pending(session)
+        except ImportError:
+            pass
         note_rec_run_stage(
             session,
             "interactive_ok",

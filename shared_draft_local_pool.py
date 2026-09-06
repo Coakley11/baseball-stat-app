@@ -7,10 +7,18 @@ back on the shared document.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Callable
 
 DRAFT_ROOM_PLAYER_POOL_KEY = "draft_room_player_pool"
 DRAFT_ROOM_PLAYER_POOL_CODE_KEY = "draft_room_player_pool_room_code"
+# Interactive paint failed while the local pool was still empty. A later
+# fragment/poll tick may attach the pool without a board revision change —
+# request one full-app ScriptRun so Add-to-Queue can register (not under
+# run_every).
+SHARED_REC_POOL_PENDING_KEY = "_live_draft_shared_rec_pool_pending"
+SHARED_REC_POOL_READY_RERUN_ATTEMPTED_KEY = "_live_draft_shared_rec_pool_ready_rerun_attempted"
+SHARED_REC_POOL_PENDING_REASON_KEY = "_live_draft_shared_rec_pool_pending_reason"
 
 
 def pool_is_empty(pool: Any) -> bool:
@@ -150,3 +158,80 @@ def ensure_local_shared_player_pool(
     room["pool"] = rebuilt
     remember_local_shared_player_pool(session, rebuilt, room_code=code)
     return rebuilt
+
+
+def mark_shared_rec_pool_pending(session: dict[str, Any], *, reason: str = "") -> None:
+    """Note that recommendation cards are waiting on a local pool rebuild."""
+    if not isinstance(session, dict):
+        return
+    session[SHARED_REC_POOL_PENDING_KEY] = True
+    session[SHARED_REC_POOL_PENDING_REASON_KEY] = str(reason or "empty_local_pool")[:120]
+    # Allow one fresh empty→ready handoff after each new pending mark.
+    session.pop(SHARED_REC_POOL_READY_RERUN_ATTEMPTED_KEY, None)
+
+
+def clear_shared_rec_pool_pending(session: dict[str, Any]) -> None:
+    if not isinstance(session, dict):
+        return
+    session.pop(SHARED_REC_POOL_PENDING_KEY, None)
+    session.pop(SHARED_REC_POOL_PENDING_REASON_KEY, None)
+    session.pop(SHARED_REC_POOL_READY_RERUN_ATTEMPTED_KEY, None)
+
+
+def shared_rec_pool_pending(session: dict[str, Any]) -> bool:
+    return bool(isinstance(session, dict) and session.get(SHARED_REC_POOL_PENDING_KEY))
+
+
+def maybe_request_full_rerun_when_shared_pool_ready(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any] | None = None,
+    *,
+    builder: Callable[[dict[str, Any], dict[str, Any] | None], Any] | None = None,
+) -> bool:
+    """If interactive failed on an empty pool and the pool is now ready, request a full ScriptRun.
+
+    Safe for poll / readiness fragments: does not register Add-to-Queue widgets.
+    Does not put ``pool`` back on the shared wire document.
+    """
+    if not shared_rec_pool_pending(session):
+        return False
+    if session.get(SHARED_REC_POOL_READY_RERUN_ATTEMPTED_KEY):
+        return False
+    live = room if isinstance(room, dict) else session.get("live_draft_room")
+    if not isinstance(live, dict):
+        return False
+    try:
+        from live_draft_setup_mode import is_shared_multiplayer_intent
+
+        if not is_shared_multiplayer_intent(session, room=live):
+            return False
+    except ImportError:
+        if not str(session.get("active_shared_draft_room_code") or "").strip():
+            return False
+
+    attached = ensure_local_shared_player_pool(session, live, builder=builder)
+    session["live_draft_room"] = live
+    if pool_is_empty(attached) and pool_is_empty(live.get("pool")):
+        return False
+
+    session[SHARED_REC_POOL_READY_RERUN_ATTEMPTED_KEY] = True
+    session["_live_draft_shared_rec_pool_ready_rerun_ts"] = time.time()
+    session["_live_draft_last_rerun_source"] = "shared_rec_pool_ready"
+    # Clear stuck create "Starting…" once the live room has a usable local pool.
+    try:
+        from live_draft_start_progress import finish_live_draft_start, is_live_draft_start_in_flight
+
+        if is_live_draft_start_in_flight(session):
+            finish_live_draft_start(session, ok=True)
+    except ImportError:
+        session.pop("_live_draft_start_in_flight", None)
+        session.pop("_start_live_draft_pending", None)
+
+    if st is None:
+        return True
+    try:
+        st.rerun(scope="app")
+    except TypeError:
+        st.rerun()
+    return True

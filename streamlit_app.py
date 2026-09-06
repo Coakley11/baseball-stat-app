@@ -25536,6 +25536,24 @@ elif active_page == "Live Draft Room":
                 if is_shared_multiplayer_intent(st.session_state, room=room):
                     ensure_local_shared_player_pool(st.session_state, room)
                     st.session_state["live_draft_room"] = room
+                    # Create UI can stick on "Starting…" after the shared room is
+                    # already live; clear once the local pool handoff has a room.
+                    try:
+                        from live_draft_start_progress import (
+                            finish_live_draft_start,
+                            is_live_draft_start_in_flight,
+                        )
+
+                        _status = str(room.get("status") or "").strip()
+                        if is_live_draft_start_in_flight(st.session_state) and _status in (
+                            "not_started",
+                            "in_progress",
+                            "paused",
+                            "complete",
+                        ):
+                            finish_live_draft_start(st.session_state, ok=True)
+                    except ImportError:
+                        pass
             except ImportError:
                 pass
         except Exception as _ldr_room_body_exc:
