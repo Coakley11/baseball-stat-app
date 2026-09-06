@@ -194,6 +194,7 @@ def clear_stale_shared_room_local_state(
 ) -> dict[str, Any]:
     """Clear local active-room mirrors without destroying durable preferences."""
     cleared: list[str] = []
+    prior_code = _room_code(session)
     for key in (
         "active_shared_draft_room_code",
         "draft_room_shared_meta",
@@ -210,11 +211,47 @@ def clear_stale_shared_room_local_state(
         if key in session:
             session.pop(key, None)
             cleared.append(key)
+    # Membership maps / per-room participant state must not reattach an orphan lobby.
+    membership = session.get("draft_room_participant_membership")
+    if isinstance(membership, dict):
+        if prior_code and prior_code in membership:
+            membership.pop(prior_code, None)
+            cleared.append(f"membership:{prior_code}")
+        elif prior_code:
+            # Case-insensitive code key
+            for key in list(membership.keys()):
+                if str(key).strip().upper() == prior_code:
+                    membership.pop(key, None)
+                    cleared.append(f"membership:{key}")
+        if not membership:
+            session.pop("draft_room_participant_membership", None)
+            cleared.append("draft_room_participant_membership")
+    part_state = session.get("draft_room_participant_state")
+    if isinstance(part_state, dict) and prior_code:
+        for key in list(part_state.keys()):
+            if str(key).strip().upper() == prior_code:
+                part_state.pop(key, None)
+                cleared.append(f"participant_state:{key}")
+        if not part_state:
+            session.pop("draft_room_participant_state", None)
     try:
         from live_draft_state import clear_live_draft_state
 
         clear_live_draft_state(session, reason=f"stale_membership_repair:{reason}")
         cleared.append("clear_live_draft_state")
+    except Exception:
+        pass
+    # Belt-and-suspenders: page_filter Live Draft block can rehydrate orphans on
+    # the next ScriptRun if only top-level live_draft_room was popped.
+    try:
+        from live_draft_state import LIVE_DRAFT_PAGE_BLOCK, LIVE_DRAFT_ROOM_KEY
+
+        pf = session.get("page_filter_state")
+        if isinstance(pf, dict):
+            block = pf.get(LIVE_DRAFT_PAGE_BLOCK)
+            if isinstance(block, dict) and LIVE_DRAFT_ROOM_KEY in block:
+                block.pop(LIVE_DRAFT_ROOM_KEY, None)
+                cleared.append("page_filter_live_draft_room")
     except Exception:
         pass
     try:
@@ -223,7 +260,7 @@ def clear_stale_shared_room_local_state(
         bump_live_draft_page_epoch(session)
     except ImportError:
         pass
-    diag = {"reason": reason, "cleared": cleared}
+    diag = {"reason": reason, "cleared": cleared, "prior_room_code": prior_code}
     session[STALE_REPAIR_DIAG_KEY] = diag
     session[MEMBERSHIP_GATE_DIAG_KEY] = {"ok": False, "reason": reason}
     return diag

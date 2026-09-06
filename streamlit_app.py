@@ -25695,8 +25695,13 @@ elif active_page == "Live Draft Room":
                     pass
 
             if is_shared_multiplayer_intent(st.session_state, room=room):
+                from live_draft_setup_mode import shared_room_code as _shared_room_code_fn
+
                 _lobby_status = str(room.get("status") or "").strip()
                 _lobby_started = _lobby_status in ("in_progress", "paused", "complete")
+                _incomplete_shared = (
+                    _lobby_status == "not_started" and not str(_shared_room_code_fn(st.session_state) or "").strip()
+                )
                 _lobby_slot = live_draft_current_slot(room) if _lobby_started else None
                 _lobby_pick_order = room.get("pick_order") or []
                 _lobby_total = len(_lobby_pick_order)
@@ -25783,6 +25788,14 @@ elif active_page == "Live Draft Room":
                                 st.rerun()
                     elif setup_is_read_only(room):
                         st.caption("Draft setup is read-only after the first pick.")
+                elif _incomplete_shared:
+                    # Shared intent + not_started room blob but no join code yet.
+                    # Do not paint Ready/active lobby — setup Create remains the path.
+                    st.warning(
+                        "Shared draft room is incomplete — no join code yet. "
+                        "Use **Create Shared Draft Room** in Draft Setup above, "
+                        "or End/Delete this draft and start over."
+                    )
                 else:
                     # Active draft — hide Lobby Status / Shared Draft Room Ready.
                     try:

@@ -73,10 +73,19 @@ class SetupVisibilityTests(unittest.TestCase):
         self.assertTrue(should_show_full_draft_setup({}))
         self.assertFalse(should_show_full_draft_setup({}, room=_sample_room()))
 
-    def test_shared_lobby_detected(self) -> None:
+    def test_shared_lobby_requires_room_code(self) -> None:
         session = {"live_draft_setup_mode": SETUP_MODE_SHARED}
         room = _sample_room(status="not_started")
+        self.assertFalse(is_shared_lobby(session, room))
+        session[ACTIVE_SHARED_ROOM_CODE_KEY] = "ABC123"
         self.assertTrue(is_shared_lobby(session, room))
+
+    def test_incomplete_shared_keeps_full_setup(self) -> None:
+        session = {
+            "live_draft_setup_mode": SETUP_MODE_SHARED,
+            "live_draft_room": _sample_room(status="not_started"),
+        }
+        self.assertTrue(should_show_full_draft_setup(session))
 
     def test_setup_read_only_after_first_pick(self) -> None:
         room = _sample_room(

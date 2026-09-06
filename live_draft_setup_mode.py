@@ -688,13 +688,31 @@ def is_shared_lobby(session: dict[str, Any], room: dict[str, Any] | None = None)
     live = room if isinstance(room, dict) else session.get("live_draft_room")
     if not isinstance(live, dict):
         return False
-    return is_shared_multiplayer_intent(session, room=live) and str(live.get("status") or "") == "not_started"
+    if not is_shared_multiplayer_intent(session, room=live):
+        return False
+    if str(live.get("status") or "") != "not_started":
+        return False
+    # A joinable Shared lobby requires a 6-character code. A not_started room
+    # blob without a code is an incomplete create — keep the host on setup.
+    return bool(shared_room_code(session))
 
 
 def should_show_full_draft_setup(session: dict[str, Any], room: dict[str, Any] | None = None) -> bool:
-    """Full setup panel only before any live draft room exists."""
+    """Full setup panel only before any live draft room exists.
+
+    Also keep setup when Shared mode has a not_started room blob but no join
+    code yet (incomplete create) so Create Shared Draft Room stays reachable.
+    """
     live = room if isinstance(room, dict) else session.get("live_draft_room")
-    return not isinstance(live, dict)
+    if not isinstance(live, dict):
+        return True
+    if (
+        is_shared_multiplayer_intent(session, room=live)
+        and str(live.get("status") or "") == "not_started"
+        and not shared_room_code(session)
+    ):
+        return True
+    return False
 
 
 def should_hide_legacy_shared_panel(session: dict[str, Any], room: dict[str, Any] | None = None) -> bool:

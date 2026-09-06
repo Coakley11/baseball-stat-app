@@ -86,6 +86,49 @@ class OrphanLocalLobbyMissingTests(unittest.TestCase):
         self.assertEqual(diag.get("prior_room_code"), "GONE01")
         self.assertNotIn(ACTIVE_SHARED_ROOM_CODE_KEY, session)
 
+    def test_orphan_clear_removes_page_filter_and_membership_maps(self) -> None:
+        """Nested page_filter live_draft_room must not rehydrate an orphan lobby."""
+        from live_draft_state import LIVE_DRAFT_PAGE_BLOCK, LIVE_DRAFT_ROOM_KEY, prepare_live_draft_state
+
+        session = {
+            "auth_user_id": "guest",
+            "draft_room_participant_id": "workspace:guest",
+            ACTIVE_SHARED_ROOM_CODE_KEY: "2PMUNM",
+            "draft_room_participant_team": "Team A",
+            "draft_room_participant_membership": {
+                "2PMUNM": {"workspace:guest": {"participant_id": "workspace:guest", "assigned_team": "Team A"}}
+            },
+            "draft_room_participant_state": {"2PMUNM": {"joined_at": "2026-09-06T02:20:17+00:00"}},
+            "page_filter_state": {
+                LIVE_DRAFT_PAGE_BLOCK: {
+                    LIVE_DRAFT_ROOM_KEY: {
+                        "draft_room_id": "JOIN01",
+                        "status": "not_started",
+                        "current_pick_index": 0,
+                        "config": {"share_code": "2PMUNM", "room_code": "2PMUNM"},
+                    }
+                }
+            },
+            "live_draft_room": {
+                "draft_room_id": "JOIN01",
+                "status": "not_started",
+                "current_pick_index": 0,
+                "config": {"share_code": "2PMUNM", "room_code": "2PMUNM"},
+            },
+        }
+        ok, reason = assert_or_repair_before_shared_render(session)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "orphan_local_lobby_missing")
+        self.assertNotIn(ACTIVE_SHARED_ROOM_CODE_KEY, session)
+        self.assertNotIn("draft_room_participant_membership", session)
+        pf = session.get("page_filter_state") or {}
+        block = pf.get(LIVE_DRAFT_PAGE_BLOCK) or {}
+        self.assertNotIn(LIVE_DRAFT_ROOM_KEY, block)
+        # Prepare must not resurrect the orphan from page_filter.
+        prepared = prepare_live_draft_state(session)
+        self.assertFalse(isinstance(prepared, dict) and prepared.get("draft_room_id") == "JOIN01")
+        self.assertNotIn(ACTIVE_SHARED_ROOM_CODE_KEY, session)
+
 
 if __name__ == "__main__":
     unittest.main()
