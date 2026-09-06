@@ -1436,13 +1436,9 @@ def join_shared_draft_room(
         record_join_assignment_diagnostics(session, source="join_success", failure_reason=fail)
     except ImportError:
         pass
-    # Keep Draft Mode Shared for the guest after join (prefs only — no widget key write).
-    try:
-        from live_draft_setup_mode import SETUP_MODE_SHARED, persist_live_draft_setup_mode_preference
-
-        persist_live_draft_setup_mode_preference(session, SETUP_MODE_SHARED, st=None)
-    except ImportError:
-        pass
+    # Keep Draft Mode Shared + clear setup-forcing flags so the next ScriptRun
+    # enters Shared lobby (same route contract as host Create / restore).
+    establish_shared_room_route_after_join(session)
     owned_ws_after = str(
         session.get("_suite_owned_workspace_id") or session.get("_suite_active_workspace_id") or ""
     ).strip()
@@ -1812,6 +1808,8 @@ def _sync_participant_team_aliases(session: dict[str, Any], team: str) -> None:
     session[ACTIVE_PARTICIPANT_ID_KEY] = pid
     session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
     if is_multiplayer_draft_active(session):
+        # prepare_global_draft_context clears room_your_team for multiplayer;
+        # keep participant team only.
         return
     session["room_your_team"] = team
     try:
@@ -1826,4 +1824,52 @@ def _sync_participant_team_aliases(session: dict[str, Any], team: str) -> None:
         cfg["your_team"] = team
         cfg["user_team"] = team
         room["config"] = cfg
+
+
+def establish_shared_room_route_after_join(session: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative session/route contract after successful Join (mirrors Create).
+
+    After ``join_shared_draft_room`` persists membership, the next full ScriptRun must
+    resolve Shared lobby/room — not Solo/setup. Clears setup-forcing flags and pins
+    Shared mode preference without fighting a locked Draft Mode radio mid-run.
+    """
+    # Stale End/Delete flags would wipe the just-joined room on lifecycle resolve.
+    session.pop("_live_draft_force_setup_after_delete", None)
+    if str(session.get("_live_draft_deleting") or "").strip().lower() == "done":
+        session.pop("_live_draft_deleting", None)
+
+    team = str(
+        session.get(ACTIVE_PARTICIPANT_TEAM_KEY)
+        or session.get("live_draft_my_team")
+        or ""
+    ).strip()
+    if team:
+        session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
+        session["live_draft_my_team"] = team
+
+    try:
+        from live_draft_setup_mode import SETUP_MODE_SHARED, request_live_draft_setup_mode
+
+        # Widget-safe: writes LIVE_DRAFT_SETUP_MODE_KEY when unlocked, else pending
+        # for the next ScriptRun before the radio binds (same pattern as Create).
+        request_live_draft_setup_mode(session, SETUP_MODE_SHARED, persist=True, st=None)
+    except ImportError:
+        try:
+            from live_draft_setup_mode import SETUP_MODE_SHARED, persist_live_draft_setup_mode_preference
+
+            persist_live_draft_setup_mode_preference(session, SETUP_MODE_SHARED, st=None)
+        except ImportError:
+            pass
+
+    code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+    room = session.get(LIVE_DRAFT_ROOM_KEY)
+    contract = {
+        "ok": bool(code) and isinstance(room, dict),
+        "room_code": code,
+        "has_live_draft_room": isinstance(room, dict),
+        "participant_team": team,
+        "reason": "shared_room_join_route",
+    }
+    session["_shared_room_join_route_contract"] = contract
+    return contract
 

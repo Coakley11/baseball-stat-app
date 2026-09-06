@@ -590,16 +590,20 @@ def render_guest_join_from_setup(st: Any, session: dict[str, Any]) -> bool:
         room_lookup_attempted=True,
     )
     if ok:
-        # Mode preference is persisted inside join_shared_draft_room (no widget key write).
-        # Compact setup join must also force-save workspace membership — the
-        # legacy multiplayer panel already does this; without it a guest
-        # refresh lands on empty Solo setup.
+        # join_shared_draft_room + establish_shared_room_route_after_join pin Shared
+        # lobby route; finalize force-saves workspace membership for refresh restore.
         try:
             from draft_ui_multiplayer import _finalize_successful_join
 
             _finalize_successful_join(session, display)
         except ImportError:
             session["_draft_join_flash"] = display
+            try:
+                from draft_room_context import establish_shared_room_route_after_join
+
+                establish_shared_room_route_after_join(session)
+            except ImportError:
+                pass
             try:
                 from baseball_persistent_state import force_save_baseball_state
 

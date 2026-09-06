@@ -65,9 +65,15 @@ def _render_supabase_error_detail(st: Any, session: dict[str, Any]) -> None:
 
 
 def _finalize_successful_join(session: dict[str, Any], message: str) -> None:
-    from draft_room_context import prepare_global_draft_context
+    from draft_room_context import (
+        establish_shared_room_route_after_join,
+        prepare_global_draft_context,
+    )
 
     prepare_global_draft_context(session)
+    # After prepare (which may pop multiplayer room_your_team): pin Shared lobby
+    # route + clear setup-forcing flags so the next ScriptRun does not stay on setup.
+    establish_shared_room_route_after_join(session)
     session["_draft_join_flash"] = message
     session["_shared_draft_poll_ts"] = time.time()
     try:

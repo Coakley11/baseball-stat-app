@@ -24518,6 +24518,29 @@ elif active_page == "Live Draft Room":
         except ImportError:
             render_shared_scoring_consistency_check(yearly_df, market_df_live, key_suffix="live_draft")
 
+    # Guest Join pending must run BEFORE lifecycle capture. Membership + route
+    # keys must exist when we choose setup vs Shared lobby; processing only inside
+    # the SETUP expander left successful joins on setup when the next run never
+    # re-entered that branch (or membership-gate Join UI set the flag off-setup).
+    try:
+        from live_draft_setup_ui import render_guest_join_from_setup
+
+        if render_guest_join_from_setup(st, st.session_state):
+            try:
+                from live_draft_safe_mode import request_live_draft_rerun
+
+                request_live_draft_rerun(
+                    st,
+                    st.session_state,
+                    "shared_draft_join_route",
+                    room=st.session_state.get("live_draft_room"),
+                )
+            except ImportError:
+                st.rerun()
+            st.stop()
+    except ImportError:
+        pass
+
     room = st.session_state.get("live_draft_room")
     # Capture once for exclusive lifecycle branching. Do not re-read after setup —
     # End Draft clears room then setup paints; a later rehydrate must not also paint
@@ -24845,8 +24868,21 @@ elif active_page == "Live Draft Room":
                 )
 
                 _setup_mode = render_live_draft_mode_selector(st, st.session_state)
+                # Join pending is processed before lifecycle capture above; this
+                # call is a no-op when the flag was already consumed.
                 if render_guest_join_from_setup(st, st.session_state):
-                    st.rerun()
+                    try:
+                        from live_draft_safe_mode import request_live_draft_rerun
+
+                        request_live_draft_rerun(
+                            st,
+                            st.session_state,
+                            "shared_draft_join_route",
+                            room=st.session_state.get("live_draft_room"),
+                        )
+                    except ImportError:
+                        st.rerun()
+                    st.stop()
                 render_join_attempt_feedback(st, st.session_state)
             except ImportError:
                 _setup_mode = "solo"
