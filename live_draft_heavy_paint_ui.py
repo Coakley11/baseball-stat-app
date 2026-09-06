@@ -9,6 +9,10 @@ from typing import Any
 DEFER_HEAVY_LOADING_KEY = "_live_draft_defer_heavy_loading"
 HEAVY_PAINT_DONE_KEY = "_live_draft_heavy_paint_done"
 HEAVY_FRAGMENT_MOUNT_KEY = "_live_draft_heavy_fragment_mount_log"
+# Set for the current ScriptRun after paint_body registers decision/quick-nav widgets.
+# Cleared at the start of each deferred-heavy render so fallback can still run paint_body
+# on a later ScriptRun (HEAVY_PAINT_DONE path) when widgets have not yet painted this run.
+PAINT_BODY_RAN_THIS_SCRIPT_KEY = "_live_draft_paint_body_ran_this_script"
 
 
 def note_heavy_fragment_mount(session: dict[str, Any], *, phase: str = "render") -> None:
@@ -79,6 +83,9 @@ def render_deferred_heavy_paint_fragment(
         except ImportError:
             pass
         paint_body()
+        # paint_body owns Draft Decision / Quick Draft Tools (live_draft_quick_nav_*).
+        # A second same-run invocation re-registers those keys → StreamlitDuplicateElementKey.
+        session[PAINT_BODY_RAN_THIS_SCRIPT_KEY] = True
 
     def _invoke_paint_interactive(*, via: str) -> bool:
         if paint_interactive is None:
@@ -135,7 +142,8 @@ def render_deferred_heavy_paint_fragment(
             return True
         # Same-run recovery: Shared Start often finishes paint_body on the
         # empty/loading path. HEAVY_PAINT_DONE then sticks, and fragment ticks
-        # never retry interactive registration. Rebuild prepared+cache here.
+        # never retry interactive registration. Rebuild prepared+cache here —
+        # but only when paint_body has not already registered widgets this run.
         session["_live_draft_rec_interactive_fallback_paint_body"] = True
         try:
             from live_draft_rec_live_paint import note_rec_run_stage
@@ -143,6 +151,30 @@ def render_deferred_heavy_paint_fragment(
             note_rec_run_stage(session, "fallback_started")
         except ImportError:
             pass
+        if session.get(PAINT_BODY_RAN_THIS_SCRIPT_KEY):
+            # full_page path already painted decision/quick-nav once. Re-running
+            # paint_body duplicates live_draft_quick_nav_queue. Empty shared-pool
+            # recovery is owned by the pool-ready full ScriptRun handoff.
+            session["_live_draft_rec_interactive_fallback_paint_body_skipped"] = (
+                "paint_body_already_ran_this_script"
+            )
+            session["_live_draft_rec_interactive_fallback_body_ok"] = False
+            session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
+            painted = _invoke_paint_interactive(
+                via="full_page_interactive_live_after_fallback_skip"
+            )
+            session["_live_draft_rec_interactive_fallback_ok"] = bool(painted)
+            try:
+                from live_draft_rec_live_paint import note_rec_run_stage
+
+                note_rec_run_stage(
+                    session,
+                    "fallback_skipped_duplicate_paint_body",
+                    painted=bool(painted),
+                )
+            except ImportError:
+                pass
+            return painted
         try:
             _invoke_paint_body(via="full_page_interactive_fallback")
             session["_live_draft_rec_interactive_fallback_body_ok"] = True
@@ -165,6 +197,9 @@ def render_deferred_heavy_paint_fragment(
         except ImportError:
             pass
         return painted
+
+    # New ScriptRun → allow one paint_body ownership pass (including DONE-path fallback).
+    session.pop(PAINT_BODY_RAN_THIS_SCRIPT_KEY, None)
 
     try:
         from live_draft_fast_solo_start import (

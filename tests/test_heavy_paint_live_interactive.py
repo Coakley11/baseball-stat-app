@@ -240,8 +240,13 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
         self.assertTrue(session.get(HEAVY_PAINT_DONE_KEY))
         st.rerun.assert_called()
 
-    def test_full_page_same_run_recovers_when_first_interactive_fails(self) -> None:
-        """Shared Start: first paint_body can skip prepared; recover before returning."""
+    def test_full_page_same_run_skips_second_paint_body_when_interactive_fails(self) -> None:
+        """Shared Start: first paint_body owns quick-nav; do not re-invoke same ScriptRun.
+
+        Re-running paint_body after interactive failure re-registered
+        ``live_draft_quick_nav_queue`` → StreamlitDuplicateElementKey. Empty-pool
+        recovery is owned by the shared pool-ready full ScriptRun handoff.
+        """
         st = MagicMock()
         st.fragment = None
         session: dict[str, Any] = {}
@@ -250,10 +255,6 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
 
         def paint_body() -> None:
             body_n["n"] += 1
-            if body_n["n"] >= 2:
-                store_prepared_rec_interactive(
-                    session, room_id="SHARED1", gaps=[], category_needs=[], max_cards=1
-                )
 
         def paint_interactive() -> bool:
             interactive_n["n"] += 1
@@ -267,10 +268,14 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
                     paint_body,
                     paint_interactive=paint_interactive,
                 )
-        self.assertGreaterEqual(body_n["n"], 2)
+        self.assertEqual(body_n["n"], 1)
         self.assertGreaterEqual(interactive_n["n"], 2)
         self.assertTrue(session.get(HEAVY_PAINT_DONE_KEY))
-        self.assertTrue(session.get("_live_draft_rec_interactive_fallback_ok"))
+        self.assertEqual(
+            session.get("_live_draft_rec_interactive_fallback_paint_body_skipped"),
+            "paint_body_already_ran_this_script",
+        )
+        self.assertFalse(session.get("_live_draft_rec_interactive_fallback_ok"))
 
     def test_render_rec_interactive_uses_prepared_cache_not_empty(self) -> None:
         import pandas as pd
