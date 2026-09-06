@@ -247,6 +247,34 @@ def _local_membership_markers_present(session: dict[str, Any]) -> bool:
     return bool(pid or team or has_room)
 
 
+def _orphan_not_started_local_room_missing(session: dict[str, Any], code: str) -> bool:
+    """True when a not_started lobby points at a local-file room that does not exist.
+
+    Soft-miss keeps membership for transient Supabase read failures. On the local
+    file backend, ``not_found`` for a not_started lobby is definitive — keeping the
+    orphan traps the host without commissioner End/Delete and blocks guests with
+    \"Room code not found\".
+    """
+    code = str(code or "").strip().upper()
+    if not code:
+        return False
+    room = session.get("live_draft_room")
+    status = ""
+    if isinstance(room, dict):
+        status = str(room.get("status") or "").strip().lower()
+    if status not in ("", "not_started"):
+        return False
+    try:
+        from draft_room_shared_state import get_local_shared_room_store, shared_room_backend_name
+
+        if shared_room_backend_name() != "local_file":
+            return False
+        diag = get_local_shared_room_store().load_with_diagnostics(code)
+        return str(diag.get("reason") or "") == "not_found"
+    except Exception:
+        return False
+
+
 def _try_reattach_from_document(
     session: dict[str, Any],
     doc: dict[str, Any],
@@ -321,6 +349,20 @@ def repair_stale_shared_room_session(
     )
     if ok:
         return {"repaired": False, "reason": "membership_valid", "room_code": code}
+
+    # Local-file not_started lobby with a definitive missing document: clear orphan.
+    if reason == "room_missing" and _orphan_not_started_local_room_missing(session, code):
+        try:
+            from live_draft_creation_trace import new_room_is_protected
+
+            if new_room_is_protected(session):
+                return {"repaired": False, "reason": "protected_new_room", "room_code": code}
+        except ImportError:
+            pass
+        diag = clear_stale_shared_room_local_state(session, reason="orphan_local_lobby_missing")
+        diag["repaired"] = True
+        diag["prior_room_code"] = code
+        return diag
 
     # Soft miss: temporary load failure / auth blip — keep membership pointers.
     soft_reasons = {"room_missing", "no_participant_id"}
@@ -401,7 +443,18 @@ def assert_or_repair_before_shared_render(session: dict[str, Any]) -> tuple[bool
         return True, reason
 
     # Soft miss with local membership still present — do not kick out.
+    # Exception: definitive local-file not_found for a not_started lobby orphan.
     if reason in {"room_missing", "no_participant_id"} and _local_membership_markers_present(session):
+        if reason == "room_missing" and _orphan_not_started_local_room_missing(session, code):
+            try:
+                from live_draft_creation_trace import new_room_is_protected
+
+                protected = bool(new_room_is_protected(session))
+            except ImportError:
+                protected = False
+            if not protected:
+                repair_stale_shared_room_session(session, allow_soft_miss=False)
+                return False, "orphan_local_lobby_missing"
         session[MEMBERSHIP_GATE_DIAG_KEY] = {
             "ok": False,
             "reason": reason,
@@ -453,6 +506,9 @@ def assert_or_repair_before_shared_render(session: dict[str, Any]) -> tuple[bool
     # Confirmed hard failure — wipe only when document loaded and membership gone,
     # or terminal/tombstone. Never wipe solely because one read returned None.
     if reason in {"room_missing"} and _local_membership_markers_present(session):
+        if _orphan_not_started_local_room_missing(session, code):
+            repair_stale_shared_room_session(session, allow_soft_miss=False)
+            return False, "orphan_local_lobby_missing"
         return True, f"soft_miss:{reason}"
     repair_stale_shared_room_session(session, allow_soft_miss=False)
     return False, reason
