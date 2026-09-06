@@ -225,7 +225,42 @@ def gate_start_new_live_draft_click(session: dict[str, Any]) -> dict[str, Any]:
     Invalid setups store the exact error and never arm create or replace.
     Valid setups with a resumable slot arm replace confirmation only.
     Otherwise arms ``_start_live_draft_pending``.
+
+    Prepared Shared lobby (room code + not_started): setup widgets may still show
+    stale picks (prefs default 4) while the room already stores a valid create-time
+    config. Arm pending so the handler can call ``start_prepared_shared_room`` —
+    do not re-block on setup-widget picks-vs-positions.
     """
+    try:
+        from live_draft_setup_mode import is_shared_lobby
+
+        if is_shared_lobby(session):
+            clear_setup_validation_error(session)
+            session.pop("_live_draft_start_replace_resumable_pending", None)
+            session["_start_live_draft_mode"] = "new"
+            session["_start_live_draft_pending"] = True
+            session.pop("_simulator_to_live_show_confirm", None)
+            record_start_path_diagnostics(
+                session,
+                button_clicked=True,
+                validation_ok=True,
+                validation_error="",
+                solo_mode=False,
+                shared_mode=True,
+                draft_creation_attempted=False,
+                gate="on_start_prepared_shared_lobby",
+                final_status="pending_armed_shared_lobby",
+            )
+            return {
+                "armed": True,
+                "replace_pending": False,
+                "ok": True,
+                "error": "",
+                "check": {"ok": True, "shared_lobby": True},
+            }
+    except ImportError:
+        pass
+
     try:
         from live_draft_setup_mode import is_solo_draft_mode
 

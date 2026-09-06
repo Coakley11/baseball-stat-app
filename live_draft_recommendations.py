@@ -106,7 +106,7 @@ def live_draft_recommendations(
     try:
         return _live_draft_recommendations_impl(room, top_n=top_n, team=team, session=session)
     except Exception as exc:
-        if isinstance(session, dict):
+        if session is not None and hasattr(session, "get") and hasattr(session, "__setitem__"):
             session["_recommendation_schema_diag"] = recommendation_schema_diagnostics(
                 None,
                 path="live_draft_recommendations",

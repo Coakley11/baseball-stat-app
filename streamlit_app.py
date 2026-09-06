@@ -10479,10 +10479,12 @@ def live_draft_recommendations(room, top_n=8, team=None, session=None):
 def cached_live_draft_recommendations(session, room, top_n=8, team=None):
     """Reuse recommendation tables within the same pick when the board has not changed."""
     try:
-        from live_draft_setup_mode import is_shared_multiplayer_intent
-        from shared_draft_local_pool import ensure_local_shared_player_pool
+        from shared_draft_local_pool import (
+            ensure_local_shared_player_pool,
+            needs_local_shared_player_pool,
+        )
 
-        if is_shared_multiplayer_intent(session, room=room):
+        if needs_local_shared_player_pool(session, room):
             ensure_local_shared_player_pool(session, room)
     except ImportError:
         pass
@@ -25566,10 +25568,20 @@ elif active_page == "Live Draft Room":
                 pass
             ldr_post_rerun_checkpoint(st, st.session_state, "after_room_body_enter")
             try:
-                from live_draft_setup_mode import is_shared_multiplayer_intent
-                from shared_draft_local_pool import ensure_local_shared_player_pool
+                from shared_draft_local_pool import (
+                    _live_pool_diag,
+                    ensure_local_shared_player_pool,
+                    needs_local_shared_player_pool,
+                )
 
-                if is_shared_multiplayer_intent(st.session_state, room=room):
+                _need = needs_local_shared_player_pool(st.session_state, room)
+                _live_pool_diag(
+                    "room_body_ensure_gate",
+                    need=bool(_need),
+                    room_status=str((room or {}).get("status") or ""),
+                    active_code=str(st.session_state.get("active_shared_draft_room_code") or ""),
+                )
+                if _need:
                     ensure_local_shared_player_pool(st.session_state, room)
                     st.session_state["live_draft_room"] = room
                     # Create UI can stick on "Starting…" after the shared room is
@@ -25590,8 +25602,22 @@ elif active_page == "Live Draft Room":
                             finish_live_draft_start(st.session_state, ok=True)
                     except ImportError:
                         pass
-            except ImportError:
-                pass
+            except Exception as _pool_ensure_exc:
+                try:
+                    from shared_draft_local_pool import _live_pool_diag
+
+                    _live_pool_diag(
+                        "room_body_ensure_exc",
+                        error=f"{type(_pool_ensure_exc).__name__}:{_pool_ensure_exc}"[:200],
+                    )
+                except Exception:
+                    pass
+                try:
+                    st.caption(
+                        f"Local pool ensure error: `{type(_pool_ensure_exc).__name__}: {_pool_ensure_exc}`"[:220]
+                    )
+                except Exception:
+                    pass
         except Exception as _ldr_room_body_exc:
             try:
                 from live_draft_render_trace import ldr_exception

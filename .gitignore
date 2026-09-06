@@ -8,6 +8,8 @@ venv/
 **/__pycache__/
 *.pyo
 data/app_state.json
+data/draft_room_local_pools/
+data/tb_probe/
 data/playwright_daniel_auth.storage.json
 data/playwright_daniel_auth.session.json
 data/playwright_daniel_chromium_profile/

@@ -27,6 +27,7 @@ from shared_draft_local_pool import (
     ensure_local_shared_player_pool,
     mark_shared_rec_pool_pending,
     maybe_request_full_rerun_when_shared_pool_ready,
+    needs_local_shared_player_pool,
     shared_rec_pool_pending,
 )
 
@@ -218,6 +219,139 @@ class SharedRecPoolReadyHandoffTests(unittest.TestCase):
         )
         self.assertFalse(getattr(attached, "empty", True))
         self.assertEqual(len(room["pool"]), 1)
+
+    def test_needs_local_pool_when_intent_false_but_room_code_present(self) -> None:
+        """Room-body historically skipped ensure when intent briefly returned False."""
+        session: dict[str, Any] = {"active_shared_draft_room_code": "IY70DR"}
+        room = _shared_room()
+        with patch(
+            "live_draft_setup_mode.is_shared_multiplayer_intent",
+            return_value=False,
+        ):
+            self.assertTrue(needs_local_shared_player_pool(session, room))
+
+    def test_interactive_keeps_pending_when_pool_present_but_top_rec_empty(self) -> None:
+        st = MagicMock()
+        session: dict[str, Any] = {
+            "active_shared_draft_room_code": "ABCD12",
+            PREPARED_REC_INTERACTIVE_KEY: {
+                "room_id": "ROOM_SHARED1",
+                "gaps": [],
+                "category_needs": [],
+                "max_cards": 1,
+                "multiplayer": True,
+            },
+        }
+        room = _shared_room(pool=_pool())
+        with patch(
+            "live_draft_rec_live_paint._rebuild_top_rec_into_cache",
+            return_value=pd.DataFrame(),
+        ):
+            ok = render_rec_interactive_widgets(st, session, room)
+        self.assertFalse(ok)
+        self.assertTrue(shared_rec_pool_pending(session))
+        self.assertEqual(
+            session.get("_live_draft_shared_rec_pool_pending_reason"),
+            "top_rec_empty_with_pool",
+        )
+
+    def test_ensure_accepts_streamlit_session_state_proxy(self) -> None:
+        """Streamlit SessionState is not isinstance(dict) — ensure must still attach."""
+
+        class _SessionProxy:
+            def __init__(self) -> None:
+                self._data: dict[str, Any] = {"active_shared_draft_room_code": "IY70DR"}
+
+            def get(self, key: str, default: Any = None) -> Any:
+                return self._data.get(key, default)
+
+            def __setitem__(self, key: str, value: Any) -> None:
+                self._data[key] = value
+
+            def __getitem__(self, key: str) -> Any:
+                return self._data[key]
+
+            def pop(self, key: str, default: Any = None) -> Any:
+                return self._data.pop(key, default)
+
+        session = _SessionProxy()
+        room = _shared_room()
+        room["pool"] = pd.DataFrame()
+        self.assertFalse(isinstance(session, dict))
+        self.assertTrue(needs_local_shared_player_pool(session, room))
+        attached = ensure_local_shared_player_pool(
+            session,  # type: ignore[arg-type]
+            room,
+            builder=lambda _s, _r: _pool(),
+            force_rebuild=True,
+        )
+        self.assertFalse(getattr(attached, "empty", True))
+        self.assertEqual(len(room["pool"]), 1)
+
+    def test_disk_pool_is_visible_across_sessions(self) -> None:
+        from shared_draft_local_pool import load_local_pool_disk, save_local_pool_disk
+
+        code = "DISK99"
+        save_local_pool_disk(code, _pool())
+        self.addCleanup(lambda: __import__("pathlib").Path(
+            __import__("shared_draft_local_pool")._local_pool_disk_path(code)
+        ).unlink(missing_ok=True))
+        loaded = load_local_pool_disk(code)
+        self.assertFalse(getattr(loaded, "empty", True))
+        session: dict[str, Any] = {"active_shared_draft_room_code": code}
+        room = {
+            "draft_room_id": "ROOM_DISK",
+            "room_code": code,
+            "status": "in_progress",
+            "config": {"draft_setup_mode": "shared", "room_code": code},
+            "draft_board": [],
+            "pool": pd.DataFrame(),
+        }
+        attached = ensure_local_shared_player_pool(
+            session, room, builder=lambda _s, _r: pd.DataFrame()
+        )
+        self.assertFalse(getattr(attached, "empty", True))
+        self.assertEqual(len(room["pool"]), 1)
+
+    def test_interactive_rebuild_ensures_pool_when_intent_false_but_code_set(self) -> None:
+        st = MagicMock()
+        session: dict[str, Any] = {
+            "active_shared_draft_room_code": "ABCD12",
+            PREPARED_REC_INTERACTIVE_KEY: {
+                "room_id": "ROOM_SHARED1",
+                "gaps": [],
+                "category_needs": [],
+                "max_cards": 1,
+                "multiplayer": True,
+            },
+        }
+        room = _shared_room()
+        room["pool"] = pd.DataFrame()
+
+        def _fake_recs(_room, top_n=8, team=None, session=None):
+            pool = _room.get("pool")
+            if pool is None or getattr(pool, "empty", True):
+                return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+            return _pool(), _pool(), _pool(), _pool()
+
+        with patch(
+            "live_draft_setup_mode.is_shared_multiplayer_intent",
+            return_value=False,
+        ):
+            with patch(
+                "shared_draft_local_pool.rebuild_shared_room_player_pool",
+                side_effect=lambda _s, _r: _pool(),
+            ):
+                with patch(
+                    "live_draft_recommendations.live_draft_recommendations",
+                    side_effect=_fake_recs,
+                ):
+                    with patch("live_draft_room_ui.render_live_draft_rec_cards") as cards:
+                        with patch("live_draft_room_ui.render_live_draft_rec_summary_banner"):
+                            ok = render_rec_interactive_widgets(st, session, room)
+        self.assertTrue(ok)
+        self.assertFalse(getattr(room.get("pool"), "empty", True))
+        cards.assert_called_once()
 
 
 if __name__ == "__main__":

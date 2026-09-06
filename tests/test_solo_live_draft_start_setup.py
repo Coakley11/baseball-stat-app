@@ -207,6 +207,29 @@ class SoloStartValidationTests(unittest.TestCase):
         self.assertNotIn("evaluate_live_draft_start_setup", import_src)
         self.assertNotIn("validate_live_draft_setup", import_src)
 
+    def test_shared_lobby_start_arms_despite_stale_widget_picks(self) -> None:
+        """Lobby Start must not re-block on setup-widget picks when room already exists."""
+        from live_draft_start_setup import gate_start_new_live_draft_click
+
+        session = {
+            "live_draft_picks_per_team": 4,  # stale prefs default
+            "active_shared_draft_room_code": "ABCD12",
+            "live_draft_setup_mode": "shared_multiplayer",
+            "live_draft_room": {
+                "status": "not_started",
+                "room_code": "ABCD12",
+                "config": {
+                    "draft_setup_mode": "shared_multiplayer",
+                    "room_code": "ABCD12",
+                    "picks_per_team": 15,
+                },
+            },
+        }
+        gate = gate_start_new_live_draft_click(session)
+        self.assertTrue(gate.get("armed"))
+        self.assertTrue(session.get("_start_live_draft_pending"))
+        self.assertEqual(peek_setup_validation_error(session), "")
+
     def test_clear_error_after_successful_evaluation(self) -> None:
         session = {SETUP_VALIDATION_ERROR_KEY: LIVE_DRAFT_SETUP_ERROR}
         check = evaluate_live_draft_start_setup({}, picks_per_team=5, slots=_five_starters())

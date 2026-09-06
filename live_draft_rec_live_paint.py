@@ -303,11 +303,14 @@ def _rebuild_top_rec_into_cache(
     """
     note_rec_run_stage(session, "rebuild_started")
     try:
-        from live_draft_setup_mode import is_shared_multiplayer_intent
-        from shared_draft_local_pool import ensure_local_shared_player_pool
+        from shared_draft_local_pool import (
+            ensure_local_shared_player_pool,
+            needs_local_shared_player_pool,
+        )
 
-        if is_shared_multiplayer_intent(session, room=room):
+        if needs_local_shared_player_pool(session, room):
             ensure_local_shared_player_pool(session, room)
+            session["live_draft_room"] = room
     except ImportError:
         pass
     max_cards = int(prep.get("max_cards") or 6)
@@ -410,18 +413,27 @@ def render_rec_interactive_widgets(
                         mark_shared_rec_pool_pending(session, reason="empty_local_pool")
                         status["shared_rec_pool_pending"] = True
                     else:
-                        # Pool is present; empty top_rec is not a pool-handoff issue.
-                        from shared_draft_local_pool import clear_shared_rec_pool_pending
-
-                        clear_shared_rec_pool_pending(session)
+                        # Pool is present but top_rec is still empty — keep the handoff
+                        # pending so a later full ScriptRun retries scoring/cards.
+                        mark_shared_rec_pool_pending(
+                            session, reason="top_rec_empty_with_pool"
+                        )
+                        status["shared_rec_pool_pending"] = True
+                        status["pool_rows"] = int(len(room["pool"]))
                 except ImportError:
                     pass
                 try:
                     rebuild_err = str(session.get("_shared_local_pool_rebuild_error") or "").strip()
+                    rec_err = str(session.get("_live_draft_recommendations_error") or "").strip()
                     if rebuild_err:
                         st.caption(
                             "Recommendation cards are still building the player pool. "
                             f"Local pool rebuild: `{rebuild_err[:180]}`"
+                        )
+                    elif rec_err:
+                        st.caption(
+                            "Recommendation cards are still building the player pool. "
+                            f"Recommendations: `{rec_err[:180]}`"
                         )
                     else:
                         st.caption(
