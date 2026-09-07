@@ -860,6 +860,22 @@ def main() -> int:
         report["pause_disk"] = pause_disk
         report["pause_revision_before"] = rev_before_pause
         report["pause_revision_after"] = int(room_raw(code).get("revision") or 0)
+        # Require Pause to remain durable long enough for Resume to enable —
+        # otherwise a peer stale in_progress write can clobber Pause before UI converges.
+        pause_stable = False
+        if pause_disk:
+            for _ in range(25):
+                disk_paused = str(room_raw(code).get("status") or "").lower() == "paused"
+                resume_ready = page_btn_enabled(host, r"▶\s*Resume Draft") or page_btn_enabled(
+                    host, r"Resume Draft"
+                )
+                if disk_paused and resume_ready:
+                    host.wait_for_timeout(1200)
+                    if str(room_raw(code).get("status") or "").lower() == "paused":
+                        pause_stable = True
+                        break
+                host.wait_for_timeout(500)
+        report["pause_stable"] = pause_stable
         ht_pause = snap(host, "FP13_host_paused")
         gt_pause = snap(guest, "FP14_guest_paused")
         report["pause_host"] = bool(
@@ -878,7 +894,8 @@ def main() -> int:
 
         report["resume_click"] = False
         resumed_disk = False
-        if pause_disk:
+        report["resume_pre_status"] = str(room_raw(code).get("status") or "")
+        if pause_disk and pause_stable and str(room_raw(code).get("status") or "").lower() == "paused":
             rev_before_resume = int(room_raw(code).get("revision") or 0)
             report["resume_click"] = click_control(
                 host, r"▶\s*Resume Draft", r"Resume Draft"
@@ -890,7 +907,11 @@ def main() -> int:
                 host.wait_for_timeout(800)
             report["resume_revision_before"] = rev_before_resume
             report["resume_revision_after"] = int(room_raw(code).get("revision") or 0)
-        report["resume_disk"] = resumed_disk
+        report["resume_disk"] = bool(
+            resumed_disk
+            and report.get("resume_click")
+            and str(report.get("resume_pre_status") or "").lower() == "paused"
+        )
         host.wait_for_timeout(2000)
         ht_res = body(host)
         gt_res = body(guest)
@@ -1009,9 +1030,14 @@ def main() -> int:
         ok_pool = host_add > 0 and guest_add > 0
         ok_queue = bool(report.get("queue_isolation")) and bool(report.get("host_queue_adds"))
         ok_picks = report.get("picks_count", 0) >= 1
-        ok_pause = bool(report.get("pause_disk") and report.get("pause_click"))
+        ok_pause = bool(
+            report.get("pause_disk")
+            and report.get("pause_click")
+            and report.get("pause_stable")
+        )
         ok_resume = bool(
             report.get("pause_disk")
+            and report.get("pause_stable")
             and report.get("resume_click")
             and report.get("resume_disk")
         )

@@ -209,6 +209,12 @@ def render_live_draft_control_center(
         ) and is_commissioner:
             from live_draft_timer_logic import live_draft_resume_timer
 
+            try:
+                from draft_room_shared_state import mark_shared_unpause_commit_allowed
+
+                mark_shared_unpause_commit_allowed(session)
+            except ImportError:
+                session["_live_draft_allow_unpause_commit"] = True
             room["status"] = "in_progress"
             pause_left = int(room.get("paused_remaining_seconds") or cfg.get("timer_seconds", 60))
             live_draft_resume_timer(room, pause_left)
@@ -243,6 +249,12 @@ def render_live_draft_control_center(
             from live_draft_autopick import live_draft_auto_pick
 
             if room.get("status") == "paused":
+                try:
+                    from draft_room_shared_state import mark_shared_unpause_commit_allowed
+
+                    mark_shared_unpause_commit_allowed(session)
+                except ImportError:
+                    session["_live_draft_allow_unpause_commit"] = True
                 room["status"] = "in_progress"
             # Capture expected pick so a double-click cannot advance twice.
             expected_pick = int(room.get("current_pick_index") or 0)

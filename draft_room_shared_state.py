@@ -1226,6 +1226,51 @@ def publish_shared_room_runtime(
     return runtime
 
 
+ALLOW_UNPAUSE_COMMIT_KEY = "_live_draft_allow_unpause_commit"
+
+
+def mark_shared_unpause_commit_allowed(session: dict[str, Any] | None) -> None:
+    """Commissioner Resume / Auto-Pick-from-paused may transition disk out of paused."""
+    if isinstance(session, dict):
+        session[ALLOW_UNPAUSE_COMMIT_KEY] = True
+
+
+def preserve_paused_against_stale_in_progress(
+    session: dict[str, Any] | None,
+    current_doc: dict[str, Any],
+    live_room: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep durable Pause when a peer writes stale ``in_progress`` over ``paused``.
+
+    Host Pause can land on disk, then Guest (or a lagging Host ScriptRun) commits an
+    older in-memory ``in_progress`` room with ``expected_revision=None`` (head).
+    That clobbers Pause so Resume never enables — acceptance saw pause_disk then
+    resume_click=false with an immediate in_progress poll.
+    """
+    if not isinstance(live_room, dict) or not isinstance(current_doc, dict):
+        return live_room
+    cur_status = str(current_doc.get("status") or "").strip().lower()
+    incoming = str(live_room.get("status") or "").strip().lower()
+    if cur_status != "paused" or incoming != "in_progress":
+        return live_room
+    sess = session if isinstance(session, dict) else {}
+    if sess.pop(ALLOW_UNPAUSE_COMMIT_KEY, False):
+        return live_room
+    out = copy.deepcopy(live_room)
+    cur_room = current_doc.get("room") if isinstance(current_doc.get("room"), dict) else {}
+    out["status"] = "paused"
+    if cur_room.get("paused_remaining_seconds") is not None:
+        out["paused_remaining_seconds"] = cur_room.get("paused_remaining_seconds")
+    try:
+        from live_draft_timer_logic import live_draft_clear_timer
+
+        live_draft_clear_timer(out)
+    except ImportError:
+        out["timer_started_at"] = None
+        out["timer_deadline"] = None
+    return out
+
+
 def commit_shared_room_pick(
     session: dict[str, Any],
     live_room: dict[str, Any],
@@ -1245,6 +1290,7 @@ def commit_shared_room_pick(
         return False, None
     head_rev = int(current.get("revision") or 0)
     use_rev = head_rev if expected_revision is None else int(expected_revision)
+    live_room = preserve_paused_against_stale_in_progress(session, current, live_room)
     updated = bump_revision(current, live_room=live_room)
     ok, saved = backend.save_if_revision(updated, expected_revision=use_rev)
     invalidate_shared_room_document_cache(session, code)
