@@ -444,6 +444,28 @@ def commit_live_draft_mode_from_widget(
     _stamp_room_setup_mode(session, normalized)
     # Force-disk on every deliberate radio selection so Shared survives refresh.
     persist_live_draft_setup_mode_preference(session, normalized, st=st)
+    # Switching to Solo for the *next* draft must drop a stale Shared latch so
+    # restore does not reattach an ended/leftover Shared room over Solo Start.
+    # Do not clear while a Shared runtime is still bound on this session.
+    if normalized == SETUP_MODE_SOLO:
+        live = session.get("live_draft_room")
+        shared_runtime = False
+        if isinstance(live, dict):
+            cfg = live.get("config") if isinstance(live.get("config"), dict) else {}
+            status = str(live.get("status") or "").strip().lower()
+            mode = str(cfg.get("draft_setup_mode") or "").strip().lower()
+            code = str(live.get("room_code") or cfg.get("room_code") or "").strip()
+            if status in {"in_progress", "paused", "not_started"} and (
+                mode == SETUP_MODE_SHARED or "shared" in mode or bool(code)
+            ):
+                shared_runtime = True
+        if not shared_runtime:
+            try:
+                from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY
+
+                session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+            except ImportError:
+                session.pop("active_shared_draft_room_code", None)
     return normalized
 
 

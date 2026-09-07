@@ -1374,6 +1374,14 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
             session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
         code = ""
 
+    # Solo next-draft preference must not inherit leftover Shared rooms via
+    # membership-map / disk participant scan when no Shared runtime is bound.
+    # Active-code / preferred-league restore above still runs (Shared refresh).
+    if _skip_shared_fallback_reattach_for_solo_pref(session):
+        session["_live_draft_restore_blocked_reason"] = "solo_pref_skip_membership_disk_reattach"
+        session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+        return ""
+
     candidates: list[tuple[str, str, str]] = []
     membership = session.get(MEMBERSHIP_KEY)
     if isinstance(membership, dict):
@@ -1418,6 +1426,40 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
     session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
     return ""
 
+
+def _skip_shared_fallback_reattach_for_solo_pref(session: dict[str, Any]) -> bool:
+    """True when Solo is preferred and no Shared runtime is already in hand.
+
+    Prevents leftover Shared rooms on disk from hijacking Solo Draft Start after
+    Shared Draft work. Does not block Shared refresh: Create Shared persists
+    preferred_next=shared, and mid-Shared sessions keep a Shared room stamp.
+    """
+    try:
+        from live_draft_setup_mode import SETUP_MODE_SOLO, get_preferred_next_draft_mode
+
+        if get_preferred_next_draft_mode(session) != SETUP_MODE_SOLO:
+            return False
+    except ImportError:
+        mode = str(
+            session.get("preferred_next_draft_mode") or session.get("live_draft_setup_mode") or ""
+        ).strip().lower()
+        if mode and mode not in ("solo", "solo_draft"):
+            return False
+
+    live = session.get("live_draft_room")
+    if isinstance(live, dict):
+        cfg = live.get("config") if isinstance(live.get("config"), dict) else {}
+        status = str(live.get("status") or "").strip().lower()
+        mode = str(cfg.get("draft_setup_mode") or "").strip().lower()
+        code = str(live.get("room_code") or cfg.get("room_code") or "").strip()
+        if status in {"in_progress", "paused", "not_started"} and (
+            mode == "shared_multiplayer"
+            or "shared" in mode
+            or bool(code)
+        ):
+            # Continuing a Shared runtime — allow membership / disk recovery.
+            return False
+    return True
 
 def _local_file_room_definitive_not_found(room_code: str) -> bool:
     """True when the local-file backend reports a definitive missing share code."""

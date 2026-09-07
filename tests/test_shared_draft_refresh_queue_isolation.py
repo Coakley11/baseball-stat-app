@@ -160,6 +160,9 @@ class SharedDraftRefreshQueueIsolationTests(unittest.TestCase):
         refreshed = {
             "draft_room_participant_id": "coakley11",
             "auth_user_id": "coakley11",
+            # Shared Create persists preferred_next=shared; refresh must reattach.
+            "preferred_next_draft_mode": "shared_multiplayer",
+            "live_draft_setup_mode": "shared_multiplayer",
             ACTIVE_SHARED_ROOM_CODE_KEY: code,
             MEMBERSHIP_KEY: dict(guest.get(MEMBERSHIP_KEY) or {}),
             PARTICIPANT_STATE_KEY: dict(guest.get(PARTICIPANT_STATE_KEY) or {}),
