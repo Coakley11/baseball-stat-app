@@ -196,7 +196,7 @@ def render_live_draft_control_center(
         except ImportError:
             pass
     with top2:
-        if st.button(
+        _resume_return = st.button(
             "▶ Resume Draft",
             disabled=status != "paused" or not is_commissioner,
             key="live_draft_resume",
@@ -207,7 +207,13 @@ def render_live_draft_control_center(
                 else "Continues a normally paused active draft (not a saved-for-later park)."
             ),
             use_container_width=True,
-        ) and is_commissioner:
+        )
+        try:
+            session["_live_draft_resume_button_return"] = bool(_resume_return)
+            session["_live_draft_resume_button_status"] = str(status or "")
+        except Exception:
+            pass
+        if _resume_return and is_commissioner:
             from live_draft_timer_logic import live_draft_resume_timer
 
             try:

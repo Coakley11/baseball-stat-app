@@ -487,6 +487,60 @@ def pool_diag_summary() -> dict:
     }
 
 
+def click_resume_authoritative(page, *, timeout: int = 12000) -> dict:
+    """Click the authoritative ▶ Resume Draft control (probe-proven path).
+
+    Re-resolves the locator immediately before the click. Does not treat a
+    Playwright success alone as delivery — callers must require disk transition.
+    """
+    out: dict = {
+        "ok": False,
+        "method": "",
+        "match_count": 0,
+        "enabled": False,
+        "label": "",
+        "testid": "",
+    }
+    try:
+        loc = page.get_by_role("button", name=re.compile(r"▶\s*Resume Draft|Resume Draft", re.I))
+        out["match_count"] = int(loc.count())
+        if out["match_count"] < 1:
+            return out
+        target = loc.first
+        target.wait_for(state="visible", timeout=timeout)
+        out["enabled"] = not target.is_disabled()
+        if target.is_disabled():
+            return out
+        try:
+            out["label"] = (target.inner_text(timeout=1500) or "").strip()[:80]
+        except Exception:
+            out["label"] = "Resume Draft"
+        try:
+            out["testid"] = target.get_attribute("data-testid") or ""
+        except Exception:
+            pass
+        try:
+            target.scroll_into_view_if_needed(timeout=min(timeout, 8000))
+        except Exception:
+            pass
+        # Fresh resolve at click time (avoid stale handle after poll/rerun).
+        loc = page.get_by_role("button", name=re.compile(r"▶\s*Resume Draft|Resume Draft", re.I))
+        target = loc.first
+        if target.is_disabled():
+            out["enabled"] = False
+            return out
+        out["click_at"] = time.time()
+        try:
+            target.click(timeout=timeout)
+        except Exception:
+            target.click(timeout=timeout, force=True)
+        out["ok"] = True
+        out["method"] = "get_by_role_resume_draft"
+    except Exception as exc:
+        out["error"] = f"{type(exc).__name__}:{exc}"[:200]
+    return out
+
+
 def wait_resume_enabled(page, code: str, *, timeout_s: float = 120.0) -> bool:
     """Wait until durable Pause is reflected as an enabled ▶ Resume Draft control.
 
@@ -952,6 +1006,19 @@ def main() -> int:
                         break
                 host.wait_for_timeout(500)
         report["pause_stable"] = pause_stable
+        # Sample frozen timer on the original Host *before* opening a fresh Resume
+        # context. A multi-second wait on the Resume page between ready and click
+        # previously allowed poll/rerun to detach Streamlit binding while Playwright
+        # still reported click success (rev unchanged).
+        if pause_disk:
+            t_p1 = countdown(body(host))
+            host.wait_for_timeout(2000)
+            t_p2 = countdown(body(host))
+            report["timer_while_paused"] = {"t1": t_p1[:3], "t2": t_p2[:3]}
+            gt_pause_early = snap(guest, "FP14_guest_paused")
+            report["pause_guest"] = bool(
+                re.search(r"Draft Status:\s*Paused|\bPaused\b", gt_pause_early, re.I)
+            )
         # Long-lived Host session can keep stale in_progress Control Center state after
         # durable Pause. Fresh Host context (same as pause_stable_probe) rehydrates Resume.
         resume_page = host
@@ -970,69 +1037,61 @@ def main() -> int:
             except Exception as exc:
                 report["pause_fresh_host_error"] = f"{type(exc).__name__}:{exc}"[:200]
                 resume_page = host
-        ht_pause = snap(resume_page, "FP13_host_paused")
-        gt_pause = snap(guest, "FP14_guest_paused")
         report["pause_host"] = bool(
-            re.search(r"Draft Status:\s*Paused|\bPaused\b", ht_pause, re.I)
-        ) or (
             page_btn_enabled(resume_page, r"Resume Draft")
-        )
-        report["pause_guest"] = bool(
-            re.search(r"Draft Status:\s*Paused|\bPaused\b", gt_pause, re.I)
-        )
-        # While paused, sample timer twice
-        t_p1 = countdown(body(resume_page))
-        resume_page.wait_for_timeout(3000)
-        t_p2 = countdown(body(resume_page))
-        report["timer_while_paused"] = {"t1": t_p1[:3], "t2": t_p2[:3]}
+        ) or bool(report.get("pause_stable"))
 
         report["resume_click"] = False
         resumed_disk = False
         report["resume_pre_status"] = room_status(code) or str(room_raw(code).get("status") or "")
+        report["resume_transport"] = {}
         if pause_disk and room_status(code) == "paused":
             if not pause_stable:
                 pause_stable = wait_resume_enabled(resume_page, code, timeout_s=60.0)
                 report["pause_stable"] = pause_stable
+            # Click immediately after ready — no snap/timer delay (transport race).
             if pause_stable or page_btn_enabled(resume_page, r"Resume Draft"):
-                rev_before_resume = int(room_raw(code).get("revision") or 0)
-                # Resume is st.button(..., type="primary") — prefer primary test id + exact label
-                # (same path as pause_stable_probe; click_control alone can false-succeed).
-                resume_clicked = False
-                try:
-                    primary = resume_page.locator(
-                        '[data-testid="stBaseButton-primary"]'
-                    ).filter(has_text=re.compile(r"Resume Draft", re.I))
-                    if primary.count():
-                        primary.first.scroll_into_view_if_needed(timeout=8000)
-                        primary.first.click(timeout=12000)
-                        resume_clicked = True
-                except Exception:
-                    resume_clicked = False
-                if not resume_clicked:
-                    try:
-                        loc = resume_page.get_by_role(
-                            "button", name=re.compile(r"Resume Draft", re.I)
-                        ).first
-                        loc.scroll_into_view_if_needed(timeout=8000)
-                        loc.click(timeout=12000)
-                        resume_clicked = True
-                    except Exception:
-                        resume_clicked = click_control(
-                            resume_page, r"▶\s*Resume Draft", r"Resume Draft"
-                        )
-                report["resume_click"] = bool(resume_clicked)
-                resume_page.wait_for_timeout(3000)
-                for _ in range(30):
-                    if room_status(code) == "in_progress":
-                        resumed_disk = True
+                for attempt in range(2):
+                    # Re-wait for enabled control on retry (fresh locator).
+                    if attempt:
+                        wait_resume_enabled(resume_page, code, timeout_s=45.0)
+                    rev_before_resume = int(room_raw(code).get("revision") or 0)
+                    click_meta = click_resume_authoritative(resume_page)
+                    report["resume_click"] = bool(click_meta.get("ok"))
+                    report["resume_transport"] = {
+                        "attempt": attempt + 1,
+                        **{k: click_meta.get(k) for k in (
+                            "method", "match_count", "enabled", "label", "testid", "error"
+                        )},
+                    }
+                    if not click_meta.get("ok"):
+                        continue
+                    for _ in range(30):
+                        if room_status(code) == "in_progress":
+                            resumed_disk = True
+                            break
+                        resume_page.wait_for_timeout(700)
+                    report["resume_revision_before"] = rev_before_resume
+                    report["resume_revision_after"] = int(room_raw(code).get("revision") or 0)
+                    if resumed_disk and int(report["resume_revision_after"] or 0) > rev_before_resume:
                         break
-                    resume_page.wait_for_timeout(800)
-                report["resume_revision_before"] = rev_before_resume
-                report["resume_revision_after"] = int(room_raw(code).get("revision") or 0)
+                    # Click without revision bump ⇒ transport miss; retry once.
+                    report["resume_transport"]["disk_after_click"] = room_status(code)
+                    report["resume_transport"]["revision_bump"] = False
+                if resumed_disk:
+                    report["resume_transport"]["revision_bump"] = True
+        # Snap after Resume attempt so locator→click is not delayed by body dumps.
+        ht_pause = snap(resume_page, "FP13_host_paused")
+        if not report.get("pause_host"):
+            report["pause_host"] = bool(
+                re.search(r"Draft Status:\s*Paused|\bPaused\b", ht_pause, re.I)
+            ) or page_btn_enabled(resume_page, r"Resume Draft")
         report["resume_disk"] = bool(
             resumed_disk
             and report.get("resume_click")
             and str(report.get("resume_pre_status") or "").lower() == "paused"
+            and int(report.get("resume_revision_after") or 0)
+            > int(report.get("resume_revision_before") or 0)
         )
         host.wait_for_timeout(2000)
         # Prefer original host for post-resume UI when fresh context was used for the click.
