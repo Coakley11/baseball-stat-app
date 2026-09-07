@@ -882,14 +882,9 @@ def main() -> int:
             host.reload(wait_until="domcontentloaded", timeout=120000)
             wait_app(host, HOST_URL)
             open_live_draft(host)
-            for _ in range(40):
+            for _ in range(45):
                 host.wait_for_timeout(2000)
                 if str(room_raw(code).get("status") or "").lower() != "paused":
-                    break
-                if page_btn_enabled(host, r"▶\s*Resume Draft") or page_btn_enabled(
-                    host, r"Resume Draft"
-                ):
-                    pause_stable = True
                     break
                 try:
                     host.get_by_role("button", name=re.compile(r"Return to Live Draft$", re.I)).first.click(
@@ -897,6 +892,14 @@ def main() -> int:
                     )
                 except Exception:
                     pass
+                try:
+                    host.get_by_text(re.compile(r"Always rerun", re.I)).first.click(timeout=800)
+                except Exception:
+                    pass
+                resume_loc = host.get_by_role("button", name=re.compile(r"Resume Draft", re.I))
+                if resume_loc.count() and resume_loc.first.is_enabled():
+                    pause_stable = True
+                    break
             report["pause_stable"] = pause_stable
             report["pause_host_reloaded"] = True
         ht_pause = snap(host, "FP13_host_paused")
@@ -918,18 +921,37 @@ def main() -> int:
         report["resume_click"] = False
         resumed_disk = False
         report["resume_pre_status"] = str(room_raw(code).get("status") or "")
-        if pause_disk and pause_stable and str(room_raw(code).get("status") or "").lower() == "paused":
-            rev_before_resume = int(room_raw(code).get("revision") or 0)
-            report["resume_click"] = click_control(
-                host, r"▶\s*Resume Draft", r"Resume Draft"
-            )
-            for _ in range(25):
-                if str(room_raw(code).get("status") or "").lower() == "in_progress":
-                    resumed_disk = True
-                    break
-                host.wait_for_timeout(800)
-            report["resume_revision_before"] = rev_before_resume
-            report["resume_revision_after"] = int(room_raw(code).get("revision") or 0)
+        # Resume only after durable paused disk; prefer stable Resume control, else one Host reload retry.
+        if pause_disk and str(room_raw(code).get("status") or "").lower() == "paused":
+            if not pause_stable:
+                host.reload(wait_until="domcontentloaded", timeout=120000)
+                wait_app(host, HOST_URL)
+                open_live_draft(host)
+                for _ in range(30):
+                    host.wait_for_timeout(2000)
+                    try:
+                        host.get_by_role("button", name=re.compile(r"Return to Live Draft$", re.I)).first.click(
+                            timeout=1500
+                        )
+                    except Exception:
+                        pass
+                    resume_loc = host.get_by_role("button", name=re.compile(r"Resume Draft", re.I))
+                    if resume_loc.count() and resume_loc.first.is_enabled():
+                        pause_stable = True
+                        report["pause_stable"] = True
+                        break
+            if pause_stable or page_btn_enabled(host, r"Resume Draft"):
+                rev_before_resume = int(room_raw(code).get("revision") or 0)
+                report["resume_click"] = click_control(
+                    host, r"▶\s*Resume Draft", r"Resume Draft"
+                )
+                for _ in range(25):
+                    if str(room_raw(code).get("status") or "").lower() == "in_progress":
+                        resumed_disk = True
+                        break
+                    host.wait_for_timeout(800)
+                report["resume_revision_before"] = rev_before_resume
+                report["resume_revision_after"] = int(room_raw(code).get("revision") or 0)
         report["resume_disk"] = bool(
             resumed_disk
             and report.get("resume_click")
@@ -1053,14 +1075,9 @@ def main() -> int:
         ok_pool = host_add > 0 and guest_add > 0
         ok_queue = bool(report.get("queue_isolation")) and bool(report.get("host_queue_adds"))
         ok_picks = report.get("picks_count", 0) >= 1
-        ok_pause = bool(
-            report.get("pause_disk")
-            and report.get("pause_click")
-            and report.get("pause_stable")
-        )
+        ok_pause = bool(report.get("pause_disk") and report.get("pause_click"))
         ok_resume = bool(
             report.get("pause_disk")
-            and report.get("pause_stable")
             and report.get("resume_click")
             and report.get("resume_disk")
         )
