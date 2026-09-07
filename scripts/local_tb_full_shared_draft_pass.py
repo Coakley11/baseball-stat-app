@@ -336,16 +336,36 @@ def room_participants(code: str) -> list[str]:
 
 def room_raw(code: str) -> dict:
     path = ROOM_DIR / f"{code}.json"
-    for _ in range(12):
+    last_err = ""
+    for _ in range(40):
         try:
             text = path.read_text(encoding="utf-8")
             if not text.strip():
-                time.sleep(0.25)
+                time.sleep(0.2)
                 continue
             return json.loads(text)
-        except (OSError, json.JSONDecodeError):
-            time.sleep(0.25)
-    return {}
+        except (OSError, json.JSONDecodeError) as exc:
+            last_err = f"{type(exc).__name__}:{exc}"
+            time.sleep(0.2)
+    # Last-chance single read for callers that must not treat a mid-write as missing.
+    try:
+        text = path.read_text(encoding="utf-8")
+        if text.strip():
+            return json.loads(text)
+    except Exception as exc:
+        last_err = f"{type(exc).__name__}:{exc}"
+    return {"_room_raw_error": last_err or "empty"}
+
+
+def room_status(code: str) -> str:
+    raw = room_raw(code)
+    if not isinstance(raw, dict) or raw.get("_room_raw_error"):
+        return ""
+    st = str(raw.get("status") or "").strip().lower()
+    if st:
+        return st
+    room = raw.get("room") if isinstance(raw.get("room"), dict) else {}
+    return str(room.get("status") or "").strip().lower()
 
 
 def add_count(page) -> int:
@@ -476,7 +496,7 @@ def wait_resume_enabled(page, code: str, *, timeout_s: float = 120.0) -> bool:
     page.wait_for_timeout(8000)
     t0 = time.time()
     while time.time() - t0 < timeout_s:
-        if str(room_raw(code).get("status") or "").lower() != "paused":
+        if room_status(code) != "paused":
             return False
         try:
             page.get_by_text(re.compile(r"Always rerun", re.I)).first.click(timeout=800)
@@ -900,8 +920,8 @@ def main() -> int:
         pause_disk = False
         for attempt in range(3):
             pause_click = click_control(host, r"⏸\s*Pause Draft", r"Pause Draft") or pause_click
-            for _ in range(20):
-                if str(room_raw(code).get("status") or "").lower() == "paused":
+            for _ in range(35):
+                if room_status(code) == "paused":
                     pause_disk = True
                     break
                 host.wait_for_timeout(700)
@@ -910,6 +930,8 @@ def main() -> int:
             # Mid-cycle Reset then retry if click did not durably pause.
             click_control(host, r"Reset Timer")
             host.wait_for_timeout(1500)
+        if not pause_disk and room_status(code) == "paused":
+            pause_disk = True
         report["pause_click"] = pause_click
         report["pause_disk"] = pause_disk
         report["pause_revision_before"] = rev_before_pause
@@ -919,13 +941,13 @@ def main() -> int:
         pause_stable = False
         if pause_disk:
             for _ in range(25):
-                disk_paused = str(room_raw(code).get("status") or "").lower() == "paused"
+                disk_paused = room_status(code) == "paused"
                 resume_ready = page_btn_enabled(host, r"▶\s*Resume Draft") or page_btn_enabled(
                     host, r"Resume Draft"
                 )
                 if disk_paused and resume_ready:
                     host.wait_for_timeout(1200)
-                    if str(room_raw(code).get("status") or "").lower() == "paused":
+                    if room_status(code) == "paused":
                         pause_stable = True
                         break
                 host.wait_for_timeout(500)
@@ -966,8 +988,8 @@ def main() -> int:
 
         report["resume_click"] = False
         resumed_disk = False
-        report["resume_pre_status"] = str(room_raw(code).get("status") or "")
-        if pause_disk and str(room_raw(code).get("status") or "").lower() == "paused":
+        report["resume_pre_status"] = room_status(code) or str(room_raw(code).get("status") or "")
+        if pause_disk and room_status(code) == "paused":
             if not pause_stable:
                 pause_stable = wait_resume_enabled(resume_page, code, timeout_s=60.0)
                 report["pause_stable"] = pause_stable
@@ -1001,7 +1023,7 @@ def main() -> int:
                 report["resume_click"] = bool(resume_clicked)
                 resume_page.wait_for_timeout(3000)
                 for _ in range(30):
-                    if str(room_raw(code).get("status") or "").lower() == "in_progress":
+                    if room_status(code) == "in_progress":
                         resumed_disk = True
                         break
                     resume_page.wait_for_timeout(800)
