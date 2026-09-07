@@ -366,6 +366,9 @@ def render_rec_interactive_widgets(
     *,
     fmt_rate_4=None,
     fmt_int=None,
+    dense: bool = False,
+    max_cards_override: int | None = None,
+    skip_summary_banner: bool = False,
 ) -> bool:
     """Render recommendation card Streamlit widgets from prepared cache (live path)."""
     note_rec_run_stage(session, "interactive_invoked")
@@ -378,6 +381,7 @@ def render_rec_interactive_widgets(
         "snapshot_used": False,
         "prepared_synthesized": False,
         "script_run_seq": int(session.get("_solo_stage1_script_run_seq") or 0),
+        "dense": bool(dense),
     }
     rid = str(room.get("draft_room_id") or "").strip()
     had_prep = isinstance(session.get(PREPARED_REC_INTERACTIVE_KEY), dict)
@@ -470,11 +474,16 @@ def render_rec_interactive_widgets(
     gaps = list(prep.get("gaps") or [])
     category_needs = list(prep.get("category_needs") or [])
     max_cards = int(prep.get("max_cards") or 6)
+    if max_cards_override is not None:
+        max_cards = max(1, int(max_cards_override))
+    elif dense:
+        max_cards = min(max_cards, 3)
     multiplayer = bool(prep.get("multiplayer"))
     try:
         from live_draft_room_ui import render_live_draft_rec_cards, render_live_draft_rec_summary_banner
 
-        render_live_draft_rec_summary_banner(st, top_rec, gaps=gaps)
+        if not skip_summary_banner and not dense:
+            render_live_draft_rec_summary_banner(st, top_rec, gaps=gaps)
         render_live_draft_rec_cards(
             st,
             session,
@@ -482,6 +491,7 @@ def render_rec_interactive_widgets(
             top_rec,
             max_cards=max_cards,
             multiplayer=multiplayer,
+            dense=bool(dense),
             fmt_rate_4=fmt_rate_4,
             fmt_int=fmt_int,
             gaps=gaps,

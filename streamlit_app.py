@@ -908,7 +908,16 @@ def render_global_app_chrome(active_page: str) -> None:
     </div>
 </div>
 """, unsafe_allow_html=True)
-    app_tutorial.render_tutorial_header_bar()
+    suppress_tutorial = False
+    if active_page == "Live Draft Room":
+        try:
+            from live_draft_active_surface import live_draft_suppress_page_intro
+
+            suppress_tutorial = bool(live_draft_suppress_page_intro(st.session_state))
+        except ImportError:
+            suppress_tutorial = False
+    if not suppress_tutorial:
+        app_tutorial.render_tutorial_header_bar()
 
 def fmt_int(x):
     x = pd.to_numeric(x, errors="coerce")
@@ -4196,9 +4205,18 @@ def clean_ui_columns(df):
         "Perf_Score": "Current Score",
         "Valuation_Score": "Valuation Score",
     }
+    # Avoid fullName→Player when Player already exists (duplicate Arrow columns).
+    if "Player" in df.columns and "fullName" in df.columns:
+        df = df.drop(columns=["fullName"])
     df = df.rename(columns=rename_map)
+    # Use bool(...): pandas may return numpy.bool_, and `is False` never matches.
+    if not bool(getattr(df.columns, "is_unique", True)):
+        df = df.loc[:, ~df.columns.duplicated()].copy()
     drop_cols = [c for c in df.columns if str(c).lower().endswith("id") or "playerid" in str(c).lower() or "teamid" in str(c).lower()]
-    return df.drop(columns=drop_cols, errors="ignore")
+    out = df.drop(columns=drop_cols, errors="ignore")
+    if not bool(getattr(out.columns, "is_unique", True)):
+        out = out.loc[:, ~out.columns.duplicated()].copy()
+    return out
 
 
 
@@ -22611,13 +22629,21 @@ elif active_page == "Live Draft Room":
     try:
         from suite_identity_guard import render_mp_identity_diagnostics
 
-        _mp_room = st.session_state.get("live_draft_room")
-        render_mp_identity_diagnostics(
-            st,
-            st.session_state,
-            room=_mp_room if isinstance(_mp_room, dict) else None,
-            temporary=True,
-        )
+        _suppress_mp_diag = False
+        try:
+            from live_draft_active_surface import live_draft_suppress_page_intro
+
+            _suppress_mp_diag = bool(live_draft_suppress_page_intro(st.session_state))
+        except ImportError:
+            _suppress_mp_diag = False
+        if not _suppress_mp_diag:
+            _mp_room = st.session_state.get("live_draft_room")
+            render_mp_identity_diagnostics(
+                st,
+                st.session_state,
+                room=_mp_room if isinstance(_mp_room, dict) else None,
+                temporary=True,
+            )
     except Exception:
         pass
     try:
@@ -22726,12 +22752,23 @@ elif active_page == "Live Draft Room":
         ldr_section_done(st.session_state, "prepare_global_fantasy_settings", st=st)
     except ImportError:
         pass
-    render_section_header(
-        "📡 Live Draft Room",
-        "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft.",
-        compact=True,
-    )
-    render_page_guide(active_page)
+    _show_ldr_guide = True
+    try:
+        from live_draft_active_surface import live_draft_suppress_page_intro
+
+        _show_ldr_guide = not bool(live_draft_suppress_page_intro(st.session_state))
+    except ImportError:
+        _show_ldr_guide = True
+    if _show_ldr_guide:
+        render_section_header(
+            "📡 Live Draft Room",
+            "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft.",
+            compact=True,
+        )
+        render_page_guide(active_page)
+    else:
+        # Active draft: keep a compact title only — Quick Guide pushes cards below the fold.
+        st.markdown("### 📡 Live Draft Room")
     try:
         from live_draft_render_trace import ldr_post_rerun_checkpoint, ldr_section_done, ldr_step
 
@@ -25562,10 +25599,13 @@ elif active_page == "Live Draft Room":
             except ImportError:
                 pass
             try:
-                st.caption(
-                    "⏱ LDR step enter: `room_body` "
-                    f"(last_rerun=`{st.session_state.get('_live_draft_last_rerun_source') or '—'}`)"
-                )
+                from live_draft_active_surface import live_draft_suppress_page_intro
+
+                if not live_draft_suppress_page_intro(st.session_state):
+                    st.caption(
+                        "⏱ LDR step enter: `room_body` "
+                        f"(last_rerun=`{st.session_state.get('_live_draft_last_rerun_source') or '—'}`)"
+                    )
             except Exception:
                 pass
             ldr_post_rerun_checkpoint(st, st.session_state, "after_room_body_enter")
@@ -26049,13 +26089,35 @@ elif active_page == "Live Draft Room":
                     except ImportError:
                         pass
 
-                user_team = st.selectbox(
-                    "Your Fantasy Team (for survival % & next-pick logic)",
-                    team_list,
-                    index=team_list.index(user_team) if user_team in team_list else 0,
-                    key="live_draft_my_team",
-                    on_change=_live_draft_team_changed,
-                )
+                # Active Solo: keep the current team as a caption so the Fantasy Team
+                # selectbox does not push recommendation cards below the first viewport.
+                _solo_compact_viewport = False
+                try:
+                    from live_draft_active_surface import live_draft_suppress_page_intro
+
+                    _solo_compact_viewport = bool(
+                        live_draft_suppress_page_intro(st.session_state)
+                    )
+                except ImportError:
+                    _solo_compact_viewport = False
+                if _solo_compact_viewport:
+                    if user_team not in team_list and team_list:
+                        user_team = team_list[0]
+                    st.session_state["live_draft_my_team"] = user_team
+                    try:
+                        from live_draft_ux import format_your_fantasy_team
+
+                        st.caption(format_your_fantasy_team(user_team))
+                    except ImportError:
+                        st.caption(f"Your Fantasy Team: {user_team}")
+                else:
+                    user_team = st.selectbox(
+                        "Your Fantasy Team (for survival % & next-pick logic)",
+                        team_list,
+                        index=team_list.index(user_team) if user_team in team_list else 0,
+                        key="live_draft_my_team",
+                        on_change=_live_draft_team_changed,
+                    )
                 cfg["user_team"] = user_team
                 cfg["your_team"] = user_team
                 room["config"]["user_team"] = user_team
@@ -26124,24 +26186,41 @@ elif active_page == "Live Draft Room":
                 or (slot.get("Round") if isinstance(slot, dict) else "")
                 or "—"
             )
+            _solo_compact_viewport = False
             try:
-                from live_draft_room_ui import render_live_draft_league_header
+                from live_draft_active_surface import live_draft_suppress_page_intro
 
-                render_live_draft_league_header(
-                    st,
-                    league_name=str(cfg.get("league_name") or "League"),
-                    teams=team_list,
-                    solo=not _multiplayer_draft,
-                    pick_label=pick_label,
-                    round_no=round_no,
-                    on_clock_team=on_clock_team,
-                    live=_draft_in_progress,
+                _solo_compact_viewport = bool(
+                    (not _multiplayer_draft)
+                    and live_draft_suppress_page_intro(st.session_state)
                 )
             except ImportError:
+                _solo_compact_viewport = False
+            if _solo_compact_viewport:
+                # Compact Solo status — full league header pushes cards below the fold.
                 st.caption(
-                    f"**{cfg.get('league_name', 'League')}** · "
-                    f"Pick {pick_num} of {total_picks}"
+                    f"**{cfg.get('league_name', 'League')}** · Solo · "
+                    f"{pick_label} · Round {round_no} · On clock: {on_clock_team}"
                 )
+            else:
+                try:
+                    from live_draft_room_ui import render_live_draft_league_header
+
+                    render_live_draft_league_header(
+                        st,
+                        league_name=str(cfg.get("league_name") or "League"),
+                        teams=team_list,
+                        solo=not _multiplayer_draft,
+                        pick_label=pick_label,
+                        round_no=round_no,
+                        on_clock_team=on_clock_team,
+                        live=_draft_in_progress,
+                    )
+                except ImportError:
+                    st.caption(
+                        f"**{cfg.get('league_name', 'League')}** · "
+                        f"Pick {pick_num} of {total_picks}"
+                    )
         else:
             on_clock_team = str(
                 (_paint.get("team_on_clock") if isinstance(_paint, dict) else None)
@@ -26159,7 +26238,17 @@ elif active_page == "Live Draft Room":
             pick_num = int(_hdr_pick) if _hdr_pick is not None else (total_picks if _draft_is_complete else 1)
             pick_label = f"Pick {pick_num} of {total_picks}"
         _status_label = str(_derived_status or room.get("status", "")).replace("_", " ").title()
-        if not _shared_lobby_view:
+        _solo_compact_viewport = False
+        try:
+            from live_draft_active_surface import live_draft_suppress_page_intro
+
+            _solo_compact_viewport = bool(
+                (not _multiplayer_draft)
+                and live_draft_suppress_page_intro(st.session_state)
+            )
+        except ImportError:
+            _solo_compact_viewport = False
+        if not _shared_lobby_view and not _solo_compact_viewport:
             try:
                 from live_draft_room_ui import render_live_draft_room_header
 
@@ -26196,6 +26285,11 @@ elif active_page == "Live Draft Room":
                             st.markdown(f"**Room Code:** `{sc}`")
                         else:
                             st.warning("Room code missing — shared draft may not be joinable.")
+        elif not _shared_lobby_view and _solo_compact_viewport:
+            # Compact Solo: one-line room stamp — full banner pushes cards below the fold.
+            st.caption(
+                f"Solo Draft · {user_team or '—'} · {pick_label} · On clock: {on_clock_team}"
+            )
         if not _shared_lobby_view and _multiplayer_draft:
             try:
                 from live_draft_room_ui import render_live_draft_status_badges
@@ -26545,26 +26639,12 @@ elif active_page == "Live Draft Room":
                 )
             except ImportError:
                 pass
-            try:
-                from live_draft_control_center_ui import render_control_center_with_live_chat
 
-                _cc = render_control_center_with_live_chat(
-                    st,
-                    st.session_state,
-                    room,
-                    cfg=cfg,
-                    persist_room=lambda r, reason: _persist_live_draft_room(r, reason=reason),
-                    developer_mode=bool(developer_mode_enabled()),
-                )
-                _is_commissioner = bool((_cc or {}).get("is_commissioner"))
-                _doc_h = (_cc or {}).get("document")
-            except ImportError:
-                _is_commissioner = True
-                _doc_h = None
+            def _paint_live_draft_control_center() -> tuple[bool, Any]:
                 try:
-                    from live_draft_control_center_ui import render_live_draft_control_center
+                    from live_draft_control_center_ui import render_control_center_with_live_chat
 
-                    _cc = render_live_draft_control_center(
+                    _cc = render_control_center_with_live_chat(
                         st,
                         st.session_state,
                         room,
@@ -26572,10 +26652,37 @@ elif active_page == "Live Draft Room":
                         persist_room=lambda r, reason: _persist_live_draft_room(r, reason=reason),
                         developer_mode=bool(developer_mode_enabled()),
                     )
-                    _is_commissioner = bool((_cc or {}).get("is_commissioner"))
-                    _doc_h = (_cc or {}).get("document")
+                    return (
+                        bool((_cc or {}).get("is_commissioner")),
+                        (_cc or {}).get("document"),
+                    )
                 except ImportError:
-                    st.warning("Control Center unavailable — live_draft_control_center_ui missing.")
+                    try:
+                        from live_draft_control_center_ui import render_live_draft_control_center
+
+                        _cc = render_live_draft_control_center(
+                            st,
+                            st.session_state,
+                            room,
+                            cfg=cfg,
+                            persist_room=lambda r, reason: _persist_live_draft_room(r, reason=reason),
+                            developer_mode=bool(developer_mode_enabled()),
+                        )
+                        return (
+                            bool((_cc or {}).get("is_commissioner")),
+                            (_cc or {}).get("document"),
+                        )
+                    except ImportError:
+                        st.warning("Control Center unavailable — live_draft_control_center_ui missing.")
+                        return True, None
+
+            # Solo active: collapse Control Center so recommendation cards land in the
+            # first viewport. Pause/Resume remain one click away inside the expander.
+            if bool(_is_solo_draft):
+                with st.expander("Draft controls (Pause · Auto Pick · Queue)", expanded=False):
+                    _is_commissioner, _doc_h = _paint_live_draft_control_center()
+            else:
+                _is_commissioner, _doc_h = _paint_live_draft_control_center()
             try:
                 from live_draft_render_checkpoints import note_active_page_receipt
 
@@ -26683,6 +26790,40 @@ elif active_page == "Live Draft Room":
             ldr_section(st.session_state, "room_board_column", st=st)
         except ImportError:
             pass
+
+        # Solo human path: paint Add-to-Queue cards ABOVE the board/On-Clock row so a
+        # normal laptop viewport sees usable recommendation cards after Start.
+        st.session_state.pop("_live_draft_rec_cards_early_viewport", None)
+        if bool(_is_solo_draft) and not bool(_draft_is_complete):
+            try:
+                from live_draft_rec_live_paint import render_rec_interactive_widgets
+
+                st.markdown("#### Recommended picks")
+                _early_ok = bool(
+                    render_rec_interactive_widgets(
+                        st,
+                        st.session_state,
+                        room,
+                        fmt_rate_4=fmt_rate_4,
+                        fmt_int=fmt_int,
+                        dense=True,
+                        max_cards_override=3,
+                        skip_summary_banner=True,
+                    )
+                )
+                st.session_state["_live_draft_rec_cards_early_viewport"] = _early_ok
+                if _early_ok:
+                    st.session_state["_live_draft_rec_cards_inline"] = True
+                    st.session_state[
+                        "_live_draft_rec_queue_interactive_owner"
+                    ] = "solo_early_viewport"
+                else:
+                    st.caption("Loading recommendation cards…")
+            except Exception as _early_rec_exc:
+                st.session_state["_live_draft_rec_cards_early_viewport"] = False
+                st.session_state["_live_draft_rec_early_viewport_error"] = (
+                    f"{type(_early_rec_exc).__name__}: {_early_rec_exc}"
+                )[:240]
 
         board_col, rec_col = st.columns([1.45, 1.0])
         # Queue fragment MUST mount inside board_col (same container it paints).
@@ -27257,128 +27398,183 @@ elif active_page == "Live Draft Room":
                                             top_rec,
                                             room_id=str(room.get("draft_room_id") or ""),
                                         )
-                                    # Add-to-Queue buttons are owned exclusively by
-                                    # paint_interactive (ScriptRun / full_page_interactive_live).
-                                    # Never register them from heavy paint_body — when this runs
-                                    # under fragment(run_every=1) Streamlit accepts WS transport
-                                    # without dispatching on_click (production 47712472).
-                                    if bool(st.session_state.get("_solo_stage1_in_fragment_run")):
+                                    # Add-to-Queue: Solo already painted cards above the board
+                                    # row for first-viewport landing — do not re-register the
+                                    # same widget keys here. Shared / non-early keeps inline.
+                                    if bool(st.session_state.get("_live_draft_rec_cards_early_viewport")):
+                                        st.session_state[
+                                            "_live_draft_rec_queue_interactive_owner"
+                                        ] = "solo_early_viewport"
+                                    elif bool(st.session_state.get("_solo_stage1_in_fragment_run")):
                                         st.session_state[
                                             "_live_draft_rec_queue_interactive_owner"
                                         ] = "deferred_to_script_run_handoff"
+                                        st.session_state.pop("_live_draft_rec_cards_inline", None)
                                     else:
-                                        # Non-fragment paint_body (via=full_page): still defer
-                                        # widget registration to paint_interactive below/outer.
-                                        st.session_state[
-                                            "_live_draft_rec_queue_interactive_owner"
-                                        ] = "pending_paint_interactive"
+                                        try:
+                                            from live_draft_rec_live_paint import (
+                                                render_rec_interactive_widgets,
+                                            )
+
+                                            _inline_ok = bool(
+                                                render_rec_interactive_widgets(
+                                                    st,
+                                                    st.session_state,
+                                                    room,
+                                                    fmt_rate_4=fmt_rate_4,
+                                                    fmt_int=fmt_int,
+                                                )
+                                            )
+                                            st.session_state["_live_draft_rec_cards_inline"] = _inline_ok
+                                            st.session_state[
+                                                "_live_draft_rec_queue_interactive_owner"
+                                            ] = "paint_body_script_run_inline"
+                                        except Exception as _inline_rec_exc:
+                                            st.session_state["_live_draft_rec_cards_inline"] = False
+                                            st.session_state[
+                                                "_live_draft_rec_queue_interactive_owner"
+                                            ] = "pending_paint_interactive"
+                                            st.session_state[
+                                                "_live_draft_rec_interactive_wiring_error"
+                                            ] = (
+                                                f"{type(_inline_rec_exc).__name__}: {_inline_rec_exc}"
+                                            )[:240]
                                 except ImportError:
-                                    if not bool(st.session_state.get("_solo_stage1_in_fragment_run")):
+                                    if (
+                                        not bool(st.session_state.get("_solo_stage1_in_fragment_run"))
+                                        and not bool(
+                                            st.session_state.get("_live_draft_rec_cards_early_viewport")
+                                        )
+                                    ):
                                         _render_live_draft_rec_cards(top_rec, max_cards=6)
 
-                                rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
-                                rec_cols = [
-                                    "fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank",
-                                    "Fantasy Edge", "Survival Probability", "Survival Label",
-                                    "Draft Fit Score", "Decision Score",
-                                    "Why this pick",
-                                ]
-                                try:
-                                    from live_draft_ux import REC_TABLE_SORT_OPTIONS, apply_survival_display_columns, sort_recommendation_table
+                                # Tables stay available but collapsed by default so cards remain
+                                # the primary Solo recommendation surface in the first viewport.
+                                with st.expander("Recommendation tables", expanded=False):
+                                    rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
+                                    rec_cols = [
+                                        "fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank",
+                                        "Fantasy Edge", "Survival Probability", "Survival Label",
+                                        "Draft Fit Score", "Decision Score",
+                                        "Why this pick",
+                                    ]
 
-                                    _rec_sort_labels = list(REC_TABLE_SORT_OPTIONS.keys())
-                                    _rec_sort_choice = st.selectbox(
-                                        "Sort recommendations by",
-                                        _rec_sort_labels,
-                                        index=0,
-                                        key="live_draft_rec_table_sort",
-                                        help=(
-                                            "Reorders the same recommendation pool. "
-                                            "It does not run a different recommendation algorithm."
-                                        ),
-                                    )
-                                    st.caption(
-                                        "Sort changes display order only — the recommended player set stays the same."
-                                    )
-                                    _rec_sort_col = REC_TABLE_SORT_OPTIONS.get(_rec_sort_choice, "Decision Score")
+                                    def _live_rec_table_frame(df: pd.DataFrame) -> pd.DataFrame:
+                                        """Select display cols and rename fullName→Player without dup columns."""
+                                        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+                                            return pd.DataFrame()
+                                        cols = [c for c in rec_cols if c in df.columns]
+                                        out = df.loc[:, cols].copy()
+                                        if "fullName" in out.columns:
+                                            if "Player" in out.columns:
+                                                out = out.drop(columns=["Player"])
+                                            out = out.rename(columns={"fullName": "Player"})
+                                        return out
 
-                                    def _prepare_live_rec_table(df: pd.DataFrame) -> pd.DataFrame:
-                                        from table_dataframe_guard import ensure_dataframe
-
-                                        frame = ensure_dataframe(df, caller="_prepare_live_rec_table")
-                                        if frame.empty:
-                                            return frame
-                                        sorted_df = sort_recommendation_table(frame, _rec_sort_col)
-                                        return ensure_dataframe(
-                                            apply_survival_display_columns(sorted_df),
-                                            caller="_prepare_live_rec_table.survival",
-                                        )
-                                except ImportError:
-                                    def _prepare_live_rec_table(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[misc]
-                                        from table_dataframe_guard import ensure_dataframe
-
-                                        return ensure_dataframe(df, caller="_prepare_live_rec_table.fallback")
-
-                                _pool_for_why = room.get("pool")
-                                try:
-                                    from live_draft_ui_cache import enrich_live_draft_recommendations_with_why
-
-                                    _why_tables = enrich_live_draft_recommendations_with_why(
-                                        st.session_state,
-                                        _ui_cache_key,
-                                        {
-                                            "top_rec": top_rec,
-                                            "best_avail": best_avail,
-                                            "pos_fit": pos_fit,
-                                            "value_sleep": value_sleep,
-                                        },
-                                        gaps=_gaps,
-                                        category_needs=_category_needs,
-                                        pool_df=_pool_for_why,
-                                        config=cfg,
-                                    )
-                                    top_rec = _why_tables["top_rec"]
-                                    best_avail = _why_tables["best_avail"]
-                                    pos_fit = _why_tables["pos_fit"]
-                                    value_sleep = _why_tables["value_sleep"]
-                                except ImportError:
-                                    from live_draft_room_ui import add_why_this_pick_column
-
-                                    top_rec = add_why_this_pick_column(
-                                        top_rec, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
-                                    )
-                                    best_avail = add_why_this_pick_column(
-                                        best_avail, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
-                                    )
-                                    pos_fit = add_why_this_pick_column(
-                                        pos_fit, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
-                                    )
-                                    value_sleep = add_why_this_pick_column(
-                                        value_sleep, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
-                                    )
-                                try:
-                                    from table_dataframe_guard import ensure_dataframe
-
-                                    top_rec = ensure_dataframe(top_rec, caller="live_draft.top_rec")
-                                    best_avail = ensure_dataframe(best_avail, caller="live_draft.best_avail")
-                                    pos_fit = ensure_dataframe(pos_fit, caller="live_draft.pos_fit")
-                                    value_sleep = ensure_dataframe(value_sleep, caller="live_draft.value_sleep")
-                                except ImportError:
-                                    if top_rec is None:
-                                        top_rec = pd.DataFrame()
-                                    if best_avail is None:
-                                        best_avail = pd.DataFrame()
-                                    if pos_fit is None:
-                                        pos_fit = pd.DataFrame()
-                                    if value_sleep is None:
-                                        value_sleep = pd.DataFrame()
-                                with rec_tabs[0]:
-                                    _top_show = top_rec[[c for c in rec_cols if c in top_rec.columns]].rename(columns={"fullName": "Player"})
-                                    _top_show = _prepare_live_rec_table(_top_show)
                                     try:
-                                        from live_draft_perf import PHASE_REC_SECTION, live_draft_perf_action
+                                        from live_draft_ux import REC_TABLE_SORT_OPTIONS, apply_survival_display_columns, sort_recommendation_table
 
-                                        with live_draft_perf_action(st.session_state, "rec:Top Picks", phase=PHASE_REC_SECTION):
+                                        _rec_sort_labels = list(REC_TABLE_SORT_OPTIONS.keys())
+                                        _rec_sort_choice = st.selectbox(
+                                            "Sort recommendations by",
+                                            _rec_sort_labels,
+                                            index=0,
+                                            key="live_draft_rec_table_sort",
+                                            help=(
+                                                "Reorders the same recommendation pool. "
+                                                "It does not run a different recommendation algorithm."
+                                            ),
+                                        )
+                                        st.caption(
+                                            "Sort changes display order only — the recommended player set stays the same."
+                                        )
+                                        _rec_sort_col = REC_TABLE_SORT_OPTIONS.get(_rec_sort_choice, "Decision Score")
+
+                                        def _prepare_live_rec_table(df: pd.DataFrame) -> pd.DataFrame:
+                                            from table_dataframe_guard import ensure_dataframe
+
+                                            frame = ensure_dataframe(df, caller="_prepare_live_rec_table")
+                                            if frame.empty:
+                                                return frame
+                                            sorted_df = sort_recommendation_table(frame, _rec_sort_col)
+                                            return ensure_dataframe(
+                                                apply_survival_display_columns(sorted_df),
+                                                caller="_prepare_live_rec_table.survival",
+                                            )
+                                    except ImportError:
+                                        def _prepare_live_rec_table(df: pd.DataFrame) -> pd.DataFrame:  # type: ignore[misc]
+                                            from table_dataframe_guard import ensure_dataframe
+
+                                            return ensure_dataframe(df, caller="_prepare_live_rec_table.fallback")
+
+                                    _pool_for_why = room.get("pool")
+                                    try:
+                                        from live_draft_ui_cache import enrich_live_draft_recommendations_with_why
+
+                                        _why_tables = enrich_live_draft_recommendations_with_why(
+                                            st.session_state,
+                                            _ui_cache_key,
+                                            {
+                                                "top_rec": top_rec,
+                                                "best_avail": best_avail,
+                                                "pos_fit": pos_fit,
+                                                "value_sleep": value_sleep,
+                                            },
+                                            gaps=_gaps,
+                                            category_needs=_category_needs,
+                                            pool_df=_pool_for_why,
+                                            config=cfg,
+                                        )
+                                        top_rec = _why_tables["top_rec"]
+                                        best_avail = _why_tables["best_avail"]
+                                        pos_fit = _why_tables["pos_fit"]
+                                        value_sleep = _why_tables["value_sleep"]
+                                    except ImportError:
+                                        from live_draft_room_ui import add_why_this_pick_column
+
+                                        top_rec = add_why_this_pick_column(
+                                            top_rec, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
+                                        )
+                                        best_avail = add_why_this_pick_column(
+                                            best_avail, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
+                                        )
+                                        pos_fit = add_why_this_pick_column(
+                                            pos_fit, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
+                                        )
+                                        value_sleep = add_why_this_pick_column(
+                                            value_sleep, gaps=_gaps, category_needs=_category_needs, pool_df=_pool_for_why, config=cfg
+                                        )
+                                    try:
+                                        from table_dataframe_guard import ensure_dataframe
+
+                                        top_rec = ensure_dataframe(top_rec, caller="live_draft.top_rec")
+                                        best_avail = ensure_dataframe(best_avail, caller="live_draft.best_avail")
+                                        pos_fit = ensure_dataframe(pos_fit, caller="live_draft.pos_fit")
+                                        value_sleep = ensure_dataframe(value_sleep, caller="live_draft.value_sleep")
+                                    except ImportError:
+                                        if top_rec is None:
+                                            top_rec = pd.DataFrame()
+                                        if best_avail is None:
+                                            best_avail = pd.DataFrame()
+                                        if pos_fit is None:
+                                            pos_fit = pd.DataFrame()
+                                        if value_sleep is None:
+                                            value_sleep = pd.DataFrame()
+                                    with rec_tabs[0]:
+                                        _top_show = _live_rec_table_frame(top_rec)
+                                        _top_show = _prepare_live_rec_table(_top_show)
+                                        try:
+                                            from live_draft_perf import PHASE_REC_SECTION, live_draft_perf_action
+
+                                            with live_draft_perf_action(st.session_state, "rec:Top Picks", phase=PHASE_REC_SECTION):
+                                                render_output_table(
+                                                    format_fantasy_table(clean_ui_columns(_top_show)),
+                                                    key="live_draft_rec_top",
+                                                    file_name="live_draft_top_recommendations.csv",
+                                                    display_rows=10,
+                                                    style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                                                )
+                                        except ImportError:
                                             render_output_table(
                                                 format_fantasy_table(clean_ui_columns(_top_show)),
                                                 key="live_draft_rec_top",
@@ -27386,64 +27582,60 @@ elif active_page == "Live Draft Room":
                                                 display_rows=10,
                                                 style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
                                             )
-                                    except ImportError:
+                                    with rec_tabs[1]:
+                                        _bpa_show = _live_rec_table_frame(best_avail)
+                                        _bpa_show = _prepare_live_rec_table(_bpa_show)
                                         render_output_table(
-                                            format_fantasy_table(clean_ui_columns(_top_show)),
-                                            key="live_draft_rec_top",
-                                            file_name="live_draft_top_recommendations.csv",
+                                            format_fantasy_table(clean_ui_columns(_bpa_show)),
+                                            key="live_draft_rec_bpa",
+                                            file_name="live_draft_best_available.csv",
                                             display_rows=10,
                                             style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
                                         )
-                                with rec_tabs[1]:
-                                    _bpa_show = best_avail[[c for c in rec_cols if c in best_avail.columns]].rename(columns={"fullName": "Player"})
-                                    _bpa_show = _prepare_live_rec_table(_bpa_show)
-                                    render_output_table(
-                                        format_fantasy_table(clean_ui_columns(_bpa_show)),
-                                        key="live_draft_rec_bpa",
-                                        file_name="live_draft_best_available.csv",
-                                        display_rows=10,
-                                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
-                                    )
-                                with rec_tabs[2]:
-                                    if pos_fit.empty:
-                                        st.caption("No specific positional need flagged — take best value.")
-                                    else:
-                                        _pos_show = pos_fit[[c for c in rec_cols if c in pos_fit.columns]].rename(columns={"fullName": "Player"})
-                                        _pos_show = _prepare_live_rec_table(_pos_show)
-                                        render_output_table(
-                                            format_fantasy_table(clean_ui_columns(_pos_show)),
-                                            key="live_draft_rec_pos",
-                                            file_name="live_draft_positional_fits.csv",
-                                            display_rows=10,
-                                            style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
-                                        )
-                                with rec_tabs[3]:
-                                    _val_show = value_sleep[[c for c in rec_cols if c in value_sleep.columns]].rename(columns={"fullName": "Player"})
-                                    _val_show = _prepare_live_rec_table(_val_show)
-                                    render_output_table(
-                                        format_fantasy_table(clean_ui_columns(_val_show)),
-                                        key="live_draft_rec_value",
-                                        file_name="live_draft_value_sleepers.csv",
-                                        display_rows=10,
-                                        style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
-                                    )
-                                if developer_mode_enabled():
-                                    try:
-                                        from page_diagnostics import inline_diagnostics_enabled
-                                    except ImportError:
-                                        inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
-                                    if inline_diagnostics_enabled(developer_mode_enabled()):
-                                        with st.expander("Draft Scoring Breakdown", expanded=False):
-                                            st.caption("Component contributions from the draft scoring engine.")
-                                            _ld_brk_opts = [""] + (top_rec["fullName"].astype(str).tolist() if not top_rec.empty else [])
-                                            _ld_brk_player = st.selectbox("Inspect player", _ld_brk_opts, key="live_draft_breakdown_player")
-                                            render_draft_scoring_breakdown(
-                                                top_rec if not top_rec.empty else pd.DataFrame(),
-                                                player_name=_ld_brk_player if _ld_brk_player else None,
-                                                key_suffix="live",
+                                    with rec_tabs[2]:
+                                        if pos_fit.empty:
+                                            st.caption("No specific positional need flagged — take best value.")
+                                        else:
+                                            _pos_show = _live_rec_table_frame(pos_fit)
+                                            _pos_show = _prepare_live_rec_table(_pos_show)
+                                            render_output_table(
+                                                format_fantasy_table(clean_ui_columns(_pos_show)),
+                                                key="live_draft_rec_pos",
+                                                file_name="live_draft_positional_fits.csv",
+                                                display_rows=10,
+                                                style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
                                             )
+                                    with rec_tabs[3]:
+                                        _val_show = _live_rec_table_frame(value_sleep)
+                                        _val_show = _prepare_live_rec_table(_val_show)
+                                        render_output_table(
+                                            format_fantasy_table(clean_ui_columns(_val_show)),
+                                            key="live_draft_rec_value",
+                                            file_name="live_draft_value_sleepers.csv",
+                                            display_rows=10,
+                                            style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                                        )
+                                    if developer_mode_enabled():
+                                        try:
+                                            from page_diagnostics import inline_diagnostics_enabled
+                                        except ImportError:
+                                            inline_diagnostics_enabled = lambda dm: dm  # type: ignore[assignment,misc]
+                                        if inline_diagnostics_enabled(developer_mode_enabled()):
+                                            with st.expander("Draft Scoring Breakdown", expanded=False):
+                                                st.caption("Component contributions from the draft scoring engine.")
+                                                _ld_brk_opts = [""] + (top_rec["fullName"].astype(str).tolist() if not top_rec.empty else [])
+                                                _ld_brk_player = st.selectbox("Inspect player", _ld_brk_opts, key="live_draft_breakdown_player")
+                                                render_draft_scoring_breakdown(
+                                                    top_rec if not top_rec.empty else pd.DataFrame(),
+                                                    player_name=_ld_brk_player if _ld_brk_player else None,
+                                                    key_suffix="live",
+                                                )
 
                 def _paint_live_recommendation_interactive_only() -> bool:
+                    # Cards may already be registered inline above the tables expander
+                    # during script-run paint_body (Solo first-viewport landing).
+                    if st.session_state.get("_live_draft_rec_cards_inline"):
+                        return True
                     try:
                         from live_draft_rec_live_paint import render_rec_interactive_widgets
 
@@ -27599,19 +27791,42 @@ elif active_page == "Live Draft Room":
                     try:
                         from live_draft_perf import PHASE_ROSTER_SECTION, live_draft_perf_action
 
+                        _roster_frame = format_draft_lab_table(
+                            clean_ui_columns(
+                                team_view[[c for c in roster_show if c in team_view.columns]]
+                            )
+                        )
+                        if not bool(getattr(_roster_frame.columns, "is_unique", True)):
+                            _roster_frame = _roster_frame.loc[
+                                :, ~_roster_frame.columns.duplicated()
+                            ].copy()
                         with live_draft_perf_action(st.session_state, f"roster:{team_name}", phase=PHASE_ROSTER_SECTION):
                             render_output_table(
-                                format_draft_lab_table(clean_ui_columns(team_view[[c for c in roster_show if c in team_view.columns]])),
+                                _roster_frame,
                                 key=f"live_draft_roster_{team_name}",
                                 file_name=f"live_draft_roster_{team_name}.csv",
                                 display_rows=40,
                             )
                     except ImportError:
+                        _roster_frame = format_draft_lab_table(
+                            clean_ui_columns(
+                                team_view[[c for c in roster_show if c in team_view.columns]]
+                            )
+                        )
+                        if not bool(getattr(_roster_frame.columns, "is_unique", True)):
+                            _roster_frame = _roster_frame.loc[
+                                :, ~_roster_frame.columns.duplicated()
+                            ].copy()
                         render_output_table(
-                            format_draft_lab_table(clean_ui_columns(team_view[[c for c in roster_show if c in team_view.columns]])),
+                            _roster_frame,
                             key=f"live_draft_roster_{team_name}",
                             file_name=f"live_draft_roster_{team_name}.csv",
                             display_rows=40,
+                        )
+                    except Exception as _roster_paint_exc:
+                        st.caption(
+                            f"Roster table unavailable for {team_name}: "
+                            f"{type(_roster_paint_exc).__name__}"
                         )
 
         totals_df = live_draft_team_totals(room)

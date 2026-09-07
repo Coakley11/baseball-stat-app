@@ -1692,6 +1692,7 @@ def render_live_draft_rec_cards(
     max_cards: int = 6,
     multiplayer: bool = False,
     layout: str = "horizontal",
+    dense: bool = False,
     fmt_rate_4=None,
     fmt_int=None,
     gaps: list[str] | None = None,
@@ -1722,11 +1723,13 @@ def render_live_draft_rec_cards(
 
     pick_idx = int(room.get("current_pick_index") or 0)
     room_id = str(room.get("draft_room_id") or "").strip()
-    layout_mode = "stacked" if layout == "stacked" else "compact_horizontal"
+    layout_mode = "dense" if dense else ("stacked" if layout == "stacked" else "compact_horizontal")
     record_rec_card_diagnostics(
         session,
         recommendation_card_layout_mode=layout_mode,
-        recommendation_card_width="full_row" if layout_mode == "compact_horizontal" else "stacked",
+        recommendation_card_width="dense_row" if dense else (
+            "full_row" if layout_mode == "compact_horizontal" else "stacked"
+        ),
         recommendation_card_count=len(rows),
         rec_card_render_ts=time.time(),
     )
@@ -1824,79 +1827,95 @@ def render_live_draft_rec_cards(
 
         with st.container(border=True):
             team = str(r.get("Team") or r.get("teamName") or "").strip()
-            try:
-                from player_photos import (
-                    build_draft_score_metrics_html,
-                    compact_fantasy_stat_line,
-                    get_player_photo_info,
-                    inject_player_photo_styles,
-                    player_grade_display,
-                    render_rec_card_photo_html,
-                )
-
-                inject_player_photo_styles(st)
-                photo_info = get_player_photo_info(
-                    player_id=player_id or None,
-                    full_name=name,
-                    row=r,
-                    use_api=True,
-                )
-                stat_line = compact_fantasy_stat_line(r)
-                photo_html = render_rec_card_photo_html(photo_info, alt=name)
-                team_line = f" · {team}" if team else ""
-                stat_html = f'<div class="ld-rec-stat-line">{stat_line}</div>' if stat_line else ""
-                metrics_html = build_draft_score_metrics_html(
-                    r,
-                    show_decision_score=True,
-                    show_player_grade=True,
-                    show_roster_fit=True,
-                    show_market_rank=False,
-                    show_model_rank=False,
-                    show_fantasy_edge=True,
-                )
-                strength_txt = ""
-                if strengths:
-                    strength_txt = (
-                        f'<div style="font-size:0.82rem;color:#475569;margin-top:4px;">'
-                        f"Top strengths: {', '.join(strengths)}</div>"
-                    )
-                try:
-                    from live_draft_ux import confidence_label_from_score, position_color
-
-                    decision = pd.to_numeric(r.get("Decision Score", np.nan), errors="coerce")
-                    conf_label, conf_stars = confidence_label_from_score(
-                        float(decision) if pd.notna(decision) else None
-                    )
-                    confidence_txt = (
-                        f'<div style="font-size:0.8rem;color:#334155;margin-top:6px;">'
-                        f"<strong>{conf_label}</strong> {conf_stars}</div>"
-                    )
-                except ImportError:
-                    confidence_txt = ""
-                pos_color = "#475569"
-                try:
-                    from live_draft_ux import position_color
-
-                    pos_color = position_color(pos)
-                except ImportError:
-                    pass
-                meta_line = f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}' if not badges else f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}'
+            if dense:
+                # Solo first-viewport: one compact row so Add-to-Queue stays on-screen.
                 meta_open = build_ld_rec_card_meta_open_tag(
                     player_id=player_id, player_name=name
                 )
+                edge_disp = edge_txt if edge_txt else "—"
+                team_bit = f" · {team}" if team else ""
                 st.markdown(
-                    f'<div class="ld-rec-card-header">{photo_html}{meta_open}'
-                    f'<div style="font-size:1.05rem;font-weight:800;line-height:1.25;">{name}</div>'
-                    f'<div style="font-size:0.88rem;color:#475569;">{meta_line}</div>'
-                    f"{stat_html}{metrics_html}{strength_txt}{confidence_txt}"
+                    f'{meta_open}<div style="font-size:1rem;font-weight:800;line-height:1.2;">'
+                    f"{i}. {html.escape(name)}</div>"
+                    f'<div style="font-size:0.85rem;color:#475569;margin-bottom:4px;">'
+                    f"{html.escape(pos)}{html.escape(team_bit)} · Edge {html.escape(str(edge_disp))}"
                     f"</div></div>",
                     unsafe_allow_html=True,
                 )
-            except ImportError:
-                st.markdown(f"**{name}**")
-                st.caption(f"{pos}")
-            if badge_html:
-                st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
+            else:
+                try:
+                    from player_photos import (
+                        build_draft_score_metrics_html,
+                        compact_fantasy_stat_line,
+                        get_player_photo_info,
+                        inject_player_photo_styles,
+                        player_grade_display,
+                        render_rec_card_photo_html,
+                    )
+
+                    inject_player_photo_styles(st)
+                    photo_info = get_player_photo_info(
+                        player_id=player_id or None,
+                        full_name=name,
+                        row=r,
+                        use_api=True,
+                    )
+                    stat_line = compact_fantasy_stat_line(r)
+                    photo_html = render_rec_card_photo_html(photo_info, alt=name)
+                    team_line = f" · {team}" if team else ""
+                    stat_html = f'<div class="ld-rec-stat-line">{stat_line}</div>' if stat_line else ""
+                    metrics_html = build_draft_score_metrics_html(
+                        r,
+                        show_decision_score=True,
+                        show_player_grade=True,
+                        show_roster_fit=True,
+                        show_market_rank=False,
+                        show_model_rank=False,
+                        show_fantasy_edge=True,
+                    )
+                    strength_txt = ""
+                    if strengths:
+                        strength_txt = (
+                            f'<div style="font-size:0.82rem;color:#475569;margin-top:4px;">'
+                            f"Top strengths: {', '.join(strengths)}</div>"
+                        )
+                    try:
+                        from live_draft_ux import confidence_label_from_score, position_color
+
+                        decision = pd.to_numeric(r.get("Decision Score", np.nan), errors="coerce")
+                        conf_label, conf_stars = confidence_label_from_score(
+                            float(decision) if pd.notna(decision) else None
+                        )
+                        confidence_txt = (
+                            f'<div style="font-size:0.8rem;color:#334155;margin-top:6px;">'
+                            f"<strong>{conf_label}</strong> {conf_stars}</div>"
+                        )
+                    except ImportError:
+                        confidence_txt = ""
+                    pos_color = "#475569"
+                    try:
+                        from live_draft_ux import position_color
+
+                        pos_color = position_color(pos)
+                    except ImportError:
+                        pass
+                    meta_line = f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}' if not badges else f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}'
+                    meta_open = build_ld_rec_card_meta_open_tag(
+                        player_id=player_id, player_name=name
+                    )
+                    st.markdown(
+                        f'<div class="ld-rec-card-header">{photo_html}{meta_open}'
+                        f'<div style="font-size:1.05rem;font-weight:800;line-height:1.25;">{name}</div>'
+                        f'<div style="font-size:0.88rem;color:#475569;">{meta_line}</div>'
+                        f"{stat_html}{metrics_html}{strength_txt}{confidence_txt}"
+                        f"</div></div>",
+                        unsafe_allow_html=True,
+                    )
+                except ImportError:
+                    st.markdown(f"**{name}**")
+                    st.caption(f"{pos}")
+                if badge_html:
+                    st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
             btn_col, queue_col, detail_col = st.columns([2, 1, 1])
             queued_names = {
                 str(x).strip().lower()
