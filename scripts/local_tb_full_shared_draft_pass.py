@@ -879,7 +879,7 @@ def main() -> int:
         # If disk is paused but Host Control Center has not enabled Resume yet,
         # force a Host reload so session hydrates from durable paused status.
         if pause_disk and not pause_stable:
-            host.reload(wait_until="domcontentloaded", timeout=120000)
+            host.goto(HOST_URL, wait_until="domcontentloaded", timeout=120000)
             wait_app(host, HOST_URL)
             open_live_draft(host)
             for _ in range(45):
@@ -897,9 +897,16 @@ def main() -> int:
                 except Exception:
                     pass
                 resume_loc = host.get_by_role("button", name=re.compile(r"Resume Draft", re.I))
-                if resume_loc.count() and resume_loc.first.is_enabled():
+                adds = add_count(host)
+                if resume_loc.count() and (not resume_loc.first.is_disabled()):
                     pause_stable = True
                     break
+                if adds > 0 and resume_loc.count():
+                    # Interactive room body present — wait one more tick for enabled Resume.
+                    host.wait_for_timeout(1500)
+                    if resume_loc.count() and (not resume_loc.first.is_disabled()):
+                        pause_stable = True
+                        break
             report["pause_stable"] = pause_stable
             report["pause_host_reloaded"] = True
         ht_pause = snap(host, "FP13_host_paused")
@@ -921,13 +928,20 @@ def main() -> int:
         report["resume_click"] = False
         resumed_disk = False
         report["resume_pre_status"] = str(room_raw(code).get("status") or "")
-        # Resume only after durable paused disk; prefer stable Resume control, else one Host reload retry.
+        # Resume only after durable paused disk; prefer stable Resume control, else one Host goto retry.
         if pause_disk and str(room_raw(code).get("status") or "").lower() == "paused":
-            if not pause_stable:
-                host.reload(wait_until="domcontentloaded", timeout=120000)
+            if not (
+                pause_stable
+                or page_btn_enabled(host, r"Resume Draft")
+                or (
+                    host.get_by_role("button", name=re.compile(r"Resume Draft", re.I)).count()
+                    and not host.get_by_role("button", name=re.compile(r"Resume Draft", re.I)).first.is_disabled()
+                )
+            ):
+                host.goto(HOST_URL, wait_until="domcontentloaded", timeout=120000)
                 wait_app(host, HOST_URL)
                 open_live_draft(host)
-                for _ in range(30):
+                for _ in range(40):
                     host.wait_for_timeout(2000)
                     try:
                         host.get_by_role("button", name=re.compile(r"Return to Live Draft$", re.I)).first.click(
@@ -936,11 +950,19 @@ def main() -> int:
                     except Exception:
                         pass
                     resume_loc = host.get_by_role("button", name=re.compile(r"Resume Draft", re.I))
-                    if resume_loc.count() and resume_loc.first.is_enabled():
+                    if resume_loc.count() and (not resume_loc.first.is_disabled()):
                         pause_stable = True
                         report["pause_stable"] = True
                         break
-            if pause_stable or page_btn_enabled(host, r"Resume Draft"):
+            resume_ready = pause_stable or page_btn_enabled(host, r"Resume Draft")
+            try:
+                resume_ready = resume_ready or (
+                    host.get_by_role("button", name=re.compile(r"Resume Draft", re.I)).count()
+                    and not host.get_by_role("button", name=re.compile(r"Resume Draft", re.I)).first.is_disabled()
+                )
+            except Exception:
+                pass
+            if resume_ready:
                 rev_before_resume = int(room_raw(code).get("revision") or 0)
                 report["resume_click"] = click_control(
                     host, r"▶\s*Resume Draft", r"Resume Draft"
