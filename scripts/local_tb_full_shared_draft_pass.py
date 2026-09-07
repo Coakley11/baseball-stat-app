@@ -616,8 +616,10 @@ def main() -> int:
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
-        host = browser.new_context().new_page()
-        guest = browser.new_context().new_page()
+        host_ctx = browser.new_context()
+        guest_ctx = browser.new_context()
+        host = host_ctx.new_page()
+        guest = guest_ctx.new_page()
 
         # ---- Host Create ----
         wait_app(host, HOST_URL)
@@ -1020,13 +1022,21 @@ def main() -> int:
                 re.search(r"Draft Status:\s*Paused|\bPaused\b", gt_pause_early, re.I)
             )
         # Long-lived Host session can keep stale in_progress Control Center state after
-        # durable Pause. Fresh Host context (same as pause_stable_probe) rehydrates Resume.
+        # durable Pause. A *second* Host context on the same workspace while the first
+        # stays connected prevents Resume from stabilizing (dual Streamlit sessions).
+        # Close the original Host session first — matches successful single-host probes.
         resume_page = host
         fresh_host_ctx = None
         if pause_disk:
             try:
+                try:
+                    host_ctx.close()
+                except Exception:
+                    pass
                 fresh_host_ctx = browser.new_context()
                 resume_page = fresh_host_ctx.new_page()
+                host = resume_page
+                host_ctx = fresh_host_ctx
                 resume_page.goto(HOST_URL, wait_until="domcontentloaded", timeout=120000)
                 wait_app(resume_page, HOST_URL)
                 open_live_draft(resume_page)
@@ -1034,6 +1044,7 @@ def main() -> int:
                 report["pause_stable"] = pause_stable
                 report["pause_host_reloaded"] = True
                 report["pause_fresh_host_context"] = True
+                report["pause_host_session_replaced"] = True
             except Exception as exc:
                 report["pause_fresh_host_error"] = f"{type(exc).__name__}:{exc}"[:200]
                 resume_page = host
@@ -1049,37 +1060,34 @@ def main() -> int:
             if not pause_stable:
                 pause_stable = wait_resume_enabled(resume_page, code, timeout_s=60.0)
                 report["pause_stable"] = pause_stable
-            # Click immediately after ready — no snap/timer delay (transport race).
-            if pause_stable or page_btn_enabled(resume_page, r"Resume Draft"):
-                for attempt in range(2):
-                    # Re-wait for enabled control on retry (fresh locator).
-                    if attempt:
-                        wait_resume_enabled(resume_page, code, timeout_s=45.0)
-                    rev_before_resume = int(room_raw(code).get("revision") or 0)
-                    click_meta = click_resume_authoritative(resume_page)
-                    report["resume_click"] = bool(click_meta.get("ok"))
-                    report["resume_transport"] = {
-                        "attempt": attempt + 1,
-                        **{k: click_meta.get(k) for k in (
-                            "method", "match_count", "enabled", "label", "testid", "error"
-                        )},
-                    }
-                    if not click_meta.get("ok"):
-                        continue
-                    for _ in range(30):
-                        if room_status(code) == "in_progress":
-                            resumed_disk = True
-                            break
-                        resume_page.wait_for_timeout(700)
-                    report["resume_revision_before"] = rev_before_resume
-                    report["resume_revision_after"] = int(room_raw(code).get("revision") or 0)
-                    if resumed_disk and int(report["resume_revision_after"] or 0) > rev_before_resume:
+            # Always attempt authoritative Resume click while disk is paused — do not
+            # soft-skip when wait_resume_enabled timed out (Playwright can still wait).
+            for attempt in range(2):
+                if attempt:
+                    wait_resume_enabled(resume_page, code, timeout_s=45.0)
+                rev_before_resume = int(room_raw(code).get("revision") or 0)
+                click_meta = click_resume_authoritative(resume_page)
+                report["resume_click"] = bool(click_meta.get("ok")) or bool(report.get("resume_click"))
+                report["resume_transport"] = {
+                    "attempt": attempt + 1,
+                    **{k: click_meta.get(k) for k in (
+                        "method", "match_count", "enabled", "label", "testid", "error"
+                    )},
+                }
+                if not click_meta.get("ok"):
+                    continue
+                for _ in range(30):
+                    if room_status(code) == "in_progress":
+                        resumed_disk = True
                         break
-                    # Click without revision bump ⇒ transport miss; retry once.
-                    report["resume_transport"]["disk_after_click"] = room_status(code)
-                    report["resume_transport"]["revision_bump"] = False
-                if resumed_disk:
+                    resume_page.wait_for_timeout(700)
+                report["resume_revision_before"] = rev_before_resume
+                report["resume_revision_after"] = int(room_raw(code).get("revision") or 0)
+                if resumed_disk and int(report["resume_revision_after"] or 0) > rev_before_resume:
                     report["resume_transport"]["revision_bump"] = True
+                    break
+                report["resume_transport"]["disk_after_click"] = room_status(code)
+                report["resume_transport"]["revision_bump"] = False
         # Snap after Resume attempt so locator→click is not delayed by body dumps.
         ht_pause = snap(resume_page, "FP13_host_paused")
         if not report.get("pause_host"):
@@ -1094,7 +1102,7 @@ def main() -> int:
             > int(report.get("resume_revision_before") or 0)
         )
         host.wait_for_timeout(2000)
-        # Prefer original host for post-resume UI when fresh context was used for the click.
+        # Host page is already the Resume context after session replace.
         if resumed_disk:
             try:
                 host.goto(HOST_URL, wait_until="domcontentloaded", timeout=120000)
@@ -1113,11 +1121,7 @@ def main() -> int:
         )
         snap(host, "FP15_host_resumed")
         snap(guest, "FP16_guest_resumed")
-        if fresh_host_ctx is not None:
-            try:
-                fresh_host_ctx.close()
-            except Exception:
-                pass
+        # Do not close host_ctx here — it is the active Host for refresh checks.
 
         t1 = countdown(body(host))
         host.wait_for_timeout(5000)
