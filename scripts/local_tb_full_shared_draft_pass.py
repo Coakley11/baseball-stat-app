@@ -335,7 +335,17 @@ def room_participants(code: str) -> list[str]:
 
 
 def room_raw(code: str) -> dict:
-    return json.loads((ROOM_DIR / f"{code}.json").read_text(encoding="utf-8"))
+    path = ROOM_DIR / f"{code}.json"
+    for _ in range(12):
+        try:
+            text = path.read_text(encoding="utf-8")
+            if not text.strip():
+                time.sleep(0.25)
+                continue
+            return json.loads(text)
+        except (OSError, json.JSONDecodeError):
+            time.sleep(0.25)
+    return {}
 
 
 def add_count(page) -> int:
