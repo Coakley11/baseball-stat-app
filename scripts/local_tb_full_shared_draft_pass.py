@@ -276,6 +276,14 @@ def click_control(page, *pats: str, timeout: int = 12000) -> bool:
     return False
 
 
+def page_btn_enabled(page, pat: str) -> bool:
+    try:
+        loc = page.get_by_role("button", name=re.compile(pat, re.I))
+        return bool(loc.count() and loc.first.is_enabled())
+    except Exception:
+        return False
+
+
 def extract_code(text: str) -> str:
     for pat in (
         r"Join code:\s*([A-Z0-9]{6})",
@@ -795,28 +803,52 @@ def main() -> int:
 
         # ---- Pause / Resume / timer ----
         host.bring_to_front()
+        rev_before_pause = int(room_raw(code).get("revision") or 0)
         t_before_pause = countdown(body(host))
         report["timer_before_pause"] = t_before_pause[:3]
-        report["pause_click"] = click_control(host, r"Pause Draft", r"^Pause$", r"\bPause\b")
-        host.wait_for_timeout(3500)
+        # Exact authoritative Control Center labels (emoji prefix required).
+        report["pause_click"] = click_control(
+            host, r"⏸\s*Pause Draft", r"Pause Draft"
+        )
+        pause_disk = False
+        for _ in range(25):
+            if str(room_raw(code).get("status") or "").lower() == "paused":
+                pause_disk = True
+                break
+            host.wait_for_timeout(800)
+        report["pause_disk"] = pause_disk
+        report["pause_revision_before"] = rev_before_pause
+        report["pause_revision_after"] = int(room_raw(code).get("revision") or 0)
         ht_pause = snap(host, "FP13_host_paused")
         gt_pause = snap(guest, "FP14_guest_paused")
-        report["pause_host"] = bool(re.search(r"Resume Draft|\bPaused\b|Draft Status:\s*Paused", ht_pause, re.I))
-        report["pause_guest"] = bool(re.search(r"Resume Draft|\bPaused\b|Draft Status:\s*Paused", gt_pause, re.I))
-        report["pause_disk"] = str(room_raw(code).get("status") or "").lower() == "paused"
+        report["pause_host"] = bool(
+            re.search(r"Draft Status:\s*Paused|\bPaused\b", ht_pause, re.I)
+        ) or (
+            page_btn_enabled(host, r"Resume Draft")
+        )
+        report["pause_guest"] = bool(
+            re.search(r"Draft Status:\s*Paused|\bPaused\b", gt_pause, re.I)
+        )
         # While paused, sample timer twice
         t_p1 = countdown(body(host))
         host.wait_for_timeout(3000)
         t_p2 = countdown(body(host))
         report["timer_while_paused"] = {"t1": t_p1[:3], "t2": t_p2[:3]}
 
-        report["resume_click"] = click_control(host, r"Resume Draft", r"^Resume$", r"\bResume\b")
+        report["resume_click"] = False
         resumed_disk = False
-        for _ in range(20):
-            if str(room_raw(code).get("status") or "").lower() == "in_progress":
-                resumed_disk = True
-                break
-            host.wait_for_timeout(1500)
+        if pause_disk:
+            rev_before_resume = int(room_raw(code).get("revision") or 0)
+            report["resume_click"] = click_control(
+                host, r"▶\s*Resume Draft", r"Resume Draft"
+            )
+            for _ in range(25):
+                if str(room_raw(code).get("status") or "").lower() == "in_progress":
+                    resumed_disk = True
+                    break
+                host.wait_for_timeout(800)
+            report["resume_revision_before"] = rev_before_resume
+            report["resume_revision_after"] = int(room_raw(code).get("revision") or 0)
         report["resume_disk"] = resumed_disk
         host.wait_for_timeout(2000)
         ht_res = body(host)
@@ -936,9 +968,12 @@ def main() -> int:
         ok_pool = host_add > 0 and guest_add > 0
         ok_queue = bool(report.get("queue_isolation")) and bool(report.get("host_queue_adds"))
         ok_picks = report.get("picks_count", 0) >= 1
-        ok_pause = bool(report.get("pause_host") or report.get("pause_click"))
-        ok_resume = bool(report.get("resume_click") and report.get("resume_disk"))
-        ok_timer = bool(report.get("timer_host", {}).get("progressed") or report.get("timer_guest", {}).get("progressed"))
+        ok_pause = bool(report.get("pause_disk") and report.get("pause_click"))
+        ok_resume = bool(
+            report.get("pause_disk")
+            and report.get("resume_click")
+            and report.get("resume_disk")
+        )        ok_timer = bool(report.get("timer_host", {}).get("progressed") or report.get("timer_guest", {}).get("progressed"))
         ok_gref = bool(
             report["guest_refresh"].get("same_code")
             and report["guest_refresh"].get("not_orphan_setup")

@@ -123,6 +123,10 @@ def live_draft_pause_timer(room: dict[str, Any]) -> int:
         room.get("paused_remaining_seconds") or _timer_seconds(room)
     )
     remaining = max(0, int(remaining))
+    # Pausing at 0s must not leave Resume with an immediately-expired clock —
+    # that re-enters expire/autopick the moment the room is resumed.
+    if remaining <= 0:
+        remaining = int(_timer_seconds(room))
     room["paused_remaining_seconds"] = remaining
     room["status"] = "paused"
     live_draft_clear_timer(room)
@@ -229,6 +233,7 @@ def live_draft_resume_timer(room: dict[str, Any], remaining_seconds: int) -> Non
     remaining = max(0, int(remaining_seconds))
     now = time.time()
     timer_seconds = _timer_seconds(room)
+    room["status"] = "in_progress"
     room["timer_deadline"] = now + remaining
     room["timer_started_at"] = now - max(0, timer_seconds - remaining)
     room["timer_handled_index"] = -1

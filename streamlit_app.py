@@ -26304,8 +26304,14 @@ elif active_page == "Live Draft Room":
                 pass
 
         with ldr_step(st.session_state, "timer_enter", st=st):
+            _room_status_for_timer = str(room.get("status") or "").strip().lower() if isinstance(room, dict) else ""
+            # Commissioner Pause must freeze expire/autopick. `_draft_in_progress` is
+            # board-based and stays true while paused — without a status gate the page
+            # keeps calling handle_expired_pick_on_page and can thrash ScriptRuns so
+            # Resume never paints after a durable pause.
             _timer_ok = bool(
                 _draft_in_progress
+                and _room_status_for_timer == "in_progress"
                 and slot is not None
                 and (_reconcile is None or getattr(_reconcile, "timer_should_run", True))
             )
