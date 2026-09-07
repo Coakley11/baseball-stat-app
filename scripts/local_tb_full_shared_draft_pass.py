@@ -1076,7 +1076,16 @@ def main() -> int:
                 }
                 if not click_meta.get("ok"):
                     continue
-                for _ in range(30):
+                # Wait for Streamlit to finish the click-driven rerun before polling disk.
+                try:
+                    resume_page.wait_for_selector(
+                        '[data-testid="stStatusWidget"]',
+                        state="detached",
+                        timeout=15000,
+                    )
+                except Exception:
+                    resume_page.wait_for_timeout(2000)
+                for _ in range(45):
                     if room_status(code) == "in_progress":
                         resumed_disk = True
                         break

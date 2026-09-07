@@ -211,11 +211,23 @@ def render_live_draft_control_center(
         try:
             session["_live_draft_resume_button_return"] = bool(_resume_return)
             session["_live_draft_resume_button_status"] = str(status or "")
+            session["_live_draft_resume_button_commissioner"] = bool(is_commissioner)
         except Exception:
             pass
-        if _resume_return and is_commissioner:
+        if _resume_return:
+            # Enabled Resume is already commissioner-gated via disabled=. Do not
+            # re-check is_commissioner on the return-value path — a same-run
+            # membership flake would drop the only Resume delivery.
             from live_draft_timer_logic import live_draft_resume_timer
 
+            try:
+                print(
+                    f"RESUME_BUTTON_RETURNED commissioner={bool(is_commissioner)} "
+                    f"status={status!s} room={str(room.get('draft_room_id') or '')[:16]}",
+                    flush=True,
+                )
+            except Exception:
+                pass
             try:
                 from draft_room_shared_state import mark_shared_unpause_commit_allowed
 
