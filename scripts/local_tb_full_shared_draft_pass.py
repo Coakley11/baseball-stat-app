@@ -973,10 +973,34 @@ def main() -> int:
                 report["pause_stable"] = pause_stable
             if pause_stable or page_btn_enabled(resume_page, r"Resume Draft"):
                 rev_before_resume = int(room_raw(code).get("revision") or 0)
-                report["resume_click"] = click_control(
-                    resume_page, r"▶\s*Resume Draft", r"Resume Draft"
-                )
-                for _ in range(25):
+                # Resume is st.button(..., type="primary") — prefer primary test id + exact label
+                # (same path as pause_stable_probe; click_control alone can false-succeed).
+                resume_clicked = False
+                try:
+                    primary = resume_page.locator(
+                        '[data-testid="stBaseButton-primary"]'
+                    ).filter(has_text=re.compile(r"Resume Draft", re.I))
+                    if primary.count():
+                        primary.first.scroll_into_view_if_needed(timeout=8000)
+                        primary.first.click(timeout=12000)
+                        resume_clicked = True
+                except Exception:
+                    resume_clicked = False
+                if not resume_clicked:
+                    try:
+                        loc = resume_page.get_by_role(
+                            "button", name=re.compile(r"Resume Draft", re.I)
+                        ).first
+                        loc.scroll_into_view_if_needed(timeout=8000)
+                        loc.click(timeout=12000)
+                        resume_clicked = True
+                    except Exception:
+                        resume_clicked = click_control(
+                            resume_page, r"▶\s*Resume Draft", r"Resume Draft"
+                        )
+                report["resume_click"] = bool(resume_clicked)
+                resume_page.wait_for_timeout(3000)
+                for _ in range(30):
                     if str(room_raw(code).get("status") or "").lower() == "in_progress":
                         resumed_disk = True
                         break
