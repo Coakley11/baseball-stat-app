@@ -251,24 +251,46 @@ def click_btn(page, label: str, timeout: int = 12000) -> bool:
 
 
 def click_control(page, *pats: str, timeout: int = 12000) -> bool:
-    """Click a Streamlit button.
+    """Click an authoritative Streamlit control with a fresh locator.
 
-    Prefer a DOM ``el.click()`` — Playwright's locator click can report success
-    while Streamlit never sees the widget return-value (Pause/Resume).
+    Prefer Playwright's locator click (proven Pause delivery path). Fall back to
+    a trusted DOM click only if the locator click path fails. Always re-resolve
+    the button immediately before the click so fragment/timer rerenders cannot
+    leave a stale handle.
     """
     for pat in pats:
         try:
             loc = page.get_by_role("button", name=re.compile(pat, re.I)).first
             loc.wait_for(state="visible", timeout=timeout)
-            handle = loc.element_handle(timeout=timeout)
-            if handle is None:
+            if loc.is_disabled():
                 continue
-            page.evaluate("(el) => el.click()", handle)
+            try:
+                loc.scroll_into_view_if_needed(timeout=min(timeout, 8000))
+            except Exception:
+                pass
+            try:
+                loc.click(timeout=timeout)
+            except Exception:
+                loc.click(timeout=timeout, force=True)
             page.wait_for_timeout(2500)
             return True
         except Exception:
             try:
-                page.get_by_role("button", name=re.compile(pat, re.I)).first.click(timeout=timeout)
+                loc = page.get_by_role("button", name=re.compile(pat, re.I)).first
+                loc.wait_for(state="visible", timeout=timeout)
+                handle = loc.element_handle(timeout=timeout)
+                if handle is None:
+                    continue
+                page.evaluate(
+                    """(el) => {
+                      el.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true}));
+                      el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+                      el.dispatchEvent(new PointerEvent('pointerup', {bubbles:true}));
+                      el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
+                      el.click();
+                    }""",
+                    handle,
+                )
                 page.wait_for_timeout(2500)
                 return True
             except Exception:
@@ -803,19 +825,38 @@ def main() -> int:
 
         # ---- Pause / Resume / timer ----
         host.bring_to_front()
+        # Avoid Pause at 0s: expire/page_autopick historically raced Control Center
+        # and acceptance recorded pause_click without durable paused disk.
+        t_probe = countdown(body(host))
+        rem = min(t_probe) if t_probe else 0
+        if rem <= 15:
+            click_control(host, r"Reset Timer")
+            for _ in range(20):
+                t_probe = countdown(body(host))
+                rem = min(t_probe) if t_probe else 0
+                if rem > 20:
+                    break
+                host.wait_for_timeout(500)
         rev_before_pause = int(room_raw(code).get("revision") or 0)
         t_before_pause = countdown(body(host))
         report["timer_before_pause"] = t_before_pause[:3]
+        report["timer_remaining_at_pause"] = min(t_before_pause) if t_before_pause else None
         # Exact authoritative Control Center labels (emoji prefix required).
-        report["pause_click"] = click_control(
-            host, r"⏸\s*Pause Draft", r"Pause Draft"
-        )
+        pause_click = False
         pause_disk = False
-        for _ in range(25):
-            if str(room_raw(code).get("status") or "").lower() == "paused":
-                pause_disk = True
+        for attempt in range(3):
+            pause_click = click_control(host, r"⏸\s*Pause Draft", r"Pause Draft") or pause_click
+            for _ in range(20):
+                if str(room_raw(code).get("status") or "").lower() == "paused":
+                    pause_disk = True
+                    break
+                host.wait_for_timeout(700)
+            if pause_disk:
                 break
-            host.wait_for_timeout(800)
+            # Mid-cycle Reset then retry if click did not durably pause.
+            click_control(host, r"Reset Timer")
+            host.wait_for_timeout(1500)
+        report["pause_click"] = pause_click
         report["pause_disk"] = pause_disk
         report["pause_revision_before"] = rev_before_pause
         report["pause_revision_after"] = int(room_raw(code).get("revision") or 0)

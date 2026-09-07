@@ -26374,6 +26374,19 @@ elif active_page == "Live Draft Room":
         # (safe_mode / rerun throttle / recovery caption). Missing this gate left the
         # clock stuck at 0 while page_complete kept firing.
         _process_expired_or_timer = bool(not _autopick_off and (_timer_ok or _clock_expired))
+        # Same-run Pause/Resume must preempt expire: expire historically runs before
+        # Control Center so Auto Pick wins at 0s, but that also drops Pause clicks
+        # when the clock is already expired (acceptance saw pause_click with
+        # pause_disk=false + last_rerun=page_autopick).
+        _pause_resume_pending = False
+        try:
+            from live_draft_control_trigger_gate import control_center_pause_resume_pending
+
+            _pause_resume_pending = bool(control_center_pause_resume_pending(st))
+        except ImportError:
+            _pause_resume_pending = False
+        if _pause_resume_pending:
+            _process_expired_or_timer = False
         _expired_result = None
         _solo_expire = None
         _timer_bar_fallback = None  # "caption" | "recovery" | None
@@ -26390,7 +26403,8 @@ elif active_page == "Live Draft Room":
             solo_clock_expired = None  # type: ignore[misc, assignment]
 
         # Expire commit runs before Control Center buttons so a same-run Auto Pick /
-        # Pause click cannot race the zero-second rollover. Timer bar paints after
+        # Pause click cannot race the zero-second rollover — unless Pause/Resume is
+        # already pending on this ScriptRun (see gate above). Timer bar paints after
         # Control Center + Chat so the visual order stays controls|chat → On Clock.
         if _process_expired_or_timer and _is_solo_draft:
             try:
