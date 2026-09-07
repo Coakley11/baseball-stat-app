@@ -457,6 +457,32 @@ def pool_diag_summary() -> dict:
     }
 
 
+def wait_resume_enabled(page, code: str, *, timeout_s: float = 100.0) -> bool:
+    """Wait until durable Pause is reflected as an enabled ▶ Resume Draft control."""
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        if str(room_raw(code).get("status") or "").lower() != "paused":
+            return False
+        try:
+            page.get_by_text(re.compile(r"Always rerun", re.I)).first.click(timeout=800)
+        except Exception:
+            pass
+        try:
+            page.get_by_role("button", name=re.compile(r"Return to Live Draft$", re.I)).first.click(
+                timeout=1500
+            )
+        except Exception:
+            pass
+        try:
+            loc = page.get_by_role("button", name=re.compile(r"Resume Draft", re.I))
+            if loc.count() and not loc.first.is_disabled():
+                return True
+        except Exception:
+            pass
+        page.wait_for_timeout(2000)
+    return False
+
+
 def main() -> int:
     from playwright.sync_api import sync_playwright
 
@@ -876,102 +902,57 @@ def main() -> int:
                         break
                 host.wait_for_timeout(500)
         report["pause_stable"] = pause_stable
-        # If disk is paused but Host Control Center has not enabled Resume yet,
-        # force a Host reload so session hydrates from durable paused status.
-        if pause_disk and not pause_stable:
-            host.goto(HOST_URL, wait_until="domcontentloaded", timeout=120000)
-            wait_app(host, HOST_URL)
-            open_live_draft(host)
-            for _ in range(45):
-                host.wait_for_timeout(2000)
-                if str(room_raw(code).get("status") or "").lower() != "paused":
-                    break
-                try:
-                    host.get_by_role("button", name=re.compile(r"Return to Live Draft$", re.I)).first.click(
-                        timeout=1500
-                    )
-                except Exception:
-                    pass
-                try:
-                    host.get_by_text(re.compile(r"Always rerun", re.I)).first.click(timeout=800)
-                except Exception:
-                    pass
-                resume_loc = host.get_by_role("button", name=re.compile(r"Resume Draft", re.I))
-                adds = add_count(host)
-                if resume_loc.count() and (not resume_loc.first.is_disabled()):
-                    pause_stable = True
-                    break
-                if adds > 0 and resume_loc.count():
-                    # Interactive room body present — wait one more tick for enabled Resume.
-                    host.wait_for_timeout(1500)
-                    if resume_loc.count() and (not resume_loc.first.is_disabled()):
-                        pause_stable = True
-                        break
-            report["pause_stable"] = pause_stable
-            report["pause_host_reloaded"] = True
-        ht_pause = snap(host, "FP13_host_paused")
+        # Long-lived Host session can keep stale in_progress Control Center state after
+        # durable Pause. Fresh Host context (same as pause_stable_probe) rehydrates Resume.
+        resume_page = host
+        fresh_host_ctx = None
+        if pause_disk:
+            try:
+                fresh_host_ctx = browser.new_context()
+                resume_page = fresh_host_ctx.new_page()
+                resume_page.goto(HOST_URL, wait_until="domcontentloaded", timeout=120000)
+                wait_app(resume_page, HOST_URL)
+                open_live_draft(resume_page)
+                pause_stable = wait_resume_enabled(resume_page, code, timeout_s=100.0)
+                report["pause_stable"] = pause_stable
+                report["pause_host_reloaded"] = True
+                report["pause_fresh_host_context"] = True
+            except Exception as exc:
+                report["pause_fresh_host_error"] = f"{type(exc).__name__}:{exc}"[:200]
+                resume_page = host
+        ht_pause = snap(resume_page, "FP13_host_paused")
         gt_pause = snap(guest, "FP14_guest_paused")
         report["pause_host"] = bool(
             re.search(r"Draft Status:\s*Paused|\bPaused\b", ht_pause, re.I)
         ) or (
-            page_btn_enabled(host, r"Resume Draft")
+            page_btn_enabled(resume_page, r"Resume Draft")
         )
         report["pause_guest"] = bool(
             re.search(r"Draft Status:\s*Paused|\bPaused\b", gt_pause, re.I)
         )
         # While paused, sample timer twice
-        t_p1 = countdown(body(host))
-        host.wait_for_timeout(3000)
-        t_p2 = countdown(body(host))
+        t_p1 = countdown(body(resume_page))
+        resume_page.wait_for_timeout(3000)
+        t_p2 = countdown(body(resume_page))
         report["timer_while_paused"] = {"t1": t_p1[:3], "t2": t_p2[:3]}
 
         report["resume_click"] = False
         resumed_disk = False
         report["resume_pre_status"] = str(room_raw(code).get("status") or "")
-        # Resume only after durable paused disk; prefer stable Resume control, else one Host goto retry.
         if pause_disk and str(room_raw(code).get("status") or "").lower() == "paused":
-            if not (
-                pause_stable
-                or page_btn_enabled(host, r"Resume Draft")
-                or (
-                    host.get_by_role("button", name=re.compile(r"Resume Draft", re.I)).count()
-                    and not host.get_by_role("button", name=re.compile(r"Resume Draft", re.I)).first.is_disabled()
-                )
-            ):
-                host.goto(HOST_URL, wait_until="domcontentloaded", timeout=120000)
-                wait_app(host, HOST_URL)
-                open_live_draft(host)
-                for _ in range(40):
-                    host.wait_for_timeout(2000)
-                    try:
-                        host.get_by_role("button", name=re.compile(r"Return to Live Draft$", re.I)).first.click(
-                            timeout=1500
-                        )
-                    except Exception:
-                        pass
-                    resume_loc = host.get_by_role("button", name=re.compile(r"Resume Draft", re.I))
-                    if resume_loc.count() and (not resume_loc.first.is_disabled()):
-                        pause_stable = True
-                        report["pause_stable"] = True
-                        break
-            resume_ready = pause_stable or page_btn_enabled(host, r"Resume Draft")
-            try:
-                resume_ready = resume_ready or (
-                    host.get_by_role("button", name=re.compile(r"Resume Draft", re.I)).count()
-                    and not host.get_by_role("button", name=re.compile(r"Resume Draft", re.I)).first.is_disabled()
-                )
-            except Exception:
-                pass
-            if resume_ready:
+            if not pause_stable:
+                pause_stable = wait_resume_enabled(resume_page, code, timeout_s=60.0)
+                report["pause_stable"] = pause_stable
+            if pause_stable or page_btn_enabled(resume_page, r"Resume Draft"):
                 rev_before_resume = int(room_raw(code).get("revision") or 0)
                 report["resume_click"] = click_control(
-                    host, r"▶\s*Resume Draft", r"Resume Draft"
+                    resume_page, r"▶\s*Resume Draft", r"Resume Draft"
                 )
                 for _ in range(25):
                     if str(room_raw(code).get("status") or "").lower() == "in_progress":
                         resumed_disk = True
                         break
-                    host.wait_for_timeout(800)
+                    resume_page.wait_for_timeout(800)
                 report["resume_revision_before"] = rev_before_resume
                 report["resume_revision_after"] = int(room_raw(code).get("revision") or 0)
         report["resume_disk"] = bool(
@@ -980,6 +961,15 @@ def main() -> int:
             and str(report.get("resume_pre_status") or "").lower() == "paused"
         )
         host.wait_for_timeout(2000)
+        # Prefer original host for post-resume UI when fresh context was used for the click.
+        if resumed_disk:
+            try:
+                host.goto(HOST_URL, wait_until="domcontentloaded", timeout=120000)
+                wait_app(host, HOST_URL)
+                open_live_draft(host)
+                host.wait_for_timeout(4000)
+            except Exception:
+                pass
         ht_res = body(host)
         gt_res = body(guest)
         report["resume_host"] = resumed_disk or bool(
@@ -990,6 +980,11 @@ def main() -> int:
         )
         snap(host, "FP15_host_resumed")
         snap(guest, "FP16_guest_resumed")
+        if fresh_host_ctx is not None:
+            try:
+                fresh_host_ctx.close()
+            except Exception:
+                pass
 
         t1 = countdown(body(host))
         host.wait_for_timeout(5000)
