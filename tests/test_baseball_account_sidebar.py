@@ -113,9 +113,12 @@ class BaseballAccountSidebarTests(unittest.TestCase):
         from pathlib import Path
 
         source = Path(__file__).resolve().parents[1].joinpath("streamlit_app.py").read_text(encoding="utf-8")
-        account_idx = source.index("render_baseball_account_sidebar(st)")
+        # Consolidated Login / Account & Workspace chrome owns the account entry.
+        chrome_idx = source.index("_render_baseball_sidebar_chrome(st)")
         choose_idx = source.index('st.sidebar.radio(\n    "Choose Page"')
-        self.assertLess(account_idx, choose_idx)
+        self.assertLess(chrome_idx, choose_idx)
+        self.assertIn("render_baseball_account_workspace_control", source)
+        self.assertNotIn("render_baseball_account_sidebar(st)", source)
 
 
 if __name__ == "__main__":

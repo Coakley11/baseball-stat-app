@@ -14334,7 +14334,24 @@ def _record_sidebar_nav_trace(phase: str, *, rerun_source: str = "", **kwargs: o
 
 
 def _render_baseball_sidebar_chrome(st_obj) -> None:
-    """Render Command Center link + Saved session once per script run."""
+    """Single top-left Login / Account & Workspace control (Investment/Music pattern)."""
+    try:
+        from baseball_account_workspace import render_baseball_account_workspace_control
+        from baseball_persistent_state import default_reset_baseball_session
+
+        render_baseball_account_workspace_control(
+            st_obj,
+            on_reset=default_reset_baseball_session,
+            reset_help=(
+                "Clears saved page, filters, and workspace for this app. "
+                "Lahman data is not deleted."
+            ),
+        )
+        return
+    except Exception:
+        pass
+    # Fallback: keep Command Center + Saved session reachable if the
+    # consolidated control fails to import on an older deploy pin.
     try:
         from suite_command_center_link import render_command_center_sidebar_link
 
@@ -14342,6 +14359,7 @@ def _render_baseball_sidebar_chrome(st_obj) -> None:
     except Exception:
         pass
     try:
+        from baseball_persistent_state import default_reset_baseball_session
         from suite_user_persistence import render_reset_controls
 
         render_reset_controls(
@@ -14823,10 +14841,13 @@ if developer_mode_enabled():
         except Exception:
             pass
 
+# Account / Login / Command Center / Saved Sessions are consolidated in
+# _render_baseball_sidebar_chrome (top-left). Do not re-render a separate
+# Account & Sign In expander here — duplicate keys and redundant chrome.
 try:
-    from baseball_account_sidebar import render_baseball_account_sidebar
+    from baseball_account_sidebar import render_developer_auth_badge
 
-    render_baseball_account_sidebar(st)
+    render_developer_auth_badge(st)
 except Exception:
     pass
 
