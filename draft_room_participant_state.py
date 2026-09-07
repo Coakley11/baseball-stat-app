@@ -1359,7 +1359,19 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
         if attached:
             clear_mismatched_live_draft_runtime(session, attached)
             return attached
-        session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+        # Phantom active code (local file definitive miss) must not soft-miss forever
+        # or rehydrate from page_filter after we drop the top-level pointer.
+        if _local_file_room_definitive_not_found(code):
+            try:
+                from shared_room_membership_gate import clear_stale_shared_room_local_state
+
+                clear_stale_shared_room_local_state(
+                    session, reason="restore_active_local_room_missing"
+                )
+            except ImportError:
+                session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
+        else:
+            session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
         code = ""
 
     candidates: list[tuple[str, str, str]] = []
@@ -1388,9 +1400,6 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
             if team:
                 candidates.append((room_code, team, _membership_joined_at(session, room_code)))
 
-    if not candidates:
-        return ""
-
     # Newest local membership first — but only reattach when the document agrees.
     candidates.sort(key=lambda row: row[2] or "", reverse=True)
     for room_code, _team, _joined in candidates:
@@ -1398,9 +1407,103 @@ def restore_persisted_shared_room_membership(session: dict[str, Any]) -> str:
         if attached:
             return attached
 
+    # Workspace membership maps can be overwritten by a later failed Create that
+    # never wrote a room file. Fall back to durable disk rooms that still list us.
+    attached = _reattach_from_local_disk_participant_scan(
+        session, participant_id=pid, authoritative_reattach=_authoritative_reattach
+    )
+    if attached:
+        return attached
+
     session.pop(ACTIVE_SHARED_ROOM_CODE_KEY, None)
     return ""
 
+
+def _local_file_room_definitive_not_found(room_code: str) -> bool:
+    """True when the local-file backend reports a definitive missing share code."""
+    code = str(room_code or "").strip().upper()
+    if not code:
+        return False
+    try:
+        from draft_room_shared_state import get_local_shared_room_store, shared_room_backend_name
+
+        if shared_room_backend_name() != "local_file":
+            return False
+        diag = get_local_shared_room_store().load_with_diagnostics(code)
+        return str(diag.get("reason") or "") == "not_found"
+    except Exception:
+        return False
+
+
+def _reattach_from_local_disk_participant_scan(
+    session: dict[str, Any],
+    *,
+    participant_id: str,
+    authoritative_reattach,
+) -> str:
+    """Reattach newest live local room that still lists this participant on disk.
+
+    Used only after preferred/active/membership-map restore failed — never as a
+    first-choice auto-join over an explicit active code.
+    """
+    pid = str(participant_id or "").strip()
+    if not pid:
+        return ""
+    try:
+        from draft_room_shared_state import DATA_DIR, shared_room_backend_name
+        from shared_room_membership_gate import participant_in_document
+    except ImportError:
+        return ""
+    try:
+        if shared_room_backend_name() != "local_file":
+            return ""
+    except Exception:
+        return ""
+    if DATA_DIR is None or not getattr(DATA_DIR, "is_dir", lambda: False)():
+        return ""
+
+    import json
+
+    hits: list[tuple[str, str, str]] = []
+    try:
+        paths = sorted(DATA_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return ""
+    for path in paths[:80]:
+        room_code = str(path.stem or "").strip().upper()
+        if not room_code or _shared_room_restore_blocked(session, room_code):
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        status = str(raw.get("status") or "").strip().lower()
+        room_blob = raw.get("room") if isinstance(raw.get("room"), dict) else {}
+        if not status:
+            status = str((room_blob or {}).get("status") or "").strip().lower()
+        if status not in {"in_progress", "paused", "not_started"}:
+            continue
+        ok_doc, _team = participant_in_document(raw, pid)
+        if not ok_doc:
+            continue
+        # Prefer live drafts over lobby stubs when ranking.
+        rank = {"in_progress": "3", "paused": "2", "not_started": "1"}.get(status, "0")
+        updated = str(raw.get("updated_at") or raw.get("created_at") or "")
+        hits.append((room_code, f"{rank}:{updated}", status))
+
+    hits.sort(key=lambda row: row[1], reverse=True)
+    for room_code, _rank, _status in hits:
+        attached = authoritative_reattach(room_code, source="local_disk_participant_scan")
+        if attached:
+            session["_live_draft_restore_disk_scan"] = {
+                "room_code": attached,
+                "participant_id": pid,
+            }
+            clear_mismatched_live_draft_runtime(session, attached)
+            return attached
+    return ""
 
 def _hydrate_team_from_membership(
     session: dict[str, Any],

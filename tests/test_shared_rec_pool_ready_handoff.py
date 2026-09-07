@@ -246,6 +246,9 @@ class SharedRecPoolReadyHandoffTests(unittest.TestCase):
         with patch(
             "live_draft_rec_live_paint._rebuild_top_rec_into_cache",
             return_value=pd.DataFrame(),
+        ), patch(
+            "shared_draft_local_pool.maybe_request_full_rerun_when_shared_pool_ready",
+            return_value=False,
         ):
             ok = render_rec_interactive_widgets(st, session, room)
         self.assertFalse(ok)
@@ -254,6 +257,48 @@ class SharedRecPoolReadyHandoffTests(unittest.TestCase):
             session.get("_live_draft_shared_rec_pool_pending_reason"),
             "top_rec_empty_with_pool",
         )
+
+    def test_refresh_top_rec_empty_with_pool_requests_one_handoff_rerun(self) -> None:
+        """New session after refresh: pool disk-hit but top_rec absent → one full ScriptRun."""
+        st = MagicMock()
+        session: dict[str, Any] = {
+            "active_shared_draft_room_code": "ABCD12",
+            PREPARED_REC_INTERACTIVE_KEY: {
+                "room_id": "ROOM_SHARED1",
+                "gaps": [],
+                "category_needs": [],
+                "max_cards": 1,
+                "multiplayer": True,
+            },
+        }
+        room = _shared_room(pool=_pool())
+        with patch(
+            "live_draft_rec_live_paint._rebuild_top_rec_into_cache",
+            return_value=pd.DataFrame(),
+        ), patch(
+            "shared_draft_local_pool.maybe_request_full_rerun_when_shared_pool_ready",
+            return_value=True,
+        ) as handoff:
+            ok = render_rec_interactive_widgets(st, session, room)
+        self.assertFalse(ok)
+        handoff.assert_called_once()
+        self.assertTrue(session.get("_live_draft_refresh_top_rec_handoff_attempted"))
+        status = session.get(INTERACTIVE_PAINT_STATUS_KEY) or {}
+        self.assertTrue(status.get("handoff_rerun_requested"))
+
+        # Second failure must not loop-rerun via the immediate path.
+        handoff.reset_mock()
+        with patch(
+            "live_draft_rec_live_paint._rebuild_top_rec_into_cache",
+            return_value=pd.DataFrame(),
+        ), patch(
+            "shared_draft_local_pool.maybe_request_full_rerun_when_shared_pool_ready",
+            return_value=True,
+        ) as handoff2:
+            ok2 = render_rec_interactive_widgets(st, session, room)
+        self.assertFalse(ok2)
+        handoff2.assert_not_called()
+
 
     def test_ensure_accepts_streamlit_session_state_proxy(self) -> None:
         """Streamlit SessionState is not isinstance(dict) — ensure must still attach."""

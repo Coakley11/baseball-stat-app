@@ -251,13 +251,28 @@ def click_btn(page, label: str, timeout: int = 12000) -> bool:
 
 
 def click_control(page, *pats: str, timeout: int = 12000) -> bool:
+    """Click a Streamlit button.
+
+    Prefer a DOM ``el.click()`` — Playwright's locator click can report success
+    while Streamlit never sees the widget return-value (Pause/Resume).
+    """
     for pat in pats:
         try:
-            page.get_by_role("button", name=re.compile(pat, re.I)).first.click(timeout=timeout)
-            page.wait_for_timeout(2000)
+            loc = page.get_by_role("button", name=re.compile(pat, re.I)).first
+            loc.wait_for(state="visible", timeout=timeout)
+            handle = loc.element_handle(timeout=timeout)
+            if handle is None:
+                continue
+            page.evaluate("(el) => el.click()", handle)
+            page.wait_for_timeout(2500)
             return True
         except Exception:
-            continue
+            try:
+                page.get_by_role("button", name=re.compile(pat, re.I)).first.click(timeout=timeout)
+                page.wait_for_timeout(2500)
+                return True
+            except Exception:
+                continue
     return False
 
 
@@ -834,11 +849,20 @@ def main() -> int:
             guest.get_by_role("button", name=re.compile(r"Return to Live Draft$", re.I)).first.click(timeout=2500)
         except Exception:
             pass
-        guest.wait_for_timeout(12000)
-        gref = snap(guest, "FP17_guest_refresh")
+        # Patient wait: room_body + recommendation rebuild after new Streamlit session.
+        # Do not spam Return — that interrupts the handoff ScriptRun.
+        gref_adds = 0
+        gref = ""
+        for _ in range(40):
+            guest.wait_for_timeout(3000)
+            gref = body(guest)
+            gref_adds = add_count(guest)
+            if gref_adds > 0 and code in gref.upper():
+                break
+        snap(guest, "FP17_guest_refresh")
         report["guest_refresh"] = {
             "same_code": code in gref.upper(),
-            "add_count": add_count(guest),
+            "add_count": gref_adds,
             "queue_names": queue_names_from_text(gref),
             "queue_pre": guest_q_pre_ref,
             "status": (m.group(0) if (m := re.search(r"Draft Status:[^\n]+", gref)) else None),
@@ -863,11 +887,18 @@ def main() -> int:
             host.get_by_role("button", name=re.compile(r"Return to Live Draft$", re.I)).first.click(timeout=2500)
         except Exception:
             pass
-        host.wait_for_timeout(12000)
-        href = snap(host, "FP18_host_refresh")
+        href_adds = 0
+        href = ""
+        for _ in range(40):
+            host.wait_for_timeout(3000)
+            href = body(host)
+            href_adds = add_count(host)
+            if href_adds > 0 and code in href.upper():
+                break
+        snap(host, "FP18_host_refresh")
         report["host_refresh"] = {
             "same_code": code in href.upper(),
-            "add_count": add_count(host),
+            "add_count": href_adds,
             "queue_names": queue_names_from_text(href),
             "queue_pre": host_q_pre_ref,
             "status": (m.group(0) if (m := re.search(r"Draft Status:[^\n]+", href)) else None),
@@ -911,21 +942,12 @@ def main() -> int:
         ok_gref = bool(
             report["guest_refresh"].get("same_code")
             and report["guest_refresh"].get("not_orphan_setup")
-            and (
-                report["guest_refresh"].get("add_count", 0) > 0
-                or report["guest_refresh"].get("queue_preserved")
-                or bool(report["guest_refresh"].get("board_still"))
-            )
+            and report["guest_refresh"].get("add_count", 0) > 0
         )
         ok_href = bool(
             report["host_refresh"].get("same_code")
             and report["host_refresh"].get("not_orphan_setup")
-            and (
-                report["host_refresh"].get("add_count", 0) > 0
-                or report["host_refresh"].get("queue_preserved")
-                or "Paused" in str(report["host_refresh"].get("status") or "")
-                or "In Progress" in str(report["host_refresh"].get("status") or "")
-            )
+            and report["host_refresh"].get("add_count", 0) > 0
         )
 
         report["acceptance"] = {

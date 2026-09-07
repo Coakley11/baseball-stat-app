@@ -420,6 +420,29 @@ def render_rec_interactive_widgets(
                         )
                         status["shared_rec_pool_pending"] = True
                         status["pool_rows"] = int(len(room["pool"]))
+                        # Refresh/reconnect: request one owning ScriptRun immediately
+                        # when the pool is already attached. Cap at one attempt so a
+                        # persistently empty rebuild cannot loop-rerun.
+                        if not session.get("_live_draft_refresh_top_rec_handoff_attempted"):
+                            session["_live_draft_refresh_top_rec_handoff_attempted"] = True
+                            try:
+                                from shared_draft_local_pool import (
+                                    maybe_request_full_rerun_when_shared_pool_ready,
+                                )
+
+                                if maybe_request_full_rerun_when_shared_pool_ready(
+                                    st, session, room
+                                ):
+                                    status["handoff_rerun_requested"] = True
+                                    session[INTERACTIVE_PAINT_STATUS_KEY] = status
+                                    note_rec_run_stage(
+                                        session,
+                                        "interactive_failed_handoff_rerun",
+                                        fail_reason=status["fail_reason"],
+                                    )
+                                    return False
+                            except ImportError:
+                                pass
                 except ImportError:
                     pass
                 try:

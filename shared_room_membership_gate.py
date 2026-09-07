@@ -291,6 +291,9 @@ def _orphan_not_started_local_room_missing(session: dict[str, Any], code: str) -
     file backend, ``not_found`` for a not_started lobby is definitive — keeping the
     orphan traps the host without commissioner End/Delete and blocks guests with
     \"Room code not found\".
+
+    Also treat empty-status / PREDRAFT lobby stubs the same way when the share
+    code has no local file (Host phantom Create that never persisted).
     """
     code = str(code or "").strip().upper()
     if not code:

@@ -418,6 +418,7 @@ def clear_shared_rec_pool_pending(session: dict[str, Any]) -> None:
     session.pop(SHARED_REC_POOL_PENDING_KEY, None)
     session.pop(SHARED_REC_POOL_PENDING_REASON_KEY, None)
     session.pop(SHARED_REC_POOL_READY_RERUN_ATTEMPTED_KEY, None)
+    session.pop("_live_draft_refresh_top_rec_handoff_attempted", None)
 
 
 def shared_rec_pool_pending(session: dict[str, Any]) -> bool:
