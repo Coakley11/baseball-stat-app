@@ -11009,7 +11009,9 @@ def _persist_live_draft_room(room, *, reason: str, rerun: bool = True) -> None:
         from draft_room_context import commit_shared_room_state, is_multiplayer_draft_active
 
         if is_multiplayer_draft_active(st.session_state):
-            ok, msg, _ = commit_shared_room_state(st.session_state, room)
+            ok, msg, _ = commit_shared_room_state(
+                st.session_state, room, persist_reason=reason
+            )
             shared_ok = bool(ok)
             shared_err = str(msg or "")
             if not ok and msg:

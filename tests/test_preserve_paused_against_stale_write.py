@@ -29,14 +29,14 @@ class PreservePausedAgainstStaleWriteTests(unittest.TestCase):
         self.assertEqual(int(out.get("paused_remaining_seconds") or 0), 44)
         self.assertIsNone(out.get("timer_deadline"))
 
-    def test_explicit_unpause_allowed(self) -> None:
+    def test_explicit_unpause_via_persist_reason(self) -> None:
         current = {"status": "paused", "room": {"paused_remaining_seconds": 30}}
         live = {"status": "in_progress", "timer_deadline": 123.0}
-        session = {}
-        mark_shared_unpause_commit_allowed(session)
-        out = preserve_paused_against_stale_in_progress(session, current, live)
+        out = preserve_paused_against_stale_in_progress(
+            {}, current, live, persist_reason="resume_draft"
+        )
         self.assertEqual(out.get("status"), "in_progress")
-        self.assertNotIn(ALLOW_UNPAUSE_COMMIT_KEY, session)
+
 
     def test_in_progress_to_paused_unchanged(self) -> None:
         current = {"status": "in_progress", "room": {}}

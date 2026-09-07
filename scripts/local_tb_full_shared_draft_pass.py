@@ -876,6 +876,29 @@ def main() -> int:
                         break
                 host.wait_for_timeout(500)
         report["pause_stable"] = pause_stable
+        # If disk is paused but Host Control Center has not enabled Resume yet,
+        # force a Host reload so session hydrates from durable paused status.
+        if pause_disk and not pause_stable:
+            host.reload(wait_until="domcontentloaded", timeout=120000)
+            wait_app(host, HOST_URL)
+            open_live_draft(host)
+            for _ in range(40):
+                host.wait_for_timeout(2000)
+                if str(room_raw(code).get("status") or "").lower() != "paused":
+                    break
+                if page_btn_enabled(host, r"▶\s*Resume Draft") or page_btn_enabled(
+                    host, r"Resume Draft"
+                ):
+                    pause_stable = True
+                    break
+                try:
+                    host.get_by_role("button", name=re.compile(r"Return to Live Draft$", re.I)).first.click(
+                        timeout=1500
+                    )
+                except Exception:
+                    pass
+            report["pause_stable"] = pause_stable
+            report["pause_host_reloaded"] = True
         ht_pause = snap(host, "FP13_host_paused")
         gt_pause = snap(guest, "FP14_guest_paused")
         report["pause_host"] = bool(

@@ -1227,6 +1227,14 @@ def publish_shared_room_runtime(
 
 
 ALLOW_UNPAUSE_COMMIT_KEY = "_live_draft_allow_unpause_commit"
+UNPAUSE_PERSIST_REASONS = frozenset(
+    {
+        "resume_draft",
+        "auto_pick",
+        "auto_pick_now",
+        "auto_pick_complete",
+    }
+)
 
 
 def mark_shared_unpause_commit_allowed(session: dict[str, Any] | None) -> None:
@@ -1239,6 +1247,8 @@ def preserve_paused_against_stale_in_progress(
     session: dict[str, Any] | None,
     current_doc: dict[str, Any],
     live_room: dict[str, Any],
+    *,
+    persist_reason: str = "",
 ) -> dict[str, Any]:
     """Keep durable Pause when a peer writes stale ``in_progress`` over ``paused``.
 
@@ -1254,7 +1264,8 @@ def preserve_paused_against_stale_in_progress(
     if cur_status != "paused" or incoming != "in_progress":
         return live_room
     sess = session if isinstance(session, dict) else {}
-    if sess.pop(ALLOW_UNPAUSE_COMMIT_KEY, False):
+    reason = str(persist_reason or "").strip()
+    if reason in UNPAUSE_PERSIST_REASONS or sess.pop(ALLOW_UNPAUSE_COMMIT_KEY, False):
         return live_room
     out = copy.deepcopy(live_room)
     cur_room = current_doc.get("room") if isinstance(current_doc.get("room"), dict) else {}
@@ -1277,6 +1288,7 @@ def commit_shared_room_pick(
     *,
     expected_revision: int | None = None,
     store: SharedRoomStore | None = None,
+    persist_reason: str = "",
 ) -> tuple[bool, dict[str, Any] | None]:
     """Write pick to shared store with revision check, then refresh session."""
     code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
@@ -1290,7 +1302,9 @@ def commit_shared_room_pick(
         return False, None
     head_rev = int(current.get("revision") or 0)
     use_rev = head_rev if expected_revision is None else int(expected_revision)
-    live_room = preserve_paused_against_stale_in_progress(session, current, live_room)
+    live_room = preserve_paused_against_stale_in_progress(
+        session, current, live_room, persist_reason=persist_reason
+    )
     updated = bump_revision(current, live_room=live_room)
     ok, saved = backend.save_if_revision(updated, expected_revision=use_rev)
     invalidate_shared_room_document_cache(session, code)

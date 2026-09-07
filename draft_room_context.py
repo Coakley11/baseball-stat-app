@@ -1504,6 +1504,7 @@ def commit_shared_room_state(
     player_name: str | None = None,
     pick_already_applied: bool = False,
     store: SharedRoomStore | None = None,
+    persist_reason: str = "",
 ) -> tuple[bool, str, dict[str, Any] | None]:
     """Validate (optional pick) and persist shared room document."""
     from draft_room_shared_state import commit_shared_room_pick
@@ -1600,6 +1601,7 @@ def commit_shared_room_state(
         live_room,
         expected_revision=expected_revision,
         store=store,
+        persist_reason=persist_reason,
     )
     board_after = len(live_room.get("draft_board") or []) if isinstance(live_room, dict) else 0
     idx_after = int(live_room.get("current_pick_index") or 0) if isinstance(live_room, dict) else 0

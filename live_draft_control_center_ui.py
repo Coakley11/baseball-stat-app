@@ -162,7 +162,8 @@ def render_live_draft_control_center(
             try:
                 from live_draft_safe_mode import request_live_draft_rerun
 
-                request_live_draft_rerun(st, session, "pause_draft", room=room)
+                if not request_live_draft_rerun(st, session, "pause_draft", room=room):
+                    st.rerun()
             except ImportError:
                 st.rerun()
         try:
