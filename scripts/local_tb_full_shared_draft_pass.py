@@ -973,7 +973,8 @@ def main() -> int:
             report.get("pause_disk")
             and report.get("resume_click")
             and report.get("resume_disk")
-        )        ok_timer = bool(report.get("timer_host", {}).get("progressed") or report.get("timer_guest", {}).get("progressed"))
+        )
+        ok_timer = bool(report.get("timer_host", {}).get("progressed") or report.get("timer_guest", {}).get("progressed"))
         ok_gref = bool(
             report["guest_refresh"].get("same_code")
             and report["guest_refresh"].get("not_orphan_setup")
