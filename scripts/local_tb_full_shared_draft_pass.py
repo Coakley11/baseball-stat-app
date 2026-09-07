@@ -457,8 +457,13 @@ def pool_diag_summary() -> dict:
     }
 
 
-def wait_resume_enabled(page, code: str, *, timeout_s: float = 100.0) -> bool:
-    """Wait until durable Pause is reflected as an enabled ▶ Resume Draft control."""
+def wait_resume_enabled(page, code: str, *, timeout_s: float = 120.0) -> bool:
+    """Wait until durable Pause is reflected as an enabled ▶ Resume Draft control.
+
+    Matches the proven pause_stable_probe path: settle, Return-to-Live-Draft, then
+    require Draft Status / interactive body before trusting Resume enablement.
+    """
+    page.wait_for_timeout(8000)
     t0 = time.time()
     while time.time() - t0 < timeout_s:
         if str(room_raw(code).get("status") or "").lower() != "paused":
@@ -473,13 +478,26 @@ def wait_resume_enabled(page, code: str, *, timeout_s: float = 100.0) -> bool:
             )
         except Exception:
             pass
+        text = body(page)
+        has_status = bool(re.search(r"Draft Status:", text, re.I))
+        has_code = code.upper() in text.upper()
+        adds = add_count(page)
         try:
             loc = page.get_by_role("button", name=re.compile(r"Resume Draft", re.I))
-            if loc.count() and not loc.first.is_disabled():
+            if loc.count() and not loc.first.is_disabled() and (has_status or adds > 0 or has_code):
                 return True
         except Exception:
             pass
-        page.wait_for_timeout(2000)
+        # Prefer interactive body before next poll (same contract as refresh wait).
+        if has_status and re.search(r"Draft Status:\s*Paused", text, re.I):
+            page.wait_for_timeout(1500)
+            try:
+                loc = page.get_by_role("button", name=re.compile(r"Resume Draft", re.I))
+                if loc.count() and not loc.first.is_disabled():
+                    return True
+            except Exception:
+                pass
+        page.wait_for_timeout(2500)
     return False
 
 
