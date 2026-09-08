@@ -24317,6 +24317,8 @@ elif active_page == "Live Draft Room":
                                     from live_draft_fast_solo_start import mark_defer_heavy_first_paint
 
                                     mark_defer_heavy_first_paint(st.session_state)
+                                    st.session_state.pop("_solo_projection_grade_rerun_done", None)
+                                    st.session_state["_solo_needs_projection_player_grades"] = True
                                     note_start_stage(st.session_state, "recommendations_deferred")
                                 except ImportError:
                                     pass
@@ -26404,60 +26406,23 @@ elif active_page == "Live Draft Room":
         if _solo_recs_here:
             try:
                 from live_draft_fast_solo_start import (
-                    DEFERRED_FULL_POOL_DONE_KEY,
                     _pool_has_projection_player_grades,
                     ensure_solo_player_pool_for_recs,
-                    maybe_build_deferred_full_pool,
                 )
 
                 # Restore/fast-start can leave Solo pool empty before Recommendations.
+                # Do NOT block first card paint on the full projection rebuild — that hung
+                # Solo Pick 1 on a blank viewport. Paint with the attached pool first; the
+                # end-of-page deferred upgrade (+ one rerun) swaps in real Player Grades.
                 ensure_solo_player_pool_for_recs(st.session_state, room)
                 _ensured = st.session_state.get("live_draft_room")
                 if isinstance(_ensured, dict):
                     room = _ensured
-                # Fast Solo must upgrade to the unified projection Player Grade pool before
-                # recommendation scoring — otherwise temporary market proxies drive cards.
                 _pool_now = room.get("pool") if isinstance(room, dict) else None
                 if not _pool_has_projection_player_grades(_pool_now):
-                    with st.spinner("Loading projection Player Grades…"):
-                        _upgraded = maybe_build_deferred_full_pool(
-                            st.session_state, force=True
-                        )
-                        if not _upgraded:
-                            try:
-                                _full = get_cached_unified_projection_pool_live()
-                                if _full is not None and not getattr(_full, "empty", True):
-                                    from draft_scoring_pool import (
-                                        POOL_KIND_VALID_PROJECTION,
-                                        POOL_VALUE_KIND_KEY,
-                                        ensure_draft_scoring_pool_columns,
-                                    )
-
-                                    _full = ensure_draft_scoring_pool_columns(_full)
-                                    _full.attrs[POOL_VALUE_KIND_KEY] = (
-                                        POOL_KIND_VALID_PROJECTION
-                                    )
-                                    room["pool"] = _full.copy()
-                                    st.session_state["live_draft_room"] = room
-                                    st.session_state[DEFERRED_FULL_POOL_DONE_KEY] = True
-                                    try:
-                                        from live_draft_ui_cache import (
-                                            invalidate_live_draft_ui_caches_after_board_change,
-                                        )
-
-                                        invalidate_live_draft_ui_caches_after_board_change(
-                                            st.session_state,
-                                            reason="solo_projection_player_grade_attach",
-                                        )
-                                    except ImportError:
-                                        st.session_state.pop("_live_draft_rec_cache", None)
-                            except Exception as _pool_exc:
-                                st.session_state["_solo_projection_attach_error"] = str(
-                                    _pool_exc
-                                )[:200]
-                        _ensured = st.session_state.get("live_draft_room")
-                        if isinstance(_ensured, dict):
-                            room = _ensured
+                    st.session_state["_solo_needs_projection_player_grades"] = True
+                else:
+                    st.session_state.pop("_solo_needs_projection_player_grades", None)
             except ImportError:
                 pass
             try:
@@ -26465,6 +26430,10 @@ elif active_page == "Live Draft Room":
 
                 # Historical Live Draft terminology (not "Recommended picks" / queue strip).
                 st.markdown("##### Recommendations")
+                if st.session_state.get("_solo_needs_projection_player_grades"):
+                    st.caption(
+                        "Loading projection Player Grades… temporary ranks may refresh shortly."
+                    )
                 st.caption(
                     "Players the engine recommends for this pick. "
                     "Inspect a card, draft now, or optionally add one to your Queue. "
@@ -28231,11 +28200,24 @@ elif active_page == "Live Draft Room":
         pass
 
     try:
-        from live_draft_fast_solo_start import maybe_build_deferred_full_pool
+        from live_draft_fast_solo_start import (
+            _pool_has_projection_player_grades,
+            maybe_build_deferred_full_pool,
+        )
 
         # Always allow deferred Solo pool upgrade — do not wait for heavy-paint defer
         # to clear, or Recommended picks can stay empty across poll ticks.
-        maybe_build_deferred_full_pool(st.session_state)
+        _force_proj = bool(st.session_state.get("_solo_needs_projection_player_grades"))
+        _room_end = st.session_state.get("live_draft_room")
+        if not _force_proj and isinstance(_room_end, dict):
+            _force_proj = not _pool_has_projection_player_grades(_room_end.get("pool"))
+        _upgraded = maybe_build_deferred_full_pool(st.session_state, force=_force_proj)
+        if _upgraded:
+            st.session_state.pop("_solo_needs_projection_player_grades", None)
+            # One rerun so early recommendation cards score with real Player Grades.
+            if not st.session_state.get("_solo_projection_grade_rerun_done"):
+                st.session_state["_solo_projection_grade_rerun_done"] = True
+                st.rerun()
     except ImportError:
         pass
 
