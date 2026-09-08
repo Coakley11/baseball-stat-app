@@ -128,13 +128,41 @@ def build_fast_market_pool(market_df: Any, *, min_rows: int = 400) -> Any:
                 df.loc[fill, "Primary Position"] = derived.loc[fill]
     if "Market Rank" not in df.columns:
         df["Market Rank"] = range(1, len(df) + 1)
-    if "Expected Fantasy Value" not in df.columns:
-        rank = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(len(df))
-        df["Expected Fantasy Value"] = (len(df) + 1 - rank).clip(lower=1)
-    if "Model Rank" not in df.columns:
-        df["Model Rank"] = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(999)
-    if "Fantasy Edge" not in df.columns:
-        df["Fantasy Edge"] = 0
+    # Fast market pools often ship an Expected Fantasy Value column of all zeros.
+    # Treat that as missing and apply the historical Market Rank proxy, then ensure().
+    try:
+        from draft_scoring_pool import (
+            POOL_KIND_FAST_MARKET_FALLBACK,
+            POOL_VALUE_KIND_KEY,
+            _efv_series_is_unusable,
+            _market_rank_proxy_efv,
+            ensure_draft_scoring_pool_columns,
+        )
+
+        if "Expected Fantasy Value" not in df.columns or _efv_series_is_unusable(
+            df["Expected Fantasy Value"] if "Expected Fantasy Value" in df.columns else None
+        ):
+            rank = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(len(df))
+            df["Expected Fantasy Value"] = _market_rank_proxy_efv(rank, n_rows=len(df))
+        if "Model Rank" not in df.columns:
+            df["Model Rank"] = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(999)
+        if "Fantasy Edge" not in df.columns:
+            df["Fantasy Edge"] = 0
+        df = ensure_draft_scoring_pool_columns(df)
+        df.attrs[POOL_VALUE_KIND_KEY] = POOL_KIND_FAST_MARKET_FALLBACK
+    except ImportError:
+        if "Expected Fantasy Value" not in df.columns:
+            rank = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(len(df))
+            df["Expected Fantasy Value"] = (len(df) + 1 - rank).clip(lower=1)
+        else:
+            efv = pd.to_numeric(df["Expected Fantasy Value"], errors="coerce")
+            if (not efv.notna().any()) or float(efv.fillna(0).max()) == 0.0:
+                rank = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(len(df))
+                df["Expected Fantasy Value"] = (len(df) + 1 - rank).clip(lower=1)
+        if "Model Rank" not in df.columns:
+            df["Model Rank"] = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(999)
+        if "Fantasy Edge" not in df.columns:
+            df["Fantasy Edge"] = 0
     df = df.drop_duplicates(subset=["fullName"], keep="first")
     if len(df) > int(min_rows):
         df = df.head(int(min_rows)).copy()

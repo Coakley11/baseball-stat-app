@@ -8,8 +8,12 @@ import pandas as pd
 
 from draft_scoring_pool import (
     LIVE_DRAFT_REQUIRED_PLAYER_COLUMNS,
+    POOL_KIND_FAST_MARKET_FALLBACK,
+    POOL_KIND_VALID_PROJECTION,
+    POOL_VALUE_KIND_KEY,
     analyze_compact_pool,
     ensure_draft_scoring_pool_columns,
+    ensure_draft_scoring_pool_columns_with_report,
     prepare_pool_for_compact_serialization,
     select_live_draft_compact_columns,
 )
@@ -214,6 +218,180 @@ class DraftScoringPoolTests(unittest.TestCase):
         )
         out = ensure_draft_scoring_pool_columns(pool)
         self.assertEqual(str(out.loc[0, "Primary Position"]), "3B")
+
+    def test_zero_efv_column_rebuilds_market_proxy_and_ranks(self) -> None:
+        pool = pd.DataFrame(
+            [
+                {
+                    "playerID": "p1",
+                    "fullName": "Early Star",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.0,
+                    "Market Rank": 5,
+                    "Model Rank": 9999,
+                    "Fantasy Edge": 0.0,
+                },
+                {
+                    "playerID": "p2",
+                    "fullName": "Deep Fringe",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.0,
+                    "Market Rank": 350,
+                    "Model Rank": 9999,
+                    "Fantasy Edge": 349.0,
+                },
+                {
+                    "playerID": "p3",
+                    "fullName": "Mid Tier",
+                    "Primary Position": "SS",
+                    "Expected Fantasy Value": 0.0,
+                    "Market Rank": 40,
+                    "Model Rank": 9999,
+                    "Fantasy Edge": 39.0,
+                },
+            ]
+        )
+        out, report = ensure_draft_scoring_pool_columns_with_report(pool)
+        self.assertEqual(report.get("pool_value_kind"), POOL_KIND_FAST_MARKET_FALLBACK)
+        self.assertEqual(out.attrs.get(POOL_VALUE_KIND_KEY), POOL_KIND_FAST_MARKET_FALLBACK)
+        efv = pd.to_numeric(out["Expected Fantasy Value"], errors="coerce")
+        self.assertGreater(float(efv.max()), 0.0)
+        self.assertGreater(int(efv.nunique()), 1)
+        early = out.loc[out["fullName"] == "Early Star"].iloc[0]
+        fringe = out.loc[out["fullName"] == "Deep Fringe"].iloc[0]
+        self.assertGreater(float(early["Expected Fantasy Value"]), float(fringe["Expected Fantasy Value"]))
+        model = pd.to_numeric(out["Model Rank"], errors="coerce")
+        self.assertGreater(int(model.nunique()), 1)
+        self.assertLess(float(early["Model Rank"]), float(fringe["Model Rank"]))
+        self.assertLess(abs(float(fringe["Fantasy Edge"])), 50.0)
+
+    def test_sentinel_model_rank_recomputed_not_collapsed(self) -> None:
+        pool = pd.DataFrame(
+            [
+                {
+                    "playerID": "p1",
+                    "fullName": "A",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 95.0,
+                    "Market Rank": 10,
+                    "Model Rank": 9999,
+                },
+                {
+                    "playerID": "p2",
+                    "fullName": "B",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 80.0,
+                    "Market Rank": 25,
+                    "Model Rank": 9999,
+                },
+                {
+                    "playerID": "p3",
+                    "fullName": "C",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 50.0,
+                    "Market Rank": 100,
+                    "Model Rank": 9999,
+                },
+            ]
+        )
+        out = ensure_draft_scoring_pool_columns(pool)
+        ranks = pd.to_numeric(out["Model Rank"], errors="coerce")
+        self.assertTrue((ranks < 9000).all())
+        self.assertGreater(int(ranks.nunique()), 1)
+        self.assertEqual(float(out.loc[out["fullName"] == "A", "Model Rank"].iloc[0]), 1.0)
+
+    def test_collapsed_model_rank_does_not_create_fake_edge(self) -> None:
+        pool = pd.DataFrame(
+            [
+                {
+                    "playerID": "p1",
+                    "fullName": "Elite",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.0,
+                    "Market Rank": 8,
+                    "Model Rank": 1,
+                    "Fantasy Edge": 7.0,
+                },
+                {
+                    "playerID": "p2",
+                    "fullName": "Ben Fringe",
+                    "Primary Position": "3B",
+                    "Expected Fantasy Value": 0.0,
+                    "Market Rank": 359,
+                    "Model Rank": 1,
+                    "Fantasy Edge": 358.0,
+                },
+            ]
+        )
+        out = ensure_draft_scoring_pool_columns(pool)
+        fringe = out.loc[out["fullName"] == "Ben Fringe"].iloc[0]
+        self.assertLess(abs(float(fringe["Fantasy Edge"])), 5.0)
+        self.assertNotEqual(float(fringe["Model Rank"]), 1.0)
+        model = pd.to_numeric(out["Model Rank"], errors="coerce")
+        self.assertGreater(int(model.nunique()), 1)
+
+    def test_valid_projection_pool_preserved(self) -> None:
+        pool = pd.DataFrame(
+            [
+                {
+                    "playerID": "p1",
+                    "fullName": "Aaron Judge",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.95,
+                    "Market Rank": 15,
+                    "Model Rank": 8,
+                    "Fantasy Edge": 7,
+                },
+                {
+                    "playerID": "p2",
+                    "fullName": "Bench Bat",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.40,
+                    "Market Rank": 120,
+                    "Model Rank": 140,
+                    "Fantasy Edge": -20,
+                },
+            ]
+        )
+        out, report = ensure_draft_scoring_pool_columns_with_report(pool)
+        self.assertEqual(report.get("pool_value_kind"), POOL_KIND_VALID_PROJECTION)
+        judge = out.loc[out["fullName"] == "Aaron Judge"].iloc[0]
+        self.assertAlmostEqual(float(judge["Expected Fantasy Value"]), 0.95, places=5)
+        self.assertEqual(float(judge["Model Rank"]), 8.0)
+        self.assertEqual(float(judge["Fantasy Edge"]), 7.0)
+
+    def test_strong_market_outranks_deep_adp_when_fit_equal(self) -> None:
+        """Generic ranking sanity: early market beat deep ADP when value signal repaired."""
+        pool = pd.DataFrame(
+            [
+                {
+                    "playerID": "early",
+                    "fullName": "Early Market",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.0,
+                    "Market Rank": 12,
+                    "Model Rank": 9999,
+                    "Fantasy Edge": 0.0,
+                },
+                {
+                    "playerID": "deep",
+                    "fullName": "Deep Adp",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.0,
+                    "Market Rank": 340,
+                    "Model Rank": 9999,
+                    "Fantasy Edge": 339.0,
+                },
+            ]
+        )
+        repaired = ensure_draft_scoring_pool_columns(pool)
+        early = repaired.loc[repaired["fullName"] == "Early Market"].iloc[0]
+        deep = repaired.loc[repaired["fullName"] == "Deep Adp"].iloc[0]
+        self.assertGreater(float(early["Expected Fantasy Value"]), float(deep["Expected Fantasy Value"]))
+        self.assertLess(float(early["Model Rank"]), float(deep["Model Rank"]))
+        self.assertLess(abs(float(deep["Fantasy Edge"])), 20.0)
+        by_efv = repaired.sort_values("Expected Fantasy Value", ascending=False)
+        self.assertEqual(str(by_efv.iloc[0]["fullName"]), "Early Market")
 
 
 if __name__ == "__main__":

@@ -60,6 +60,30 @@ class TestFastSoloStart(unittest.TestCase):
         self.assertEqual(by_name["Jose Ramirez"], "3B")
         self.assertEqual(by_name["Aaron Judge"], "OF")
 
+    def test_build_fast_market_pool_repairs_all_zero_efv(self) -> None:
+        market = pd.DataFrame(
+            {
+                "Player": [f"P{i}" for i in range(20)],
+                "Market Rank": list(range(1, 21)),
+                "Position": ["OF"] * 20,
+                "Expected Fantasy Value": [0.0] * 20,
+                "Model Rank": [9999] * 20,
+                "Fantasy Edge": [float(i) for i in range(20)],
+            }
+        )
+        pool = build_fast_market_pool(market, min_rows=20)
+        efv = pd.to_numeric(pool["Expected Fantasy Value"], errors="coerce")
+        model = pd.to_numeric(pool["Model Rank"], errors="coerce")
+        edge = pd.to_numeric(pool["Fantasy Edge"], errors="coerce")
+        self.assertGreater(float(efv.max()), 0.0)
+        self.assertGreater(int(efv.nunique()), 1)
+        self.assertGreater(int(model.nunique()), 1)
+        self.assertLess(float(edge.max()), 50.0)
+        self.assertGreater(
+            float(pool.loc[pool["Market Rank"] == 1, "Expected Fantasy Value"].iloc[0]),
+            float(pool.loc[pool["Market Rank"] == 20, "Expected Fantasy Value"].iloc[0]),
+        )
+
     def test_defer_heavy_first_paint_lifecycle(self) -> None:
         session: dict = {}
         self.assertFalse(should_defer_heavy_first_paint(session))

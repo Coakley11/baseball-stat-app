@@ -71,6 +71,11 @@ _SCORING_FALLBACK_DEFAULTS: dict[str, float | str] = {
     "Market vs Model Score": 0.0,
 }
 
+# Pool value-signal classification for fast Solo vs full projection pools.
+POOL_KIND_VALID_PROJECTION = "VALID_PROJECTION_POOL"
+POOL_KIND_FAST_MARKET_FALLBACK = "FAST_MARKET_FALLBACK_POOL"
+POOL_VALUE_KIND_KEY = "_draft_pool_value_kind"
+
 
 SCORING_TRACE_COLUMNS: tuple[str, ...] = (
     "Expected Fantasy Value",
@@ -135,6 +140,53 @@ def _series_is_default(col: pd.Series, default: float | str) -> pd.Series:
 def _bad_rank_mask(series: pd.Series) -> pd.Series:
     nums = pd.to_numeric(series, errors="coerce")
     return nums.isna() | nums.ge(_RANK_DEFAULT)
+
+
+def _efv_series_is_unusable(series: pd.Series | None) -> bool:
+    """True when EFV is missing, all-zero, constant, or otherwise non-informative."""
+    if series is None:
+        return True
+    nums = pd.to_numeric(series, errors="coerce")
+    if not nums.notna().any():
+        return True
+    filled = nums.dropna()
+    if filled.empty:
+        return True
+    if float(filled.max()) == 0.0 and float(filled.min()) == 0.0:
+        return True
+    # Constant across a multi-row pool cannot drive ranking. A single-row
+    # constant is fine (fixtures / one-player restores).
+    if len(filled) > 1 and int(filled.nunique(dropna=True)) <= 1:
+        return True
+    return False
+
+
+def _model_rank_series_is_degenerate(series: pd.Series | None) -> bool:
+    """True when Model Rank is sentinel, missing, or collapsed to one value."""
+    if series is None:
+        return True
+    nums = pd.to_numeric(series, errors="coerce")
+    if not nums.notna().any():
+        return True
+    if bool(_bad_rank_mask(nums).all()):
+        return True
+    usable = nums[~_bad_rank_mask(nums)]
+    if usable.empty:
+        return True
+    # All players sharing one Model Rank (e.g. every row = 1) is non-informative.
+    if len(usable) > 1 and int(usable.nunique(dropna=True)) <= 1:
+        return True
+    return False
+
+
+def _market_rank_proxy_efv(market_rank: pd.Series, *, n_rows: int) -> pd.Series:
+    """Historical fast-pool EFV proxy: higher value for better (lower) market ranks."""
+    rank = pd.to_numeric(market_rank, errors="coerce").fillna(float(n_rows))
+    # Use the larger of pool size vs max observed market rank so absolute ADP
+    # ranks (e.g. 350 in a short fixture) still produce an informative spread.
+    observed = float(rank.max()) if rank.notna().any() else float(n_rows)
+    ceiling = max(float(n_rows), observed)
+    return (ceiling + 1.0 - rank).clip(lower=1.0)
 
 
 def _fill_bad_rows(
@@ -265,6 +317,7 @@ def _ensure_draft_scoring_pool_columns(
         return pool.copy() if isinstance(pool, pd.DataFrame) else pd.DataFrame(), report
 
     out = pool if mutate else pool.copy()
+    report["pool_value_kind"] = POOL_KIND_VALID_PROJECTION
 
     if "Market Rank" not in out.columns:
         out["Market Rank"] = pd.NA
@@ -300,6 +353,28 @@ def _ensure_draft_scoring_pool_columns(
                 derived_name="Market Rank",
             )
 
+    # --- Expected Fantasy Value hygiene ---
+    # An all-zero / constant EFV column is not "present projections" — rebuild from
+    # Market Rank (historical fast Solo intent) so Decision Score retains a value signal.
+    if "Expected Fantasy Value" not in out.columns:
+        out["Expected Fantasy Value"] = pd.NA
+    efv_unusable = _efv_series_is_unusable(out["Expected Fantasy Value"])
+    used_market_proxy_efv = False
+    if efv_unusable:
+        market = pd.to_numeric(out["Market Rank"], errors="coerce")
+        if market.notna().any() and not bool(_bad_rank_mask(market).all()):
+            proxy = _market_rank_proxy_efv(market, n_rows=len(out))
+            out["Expected Fantasy Value"] = proxy
+            report["derived_columns"].append("Expected Fantasy Value")
+            report["default_filled_counts"]["Expected Fantasy Value"] = int(len(out))
+            report["pool_value_kind"] = POOL_KIND_FAST_MARKET_FALLBACK
+            report["efv_repair"] = "market_rank_proxy"
+            used_market_proxy_efv = True
+        else:
+            report["efv_repair"] = "unavailable"
+            report["pool_value_kind"] = POOL_KIND_FAST_MARKET_FALLBACK
+
+    # --- Model Rank hygiene ---
     if "Model Rank" not in out.columns:
         out["Model Rank"] = pd.NA
     model_bad = _bad_rank_mask(out["Model Rank"])
@@ -313,10 +388,24 @@ def _ensure_draft_scoring_pool_columns(
             derived_name="Model Rank",
         )
         model_bad = _bad_rank_mask(out["Model Rank"])
-    if model_bad.any() and "Expected Fantasy Value" in out.columns:
-        efv = pd.to_numeric(out["Expected Fantasy Value"], errors="coerce")
-        if efv.notna().any():
-            model_rank = efv.rank(ascending=False, method="min")
+
+    efv_now = pd.to_numeric(out["Expected Fantasy Value"], errors="coerce")
+    efv_usable_now = not _efv_series_is_unusable(efv_now)
+    market_now = pd.to_numeric(out["Market Rank"], errors="coerce")
+    market_usable = market_now.notna().any() and not bool(_bad_rank_mask(market_now).all())
+
+    # Fast market fallback: keep Model Rank on the same absolute scale as Market Rank.
+    # Dense-ranking proxy EFV to 1..n while Market Rank stays at ADP scale (e.g. 359)
+    # recreates Market−1-style Fantasy Edge artifacts for deep-ADP players.
+    if used_market_proxy_efv and market_usable:
+        out["Model Rank"] = market_now
+        if "Model Rank" not in report.get("derived_columns", []):
+            report.setdefault("derived_columns", []).append("Model Rank")
+        report["model_rank_repair"] = "aligned_to_market_rank"
+        report["pool_value_kind"] = POOL_KIND_FAST_MARKET_FALLBACK
+    else:
+        if model_bad.any() and efv_usable_now:
+            model_rank = efv_now.rank(ascending=False, method="min")
             _fill_bad_rows(
                 out,
                 "Model Rank",
@@ -325,24 +414,54 @@ def _ensure_draft_scoring_pool_columns(
                 report=report,
                 derived_name="Model Rank",
             )
+            model_bad = _bad_rank_mask(out["Model Rank"])
 
-    if "Market Rank" in out.columns and "Model Rank" in out.columns:
+        # Collapsed Model Rank (e.g. all 1 from ranking all-zero EFV) is not meaningful.
+        if _model_rank_series_is_degenerate(out["Model Rank"]):
+            if efv_usable_now:
+                out["Model Rank"] = efv_now.rank(ascending=False, method="min")
+                if "Model Rank" not in report.get("derived_columns", []):
+                    report.setdefault("derived_columns", []).append("Model Rank")
+                report["model_rank_repair"] = "efv_rank"
+            elif market_usable:
+                out["Model Rank"] = market_now
+                if "Model Rank" not in report.get("derived_columns", []):
+                    report.setdefault("derived_columns", []).append("Model Rank")
+                report["model_rank_repair"] = "aligned_to_market_rank"
+                report["pool_value_kind"] = POOL_KIND_FAST_MARKET_FALLBACK
+            else:
+                report["model_rank_repair"] = "unresolved_degenerate"
+
+    # --- Fantasy Edge ---
+    # Only Market−Model when Model Rank is meaningful and on a comparable scale.
+    # Fast market-proxy pools intentionally neutralize Edge (Model aligned to Market).
+    model_meaningful = not _model_rank_series_is_degenerate(
+        out["Model Rank"] if "Model Rank" in out.columns else None
+    )
+    if used_market_proxy_efv or report.get("pool_value_kind") == POOL_KIND_FAST_MARKET_FALLBACK:
+        out["Fantasy Edge"] = 0.0
+        report["fantasy_edge_repair"] = "neutral_fast_market_fallback"
+        if "Fantasy Edge" not in report.get("derived_columns", []):
+            report.setdefault("derived_columns", []).append("Fantasy Edge")
+    elif (
+        model_meaningful
+        and "Market Rank" in out.columns
+        and "Model Rank" in out.columns
+    ):
         market = pd.to_numeric(out["Market Rank"], errors="coerce")
         model = pd.to_numeric(out["Model Rank"], errors="coerce")
-        computed_edge = market - model
-        if "Fantasy Edge" not in out.columns:
-            out["Fantasy Edge"] = pd.NA
-        edge_vals = pd.to_numeric(out["Fantasy Edge"], errors="coerce")
-        edge_bad = edge_vals.isna() | _bad_rank_mask(out["Fantasy Edge"])
-        edge_bad = edge_bad | (edge_vals.fillna(0).eq(0) & computed_edge.notna() & computed_edge.ne(0))
-        _fill_bad_rows(
-            out,
-            "Fantasy Edge",
-            computed_edge,
-            bad=edge_bad,
-            report=report,
-            derived_name="Fantasy Edge",
-        )
+        computed_edge = (market - model).fillna(0.0)
+        # Always align Edge to ranks so prior Market−1 artifacts cannot persist
+        # after Model Rank repair.
+        out["Fantasy Edge"] = computed_edge
+        if "Fantasy Edge" not in report.get("derived_columns", []):
+            report.setdefault("derived_columns", []).append("Fantasy Edge")
+        report["fantasy_edge_repair"] = "from_market_minus_model"
+    else:
+        out["Fantasy Edge"] = 0.0
+        report["fantasy_edge_repair"] = "neutralized_invalid_model"
+        if "Fantasy Edge" not in report.get("derived_columns", []):
+            report.setdefault("derived_columns", []).append("Fantasy Edge")
 
     if "Primary Position" not in out.columns:
         out["Primary Position"] = ""
@@ -387,6 +506,9 @@ def _ensure_draft_scoring_pool_columns(
             bad = _bad_rank_mask(out[col])
         elif col == "Fantasy Edge":
             bad = pd.to_numeric(out[col], errors="coerce").isna()
+        elif col == "Expected Fantasy Value":
+            # Never re-default repaired/proxy EFV to 0; only fill true NaNs.
+            bad = pd.to_numeric(out[col], errors="coerce").isna()
         elif col == "Primary Position":
             s = out[col].fillna("").astype(str).str.strip()
             bad = s.eq("")  # UTIL may remain when no richer source exists
@@ -395,5 +517,16 @@ def _ensure_draft_scoring_pool_columns(
         if bad.any():
             out.loc[bad, col] = default
             report["default_filled_counts"][col] = int(bad.sum())
+
+    # Final classification for callers / diagnostics.
+    if report.get("pool_value_kind") != POOL_KIND_FAST_MARKET_FALLBACK:
+        if _efv_series_is_unusable(out.get("Expected Fantasy Value")):
+            report["pool_value_kind"] = POOL_KIND_FAST_MARKET_FALLBACK
+        else:
+            report["pool_value_kind"] = POOL_KIND_VALID_PROJECTION
+    try:
+        out.attrs[POOL_VALUE_KIND_KEY] = report["pool_value_kind"]
+    except Exception:
+        pass
 
     return out, report
