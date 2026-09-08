@@ -182,8 +182,15 @@ def configure_and_start(page, report: dict) -> None:
         raise RuntimeError("Start New Live Draft missing")
     btn.first.click(timeout=8000)
     report["started_click"] = True
-    # Give first paint a chance before the Solo timer expires into autopick.
-    page.wait_for_timeout(4000)
+    # Solo start now builds the projection pool — allow a long first-paint window.
+    for i in range(40):
+        page.wait_for_timeout(3000)
+        body = page.locator("[data-testid=stMain]").inner_text()
+        if "Why Recommended" in body or "Recommendations" in body:
+            report["post_start_iters"] = i + 1
+            break
+        if "Building projection" in body or "Building player pool" in body:
+            report["saw_pool_build"] = True
     try:
         page.get_by_text(re.compile(r"Draft controls", re.I)).first.click(timeout=3000)
         page.wait_for_timeout(800)
