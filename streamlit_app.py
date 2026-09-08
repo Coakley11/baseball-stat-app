@@ -26386,9 +26386,11 @@ elif active_page == "Live Draft Room":
         except ImportError:
             pass
 
-        # Solo first-viewport landing: Recommended picks MUST paint before Control Center
-        # / timer chrome. Streamlit remembers expander open-state — an open Draft
-        # controls panel alone fills a 768px laptop viewport and hides the cards.
+        # Solo first-viewport landing: full player recommendation cards MUST paint before
+        # Control Center / timer chrome. Keep dense=False so we use the historical Live Draft
+        # player-card body (photo / metrics / Why Recommended / Draft + Queue actions).
+        # Streamlit remembers expander open-state — an open Draft controls panel alone
+        # fills a 768px laptop viewport and hides the cards.
         st.session_state.pop("_live_draft_rec_cards_early_viewport", None)
         _solo_recs_here = False
         try:
@@ -26403,7 +26405,7 @@ elif active_page == "Live Draft Room":
             try:
                 from live_draft_fast_solo_start import ensure_solo_player_pool_for_recs
 
-                # Restore/fast-start can leave Solo pool empty before Recommended picks.
+                # Restore/fast-start can leave Solo pool empty before Recommendations.
                 ensure_solo_player_pool_for_recs(st.session_state, room)
                 _ensured = st.session_state.get("live_draft_room")
                 if isinstance(_ensured, dict):
@@ -26413,8 +26415,23 @@ elif active_page == "Live Draft Room":
             try:
                 from live_draft_rec_live_paint import render_rec_interactive_widgets
 
-                st.markdown("### Recommended picks")
-                st.caption("Top available players — use **Add to Queue** on a card.")
+                # Historical Live Draft terminology (not "Recommended picks" / queue strip).
+                st.markdown("##### Recommendations")
+                st.caption(
+                    "Players the engine recommends for this pick. "
+                    "Inspect a card, draft now, or optionally add one to your Queue."
+                )
+                try:
+                    from live_draft_ux import FANTASY_EDGE_TOOLTIP, ROSTER_FIT_TOOLTIP
+
+                    st.markdown(
+                        f'**Fantasy Edge** <span title="{FANTASY_EDGE_TOOLTIP}">ⓘ</span> · '
+                        f'**Roster Fit** <span title="{ROSTER_FIT_TOOLTIP}">ⓘ</span> — '
+                        "Open **Why Recommended** on any card for category impact, scarcity, and fit details.",
+                        unsafe_allow_html=True,
+                    )
+                except ImportError:
+                    pass
                 _early_ok = bool(
                     render_rec_interactive_widgets(
                         st,
@@ -26422,7 +26439,7 @@ elif active_page == "Live Draft Room":
                         room,
                         fmt_rate_4=fmt_rate_4,
                         fmt_int=fmt_int,
-                        dense=True,
+                        dense=False,
                         max_cards_override=3,
                         skip_summary_banner=True,
                     )
@@ -27409,7 +27426,11 @@ elif active_page == "Live Draft Room":
                                 except Exception:
                                     pass
                                 # Quick tools live inside the Draft Decision Panel (no second tall nav strip).
-                                st.markdown("##### Recommendations")
+                                _solo_early_recs_done = bool(
+                                    st.session_state.get("_live_draft_rec_cards_early_viewport")
+                                )
+                                if not _solo_early_recs_done:
+                                    st.markdown("##### Recommendations")
                                 _rec_err = str(st.session_state.pop("_live_draft_recommendations_error", "") or "").strip()
                                 _rec_diag = dict(st.session_state.get("_recommendation_schema_diag") or {})
                                 if _rec_err or str(_rec_diag.get("status") or "") in (
@@ -27486,7 +27507,7 @@ elif active_page == "Live Draft Room":
                                     )
                                     if _defer_recs and (top_rec is None or getattr(top_rec, "empty", True)):
                                         st.caption("Loading recommendations…")
-                                    else:
+                                    elif not _solo_early_recs_done:
                                         try:
                                             from live_draft_ux import FANTASY_EDGE_TOOLTIP, ROSTER_FIT_TOOLTIP
 
@@ -27501,13 +27522,16 @@ elif active_page == "Live Draft Room":
                                                 "**Fantasy Edge** shows value vs market; **Roster Fit** adjusts for your open slots. "
                                                 "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
                                             )
+                                    if not (
+                                        _defer_recs and (top_rec is None or getattr(top_rec, "empty", True))
+                                    ):
                                         store_interactive_top_rec_snapshot(
                                             st.session_state,
                                             top_rec,
                                             room_id=str(room.get("draft_room_id") or ""),
                                         )
-                                    # Add-to-Queue: Solo already painted cards above the board
-                                    # row for first-viewport landing — do not re-register the
+                                    # Solo already painted full player cards above the board
+                                    # for first-viewport landing — do not re-register the
                                     # same widget keys here. Shared / non-early keeps inline.
                                     if bool(st.session_state.get("_live_draft_rec_cards_early_viewport")):
                                         st.session_state[
