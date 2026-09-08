@@ -1920,7 +1920,9 @@ def render_live_draft_rec_cards(
                 if badge_html:
                     st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
                 if horizontal:
-                    btn_col = queue_col = detail_col = nullcontext()
+                    # Keep Draft + Queue on one row so both stay in a 768px Solo viewport.
+                    btn_col, queue_col = st.columns(2)
+                    detail_col = nullcontext()
                 else:
                     btn_col, queue_col, detail_col = st.columns([2, 1, 1])
                 queued_names = {
