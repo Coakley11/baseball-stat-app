@@ -264,7 +264,31 @@ def _top_rec_from_snapshot(session: dict[str, Any], room: dict[str, Any]) -> Any
     snap_rid = str(snap.get("room_id") or "").strip()
     if rid and snap_rid and snap_rid != rid:
         return None
-    return snap.get("top_rec")
+    top = snap.get("top_rec")
+    if top is None or getattr(top, "empty", True):
+        return top
+    try:
+        from live_draft_ui_cache import filter_df_excluding_drafted
+
+        filtered = filter_df_excluding_drafted(top, room)
+        if filtered is not None and not getattr(filtered, "empty", True):
+            if len(filtered) != len(top):
+                store_interactive_top_rec_snapshot(session, filtered, room_id=rid)
+            return filtered
+        return filtered
+    except ImportError:
+        return top
+
+
+def _filter_top_rec_excluding_drafted(top_rec: Any, room: dict[str, Any]) -> Any:
+    if top_rec is None or getattr(top_rec, "empty", True):
+        return top_rec
+    try:
+        from live_draft_ui_cache import filter_df_excluding_drafted
+
+        return filter_df_excluding_drafted(top_rec, room)
+    except ImportError:
+        return top_rec
 
 
 def _republish_top_rec_into_cache(session: dict[str, Any], room: dict[str, Any], top_rec: Any) -> None:
@@ -496,6 +520,15 @@ def render_rec_interactive_widgets(
                 except Exception:
                     pass
                 return False
+    # Hard invariant: never paint drafted players on recommendation cards.
+    top_rec = _filter_top_rec_excluding_drafted(top_rec, room)
+    if top_rec is not None and not getattr(top_rec, "empty", True):
+        try:
+            store_interactive_top_rec_snapshot(
+                session, top_rec, room_id=str(room.get("draft_room_id") or "").strip()
+            )
+        except Exception:
+            pass
     gaps = list(prep.get("gaps") or [])
     category_needs = list(prep.get("category_needs") or [])
     max_cards = int(prep.get("max_cards") or 6)

@@ -88,13 +88,10 @@ REC_TABLE_SORT_OPTIONS: dict[str, str] = {
     # label → actual dataframe column used by the recommendation engine
     "Decision Score": "Decision Score",
     "Player Grade": "Player Grade",
-    "Fantasy Edge": "Fantasy Edge",
-    "Roster Fit Score": "Roster Fit Score",
+    "Roster Fit": "Roster Fit Score",
+    "Positional Scarcity": "Position Scarcity Score",
     "Market Rank": "Market Rank",
     "Primary Position": "Primary Position",
-    "Risk Score": "Risk Score",
-    "Survival Probability": "Survival Probability",
-    "Category Need Bonus": "Category Need Bonus",
 }
 
 
@@ -297,6 +294,8 @@ def sort_recommendation_table(df: pd.DataFrame, sort_key: str, *, ascending: boo
         col = "Expected Fantasy Value"
     if col == "Roster Fit Score" and col not in df.columns and "Draft Fit Score" in df.columns:
         col = "Draft Fit Score"
+    if col == "Position Scarcity Score" and col not in df.columns and "Scarcity Score" in df.columns:
+        col = "Scarcity Score"
     if col not in df.columns:
         return df
     # Rank-like fields sort ascending (lower is better); scores/probabilities descending.

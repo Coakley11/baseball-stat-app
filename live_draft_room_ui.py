@@ -1989,13 +1989,14 @@ def render_live_draft_rec_cards(
                             pass
 
                     if draft_enabled:
-                        st.button(
+                        _rec_draft_clicked = st.button(
                             btn_label,
                             key=btn_key,
                             type="primary",
                             use_container_width=True,
-                            on_click=_on_rec_draft_click,
                         )
+                        if _rec_draft_clicked:
+                            _on_rec_draft_click()
                     else:
                         st.button(
                             btn_label,
@@ -2412,8 +2413,14 @@ def render_draft_decision_panel(
     gaps: list[str] | None = None,
     room: dict[str, Any] | None = None,
     page_label_fn: Any = None,
+    include_quick_tools: bool = True,
 ) -> None:
-    """One compact Roster Status + Scarcity + Quick Tools strip for timed picks."""
+    """One compact Roster Status + Scarcity strip for timed picks.
+
+    Quick Draft Tools render at the end by default. Callers may set
+    ``include_quick_tools=False`` and paint Quick Draft Tools later (e.g. after
+    recommendation ranking tables) without moving other page sections.
+    """
     lines = list(tracker.get("lines") or [])
     open_gaps = {str(g).strip() for g in (gaps or tracker.get("gaps") or []) if str(g).strip()}
     scarcity_by_pos: dict[str, dict[str, Any]] = {}
@@ -2544,15 +2551,16 @@ def render_draft_decision_panel(
     else:
         st.caption("Roster slots not configured.")
 
-    # Compact quick tools — no large tiles.
-    try:
-        from live_draft_navigation import render_live_draft_quick_nav_compact
-
-        render_live_draft_quick_nav_compact(st, session, page_label_fn=page_label_fn)
-    except ImportError:
+    if include_quick_tools:
+        # Compact quick tools — no large tiles.
         try:
-            from live_draft_navigation import render_live_draft_quick_nav
+            from live_draft_navigation import render_live_draft_quick_nav_compact
 
-            render_live_draft_quick_nav(st, session, page_label_fn=page_label_fn)
+            render_live_draft_quick_nav_compact(st, session, page_label_fn=page_label_fn)
         except ImportError:
-            pass
+            try:
+                from live_draft_navigation import render_live_draft_quick_nav
+
+                render_live_draft_quick_nav(st, session, page_label_fn=page_label_fn)
+            except ImportError:
+                pass

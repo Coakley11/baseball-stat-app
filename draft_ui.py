@@ -2518,14 +2518,16 @@ def render_live_manual_draft_panel(
             )
 
         # Always paint Draft Player — never hide it when unavailable.
+        # Same ScriptRun return-value contract as Add to Queue / Pause Draft.
         if button_enabled:
-            st.button(
+            _manual_draft_clicked = st.button(
                 "Draft Player",
                 key=MANUAL_DRAFT_BUTTON_KEY,
                 type="primary",
                 use_container_width=True,
-                on_click=_on_manual_draft_click,
             )
+            if _manual_draft_clicked:
+                _on_manual_draft_click()
         else:
             reason_txt = disable_reason or "Cannot draft this player right now."
             st.button(

@@ -810,7 +810,6 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
         )
     except ImportError:
         pass
-    note_solo_fragment_owned_expire(session)
     from live_draft_solo_timer import expire_current_pick_and_advance
 
     _log_tick(
@@ -841,6 +840,9 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
     )
 
     if result.ok and (result.advanced or result.complete):
+        # Stamp ownership only after a confirmed advance so a failed expire does not
+        # suppress page fallback for ~2s while the clock sits at 0:00.
+        note_solo_fragment_owned_expire(session)
         try:
             from live_draft_solo_expire_chain import note_solo_expire_chain
 

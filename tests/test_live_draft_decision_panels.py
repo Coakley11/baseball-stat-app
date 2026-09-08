@@ -385,12 +385,18 @@ class DraftNavigationTests(unittest.TestCase):
         text = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
         decision_idx = text.find("render_draft_decision_panel(")
         self.assertNotEqual(decision_idx, -1)
-        section = text[decision_idx : decision_idx + 8000]
+        section = text[decision_idx : decision_idx + 20000]
         heading_idx = section.find('st.markdown("##### Recommendations")')
-        rec_cards_idx = section.find("render_live_draft_rec_cards(")
+        # Cards may paint via interactive widgets (not a direct render_live_draft_rec_cards call).
+        rec_paint_idx = section.find("render_rec_interactive_widgets(")
+        if rec_paint_idx < 0:
+            rec_paint_idx = section.find("render_live_draft_rec_cards(")
+        rankings_idx = section.find('st.expander("Recommendation rankings"')
         self.assertNotEqual(heading_idx, -1)
-        self.assertNotEqual(rec_cards_idx, -1)
-        self.assertGreater(rec_cards_idx, heading_idx)
+        self.assertNotEqual(rec_paint_idx, -1)
+        self.assertGreater(rec_paint_idx, heading_idx)
+        self.assertNotEqual(rankings_idx, -1)
+        self.assertGreater(rankings_idx, heading_idx)
 
 
 _REPO = Path(__file__).resolve().parents[1]

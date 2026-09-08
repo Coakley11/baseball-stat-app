@@ -15,10 +15,14 @@ QUEUE_TICK_KEY = "_live_draft_queue_only_tick"
 QUEUE_FAST_PAINT_KEY = "_live_draft_queue_fast_paint"
 PICK_TICK_KEY = "_live_draft_optimistic_pick_tick"
 EXPENSIVE_WORK_KEY = "_live_draft_force_expensive_recompute"
+# Survives mid-page consume of QUEUE/TIMER/PICK ticks so end-of-page work
+# (deferred projection pool) can still skip blocking upgrades on interactive runs.
+LIGHT_RERUN_KEY = "_live_draft_light_rerun"
 
 
 def mark_live_draft_timer_tick(session: dict[str, Any]) -> None:
     session[TIMER_TICK_KEY] = True
+    session[LIGHT_RERUN_KEY] = True
     session.pop(QUEUE_TICK_KEY, None)
     session.pop(PICK_TICK_KEY, None)
     session.pop(QUEUE_FAST_PAINT_KEY, None)
@@ -27,6 +31,7 @@ def mark_live_draft_timer_tick(session: dict[str, Any]) -> None:
 def mark_live_draft_queue_tick(session: dict[str, Any]) -> None:
     """Queue add/remove/reorder — skip expensive recs once; never abort the page."""
     session[QUEUE_TICK_KEY] = True
+    session[LIGHT_RERUN_KEY] = True
     # Do NOT set QUEUE_FAST_PAINT_KEY — that previously caused st.stop() after queue.
     session.pop(QUEUE_FAST_PAINT_KEY, None)
     session.pop(TIMER_TICK_KEY, None)
@@ -60,10 +65,20 @@ def consume_live_draft_queue_fast_paint(session: dict[str, Any]) -> bool:
 def mark_live_draft_optimistic_pick_tick(session: dict[str, Any]) -> None:
     """After optimistic local pick — paint board/timer; keep patched recs until Phase 4 refresh."""
     session[PICK_TICK_KEY] = True
+    session[LIGHT_RERUN_KEY] = True
     session.pop(TIMER_TICK_KEY, None)
     session.pop(QUEUE_TICK_KEY, None)
     session.pop(QUEUE_FAST_PAINT_KEY, None)
     session.pop(EXPENSIVE_WORK_KEY, None)
+
+
+def consume_live_draft_light_rerun(session: dict[str, Any]) -> bool:
+    """True once per interactive/light ScriptRun (queue/timer/pick)."""
+    return bool(session.pop(LIGHT_RERUN_KEY, None))
+
+
+def live_draft_light_rerun_active(session: dict[str, Any]) -> bool:
+    return bool(session.get(LIGHT_RERUN_KEY))
 
 
 def clear_live_draft_timer_tick(session: dict[str, Any]) -> None:

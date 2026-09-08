@@ -106,6 +106,7 @@ class LiveDraftCoreInteractionContractTests(unittest.TestCase):
         expander.__enter__ = MagicMock(return_value=expander)
         expander.__exit__ = MagicMock(return_value=False)
         st.expander.return_value = expander
+        st.button.return_value = False
 
         with patch("live_draft_room_ui.record_rec_card_diagnostics"), patch(
             "draft_actions.resolve_manual_draft_panel_gate",
@@ -141,6 +142,92 @@ class LiveDraftCoreInteractionContractTests(unittest.TestCase):
             [x for x in session["draft_queue"] if str(x).strip().lower() == "aaron judge"],
             ["Aaron Judge"],
         )
+
+    def test_rec_rankings_painted_above_quick_draft_tools_only(self) -> None:
+        """Only allowed layout move: recommendation rankings sit above Quick Draft Tools."""
+        src = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
+        body_marker = "def _paint_heavy_recommendations_body() -> None:"
+        body = src.split(body_marker, 1)[1].split(
+            "def _paint_live_recommendation_interactive_only()", 1
+        )[0]
+        rankings_idx = body.find('st.expander("Recommendation rankings"')
+        qt_idx = body.find("render_live_draft_quick_nav_compact")
+        self.assertNotEqual(rankings_idx, -1)
+        self.assertNotEqual(qt_idx, -1)
+        self.assertLess(rankings_idx, qt_idx)
+        self.assertIn("include_quick_tools=False", body)
+        # Draft Queue panel must not be relocated between rankings and Quick Tools.
+        # (Quick Draft Tools itself may mention "Draft Queue" as a jump button.)
+        between = body[rankings_idx:qt_idx]
+        self.assertNotIn("render_live_draft_queue", between)
+        self.assertNotIn("Draft Queue ·", between)
+
+    def test_recommended_players_user_facing_intro(self) -> None:
+        src = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
+        self.assertIn('st.markdown("##### Recommended Players")', src)
+        self.assertIn(
+            "Compare the best options for your current pick based on player quality",
+            src,
+        )
+        self.assertNotIn("Players the engine recommends for this pick", src)
+
+    def test_deferred_pool_skipped_on_light_interactive_runs(self) -> None:
+        src = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
+        self.assertIn("live_draft_light_rerun_active", src)
+        self.assertIn("Never run the blocking projection rebuild on the same ScriptRun", src)
+
+    def test_patch_after_pick_filters_interactive_snapshot(self) -> None:
+        from live_draft_rec_live_paint import INTERACTIVE_TOP_REC_SNAPSHOT_KEY
+        from live_draft_ui_cache import patch_live_draft_caches_after_pick
+
+        session = {
+            INTERACTIVE_TOP_REC_SNAPSHOT_KEY: {
+                "room_id": "R1",
+                "top_rec": pd.DataFrame(
+                    [
+                        {"fullName": "Aaron Judge", "playerID": "judge"},
+                        {"fullName": "Shohei Ohtani", "playerID": "ohtani"},
+                    ]
+                ),
+            },
+            "_live_draft_rec_cache": {
+                "top_rec": pd.DataFrame(
+                    [
+                        {"fullName": "Aaron Judge", "playerID": "judge"},
+                        {"fullName": "Shohei Ohtani", "playerID": "ohtani"},
+                    ]
+                ),
+                "best_avail": pd.DataFrame(),
+                "pos_fit": pd.DataFrame(),
+                "value_sleep": pd.DataFrame(),
+            },
+        }
+        room = {
+            "draft_room_id": "R1",
+            "draft_board": [{"Player": "Aaron Judge", "playerID": "judge"}],
+            "config": {},
+        }
+        patch_live_draft_caches_after_pick(
+            session, room, player_id="judge", player_name="Aaron Judge"
+        )
+        snap = session.get(INTERACTIVE_TOP_REC_SNAPSHOT_KEY) or {}
+        top = snap.get("top_rec")
+        self.assertIsNotNone(top)
+        names = [str(x).lower() for x in top["fullName"].tolist()]
+        self.assertNotIn("aaron judge", names)
+        self.assertIn("shohei ohtani", names)
+
+    def test_expire_ownership_stamped_only_after_success(self) -> None:
+        src = (_REPO / "live_draft_solo_heartbeat.py").read_text(encoding="utf-8")
+        # Ownership stamp must follow a confirmed advance, not precede expire_current_pick.
+        attempt = src.find("phase=f\"{source}_expire_attempt\"")
+        stamp = src.find("note_solo_fragment_owned_expire(session)")
+        committed = src.find('if result.ok and (result.advanced or result.complete):')
+        self.assertNotEqual(attempt, -1)
+        self.assertNotEqual(stamp, -1)
+        self.assertNotEqual(committed, -1)
+        self.assertGreater(stamp, committed)
+        self.assertGreater(stamp, attempt)
 
 
 if __name__ == "__main__":

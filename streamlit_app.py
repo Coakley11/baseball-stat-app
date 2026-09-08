@@ -26520,15 +26520,15 @@ elif active_page == "Live Draft Room":
                 from live_draft_rec_live_paint import render_rec_interactive_widgets
 
                 # Historical Live Draft terminology (not "Recommended picks" / queue strip).
-                st.markdown("##### Recommendations")
+                st.markdown("##### Recommended Players")
                 if st.session_state.get("_solo_needs_projection_player_grades"):
                     st.caption(
                         "Loading projection Player Grades… temporary ranks may refresh shortly."
                     )
                 st.caption(
-                    "Players the engine recommends for this pick. "
-                    "Inspect a card, draft now, or optionally add one to your Queue. "
-                    "Open **Why Recommended** for category impact, scarcity, and fit."
+                    "Compare the best options for your current pick based on player quality, "
+                    "your roster needs, and positional scarcity. Draft a player now or save "
+                    "one to your Queue for later."
                 )
                 _early_ok = bool(
                     render_rec_interactive_widgets(
@@ -26803,14 +26803,20 @@ elif active_page == "Live Draft Room":
                     note_live_draft_page_load(st.session_state, room)
                 _owned_at = float(st.session_state.get(SOLO_FRAGMENT_OWNED_EXPIRE_KEY) or 0.0)
                 _fragment_recent = bool(_owned_at and (_solo_page_time.time() - _owned_at) < 2.0)
+                _clock_is_zero = bool(solo_clock_expired(room)) if callable(solo_clock_expired) else False
                 try:
                     from live_draft_solo_expire_chain import solo_expire_owner
 
-                    if solo_expire_owner(st.session_state) == "wake":
+                    # Wake owns Cloud expire only while the clock has already advanced.
+                    # If remaining is still 0, page fallback must still commit Auto Pick.
+                    if solo_expire_owner(st.session_state) == "wake" and not _clock_is_zero:
                         _fragment_recent = True
                 except ImportError:
                     pass
-                _clock_is_zero = bool(solo_clock_expired(room)) if callable(solo_clock_expired) else False
+                # Ownership stamp without a new deadline is not a successful expire —
+                # do not suppress page fallback while still stuck at 0:00.
+                if _fragment_recent and _clock_is_zero:
+                    _fragment_recent = False
                 try:
                     from live_draft_solo_heartbeat import solo_heartbeat_recent
 
@@ -27503,6 +27509,7 @@ elif active_page == "Live Draft Room":
                                                     gaps=_gaps,
                                                     room=room,
                                                     page_label_fn=page_option_label,
+                                                    include_quick_tools=False,
                                                 )
                                         except ImportError:
                                             render_draft_decision_panel(
@@ -27513,6 +27520,7 @@ elif active_page == "Live Draft Room":
                                                 gaps=_gaps,
                                                 room=room,
                                                 page_label_fn=page_option_label,
+                                                include_quick_tools=False,
                                             )
                                         # Category outlook kept available for Developer Mode only (reduces scroll).
                                         if developer_mode_enabled():
@@ -27720,12 +27728,21 @@ elif active_page == "Live Draft Room":
 
                                 # Tables stay available but collapsed by default so cards remain
                                 # the primary Solo recommendation surface in the first viewport.
-                                with st.expander("Recommendation tables", expanded=False):
+                                # Placement: immediately above Quick Draft Tools (only layout move).
+                                with st.expander("Recommendation rankings", expanded=False):
                                     rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
+                                    # Product-facing columns only (internal EFV/Model Rank not exposed).
                                     rec_cols = [
-                                        "fullName", "Primary Position", "Expected Fantasy Value", "Model Rank", "Market Rank",
-                                        "Fantasy Edge", "Survival Probability", "Survival Label",
-                                        "Draft Fit Score", "Decision Score",
+                                        "fullName",
+                                        "Primary Position",
+                                        "Expected Fantasy Value",
+                                        "Player Grade",
+                                        "Decision Score",
+                                        "Roster Fit Score",
+                                        "Draft Fit Score",
+                                        "Position Scarcity Score",
+                                        "Scarcity Score",
+                                        "Market Rank",
                                         "Why this pick",
                                     ]
 
@@ -27842,7 +27859,7 @@ elif active_page == "Live Draft Room":
                                                     key="live_draft_rec_top",
                                                     file_name="live_draft_top_recommendations.csv",
                                                     display_rows=10,
-                                                    style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                                                    style_cols=["Player Grade", "Decision Score", "Roster Fit Score", "Position Scarcity Score"],
                                                 )
                                         except ImportError:
                                             render_output_table(
@@ -27850,7 +27867,7 @@ elif active_page == "Live Draft Room":
                                                 key="live_draft_rec_top",
                                                 file_name="live_draft_top_recommendations.csv",
                                                 display_rows=10,
-                                                style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                                                style_cols=["Player Grade", "Decision Score", "Roster Fit Score", "Position Scarcity Score"],
                                             )
                                     with rec_tabs[1]:
                                         _bpa_show = _live_rec_table_frame(best_avail)
@@ -27860,7 +27877,7 @@ elif active_page == "Live Draft Room":
                                             key="live_draft_rec_bpa",
                                             file_name="live_draft_best_available.csv",
                                             display_rows=10,
-                                            style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                                            style_cols=["Player Grade", "Decision Score", "Roster Fit Score", "Position Scarcity Score"],
                                         )
                                     with rec_tabs[2]:
                                         if pos_fit.empty:
@@ -27873,7 +27890,7 @@ elif active_page == "Live Draft Room":
                                                 key="live_draft_rec_pos",
                                                 file_name="live_draft_positional_fits.csv",
                                                 display_rows=10,
-                                                style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                                                style_cols=["Player Grade", "Decision Score", "Roster Fit Score", "Position Scarcity Score"],
                                             )
                                     with rec_tabs[3]:
                                         _val_show = _live_rec_table_frame(value_sleep)
@@ -27883,7 +27900,7 @@ elif active_page == "Live Draft Room":
                                             key="live_draft_rec_value",
                                             file_name="live_draft_value_sleepers.csv",
                                             display_rows=10,
-                                            style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score", "Decision Score"],
+                                            style_cols=["Player Grade", "Decision Score", "Roster Fit Score", "Position Scarcity Score"],
                                         )
                                     if developer_mode_enabled():
                                         try:
@@ -27900,6 +27917,29 @@ elif active_page == "Live Draft Room":
                                                     player_name=_ld_brk_player if _ld_brk_player else None,
                                                     key_suffix="live",
                                                 )
+
+                                # ONLY layout reposition: Quick Draft Tools sit immediately
+                                # below recommendation ranking tables (Decision Panel still
+                                # paints roster/scarcity above; Draft Queue placement unchanged).
+                                try:
+                                    from live_draft_navigation import render_live_draft_quick_nav_compact
+
+                                    render_live_draft_quick_nav_compact(
+                                        st,
+                                        st.session_state,
+                                        page_label_fn=page_option_label,
+                                    )
+                                except ImportError:
+                                    try:
+                                        from live_draft_navigation import render_live_draft_quick_nav
+
+                                        render_live_draft_quick_nav(
+                                            st,
+                                            st.session_state,
+                                            page_label_fn=page_option_label,
+                                        )
+                                    except ImportError:
+                                        pass
 
                 def _paint_live_recommendation_interactive_only() -> bool:
                     # Cards may already be registered inline above the tables expander
@@ -28305,6 +28345,66 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
 
+    try:
+        from live_draft_fast_solo_start import (
+            _pool_has_projection_player_grades,
+            maybe_build_deferred_full_pool,
+        )
+
+        # Never run the blocking projection rebuild on the same ScriptRun as Draft /
+        # Queue / Auto Pick / timer ticks — that freezes ordinary interactions.
+        _action_pending = bool(
+            st.session_state.get("_pending_manual_draft_pick")
+            or st.session_state.get("_live_draft_manual_pick_in_flight")
+            or st.session_state.get("_live_draft_pick_submitting")
+        )
+        try:
+            from live_draft_control_trigger_gate import control_center_pause_resume_pending
+
+            _action_pending = _action_pending or bool(
+                control_center_pause_resume_pending(st)
+            )
+        except ImportError:
+            pass
+        try:
+            from live_draft_rerun_scope import live_draft_light_rerun_active
+
+            _action_pending = _action_pending or bool(
+                live_draft_light_rerun_active(st.session_state)
+            )
+        except ImportError:
+            pass
+        _force_proj = bool(st.session_state.get("_solo_needs_projection_player_grades"))
+        _room_end = st.session_state.get("live_draft_room")
+        if not _force_proj and isinstance(_room_end, dict):
+            _force_proj = not _pool_has_projection_player_grades(_room_end.get("pool"))
+        if not _action_pending:
+            try:
+                from live_draft_start_progress import is_live_draft_start_in_flight
+
+                if is_live_draft_start_in_flight(st.session_state):
+                    _action_pending = True
+            except ImportError:
+                pass
+        # Wait until the active draft heavy paint has registered once so Start /
+        # first viewport are not blocked by the synchronous projection rebuild.
+        _heavy_done = bool(st.session_state.get("_live_draft_heavy_paint_done"))
+        if not _action_pending and _heavy_done:
+            _upgraded = maybe_build_deferred_full_pool(st.session_state, force=_force_proj)
+            if _upgraded:
+                st.session_state.pop("_solo_needs_projection_player_grades", None)
+                if not st.session_state.get("_solo_projection_grade_rerun_done"):
+                    st.session_state["_solo_projection_grade_rerun_done"] = True
+                    st.session_state["_live_draft_defer_full_rerun"] = True
+        try:
+            from live_draft_rerun_scope import consume_live_draft_light_rerun
+
+            consume_live_draft_light_rerun(st.session_state)
+        except ImportError:
+            pass
+    except ImportError:
+        pass
+
     if st.session_state.pop("_live_draft_defer_full_rerun", None):
         try:
             from live_draft_render_checkpoints import note_live_draft_render_checkpoint
@@ -28330,45 +28430,6 @@ elif active_page == "Live Draft Room":
 
         mark_ux_milestone(st.session_state, "page_complete", rebuild="full_page", st=st)
         settle_ux_action(st.session_state, where="app_settled", st=st)
-    except ImportError:
-        pass
-
-    try:
-        from live_draft_fast_solo_start import (
-            _pool_has_projection_player_grades,
-            maybe_build_deferred_full_pool,
-        )
-
-        # Always allow deferred Solo pool upgrade — do not wait for heavy-paint defer
-        # to clear, or Recommended picks can stay empty across poll ticks.
-        _force_proj = bool(st.session_state.get("_solo_needs_projection_player_grades"))
-        _room_end = st.session_state.get("live_draft_room")
-        if not _force_proj and isinstance(_room_end, dict):
-            _force_proj = not _pool_has_projection_player_grades(_room_end.get("pool"))
-        _upgraded = maybe_build_deferred_full_pool(st.session_state, force=_force_proj)
-        if _upgraded:
-            st.session_state.pop("_solo_needs_projection_player_grades", None)
-            # Refresh cards with real Player Grades only when no interactive action is
-            # pending on this ScriptRun (Draft / Queue / Auto Pick / Pause).
-            _action_pending = bool(
-                st.session_state.get("_pending_manual_draft_pick")
-                or st.session_state.get("_live_draft_manual_pick_in_flight")
-                or st.session_state.get("_live_draft_pick_submitting")
-            )
-            try:
-                from live_draft_control_trigger_gate import control_center_pause_resume_pending
-
-                _action_pending = _action_pending or bool(
-                    control_center_pause_resume_pending(st)
-                )
-            except ImportError:
-                pass
-            if (
-                not _action_pending
-                and not st.session_state.get("_solo_projection_grade_rerun_done")
-            ):
-                st.session_state["_solo_projection_grade_rerun_done"] = True
-                st.session_state["_live_draft_defer_full_rerun"] = True
     except ImportError:
         pass
 
