@@ -26403,13 +26403,61 @@ elif active_page == "Live Draft Room":
             _solo_recs_here = bool(_solo_compact_viewport) and not bool(_draft_is_complete)
         if _solo_recs_here:
             try:
-                from live_draft_fast_solo_start import ensure_solo_player_pool_for_recs
+                from live_draft_fast_solo_start import (
+                    DEFERRED_FULL_POOL_DONE_KEY,
+                    _pool_has_projection_player_grades,
+                    ensure_solo_player_pool_for_recs,
+                    maybe_build_deferred_full_pool,
+                )
 
                 # Restore/fast-start can leave Solo pool empty before Recommendations.
                 ensure_solo_player_pool_for_recs(st.session_state, room)
                 _ensured = st.session_state.get("live_draft_room")
                 if isinstance(_ensured, dict):
                     room = _ensured
+                # Fast Solo must upgrade to the unified projection Player Grade pool before
+                # recommendation scoring — otherwise temporary market proxies drive cards.
+                _pool_now = room.get("pool") if isinstance(room, dict) else None
+                if not _pool_has_projection_player_grades(_pool_now):
+                    with st.spinner("Loading projection Player Grades…"):
+                        _upgraded = maybe_build_deferred_full_pool(
+                            st.session_state, force=True
+                        )
+                        if not _upgraded:
+                            try:
+                                _full = get_cached_unified_projection_pool_live()
+                                if _full is not None and not getattr(_full, "empty", True):
+                                    from draft_scoring_pool import (
+                                        POOL_KIND_VALID_PROJECTION,
+                                        POOL_VALUE_KIND_KEY,
+                                        ensure_draft_scoring_pool_columns,
+                                    )
+
+                                    _full = ensure_draft_scoring_pool_columns(_full)
+                                    _full.attrs[POOL_VALUE_KIND_KEY] = (
+                                        POOL_KIND_VALID_PROJECTION
+                                    )
+                                    room["pool"] = _full.copy()
+                                    st.session_state["live_draft_room"] = room
+                                    st.session_state[DEFERRED_FULL_POOL_DONE_KEY] = True
+                                    try:
+                                        from live_draft_ui_cache import (
+                                            invalidate_live_draft_ui_caches_after_board_change,
+                                        )
+
+                                        invalidate_live_draft_ui_caches_after_board_change(
+                                            st.session_state,
+                                            reason="solo_projection_player_grade_attach",
+                                        )
+                                    except ImportError:
+                                        st.session_state.pop("_live_draft_rec_cache", None)
+                            except Exception as _pool_exc:
+                                st.session_state["_solo_projection_attach_error"] = str(
+                                    _pool_exc
+                                )[:200]
+                        _ensured = st.session_state.get("live_draft_room")
+                        if isinstance(_ensured, dict):
+                            room = _ensured
             except ImportError:
                 pass
             try:

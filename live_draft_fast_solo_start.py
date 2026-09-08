@@ -203,12 +203,22 @@ def _pool_has_projection_player_grades(pool: Any) -> bool:
 
 def _deferred_pool_params_from_room(session: dict[str, Any], room: dict[str, Any]) -> dict[str, Any]:
     cfg = dict(room.get("config") or {})
+    lahman_year = int(
+        session.get("_lahman_max_year")
+        or session.get("lahman_max_year")
+        or cfg.get("lahman_max_year")
+        or 0
+    )
+    if lahman_year <= 0:
+        # Match streamlit_app year_max fallback so deferred rebuild is not empty.
+        try:
+            from datetime import datetime
+
+            lahman_year = int(datetime.now().year) - 1
+        except Exception:
+            lahman_year = 2024
     return {
-        "lahman_max_year": int(
-            session.get("lahman_max_year")
-            or cfg.get("lahman_max_year")
-            or 0
-        ),
+        "lahman_max_year": lahman_year,
         "draft_window": int(cfg.get("projection_window") or session.get("live_draft_proj_window") or 3),
         "fantasy_format": str(
             cfg.get("fantasy_format") or cfg.get("scoring_type") or "5x5 Roto"
