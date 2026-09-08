@@ -238,7 +238,7 @@ class CompactRecCardTests(unittest.TestCase):
         )
 
         diag = self.session.get(LIVE_DRAFT_REC_DIAG_KEY) or {}
-        self.assertEqual(diag.get("recommendation_card_layout_mode"), "compact_horizontal")
+        self.assertEqual(diag.get("recommendation_card_layout_mode"), "horizontal_grid_3")
         md = str(self.st.markdown.call_args_list)
         self.assertIn("Juan Soto", md)
         self.assertEqual(self.st.button.call_count, 2)

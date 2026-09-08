@@ -1724,7 +1724,7 @@ def render_live_draft_rec_cards(
     pick_idx = int(room.get("current_pick_index") or 0)
     room_id = str(room.get("draft_room_id") or "").strip()
     layout_mode = (
-        "horizontal_cards"
+        "horizontal_grid_3"
         if str(layout or "").strip().lower() == "horizontal"
         else ("dense" if dense else ("stacked" if layout == "stacked" else "compact_horizontal"))
     )
@@ -1753,9 +1753,13 @@ def render_live_draft_rec_cards(
     paused = str(room.get("status") or "") == "paused"
     submitting = False
     try:
-        from live_draft_pick_timer import is_pick_submitting
+        from live_draft_pick_timer import clear_pick_submit_state, is_pick_submitting
 
         submitting = is_pick_submitting(session)
+        # Sticky submitting with no pending pick permanently disables Draft Player.
+        if submitting and not session.get("_pending_manual_draft_pick"):
+            clear_pick_submit_state(session)
+            submitting = False
     except ImportError:
         pass
 
@@ -1768,164 +1772,174 @@ def render_live_draft_rec_cards(
 
     from contextlib import nullcontext
 
-    horizontal = str(layout or '').strip().lower() == 'horizontal'
-    column_slots = st.columns(len(rows)) if horizontal else [None] * len(rows)
-
-    for slot, (i, (_, r)) in zip(column_slots, enumerate(rows, start=1)):
-        with (slot if slot is not None else nullcontext()):
-            name = str(r.get("fullName", "Player") or "Player")
-            pos = str(r.get("Primary Position", "") or "—")
-            edge = pd.to_numeric(r.get("Fantasy Edge", np.nan), errors="coerce")
-            surv = pd.to_numeric(r.get("Survival Probability", np.nan), errors="coerce")
-            pool_df = room.get("pool")
-            cfg = dict(room.get("config") or {})
-            try:
-                from live_draft_category_outlook import player_top_category_strengths
-                from live_draft_ux import describe_strengths
-
-                raw_strengths = player_top_category_strengths(r, pool_df, config=cfg, max_count=2)
-                strengths = describe_strengths(raw_strengths, max_count=2)
-            except ImportError:
-                strengths = []
-            badges = _rec_card_badges(
-                i, r, rec_df, gaps=gaps, category_needs=category_needs, strengths=strengths
-            )
-            tier_lbl, _tier_css = _rec_tier_badge(i, r, badges=badges)
-            edge_txt, _edge_css = _display_edge(edge if pd.notna(edge) else None)
-            action = _rec_action_guidance(float(surv) if pd.notna(surv) else None, i)
-            try:
-                from live_draft_rec_badges import primary_recommendation_reason
-
-                headline = primary_recommendation_reason(
-                    i, r, badges=badges, strengths=strengths, gaps=gaps
-                )
-            except ImportError:
-                headline = tier_lbl
-            explanation = build_draft_insight_text(
-                r, badges=badges, strengths=None, gaps=gaps, rank=i
-            )
-            badge_html = "".join(
-                f'<span class="ld-rec-badge {css}{" rank" if label in ("Best Overall", "Second Best", "Third Best") else ""}">{label}</span>'
-                for label, css in badges
-            )
-            surv_pct = f"{int(round(float(surv) * 100))}% avail next round" if pd.notna(surv) else "—"
-            player_id = str(r.get("playerID") or r.get("player_id") or "").strip()
-            stable_key = player_id or f"name_{name.replace(' ', '_')[:32]}"
-
-            player_available = True
-            avail_reason = ""
-            draft_gate: dict[str, Any] = {}
-            try:
-                from draft_actions import resolve_player_draft_gate
-
-                draft_gate = resolve_player_draft_gate(session, name)
-                player_available = bool(draft_gate.get("allowed"))
-                avail_reason = str(draft_gate.get("disable_message") or "")
-            except ImportError:
+    horizontal = str(layout or "").strip().lower() == "horizontal"
+    # Desktop: readable 3-across grid (2 rows for six cards). Avoid six ultra-narrow
+    # columns that force vertical scanning / truncated metrics.
+    cols_per_row = 3 if horizontal else 1
+    for row_start in range(0, len(rows), cols_per_row):
+        chunk = list(enumerate(rows[row_start : row_start + cols_per_row], start=row_start + 1))
+        column_slots = st.columns(len(chunk)) if horizontal else [None] * len(chunk)
+        for slot, (i, (_, r)) in zip(column_slots, chunk):
+            with (slot if slot is not None else nullcontext()):
+                name = str(r.get("fullName", "Player") or "Player")
+                pos = str(r.get("Primary Position", "") or "—")
+                edge = pd.to_numeric(r.get("Fantasy Edge", np.nan), errors="coerce")
+                surv = pd.to_numeric(r.get("Survival Probability", np.nan), errors="coerce")
+                pool_df = room.get("pool")
+                cfg = dict(room.get("config") or {})
                 try:
-                    from draft_actions import _live_player_available
+                    from live_draft_category_outlook import player_top_category_strengths
+                    from live_draft_ux import describe_strengths
 
-                    player_available, avail_reason = _live_player_available(session, name)
+                    raw_strengths = player_top_category_strengths(r, pool_df, config=cfg, max_count=2)
+                    strengths = describe_strengths(raw_strengths, max_count=2)
                 except ImportError:
-                    pass
-
-            draft_enabled = turn_enabled and player_available and not draft_complete and not paused and not submitting
-            disable_reason = ""
-            if submitting:
-                disable_reason = "Submitting pick…"
-            elif paused:
-                disable_reason = "Draft is paused — resume to pick."
-            elif draft_complete:
-                disable_reason = "Draft is complete."
-            elif not turn_enabled:
-                disable_reason = str(gate.get("draft_button_disable_reason") or "Not your turn.")
-            elif not player_available:
-                disable_reason = avail_reason or f"{name} is not available."
-
-            with st.container(border=True):
-                team = str(r.get("Team") or r.get("teamName") or "").strip()
+                    strengths = []
+                badges = _rec_card_badges(
+                    i, r, rec_df, gaps=gaps, category_needs=category_needs, strengths=strengths
+                )
+                tier_lbl, _tier_css = _rec_tier_badge(i, r, badges=badges)
+                edge_txt, _edge_css = _display_edge(edge if pd.notna(edge) else None)
+                action = _rec_action_guidance(float(surv) if pd.notna(surv) else None, i)
                 try:
-                    from player_photos import (
-                        build_draft_score_metrics_html,
-                        compact_fantasy_stat_line,
-                        get_player_photo_info,
-                        inject_player_photo_styles,
-                        player_grade_display,
-                        render_rec_card_photo_html,
-                    )
+                    from live_draft_rec_badges import primary_recommendation_reason
 
-                    inject_player_photo_styles(st)
-                    photo_info = get_player_photo_info(
-                        player_id=player_id or None,
-                        full_name=name,
-                        row=r,
-                        use_api=True,
+                    headline = primary_recommendation_reason(
+                        i, r, badges=badges, strengths=strengths, gaps=gaps
                     )
-                    stat_line = compact_fantasy_stat_line(r)
-                    photo_html = render_rec_card_photo_html(photo_info, alt=name)
-                    team_line = f" · {team}" if team else ""
-                    stat_html = f'<div class="ld-rec-stat-line">{stat_line}</div>' if stat_line else ""
-                    metrics_html = build_draft_score_metrics_html(
-                        r,
-                        show_decision_score=True,
-                        show_player_grade=True,
-                        show_roster_fit=True,
-                        show_scarcity=True,
-                        show_market_rank=False,
-                        show_model_rank=False,
-                        show_fantasy_edge=False,
-                    )
-                    strength_txt = ""
-                    if strengths and not horizontal:
-                        strength_txt = (
-                            f'<div style="font-size:0.82rem;color:#475569;margin-top:4px;">'
-                            f"Top strengths: {', '.join(strengths)}</div>"
-                        )
+                except ImportError:
+                    headline = tier_lbl
+                explanation = build_draft_insight_text(
+                    r, badges=badges, strengths=None, gaps=gaps, rank=i
+                )
+                badge_html = "".join(
+                    f'<span class="ld-rec-badge {css}{" rank" if label in ("Best Overall", "Second Best", "Third Best") else ""}">{label}</span>'
+                    for label, css in badges
+                )
+                surv_pct = f"{int(round(float(surv) * 100))}% avail next round" if pd.notna(surv) else "—"
+                player_id = str(r.get("playerID") or r.get("player_id") or "").strip()
+                stable_key = player_id or f"name_{name.replace(' ', '_')[:32]}"
+
+                player_available = True
+                avail_reason = ""
+                draft_gate: dict[str, Any] = {}
+                try:
+                    from draft_actions import resolve_player_draft_gate
+
+                    draft_gate = resolve_player_draft_gate(session, name)
+                    player_available = bool(draft_gate.get("allowed"))
+                    avail_reason = str(draft_gate.get("disable_message") or "")
+                except ImportError:
                     try:
-                        from live_draft_ux import confidence_label_from_score, position_color
+                        from draft_actions import _live_player_available
 
-                        decision = pd.to_numeric(r.get("Decision Score", np.nan), errors="coerce")
-                        conf_label, conf_stars = confidence_label_from_score(
-                            float(decision) if pd.notna(decision) else None
-                        )
-                        confidence_txt = (
-                            f'<div style="font-size:0.8rem;color:#334155;margin-top:6px;">'
-                            f"<strong>{conf_label}</strong> {conf_stars}</div>"
-                        )
-                        if horizontal:
-                            confidence_txt = ""
-                    except ImportError:
-                        confidence_txt = ""
-                    pos_color = "#475569"
-                    try:
-                        from live_draft_ux import position_color
-
-                        pos_color = position_color(pos)
+                        player_available, avail_reason = _live_player_available(session, name)
                     except ImportError:
                         pass
-                    meta_line = f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}' if not badges else f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}'
-                    meta_open = build_ld_rec_card_meta_open_tag(
-                        player_id=player_id, player_name=name
-                    )
-                    st.markdown(
-                        f'<div class="ld-rec-card-header">{photo_html}{meta_open}'
-                        f'<div style="font-size:1.05rem;font-weight:800;line-height:1.25;">{name}</div>'
-                        f'<div style="font-size:0.88rem;color:#475569;">{meta_line}</div>'
-                        f"{stat_html}{metrics_html}{strength_txt}{confidence_txt}"
-                        f"</div></div>",
-                        unsafe_allow_html=True,
-                    )
-                except ImportError:
-                    st.markdown(f"**{name}**")
-                    st.caption(f"{pos}")
-                if badge_html:
-                    st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
+
+                draft_enabled = turn_enabled and player_available and not draft_complete and not paused and not submitting
+                disable_reason = ""
+                if submitting:
+                    disable_reason = "Submitting pick…"
+                elif paused:
+                    disable_reason = "Draft is paused — resume to pick."
+                elif draft_complete:
+                    disable_reason = "Draft is complete."
+                elif not turn_enabled:
+                    disable_reason = str(gate.get("draft_button_disable_reason") or "Not your turn.")
+                elif not player_available:
+                    disable_reason = avail_reason or f"{name} is not available."
+
+                with st.container(border=True):
+                    team = str(r.get("Team") or r.get("teamName") or "").strip()
+                    try:
+                        from player_photos import (
+                            build_draft_score_metrics_html,
+                            compact_fantasy_stat_line,
+                            get_player_photo_info,
+                            inject_player_photo_styles,
+                            player_grade_display,
+                            render_rec_card_photo_html,
+                        )
+
+                        inject_player_photo_styles(st)
+                        photo_info = get_player_photo_info(
+                            player_id=player_id or None,
+                            full_name=name,
+                            row=r,
+                            use_api=True,
+                        )
+                        stat_line = compact_fantasy_stat_line(r)
+                        photo_html = render_rec_card_photo_html(photo_info, alt=name)
+                        team_line = f" · {team}" if team else ""
+                        stat_html = f'<div class="ld-rec-stat-line">{stat_line}</div>' if stat_line else ""
+                        metrics_html = build_draft_score_metrics_html(
+                            r,
+                            show_decision_score=True,
+                            show_player_grade=True,
+                            show_roster_fit=True,
+                            show_scarcity=True,
+                            show_market_rank=False,
+                            show_model_rank=False,
+                            show_fantasy_edge=False,
+                        )
+                        strength_txt = ""
+                        if strengths and not horizontal:
+                            strength_txt = (
+                                f'<div style="font-size:0.82rem;color:#475569;margin-top:4px;">'
+                                f"Top strengths: {', '.join(strengths)}</div>"
+                            )
+                        try:
+                            from live_draft_ux import confidence_label_from_score, position_color
+
+                            decision = pd.to_numeric(r.get("Decision Score", np.nan), errors="coerce")
+                            conf_label, conf_stars = confidence_label_from_score(
+                                float(decision) if pd.notna(decision) else None
+                            )
+                            confidence_txt = (
+                                f'<div style="font-size:0.8rem;color:#334155;margin-top:6px;">'
+                                f"<strong>{conf_label}</strong> {conf_stars}</div>"
+                            )
+                            if horizontal:
+                                confidence_txt = ""
+                        except ImportError:
+                            confidence_txt = ""
+                        pos_color = "#475569"
+                        try:
+                            from live_draft_ux import position_color
+
+                            pos_color = position_color(pos)
+                        except ImportError:
+                            pass
+                        meta_line = f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}' if not badges else f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}'
+                        meta_open = build_ld_rec_card_meta_open_tag(
+                            player_id=player_id, player_name=name
+                        )
+                        st.markdown(
+                            f'<div class="ld-rec-card-header">{photo_html}{meta_open}'
+                            f'<div style="font-size:1.05rem;font-weight:800;line-height:1.25;">{name}</div>'
+                            f'<div style="font-size:0.88rem;color:#475569;">{meta_line}</div>'
+                            f"{stat_html}{metrics_html}{strength_txt}{confidence_txt}"
+                            f"</div></div>",
+                            unsafe_allow_html=True,
+                        )
+                    except ImportError:
+                        st.markdown(f"**{name}**")
+                        st.caption(f"{pos}")
+                    if badge_html:
+                        st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
                 if horizontal:
                     # Keep Draft + Queue on one row so both stay in a 768px Solo viewport.
-                    btn_col, queue_col = st.columns(2)
+                    _action_cols = st.columns(2)
+                    btn_col, queue_col = _action_cols[0], _action_cols[1]
                     detail_col = nullcontext()
                 else:
-                    btn_col, queue_col, detail_col = st.columns([2, 1, 1])
+                    _action_cols = st.columns([2, 1, 1])
+                    btn_col, queue_col, detail_col = (
+                        _action_cols[0],
+                        _action_cols[1],
+                        _action_cols[2],
+                    )
                 queued_names = {
                     str(x).strip().lower()
                     for x in (session.get("draft_queue") or [])

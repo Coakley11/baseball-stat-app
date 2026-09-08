@@ -26484,6 +26484,7 @@ elif active_page == "Live Draft Room":
         # Streamlit remembers expander open-state — an open Draft controls panel alone
         # fills a 768px laptop viewport and hides the cards.
         st.session_state.pop("_live_draft_rec_cards_early_viewport", None)
+        st.session_state.pop("_live_draft_manual_panel_early", None)
         _solo_recs_here = False
         try:
             from live_draft_setup_mode import is_solo_live_draft as _is_solo_fn_early
@@ -26548,85 +26549,11 @@ elif active_page == "Live Draft Room":
                     st.session_state[
                         "_live_draft_rec_queue_interactive_owner"
                     ] = "solo_early_viewport"
-                    # Cards already painted (temporary grades OK). Attach real projection
-                    # Player Grades now and rerun once — avoids blank first paint and the
-                    # ensure_solo silent-failure path.
-                    if st.session_state.get("_solo_needs_projection_player_grades"):
-                        try:
-                            from live_draft_fast_solo_start import (
-                                DEFERRED_FULL_POOL_DONE_KEY,
-                                maybe_build_deferred_full_pool,
-                            )
-
-                            with st.spinner("Loading projection Player Grades…"):
-                                _up = maybe_build_deferred_full_pool(
-                                    st.session_state, force=True
-                                )
-                                if not _up:
-                                    # Direct attach when deferred helper cannot rebuild.
-                                    _full = get_cached_unified_projection_pool_live()
-                                    if _full is not None and not getattr(
-                                        _full, "empty", True
-                                    ):
-                                        from draft_scoring_pool import (
-                                            POOL_KIND_VALID_PROJECTION,
-                                            POOL_VALUE_KIND_KEY,
-                                            ensure_draft_scoring_pool_columns,
-                                        )
-
-                                        _full = ensure_draft_scoring_pool_columns(_full)
-                                        _full.attrs[POOL_VALUE_KIND_KEY] = (
-                                            POOL_KIND_VALID_PROJECTION
-                                        )
-                                        _room_up = st.session_state.get(
-                                            "live_draft_room"
-                                        )
-                                        if isinstance(_room_up, dict):
-                                            _room_up["pool"] = _full.copy()
-                                            st.session_state[
-                                                "live_draft_room"
-                                            ] = _room_up
-                                            room = _room_up
-                                        st.session_state[
-                                            DEFERRED_FULL_POOL_DONE_KEY
-                                        ] = True
-                                        try:
-                                            from live_draft_ui_cache import (
-                                                invalidate_live_draft_ui_caches_after_board_change,
-                                            )
-
-                                            invalidate_live_draft_ui_caches_after_board_change(
-                                                st.session_state,
-                                                reason="solo_projection_direct_attach",
-                                            )
-                                        except ImportError:
-                                            st.session_state.pop(
-                                                "_live_draft_rec_cache", None
-                                            )
-                                        _up = True
-                            if _up and not st.session_state.get(
-                                "_solo_projection_grade_rerun_done"
-                            ):
-                                st.session_state.pop(
-                                    "_solo_needs_projection_player_grades", None
-                                )
-                                st.session_state[
-                                    "_solo_projection_grade_rerun_done"
-                                ] = True
-                                st.rerun()
-                            elif not _up:
-                                _err = st.session_state.get(
-                                    "_solo_projection_attach_error"
-                                ) or "deferred_pool_upgrade_returned_false"
-                                st.caption(f"Player Grade upgrade pending: `{_err}`")
-                        except Exception as _up_exc:
-                            st.session_state["_solo_projection_attach_error"] = (
-                                f"{type(_up_exc).__name__}: {_up_exc}"
-                            )[:200]
-                            st.caption(
-                                "Player Grade upgrade error: "
-                                f"`{st.session_state['_solo_projection_attach_error']}`"
-                            )
+                    # Do NOT attach/rebuild the projection pool or st.rerun() here.
+                    # Mid-page upgrade+rerun after Draft/Queue widgets register drops
+                    # Add-to-Queue return values, Control Center Auto Pick, and can
+                    # race manual Draft Player commits. End-of-page deferred upgrade
+                    # owns the Player Grade attach (after interactive controls paint).
                 else:
                     st.info("Loading recommendation cards…")
                     try:
@@ -26651,6 +26578,37 @@ elif active_page == "Live Draft Room":
                     f"{type(_early_rec_exc).__name__}: {_early_rec_exc}"
                 )[:240]
                 st.warning("Recommendation cards unavailable this pass — scroll for Draft Board.")
+
+            # Solo: keep Manual Draft reachable immediately under recommendations so
+            # arbitrary available players are draftable without scrolling past chrome.
+            if bool(st.session_state.get("_live_draft_rec_cards_early_viewport")):
+                try:
+                    from draft_ui import render_live_manual_draft_panel
+
+                    st.markdown("##### Manual Draft")
+                    st.caption(
+                        "Browse any available legal player — you are not limited to the recommendation cards."
+                    )
+                    if render_live_manual_draft_panel(
+                        st,
+                        st.session_state,
+                        room,
+                        user_team=user_team,
+                        multiplayer=_multiplayer_draft,
+                    ):
+                        try:
+                            from live_draft_safe_mode import request_live_draft_rerun
+
+                            request_live_draft_rerun(
+                                st, st.session_state, "manual_pick_early", room=room
+                            )
+                        except ImportError:
+                            st.rerun()
+                    st.session_state["_live_draft_manual_panel_early"] = True
+                except Exception as _early_manual_exc:
+                    st.session_state["_live_draft_manual_panel_early_error"] = (
+                        f"{type(_early_manual_exc).__name__}: {_early_manual_exc}"
+                    )[:200]
 
         try:
             from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section, ldr_step
@@ -26799,10 +26757,9 @@ elif active_page == "Live Draft Room":
         # (safe_mode / rerun throttle / recovery caption). Missing this gate left the
         # clock stuck at 0 while page_complete kept firing.
         _process_expired_or_timer = bool(not _autopick_off and (_timer_ok or _clock_expired))
-        # Hold expire while Solo is still on temporary market grades so the
-        # projection Player Grade attach can finish before autopick advances.
-        if st.session_state.get("_solo_needs_projection_player_grades"):
-            _process_expired_or_timer = False
+        # Never block timer auto-pick on projection-grade upgrade. Temporary market
+        # grades are still legal for auto-pick; holding expire left Solo stuck at 0s
+        # with Auto Pick for other teams appearing to do nothing.
         # Same-run Pause/Resume must preempt expire: expire historically runs before
         # Control Center so Auto Pick wins at 0s, but that also drops Pause clicks
         # when the clock is already expired (acceptance saw pause_click with
@@ -28035,20 +27992,24 @@ elif active_page == "Live Draft Room":
                 except ImportError:
                     pass
 
-                if render_live_manual_draft_panel(
-                    st,
-                    st.session_state,
-                    room,
-                    user_team=user_team,
-                    multiplayer=_multiplayer_draft,
-                ):
-                    try:
-                        from live_draft_safe_mode import request_live_draft_rerun
+                # Early Solo path already painted Manual Draft under Recommendations —
+                # skip the duplicate widget tree (StreamlitDuplicateElementKey).
+                if not bool(st.session_state.get("_live_draft_manual_panel_early")):
+                    if render_live_manual_draft_panel(
+                        st,
+                        st.session_state,
+                        room,
+                        user_team=user_team,
+                        multiplayer=_multiplayer_draft,
+                    ):
+                        try:
+                            from live_draft_safe_mode import request_live_draft_rerun
 
-                        request_live_draft_rerun(st, st.session_state, "manual_pick", room=room)
-                    except ImportError:
-                        st.rerun()
-        # Active Live Draft: skip "Continue analysis / settings on another page" nav.
+                            request_live_draft_rerun(st, st.session_state, "manual_pick", room=room)
+                        except ImportError:
+                            st.rerun()
+                else:
+                    st.session_state.pop("_live_draft_manual_panel_early", None)        # Active Live Draft: skip "Continue analysis / settings on another page" nav.
         # Quick Draft Tools in the Decision Panel cover Assistant / Sleepers / Queue.
 
         if developer_mode_enabled():
@@ -28387,10 +28348,27 @@ elif active_page == "Live Draft Room":
         _upgraded = maybe_build_deferred_full_pool(st.session_state, force=_force_proj)
         if _upgraded:
             st.session_state.pop("_solo_needs_projection_player_grades", None)
-            # One rerun so early recommendation cards score with real Player Grades.
-            if not st.session_state.get("_solo_projection_grade_rerun_done"):
+            # Refresh cards with real Player Grades only when no interactive action is
+            # pending on this ScriptRun (Draft / Queue / Auto Pick / Pause).
+            _action_pending = bool(
+                st.session_state.get("_pending_manual_draft_pick")
+                or st.session_state.get("_live_draft_manual_pick_in_flight")
+                or st.session_state.get("_live_draft_pick_submitting")
+            )
+            try:
+                from live_draft_control_trigger_gate import control_center_pause_resume_pending
+
+                _action_pending = _action_pending or bool(
+                    control_center_pause_resume_pending(st)
+                )
+            except ImportError:
+                pass
+            if (
+                not _action_pending
+                and not st.session_state.get("_solo_projection_grade_rerun_done")
+            ):
                 st.session_state["_solo_projection_grade_rerun_done"] = True
-                st.rerun()
+                st.session_state["_live_draft_defer_full_rerun"] = True
     except ImportError:
         pass
 
