@@ -26607,7 +26607,8 @@ elif active_page == "Live Draft Room":
                             st.caption(
                                 "Player Grade upgrade error: "
                                 f"`{st.session_state['_solo_projection_attach_error']}`"
-                            )                else:
+                            )
+                else:
                     st.info("Loading recommendation cards…")
                     try:
                         _st = st.session_state.get("_live_draft_rec_interactive_paint_status")
