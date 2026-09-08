@@ -26401,6 +26401,16 @@ elif active_page == "Live Draft Room":
             _solo_recs_here = bool(_solo_compact_viewport) and not bool(_draft_is_complete)
         if _solo_recs_here:
             try:
+                from live_draft_fast_solo_start import ensure_solo_player_pool_for_recs
+
+                # Restore/fast-start can leave Solo pool empty before Recommended picks.
+                ensure_solo_player_pool_for_recs(st.session_state, room)
+                _ensured = st.session_state.get("live_draft_room")
+                if isinstance(_ensured, dict):
+                    room = _ensured
+            except ImportError:
+                pass
+            try:
                 from live_draft_rec_live_paint import render_rec_interactive_widgets
 
                 st.markdown("### Recommended picks")
@@ -26425,6 +26435,22 @@ elif active_page == "Live Draft Room":
                     ] = "solo_early_viewport"
                 else:
                     st.info("Loading recommendation cards…")
+                    try:
+                        _st = st.session_state.get("_live_draft_rec_interactive_paint_status")
+                        if isinstance(_st, dict) and _st.get("fail_reason"):
+                            st.caption(
+                                "Rec diag: "
+                                f"`{_st.get('fail_reason')}` "
+                                f"pool_rows=`{_st.get('pool_rows')}` "
+                                f"avail=`{_st.get('avail_rows')}` "
+                                f"clock=`{_st.get('team_on_clock')}` "
+                                f"rec_err=`{_st.get('rec_err') or '—'}` "
+                                f"schema=`{_st.get('schema_status')}` "
+                                f"ensure=`{st.session_state.get('_solo_pool_ensure_error') or '—'}` "
+                                f"rebuild=`{st.session_state.get('_live_draft_rec_interactive_rebuild_error') or '—'}`"
+                            )
+                    except Exception:
+                        pass
             except Exception as _early_rec_exc:
                 st.session_state["_live_draft_rec_cards_early_viewport"] = False
                 st.session_state["_live_draft_rec_early_viewport_error"] = (
@@ -28142,13 +28168,11 @@ elif active_page == "Live Draft Room":
         pass
 
     try:
-        from live_draft_fast_solo_start import (
-            maybe_build_deferred_full_pool,
-            should_defer_heavy_first_paint,
-        )
+        from live_draft_fast_solo_start import maybe_build_deferred_full_pool
 
-        if not should_defer_heavy_first_paint(st.session_state):
-            maybe_build_deferred_full_pool(st.session_state)
+        # Always allow deferred Solo pool upgrade — do not wait for heavy-paint defer
+        # to clear, or Recommended picks can stay empty across poll ticks.
+        maybe_build_deferred_full_pool(st.session_state)
     except ImportError:
         pass
 

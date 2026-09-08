@@ -97,6 +97,35 @@ def build_fast_market_pool(market_df: Any, *, min_rows: int = 400) -> Any:
         df["Primary Position"] = df["Position"]
     if "Primary Position" not in df.columns:
         df["Primary Position"] = "UTIL"
+    # Market feeds often ship Primary Position as UTIL (or omit it) while ADP /
+    # FantasyPros still have real eligibility. Scoring hard-filters illegal slots,
+    # so UTIL-only pools yield empty recommendation cards.
+    try:
+        from draft_scoring_pool import ensure_draft_scoring_pool_columns
+
+        df = ensure_draft_scoring_pool_columns(df)
+    except ImportError:
+        pos = df["Primary Position"].fillna("").astype(str).str.strip()
+        bad = pos.eq("") | pos.str.upper().eq("UTIL")
+        if bad.any():
+            for src in ("ADP Position", "FantasyPros Position", "Position"):
+                if src not in df.columns:
+                    continue
+                still = bad & df["Primary Position"].fillna("").astype(str).str.strip().str.upper().isin(
+                    {"", "UTIL"}
+                )
+                if not still.any():
+                    break
+                raw = df.loc[still, src].fillna("").astype(str)
+                derived = (
+                    raw.str.replace(r"\d+$", "", regex=True)
+                    .str.split(r"[,/\+]", regex=True)
+                    .str[0]
+                    .str.strip()
+                    .str.upper()
+                )
+                fill = still & derived.ne("")
+                df.loc[fill, "Primary Position"] = derived.loc[fill]
     if "Market Rank" not in df.columns:
         df["Market Rank"] = range(1, len(df) + 1)
     if "Expected Fantasy Value" not in df.columns:
@@ -168,4 +197,115 @@ def maybe_build_deferred_full_pool(session: dict[str, Any]) -> bool:
         )
     except ImportError:
         session.pop("_live_draft_rec_cache", None)
+    return True
+
+
+def ensure_solo_player_pool_for_recs(session: dict[str, Any], room: dict[str, Any] | None = None) -> bool:
+    """Guarantee Solo rooms have a non-empty pool before recommendation card paint.
+
+    Restored Solo sessions and fast-start rooms can land on the active page with an
+    empty ``room['pool']`` (persistence strip / deferred upgrade not yet applied).
+    Early Recommended picks paint then stays on "Loading…" forever.
+    """
+    live = room if isinstance(room, dict) else session.get("live_draft_room")
+    if not isinstance(live, dict):
+        return False
+
+    # Never steal Shared's local-pool rebuild path.
+    try:
+        from live_draft_setup_mode import is_shared_multiplayer_intent
+
+        if is_shared_multiplayer_intent(session, room=live):
+            return False
+    except ImportError:
+        if str(session.get("active_shared_draft_room_code") or "").strip():
+            # Ambiguous: only skip when room itself is stamped shared.
+            cfg0 = dict(live.get("config") or {})
+            if "shared" in str(cfg0.get("draft_setup_mode") or cfg0.get("draft_mode") or "").lower():
+                return False
+
+    solo = False
+    try:
+        from live_draft_solo_timer import is_solo_live_draft
+
+        solo = bool(is_solo_live_draft(session, live))
+    except ImportError:
+        solo = False
+    if not solo:
+        cfg = dict(live.get("config") or {})
+        mode = str(
+            cfg.get("draft_setup_mode")
+            or cfg.get("draft_mode")
+            or session.get("live_draft_setup_mode")
+            or ""
+        ).lower()
+        solo = mode in {"solo", "solo_draft"} or mode.startswith("solo")
+    if not solo:
+        return False
+
+    status = str(live.get("status") or "").strip()
+    if status not in ("in_progress", "paused"):
+        return False
+
+    # Prefer the deferred full projection pool when Start queued it.
+    try:
+        maybe_build_deferred_full_pool(session)
+        live = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else live
+    except Exception:
+        pass
+
+    pool = live.get("pool") if isinstance(live, dict) else None
+    if pool is not None and not getattr(pool, "empty", True):
+        return True
+
+    # Cold restore / stripped pool: attach a fast market pool so cards can paint.
+    try:
+        import importlib
+
+        app_mod = importlib.import_module("streamlit_app")
+        market_df = app_mod.load_fantasypros_market_data()
+    except Exception as exc:
+        session["_solo_pool_ensure_error"] = f"market:{type(exc).__name__}:{exc}"[:200]
+        note_start_stage(session, "solo_pool_ensure_failed", error=str(exc)[:160])
+        return False
+    try:
+        cfg = dict(live.get("config") or {})
+        total_picks = int(cfg.get("total_picks") or 0) or (
+            int(cfg.get("num_teams") or 2) * int(cfg.get("picks_per_team") or 15)
+        )
+        fast = build_fast_market_pool(market_df, min_rows=max(400, int(total_picks) * 40))
+    except Exception as exc:
+        session["_solo_pool_ensure_error"] = f"fast:{type(exc).__name__}:{exc}"[:200]
+        note_start_stage(session, "solo_pool_ensure_failed", error=str(exc)[:160])
+        return False
+    if fast is None or getattr(fast, "empty", True):
+        session["_solo_pool_ensure_error"] = "empty_fast_market_pool"
+        note_start_stage(session, "solo_pool_ensure_failed", error="empty_fast_market_pool")
+        return False
+    live["pool"] = fast.copy()
+    session["live_draft_room"] = live
+    note_start_stage(
+        session,
+        "solo_pool_ensure_fast_attached",
+        pool_live_count=int(len(fast)),
+    )
+    # Queue a full-pool upgrade when Start did not already mark one.
+    if not session.get(DEFERRED_FULL_POOL_DONE_KEY) and not isinstance(
+        session.get(DEFERRED_FULL_POOL_KEY), dict
+    ):
+        try:
+            mark_deferred_full_pool(
+                session,
+                params={
+                    "lahman_max_year": int(session.get("_lahman_max_year") or 0),
+                    "draft_window": int(cfg.get("draft_window") or session.get("live_proj_window") or 3),
+                    "fantasy_format": str(cfg.get("fantasy_format") or "5x5 Roto"),
+                    "projection_style": str(cfg.get("projection_style") or "Balanced"),
+                    "use_ml_blend": bool(session.get("draft_use_ml_blend", False)),
+                    "ml_blend_weight": float(session.get("draft_ml_blend_weight", 0.12) or 0),
+                    "ml_min_games_for_signal": int(session.get("draft_ml_min_games_signal", 50) or 50),
+                },
+            )
+        except Exception:
+            pass
     return True

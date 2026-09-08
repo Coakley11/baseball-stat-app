@@ -197,6 +197,24 @@ class DraftScoringPoolTests(unittest.TestCase):
         self.assertLess(float(frame.loc[0, "Model Rank"]), 9000)
         self.assertEqual(float(frame.loc[0, "Market Rank"]), 12.0)
 
+    def test_ensure_derives_primary_position_from_adp_when_util(self) -> None:
+        pool = pd.DataFrame(
+            [
+                {
+                    "playerID": "p1",
+                    "fullName": "Jose Ramirez",
+                    "Primary Position": "UTIL",
+                    "ADP Position": "3B,DH",
+                    "FantasyPros Position": "3B1",
+                    "Expected Fantasy Value": 90.0,
+                    "Market Rank": 5,
+                    "Model Rank": 4,
+                }
+            ]
+        )
+        out = ensure_draft_scoring_pool_columns(pool)
+        self.assertEqual(str(out.loc[0, "Primary Position"]), "3B")
+
 
 if __name__ == "__main__":
     unittest.main()

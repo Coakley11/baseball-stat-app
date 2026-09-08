@@ -470,6 +470,54 @@ class LiveDraftRosterSlotsTests(unittest.TestCase):
         filtered = filter_candidates_to_legal_roster_positions(pool, config=cfg, room=room)
         self.assertTrue(filtered.empty)
 
+    def test_util_primary_uses_adp_fantasypros_eligibility(self) -> None:
+        """Fast Solo market pools often stamp Primary Position=UTIL for every row."""
+        cfg = freeze_slot_instances_on_config(
+            {"slots": {"C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 0, "OF": 0, "DH": 0, "P": 0, "BN": 0}}
+        )
+        pool = pd.DataFrame(
+            [
+                {
+                    "fullName": "Jose Ramirez",
+                    "Primary Position": "UTIL",
+                    "FantasyPros Position": "3B1",
+                    "ADP Position": "3B,DH",
+                    "Expected Fantasy Value": 0.9,
+                },
+                {
+                    "fullName": "Aaron Judge",
+                    "Primary Position": "UTIL",
+                    "FantasyPros Position": "OF1",
+                    "ADP Position": "LF,CF,RF,DH",
+                    "Expected Fantasy Value": 0.99,
+                },
+                {
+                    "fullName": "Cal Raleigh",
+                    "Primary Position": "UTIL",
+                    "FantasyPros Position": "C1",
+                    "ADP Position": "C,DH",
+                    "Expected Fantasy Value": 0.7,
+                },
+            ]
+        )
+        filtered = filter_candidates_to_legal_roster_positions(pool, config=cfg, room=None)
+        names = set(filtered["fullName"].astype(str))
+        self.assertIn("Jose Ramirez", names)
+        self.assertIn("Cal Raleigh", names)
+        self.assertNotIn("Aaron Judge", names)
+
+        scored, _gaps = apply_draft_pick_scoring(
+            pool,
+            pd.DataFrame(),
+            target_counts=get_required_position_counts(cfg),
+            room={"config": cfg, "teams": ["Team 1"], "rosters": {"Team 1": []}},
+        )
+        self.assertFalse(scored.empty)
+        scored_names = set(scored["fullName"].astype(str))
+        self.assertIn("Jose Ramirez", scored_names)
+        self.assertIn("Cal Raleigh", scored_names)
+        self.assertNotIn("Aaron Judge", scored_names)
+
 
 if __name__ == "__main__":
     unittest.main()

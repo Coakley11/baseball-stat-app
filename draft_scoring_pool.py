@@ -344,6 +344,40 @@ def _ensure_draft_scoring_pool_columns(
             derived_name="Fantasy Edge",
         )
 
+    if "Primary Position" not in out.columns:
+        out["Primary Position"] = ""
+    _pos = out["Primary Position"].fillna("").astype(str).str.strip()
+    _pos_bad = _pos.eq("") | _pos.str.upper().isin({"UTIL", "NA", "NAN", "NONE", "NULL", "-"})
+    if _pos_bad.any():
+        derived = pd.Series("", index=out.index, dtype=object)
+        for src_col in ("ADP Position", "FantasyPros Position", "Position", "Eligible Positions"):
+            if src_col not in out.columns:
+                continue
+            still = derived.eq("") & _pos_bad
+            if not still.any():
+                break
+            try:
+                from live_draft_roster_slots import _split_position_tokens
+
+                for ix in out.index[still]:
+                    toks = [
+                        t
+                        for t in _split_position_tokens(out.at[ix, src_col])
+                        if t and t != "UTIL"
+                    ]
+                    if toks:
+                        derived.at[ix] = toks[0]
+            except ImportError:
+                raw = out.loc[still, src_col].fillna("").astype(str)
+                derived.loc[still] = raw.str.replace(r"\d+$", "", regex=True).str.split(
+                    r"[,/\+]", regex=True
+                ).str[0].str.strip().str.upper()
+        fill_mask = _pos_bad & derived.astype(str).str.strip().ne("")
+        if fill_mask.any():
+            out.loc[fill_mask, "Primary Position"] = derived.loc[fill_mask].astype(str)
+            report["derived_columns"].append("Primary Position")
+            report["default_filled_counts"]["Primary Position"] = int(fill_mask.sum())
+
     for col, default in _SCORING_FALLBACK_DEFAULTS.items():
         if col not in out.columns:
             out[col] = default
@@ -354,7 +388,8 @@ def _ensure_draft_scoring_pool_columns(
         elif col == "Fantasy Edge":
             bad = pd.to_numeric(out[col], errors="coerce").isna()
         elif col == "Primary Position":
-            bad = out[col].fillna("").astype(str).eq("")
+            s = out[col].fillna("").astype(str).str.strip()
+            bad = s.eq("")  # UTIL may remain when no richer source exists
         else:
             bad = pd.to_numeric(out[col], errors="coerce").isna()
         if bad.any():

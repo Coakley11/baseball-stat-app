@@ -210,8 +210,34 @@ def freeze_slot_instances_on_config(config: dict[str, Any]) -> dict[str, Any]:
     return cfg
 
 
+_FANTASY_POS_BASE = (
+    "C",
+    "1B",
+    "2B",
+    "3B",
+    "SS",
+    "OF",
+    "DH",
+    "UTIL",
+    "P",
+    "SP",
+    "RP",
+    "LF",
+    "CF",
+    "RF",
+)
+_FANTASY_POS_BASE_RE = re.compile(
+    r"^(" + "|".join(_FANTASY_POS_BASE) + r")\d*$",
+    re.IGNORECASE,
+)
+
+
 def _normalize_pos_token(token: str) -> str:
     t = str(token or "").upper().strip()
+    # FantasyPros-style labels: OF1, SS2, 3B1, DH1, C12 → OF/SS/3B/DH/C
+    m = _FANTASY_POS_BASE_RE.match(t)
+    if m:
+        t = m.group(1).upper()
     if t in ("LF", "CF", "RF"):
         return "OF"
     if t in ("SP", "RP"):
@@ -232,14 +258,28 @@ def _split_position_tokens(primary_val: Any) -> list[str]:
 
 def _player_position_tokens(row: pd.Series) -> list[str]:
     tokens: list[str] = []
-    for col in ("Primary Position", "Position", "Eligibility", "Positions"):
+    # Fast market / compact pools often leave Primary Position as UTIL while ADP /
+    # FantasyPros still carry real eligibility — consult those before defaulting.
+    for col in (
+        "Primary Position",
+        "Position",
+        "ADP Position",
+        "FantasyPros Position",
+        "Eligible Positions",
+        "Eligibility",
+        "Positions",
+    ):
         if col in row.index:
             tokens.extend(_split_position_tokens(row.get(col)))
     if isinstance(row.get("_position_tokens"), list):
         tokens.extend(_normalize_pos_token(str(t)) for t in row.get("_position_tokens") if str(t).strip())
-    tokens = list(dict.fromkeys(tokens))
+    # UTIL alone is not a real fantasy slot identity for gatekeeping — drop it when
+    # richer tokens exist so OF/SS/3B eligibility still counts.
+    tokens = [t for t in dict.fromkeys(tokens) if t]
+    non_util = [t for t in tokens if t != "UTIL"]
+    if non_util:
+        return non_util
     return tokens or ["DH"]
-
 
 def _eligible_for_draft_slot(pos_tokens: list[str], position_code: str) -> bool:
     slot = "UTIL" if position_code == "DH" else position_code

@@ -313,6 +313,15 @@ def _rebuild_top_rec_into_cache(
             session["live_draft_room"] = room
     except ImportError:
         pass
+    try:
+        from live_draft_fast_solo_start import ensure_solo_player_pool_for_recs
+
+        if ensure_solo_player_pool_for_recs(session, room):
+            refreshed = session.get("live_draft_room")
+            if isinstance(refreshed, dict):
+                room = refreshed
+    except ImportError:
+        pass
     max_cards = int(prep.get("max_cards") or 6)
     cfg = dict(room.get("config") or {})
     team = str(
@@ -405,6 +414,21 @@ def render_rec_interactive_widgets(
             status["cache_rebuilt"] = top_rec is not None and not getattr(top_rec, "empty", True)
             if top_rec is None or getattr(top_rec, "empty", True):
                 status["fail_reason"] = "top_rec_missing_after_rebuild"
+                try:
+                    from live_draft_recommendation_context import resolve_team_on_clock
+                    from live_draft_state import live_draft_get_available
+
+                    _slot, _toc = resolve_team_on_clock(room)
+                    _av = live_draft_get_available(room)
+                    status["team_on_clock"] = str(_toc or "")
+                    status["avail_rows"] = int(len(_av)) if _av is not None else -1
+                    status["rec_err"] = str(session.get("_live_draft_recommendations_error") or "")[:160]
+                    _schema = session.get("_recommendation_schema_diag")
+                    if isinstance(_schema, dict):
+                        status["schema_status"] = str(_schema.get("status") or _schema.get("schema_ok"))[:80]
+                        status["missing_rank_cols"] = list(_schema.get("missing_ranking_columns") or [])[:8]
+                except Exception as _probe_exc:
+                    status["probe_err"] = f"{type(_probe_exc).__name__}:{_probe_exc}"[:160]
                 session[INTERACTIVE_PAINT_STATUS_KEY] = status
                 note_rec_run_stage(session, "interactive_failed", fail_reason=status["fail_reason"])
                 try:
