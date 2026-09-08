@@ -182,9 +182,21 @@ def configure_and_start(page, report: dict) -> None:
         raise RuntimeError("Start New Live Draft missing")
     btn.first.click(timeout=8000)
     report["started_click"] = True
+    # Give first paint a chance before the Solo timer expires into autopick.
+    page.wait_for_timeout(4000)
+    try:
+        page.get_by_text(re.compile(r"Draft controls", re.I)).first.click(timeout=3000)
+        page.wait_for_timeout(800)
+        pause = page.locator("button").filter(has_text=re.compile(r"^Pause$", re.I))
+        if pause.count():
+            pause.first.click(timeout=3000)
+            page.wait_for_timeout(2000)
+            report["paused"] = True
+    except Exception as exc:
+        report["pause_err"] = str(exc)[:160]
 
 
-def wait_for_projection_recs(page, report: dict, *, seconds: int = 180) -> str:
+def wait_for_projection_recs(page, report: dict, *, seconds: int = 300) -> str:
     main = ""
     for i in range(max(1, seconds // 3)):
         page.wait_for_timeout(3000)
@@ -197,18 +209,26 @@ def wait_for_projection_recs(page, report: dict, *, seconds: int = 180) -> str:
         except Exception:
             pass
         main = page.locator("[data-testid=stMain]").inner_text()
+        if "Recommendations" in main:
+            report["saw_recs_section"] = True
         if "Why Recommended" in main and "Player Grade" in main and "Decision Score" in main:
             scores = [float(x) for x in re.findall(r"Decision Score:\s*([0-9.]+)", main)[:6]]
             report["wait_iters"] = i + 1
             report["decision_scores"] = scores
-            # Wait for projection upgrade if still market-proxy-ish (all ~60-70).
+            report["recs_ready"] = True
             if scores and max(scores) >= 80:
                 report["projection_grades_ready"] = True
                 return main
             report["projection_grades_ready"] = False
-            if "Preparing" in main or "projection" in main.lower() or "Loading" in main:
-                report["saw_upgrade_spinner"] = True
-    report["recs_ready"] = "Why Recommended" in main
+            if "projection Player Grades" in main or "temporary ranks" in main:
+                report["saw_upgrade_caption"] = True
+                continue
+            # Cards with PG/DS visible; keep waiting a bit for upgrade when caption present.
+            if i >= 20:
+                return main
+        if "Starting" in main:
+            report["saw_starting"] = True
+    report["recs_ready"] = "Why Recommended" in (main or "")
     return main
 
 

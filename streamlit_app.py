@@ -26458,6 +26458,31 @@ elif active_page == "Live Draft Room":
                     st.session_state[
                         "_live_draft_rec_queue_interactive_owner"
                     ] = "solo_early_viewport"
+                    # Cards already painted (temporary grades OK). Attach real projection
+                    # Player Grades now and rerun once — avoids blank first paint and the
+                    # ensure_solo silent-failure path.
+                    if st.session_state.get("_solo_needs_projection_player_grades"):
+                        try:
+                            from live_draft_fast_solo_start import maybe_build_deferred_full_pool
+
+                            with st.spinner("Loading projection Player Grades…"):
+                                _up = maybe_build_deferred_full_pool(
+                                    st.session_state, force=True
+                                )
+                            if _up and not st.session_state.get(
+                                "_solo_projection_grade_rerun_done"
+                            ):
+                                st.session_state.pop(
+                                    "_solo_needs_projection_player_grades", None
+                                )
+                                st.session_state[
+                                    "_solo_projection_grade_rerun_done"
+                                ] = True
+                                st.rerun()
+                        except Exception as _up_exc:
+                            st.session_state["_solo_projection_attach_error"] = (
+                                f"{type(_up_exc).__name__}: {_up_exc}"
+                            )[:200]
                 else:
                     st.info("Loading recommendation cards…")
                     try:

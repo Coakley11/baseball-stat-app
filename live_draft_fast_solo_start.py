@@ -359,27 +359,21 @@ def ensure_solo_player_pool_for_recs(session: dict[str, Any], room: dict[str, An
     if status not in ("in_progress", "paused"):
         return False
 
-    # Prefer the deferred full projection pool (Player Grade) over fast-market temporary grades.
-    try:
-        maybe_build_deferred_full_pool(session)
-        live = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else live
-        pool_chk = live.get("pool") if isinstance(live, dict) else None
-        if not _pool_has_projection_player_grades(pool_chk):
-            maybe_build_deferred_full_pool(session, force=True)
-            live = (
-                session.get("live_draft_room")
-                if isinstance(session.get("live_draft_room"), dict)
-                else live
-            )
-    except Exception:
-        pass
-
+    # Prefer an already-attached projection pool. Do not force a synchronous
+    # unified-pool rebuild here — that either blanks Solo first paint for minutes
+    # or fails silently under ``except Exception``. End-of-page deferred upgrade
+    # (+ one rerun) owns the Player Grade attach.
     pool = live.get("pool") if isinstance(live, dict) else None
     if pool is not None and not getattr(pool, "empty", True):
-        if _pool_has_projection_player_grades(pool):
-            return True
-        # Fast market pool is present but projection grades are not — keep trying upgrade
-        # on later paints; still allow cards to render from the temporary pool.
+        if not _pool_has_projection_player_grades(pool):
+            if not isinstance(session.get(DEFERRED_FULL_POOL_KEY), dict):
+                try:
+                    mark_deferred_full_pool(
+                        session, params=_deferred_pool_params_from_room(session, live)
+                    )
+                except Exception:
+                    pass
+            session["_solo_needs_projection_player_grades"] = True
         return True
 
     # Cold restore / stripped pool: attach a fast market pool so cards can paint.
@@ -408,6 +402,7 @@ def ensure_solo_player_pool_for_recs(session: dict[str, Any], room: dict[str, An
         return False
     live["pool"] = fast.copy()
     session["live_draft_room"] = live
+    session["_solo_needs_projection_player_grades"] = True
     note_start_stage(
         session,
         "solo_pool_ensure_fast_attached",
@@ -420,15 +415,7 @@ def ensure_solo_player_pool_for_recs(session: dict[str, Any], room: dict[str, An
         try:
             mark_deferred_full_pool(
                 session,
-                params={
-                    "lahman_max_year": int(session.get("_lahman_max_year") or 0),
-                    "draft_window": int(cfg.get("draft_window") or session.get("live_proj_window") or 3),
-                    "fantasy_format": str(cfg.get("fantasy_format") or "5x5 Roto"),
-                    "projection_style": str(cfg.get("projection_style") or "Balanced"),
-                    "use_ml_blend": bool(session.get("draft_use_ml_blend", False)),
-                    "ml_blend_weight": float(session.get("draft_ml_blend_weight", 0.12) or 0),
-                    "ml_min_games_for_signal": int(session.get("draft_ml_min_games_signal", 50) or 50),
-                },
+                params=_deferred_pool_params_from_room(session, live),
             )
         except Exception:
             pass
