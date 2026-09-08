@@ -179,14 +179,32 @@ def _model_rank_series_is_degenerate(series: pd.Series | None) -> bool:
     return False
 
 
-def _market_rank_proxy_efv(market_rank: pd.Series, *, n_rows: int) -> pd.Series:
-    """Historical fast-pool EFV proxy: higher value for better (lower) market ranks."""
+def _market_rank_proxy_player_grade(market_rank: pd.Series, *, n_rows: int) -> pd.Series:
+    """Temporary 0–1 Player Grade proxy from Market Rank (fast Solo only).
+
+    Product contract: Player Grade is 0–100 display from internal 0–1 projection
+    quality. Never invent ADP-count-scale values (e.g. 401−rank) here — those break
+    the Player Grade display contract and are not the established value system.
+    """
     rank = pd.to_numeric(market_rank, errors="coerce").fillna(float(n_rows))
-    # Use the larger of pool size vs max observed market rank so absolute ADP
-    # ranks (e.g. 350 in a short fixture) still produce an informative spread.
     observed = float(rank.max()) if rank.notna().any() else float(n_rows)
-    ceiling = max(float(n_rows), observed)
-    return (ceiling + 1.0 - rank).clip(lower=1.0)
+    ceiling = max(float(n_rows), observed, 1.0)
+    return ((ceiling + 1.0 - rank) / ceiling).clip(lower=0.01, upper=1.0)
+
+
+def _market_rank_proxy_efv(market_rank: pd.Series, *, n_rows: int) -> pd.Series:
+    """Alias kept for call sites; returns 0–1 Player Grade scale (not ADP counts)."""
+    return _market_rank_proxy_player_grade(market_rank, n_rows=n_rows)
+
+
+def _efv_looks_like_adp_count_scale(series: pd.Series | None) -> bool:
+    """True when EFV values look like Market Rank inverses (≫1), not Player Grade 0–1."""
+    if series is None:
+        return False
+    nums = pd.to_numeric(series, errors="coerce").dropna()
+    if nums.empty or len(nums) < 2:
+        return False
+    return float(nums.max()) > 1.5 and float(nums.min()) >= 1.0
 
 
 def _fill_bad_rows(
@@ -353,22 +371,31 @@ def _ensure_draft_scoring_pool_columns(
                 derived_name="Market Rank",
             )
 
-    # --- Expected Fantasy Value hygiene ---
-    # An all-zero / constant EFV column is not "present projections" — rebuild from
-    # Market Rank (historical fast Solo intent) so Decision Score retains a value signal.
+    # --- Expected Fantasy Value / Player Grade hygiene ---
+    # Internal column: Expected Fantasy Value. User-facing: Player Grade (0–1 → 0–100).
+    # Never leave ADP-count-scale values (≫1) in this column — that breaks Player Grade.
     if "Expected Fantasy Value" not in out.columns:
         out["Expected Fantasy Value"] = pd.NA
+    efv_probe = pd.to_numeric(out["Expected Fantasy Value"], errors="coerce")
+    if _efv_looks_like_adp_count_scale(efv_probe):
+        ceiling = max(float(efv_probe.max()), 1.0)
+        out["Expected Fantasy Value"] = (efv_probe / ceiling).clip(lower=0.01, upper=1.0)
+        report["derived_columns"].append("Expected Fantasy Value")
+        report["efv_repair"] = "coerced_adp_count_scale_to_player_grade_0_1"
+        report["pool_value_kind"] = POOL_KIND_FAST_MARKET_FALLBACK
+
     efv_unusable = _efv_series_is_unusable(out["Expected Fantasy Value"])
     used_market_proxy_efv = False
     if efv_unusable:
         market = pd.to_numeric(out["Market Rank"], errors="coerce")
         if market.notna().any() and not bool(_bad_rank_mask(market).all()):
-            proxy = _market_rank_proxy_efv(market, n_rows=len(out))
+            # Temporary 0–1 Player Grade proxy only (fast Solo until full projections load).
+            proxy = _market_rank_proxy_player_grade(market, n_rows=len(out))
             out["Expected Fantasy Value"] = proxy
             report["derived_columns"].append("Expected Fantasy Value")
             report["default_filled_counts"]["Expected Fantasy Value"] = int(len(out))
             report["pool_value_kind"] = POOL_KIND_FAST_MARKET_FALLBACK
-            report["efv_repair"] = "market_rank_proxy"
+            report["efv_repair"] = "temporary_0_1_market_player_grade_proxy"
             used_market_proxy_efv = True
         else:
             report["efv_repair"] = "unavailable"

@@ -76,6 +76,7 @@ class TestFastSoloStart(unittest.TestCase):
         model = pd.to_numeric(pool["Model Rank"], errors="coerce")
         edge = pd.to_numeric(pool["Fantasy Edge"], errors="coerce")
         self.assertGreater(float(efv.max()), 0.0)
+        self.assertLessEqual(float(efv.max()), 1.0)
         self.assertGreater(int(efv.nunique()), 1)
         self.assertGreater(int(model.nunique()), 1)
         self.assertLess(float(edge.max()), 50.0)

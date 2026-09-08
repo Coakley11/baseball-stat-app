@@ -1868,11 +1868,12 @@ def render_live_draft_rec_cards(
                     metrics_html = build_draft_score_metrics_html(
                         r,
                         show_decision_score=True,
-                        show_player_grade=not horizontal,
+                        show_player_grade=True,
                         show_roster_fit=True,
+                        show_scarcity=True,
                         show_market_rank=False,
                         show_model_rank=False,
-                        show_fantasy_edge=True,
+                        show_fantasy_edge=False,
                     )
                     strength_txt = ""
                     if strengths and not horizontal:

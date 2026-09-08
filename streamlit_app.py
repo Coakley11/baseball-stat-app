@@ -26431,7 +26431,7 @@ elif active_page == "Live Draft Room":
                         fmt_int=fmt_int,
                         dense=False,
                         layout="horizontal",
-                        max_cards_override=3,
+                        max_cards_override=6,
                         skip_summary_banner=True,
                     )
                 )

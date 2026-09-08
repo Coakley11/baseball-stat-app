@@ -128,14 +128,14 @@ def build_fast_market_pool(market_df: Any, *, min_rows: int = 400) -> Any:
                 df.loc[fill, "Primary Position"] = derived.loc[fill]
     if "Market Rank" not in df.columns:
         df["Market Rank"] = range(1, len(df) + 1)
-    # Fast market pools often ship an Expected Fantasy Value column of all zeros.
-    # Treat that as missing and apply the historical Market Rank proxy, then ensure().
+    # Fast path: temporary 0–1 Player Grade proxy until deferred full projection pool.
+    # Do not stamp ADP-count-scale values into Expected Fantasy Value.
     try:
         from draft_scoring_pool import (
             POOL_KIND_FAST_MARKET_FALLBACK,
             POOL_VALUE_KIND_KEY,
             _efv_series_is_unusable,
-            _market_rank_proxy_efv,
+            _market_rank_proxy_player_grade,
             ensure_draft_scoring_pool_columns,
         )
 
@@ -143,7 +143,7 @@ def build_fast_market_pool(market_df: Any, *, min_rows: int = 400) -> Any:
             df["Expected Fantasy Value"] if "Expected Fantasy Value" in df.columns else None
         ):
             rank = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(len(df))
-            df["Expected Fantasy Value"] = _market_rank_proxy_efv(rank, n_rows=len(df))
+            df["Expected Fantasy Value"] = _market_rank_proxy_player_grade(rank, n_rows=len(df))
         if "Model Rank" not in df.columns:
             df["Model Rank"] = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(999)
         if "Fantasy Edge" not in df.columns:
@@ -153,12 +153,14 @@ def build_fast_market_pool(market_df: Any, *, min_rows: int = 400) -> Any:
     except ImportError:
         if "Expected Fantasy Value" not in df.columns:
             rank = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(len(df))
-            df["Expected Fantasy Value"] = (len(df) + 1 - rank).clip(lower=1)
+            n = max(len(df), 1)
+            df["Expected Fantasy Value"] = ((n + 1 - rank) / float(n)).clip(lower=0.01, upper=1.0)
         else:
             efv = pd.to_numeric(df["Expected Fantasy Value"], errors="coerce")
-            if (not efv.notna().any()) or float(efv.fillna(0).max()) == 0.0:
+            if (not efv.notna().any()) or float(efv.fillna(0).max()) == 0.0 or float(efv.fillna(0).max()) > 1.5:
                 rank = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(len(df))
-                df["Expected Fantasy Value"] = (len(df) + 1 - rank).clip(lower=1)
+                n = max(len(df), 1)
+                df["Expected Fantasy Value"] = ((n + 1 - rank) / float(n)).clip(lower=0.01, upper=1.0)
         if "Model Rank" not in df.columns:
             df["Model Rank"] = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(999)
         if "Fantasy Edge" not in df.columns:

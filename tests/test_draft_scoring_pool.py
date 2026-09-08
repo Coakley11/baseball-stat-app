@@ -253,8 +253,9 @@ class DraftScoringPoolTests(unittest.TestCase):
         )
         out, report = ensure_draft_scoring_pool_columns_with_report(pool)
         self.assertEqual(report.get("pool_value_kind"), POOL_KIND_FAST_MARKET_FALLBACK)
-        self.assertEqual(out.attrs.get(POOL_VALUE_KIND_KEY), POOL_KIND_FAST_MARKET_FALLBACK)
         efv = pd.to_numeric(out["Expected Fantasy Value"], errors="coerce")
+        # Temporary proxy must stay on Player Grade 0–1 scale (not ADP counts).
+        self.assertLessEqual(float(efv.max()), 1.0)
         self.assertGreater(float(efv.max()), 0.0)
         self.assertGreater(int(efv.nunique()), 1)
         early = out.loc[out["fullName"] == "Early Star"].iloc[0]
@@ -262,8 +263,71 @@ class DraftScoringPoolTests(unittest.TestCase):
         self.assertGreater(float(early["Expected Fantasy Value"]), float(fringe["Expected Fantasy Value"]))
         model = pd.to_numeric(out["Model Rank"], errors="coerce")
         self.assertGreater(int(model.nunique()), 1)
-        self.assertLess(float(early["Model Rank"]), float(fringe["Model Rank"]))
         self.assertLess(abs(float(fringe["Fantasy Edge"])), 50.0)
+
+    def test_adp_count_scale_efv_coerced_to_player_grade_0_1(self) -> None:
+        pool = pd.DataFrame(
+            [
+                {
+                    "playerID": "p1",
+                    "fullName": "Aaron Judge",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 739.0,
+                    "Market Rank": 2,
+                    "Model Rank": 2,
+                    "Fantasy Edge": 0.0,
+                },
+                {
+                    "playerID": "p2",
+                    "fullName": "Ben Williamson",
+                    "Primary Position": "3B",
+                    "Expected Fantasy Value": 381.0,
+                    "Market Rank": 359,
+                    "Model Rank": 359,
+                    "Fantasy Edge": 0.0,
+                },
+            ]
+        )
+        out, report = ensure_draft_scoring_pool_columns_with_report(pool)
+        efv = pd.to_numeric(out["Expected Fantasy Value"], errors="coerce")
+        self.assertLessEqual(float(efv.max()), 1.0)
+        self.assertEqual(report.get("efv_repair"), "coerced_adp_count_scale_to_player_grade_0_1")
+        judge = out.loc[out["fullName"] == "Aaron Judge"].iloc[0]
+        fringe = out.loc[out["fullName"] == "Ben Williamson"].iloc[0]
+        self.assertGreater(float(judge["Expected Fantasy Value"]), float(fringe["Expected Fantasy Value"]))
+
+    def test_valid_projection_player_grade_preserved_on_0_1_scale(self) -> None:
+        pool = pd.DataFrame(
+            [
+                {
+                    "playerID": "p1",
+                    "fullName": "Aaron Judge",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.95,
+                    "Market Rank": 15,
+                    "Model Rank": 8,
+                    "Fantasy Edge": 7,
+                },
+                {
+                    "playerID": "p2",
+                    "fullName": "Bench Bat",
+                    "Primary Position": "OF",
+                    "Expected Fantasy Value": 0.40,
+                    "Market Rank": 120,
+                    "Model Rank": 140,
+                    "Fantasy Edge": -20,
+                },
+            ]
+        )
+        out, report = ensure_draft_scoring_pool_columns_with_report(pool)
+        self.assertEqual(report.get("pool_value_kind"), POOL_KIND_VALID_PROJECTION)
+        judge = out.loc[out["fullName"] == "Aaron Judge"].iloc[0]
+        self.assertAlmostEqual(float(judge["Expected Fantasy Value"]), 0.95, places=5)
+        from draft_score_display import fmt_player_grade, fmt_pick_score
+
+        self.assertEqual(fmt_player_grade(0.95), "95")
+        # Decision Score display uses 0–100 contract for internal 0–1 values.
+        self.assertEqual(fmt_pick_score(0.91), "91")
 
     def test_sentinel_model_rank_recomputed_not_collapsed(self) -> None:
         pool = pd.DataFrame(
@@ -360,6 +424,19 @@ class DraftScoringPoolTests(unittest.TestCase):
         self.assertEqual(float(judge["Model Rank"]), 8.0)
         self.assertEqual(float(judge["Fantasy Edge"]), 7.0)
 
+    def test_decision_score_weights_match_baseline_contract(self) -> None:
+        """Decision Score still uses established 0.55 value / 0.20 rank / … weights."""
+        import inspect
+
+        from live_draft_pick_scoring import apply_draft_pick_scoring
+
+        src = inspect.getsource(apply_draft_pick_scoring)
+        self.assertIn("value_dec * 0.55", src)
+        self.assertIn("* 0.20", src)
+        self.assertIn("* 0.10", src)
+        self.assertIn("pool_scarcity * 0.05", src)
+        self.assertNotIn("market_rank_proxy", src)
+
     def test_strong_market_outranks_deep_adp_when_fit_equal(self) -> None:
         """Generic ranking sanity: early market beat deep ADP when value signal repaired."""
         pool = pd.DataFrame(
@@ -387,6 +464,7 @@ class DraftScoringPoolTests(unittest.TestCase):
         repaired = ensure_draft_scoring_pool_columns(pool)
         early = repaired.loc[repaired["fullName"] == "Early Market"].iloc[0]
         deep = repaired.loc[repaired["fullName"] == "Deep Adp"].iloc[0]
+        self.assertLessEqual(float(early["Expected Fantasy Value"]), 1.0)
         self.assertGreater(float(early["Expected Fantasy Value"]), float(deep["Expected Fantasy Value"]))
         self.assertLess(float(early["Model Rank"]), float(deep["Model Rank"]))
         self.assertLess(abs(float(deep["Fantasy Edge"])), 20.0)

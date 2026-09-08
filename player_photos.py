@@ -877,6 +877,7 @@ def build_draft_score_metrics_html(
     show_market_rank: bool = True,
     show_model_rank: bool = True,
     show_fantasy_edge: bool = False,
+    show_scarcity: bool = False,
 ) -> str:
     """Labeled draft metrics block for profile cards."""
 
@@ -892,6 +893,16 @@ def build_draft_score_metrics_html(
         lines.append(_line("Player Grade", player_grade_display(row)))
     if show_roster_fit:
         lines.append(_line("Roster Fit Score", roster_fit_display(row)))
+    if show_scarcity:
+        scar = _row_get(row, "Scarcity Score")
+        if scar is None or (isinstance(scar, float) and pd.isna(scar)):
+            scar = _row_get(row, "Position Scarcity Score")
+        try:
+            scar_txt = f"{float(scar):.2f}" if scar is not None and not pd.isna(scar) else ""
+        except (TypeError, ValueError):
+            scar_txt = ""
+        if scar_txt:
+            lines.append(_line("Positional Scarcity", scar_txt))
     if show_market_rank:
         lines.append(_line("Market Rank", market_rank_display(row)))
     if show_model_rank:

@@ -23,7 +23,7 @@ class SoloRecommendationCardUxTests(unittest.TestCase):
         self.assertIn("dense=False", block)
         self.assertIn('layout="horizontal"', block)
         self.assertNotIn("dense=True", block)
-        self.assertIn("max_cards_override=3", block)
+        self.assertIn("max_cards_override=6", block)
 
     def test_rec_card_renderer_has_no_queue_only_dense_strip(self) -> None:
         src = (_REPO / "live_draft_room_ui.py").read_text(encoding="utf-8")
@@ -94,7 +94,7 @@ class SoloRecommendationCardUxTests(unittest.TestCase):
         col = MagicMock()
         col.__enter__ = MagicMock(return_value=col)
         col.__exit__ = MagicMock(return_value=False)
-        st.columns.return_value = [col, col, col]
+        st.columns.side_effect = lambda n, *a, **k: [col] * int(n if not callable(n) else n)
         expander = MagicMock()
         expander.__enter__ = MagicMock(return_value=expander)
         expander.__exit__ = MagicMock(return_value=False)
