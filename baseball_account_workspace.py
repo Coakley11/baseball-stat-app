@@ -231,9 +231,12 @@ def render_baseball_account_workspace_control(
             )
         return
 
-    # Auth disabled / shared profile: still consolidate CC + Saved Sessions.
+    # Auth disabled / shared profile: still one top control (Investment parity).
+    # Label as Login when there is no signed-in identity so the human path matches
+    # the requested top-left entry point.
     if not auth_on:
-        with st.sidebar.expander("Account & Workspace", expanded=False, key="suite_account_workspace_expander"):
+        with st.sidebar.expander("Login", expanded=False, key="suite_account_workspace_expander"):
+            st.caption("Local workspace mode (suite auth off on this deploy).")
             _render_consolidated_body(
                 st,
                 st.session_state,

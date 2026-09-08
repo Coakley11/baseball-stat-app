@@ -892,15 +892,30 @@ def _streamlit_script_run_ctx_active() -> bool:
 
 def render_global_app_chrome(active_page: str) -> None:
     """Single app header + tutorial entry — always show explorer banner."""
-    compact = active_page in DRAFT_FOCUS_PAGES
-    if compact:
-        st.markdown("""
+    suppress_tutorial = False
+    suppress_hero = False
+    if active_page == "Live Draft Room":
+        try:
+            from live_draft_active_surface import live_draft_suppress_page_intro
+
+            suppress_tutorial = bool(live_draft_suppress_page_intro(st.session_state))
+            suppress_hero = suppress_tutorial
+        except ImportError:
+            suppress_tutorial = False
+            suppress_hero = False
+    if suppress_hero:
+        # Active draft: do not spend the first viewport on the brand hero.
+        st.caption("⚾ Baseball Explorer · Live Draft")
+    else:
+        compact = active_page in DRAFT_FOCUS_PAGES
+        if compact:
+            st.markdown("""
 <div class="title-box" style="padding:14px 18px;margin-bottom:12px;">
     <div class="title-text" style="font-size:28px;">⚾ Daniel Cohen Baseball Explorer</div>
 </div>
 """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
+        else:
+            st.markdown("""
 <div class="title-box">
     <div class="title-text">⚾ Daniel Cohen Baseball Explorer</div>
     <div class="subtitle-text">
@@ -908,14 +923,6 @@ def render_global_app_chrome(active_page: str) -> None:
     </div>
 </div>
 """, unsafe_allow_html=True)
-    suppress_tutorial = False
-    if active_page == "Live Draft Room":
-        try:
-            from live_draft_active_surface import live_draft_suppress_page_intro
-
-            suppress_tutorial = bool(live_draft_suppress_page_intro(st.session_state))
-        except ImportError:
-            suppress_tutorial = False
     if not suppress_tutorial:
         app_tutorial.render_tutorial_header_bar()
 
@@ -14335,6 +14342,50 @@ def _record_sidebar_nav_trace(phase: str, *, rerun_source: str = "", **kwargs: o
 
 def _render_baseball_sidebar_chrome(st_obj) -> None:
     """Single top-left Login / Account & Workspace control (Investment/Music pattern)."""
+    # Once per Streamlit script-run. Importing this file as `streamlit_app` while the
+    # entry script is already `__main__` re-executes module-level chrome and caused
+    # duplicate Build captions + StreamlitDuplicateElementKey on the Login expander.
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        _ctx = get_script_run_ctx()
+        _run_token = id(_ctx) if _ctx is not None else None
+    except Exception:
+        _run_token = None
+    if (
+        _run_token is not None
+        and st_obj.session_state.get("_baseball_sidebar_chrome_run_token") == _run_token
+    ):
+        return
+    if _run_token is not None:
+        st_obj.session_state["_baseball_sidebar_chrome_run_token"] = _run_token
+    head = "?"
+    try:
+        import subprocess
+        from pathlib import Path
+
+        _repo = str(Path(__file__).resolve().parent)
+        head = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=_repo,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        # Mark dirty tree so humans know uncommitted UI fixes are live on this process.
+        dirty = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            cwd=_repo,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        if dirty:
+            head = f"{head}+"
+    except Exception:
+        pass
+    try:
+        st_obj.sidebar.caption(f"Build `{head}` · local")
+    except Exception:
+        pass
     try:
         from baseball_account_workspace import render_baseball_account_workspace_control
         from baseball_persistent_state import default_reset_baseball_session
@@ -14348,28 +14399,18 @@ def _render_baseball_sidebar_chrome(st_obj) -> None:
             ),
         )
         return
-    except Exception:
-        pass
-    # Fallback: keep Command Center + Saved session reachable if the
-    # consolidated control fails to import on an older deploy pin.
-    try:
-        from suite_command_center_link import render_command_center_sidebar_link
-
-        render_command_center_sidebar_link(st_obj)
-    except Exception:
-        pass
-    try:
-        from baseball_persistent_state import default_reset_baseball_session
-        from suite_user_persistence import render_reset_controls
-
-        render_reset_controls(
-            st_obj,
-            "baseball",
-            on_reset=default_reset_baseball_session,
-            help_text="Clears saved page, filters, and workspace for this app. Lahman data is not deleted.",
-        )
-    except Exception:
-        pass
+    except Exception as _acct_exc:
+        try:
+            st_obj.session_state["_baseball_account_workspace_error"] = (
+                f"{type(_acct_exc).__name__}: {_acct_exc}"
+            )[:240]
+            st_obj.sidebar.error(
+                "Account control failed — see developer diagnostics. "
+                f"({type(_acct_exc).__name__})"
+            )
+        except Exception:
+            pass
+        return
 
 
 def _on_resume_live_draft_sidebar() -> None:
@@ -26344,6 +26385,53 @@ elif active_page == "Live Draft Room":
             ldr_section_done(st.session_state, "room_headers", st=st)
         except ImportError:
             pass
+
+        # Solo first-viewport landing: Recommended picks MUST paint before Control Center
+        # / timer chrome. Streamlit remembers expander open-state — an open Draft
+        # controls panel alone fills a 768px laptop viewport and hides the cards.
+        st.session_state.pop("_live_draft_rec_cards_early_viewport", None)
+        _solo_recs_here = False
+        try:
+            from live_draft_setup_mode import is_solo_live_draft as _is_solo_fn_early
+
+            _solo_recs_here = bool(_is_solo_fn_early(st.session_state, room)) and not bool(
+                _draft_is_complete
+            )
+        except ImportError:
+            _solo_recs_here = bool(_solo_compact_viewport) and not bool(_draft_is_complete)
+        if _solo_recs_here:
+            try:
+                from live_draft_rec_live_paint import render_rec_interactive_widgets
+
+                st.markdown("### Recommended picks")
+                st.caption("Top available players — use **Add to Queue** on a card.")
+                _early_ok = bool(
+                    render_rec_interactive_widgets(
+                        st,
+                        st.session_state,
+                        room,
+                        fmt_rate_4=fmt_rate_4,
+                        fmt_int=fmt_int,
+                        dense=True,
+                        max_cards_override=3,
+                        skip_summary_banner=True,
+                    )
+                )
+                st.session_state["_live_draft_rec_cards_early_viewport"] = _early_ok
+                if _early_ok:
+                    st.session_state["_live_draft_rec_cards_inline"] = True
+                    st.session_state[
+                        "_live_draft_rec_queue_interactive_owner"
+                    ] = "solo_early_viewport"
+                else:
+                    st.info("Loading recommendation cards…")
+            except Exception as _early_rec_exc:
+                st.session_state["_live_draft_rec_cards_early_viewport"] = False
+                st.session_state["_live_draft_rec_early_viewport_error"] = (
+                    f"{type(_early_rec_exc).__name__}: {_early_rec_exc}"
+                )[:240]
+                st.warning("Recommendation cards unavailable this pass — scroll for Draft Board.")
+
         try:
             from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section, ldr_step
 
@@ -26697,10 +26785,16 @@ elif active_page == "Live Draft Room":
                         st.warning("Control Center unavailable — live_draft_control_center_ui missing.")
                         return True, None
 
-            # Solo active: collapse Control Center so recommendation cards land in the
-            # first viewport. Pause/Resume remain one click away inside the expander.
+            # Solo active: keep controls collapsed every run (Streamlit otherwise
+            # remembers an open expander and fills the laptop viewport).
             if bool(_is_solo_draft):
-                with st.expander("Draft controls (Pause · Auto Pick · Queue)", expanded=False):
+                _cc_exp_key = "solo_draft_controls_expander"
+                st.session_state[_cc_exp_key] = False
+                with st.expander(
+                    "Draft controls (Pause · Auto Pick · Queue)",
+                    expanded=False,
+                    key=_cc_exp_key,
+                ):
                     _is_commissioner, _doc_h = _paint_live_draft_control_center()
             else:
                 _is_commissioner, _doc_h = _paint_live_draft_control_center()
@@ -26812,40 +26906,7 @@ elif active_page == "Live Draft Room":
         except ImportError:
             pass
 
-        # Solo human path: paint Add-to-Queue cards ABOVE the board/On-Clock row so a
-        # normal laptop viewport sees usable recommendation cards after Start.
-        st.session_state.pop("_live_draft_rec_cards_early_viewport", None)
-        if bool(_is_solo_draft) and not bool(_draft_is_complete):
-            try:
-                from live_draft_rec_live_paint import render_rec_interactive_widgets
-
-                st.markdown("#### Recommended picks")
-                _early_ok = bool(
-                    render_rec_interactive_widgets(
-                        st,
-                        st.session_state,
-                        room,
-                        fmt_rate_4=fmt_rate_4,
-                        fmt_int=fmt_int,
-                        dense=True,
-                        max_cards_override=3,
-                        skip_summary_banner=True,
-                    )
-                )
-                st.session_state["_live_draft_rec_cards_early_viewport"] = _early_ok
-                if _early_ok:
-                    st.session_state["_live_draft_rec_cards_inline"] = True
-                    st.session_state[
-                        "_live_draft_rec_queue_interactive_owner"
-                    ] = "solo_early_viewport"
-                else:
-                    st.caption("Loading recommendation cards…")
-            except Exception as _early_rec_exc:
-                st.session_state["_live_draft_rec_cards_early_viewport"] = False
-                st.session_state["_live_draft_rec_early_viewport_error"] = (
-                    f"{type(_early_rec_exc).__name__}: {_early_rec_exc}"
-                )[:240]
-
+        # Solo cards already painted above Control Center for first-viewport landing.
         board_col, rec_col = st.columns([1.45, 1.0])
         # Queue fragment MUST mount inside board_col (same container it paints).
         # Phase 6A bug: mounting under rec_col while writing into board_col left Add

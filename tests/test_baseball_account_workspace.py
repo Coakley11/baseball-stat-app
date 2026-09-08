@@ -18,8 +18,40 @@ class BaseballAccountWorkspaceTests(unittest.TestCase):
         choose_idx = source.index('st.sidebar.radio(\n    "Choose Page"')
         self.assertLess(chrome_idx, choose_idx)
         self.assertIn("render_baseball_account_workspace_control", source)
-        # Separate Account & Sign In sidebar must not remain beside Choose Page.
         self.assertNotIn("render_baseball_account_sidebar(st)", source)
+        # Old standalone chrome must not remain as the happy-path fallback.
+        chrome_src = source[
+            source.index("def _render_baseball_sidebar_chrome") : source.index(
+                "def _on_resume_live_draft_sidebar"
+            )
+        ]
+        self.assertNotIn("render_command_center_sidebar_link", chrome_src)
+        self.assertNotIn("render_reset_controls", chrome_src)
+
+    @patch("suite_auth.is_auth_enabled", return_value=False)
+    @patch("baseball_account_sidebar.prepare_baseball_auth_session")
+    @patch("suite_account_settings.init_suite_workspace")
+    @patch("suite_account_settings.build_account_settings_context", return_value={})
+    @patch("baseball_account_workspace._render_command_center_entry")
+    def test_auth_disabled_uses_login_top_entry(
+        self,
+        mock_cc: object,
+        _ctx: object,
+        _init: object,
+        _prepare: object,
+        _enabled: object,
+    ) -> None:
+        from baseball_account_workspace import render_baseball_account_workspace_control
+
+        st = MagicMock()
+        st.session_state = {}
+        st.sidebar.expander.return_value.__enter__ = MagicMock(return_value=None)
+        st.sidebar.expander.return_value.__exit__ = MagicMock(return_value=False)
+        st.button.return_value = False
+        render_baseball_account_workspace_control(st, on_reset=lambda _s: None)
+        args, kwargs = st.sidebar.expander.call_args
+        self.assertEqual(args[0], "Login")
+        mock_cc.assert_called_once()
 
     @patch("suite_auth.is_auth_enabled", return_value=True)
     @patch("suite_auth.is_authenticated", return_value=False)

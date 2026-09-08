@@ -1755,6 +1755,109 @@ def render_live_draft_rec_cards(
     except ImportError:
         pass
 
+    if dense:
+        # Horizontal strip: 3 short cards side-by-side so names + Add-to-Queue fit in
+        # a normal laptop first viewport (≈768px tall).
+        cols = st.columns(len(rows))
+        for col, (i, (_, r)) in zip(cols, enumerate(rows, start=1)):
+            with col:
+                name = str(r.get("fullName", "Player") or "Player")
+                pos = str(r.get("Primary Position", "") or "—")
+                edge = pd.to_numeric(r.get("Fantasy Edge", np.nan), errors="coerce")
+                edge_txt, _edge_css = _display_edge(edge if pd.notna(edge) else None)
+                player_id = str(r.get("playerID") or r.get("player_id") or "").strip()
+                stable_key = player_id or f"name_{name.replace(' ', '_')[:32]}"
+                team = str(r.get("Team") or r.get("teamName") or "").strip()
+                team_bit = f" · {html.escape(team)}" if team else ""
+                meta_open = build_ld_rec_card_meta_open_tag(
+                    player_id=player_id, player_name=name
+                )
+                st.markdown(
+                    f'{meta_open}<div class="ld-rec-dense-card" style="'
+                    f"border:1px solid #cbd5e1;border-radius:10px;padding:10px 12px;"
+                    f'background:#f8fafc;min-height:96px;">'
+                    f'<div style="font-size:0.95rem;font-weight:800;line-height:1.25;">'
+                    f"{i}. {html.escape(name)}</div>"
+                    f'<div style="font-size:0.8rem;color:#475569;margin:4px 0 8px 0;">'
+                    f"{html.escape(pos)}{team_bit} · Edge {html.escape(str(edge_txt or '—'))}"
+                    f"</div></div></div>",
+                    unsafe_allow_html=True,
+                )
+                queued_names = {
+                    str(x).strip().lower()
+                    for x in (session.get("draft_queue") or [])
+                    if str(x).strip()
+                }
+                already_queued = name.strip().lower() in queued_names
+                queue_widget_key = f"rec_card_queue_{pick_idx}_{stable_key}"
+                try:
+                    from live_draft_rec_queue_click_trace import (
+                        build_rec_card_queue_widget_key,
+                        new_rec_queue_event_id,
+                        register_rec_queue_widget,
+                    )
+
+                    queue_widget_key = build_rec_card_queue_widget_key(
+                        room_id=room_id,
+                        pick_index=pick_idx,
+                        stable_key=stable_key,
+                        surface="rec_card",
+                    )
+                    queue_click_event_id = new_rec_queue_event_id()
+                    register_rec_queue_widget(
+                        session,
+                        room_id=room_id,
+                        pick_index=pick_idx,
+                        player_id=player_id,
+                        player_name=name,
+                        widget_key=queue_widget_key,
+                        surface="rec_card",
+                        already_queued=already_queued,
+                        canonical_widget_key=queue_widget_key,
+                    )
+                except ImportError:
+                    queue_click_event_id = ""
+
+                if already_queued:
+                    st.button(
+                        "Queued",
+                        key=queue_widget_key,
+                        disabled=True,
+                        use_container_width=True,
+                    )
+                else:
+                    def _on_dense_queue(
+                        _session: dict[str, Any] = session,
+                        _name: str = name,
+                        _pid: str = player_id,
+                        _wk: str = queue_widget_key,
+                        _eid: str = queue_click_event_id,
+                        _rid: str = room_id,
+                        _pidx: int = pick_idx,
+                    ) -> None:
+                        execute_rec_card_queue_click(
+                            _session,
+                            name=_name,
+                            event_id=_eid,
+                            widget_key=_wk,
+                            room_id=_rid,
+                            pick_idx=_pidx,
+                            player_id=_pid,
+                        )
+
+                    clicked = st.button(
+                        "⭐ Add to Queue",
+                        key=queue_widget_key,
+                        type="primary",
+                        use_container_width=True,
+                        on_click=_on_dense_queue,
+                        help=f"Add {name} to your draft queue.",
+                    )
+                    if clicked:
+                        # on_click already mutated; keep return-value path quiet.
+                        pass
+        return
+
     for i, (_, r) in enumerate(rows, start=1):
         name = str(r.get("fullName", "Player") or "Player")
         pos = str(r.get("Primary Position", "") or "—")

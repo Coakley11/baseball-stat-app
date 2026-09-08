@@ -42,12 +42,13 @@ class PersistentSidebarChromeTests(unittest.TestCase):
         # Find the actual call cluster after chrome (not earlier mentions in helpers).
         portfolio = source.index("pp.render_sidebar_toggle(st)", chrome)
         dev = source.index("render_developer_mode_sidebar_toggle()", chrome)
-        account = source.index("render_baseball_account_sidebar(st)", chrome)
+        # Account chrome is nested inside _render_baseball_sidebar_chrome (Investment pattern).
+        self.assertIn("render_baseball_account_workspace_control", source)
+        self.assertNotIn("render_baseball_account_sidebar(st)", source[chrome : chrome + 800])
         choose = source.index('st.sidebar.radio(\n    "Choose Page"', chrome)
         self.assertLess(chrome, portfolio)
         self.assertLess(portfolio, dev)
-        self.assertLess(dev, account)
-        self.assertLess(account, choose)
+        self.assertLess(dev, choose)
 
     def test_command_center_link_renders_after_simulated_signin_rerun(self) -> None:
         from suite_command_center_link import render_command_center_sidebar_link
