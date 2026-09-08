@@ -24389,7 +24389,26 @@ elif active_page == "Live Draft Room":
 
                                     mark_defer_heavy_first_paint(st.session_state)
                                     st.session_state.pop("_solo_projection_grade_rerun_done", None)
-                                    st.session_state["_solo_needs_projection_player_grades"] = True
+                                    try:
+                                        from live_draft_fast_solo_start import (
+                                            _pool_has_projection_player_grades,
+                                        )
+
+                                        if not _pool_has_projection_player_grades(
+                                            new_room.get("pool")
+                                        ):
+                                            st.session_state[
+                                                "_solo_needs_projection_player_grades"
+                                            ] = True
+                                        else:
+                                            st.session_state.pop(
+                                                "_solo_needs_projection_player_grades",
+                                                None,
+                                            )
+                                    except ImportError:
+                                        st.session_state[
+                                            "_solo_needs_projection_player_grades"
+                                        ] = True
                                     note_start_stage(st.session_state, "recommendations_deferred")
                                 except ImportError:
                                     pass
