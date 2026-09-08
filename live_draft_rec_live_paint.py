@@ -376,6 +376,7 @@ def render_rec_interactive_widgets(
     fmt_rate_4=None,
     fmt_int=None,
     dense: bool = False,
+    layout: str = "horizontal",
     max_cards_override: int | None = None,
     skip_summary_banner: bool = False,
 ) -> bool:
@@ -515,6 +516,7 @@ def render_rec_interactive_widgets(
             top_rec,
             max_cards=max_cards,
             multiplayer=multiplayer,
+            layout=str(layout or "horizontal"),
             dense=bool(dense),
             fmt_rate_4=fmt_rate_4,
             fmt_int=fmt_int,

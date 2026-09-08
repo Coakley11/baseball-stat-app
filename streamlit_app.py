@@ -26419,19 +26419,9 @@ elif active_page == "Live Draft Room":
                 st.markdown("##### Recommendations")
                 st.caption(
                     "Players the engine recommends for this pick. "
-                    "Inspect a card, draft now, or optionally add one to your Queue."
+                    "Inspect a card, draft now, or optionally add one to your Queue. "
+                    "Open **Why Recommended** for category impact, scarcity, and fit."
                 )
-                try:
-                    from live_draft_ux import FANTASY_EDGE_TOOLTIP, ROSTER_FIT_TOOLTIP
-
-                    st.markdown(
-                        f'**Fantasy Edge** <span title="{FANTASY_EDGE_TOOLTIP}">ⓘ</span> · '
-                        f'**Roster Fit** <span title="{ROSTER_FIT_TOOLTIP}">ⓘ</span> — '
-                        "Open **Why Recommended** on any card for category impact, scarcity, and fit details.",
-                        unsafe_allow_html=True,
-                    )
-                except ImportError:
-                    pass
                 _early_ok = bool(
                     render_rec_interactive_widgets(
                         st,
@@ -26440,6 +26430,7 @@ elif active_page == "Live Draft Room":
                         fmt_rate_4=fmt_rate_4,
                         fmt_int=fmt_int,
                         dense=False,
+                        layout="horizontal",
                         max_cards_override=3,
                         skip_summary_banner=True,
                     )

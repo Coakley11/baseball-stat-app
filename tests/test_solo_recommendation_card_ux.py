@@ -21,6 +21,7 @@ class SoloRecommendationCardUxTests(unittest.TestCase):
         self.assertIn('st.markdown("##### Recommendations")', block)
         self.assertNotIn('st.markdown("### Recommended picks")', block)
         self.assertIn("dense=False", block)
+        self.assertIn('layout="horizontal"', block)
         self.assertNotIn("dense=True", block)
         self.assertIn("max_cards_override=3", block)
 
@@ -106,7 +107,8 @@ class SoloRecommendationCardUxTests(unittest.TestCase):
                 room,
                 rec,
                 max_cards=3,
-                dense=True,  # must still paint full cards
+                layout="horizontal",
+                dense=False,
             )
 
         markdown_blobs = "\n".join(

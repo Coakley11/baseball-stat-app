@@ -1723,7 +1723,11 @@ def render_live_draft_rec_cards(
 
     pick_idx = int(room.get("current_pick_index") or 0)
     room_id = str(room.get("draft_room_id") or "").strip()
-    layout_mode = "dense" if dense else ("stacked" if layout == "stacked" else "compact_horizontal")
+    layout_mode = (
+        "horizontal_cards"
+        if str(layout or "").strip().lower() == "horizontal"
+        else ("dense" if dense else ("stacked" if layout == "stacked" else "compact_horizontal"))
+    )
     record_rec_card_diagnostics(
         session,
         recommendation_card_layout_mode=layout_mode,
@@ -1758,260 +1762,252 @@ def render_live_draft_rec_cards(
     if dense:
         # Historical note: a Solo "dense strip" (name + Add-to-Queue only) was tried for
         # first-viewport landing and rejected — recommendations must remain player cards.
-        # ``dense`` now only influences card count / layout diagnostics upstream; paint
+        # `dense` now only influences card count / layout diagnostics upstream; paint
         # always uses the full recommendation card body below.
         pass
 
-    for i, (_, r) in enumerate(rows, start=1):
-        name = str(r.get("fullName", "Player") or "Player")
-        pos = str(r.get("Primary Position", "") or "—")
-        edge = pd.to_numeric(r.get("Fantasy Edge", np.nan), errors="coerce")
-        surv = pd.to_numeric(r.get("Survival Probability", np.nan), errors="coerce")
-        pool_df = room.get("pool")
-        cfg = dict(room.get("config") or {})
-        try:
-            from live_draft_category_outlook import player_top_category_strengths
-            from live_draft_ux import describe_strengths
+    from contextlib import nullcontext
 
-            raw_strengths = player_top_category_strengths(r, pool_df, config=cfg, max_count=2)
-            strengths = describe_strengths(raw_strengths, max_count=2)
-        except ImportError:
-            strengths = []
-        badges = _rec_card_badges(
-            i, r, rec_df, gaps=gaps, category_needs=category_needs, strengths=strengths
-        )
-        tier_lbl, _tier_css = _rec_tier_badge(i, r, badges=badges)
-        edge_txt, _edge_css = _display_edge(edge if pd.notna(edge) else None)
-        action = _rec_action_guidance(float(surv) if pd.notna(surv) else None, i)
-        try:
-            from live_draft_rec_badges import primary_recommendation_reason
+    horizontal = str(layout or '').strip().lower() == 'horizontal'
+    column_slots = st.columns(len(rows)) if horizontal else [None] * len(rows)
 
-            headline = primary_recommendation_reason(
-                i, r, badges=badges, strengths=strengths, gaps=gaps
-            )
-        except ImportError:
-            headline = tier_lbl
-        explanation = build_draft_insight_text(
-            r, badges=badges, strengths=None, gaps=gaps, rank=i
-        )
-        badge_html = "".join(
-            f'<span class="ld-rec-badge {css}{" rank" if label in ("Best Overall", "Second Best", "Third Best") else ""}">{label}</span>'
-            for label, css in badges
-        )
-        surv_pct = f"{int(round(float(surv) * 100))}% avail next round" if pd.notna(surv) else "—"
-        player_id = str(r.get("playerID") or r.get("player_id") or "").strip()
-        stable_key = player_id or f"name_{name.replace(' ', '_')[:32]}"
-
-        player_available = True
-        avail_reason = ""
-        draft_gate: dict[str, Any] = {}
-        try:
-            from draft_actions import resolve_player_draft_gate
-
-            draft_gate = resolve_player_draft_gate(session, name)
-            player_available = bool(draft_gate.get("allowed"))
-            avail_reason = str(draft_gate.get("disable_message") or "")
-        except ImportError:
+    for slot, (i, (_, r)) in zip(column_slots, enumerate(rows, start=1)):
+        with (slot if slot is not None else nullcontext()):
+            name = str(r.get("fullName", "Player") or "Player")
+            pos = str(r.get("Primary Position", "") or "—")
+            edge = pd.to_numeric(r.get("Fantasy Edge", np.nan), errors="coerce")
+            surv = pd.to_numeric(r.get("Survival Probability", np.nan), errors="coerce")
+            pool_df = room.get("pool")
+            cfg = dict(room.get("config") or {})
             try:
-                from draft_actions import _live_player_available
+                from live_draft_category_outlook import player_top_category_strengths
+                from live_draft_ux import describe_strengths
 
-                player_available, avail_reason = _live_player_available(session, name)
+                raw_strengths = player_top_category_strengths(r, pool_df, config=cfg, max_count=2)
+                strengths = describe_strengths(raw_strengths, max_count=2)
             except ImportError:
-                pass
-
-        draft_enabled = turn_enabled and player_available and not draft_complete and not paused and not submitting
-        disable_reason = ""
-        if submitting:
-            disable_reason = "Submitting pick…"
-        elif paused:
-            disable_reason = "Draft is paused — resume to pick."
-        elif draft_complete:
-            disable_reason = "Draft is complete."
-        elif not turn_enabled:
-            disable_reason = str(gate.get("draft_button_disable_reason") or "Not your turn.")
-        elif not player_available:
-            disable_reason = avail_reason or f"{name} is not available."
-
-        with st.container(border=True):
-            team = str(r.get("Team") or r.get("teamName") or "").strip()
+                strengths = []
+            badges = _rec_card_badges(
+                i, r, rec_df, gaps=gaps, category_needs=category_needs, strengths=strengths
+            )
+            tier_lbl, _tier_css = _rec_tier_badge(i, r, badges=badges)
+            edge_txt, _edge_css = _display_edge(edge if pd.notna(edge) else None)
+            action = _rec_action_guidance(float(surv) if pd.notna(surv) else None, i)
             try:
-                from player_photos import (
-                    build_draft_score_metrics_html,
-                    compact_fantasy_stat_line,
-                    get_player_photo_info,
-                    inject_player_photo_styles,
-                    player_grade_display,
-                    render_rec_card_photo_html,
-                )
+                from live_draft_rec_badges import primary_recommendation_reason
 
-                inject_player_photo_styles(st)
-                photo_info = get_player_photo_info(
-                    player_id=player_id or None,
-                    full_name=name,
-                    row=r,
-                    use_api=True,
+                headline = primary_recommendation_reason(
+                    i, r, badges=badges, strengths=strengths, gaps=gaps
                 )
-                stat_line = compact_fantasy_stat_line(r)
-                photo_html = render_rec_card_photo_html(photo_info, alt=name)
-                team_line = f" · {team}" if team else ""
-                stat_html = f'<div class="ld-rec-stat-line">{stat_line}</div>' if stat_line else ""
-                metrics_html = build_draft_score_metrics_html(
-                    r,
-                    show_decision_score=True,
-                    show_player_grade=True,
-                    show_roster_fit=True,
-                    show_market_rank=False,
-                    show_model_rank=False,
-                    show_fantasy_edge=True,
-                )
-                strength_txt = ""
-                if strengths:
-                    strength_txt = (
-                        f'<div style="font-size:0.82rem;color:#475569;margin-top:4px;">'
-                        f"Top strengths: {', '.join(strengths)}</div>"
-                    )
+            except ImportError:
+                headline = tier_lbl
+            explanation = build_draft_insight_text(
+                r, badges=badges, strengths=None, gaps=gaps, rank=i
+            )
+            badge_html = "".join(
+                f'<span class="ld-rec-badge {css}{" rank" if label in ("Best Overall", "Second Best", "Third Best") else ""}">{label}</span>'
+                for label, css in badges
+            )
+            surv_pct = f"{int(round(float(surv) * 100))}% avail next round" if pd.notna(surv) else "—"
+            player_id = str(r.get("playerID") or r.get("player_id") or "").strip()
+            stable_key = player_id or f"name_{name.replace(' ', '_')[:32]}"
+
+            player_available = True
+            avail_reason = ""
+            draft_gate: dict[str, Any] = {}
+            try:
+                from draft_actions import resolve_player_draft_gate
+
+                draft_gate = resolve_player_draft_gate(session, name)
+                player_available = bool(draft_gate.get("allowed"))
+                avail_reason = str(draft_gate.get("disable_message") or "")
+            except ImportError:
                 try:
-                    from live_draft_ux import confidence_label_from_score, position_color
+                    from draft_actions import _live_player_available
 
-                    decision = pd.to_numeric(r.get("Decision Score", np.nan), errors="coerce")
-                    conf_label, conf_stars = confidence_label_from_score(
-                        float(decision) if pd.notna(decision) else None
-                    )
-                    confidence_txt = (
-                        f'<div style="font-size:0.8rem;color:#334155;margin-top:6px;">'
-                        f"<strong>{conf_label}</strong> {conf_stars}</div>"
-                    )
-                except ImportError:
-                    confidence_txt = ""
-                pos_color = "#475569"
-                try:
-                    from live_draft_ux import position_color
-
-                    pos_color = position_color(pos)
+                    player_available, avail_reason = _live_player_available(session, name)
                 except ImportError:
                     pass
-                meta_line = f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}' if not badges else f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}'
-                meta_open = build_ld_rec_card_meta_open_tag(
-                    player_id=player_id, player_name=name
-                )
-                st.markdown(
-                    f'<div class="ld-rec-card-header">{photo_html}{meta_open}'
-                    f'<div style="font-size:1.05rem;font-weight:800;line-height:1.25;">{name}</div>'
-                    f'<div style="font-size:0.88rem;color:#475569;">{meta_line}</div>'
-                    f"{stat_html}{metrics_html}{strength_txt}{confidence_txt}"
-                    f"</div></div>",
-                    unsafe_allow_html=True,
-                )
-            except ImportError:
-                st.markdown(f"**{name}**")
-                st.caption(f"{pos}")
-            if badge_html:
-                st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
-            btn_col, queue_col, detail_col = st.columns([2, 1, 1])
-            queued_names = {
-                str(x).strip().lower()
-                for x in (session.get("draft_queue") or [])
-                if str(x).strip()
-            }
-            already_queued = name.strip().lower() in queued_names
-            with btn_col:
-                btn_label = "🔴 Draft Player"
-                btn_key = f"rec_card_draft_{pick_idx}_{stable_key}"
 
-                def _on_rec_draft_click(
-                    _session: dict[str, Any] = session,
-                    _name: str = name,
-                    _pid: str = player_id,
-                    _stable: str = stable_key,
-                ) -> None:
-                    try:
-                        from live_draft_ux_latency import ACTION_DRAFT_REC, note_ux_action
+            draft_enabled = turn_enabled and player_available and not draft_complete and not paused and not submitting
+            disable_reason = ""
+            if submitting:
+                disable_reason = "Submitting pick…"
+            elif paused:
+                disable_reason = "Draft is paused — resume to pick."
+            elif draft_complete:
+                disable_reason = "Draft is complete."
+            elif not turn_enabled:
+                disable_reason = str(gate.get("draft_button_disable_reason") or "Not your turn.")
+            elif not player_available:
+                disable_reason = avail_reason or f"{name} is not available."
 
-                        note_ux_action(
-                            _session,
-                            ACTION_DRAFT_REC,
-                            source="rec_card_draft",
-                            detail=_name,
-                        )
-                    except ImportError:
-                        pass
-                    record_rec_card_diagnostics(
-                        _session,
-                        rec_card_draft_click_received=True,
-                        rec_card_player=_name,
-                        rec_card_player_id=_pid or None,
-                        rec_card_stable_key=_stable,
-                    )
-                    try:
-                        from draft_ui import queue_manual_draft_pick
-
-                        queue_manual_draft_pick(
-                            _session,
-                            player_name=_name,
-                            player_id=_pid or None,
-                            candidate_source="rec_card",
-                            pool_source="recommendation_card",
-                            widget_key="",
-                        )
-                    except ImportError:
-                        pass
-
-                if draft_enabled:
-                    st.button(
-                        btn_label,
-                        key=btn_key,
-                        type="primary",
-                        use_container_width=True,
-                        on_click=_on_rec_draft_click,
-                    )
-                else:
-                    st.button(
-                        btn_label,
-                        key=btn_key,
-                        disabled=True,
-                        use_container_width=True,
-                        help=disable_reason[:200],
-                    )
-            with queue_col:
-                legacy_widget_key = f"rec_card_queue_{pick_idx}_{stable_key}"
-                queue_widget_key = legacy_widget_key
-                queue_click_event_id = ""
-                _render_trace_row: dict[str, Any] | None = None
+            with st.container(border=True):
+                team = str(r.get("Team") or r.get("teamName") or "").strip()
                 try:
-                    from live_draft_rec_queue_click_trace import (
-                        build_rec_card_queue_widget_key,
-                        new_rec_queue_event_id,
-                        register_rec_queue_widget,
+                    from player_photos import (
+                        build_draft_score_metrics_html,
+                        compact_fantasy_stat_line,
+                        get_player_photo_info,
+                        inject_player_photo_styles,
+                        player_grade_display,
+                        render_rec_card_photo_html,
                     )
 
-                    canonical_widget_key = build_rec_card_queue_widget_key(
-                        room_id=room_id,
-                        pick_index=pick_idx,
-                        stable_key=stable_key,
-                        surface="rec_card",
+                    inject_player_photo_styles(st)
+                    photo_info = get_player_photo_info(
+                        player_id=player_id or None,
+                        full_name=name,
+                        row=r,
+                        use_api=True,
                     )
-                    queue_widget_key = canonical_widget_key
-                    queue_click_event_id = new_rec_queue_event_id()
-                    register_rec_queue_widget(
-                        session,
-                        room_id=room_id,
-                        pick_index=pick_idx,
-                        player_id=player_id,
-                        player_name=name,
-                        widget_key=queue_widget_key,
-                        surface="rec_card",
-                        already_queued=already_queued,
-                        canonical_widget_key=canonical_widget_key,
+                    stat_line = compact_fantasy_stat_line(r)
+                    photo_html = render_rec_card_photo_html(photo_info, alt=name)
+                    team_line = f" · {team}" if team else ""
+                    stat_html = f'<div class="ld-rec-stat-line">{stat_line}</div>' if stat_line else ""
+                    metrics_html = build_draft_score_metrics_html(
+                        r,
+                        show_decision_score=True,
+                        show_player_grade=not horizontal,
+                        show_roster_fit=True,
+                        show_market_rank=False,
+                        show_model_rank=False,
+                        show_fantasy_edge=True,
                     )
-                    session["_live_draft_rec_queue_key_scheme"] = "collision_safe_v1"
+                    strength_txt = ""
+                    if strengths and not horizontal:
+                        strength_txt = (
+                            f'<div style="font-size:0.82rem;color:#475569;margin-top:4px;">'
+                            f"Top strengths: {', '.join(strengths)}</div>"
+                        )
                     try:
-                        from live_draft_rec_queue_click_trace import register_rec_queue_render_trace
-                        from live_draft_rec_queue_help_ab import resolve_rec_queue_help_variant
+                        from live_draft_ux import confidence_label_from_score, position_color
 
-                        help_variant, help_present = resolve_rec_queue_help_variant(st, session)
-                        seq = int(session.get("_live_draft_rec_queue_render_seq") or 0) + 1
-                        session["_live_draft_rec_queue_render_seq"] = seq
-                        _render_trace_row = register_rec_queue_render_trace(
+                        decision = pd.to_numeric(r.get("Decision Score", np.nan), errors="coerce")
+                        conf_label, conf_stars = confidence_label_from_score(
+                            float(decision) if pd.notna(decision) else None
+                        )
+                        confidence_txt = (
+                            f'<div style="font-size:0.8rem;color:#334155;margin-top:6px;">'
+                            f"<strong>{conf_label}</strong> {conf_stars}</div>"
+                        )
+                        if horizontal:
+                            confidence_txt = ""
+                    except ImportError:
+                        confidence_txt = ""
+                    pos_color = "#475569"
+                    try:
+                        from live_draft_ux import position_color
+
+                        pos_color = position_color(pos)
+                    except ImportError:
+                        pass
+                    meta_line = f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}' if not badges else f'<span style="color:{pos_color};font-weight:700;">{pos}</span>{team_line}'
+                    meta_open = build_ld_rec_card_meta_open_tag(
+                        player_id=player_id, player_name=name
+                    )
+                    st.markdown(
+                        f'<div class="ld-rec-card-header">{photo_html}{meta_open}'
+                        f'<div style="font-size:1.05rem;font-weight:800;line-height:1.25;">{name}</div>'
+                        f'<div style="font-size:0.88rem;color:#475569;">{meta_line}</div>'
+                        f"{stat_html}{metrics_html}{strength_txt}{confidence_txt}"
+                        f"</div></div>",
+                        unsafe_allow_html=True,
+                    )
+                except ImportError:
+                    st.markdown(f"**{name}**")
+                    st.caption(f"{pos}")
+                if badge_html:
+                    st.markdown(f'<div class="ld-rec-badge-row">{badge_html}</div>', unsafe_allow_html=True)
+                if horizontal:
+                    btn_col = queue_col = detail_col = nullcontext()
+                else:
+                    btn_col, queue_col, detail_col = st.columns([2, 1, 1])
+                queued_names = {
+                    str(x).strip().lower()
+                    for x in (session.get("draft_queue") or [])
+                    if str(x).strip()
+                }
+                already_queued = name.strip().lower() in queued_names
+                with btn_col:
+                    btn_label = "🔴 Draft Player"
+                    btn_key = f"rec_card_draft_{pick_idx}_{stable_key}"
+
+                    def _on_rec_draft_click(
+                        _session: dict[str, Any] = session,
+                        _name: str = name,
+                        _pid: str = player_id,
+                        _stable: str = stable_key,
+                    ) -> None:
+                        try:
+                            from live_draft_ux_latency import ACTION_DRAFT_REC, note_ux_action
+
+                            note_ux_action(
+                                _session,
+                                ACTION_DRAFT_REC,
+                                source="rec_card_draft",
+                                detail=_name,
+                            )
+                        except ImportError:
+                            pass
+                        record_rec_card_diagnostics(
+                            _session,
+                            rec_card_draft_click_received=True,
+                            rec_card_player=_name,
+                            rec_card_player_id=_pid or None,
+                            rec_card_stable_key=_stable,
+                        )
+                        try:
+                            from draft_ui import queue_manual_draft_pick
+
+                            queue_manual_draft_pick(
+                                _session,
+                                player_name=_name,
+                                player_id=_pid or None,
+                                candidate_source="rec_card",
+                                pool_source="recommendation_card",
+                                widget_key="",
+                            )
+                        except ImportError:
+                            pass
+
+                    if draft_enabled:
+                        st.button(
+                            btn_label,
+                            key=btn_key,
+                            type="primary",
+                            use_container_width=True,
+                            on_click=_on_rec_draft_click,
+                        )
+                    else:
+                        st.button(
+                            btn_label,
+                            key=btn_key,
+                            disabled=True,
+                            use_container_width=True,
+                            help=disable_reason[:200],
+                        )
+                with queue_col:
+                    legacy_widget_key = f"rec_card_queue_{pick_idx}_{stable_key}"
+                    queue_widget_key = legacy_widget_key
+                    queue_click_event_id = ""
+                    _render_trace_row: dict[str, Any] | None = None
+                    try:
+                        from live_draft_rec_queue_click_trace import (
+                            build_rec_card_queue_widget_key,
+                            new_rec_queue_event_id,
+                            register_rec_queue_widget,
+                        )
+
+                        canonical_widget_key = build_rec_card_queue_widget_key(
+                            room_id=room_id,
+                            pick_index=pick_idx,
+                            stable_key=stable_key,
+                            surface="rec_card",
+                        )
+                        queue_widget_key = canonical_widget_key
+                        queue_click_event_id = new_rec_queue_event_id()
+                        register_rec_queue_widget(
                             session,
                             room_id=room_id,
                             pick_index=pick_idx,
@@ -2020,67 +2016,40 @@ def render_live_draft_rec_cards(
                             widget_key=queue_widget_key,
                             surface="rec_card",
                             already_queued=already_queued,
-                            render_run_seq=seq,
-                            help_variant=help_variant,
-                            help_present=help_present,
+                            canonical_widget_key=canonical_widget_key,
                         )
-                    except ImportError:
-                        _render_trace_row = None
-                except ImportError:
-                    pass
+                        session["_live_draft_rec_queue_key_scheme"] = "collision_safe_v1"
+                        try:
+                            from live_draft_rec_queue_click_trace import register_rec_queue_render_trace
+                            from live_draft_rec_queue_help_ab import resolve_rec_queue_help_variant
 
-                try:
-                    from live_draft_francisco_callback_only_gate import (
-                        maybe_arm_francisco_callback_only_from_runtime_card,
-                    )
-
-                    maybe_arm_francisco_callback_only_from_runtime_card(
-                        st,
-                        session,
-                        room_id=room_id,
-                        pick_index=pick_idx,
-                        player_id=player_id,
-                        player_name=name,
-                        widget_key=queue_widget_key,
-                        already_queued=already_queued,
-                    )
-                except ImportError:
-                    pass
-
-                if already_queued:
-                    st.button(
-                        "Queued",
-                        key=queue_widget_key,
-                        disabled=True,
-                        use_container_width=True,
-                        help=f"{name} is already in your draft queue.",
-                    )
-                    try:
-                        from live_draft_rec_queue_click_trace import note_rec_queue_widget_button_rendered
-
-                        note_rec_queue_widget_button_rendered(
-                            session,
-                            widget_key=queue_widget_key,
-                            dispatch_kind="disabled_queued",
-                        )
+                            help_variant, help_present = resolve_rec_queue_help_variant(st, session)
+                            seq = int(session.get("_live_draft_rec_queue_render_seq") or 0) + 1
+                            session["_live_draft_rec_queue_render_seq"] = seq
+                            _render_trace_row = register_rec_queue_render_trace(
+                                session,
+                                room_id=room_id,
+                                pick_index=pick_idx,
+                                player_id=player_id,
+                                player_name=name,
+                                widget_key=queue_widget_key,
+                                surface="rec_card",
+                                already_queued=already_queued,
+                                render_run_seq=seq,
+                                help_variant=help_variant,
+                                help_present=help_present,
+                            )
+                        except ImportError:
+                            _render_trace_row = None
                     except ImportError:
                         pass
-                else:
-                    try:
-                        from live_draft_rec_queue_help_ab import rec_queue_add_button_help_kwargs
 
-                        _queue_help = rec_queue_add_button_help_kwargs(st, session, player_name=name)
-                    except ImportError:
-                        _queue_help = {"help": f"Add {name} to your draft queue."}
                     try:
-                        from live_draft_rec_fragment_exec_diag import emit_rec_card_widget_exec_probe
-                        from live_draft_rec_queue_help_ab import resolve_rec_queue_help_variant
+                        from live_draft_francisco_callback_only_gate import (
+                            maybe_arm_francisco_callback_only_from_runtime_card,
+                        )
 
-                        _hv, _hp = resolve_rec_queue_help_variant(st, session)
-                        # Dispatch matches Pause: return-value in the owning ScriptRun.
-                        # Nested on_click closures (production f166ce6c) produced native WS
-                        # triggers without Python entry; Pause return-value on the same page works.
-                        emit_rec_card_widget_exec_probe(
+                        maybe_arm_francisco_callback_only_from_runtime_card(
                             st,
                             session,
                             room_id=room_id,
@@ -2088,179 +2057,225 @@ def render_live_draft_rec_cards(
                             player_id=player_id,
                             player_name=name,
                             widget_key=queue_widget_key,
-                            callback_id="execute_rec_card_queue_click",
-                            widget_kind="francisco_add_to_queue",
-                            callback_fn=execute_rec_card_queue_click,
-                            disabled=False,
-                            help_present=_hp,
-                            help_variant=_hv,
+                            already_queued=already_queued,
                         )
                     except ImportError:
                         pass
-                    if i == 1:
+
+                    if already_queued:
+                        st.button(
+                            "Queued",
+                            key=queue_widget_key,
+                            disabled=True,
+                            use_container_width=True,
+                            help=f"{name} is already in your draft queue.",
+                        )
                         try:
-                            from live_draft_rec_fragment_exec_diag import (
-                                FRAGMENT_PROBE_BUTTON_LABEL,
-                                build_fragment_probe_widget_key,
-                                on_recommendation_fragment_probe_click,
+                            from live_draft_rec_queue_click_trace import note_rec_queue_widget_button_rendered
+
+                            note_rec_queue_widget_button_rendered(
+                                session,
+                                widget_key=queue_widget_key,
+                                dispatch_kind="disabled_queued",
                             )
-                            from live_draft_solo_component_diagnostics import solo_component_diag_enabled
-
-                            if solo_component_diag_enabled(st, session):
-                                from live_draft_rec_fragment_exec_diag import emit_rec_card_widget_exec_probe
-
-                                _probe_key = build_fragment_probe_widget_key(
-                                    room_id=room_id, pick_index=pick_idx
-                                )
-
-                                def _on_probe_click(
-                                    _session: dict[str, Any] = session,
-                                    _room_id: str = room_id,
-                                    _pick_index: int = pick_idx,
-                                    _widget_key: str = _probe_key,
-                                ) -> None:
-                                    on_recommendation_fragment_probe_click(
-                                        _session,
-                                        _room_id,
-                                        _pick_index,
-                                        _widget_key,
-                                    )
-
-                                st.button(
-                                    FRAGMENT_PROBE_BUTTON_LABEL,
-                                    key=_probe_key,
-                                    use_container_width=True,
-                                    on_click=_on_probe_click,
-                                )
-                                emit_rec_card_widget_exec_probe(
-                                    st,
-                                    session,
-                                    room_id=room_id,
-                                    pick_index=pick_idx,
-                                    player_id=player_id,
-                                    player_name=name,
-                                    widget_key=_probe_key,
-                                    callback_id="on_recommendation_fragment_probe_click",
-                                    widget_kind="fragment_widget_probe",
-                                    callback_fn=_on_probe_click,
-                                    disabled=False,
-                                )
                         except ImportError:
                             pass
-                    # Same ScriptRun return-value contract as Pause Draft (control center).
-                    _rec_queue_clicked = st.button(
-                        "⭐ Add to Queue",
-                        key=queue_widget_key,
-                        use_container_width=True,
-                        **_queue_help,
-                    )
-                    try:
-                        from live_draft_rec_button_consumption_diag import (
-                            note_rec_queue_button_consumption,
-                        )
+                    else:
+                        try:
+                            from live_draft_rec_queue_help_ab import rec_queue_add_button_help_kwargs
 
-                        note_rec_queue_button_consumption(
-                            st,
-                            session,
-                            widget_key=queue_widget_key,
-                            player_id=player_id,
-                            player_name=name,
-                            room_id=room_id,
-                            pick_index=pick_idx,
-                            button_return_value=bool(_rec_queue_clicked),
-                            phase="post_button",
+                            _queue_help = rec_queue_add_button_help_kwargs(st, session, player_name=name)
+                        except ImportError:
+                            _queue_help = {"help": f"Add {name} to your draft queue."}
+                        try:
+                            from live_draft_rec_fragment_exec_diag import emit_rec_card_widget_exec_probe
+                            from live_draft_rec_queue_help_ab import resolve_rec_queue_help_variant
+
+                            _hv, _hp = resolve_rec_queue_help_variant(st, session)
+                            # Dispatch matches Pause: return-value in the owning ScriptRun.
+                            # Nested on_click closures (production f166ce6c) produced native WS
+                            # triggers without Python entry; Pause return-value on the same page works.
+                            emit_rec_card_widget_exec_probe(
+                                st,
+                                session,
+                                room_id=room_id,
+                                pick_index=pick_idx,
+                                player_id=player_id,
+                                player_name=name,
+                                widget_key=queue_widget_key,
+                                callback_id="execute_rec_card_queue_click",
+                                widget_kind="francisco_add_to_queue",
+                                callback_fn=execute_rec_card_queue_click,
+                                disabled=False,
+                                help_present=_hp,
+                                help_variant=_hv,
+                            )
+                        except ImportError:
+                            pass
+                        if i == 1:
+                            try:
+                                from live_draft_rec_fragment_exec_diag import (
+                                    FRAGMENT_PROBE_BUTTON_LABEL,
+                                    build_fragment_probe_widget_key,
+                                    on_recommendation_fragment_probe_click,
+                                )
+                                from live_draft_solo_component_diagnostics import solo_component_diag_enabled
+
+                                if solo_component_diag_enabled(st, session):
+                                    from live_draft_rec_fragment_exec_diag import emit_rec_card_widget_exec_probe
+
+                                    _probe_key = build_fragment_probe_widget_key(
+                                        room_id=room_id, pick_index=pick_idx
+                                    )
+
+                                    def _on_probe_click(
+                                        _session: dict[str, Any] = session,
+                                        _room_id: str = room_id,
+                                        _pick_index: int = pick_idx,
+                                        _widget_key: str = _probe_key,
+                                    ) -> None:
+                                        on_recommendation_fragment_probe_click(
+                                            _session,
+                                            _room_id,
+                                            _pick_index,
+                                            _widget_key,
+                                        )
+
+                                    st.button(
+                                        FRAGMENT_PROBE_BUTTON_LABEL,
+                                        key=_probe_key,
+                                        use_container_width=True,
+                                        on_click=_on_probe_click,
+                                    )
+                                    emit_rec_card_widget_exec_probe(
+                                        st,
+                                        session,
+                                        room_id=room_id,
+                                        pick_index=pick_idx,
+                                        player_id=player_id,
+                                        player_name=name,
+                                        widget_key=_probe_key,
+                                        callback_id="on_recommendation_fragment_probe_click",
+                                        widget_kind="fragment_widget_probe",
+                                        callback_fn=_on_probe_click,
+                                        disabled=False,
+                                    )
+                            except ImportError:
+                                pass
+                        # Same ScriptRun return-value contract as Pause Draft (control center).
+                        _rec_queue_clicked = st.button(
+                            "⭐ Add to Queue",
+                            key=queue_widget_key,
+                            use_container_width=True,
+                            **_queue_help,
                         )
+                        try:
+                            from live_draft_rec_button_consumption_diag import (
+                                note_rec_queue_button_consumption,
+                            )
+
+                            note_rec_queue_button_consumption(
+                                st,
+                                session,
+                                widget_key=queue_widget_key,
+                                player_id=player_id,
+                                player_name=name,
+                                room_id=room_id,
+                                pick_index=pick_idx,
+                                button_return_value=bool(_rec_queue_clicked),
+                                phase="post_button",
+                            )
+                        except ImportError:
+                            pass
+                        try:
+                            from live_draft_rec_queue_click_trace import (
+                                note_rec_queue_dispatch_layer,
+                                note_rec_queue_widget_button_rendered,
+                            )
+
+                            note_rec_queue_widget_button_rendered(
+                                session,
+                                widget_key=queue_widget_key,
+                                dispatch_kind="button_return_value",
+                            )
+                            if _rec_queue_clicked:
+                                note_rec_queue_dispatch_layer(
+                                    session,
+                                    layer="button_return_value",
+                                    widget_key=queue_widget_key,
+                                    player_id=player_id,
+                                    player_name=name,
+                                )
+                                note_rec_queue_dispatch_layer(
+                                    session,
+                                    layer="execute_rec_card_queue_click",
+                                    widget_key=queue_widget_key,
+                                    player_id=player_id,
+                                    player_name=name,
+                                )
+                                execute_rec_card_queue_click(
+                                    session,
+                                    name=name,
+                                    event_id=queue_click_event_id,
+                                    widget_key=queue_widget_key,
+                                    room_id=room_id,
+                                    pick_idx=pick_idx,
+                                    player_id=player_id,
+                                )
+                        except ImportError:
+                            if _rec_queue_clicked:
+                                execute_rec_card_queue_click(
+                                    session,
+                                    name=name,
+                                    event_id=queue_click_event_id,
+                                    widget_key=queue_widget_key,
+                                    room_id=room_id,
+                                    pick_idx=pick_idx,
+                                    player_id=player_id,
+                                )
+                    try:
+                        from live_draft_rec_queue_click_trace import render_per_card_rec_queue_render_trace_marker
+
+                        if _render_trace_row:
+                            render_per_card_rec_queue_render_trace_marker(st, session, _render_trace_row)
                     except ImportError:
                         pass
-                    try:
-                        from live_draft_rec_queue_click_trace import (
-                            note_rec_queue_dispatch_layer,
-                            note_rec_queue_widget_button_rendered,
+                with detail_col:
+                    with st.expander("Why Recommended", expanded=False):
+                        st.markdown(
+                            build_rec_card_detail_body(
+                                r,
+                                badges=badges,
+                                strengths=strengths,
+                                gaps=gaps,
+                                category_needs=category_needs,
+                                rank=i,
+                            ),
+                            unsafe_allow_html=True,
                         )
 
-                        note_rec_queue_widget_button_rendered(
-                            session,
-                            widget_key=queue_widget_key,
-                            dispatch_kind="button_return_value",
-                        )
-                        if _rec_queue_clicked:
-                            note_rec_queue_dispatch_layer(
-                                session,
-                                layer="button_return_value",
-                                widget_key=queue_widget_key,
-                                player_id=player_id,
-                                player_name=name,
-                            )
-                            note_rec_queue_dispatch_layer(
-                                session,
-                                layer="execute_rec_card_queue_click",
-                                widget_key=queue_widget_key,
-                                player_id=player_id,
-                                player_name=name,
-                            )
-                            execute_rec_card_queue_click(
-                                session,
-                                name=name,
-                                event_id=queue_click_event_id,
-                                widget_key=queue_widget_key,
-                                room_id=room_id,
-                                pick_idx=pick_idx,
-                                player_id=player_id,
-                            )
-                    except ImportError:
-                        if _rec_queue_clicked:
-                            execute_rec_card_queue_click(
-                                session,
-                                name=name,
-                                event_id=queue_click_event_id,
-                                widget_key=queue_widget_key,
-                                room_id=room_id,
-                                pick_idx=pick_idx,
-                                player_id=player_id,
-                            )
-                try:
-                    from live_draft_rec_queue_click_trace import render_per_card_rec_queue_render_trace_marker
+        try:
+            from live_draft_rec_queue_click_trace import (
+                render_rec_queue_click_trace_probe,
+                render_rec_queue_render_trace_probe,
+            )
 
-                    if _render_trace_row:
-                        render_per_card_rec_queue_render_trace_marker(st, session, _render_trace_row)
-                except ImportError:
-                    pass
-            with detail_col:
-                with st.expander("Why Recommended", expanded=False):
-                    st.markdown(
-                        build_rec_card_detail_body(
-                            r,
-                            badges=badges,
-                            strengths=strengths,
-                            gaps=gaps,
-                            category_needs=category_needs,
-                            rank=i,
-                        ),
-                        unsafe_allow_html=True,
-                    )
+            render_rec_queue_render_trace_probe(st, session)
+            render_rec_queue_click_trace_probe(st, session)
+        except ImportError:
+            pass
+        try:
+            from live_draft_queue_state_snapshot_diag import render_queue_state_snapshot_probe
 
-    try:
-        from live_draft_rec_queue_click_trace import (
-            render_rec_queue_click_trace_probe,
-            render_rec_queue_render_trace_probe,
-        )
+            render_queue_state_snapshot_probe(st, session)
+        except ImportError:
+            pass
+        try:
+            from live_draft_rec_fragment_exec_diag import render_fragment_callback_ledger_probe
 
-        render_rec_queue_render_trace_probe(st, session)
-        render_rec_queue_click_trace_probe(st, session)
-    except ImportError:
-        pass
-    try:
-        from live_draft_queue_state_snapshot_diag import render_queue_state_snapshot_probe
-
-        render_queue_state_snapshot_probe(st, session)
-    except ImportError:
-        pass
-    try:
-        from live_draft_rec_fragment_exec_diag import render_fragment_callback_ledger_probe
-
-        render_fragment_callback_ledger_probe(st, session)
-    except ImportError:
-        pass
+            render_fragment_callback_ledger_probe(st, session)
+        except ImportError:
+            pass
 
 
 def _position_heat_class(dropoff: float, *, strong_cut: float, weak_cut: float) -> str:
