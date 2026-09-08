@@ -176,17 +176,77 @@ def mark_deferred_full_pool(session: dict[str, Any], *, params: dict[str, Any]) 
     session.pop(DEFERRED_FULL_POOL_DONE_KEY, None)
 
 
-def maybe_build_deferred_full_pool(session: dict[str, Any]) -> bool:
-    """After first active-page paint, attach the full projection pool to the live room."""
-    pending = session.get(DEFERRED_FULL_POOL_KEY)
-    if not isinstance(pending, dict) or session.get(DEFERRED_FULL_POOL_DONE_KEY):
+def _pool_has_projection_player_grades(pool: Any) -> bool:
+    """True when pool carries real projection Player Grade inputs (not fast-market only)."""
+    if pool is None or getattr(pool, "empty", True):
         return False
+    cols = set(str(c) for c in getattr(pool, "columns", []))
+    if cols.intersection(
+        {
+            "Blended Projection Score",
+            "Projected Production Score",
+            "Realistic Base Projection Score",
+            "proj_HR",
+            "proj_RBI",
+        }
+    ):
+        return True
+    try:
+        from draft_scoring_pool import POOL_KIND_FAST_MARKET_FALLBACK, POOL_VALUE_KIND_KEY
+
+        if getattr(pool, "attrs", {}).get(POOL_VALUE_KIND_KEY) == POOL_KIND_FAST_MARKET_FALLBACK:
+            return False
+    except ImportError:
+        pass
+    return False
+
+
+def _deferred_pool_params_from_room(session: dict[str, Any], room: dict[str, Any]) -> dict[str, Any]:
+    cfg = dict(room.get("config") or {})
+    return {
+        "lahman_max_year": int(
+            session.get("lahman_max_year")
+            or cfg.get("lahman_max_year")
+            or 0
+        ),
+        "draft_window": int(cfg.get("projection_window") or session.get("live_draft_proj_window") or 3),
+        "fantasy_format": str(
+            cfg.get("fantasy_format") or cfg.get("scoring_type") or "5x5 Roto"
+        ),
+        "projection_style": str(
+            cfg.get("projection_style") or session.get("live_draft_proj_style") or "Balanced"
+        ),
+        "use_ml_blend": bool(cfg.get("use_ml_blend")),
+        "ml_blend_weight": float(cfg.get("ml_blend_weight") or 0),
+        "ml_min_games_for_signal": int(cfg.get("ml_min_games_for_signal") or 50),
+    }
+
+
+def maybe_build_deferred_full_pool(session: dict[str, Any], *, force: bool = False) -> bool:
+    """After first active-page paint, attach the full projection pool to the live room."""
     room = session.get("live_draft_room")
     if not isinstance(room, dict) or str(room.get("status") or "") not in ("in_progress", "paused"):
         session.pop(DEFERRED_FULL_POOL_KEY, None)
         return False
+
+    existing = room.get("pool")
+    needs_upgrade = force or not _pool_has_projection_player_grades(existing)
+    pending = session.get(DEFERRED_FULL_POOL_KEY)
+    if not isinstance(pending, dict):
+        if not needs_upgrade:
+            return False
+        # Solo may have attached a fast market pool without a pending upgrade ticket.
+        pending = _deferred_pool_params_from_room(session, room)
+        session[DEFERRED_FULL_POOL_KEY] = dict(pending)
+        session.pop(DEFERRED_FULL_POOL_DONE_KEY, None)
+    elif session.get(DEFERRED_FULL_POOL_DONE_KEY) and not needs_upgrade:
+        return False
+    elif session.get(DEFERRED_FULL_POOL_DONE_KEY) and needs_upgrade:
+        # Prior "done" stamped after a fast pool — allow a real projection rebuild.
+        session.pop(DEFERRED_FULL_POOL_DONE_KEY, None)
+
     t0 = _mono()
-    note_start_stage(session, "deferred_full_pool_start")
+    note_start_stage(session, "deferred_full_pool_start", force=bool(force))
     try:
         import importlib
 
@@ -206,6 +266,17 @@ def maybe_build_deferred_full_pool(session: dict[str, Any]) -> bool:
     if pool is None or getattr(pool, "empty", True):
         note_start_stage(session, "deferred_full_pool_failed", error="empty_pool")
         return False
+    try:
+        from draft_scoring_pool import (
+            POOL_KIND_VALID_PROJECTION,
+            POOL_VALUE_KIND_KEY,
+            ensure_draft_scoring_pool_columns,
+        )
+
+        pool = ensure_draft_scoring_pool_columns(pool)
+        pool.attrs[POOL_VALUE_KIND_KEY] = POOL_KIND_VALID_PROJECTION
+    except ImportError:
+        pass
     room["pool"] = pool.copy()
     session["live_draft_room"] = room
     session[DEFERRED_FULL_POOL_DONE_KEY] = True
@@ -215,6 +286,7 @@ def maybe_build_deferred_full_pool(session: dict[str, Any]) -> bool:
         "deferred_full_pool_done",
         pool_live_count=int(len(pool)),
         duration_ms=int((_mono() - t0) * 1000),
+        projection_grades=True,
     )
     try:
         from live_draft_ui_cache import invalidate_live_draft_ui_caches_after_board_change
@@ -277,15 +349,27 @@ def ensure_solo_player_pool_for_recs(session: dict[str, Any], room: dict[str, An
     if status not in ("in_progress", "paused"):
         return False
 
-    # Prefer the deferred full projection pool when Start queued it.
+    # Prefer the deferred full projection pool (Player Grade) over fast-market temporary grades.
     try:
         maybe_build_deferred_full_pool(session)
         live = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else live
+        pool_chk = live.get("pool") if isinstance(live, dict) else None
+        if not _pool_has_projection_player_grades(pool_chk):
+            maybe_build_deferred_full_pool(session, force=True)
+            live = (
+                session.get("live_draft_room")
+                if isinstance(session.get("live_draft_room"), dict)
+                else live
+            )
     except Exception:
         pass
 
     pool = live.get("pool") if isinstance(live, dict) else None
     if pool is not None and not getattr(pool, "empty", True):
+        if _pool_has_projection_player_grades(pool):
+            return True
+        # Fast market pool is present but projection grades are not — keep trying upgrade
+        # on later paints; still allow cards to render from the temporary pool.
         return True
 
     # Cold restore / stripped pool: attach a fast market pool so cards can paint.
