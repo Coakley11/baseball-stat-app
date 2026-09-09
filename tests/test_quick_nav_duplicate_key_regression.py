@@ -69,7 +69,7 @@ class QuickNavDuplicateKeyRegressionTests(unittest.TestCase):
         self.assertFalse(session.get("_live_draft_rec_interactive_fallback_ok"))
 
     def test_done_path_still_runs_fallback_paint_body_once(self) -> None:
-        """HEAVY_PAINT_DONE with no prior paint_body this run may still recover once."""
+        """HEAVY_PAINT_DONE paints rankings/QT once; interactive recovery must not re-paint body."""
         st = MagicMock()
         st.fragment = None
         session: dict[str, Any] = {HEAVY_PAINT_DONE_KEY: True}
@@ -94,7 +94,10 @@ class QuickNavDuplicateKeyRegressionTests(unittest.TestCase):
 
         self.assertEqual(body_calls, ["body"])
         self.assertTrue(session.get("_live_draft_rec_interactive_fallback_ok"))
-        self.assertNotIn("_live_draft_rec_interactive_fallback_paint_body_skipped", session)
+        self.assertEqual(
+            session.get("_live_draft_rec_interactive_fallback_paint_body_skipped"),
+            "paint_body_already_ran_this_script",
+        )
         # Cleared at entry of next deferred-heavy call, but still set after this run.
         self.assertTrue(session.get(PAINT_BODY_RAN_THIS_SCRIPT_KEY))
 

@@ -19,17 +19,25 @@ from live_draft_fast_solo_start import (
 
 
 class TestFastSoloStart(unittest.TestCase):
-    def test_should_use_fast_solo_pool(self) -> None:
-        session = {"live_draft_setup_mode": "solo"}
-        self.assertTrue(
-            should_use_fast_solo_pool(
-                session, solo_mode=True, from_simulator=False, prepare_shared=False
-            )
+    def test_solo_start_critical_path_uses_fast_market_pool(self) -> None:
+        """Regression: Solo Start must not cold-build unified projection sync."""
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[1].joinpath("streamlit_app.py").read_text(
+            encoding="utf-8"
         )
-        self.assertFalse(
-            should_use_fast_solo_pool(
-                session, solo_mode=False, from_simulator=False, prepare_shared=False
-            )
+        marker = "if _use_fast_pool:"
+        idx = src.find(marker)
+        self.assertNotEqual(idx, -1)
+        block = src[idx : idx + 4500]
+        self.assertIn("build_fast_market_pool(", block)
+        self.assertIn("mark_deferred_full_pool(", block)
+        self.assertIn("_solo_needs_projection_player_grades", block)
+        self.assertIn("Never call", block)
+        # Cold get_cached must not run inside the fast Solo Start branch.
+        self.assertNotIn(
+            "with st.spinner(\"Building projection Player Grades…\")",
+            block,
         )
 
     def test_build_fast_market_pool(self) -> None:

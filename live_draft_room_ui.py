@@ -1763,6 +1763,41 @@ def render_live_draft_rec_cards(
     except ImportError:
         pass
 
+    # Surface turn-gate / first-card failures so Solo Draft Player disable is diagnosable.
+    _lock_bits = []
+    if not turn_enabled:
+        _lock_bits.append(
+            f"turn=`{gate.get('draft_button_disable_reason') or 'turn_gate'}`"
+        )
+    if submitting:
+        _lock_bits.append("submitting=1")
+    if paused:
+        _lock_bits.append("paused=1")
+    try:
+        if rows:
+            _sample_name = str(rows[0][1].get("fullName") or rows[0][1].get("Player") or "").strip()
+            if _sample_name:
+                from draft_actions import resolve_player_draft_gate
+
+                _pg = resolve_player_draft_gate(session, _sample_name)
+                if not _pg.get("allowed"):
+                    _lock_bits.append(
+                        f"sample=`{_sample_name}` "
+                        f"player_reason=`{_pg.get('disable_reason')}` "
+                        f"msg=`{str(_pg.get('disable_message') or '')[:80]}`"
+                    )
+    except Exception as _lock_exc:
+        _lock_bits.append(f"diag_err=`{type(_lock_exc).__name__}`")
+    if _lock_bits:
+        st.caption(
+            "Draft Player locked: "
+            + " ".join(_lock_bits)
+            + f" status=`{gate.get('draft_status')}` "
+            f"your=`{gate.get('your_team')}` "
+            f"clock=`{gate.get('on_clock_team')}` "
+            f"is_your_pick=`{gate.get('is_your_pick')}`"
+        )
+
     if dense:
         # Historical note: a Solo "dense strip" (name + Add-to-Queue only) was tried for
         # first-viewport landing and rejected — recommendations must remain player cards.
@@ -1997,6 +2032,30 @@ def render_live_draft_rec_cards(
                         )
                         if _rec_draft_clicked:
                             _on_rec_draft_click()
+                            # Button clicks run one ScriptRun: queue happens here, but
+                            # process_pending_manual_draft_pick only runs at the top of
+                            # the *next* full ScriptRun. Fragment timer ticks do not
+                            # re-enter that path — without an app rerun the pick stalls
+                            # until an unrelated full rerun (often timer expire/autopick).
+                            _reran = False
+                            try:
+                                from live_draft_safe_mode import request_live_draft_rerun
+
+                                _reran = bool(
+                                    request_live_draft_rerun(
+                                        st,
+                                        session,
+                                        "rec_card_draft",
+                                        room=room,
+                                    )
+                                )
+                            except ImportError:
+                                pass
+                            if not _reran:
+                                try:
+                                    st.rerun()
+                                except Exception:
+                                    pass
                     else:
                         st.button(
                             btn_label,

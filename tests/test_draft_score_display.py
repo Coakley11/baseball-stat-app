@@ -110,6 +110,24 @@ class DraftScoreDisplayTests(unittest.TestCase):
         self.assertEqual(float(out.iloc[0][DISPLAY_ROSTER_FIT]), 1.42)
         self.assertEqual(float(out.iloc[0][DISPLAY_RELATIVE_GRADE]), 73.0)
 
+    def test_prepare_tolerates_efv_and_player_grade_together(self) -> None:
+        """Live ranking tables may already carry Player Grade plus internal EFV."""
+        df = pd.DataFrame(
+            [
+                {
+                    "Expected Fantasy Value": 0.91,
+                    "Player Grade": 0.91,
+                    "Decision Score": 0.88,
+                    "Draft Fit Score": 1.2,
+                    "Roster Fit Score": 1.2,
+                }
+            ]
+        )
+        out = prepare_draft_scores_for_display(df)
+        self.assertEqual(list(out.columns).count(DISPLAY_PLAYER_GRADE), 1)
+        self.assertEqual(list(out.columns).count(DISPLAY_ROSTER_FIT), 1)
+        self.assertEqual(str(out.iloc[0][DISPLAY_PLAYER_GRADE]), "91")
+
     def test_style_cols_map_to_display_names(self) -> None:
         mapped = style_cols_for_display(["Fantasy Edge", "Draft Fit Score", "Expected Fantasy Value"])
         self.assertEqual(mapped, ["Fantasy Edge", DISPLAY_ROSTER_FIT, DISPLAY_PLAYER_GRADE])

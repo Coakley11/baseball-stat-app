@@ -287,6 +287,22 @@ def style_cols_for_display(style_cols: list[str] | None) -> list[str]:
     return [COLUMN_RENAME_MAP.get(c, c) for c in style_cols]
 
 
+def _display_col_series(frame: pd.DataFrame, col: str) -> pd.Series | None:
+    """Return a 1-d Series for ``col``, or None if missing.
+
+    Duplicate column labels (e.g. EFV renamed onto an existing Player Grade)
+    make ``frame[col]`` a DataFrame; take the first matching column.
+    """
+    if col not in frame.columns:
+        return None
+    block = frame.loc[:, col]
+    if isinstance(block, pd.DataFrame):
+        if block.shape[1] == 0:
+            return None
+        block = block.iloc[:, 0]
+    return block
+
+
 def prepare_draft_scores_for_display(df: pd.DataFrame | None) -> pd.DataFrame:
     """Scale and rename draft score columns for tables/exports (display only)."""
     if df is None or not isinstance(df, pd.DataFrame):
@@ -294,17 +310,32 @@ def prepare_draft_scores_for_display(df: pd.DataFrame | None) -> pd.DataFrame:
     if df.empty:
         return df.copy()
     out = df.copy()
+    if out.columns.duplicated().any():
+        out = out.loc[:, ~out.columns.duplicated()].copy()
     for col in list(out.columns):
         if col not in SCALE_TO_DISPLAY_100:
             continue
-        series = pd.to_numeric(out[col], errors="coerce")
+        series = _display_col_series(out, col)
+        if series is None:
+            continue
+        series = pd.to_numeric(series, errors="coerce")
         scaled = series.copy()
         needs_scale = series.notna() & (series <= 1.5)
         scaled.loc[needs_scale] = series.loc[needs_scale] * 100.0
         out[col] = scaled
     rename = {k: v for k, v in COLUMN_RENAME_MAP.items() if k in out.columns}
+    # Avoid duplicate display labels when both internal + display names are present
+    # (e.g. Expected Fantasy Value + Player Grade → two Player Grade columns).
+    for src, dst in list(rename.items()):
+        if src == dst:
+            continue
+        if dst in out.columns and src in out.columns:
+            out = out.drop(columns=[src])
+            del rename[src]
     if rename:
         out = out.rename(columns=rename)
+    if out.columns.duplicated().any():
+        out = out.loc[:, ~out.columns.duplicated()].copy()
     for col in (
         DISPLAY_PLAYER_GRADE,
         DISPLAY_PICK_SCORE,
@@ -314,18 +345,22 @@ def prepare_draft_scores_for_display(df: pd.DataFrame | None) -> pd.DataFrame:
         "Total Player Grade",
         "Draft Lab Team Score",
     ):
-        if col in out.columns:
-            if col == DISPLAY_PLAYER_GRADE:
-                # Store trimmed display strings so tables never show 91.300000.
-                out[col] = pd.to_numeric(out[col], errors="coerce").apply(
-                    lambda v: _fmt_hundred_scale(v) if pd.notna(v) else v
-                )
-            else:
-                out[col] = pd.to_numeric(out[col], errors="coerce").apply(
-                    lambda v: _round_half_up_2(float(v)) if pd.notna(v) else v
-                )
-    if DISPLAY_ROSTER_FIT in out.columns:
-        out[DISPLAY_ROSTER_FIT] = pd.to_numeric(out[DISPLAY_ROSTER_FIT], errors="coerce").apply(
+        series = _display_col_series(out, col)
+        if series is None:
+            continue
+        numeric = pd.to_numeric(series, errors="coerce")
+        if col == DISPLAY_PLAYER_GRADE:
+            # Store trimmed display strings so tables never show 91.300000.
+            out[col] = numeric.apply(
+                lambda v: _fmt_hundred_scale(v) if pd.notna(v) else v
+            )
+        else:
+            out[col] = numeric.apply(
+                lambda v: _round_half_up_2(float(v)) if pd.notna(v) else v
+            )
+    roster = _display_col_series(out, DISPLAY_ROSTER_FIT)
+    if roster is not None:
+        out[DISPLAY_ROSTER_FIT] = pd.to_numeric(roster, errors="coerce").apply(
             lambda v: _round_half_up_2(float(v)) if pd.notna(v) else v
         )
     return out

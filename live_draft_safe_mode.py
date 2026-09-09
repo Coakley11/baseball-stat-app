@@ -32,6 +32,9 @@ _BLOCKED_RERUN_SOURCES = frozenset(
 _LOCAL_IMMEDIATE_RERUN_SOURCES = frozenset(
     {
         "manual_pick",
+        "manual_pick_early",
+        "manual_panel_draft",
+        "rec_card_draft",
         "local_pick_paint",
         "optimistic_pick",
         "timer_fragment_zero",

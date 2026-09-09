@@ -40,9 +40,11 @@ def render_deferred_heavy_paint_fragment(
 ) -> None:
     """Defer expensive recommendation paint; keep interactive widgets on a live render path.
 
-    ``paint_body`` runs once for heavy compute + initial paint. After ``HEAVY_PAINT_DONE_KEY``,
-    ``paint_interactive`` runs on the owning ScriptRun (not under ``run_every``) so ``st.button``
-    widgets stay registered for callbacks without timer remount races (F4 + CASE_II fix).
+    ``paint_body`` runs for recommendation rankings + Quick Draft Tools. After
+    ``HEAVY_PAINT_DONE_KEY``, it still runs on the owning ScriptRun (cache-friendly)
+    so those sections remain visible; ``paint_interactive`` also runs on that ScriptRun
+    (not under ``run_every``) so ``st.button`` widgets stay registered for callbacks
+    without timer remount races (F4 + CASE_II fix).
     """
     def _reemit_rec_queue_render_trace() -> None:
         try:
@@ -283,6 +285,12 @@ def render_deferred_heavy_paint_fragment(
         # pending owner label because finalization previously ran after registration).
         note_heavy_fragment_mount(session, phase="interactive_script_run")
         session["_live_draft_rec_queue_interactive_owner"] = "script_run_no_run_every"
+        # Rankings + Quick Draft Tools live inside paint_body. Skipping body after DONE
+        # made those sections vanish on the post-fragment ScriptRun (Solo acceptance:
+        # rankings must stay above Quick Draft Tools). paint_body is cache-friendly on
+        # light/timer reruns; interactive widgets stay ScriptRun-owned below.
+        if not session.get(PAINT_BODY_RAN_THIS_SCRIPT_KEY):
+            _invoke_paint_body(via="full_page_done")
         # Recovery + st.button registration must complete on THIS ScriptRun.
         # Never st.rerun() here — an extra run discards the incoming trigger_value.
         painted = _paint_interactive_or_recover(via="full_page_interactive_live")

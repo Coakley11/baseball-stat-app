@@ -53,14 +53,20 @@ def _your_team(session: dict[str, Any], *, live_room: dict[str, Any] | None = No
 def compute_draft_turn_enabled(ctx: dict[str, Any]) -> bool:
     """Same turn gate as page-level draft_button_diagnostics (no player selected)."""
     draft_status = str(ctx.get("draft_status") or "").strip()
+    your_team = str(ctx.get("your_team") or "").strip()
+    if not (ctx.get("is_your_pick") and your_team):
+        return False
+    if ctx.get("draft_complete"):
+        return False
     if draft_status == "in_progress":
-        return bool(ctx.get("is_your_pick") and str(ctx.get("your_team") or "").strip())
-    return bool(
-        ctx.get("is_your_pick")
-        and str(ctx.get("your_team") or "").strip()
-        and draft_status not in ("", "not_started", "complete")
-        and not ctx.get("draft_complete")
-    )
+        return True
+    # Live Draft paint can briefly omit draft_status while room.status is already
+    # in_progress (recommendation cards then render permanently-disabled Draft Player).
+    if draft_status == "" and ctx.get("live_draft_active") and str(ctx.get("on_clock_team") or "").strip():
+        return True
+    if draft_status in ("", "not_started", "complete"):
+        return False
+    return True
 
 
 def resolve_manual_draft_panel_gate(
@@ -436,9 +442,20 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
                     paint = get_live_draft_paint_snapshot(session)
                     fields = context_fields_from_snapshot(session, paint, room=room)
                     progress = dict(progress)
-                    progress["current_pick"] = fields.get("current_pick")
-                    progress["current_pick_index"] = fields.get("current_pick_index")
-                    progress["on_clock_team"] = fields.get("on_clock_team") or ""
+                    progress["current_pick"] = fields.get("current_pick") or progress.get("current_pick")
+                    progress["current_pick_index"] = (
+                        fields.get("current_pick_index")
+                        if fields.get("current_pick_index") is not None
+                        else progress.get("current_pick_index")
+                    )
+                    # Never blank a known on-clock team with an empty paint snapshot field —
+                    # that disabled every Draft Player button (is_your_pick=False, clock=None)
+                    # while the page banners still showed the correct on-clock team.
+                    progress["on_clock_team"] = (
+                        fields.get("on_clock_team")
+                        or progress.get("on_clock_team")
+                        or ""
+                    )
                     progress["draft_status"] = fields.get("draft_status") or progress.get("draft_status")
                     progress["draft_complete"] = bool(fields.get("draft_complete"))
                     progress["revision"] = fields.get("revision")
@@ -460,10 +477,34 @@ def draft_action_context(session: dict[str, Any]) -> dict[str, Any]:
                     except ImportError:
                         pass
                 ctx["draft_status"] = str(progress.get("draft_status") or "")
+                if not ctx["draft_status"] and isinstance(room, dict):
+                    ctx["draft_status"] = str(room.get("status") or "").strip()
                 ctx["draft_complete"] = bool(progress.get("draft_complete"))
                 ctx["draft_complete_reason"] = str(progress.get("draft_complete_reason") or "")
                 ctx["current_pick"] = progress.get("current_pick")
                 ctx["on_clock_team"] = progress.get("on_clock_team") or ""
+                if not str(ctx["on_clock_team"] or "").strip() and isinstance(room, dict):
+                    # Last-resort: room field or current pick_order slot.
+                    ctx["on_clock_team"] = str(room.get("on_clock_team") or "").strip()
+                    if not ctx["on_clock_team"]:
+                        try:
+                            from live_draft_recommendation_context import resolve_team_on_clock
+
+                            _slot, _toc = resolve_team_on_clock(room)
+                            ctx["on_clock_team"] = str(_toc or "").strip()
+                            if ctx["current_pick"] is None and isinstance(_slot, dict):
+                                ctx["current_pick"] = _slot.get("Pick") or _slot.get("pick")
+                        except ImportError:
+                            order = room.get("pick_order") or []
+                            idx = int(room.get("current_pick_index") or 0)
+                            if isinstance(order, list) and 0 <= idx < len(order):
+                                slot = order[idx]
+                                if isinstance(slot, dict):
+                                    ctx["on_clock_team"] = str(
+                                        slot.get("Team") or slot.get("team") or ""
+                                    ).strip()
+                                else:
+                                    ctx["on_clock_team"] = str(slot or "").strip()
                 ctx["total_picks"] = int(progress.get("total_picks") or 0)
                 ctx["current_pick_index"] = progress.get("current_pick_index")
                 ctx["revision"] = progress.get("revision")

@@ -22,7 +22,7 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
     """F4 invariant: interactive widgets must re-execute after heavy paint is done."""
 
     def test_after_heavy_paint_done_interactive_path_must_run(self) -> None:
-        """Pre-fix architecture skipped paint_body; interactive callback must still run."""
+        """DONE path keeps rankings/QT via paint_body and re-runs interactive widgets."""
         st = MagicMock()
         st.fragment = None
         session: dict[str, Any] = {HEAVY_PAINT_DONE_KEY: True}
@@ -48,12 +48,17 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
                         paint_body,
                         paint_interactive=paint_interactive,
                     )
-        self.assertEqual(expensive["n"], 0, "expensive body must not rerun when heavy paint done")
+        self.assertGreaterEqual(
+            expensive["n"],
+            1,
+            "paint_body must rerun after DONE so rankings/Quick Draft Tools stay visible",
+        )
         self.assertGreaterEqual(
             interactive["n"],
             1,
             "live interactive renderer must run when heavy paint is done",
         )
+        self.assertIn("full_page_done", via_log)
         self.assertIn("full_page_interactive_live", via_log)
 
     def test_heavy_done_does_not_mount_run_every_fragment_for_interactive_widgets(self) -> None:
@@ -194,7 +199,11 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
                     paint_body,
                     paint_interactive=paint_interactive_claim_order,
                 )
-        self.assertEqual(expensive["n"], 1)
+        self.assertEqual(
+            expensive["n"],
+            2,
+            "fragment paints body once; DONE ScriptRun paints rankings/QT again",
+        )
         self.assertGreaterEqual(interactive["n"], 1)
         self.assertEqual(session.get("_live_draft_rec_queue_interactive_owner"), "script_run_no_run_every")
         self.assertTrue(owner_at_interactive)

@@ -10,6 +10,20 @@ DEFERRED_FULL_POOL_DONE_KEY = "_live_draft_deferred_full_pool_done"
 START_STAGES_KEY = "_live_draft_start_stage_timings"
 DEFER_HEAVY_PAINT_KEY = "_live_draft_defer_heavy_first_paint"
 
+# Process-wide: once a unified projection pool has been built in this Streamlit
+# process, subsequent Solo Starts may attach it from @st.cache_data without a
+# cold ~90s rebuild on the Start critical path.
+_PROCESS_PROJECTION_POOL_WARM = False
+
+
+def mark_process_projection_pool_warm() -> None:
+    global _PROCESS_PROJECTION_POOL_WARM
+    _PROCESS_PROJECTION_POOL_WARM = True
+
+
+def process_projection_pool_is_warm() -> bool:
+    return bool(_PROCESS_PROJECTION_POOL_WARM)
+
 
 def _mono() -> float:
     return time.perf_counter()
@@ -291,6 +305,7 @@ def maybe_build_deferred_full_pool(session: dict[str, Any], *, force: bool = Fal
     session["live_draft_room"] = room
     session[DEFERRED_FULL_POOL_DONE_KEY] = True
     session.pop(DEFERRED_FULL_POOL_KEY, None)
+    mark_process_projection_pool_warm()
     note_start_stage(
         session,
         "deferred_full_pool_done",

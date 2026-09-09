@@ -2528,6 +2528,29 @@ def render_live_manual_draft_panel(
             )
             if _manual_draft_clicked:
                 _on_manual_draft_click()
+                # Same contract as recommendation-card Draft Player: queue on this
+                # ScriptRun, then force a full-app rerun so page-entry pending
+                # processing commits the pick (fragment ticks are not enough).
+                _reran = False
+                try:
+                    from live_draft_safe_mode import request_live_draft_rerun
+
+                    _reran = bool(
+                        request_live_draft_rerun(
+                            st,
+                            session,
+                            "manual_panel_draft",
+                            room=room if isinstance(room, dict) else None,
+                        )
+                    )
+                except ImportError:
+                    pass
+                if not _reran:
+                    try:
+                        st.rerun()
+                    except Exception:
+                        pass
+                return True
         else:
             reason_txt = disable_reason or "Cannot draft this player right now."
             st.button(

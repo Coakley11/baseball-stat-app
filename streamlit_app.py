@@ -23889,107 +23889,64 @@ elif active_page == "Live Draft Room":
                         _use_fast_pool = False
                         note_start_stage = None  # type: ignore[assignment]
                     if _use_fast_pool:
-                        # Scoring restore: Solo must start on the unified projection
-                        # Player Grade pool (pre-stabilization contract). Fast-market
-                        # temporary grades are only a last-resort fallback if the
-                        # projection build fails.
+                        # Solo Start must open Pick 1 quickly. Cold unified projection
+                        # builds (~90s) previously blocked the Start ScriptRun on
+                        # "Starting…". Open on the fast market pool, then attach real
+                        # Player Grades after first active-draft paint via deferred
+                        # upgrade (scoring formulas unchanged). Never call
+                        # get_cached_unified_projection_pool on this critical path —
+                        # a cold miss re-blocks Start for ~90s.
                         note_start_stage(st.session_state, "pool_build_start")
+                        _t_fast = __import__("time").perf_counter()
+                        pool_live = build_fast_market_pool(
+                            market_df_live,
+                            min_rows=max(400, int(total_picks) * 40),
+                        )
                         try:
-                            with st.spinner("Building projection Player Grades…"):
-                                pool_live = get_cached_unified_projection_pool(
-                                    int(st.session_state.get("_lahman_max_year", year_max)),
-                                    int(live_proj_window),
-                                    str(fantasy_format),
-                                    str(live_proj_style),
-                                    bool(st.session_state.get("draft_use_ml_blend", False)),
-                                    float(
-                                        st.session_state.get("draft_ml_blend_weight", 0.12)
+                            mark_deferred_full_pool(
+                                st.session_state,
+                                params={
+                                    "lahman_max_year": int(
+                                        st.session_state.get(
+                                            "_lahman_max_year", year_max
+                                        )
+                                    ),
+                                    "draft_window": int(live_proj_window),
+                                    "fantasy_format": str(fantasy_format),
+                                    "projection_style": str(live_proj_style),
+                                    "use_ml_blend": bool(
+                                        st.session_state.get(
+                                            "draft_use_ml_blend", False
+                                        )
+                                    ),
+                                    "ml_blend_weight": float(
+                                        st.session_state.get(
+                                            "draft_ml_blend_weight", 0.12
+                                        )
                                         or 0
                                     ),
-                                    int(
-                                        st.session_state.get("draft_ml_min_games_signal", 50)
+                                    "ml_min_games_for_signal": int(
+                                        st.session_state.get(
+                                            "draft_ml_min_games_signal", 50
+                                        )
                                         or 50
                                     ),
-                                )
-                            if pool_live is not None and not getattr(pool_live, "empty", True):
-                                try:
-                                    from draft_scoring_pool import (
-                                        POOL_KIND_VALID_PROJECTION,
-                                        POOL_VALUE_KIND_KEY,
-                                        ensure_draft_scoring_pool_columns,
-                                    )
-
-                                    pool_live = ensure_draft_scoring_pool_columns(pool_live)
-                                    pool_live.attrs[POOL_VALUE_KIND_KEY] = (
-                                        POOL_KIND_VALID_PROJECTION
-                                    )
-                                except ImportError:
-                                    pass
-                                st.session_state.pop(
-                                    "_solo_needs_projection_player_grades", None
-                                )
-                                note_start_stage(
-                                    st.session_state,
-                                    "pool_build_end",
-                                    pool_live_count=int(len(pool_live)),
-                                    fast_pool=False,
-                                    projection_grades=True,
-                                )
-                            else:
-                                raise RuntimeError("empty_projection_pool")
-                        except Exception as _proj_pool_exc:
-                            st.session_state["_solo_projection_start_fallback"] = (
-                                f"{type(_proj_pool_exc).__name__}: {_proj_pool_exc}"
-                            )[:200]
-                            pool_live = build_fast_market_pool(
-                                market_df_live,
-                                min_rows=max(400, int(total_picks) * 40),
+                                },
                             )
-                            try:
-                                mark_deferred_full_pool(
-                                    st.session_state,
-                                    params={
-                                        "lahman_max_year": int(
-                                            st.session_state.get(
-                                                "_lahman_max_year", year_max
-                                            )
-                                        ),
-                                        "draft_window": int(live_proj_window),
-                                        "fantasy_format": str(fantasy_format),
-                                        "projection_style": str(live_proj_style),
-                                        "use_ml_blend": bool(
-                                            st.session_state.get(
-                                                "draft_use_ml_blend", False
-                                            )
-                                        ),
-                                        "ml_blend_weight": float(
-                                            st.session_state.get(
-                                                "draft_ml_blend_weight", 0.12
-                                            )
-                                            or 0
-                                        ),
-                                        "ml_min_games_for_signal": int(
-                                            st.session_state.get(
-                                                "draft_ml_min_games_signal", 50
-                                            )
-                                            or 50
-                                        ),
-                                    },
-                                )
-                            except ImportError:
-                                pass
-                            st.session_state[
-                                "_solo_needs_projection_player_grades"
-                            ] = True
-                            note_start_stage(
-                                st.session_state,
-                                "pool_build_end",
-                                pool_live_count=int(len(pool_live))
-                                if pool_live is not None
-                                else 0,
-                                fast_pool=True,
-                                projection_fallback=True,
-                            )
+                        except ImportError:
+                            pass
+                        st.session_state["_solo_needs_projection_player_grades"] = True
+                        note_start_stage(
+                            st.session_state,
+                            "pool_build_end",
+                            pool_live_count=int(len(pool_live))
+                            if pool_live is not None
+                            else 0,
+                            fast_pool=True,
+                            fast_ms=int(
+                                (__import__("time").perf_counter() - _t_fast) * 1000
+                            ),
+                        )
                     else:
                         with st.spinner("Building player pool…"):
                             # Cached when warm; cold Cloud first-build can take several seconds.
@@ -24002,6 +23959,15 @@ elif active_page == "Live Draft Room":
                                 float(st.session_state.get("draft_ml_blend_weight", 0.12) or 0),
                                 int(st.session_state.get("draft_ml_min_games_signal", 50) or 50),
                             )
+                            try:
+                                from live_draft_fast_solo_start import (
+                                    mark_process_projection_pool_warm,
+                                )
+
+                                if pool_live is not None and not getattr(pool_live, "empty", True):
+                                    mark_process_projection_pool_warm()
+                            except ImportError:
+                                pass
                 try:
                     from live_draft_solo_create import note_timed_step
 
@@ -27751,7 +27717,27 @@ elif active_page == "Live Draft Room":
                                         if df is None or not isinstance(df, pd.DataFrame) or df.empty:
                                             return pd.DataFrame()
                                         cols = [c for c in rec_cols if c in df.columns]
+                                        # Prefer one Player Grade source — selecting both EFV and
+                                        # Player Grade makes prepare_draft_scores_for_display collide.
+                                        if (
+                                            "Expected Fantasy Value" in cols
+                                            and "Player Grade" in cols
+                                        ):
+                                            cols = [
+                                                c
+                                                for c in cols
+                                                if c != "Expected Fantasy Value"
+                                            ]
+                                        if (
+                                            "Draft Fit Score" in cols
+                                            and "Roster Fit Score" in cols
+                                        ):
+                                            cols = [
+                                                c for c in cols if c != "Draft Fit Score"
+                                            ]
                                         out = df.loc[:, cols].copy()
+                                        if out.columns.duplicated().any():
+                                            out = out.loc[:, ~out.columns.duplicated()].copy()
                                         if "fullName" in out.columns:
                                             if "Player" in out.columns:
                                                 out = out.drop(columns=["Player"])
@@ -28386,13 +28372,25 @@ elif active_page == "Live Draft Room":
                     _action_pending = True
             except ImportError:
                 pass
-        # Wait until the active draft heavy paint has registered once so Start /
-        # first viewport are not blocked by the synchronous projection rebuild.
+        # Never attach the cold projection pool on the same ScriptRun that first
+        # paints Solo early cards — that re-blocked Start handoff for tens of seconds.
+        # Schedule upgrade for the next quiet ScriptRun after cards are interactive.
         _heavy_done = bool(st.session_state.get("_live_draft_heavy_paint_done"))
-        if not _action_pending and _heavy_done:
+        _early_cards = bool(st.session_state.get("_live_draft_rec_cards_early_viewport"))
+        _pool_next = bool(st.session_state.pop("_solo_deferred_pool_next_run", None))
+        if (
+            _early_cards
+            and st.session_state.get("_solo_needs_projection_player_grades")
+            and not st.session_state.get("_solo_early_cards_pool_scheduled")
+        ):
+            st.session_state["_solo_early_cards_pool_scheduled"] = True
+            st.session_state["_solo_deferred_pool_next_run"] = True
+            _pool_next = False
+        if not _action_pending and (_pool_next or _heavy_done):
             _upgraded = maybe_build_deferred_full_pool(st.session_state, force=_force_proj)
             if _upgraded:
                 st.session_state.pop("_solo_needs_projection_player_grades", None)
+                st.session_state.pop("_solo_early_cards_pool_scheduled", None)
                 if not st.session_state.get("_solo_projection_grade_rerun_done"):
                     st.session_state["_solo_projection_grade_rerun_done"] = True
                     st.session_state["_live_draft_defer_full_rerun"] = True
