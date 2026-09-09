@@ -82,6 +82,13 @@ def ensure_recommendation_ranking_schema(
             out[col] = 0.0 if fill_missing_numeric else pd.NA
         else:
             out[col] = pd.to_numeric(out[col], errors="coerce")
+    # Player Grade is the product-facing alias of Expected Fantasy Value — never leave
+    # an empty PG shell when EFV is already populated (ranking tables / cards parity).
+    if "Expected Fantasy Value" in out.columns and "Player Grade" in out.columns:
+        pg = pd.to_numeric(out["Player Grade"], errors="coerce")
+        efv = pd.to_numeric(out["Expected Fantasy Value"], errors="coerce")
+        if efv.notna().any():
+            out["Player Grade"] = pg.fillna(efv)
     return out
 
 

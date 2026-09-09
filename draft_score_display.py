@@ -326,10 +326,21 @@ def prepare_draft_scores_for_display(df: pd.DataFrame | None) -> pd.DataFrame:
     rename = {k: v for k, v in COLUMN_RENAME_MAP.items() if k in out.columns}
     # Avoid duplicate display labels when both internal + display names are present
     # (e.g. Expected Fantasy Value + Player Grade → two Player Grade columns).
+    # Prefer a populated source (EFV) over an empty destination shell (Player Grade).
     for src, dst in list(rename.items()):
         if src == dst:
             continue
         if dst in out.columns and src in out.columns:
+            try:
+                dst_num = pd.to_numeric(out[dst], errors="coerce")
+                src_num = pd.to_numeric(out[src], errors="coerce")
+                if src_num.notna().any():
+                    if not dst_num.notna().any():
+                        out[dst] = out[src]
+                    else:
+                        out[dst] = dst_num.fillna(src_num)
+            except Exception:
+                pass
             out = out.drop(columns=[src])
             del rename[src]
     if rename:

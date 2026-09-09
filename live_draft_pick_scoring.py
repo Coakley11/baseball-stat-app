@@ -354,7 +354,24 @@ def apply_draft_pick_scoring(
             room=room,
             respect_league_remaining_demand=True,
         )
-        available = exclude_pitchers_when_no_pitcher_slots(available, config=slot_cfg)
+        available = exclude_pitchers_when_no_pitcher_slots(
+            available,
+            config=slot_cfg,
+            fantasy_format=fantasy_format,
+        )
+        try:
+            from live_draft_roster_slots import filter_candidates_to_team_open_positions
+
+            # Team-scoped legality: score/autopick for THIS roster's open needs
+            # (CPU Auto Pick must not use another team's fit / BN escape hatch).
+            available = filter_candidates_to_team_open_positions(
+                available,
+                roster_df,
+                config=slot_cfg,
+                room=room,
+            )
+        except ImportError:
+            pass
         active_positions = get_active_position_codes(slot_cfg)
         league_demand = get_league_remaining_demand(room, slot_cfg)
     except ImportError:

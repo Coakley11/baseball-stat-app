@@ -15,7 +15,18 @@ def _runtime_room(*, room_id: str = "ABC123", pick: int = 0) -> dict:
         "status": "in_progress",
         "current_pick_index": pick,
         "timer_deadline": time.time() + 60,
-        "config": {"timer_seconds": 60},
+        "config": {
+            "timer_seconds": 60,
+            "num_teams": 2,
+            "picks_per_team": 5,
+            "rounds": 5,
+            "teams": ["Team A", "Team B"],
+        },
+        "teams": ["Team A", "Team B"],
+        "pick_order": [
+            {"Pick": i + 1, "Round": 1, "Team": "Team A" if i % 2 == 0 else "Team B"}
+            for i in range(10)
+        ],
         "draft_board": [],
         "pool": pd.DataFrame(),
     }

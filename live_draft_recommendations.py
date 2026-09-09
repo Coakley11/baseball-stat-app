@@ -171,10 +171,16 @@ def _live_draft_recommendations_impl(
         score_ctx = nullcontext()
 
     with score_ctx:
-        balanced, gaps = _score_available(
+        room_cfg = dict(room.get("config") or {})
+        rule = str(
+            room_cfg.get("auto_pick_rule")
+            or cfg.get("auto_pick_rule")
+            or "balanced recommendation"
+        ).strip() or "balanced recommendation"
+        scored, gaps = _score_available(
             available,
             roster_df,
-            "balanced recommendation",
+            rule,
             target_counts,
             config=cfg,
             room=room,
@@ -185,9 +191,10 @@ def _live_draft_recommendations_impl(
             from live_draft_recommendation_context import RECOMMENDATION_CONTEXT_KEY
 
             diag = dict(session.get(RECOMMENDATION_CONTEXT_KEY) or {})
-            if not balanced.empty:
+            diag["auto_pick_rule"] = rule
+            if not scored.empty:
                 top = safe_sort_recommendations(
-                    balanced, ["Decision Score"], ascending=False
+                    scored, ["Decision Score"], ascending=False
                 ).head(1)
                 if not top.empty:
                     row = top.iloc[0]
@@ -215,28 +222,28 @@ def _live_draft_recommendations_impl(
                         diag["recommendation_reason"] = ""
             session[RECOMMENDATION_CONTEXT_KEY] = diag
             session["_recommendation_schema_diag"] = recommendation_schema_diagnostics(
-                balanced, path="live_draft_recommendations"
+                scored, path="live_draft_recommendations"
             )
         except ImportError:
             pass
 
-    if balanced is None or balanced.empty:
+    if scored is None or scored.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    balanced = ensure_recommendation_ranking_schema(balanced)
-    top_recommended = balanced.head(top_n)
+    scored = ensure_recommendation_ranking_schema(scored)
+    top_recommended = scored.head(top_n)
     best_available = safe_sort_recommendations(
-        balanced, ["Decision Score", "Expected Fantasy Value"], ascending=[False, False]
+        scored, ["Decision Score", "Expected Fantasy Value"], ascending=[False, False]
     ).head(top_n)
-    if gaps and "Primary Position" in balanced.columns:
+    if gaps and "Primary Position" in scored.columns:
         positional = safe_sort_recommendations(
-            balanced[balanced["Primary Position"].isin(gaps)],
+            scored[scored["Primary Position"].isin(gaps)],
             ["Positional Fit", "Draft Fit Score"],
             ascending=[False, False],
         ).head(top_n)
     else:
         positional = pd.DataFrame()
     sleepers = safe_sort_recommendations(
-        balanced, ["Sleeper Score", "Draft Fit Score"], ascending=[False, False]
+        scored, ["Sleeper Score", "Draft Fit Score"], ascending=[False, False]
     ).head(top_n)
     return top_recommended, best_available, positional, sleepers

@@ -27716,7 +27716,24 @@ elif active_page == "Live Draft Room":
                                         """Select display cols and rename fullName→Player without dup columns."""
                                         if df is None or not isinstance(df, pd.DataFrame) or df.empty:
                                             return pd.DataFrame()
-                                        cols = [c for c in rec_cols if c in df.columns]
+                                        work = df.copy()
+                                        # Same Player Grade contract as recommendation cards (EFV → PG).
+                                        if (
+                                            "Expected Fantasy Value" in work.columns
+                                            and "Player Grade" in work.columns
+                                        ):
+                                            pg = pd.to_numeric(work["Player Grade"], errors="coerce")
+                                            efv = pd.to_numeric(
+                                                work["Expected Fantasy Value"], errors="coerce"
+                                            )
+                                            if efv.notna().any():
+                                                work["Player Grade"] = pg.fillna(efv)
+                                        elif (
+                                            "Expected Fantasy Value" in work.columns
+                                            and "Player Grade" not in work.columns
+                                        ):
+                                            work["Player Grade"] = work["Expected Fantasy Value"]
+                                        cols = [c for c in rec_cols if c in work.columns]
                                         # Prefer one Player Grade source — selecting both EFV and
                                         # Player Grade makes prepare_draft_scores_for_display collide.
                                         if (
@@ -27735,7 +27752,7 @@ elif active_page == "Live Draft Room":
                                             cols = [
                                                 c for c in cols if c != "Draft Fit Score"
                                             ]
-                                        out = df.loc[:, cols].copy()
+                                        out = work.loc[:, cols].copy()
                                         if out.columns.duplicated().any():
                                             out = out.loc[:, ~out.columns.duplicated()].copy()
                                         if "fullName" in out.columns:

@@ -546,11 +546,16 @@ def league_allows_pitcher_recommendations(
     context: dict[str, Any] | None = None,
     fantasy_format: str | None = None,
 ) -> bool:
-    """Pitchers belong in recommendation pools only when P slots exist and format includes pitching."""
-    return bool(
-        _resolve_has_pitcher_slots(config=config, session=session, context=context)
-        and _resolve_format_includes_pitching(context=context, fantasy_format=fantasy_format)
-    )
+    """Pitchers belong in pools when the league has pitcher roster slots.
+
+    Host slot config is authoritative for Live Draft / Auto Pick. Format-name
+    helpers (e.g. waiver ``HITTER_ONLY_FORMATS`` treating ``5x5 Roto`` as
+    hitter-only) must not strip SP/RP when ``slots['P'] > 0``.
+    """
+    if _resolve_has_pitcher_slots(config=config, session=session, context=context):
+        return True
+    # No P slots — still allow when an explicit pitching format is set without slots.
+    return bool(_resolve_format_includes_pitching(context=context, fantasy_format=fantasy_format))
 
 
 def _player_has_hitter_eligibility(row: pd.Series) -> bool:
@@ -679,4 +684,42 @@ def filter_candidates_to_legal_roster_positions(
             room=room,
             respect_league_remaining_demand=False,
         )
+    return filtered
+
+
+def filter_candidates_to_team_open_positions(
+    df: pd.DataFrame | None,
+    roster_df: pd.DataFrame | None,
+    *,
+    config: dict[str, Any] | None = None,
+    room: dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    """Hard-filter to players who can fill THIS team's remaining required slots.
+
+    When required starter gaps remain (non-flex), only players eligible for at
+    least one of those gaps are kept — BN is not an escape hatch. When only
+    flex/UTIL/DH remain or all starters are filled (bench picks), return the
+    league-legal pool unchanged so BPA applies under the selected strategy.
+    """
+    if df is None or getattr(df, "empty", True):
+        return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    cfg = dict(config or {})
+    if room and isinstance(room.get("config"), dict) and not cfg.get("slots"):
+        cfg = dict(room.get("config") or {})
+    try:
+        from draft_needs import normalize_position_needs_for_scoring
+    except ImportError:
+        return df.copy()
+
+    gaps = get_remaining_position_needs(roster_df, cfg)
+    required = normalize_position_needs_for_scoring(gaps)
+    if not required:
+        return df.copy()
+
+    def _row_fills_required(row: pd.Series) -> bool:
+        tokens = _player_position_tokens(row)
+        return any(_eligible_for_draft_slot(tokens, pos) for pos in required)
+
+    mask = df.apply(_row_fills_required, axis=1)
+    filtered = df.loc[mask].copy()
     return filtered

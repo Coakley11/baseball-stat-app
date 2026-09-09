@@ -219,7 +219,8 @@ def should_preserve_in_session_room_on_auth_blocked_restore(
     rid = str(room.get("draft_room_id") or room.get("draft_id") or "").strip()
     if not rid:
         return False
-    if str(room.get("status") or "").strip().lower() != "in_progress":
+    status = str(room.get("status") or "").strip().lower()
+    if status not in ("in_progress", "complete", "completed", "paused"):
         return False
     if room.get("current_pick_index") is None:
         return False
@@ -1373,12 +1374,14 @@ def _room_blocked_from_auto_restore(
     *,
     for_persisted_restore: bool = False,
 ) -> str:
-    """Block automatic runtime restore for ended/completed drafts.
+    """Block automatic runtime restore for ended/discarded drafts only.
 
-    Tombstones always win. Persisted restore paths also skip completed boards so
-    refresh/reboot cannot reopen them. An in-session completed room (results
-    banner before End Draft) is kept until End Draft clears it.
+    Naturally completed drafts stay viewable (Draft Complete panel) across refresh
+    under the existing persistence model. Tombstones / End Draft / closed rooms
+    still block restore so setup only returns after an explicit end/new-draft action.
+    ``for_persisted_restore`` is retained for call-site compatibility.
     """
+    del for_persisted_restore  # naturally completed rooms are restorables; see docstring
     if not isinstance(room, dict):
         return ""
     draft_id = str(room.get("draft_room_id") or "").strip()
@@ -1410,16 +1413,6 @@ def _room_blocked_from_auto_restore(
     status = str(room.get("status") or "").strip().lower()
     if status in ("closed", "ended", "deleted"):
         return f"status_{status}"
-    if for_persisted_restore and status in ("complete", "completed"):
-        return f"status_{status}"
-    record = room.get("live_draft_completion_record")
-    if (
-        for_persisted_restore
-        and isinstance(record, dict)
-        and record.get("draft_status") == "complete"
-        and record.get("final_board_locked")
-    ):
-        return "completion_record"
     return ""
 
 

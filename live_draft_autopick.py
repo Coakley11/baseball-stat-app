@@ -125,47 +125,20 @@ def live_draft_auto_pick(
     board_before = _board_size(room)
     idx_before = int(room.get("current_pick_index") or 0)
 
+    # Never reuse the UI recommendation cache for Auto Pick. That cache is painted for
+    # the recommendation surface (often the user's team) and can disagree with the
+    # on-clock team's roster needs / selected strategy.
     rec_scored = pd.DataFrame()
     gaps: list[str] = []
-    used_rec_cache = False
+    skip_reason = ""
     if session is not None:
-        try:
-            from live_draft_ui_cache import REC_CACHE_KEY, live_draft_ui_cache_key
-
-            cache_key = live_draft_ui_cache_key(session, room, top_n=8, team=None)
-            entry = session.get(REC_CACHE_KEY)
-            if isinstance(entry, dict) and entry.get("key") == cache_key:
-                top_rec = entry.get("top_rec")
-                if isinstance(top_rec, pd.DataFrame) and not top_rec.empty:
-                    rec_scored = top_rec
-                    used_rec_cache = True
-                    session["_live_draft_autopick_used_rec_cache"] = True
-        except ImportError:
-            pass
-    if session is not None and not used_rec_cache:
         session["_live_draft_autopick_used_rec_cache"] = False
 
     # Authoritative Draft Setup Auto-Pick Rule — never invent a separate formula.
     rule_key = str(configured_rule or "balanced recommendation").strip() or "balanced recommendation"
-    skip_reason = ""
-    if used_rec_cache and rule_key.lower() != "balanced recommendation":
-        # Cached tables are balanced-scored; rescore with the configured rule.
-        used_rec_cache = False
-        skip_reason = "Ignored balanced recommendation cache for configured auto-pick rule."
-
-    if used_rec_cache and not rec_scored.empty:
-        pid_col = "playerID" if "playerID" in rec_scored.columns else None
-        drafted = {str(x).strip() for x in (room.get("drafted_player_ids") or []) if str(x).strip()}
-        if pid_col and drafted:
-            rec_scored = rec_scored[~rec_scored[pid_col].astype(str).isin(drafted)]
-        if rec_scored.empty:
-            used_rec_cache = False
-            skip_reason = "Cached recommendations were stale — rescoring available pool."
-
-    if not used_rec_cache:
-        rec_scored, gaps = score_available_for_rule(
-            available, roster_df, rule_key, target_counts, config=cfg
-        )
+    rec_scored, gaps = score_available_for_rule(
+        available, roster_df, rule_key, target_counts, config=cfg
+    )
     if rec_scored.empty:
         if session is not None:
             session.pop("_live_draft_in_flight_auto_pick_key", None)

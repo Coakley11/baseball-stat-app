@@ -41,3 +41,22 @@ When a pick timer expires:
 The OF must **not** be auto-drafted. Filter to legal catchers, rank by the rule, draft the top legal catcher.
 
 When multiple positions remain open, consider every player who can fill at least one open slot, then rank that pool with the configured rule.
+
+## How each Auto-Pick Rule ranks the legal pool
+
+After roster legality filtering (team open required slots, then league-legal / BN when only flex/bench remains):
+
+| Rule | Sort key (descending unless noted) |
+|------|-------------------------------------|
+| `best market rank` | lowest Market Rank, then Decision Score, Expected Fantasy Value |
+| `best model rank` | lowest Model Rank, then Decision Score, Expected Fantasy Value |
+| `best projected fantasy value` | Expected Fantasy Value, then Model Rank (asc) |
+| `best roster need` | Positional Fit, Draft Fit Score, Expected Fantasy Value |
+| `balanced recommendation` | Decision Score, Draft Fit Score, Expected Fantasy Value |
+
+The same rule is stored on `room["config"]["auto_pick_rule"]` from the setup **Auto-Pick Rule** control and drives both Auto Pick and Live Draft recommendation ranking.
+
+## Team-scoped legality
+
+While required starters remain open (non-flex), candidates must be eligible for at least one open required slot. Bench (`BN`) is not used as an escape hatch in that phase. When only UTIL/DH/BN remain — or starters are filled — the candidate set widens to league-legal BPA under the selected rule.
+
