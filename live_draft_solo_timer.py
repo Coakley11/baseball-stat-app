@@ -382,6 +382,19 @@ def expire_current_pick_and_advance(
     if complete:
         room["status"] = "complete"
         live_draft_clear_timer(room)
+        try:
+            from live_draft_completion import apply_live_draft_completion
+
+            apply_live_draft_completion(room, session)
+        except ImportError:
+            pass
+        session.pop("_pending_manual_draft_pick", None)
+        try:
+            from draft_ui import PENDING_MANUAL_PICK_KEY
+
+            session.pop(PENDING_MANUAL_PICK_KEY, None)
+        except ImportError:
+            pass
     else:
         room["status"] = "in_progress"
         duration = snapshot.timer_seconds

@@ -395,6 +395,14 @@ def stamp_team_id_on_pick_record(room: dict[str, Any], pick_record: dict[str, An
     tid = team_id_for_display_name(room, display_team)
     if tid:
         pick_record["team_id"] = tid
-    pick_record["Team"] = display_team
-    if "Fantasy Team" in pick_record or display_team:
-        pick_record["Fantasy Team"] = display_team
+    display = str(display_team or "").strip()
+    # Preserve MLB club abbreviation before overwriting Team with fantasy display name.
+    existing_mlb = str(pick_record.get("MLB Team") or pick_record.get("mlb_team") or "").strip()
+    prior_team = str(pick_record.get("Team") or "").strip()
+    if not existing_mlb and prior_team and prior_team != display:
+        pick_record["MLB Team"] = prior_team
+    elif existing_mlb:
+        pick_record["MLB Team"] = existing_mlb
+    pick_record["Team"] = display
+    if "Fantasy Team" in pick_record or display:
+        pick_record["Fantasy Team"] = display

@@ -246,6 +246,89 @@ def _deferred_pool_params_from_room(session: dict[str, Any], room: dict[str, Any
     }
 
 
+def _backfill_drafted_analytics_from_pool(room: dict[str, Any], pool: Any) -> int:
+    """Overwrite frozen Model Rank / Market Rank / Fantasy Edge / MLB Team on pick rows.
+
+    Fast Solo Start may stamp Model Rank = Market Rank (Edge 0) onto early picks.
+    After the real projection pool loads, refresh drafted board/roster analytics from
+    the upgraded pool by playerID without changing Decision Score formulas.
+    """
+    if pool is None or getattr(pool, "empty", True) or not isinstance(room, dict):
+        return 0
+    import pandas as pd
+
+    df = pool if isinstance(pool, pd.DataFrame) else pd.DataFrame(pool)
+    if "playerID" not in df.columns:
+        return 0
+    by_id: dict[str, dict[str, Any]] = {}
+    for _, row in df.iterrows():
+        pid = str(row.get("playerID") or "").strip()
+        if not pid:
+            continue
+        by_id[pid] = row.to_dict()
+    fields = (
+        "Model Rank",
+        "Market Rank",
+        "Fantasy Edge",
+        "Expected Fantasy Value",
+        "Scarcity Score",
+        "Position Scarcity Score",
+        "Blended Projection Score",
+        "MLB Team",
+        "proj_HR",
+        "proj_RBI",
+        "proj_R",
+        "proj_SB",
+        "proj_BA",
+        "proj_OPS",
+        "proj_W",
+        "proj_SV",
+        "proj_K",
+        "proj_ERA",
+        "proj_WHIP",
+    )
+    updated = 0
+
+    def _patch(rec: dict[str, Any]) -> None:
+        nonlocal updated
+        if not isinstance(rec, dict):
+            return
+        pid = str(rec.get("playerID") or rec.get("player_id") or "").strip()
+        src = by_id.get(pid)
+        if not src:
+            return
+        # Preserve fantasy Team / Fantasy Team; restore MLB club from pool.
+        pool_team = str(src.get("Team") or src.get("MLB Team") or "").strip()
+        fantasy = str(rec.get("Fantasy Team") or "").strip()
+        if pool_team and pool_team != fantasy:
+            rec["MLB Team"] = pool_team
+        for col in fields:
+            if col == "MLB Team":
+                continue
+            if col in src and src.get(col) is not None:
+                rec[col] = src.get(col)
+        # Historical Fantasy Edge = Market Rank − Model Rank when both present.
+        try:
+            market = pd.to_numeric(rec.get("Market Rank"), errors="coerce")
+            model = pd.to_numeric(rec.get("Model Rank"), errors="coerce")
+            if pd.notna(market) and pd.notna(model):
+                rec["Fantasy Edge"] = float(market) - float(model)
+        except Exception:
+            pass
+        updated += 1
+
+    for rec in room.get("draft_board") or []:
+        if isinstance(rec, dict):
+            _patch(rec)
+    for _team, players in (room.get("rosters") or {}).items():
+        if not isinstance(players, list):
+            continue
+        for rec in players:
+            if isinstance(rec, dict):
+                _patch(rec)
+    return updated
+
+
 def maybe_build_deferred_full_pool(session: dict[str, Any], *, force: bool = False) -> bool:
     """After first active-page paint, attach the full projection pool to the live room."""
     room = session.get("live_draft_room")
@@ -305,6 +388,11 @@ def maybe_build_deferred_full_pool(session: dict[str, Any], *, force: bool = Fal
     session["live_draft_room"] = room
     session[DEFERRED_FULL_POOL_DONE_KEY] = True
     session.pop(DEFERRED_FULL_POOL_KEY, None)
+    session.pop("_solo_needs_projection_player_grades", None)
+    try:
+        _backfill_drafted_analytics_from_pool(room, pool)
+    except Exception:
+        pass
     mark_process_projection_pool_warm()
     note_start_stage(
         session,

@@ -10609,15 +10609,64 @@ def cached_live_draft_recommendations(session, room, top_n=8, team=None):
 
 def live_draft_rosters_df(room):
     rows = []
+    pool = room.get("pool") if isinstance(room, dict) else None
+    pool_by_id: dict = {}
+    try:
+        import pandas as pd
+
+        if pool is not None and not getattr(pool, "empty", True) and "playerID" in getattr(pool, "columns", []):
+            for _, prow in pool.iterrows():
+                pid = str(prow.get("playerID") or "").strip()
+                if pid:
+                    pool_by_id[pid] = prow
+    except Exception:
+        pool_by_id = {}
     for team, players in (room.get("rosters") or {}).items():
         for p in players:
             row = dict(p)
             row["Fantasy Team"] = team
+            # Never treat fantasy display Team as MLB Team.
+            mlb = str(row.get("MLB Team") or row.get("mlb_team") or "").strip()
+            team_val = str(row.get("Team") or "").strip()
+            if mlb:
+                row["MLB Team"] = mlb
+            elif team_val and team_val != str(team).strip():
+                row["MLB Team"] = team_val
+            else:
+                row["MLB Team"] = row.get("MLB Team") or ""
+            # Prefer live pool analytics when available (fixes fast-start Model=Market freeze).
+            pid = str(row.get("playerID") or row.get("player_id") or "").strip()
+            src = pool_by_id.get(pid)
+            if src is not None:
+                for col in (
+                    "Model Rank",
+                    "Market Rank",
+                    "Fantasy Edge",
+                    "Expected Fantasy Value",
+                    "Scarcity Score",
+                    "Position Scarcity Score",
+                ):
+                    if col in src.index:
+                        val = src.get(col)
+                        if val is not None and not (isinstance(val, float) and pd.isna(val)):
+                            row[col] = val
+                pool_team = str(src.get("Team") or src.get("MLB Team") or "").strip()
+                if pool_team and pool_team != str(team).strip():
+                    row["MLB Team"] = pool_team
+                try:
+                    market = pd.to_numeric(row.get("Market Rank"), errors="coerce")
+                    model = pd.to_numeric(row.get("Model Rank"), errors="coerce")
+                    if pd.notna(market) and pd.notna(model):
+                        row["Fantasy Edge"] = float(market) - float(model)
+                except Exception:
+                    pass
             rows.append(row)
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
-    return df.rename(columns={"fullName": "Player", "Team": "MLB Team"})
+    if "fullName" in df.columns:
+        df = df.rename(columns={"fullName": "Player"})
+    return df
 
 
 def live_draft_team_totals(room):
@@ -12698,12 +12747,24 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     except Exception:
         _skip_sidebar_queue = False
     if _skip_sidebar_queue:
-        # Same canonical draft_queue — compact X removes (no second sortable widget tree).
-        _mirror = [
-            str(x).strip()
-            for x in (st.session_state.get("draft_queue") or [])
-            if str(x).strip()
-        ]
+        # Same resolver as main Draft Queue — session["draft_queue"] alone can lag
+        # behind draft_state.queue / last-good and falsely show empty.
+        try:
+            from draft_ui import _resolve_visible_draft_queue
+
+            _mirror, _mirror_src = _resolve_visible_draft_queue(
+                st.session_state, qkey="live_queue"
+            )
+            if not _mirror:
+                _mirror, _mirror_src = _resolve_visible_draft_queue(
+                    st.session_state, qkey="draft_queue"
+                )
+        except Exception:
+            _mirror = [
+                str(x).strip()
+                for x in (st.session_state.get("draft_queue") or [])
+                if str(x).strip()
+            ]
         st.session_state["_live_draft_queue_sidebar_mirror"] = list(_mirror)
         if not _mirror:
             st.sidebar.caption("Queue empty — add from Live Draft Room.")
@@ -26451,6 +26512,7 @@ elif active_page == "Live Draft Room":
         # fills a 768px laptop viewport and hides the cards.
         st.session_state.pop("_live_draft_rec_cards_early_viewport", None)
         st.session_state.pop("_live_draft_manual_panel_early", None)
+        st.session_state.pop("_live_draft_solo_early_timer_painted", None)
         _solo_recs_here = False
         try:
             from live_draft_setup_mode import is_solo_live_draft as _is_solo_fn_early
@@ -26461,6 +26523,22 @@ elif active_page == "Live Draft Room":
         except ImportError:
             _solo_recs_here = bool(_solo_compact_viewport) and not bool(_draft_is_complete)
         if _solo_recs_here:
+            # Always paint the on-clock timer before early recommendation cards so heavy
+            # rec paint cannot leave an active Solo pick with zero visible timers.
+            if isinstance(slot, dict) and not bool(_draft_is_complete):
+                try:
+                    from live_draft_on_clock_ui import render_live_on_clock_banner
+
+                    render_live_on_clock_banner(
+                        st,
+                        st.session_state,
+                        room,
+                        slot,
+                        next_pick=live_draft_next_pick_for_team(room, user_team),
+                    )
+                    st.session_state["_live_draft_solo_early_timer_painted"] = True
+                except Exception:
+                    st.session_state.pop("_live_draft_solo_early_timer_painted", None)
             try:
                 from live_draft_fast_solo_start import (
                     _pool_has_projection_player_grades,
@@ -26489,7 +26567,7 @@ elif active_page == "Live Draft Room":
                 st.markdown("##### Recommended Players")
                 if st.session_state.get("_solo_needs_projection_player_grades"):
                     st.caption(
-                        "Loading projection Player Grades… temporary ranks may refresh shortly."
+                        "Updating projection grades and model ranks — values may refresh shortly."
                     )
                 st.caption(
                     "Compare the best options for your current pick based on player quality, "
@@ -27194,13 +27272,15 @@ elif active_page == "Live Draft Room":
                     try:
                         from live_draft_on_clock_ui import render_live_on_clock_banner
 
-                        render_live_on_clock_banner(
-                            st,
-                            st.session_state,
-                            room,
-                            slot,
-                            next_pick=next_user_pick,
-                        )
+                        # Avoid a second Solo timer when early viewport already painted one.
+                        if not bool(st.session_state.get("_live_draft_solo_early_timer_painted")):
+                            render_live_on_clock_banner(
+                                st,
+                                st.session_state,
+                                room,
+                                slot,
+                                next_pick=next_user_pick,
+                            )
                         if developer_mode_enabled():
                             try:
                                 from live_draft_solo_timer import VISIBLE_TIMER_COUNT_KEY
@@ -28163,7 +28243,16 @@ elif active_page == "Live Draft Room":
             )
             st.markdown("</div>", unsafe_allow_html=True)
 
-        if _draft_is_complete and not _pending_manual_pick:
+        if _draft_is_complete:
+            # Never leave completion blocked by a stale pending manual pick.
+            if _pending_manual_pick:
+                try:
+                    from draft_ui import PENDING_MANUAL_PICK_KEY
+
+                    st.session_state.pop(PENDING_MANUAL_PICK_KEY, None)
+                except ImportError:
+                    st.session_state.pop("_pending_manual_draft_pick", None)
+                _pending_manual_pick = False
             try:
                 from live_draft_room_ui import render_live_draft_complete_banner
 

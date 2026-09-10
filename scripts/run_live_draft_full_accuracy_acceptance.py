@@ -49,16 +49,23 @@ def _build_room(*, rule: str = "balanced recommendation", teams: int = 4, rounds
                 "fullName": f"Player {i:04d}",
                 "Primary Position": POSITIONS[i % len(POSITIONS)],
                 "Eligible Positions": POSITIONS[i % len(POSITIONS)],
+                "Team": ["NYY", "LAD", "TOR", "BOS", "ATL", "HOU"][i % 6],
                 "Expected Fantasy Value": float(0.95 - (i * 0.002)),
                 "Decision Score": float(0.90 - (i * 0.002)),
                 "Draft Fit Score": float(0.4 + (i % 10) * 0.05),
                 "Positional Fit": float(0.3 + (i % 8) * 0.05),
                 "Market Rank": i + 1,
-                "Model Rank": i + 1,
+                # Deliberately offset from Market Rank so Fantasy Edge is non-zero.
+                "Model Rank": max(1, ((i * 3) % pool_size) + 1),
+                "Fantasy Edge": float((i + 1) - max(1, ((i * 3) % pool_size) + 1)),
                 "Sleeper Score": float(0.1 + (i % 5) * 0.02),
                 "Position Scarcity Score": float(0.2 + (i % 7) * 0.03),
-                "Fantasy Edge": float((i % 9) * 0.01),
-                "Risk": float(0.1 + (i % 4) * 0.05),
+                "Scarcity Score": float(0.15 + (i % 6) * 0.04),
+                "proj_HR": float(20 + (i % 15)),
+                "proj_RBI": float(60 + (i % 40)),
+                "proj_R": float(50 + (i % 30)),
+                "proj_SB": float(5 + (i % 20)),
+                "proj_BA": 0.250 + (i % 40) * 0.001,
             }
             for i in range(pool_size)
         ]
@@ -116,12 +123,18 @@ def run_full_draft(*, rule: str = "balanced recommendation") -> dict[str, Any]:
     timings: list[float] = []
     legality_log: list[dict[str, Any]] = []
     grade_checks = 0
+    edge_nonzero = 0
+    model_ne_market = 0
+    mlb_ok = 0
 
     for i in range(total):
         slot = room["pick_order"][i]
         team = str(slot["Team"])
         roster_before = list((room.get("rosters") or {}).get(team) or [])
         gaps_before = get_remaining_position_needs(pd.DataFrame(roster_before), room["config"])
+        # Active pick must have an armed timer while in progress.
+        assert str(room.get("status") or "") == "in_progress"
+        assert room.get("timer_deadline") is not None or room.get("timer_started_at") is not None
         t0 = time.perf_counter()
         ok, msg = live_draft_auto_pick(room, session, persist=False, finalize=False)
         dt = time.perf_counter() - t0
@@ -129,12 +142,26 @@ def run_full_draft(*, rule: str = "balanced recommendation") -> dict[str, Any]:
         assert ok, f"pick {i+1}/{total} failed for {team}: {msg}"
         pick = (room.get("draft_board") or [])[-1]
         _assert_pick_legal(room, team, pick, pick_no=i + 1)
+        model = float(pd.to_numeric(pick.get("Model Rank"), errors="coerce") or 0)
+        market = float(pd.to_numeric(pick.get("Market Rank"), errors="coerce") or 0)
+        edge = float(pd.to_numeric(pick.get("Fantasy Edge"), errors="coerce") or 0)
+        if model and market and model != market:
+            model_ne_market += 1
+        if edge != 0:
+            edge_nonzero += 1
+        mlb = str(pick.get("MLB Team") or "").strip()
+        if mlb and mlb != team:
+            mlb_ok += 1
         legality_log.append(
             {
                 "pick": i + 1,
                 "team": team,
                 "player": str(pick.get("fullName") or ""),
                 "pos": str(pick.get("Primary Position") or ""),
+                "mlb": mlb,
+                "model": model,
+                "market": market,
+                "edge": edge,
                 "gaps_before": list(gaps_before),
                 "ms": round(dt * 1000, 1),
             }
@@ -150,10 +177,18 @@ def run_full_draft(*, rule: str = "balanced recommendation") -> dict[str, Any]:
                 grade_checks += 1
 
     assert str(room.get("status") or "") == "complete"
+    assert room.get("timer_deadline") in (None, 0) or room.get("timer_started_at") is None or True
+    # Timer must be cleared on completion.
+    assert room.get("timer_deadline") is None
     assert len(room["draft_board"]) == total
     ids = [str(p.get("playerID") or "") for p in room["draft_board"]]
     assert len(ids) == len(set(ids)), "duplicate players drafted"
     assert resolve_live_draft_lifecycle(session) == LIFECYCLE_ACTIVE_DRAFT
+    assert model_ne_market > 0, "Model Rank should differ from Market Rank for some picks"
+    assert edge_nonzero > 0, "Fantasy Edge should be non-zero for some picks"
+    assert mlb_ok > 0, "MLB Team should be preserved on pick records"
+    record = room.get("live_draft_completion_record")
+    assert isinstance(record, dict) and record.get("draft_status") == "complete"
 
     # Persist + refresh simulation
     write_canonical_live_draft_state(session, room, reason="full_draft_complete", local_edit=True)
@@ -171,10 +206,14 @@ def run_full_draft(*, rule: str = "balanced recommendation") -> dict[str, Any]:
         "rule": rule,
         "total_picks": total,
         "grade_checks": grade_checks,
+        "model_ne_market": model_ne_market,
+        "edge_nonzero": edge_nonzero,
+        "mlb_ok": mlb_ok,
         "median_ms": sorted(timings)[len(timings) // 2] * 1000,
         "p95_ms": sorted(timings)[int(len(timings) * 0.95)] * 1000,
         "max_ms": max(timings) * 1000,
         "lifecycle": resolve_live_draft_lifecycle(session),
+        "completion_record": bool(record),
         "sample_log": legality_log[:5] + legality_log[-3:],
     }
 

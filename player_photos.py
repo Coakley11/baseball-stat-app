@@ -894,13 +894,22 @@ def build_draft_score_metrics_html(
     if show_roster_fit:
         lines.append(_line("Roster Fit Score", roster_fit_display(row)))
     if show_scarcity:
+        # Prefer pick-time Position Scarcity Score when pool Scarcity Score is a
+        # fast-start placeholder (0.0 / missing) so cards show real scarcity.
+        pos_scar = _row_get(row, "Position Scarcity Score")
         scar = _row_get(row, "Scarcity Score")
-        if scar is None or (isinstance(scar, float) and pd.isna(scar)):
-            scar = _row_get(row, "Position Scarcity Score")
         try:
-            scar_txt = f"{float(scar):.2f}" if scar is not None and not pd.isna(scar) else ""
+            scar_f = float(scar) if scar is not None and not pd.isna(scar) else None
         except (TypeError, ValueError):
-            scar_txt = ""
+            scar_f = None
+        try:
+            pos_f = float(pos_scar) if pos_scar is not None and not pd.isna(pos_scar) else None
+        except (TypeError, ValueError):
+            pos_f = None
+        chosen = pos_f if (scar_f is None or scar_f == 0.0) and pos_f is not None else scar_f
+        if chosen is None:
+            chosen = pos_f if pos_f is not None else scar_f
+        scar_txt = f"{chosen:.2f}" if chosen is not None else ""
         if scar_txt:
             lines.append(_line("Positional Scarcity", scar_txt))
     if show_market_rank:

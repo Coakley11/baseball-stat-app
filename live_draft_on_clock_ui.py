@@ -199,13 +199,15 @@ def render_live_on_clock_banner(
     """Render blue On-the-Clock banner with client-side 1 Hz countdown."""
     # Reset per full-page paint; fragment ticks may increment once more.
     session["visible_auto_picking_status_count"] = 0
+    # Never skip the on-clock banner for an active pick — fragment_allowed=False used
+    # to silent-return and leave Solo Draft with zero visible timers during heavy paint.
+    _fragments_ok = True
     try:
         from app_page_generation import fragment_allowed
 
-        if not fragment_allowed(session, expected_page="Live Draft Room"):
-            return
+        _fragments_ok = bool(fragment_allowed(session, expected_page="Live Draft Room"))
     except ImportError:
-        pass
+        _fragments_ok = True
     if not isinstance(slot, dict):
         return
     try:
@@ -300,9 +302,13 @@ def render_live_on_clock_banner(
     try:
         from live_draft_safe_mode import is_draft_truly_complete, timer_should_run
 
-        use_fragment = timer_should_run(session, live_room) and not is_draft_truly_complete(live_room)
+        use_fragment = (
+            _fragments_ok
+            and timer_should_run(session, live_room)
+            and not is_draft_truly_complete(live_room)
+        )
     except ImportError:
-        use_fragment = live_room.get("status") == "in_progress"
+        use_fragment = _fragments_ok and live_room.get("status") == "in_progress"
 
     remaining_now = live_draft_display_seconds(live_room)
 

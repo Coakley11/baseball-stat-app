@@ -62,6 +62,8 @@ def score_queue_player_for_on_clock_team(
         cfg = dict(live.get("config") or {})
         cfg["current_pick"] = paint.get("current_pick") or cfg.get("current_pick")
         cfg["room"] = live
+        # Display-only: do not hard-drop the queued player for open-slot legality.
+        cfg["_skip_team_open_filter"] = True
         target_counts = live_draft_target_counts(cfg)
         rule_key = str(cfg.get("auto_pick_rule") or "balanced recommendation")
         scored, _ = score_available_for_rule(row_df, roster_df, rule_key, target_counts, config=cfg)

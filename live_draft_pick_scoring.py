@@ -319,6 +319,7 @@ def apply_draft_pick_scoring(
     return_position_summary=False,
     recommendation_mode="decision",
     room: dict[str, Any] | None = None,
+    team_scoped_open_positions: bool = True,
 ):
     """
     Centralized fantasy draft intelligence engine.
@@ -364,12 +365,14 @@ def apply_draft_pick_scoring(
 
             # Team-scoped legality: score/autopick for THIS roster's open needs
             # (CPU Auto Pick must not use another team's fit / BN escape hatch).
-            available = filter_candidates_to_team_open_positions(
-                available,
-                roster_df,
-                config=slot_cfg,
-                room=room,
-            )
+            # Queue display scoring passes team_scoped_open_positions=False.
+            if team_scoped_open_positions:
+                available = filter_candidates_to_team_open_positions(
+                    available,
+                    roster_df,
+                    config=slot_cfg,
+                    room=room,
+                )
         except ImportError:
             pass
         active_positions = get_active_position_codes(slot_cfg)
@@ -569,6 +572,7 @@ def score_available_for_rule(available, roster_df, rule, target_counts, config=N
         use_ml_blend=bool(config.get("use_ml_blend", False)),
         ml_blend_weight=float(config.get("ml_blend_weight", 0) or 0),
         room=config.get("room") if isinstance(config.get("room"), dict) else None,
+        team_scoped_open_positions=not bool(config.get("_skip_team_open_filter")),
     )
     scored = enrich_player_survival_metrics(
         scored,

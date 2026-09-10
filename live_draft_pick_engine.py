@@ -312,6 +312,21 @@ def live_draft_make_pick(
         if _pick_board_is_complete(room):
             room["status"] = "complete"
             live_draft_clear_timer(room)
+            try:
+                from live_draft_completion import apply_live_draft_completion
+
+                apply_live_draft_completion(room, session)
+            except ImportError:
+                pass
+            if session is not None:
+                session.pop("_pending_manual_draft_pick", None)
+                session.pop("PENDING_MANUAL_PICK_KEY", None)
+                try:
+                    from draft_ui import PENDING_MANUAL_PICK_KEY
+
+                    session.pop(PENDING_MANUAL_PICK_KEY, None)
+                except ImportError:
+                    pass
         else:
             live_draft_reset_timer(room)
 
@@ -326,6 +341,20 @@ def live_draft_make_pick(
             if _pick_board_is_complete(room):
                 room["status"] = "complete"
                 live_draft_clear_timer(room)
+                try:
+                    from live_draft_completion import apply_live_draft_completion
+
+                    apply_live_draft_completion(room, session)
+                except ImportError:
+                    pass
+                if session is not None:
+                    session.pop("_pending_manual_draft_pick", None)
+                    try:
+                        from draft_ui import PENDING_MANUAL_PICK_KEY
+
+                        session.pop(PENDING_MANUAL_PICK_KEY, None)
+                    except ImportError:
+                        pass
             else:
                 live_draft_reset_timer(room)
         with live_draft_perf_action(session, "roster_mutation", phase=PHASE_PICK_ROSTER_MUTATION):

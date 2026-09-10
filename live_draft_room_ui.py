@@ -1763,40 +1763,54 @@ def render_live_draft_rec_cards(
     except ImportError:
         pass
 
-    # Surface turn-gate / first-card failures so Solo Draft Player disable is diagnosable.
-    _lock_bits = []
-    if not turn_enabled:
-        _lock_bits.append(
-            f"turn=`{gate.get('draft_button_disable_reason') or 'turn_gate'}`"
-        )
-    if submitting:
-        _lock_bits.append("submitting=1")
-    if paused:
-        _lock_bits.append("paused=1")
+    # Surface turn-gate failures only in developer mode — never expose raw gate bits
+    # (turn=, is_your_pick=, team_mismatch) in the normal product UI.
     try:
-        if rows:
-            _sample_name = str(rows[0][1].get("fullName") or rows[0][1].get("Player") or "").strip()
-            if _sample_name:
-                from draft_actions import resolve_player_draft_gate
+        from suite_workspace import developer_mode_checkbox_enabled
 
-                _pg = resolve_player_draft_gate(session, _sample_name)
-                if not _pg.get("allowed"):
-                    _lock_bits.append(
-                        f"sample=`{_sample_name}` "
-                        f"player_reason=`{_pg.get('disable_reason')}` "
-                        f"msg=`{str(_pg.get('disable_message') or '')[:80]}`"
-                    )
-    except Exception as _lock_exc:
-        _lock_bits.append(f"diag_err=`{type(_lock_exc).__name__}`")
-    if _lock_bits:
-        st.caption(
-            "Draft Player locked: "
-            + " ".join(_lock_bits)
-            + f" status=`{gate.get('draft_status')}` "
-            f"your=`{gate.get('your_team')}` "
-            f"clock=`{gate.get('on_clock_team')}` "
-            f"is_your_pick=`{gate.get('is_your_pick')}`"
+        _show_lock_diag = bool(developer_mode_checkbox_enabled(st=st))
+    except Exception:
+        _show_lock_diag = bool(session.get("app_developer_mode")) or bool(
+            session.get("_suite_developer_mode_user")
         )
+    if not turn_enabled and not _show_lock_diag:
+        clock_team = str(gate.get("on_clock_team") or "").strip()
+        if clock_team and not bool(gate.get("is_your_pick")):
+            st.caption(f"Waiting for {clock_team} to pick")
+    _lock_bits = []
+    if _show_lock_diag:
+        if not turn_enabled:
+            _lock_bits.append(
+                f"turn=`{gate.get('draft_button_disable_reason') or 'turn_gate'}`"
+            )
+        if submitting:
+            _lock_bits.append("submitting=1")
+        if paused:
+            _lock_bits.append("paused=1")
+        try:
+            if rows:
+                _sample_name = str(rows[0][1].get("fullName") or rows[0][1].get("Player") or "").strip()
+                if _sample_name:
+                    from draft_actions import resolve_player_draft_gate
+
+                    _pg = resolve_player_draft_gate(session, _sample_name)
+                    if not _pg.get("allowed"):
+                        _lock_bits.append(
+                            f"sample=`{_sample_name}` "
+                            f"player_reason=`{_pg.get('disable_reason')}` "
+                            f"msg=`{str(_pg.get('disable_message') or '')[:80]}`"
+                        )
+        except Exception as _lock_exc:
+            _lock_bits.append(f"diag_err=`{type(_lock_exc).__name__}`")
+        if _lock_bits:
+            st.caption(
+                "Draft Player locked: "
+                + " ".join(_lock_bits)
+                + f" status=`{gate.get('draft_status')}` "
+                f"your=`{gate.get('your_team')}` "
+                f"clock=`{gate.get('on_clock_team')}` "
+                f"is_your_pick=`{gate.get('is_your_pick')}`"
+            )
 
     if dense:
         # Historical note: a Solo "dense strip" (name + Add-to-Queue only) was tried for
@@ -2588,25 +2602,6 @@ def render_draft_decision_panel(
                 f"{r['scarcity']} scarcity"
             )
         st.markdown("\n".join(lines))
-        # Optional desktop table — never import pandas locally (shadows module `pd`
-        # and caused UnboundLocalError on phones before the markdown rows painted).
-        try:
-            df = pd.DataFrame(
-                [
-                    {
-                        "Pos": r["pos"],
-                        "Roster": f"{'❌' if r.get('need') else '✅'} {r['status']}",
-                        "Avail": r["available"],
-                        "Drafted": r["drafted"],
-                        "Scarcity": r["scarcity"],
-                    }
-                    for r in pos_rows[:14]
-                ]
-            )
-            with st.expander("Table view", expanded=False):
-                st.dataframe(df, hide_index=True, use_container_width=True)
-        except Exception:
-            pass
     else:
         st.caption("Roster slots not configured.")
 
