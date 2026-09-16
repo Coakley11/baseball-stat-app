@@ -307,11 +307,38 @@ def _eligible_for_draft_slot(pos_tokens: list[str], position_code: str) -> bool:
     return False
 
 
+def _eligible_for_open_need_recommendation(pos_tokens: list[str], position_code: str) -> bool:
+    """Stricter eligibility for recommendation/Auto Pick hard filters.
+
+    MI/CI cross-flex (SS→2B, 3B→1B) is fine for *roster assignment*, but must not
+    keep recommending SS-only players after SS is filled merely because 2B is open.
+    Multi-position players listed as SS,2B still qualify for open 2B.
+    """
+    slot = "UTIL" if position_code == "DH" else position_code
+    if slot == "BN":
+        return True
+    if slot == "P":
+        return any(p in ("P", "SP", "RP") for p in pos_tokens)
+    if slot == "UTIL":
+        return not any(p in ("P", "SP", "RP") for p in pos_tokens)
+    if slot == "OF":
+        return any(p == "OF" for p in pos_tokens)
+    if slot in ("C", "1B", "2B", "3B", "SS"):
+        return slot in pos_tokens
+    return False
+
+
 def assign_roster_to_slot_instances(
     roster_df: pd.DataFrame | None,
     config: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Assign drafted players to host slot instances in canonical order."""
+    """Assign drafted players to host slot instances in canonical order.
+
+    Exact primary-position matches are assigned before MI/CI cross-eligibility
+    (e.g. an SS-only player fills SS, not 2B). That keeps open-need gaps aligned
+    with what the user actually drafted so recommendations stop re-pushing a
+    filled shortstop while other starters remain open.
+    """
     slots = get_active_draft_roster_slots(config)
     if not slots:
         return {"lines": [], "filled": 0, "target": 0, "gaps": [], "open_positions": []}
@@ -325,34 +352,56 @@ def assign_roster_to_slot_instances(
         else:
             df["_slot_score"] = 0.0
     assigned: set[int] = set()
-    lines: list[dict[str, Any]] = []
-    gaps: list[str] = []
+    lines: list[dict[str, Any]] = [
+        {
+            "label": str(slot.get("label") or slot.get("position") or ""),
+            "position": str(slot.get("position") or ""),
+            "filled": False,
+        }
+        for slot in slots
+    ]
 
-    for slot in slots:
-        pos = str(slot.get("position") or "")
-        label = str(slot.get("label") or pos)
-        best_ix: int | None = None
-        best_score = -1.0
-        if not df.empty:
+    def _exact_match(toks: list[str], pos: str) -> bool:
+        slot = "UTIL" if pos == "DH" else pos
+        if slot == "P":
+            return any(p in ("P", "SP", "RP") for p in toks)
+        if slot == "UTIL":
+            return False  # never "exact" in pass 1 — flex is pass 2 only
+        return slot in toks
+
+    def _pass(*, exact_only: bool) -> None:
+        for i, slot in enumerate(slots):
+            if lines[i]["filled"]:
+                continue
+            pos = str(slot.get("position") or "")
+            best_ix: int | None = None
+            best_score = -1.0
+            if df.empty:
+                continue
             for ix in df.index:
                 if ix in assigned:
                     continue
                 toks = df.at[ix, "_pos_tokens"]
                 if not isinstance(toks, list):
                     toks = []
-                if not _eligible_for_draft_slot(toks, pos):
+                if exact_only:
+                    if not _exact_match(toks, pos):
+                        continue
+                elif not _eligible_for_draft_slot(toks, pos):
                     continue
                 score = float(df.at[ix, "_slot_score"] or 0.0)
                 if score > best_score:
                     best_score = score
                     best_ix = int(ix)
-        is_filled = best_ix is not None
-        if is_filled:
-            assigned.add(best_ix)
-        else:
-            gaps.append(pos)
-        lines.append({"label": label, "position": pos, "filled": is_filled})
+            if best_ix is not None:
+                assigned.add(best_ix)
+                lines[i]["filled"] = True
 
+    # Pass 1: exact positions (SS fills SS). Pass 2: MI/CI/UTIL flexibility.
+    _pass(exact_only=True)
+    _pass(exact_only=False)
+
+    gaps = [ln["position"] for ln in lines if not ln["filled"]]
     open_labels = sorted({ln["label"] for ln in lines if not ln["filled"]})
     filled_total = sum(1 for ln in lines if ln["filled"])
     return {
@@ -718,7 +767,7 @@ def filter_candidates_to_team_open_positions(
 
     def _row_fills_required(row: pd.Series) -> bool:
         tokens = _player_position_tokens(row)
-        return any(_eligible_for_draft_slot(tokens, pos) for pos in required)
+        return any(_eligible_for_open_need_recommendation(tokens, pos) for pos in required)
 
     mask = df.apply(_row_fills_required, axis=1)
     filtered = df.loc[mask].copy()

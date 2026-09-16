@@ -369,12 +369,45 @@ def live_draft_ui_cache_key(
         pool_sig = tuple(sorted(draft_pool_kwargs_from_session(session).items()))
     except ImportError:
         pass
+    # Fingerprint fast vs upgraded projection pools so Model Rank cannot stick
+    # on a stale REC_CACHE / interactive snapshot after deferred upgrade.
+    pool_kind = ""
+    pool_n = 0
+    model_fp = 0
+    try:
+        from draft_scoring_pool import POOL_VALUE_KIND_KEY
+
+        pool_df = room.get("pool")
+        if pool_df is not None and hasattr(pool_df, "attrs"):
+            pool_kind = str(getattr(pool_df, "attrs", {}).get(POOL_VALUE_KIND_KEY) or "")
+        if pool_df is not None and hasattr(pool_df, "__len__"):
+            pool_n = int(len(pool_df))
+        if pool_df is not None and hasattr(pool_df, "columns") and "Model Rank" in pool_df.columns:
+            mr = pd.to_numeric(pool_df["Model Rank"], errors="coerce").dropna()
+            if not mr.empty:
+                model_fp = int(mr.head(24).sum()) ^ int(mr.head(24).mean() * 1000)
+    except Exception:
+        pass
     drafted_ids, drafted_names = drafted_identity_sets(room)
     drafted_sig = (
         tuple(sorted(i for i in drafted_ids if i == i.lower() or " " not in i)[:64]),
         tuple(sorted(drafted_names)[:64]),
     )
-    return (idx, board_len, team_s, int(top_n), slots_key, rev, scoring, roster_sig, pool_sig, drafted_sig)
+    return (
+        idx,
+        board_len,
+        team_s,
+        int(top_n),
+        slots_key,
+        rev,
+        scoring,
+        roster_sig,
+        pool_sig,
+        drafted_sig,
+        pool_kind,
+        pool_n,
+        model_fp,
+    )
 
 
 def available_pool_cache_key(room: dict[str, Any]) -> tuple[Any, ...]:

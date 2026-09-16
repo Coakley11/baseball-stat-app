@@ -422,6 +422,16 @@ def render_rec_interactive_widgets(
     prep = ensure_prepared_rec_interactive(session, room)
     status["prepared_synthesized"] = bool(prep.get("synthesized")) and not had_prep
     top_rec = _top_rec_from_cache(session)
+    if session.pop("_solo_force_rec_rebuild_after_pool_upgrade", None):
+        # Pool upgrade: never keep market-aligned Model Rank cards from cache/snapshot.
+        top_rec = None
+        status["force_rebuild_after_pool_upgrade"] = True
+        try:
+            from live_draft_ui_cache import invalidate_live_draft_ui_caches
+
+            invalidate_live_draft_ui_caches(session, keep_interactive_snapshot=False)
+        except ImportError:
+            session.pop(INTERACTIVE_TOP_REC_SNAPSHOT_KEY, None)
     if top_rec is not None and not getattr(top_rec, "empty", True):
         status["cache_hit"] = True
         note_rec_run_stage(session, "cache_hit", top_rec_count=int(len(top_rec)))
@@ -429,7 +439,11 @@ def render_rec_interactive_widgets(
         note_rec_run_stage(session, "cache_miss")
         # Prefer last-good snapshot over expensive rebuild so the consuming ScriptRun
         # re-registers the same buttons without requiring an extra rerun.
-        top_rec = _top_rec_from_snapshot(session, room)
+        # Skip snapshot restore after a forced pool-upgrade rebuild.
+        if status.get("force_rebuild_after_pool_upgrade"):
+            top_rec = None
+        else:
+            top_rec = _top_rec_from_snapshot(session, room)
         if top_rec is not None and not getattr(top_rec, "empty", True):
             status["snapshot_used"] = True
             _republish_top_rec_into_cache(session, room, top_rec)

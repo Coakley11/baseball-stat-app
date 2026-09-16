@@ -402,16 +402,23 @@ def maybe_build_deferred_full_pool(session: dict[str, Any], *, force: bool = Fal
         projection_grades=True,
     )
     try:
-        from live_draft_ui_cache import invalidate_live_draft_ui_caches_after_board_change
+        from live_draft_ui_cache import invalidate_live_draft_ui_caches
+        from live_draft_rerun_scope import force_live_draft_expensive_recompute
 
-        # Pool upgrade must not wipe the interactive top_rec snapshot while DONE:
-        # the next full ScriptRun may be a button-trigger consumer that must
-        # re-register Add-to-Queue on that same run (not a later recovery rerun).
-        invalidate_live_draft_ui_caches_after_board_change(
-            session, reason="deferred_full_pool"
-        )
+        # Pool upgrade MUST drop the interactive top_rec snapshot — keeping it
+        # (board_change helper) left cards on Model Rank = Market Rank forever.
+        invalidate_live_draft_ui_caches(session, keep_interactive_snapshot=False)
+        force_live_draft_expensive_recompute(session)
+        session["_solo_force_rec_rebuild_after_pool_upgrade"] = True
+        session["_solo_deferred_pool_rerun"] = True
     except ImportError:
         session.pop("_live_draft_rec_cache", None)
+        try:
+            from live_draft_rec_live_paint import INTERACTIVE_TOP_REC_SNAPSHOT_KEY
+
+            session.pop(INTERACTIVE_TOP_REC_SNAPSHOT_KEY, None)
+        except ImportError:
+            pass
     return True
 
 

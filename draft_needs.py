@@ -24,11 +24,21 @@ def is_flex_only_position_needs(gaps: list[str] | None) -> bool:
 
 
 def normalize_position_needs_for_scoring(gaps: list[str] | None) -> list[str]:
-    """Required position codes for recommendations; empty when only flex/bench remains."""
+    """Required position codes for hard recommendation/Auto Pick filters.
+
+    When any non-flex starter remains open, UTIL/DH are excluded from the hard
+    candidate gate so an already-filled SS is not re-recommended merely because
+    the player can also occupy UTIL. Empty return = flex/bench BPA (widen pool).
+    """
     filtered = filter_bench_gaps(gaps)
     if not filtered or is_flex_only_position_needs(filtered):
         return []
-    return list(dict.fromkeys(filtered))
+    starters = [
+        g
+        for g in dict.fromkeys(filtered)
+        if str(g or "").strip().upper() not in _FLEX_ONLY_CODES
+    ]
+    return starters
 
 
 def display_position_needs_label(gaps: list[str] | None) -> str:

@@ -254,5 +254,123 @@ class CompletionPendingClearTests(unittest.TestCase):
         self.assertEqual(record.get("draft_status"), "complete")
 
 
+class ModelRankIndependentOfMarketTests(unittest.TestCase):
+    def test_blended_pool_overwrites_market_aligned_model_rank(self) -> None:
+        from draft_scoring_pool import (
+            POOL_KIND_VALID_PROJECTION,
+            POOL_VALUE_KIND_KEY,
+            ensure_draft_scoring_pool_columns_with_report,
+        )
+
+        # Fast-start residue: Model Rank copied from Market Rank.
+        pool = pd.DataFrame(
+            [
+                {
+                    "fullName": f"P{i}",
+                    "playerID": f"id{i}",
+                    "Primary Position": "OF",
+                    "Market Rank": 10 + i,
+                    "Model Rank": 10 + i,
+                    "Fantasy Edge": 0,
+                    "Expected Fantasy Value": 0.5,
+                    "Blended Projection Score": 100.0 - i * 7.5,
+                }
+                for i in range(12)
+            ]
+        )
+        pool.attrs[POOL_VALUE_KIND_KEY] = POOL_KIND_VALID_PROJECTION
+        out, report = ensure_draft_scoring_pool_columns_with_report(pool)
+        self.assertEqual(report.get("model_rank_repair"), "blended_projection_rank")
+        model = pd.to_numeric(out["Model Rank"], errors="coerce")
+        market = pd.to_numeric(out["Market Rank"], errors="coerce")
+        edge = pd.to_numeric(out["Fantasy Edge"], errors="coerce")
+        differ = int((model != market).fillna(False).sum())
+        self.assertGreaterEqual(differ, 8, "Model Rank must differ from Market Rank")
+        self.assertTrue(bool((edge.abs() > 0).any()), "Fantasy Edge must not be mechanically zero")
+        self.assertEqual(float(model.iloc[0]), 1.0)
+
+
+class OpenStarterPositionFilterTests(unittest.TestCase):
+    def test_ss_filled_excludes_ss_only_from_recommendations(self) -> None:
+        from live_draft_roster_slots import filter_candidates_to_team_open_positions
+
+        roster = pd.DataFrame(
+            [
+                {"fullName": "Filled SS", "Primary Position": "SS", "playerID": "ss1"},
+            ]
+        )
+        pool = pd.DataFrame(
+            [
+                {"fullName": "SS Only Star", "Primary Position": "SS", "playerID": "ss2"},
+                {"fullName": "Catcher Need", "Primary Position": "C", "playerID": "c1"},
+                {"fullName": "First Base", "Primary Position": "1B", "playerID": "fb1"},
+                {"fullName": "SS/2B Multi", "Primary Position": "SS", "Eligible Positions": "SS,2B", "playerID": "m1"},
+            ]
+        )
+        cfg = {
+            "slots": {
+                "C": 1,
+                "1B": 1,
+                "2B": 1,
+                "3B": 1,
+                "SS": 1,
+                "OF": 3,
+                "DH": 1,
+                "P": 2,
+                "BN": 2,
+            }
+        }
+        filtered = filter_candidates_to_team_open_positions(pool, roster, config=cfg)
+        names = set(filtered["fullName"].astype(str))
+        self.assertNotIn("SS Only Star", names)
+        self.assertIn("Catcher Need", names)
+        self.assertIn("First Base", names)
+        # Multi-position SS/2B still fills open 2B.
+        self.assertIn("SS/2B Multi", names)
+
+    def test_normalize_excludes_util_while_starters_open(self) -> None:
+        from draft_needs import normalize_position_needs_for_scoring
+
+        needs = normalize_position_needs_for_scoring(["C", "1B", "UTIL", "BN"])
+        self.assertEqual(needs, ["C", "1B"])
+        self.assertEqual(normalize_position_needs_for_scoring(["UTIL", "DH"]), [])
+
+
+class CompletionWordingTests(unittest.TestCase):
+    def test_mode_aware_ended_message(self) -> None:
+        from live_draft_room_ui import draft_ended_message
+
+        self.assertEqual(draft_ended_message(solo=True), "This solo draft has ended.")
+        self.assertEqual(draft_ended_message(solo=False), "This shared draft has ended.")
+
+    def test_solo_static_timer_always_repaints(self) -> None:
+        import inspect
+
+        from live_draft_on_clock_ui import render_live_on_clock_banner
+
+        src = inspect.getsource(render_live_on_clock_banner)
+        self.assertIn("force=True", src)
+        self.assertNotIn("_mark_on_clock_done()\n                    return", src.replace("\r\n", "\n"))
+
+
+class QueueSidebarMirrorTests(unittest.TestCase):
+    def test_queue_click_sets_sidebar_rerun_flag(self) -> None:
+        from live_draft_room_ui import execute_rec_card_queue_click
+
+        session: dict = {"draft_queue": []}
+        execute_rec_card_queue_click(
+            session,
+            name="Test Player",
+            event_id="e1",
+            widget_key="k1",
+            room_id="r1",
+            pick_idx=0,
+            player_id="p1",
+        )
+        self.assertIn("Test Player", session.get("draft_queue") or [])
+        self.assertEqual(session.get("_live_draft_queue_sidebar_mirror"), session.get("draft_queue"))
+        self.assertTrue(session.get("_live_draft_queue_sidebar_rerun"))
+
+
 if __name__ == "__main__":
     unittest.main()

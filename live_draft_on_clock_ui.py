@@ -336,13 +336,15 @@ def render_live_on_clock_banner(
                 remaining_now = int(snap.get("remaining_seconds") or remaining_now)
                 if snap.get("timer_deadline") is not None:
                     deadline = float(snap["timer_deadline"])
-                if not shared_banner_should_repaint(
+                # Always re-emit banner HTML on every ScriptRun. Skipping paint when
+                # the pick/deadline token matches left a blank clock after Streamlit
+                # cleared the prior run's components.html (human: timer vanishes).
+                shared_banner_should_repaint(
                     session,
                     pick_index=int(snap.get("pick_index") or pick_idx),
                     deadline=deadline,
-                ):
-                    _mark_on_clock_done()
-                    return
+                    force=True,
+                )
                 try:
                     from live_draft_cloud_diagnostics import render_surface_stamp
 
@@ -376,6 +378,22 @@ def render_live_on_clock_banner(
             pass
 
     if not use_fragment or deadline is None:
+        # in_progress with no deadline still needs a visible clock (never blank).
+        if deadline is None and str(live_room.get("status") or "") == "in_progress":
+            try:
+                cfg_sec = int(
+                    (live_room.get("config") or {}).get("timer_seconds")
+                    or live_room.get("timer_seconds")
+                    or remaining_now
+                    or 90
+                )
+                remaining_now = int(
+                    live_room.get("paused_remaining_seconds")
+                    or remaining_now
+                    or cfg_sec
+                )
+            except (TypeError, ValueError):
+                remaining_now = int(remaining_now or 90)
         _render_on_clock_banner_html(
             st,
             slot_view,

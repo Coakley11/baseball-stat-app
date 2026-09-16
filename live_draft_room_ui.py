@@ -925,20 +925,37 @@ def render_category_outlook_panel(st: Any, outlook: dict[str, Any]) -> None:
     )
 
 
+def draft_ended_message(*, solo: bool) -> str:
+    """Mode-aware completion copy — never hardcode Shared into Solo."""
+    return "This solo draft has ended." if solo else "This shared draft has ended."
+
+
 def render_live_draft_complete_banner(
     st: Any,
     *,
     team_label: str = "",
     picks_done: int,
     total_picks: int,
+    solo: bool | None = None,
+    session: dict[str, Any] | None = None,
+    room: dict[str, Any] | None = None,
 ) -> None:
     picks_txt = f"{picks_done} of {total_picks} picks completed" if total_picks else f"{picks_done} picks completed"
     team_line = f"<br/><span>{team_label}</span>" if str(team_label or "").strip() else ""
+    is_solo = solo
+    if is_solo is None:
+        try:
+            from live_draft_solo_timer import is_solo_live_draft
+
+            is_solo = bool(is_solo_live_draft(session or {}, room if isinstance(room, dict) else None))
+        except ImportError:
+            is_solo = False
+    ended_line = draft_ended_message(solo=bool(is_solo))
     st.markdown(
         f"""
         <div class="ld-draft-complete-banner">
             <div class="ld-dc-title">Draft Completed</div>
-            <div class="ld-dc-sub">{picks_txt}{team_line}</div>
+            <div class="ld-dc-sub">{ended_line}<br/>{picks_txt}{team_line}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1653,6 +1670,13 @@ def execute_rec_card_queue_click(
     except ImportError:
         pass
     after = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+    # Authoritative mirror for sidebar (painted earlier in the ScriptRun).
+    session["_live_draft_queue_sidebar_mirror"] = list(after)
+    session["draft_queue"] = list(after)
+    if added or before != after:
+        # Sidebar already painted this ScriptRun — force a follow-up paint so both
+        # Queue surfaces show the same players/order immediately.
+        session["_live_draft_queue_sidebar_rerun"] = True
     try:
         from live_draft_queue_fragment import record_queue_add_diag
 
@@ -2313,6 +2337,8 @@ def render_live_draft_rec_cards(
                                     pick_idx=pick_idx,
                                     player_id=player_id,
                                 )
+                                if session.pop("_live_draft_queue_sidebar_rerun", None):
+                                    st.rerun()
                         except ImportError:
                             if _rec_queue_clicked:
                                 execute_rec_card_queue_click(
@@ -2324,6 +2350,8 @@ def render_live_draft_rec_cards(
                                     pick_idx=pick_idx,
                                     player_id=player_id,
                                 )
+                                if session.pop("_live_draft_queue_sidebar_rerun", None):
+                                    st.rerun()
                     try:
                         from live_draft_rec_queue_click_trace import render_per_card_rec_queue_render_trace_marker
 

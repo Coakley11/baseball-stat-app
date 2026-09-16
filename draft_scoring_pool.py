@@ -424,7 +424,47 @@ def _ensure_draft_scoring_pool_columns(
     # Fast market fallback: keep Model Rank on the same absolute scale as Market Rank.
     # Dense-ranking proxy EFV to 1..n while Market Rank stays at ADP scale (e.g. 359)
     # recreates Market−1-style Fantasy Edge artifacts for deep-ADP players.
-    if used_market_proxy_efv and market_usable:
+    # Never realign once a real projection/Blended pool is present.
+    prior_kind = str(getattr(out, "attrs", {}).get(POOL_VALUE_KIND_KEY) or "")
+    has_blended = False
+    if "Blended Projection Score" in out.columns:
+        _bl = pd.to_numeric(out["Blended Projection Score"], errors="coerce")
+        has_blended = bool(_bl.notna().any()) and not _efv_series_is_unusable(_bl)
+    projection_authoritative = has_blended or prior_kind == POOL_KIND_VALID_PROJECTION
+    if projection_authoritative:
+        used_market_proxy_efv = False
+        report["pool_value_kind"] = POOL_KIND_VALID_PROJECTION
+        # Fast Solo start leaves Model Rank == Market Rank with "valid" numbers.
+        # Once a real Blended/projection pool is present, ALWAYS re-rank from the
+        # model — do not keep the market-aligned copy just because ranks look filled.
+        if has_blended:
+            out["Model Rank"] = _bl.rank(ascending=False, method="min")
+            report["model_rank_repair"] = "blended_projection_rank"
+            if "Model Rank" not in report.get("derived_columns", []):
+                report.setdefault("derived_columns", []).append("Model Rank")
+            model_bad = _bad_rank_mask(out["Model Rank"])
+        elif efv_usable_now and (
+            model_bad.any()
+            or _model_rank_series_is_degenerate(out["Model Rank"])
+            or (
+                market_usable
+                and bool(
+                    (
+                        pd.to_numeric(out["Model Rank"], errors="coerce")
+                        == market_now
+                    )
+                    .fillna(False)
+                    .mean()
+                    >= 0.85
+                )
+            )
+        ):
+            out["Model Rank"] = efv_now.rank(ascending=False, method="min")
+            report["model_rank_repair"] = "efv_rank"
+            if "Model Rank" not in report.get("derived_columns", []):
+                report.setdefault("derived_columns", []).append("Model Rank")
+            model_bad = _bad_rank_mask(out["Model Rank"])
+    elif used_market_proxy_efv and market_usable:
         out["Model Rank"] = market_now
         if "Model Rank" not in report.get("derived_columns", []):
             report.setdefault("derived_columns", []).append("Model Rank")
@@ -465,7 +505,10 @@ def _ensure_draft_scoring_pool_columns(
     model_meaningful = not _model_rank_series_is_degenerate(
         out["Model Rank"] if "Model Rank" in out.columns else None
     )
-    if used_market_proxy_efv or report.get("pool_value_kind") == POOL_KIND_FAST_MARKET_FALLBACK:
+    if (
+        not projection_authoritative
+        and (used_market_proxy_efv or report.get("pool_value_kind") == POOL_KIND_FAST_MARKET_FALLBACK)
+    ):
         out["Fantasy Edge"] = 0.0
         report["fantasy_edge_repair"] = "neutral_fast_market_fallback"
         if "Fantasy Edge" not in report.get("derived_columns", []):

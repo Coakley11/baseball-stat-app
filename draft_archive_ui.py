@@ -3656,7 +3656,31 @@ def render_live_draft_completion_panel(
     ).strip()
     st.markdown(f"#### Current Live Draft — {draft_label}")
     st.markdown("**Status:** Draft Complete")
-    st.caption("Review the final board, save the completed draft, analyze results, or create a shared league.")
+    _solo_complete = False
+    try:
+        from live_draft_solo_timer import is_solo_live_draft
+
+        _solo_complete = bool(is_solo_live_draft(session, room))
+    except ImportError:
+        _solo_complete = False
+    try:
+        from live_draft_room_ui import draft_ended_message
+
+        st.info(draft_ended_message(solo=_solo_complete))
+    except ImportError:
+        st.info(
+            "This solo draft has ended."
+            if _solo_complete
+            else "This shared draft has ended."
+        )
+    if _solo_complete:
+        st.caption(
+            "Review the final board, save the completed draft, or analyze results."
+        )
+    else:
+        st.caption(
+            "Review the final board, save the completed draft, analyze results, or create a shared league."
+        )
     review_col, save_col, analyze_col, league_col, export_col = st.columns(5)
     with review_col:
         review_open = st.button(

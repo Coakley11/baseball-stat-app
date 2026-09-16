@@ -12747,24 +12747,31 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     except Exception:
         _skip_sidebar_queue = False
     if _skip_sidebar_queue:
-        # Same resolver as main Draft Queue — session["draft_queue"] alone can lag
-        # behind draft_state.queue / last-good and falsely show empty.
+        # Always resolve from the same canonical draft_queue key as the main panel.
         try:
+            from draft_state import DRAFT_QUEUE_KEY
             from draft_ui import _resolve_visible_draft_queue
 
             _mirror, _mirror_src = _resolve_visible_draft_queue(
-                st.session_state, qkey="live_queue"
+                st.session_state, qkey=DRAFT_QUEUE_KEY
             )
-            if not _mirror:
+        except Exception:
+            try:
+                from draft_ui import _resolve_visible_draft_queue
+
                 _mirror, _mirror_src = _resolve_visible_draft_queue(
                     st.session_state, qkey="draft_queue"
                 )
-        except Exception:
-            _mirror = [
-                str(x).strip()
-                for x in (st.session_state.get("draft_queue") or [])
-                if str(x).strip()
-            ]
+            except Exception:
+                _mirror = [
+                    str(x).strip()
+                    for x in (
+                        st.session_state.get("_live_draft_queue_sidebar_mirror")
+                        or st.session_state.get("draft_queue")
+                        or []
+                    )
+                    if str(x).strip()
+                ]
         st.session_state["_live_draft_queue_sidebar_mirror"] = list(_mirror)
         if not _mirror:
             st.sidebar.caption("Queue empty — add from Live Draft Room.")
@@ -25690,12 +25697,32 @@ elif active_page == "Live Draft Room":
                 _prune_drafted_from_queue(st.session_state)
             except ImportError:
                 pass
-            if _snap.get("draft_complete") and str(_snap.get("room_status") or "") in (
-                "ended",
-                "closed",
-                "deleted",
-                "complete",
-                "completed",
+            # Solo natural complete must stay on Live Draft and render Draft Complete.
+            # Popping the room here left Solo stuck / showed Shared-only wording.
+            _snap_is_solo = False
+            try:
+                from live_draft_solo_timer import is_solo_live_draft
+
+                _snap_is_solo = bool(
+                    is_solo_live_draft(
+                        st.session_state,
+                        room if isinstance(room, dict) else None,
+                    )
+                )
+            except ImportError:
+                _snap_is_solo = False
+            _snap_status = str(_snap.get("room_status") or "").strip().lower()
+            if (
+                not _snap_is_solo
+                and _snap.get("draft_complete")
+                and _snap_status
+                in (
+                    "ended",
+                    "closed",
+                    "deleted",
+                    "complete",
+                    "completed",
+                )
             ):
                 try:
                     from live_draft_room_mutation_audit import audited_pop_live_draft_room
@@ -28263,6 +28290,8 @@ elif active_page == "Live Draft Room":
                     team_label=team_label,
                     picks_done=picks_done,
                     total_picks=total_picks,
+                    session=st.session_state,
+                    room=room,
                 )
             except ImportError:
                 st.markdown("### Draft Completed")
