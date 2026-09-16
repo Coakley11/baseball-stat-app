@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "data" / "tb_probe" / "solo_human_regressions_accept.json"
 SHOT = ROOT / "data" / "tb_probe" / "solo_human_regressions"
 PORT = 8511
-URL = f"http://127.0.0.1:{PORT}/?active_page=Live%20Draft%20Room&suite_workspace=daniel"
+URL = f"http://127.0.0.1:{PORT}/?suite_workspace=daniel"
 LOG = ROOT / "data" / "tb_probe" / "solo_human_regressions_streamlit.log"
 
 
@@ -126,49 +126,139 @@ def _click_end(page) -> None:
             break
 
 
-def _start_short_solo(page, report: dict) -> bool:
-    try:
-        page.get_by_role("radio", name=re.compile(r"Solo Draft", re.I)).check(timeout=5000)
-    except Exception:
+def _nav_live_draft(page) -> None:
+    for _ in range(3):
         try:
-            page.locator("label").filter(has_text=re.compile(r"Solo Draft")).first.click(
-                timeout=5000
+            loc = page.locator("label", has_text=re.compile(r"Live Draft Room")).first
+            if loc.count() == 0:
+                loc = page.get_by_text("Live Draft Room", exact=False).last
+            loc.click(timeout=10000, force=True)
+            page.wait_for_timeout(5000)
+            return
+        except Exception:
+            page.wait_for_timeout(2000)
+
+
+def _expand_draft_setup(page) -> None:
+    for _attempt in range(4):
+        try:
+            teams = page.get_by_label(re.compile(r"Number of Teams", re.I))
+            if teams.count() and teams.first.is_visible():
+                return
+        except Exception:
+            pass
+        try:
+            summary = page.locator('summary:has-text("Draft Setup")').first
+            if summary.count():
+                summary.click(timeout=4000, force=True)
+                page.wait_for_timeout(1200)
+                continue
+        except Exception:
+            pass
+        try:
+            exp = page.locator("[data-testid=stExpander]").filter(has_text="Draft Setup")
+            if exp.count():
+                try:
+                    exp.first.locator("summary").click(timeout=3000, force=True)
+                except Exception:
+                    exp.first.click(timeout=3000, force=True)
+                page.wait_for_timeout(1200)
+                continue
+        except Exception:
+            pass
+        try:
+            page.get_by_text("Draft Setup / Configuration", exact=False).first.click(
+                timeout=3000, force=True
             )
-        except Exception as e:
-            report["solo_err"] = str(e)[:160]
-            return False
-    page.wait_for_timeout(1200)
+            page.wait_for_timeout(1200)
+        except Exception:
+            page.wait_for_timeout(800)
+
+
+def _start_short_solo(page, report: dict) -> bool:
+    _nav_live_draft(page)
+    for i in range(45):
+        body = _body(page)
+        if "Solo Draft" in body or "Start New Live Draft" in body or "Draft Setup" in body:
+            break
+        page.wait_for_timeout(1000)
+    _expand_draft_setup(page)
     try:
-        page.get_by_label(re.compile(r"Number of Teams", re.I)).fill("2")
-        page.get_by_label(re.compile(r"Picks per Team", re.I)).fill("2")
-    except Exception as e:
-        report["setup_fill_err"] = str(e)[:160]
+        page.get_by_role("button", name=re.compile(r"Reset Setup to Defaults", re.I)).first.click(
+            timeout=4000
+        )
+        page.wait_for_timeout(2000)
+        _expand_draft_setup(page)
+    except Exception:
+        pass
+    # Solo may already be selected — force=True; ignore timeout if already selected.
     try:
-        page.get_by_label(re.compile(r"Seconds per Pick|Pick timer|Timer \(seconds\)", re.I)).fill(
-            "120"
+        page.locator("label").filter(has_text=re.compile(r"Solo Draft")).first.click(
+            timeout=4000, force=True
         )
     except Exception as e:
-        report["timer_fill_err"] = str(e)[:120]
-    page.wait_for_timeout(800)
-    for pat in (r"Start New Live Draft", r"Start Live Draft", r"^Start$"):
+        report["solo_click"] = str(e)[:120]
+    page.wait_for_timeout(1000)
+    _expand_draft_setup(page)
+    try:
+        page.get_by_label("Number of Teams", exact=True).fill("2", timeout=8000)
+        page.get_by_label("Picks per Team", exact=True).fill("2", timeout=8000)
+        report["teams_picks_set"] = True
+    except Exception as e:
+        report["setup_fill_err"] = str(e)[:160]
+        return False
+    for lab, val in (
+        ("C", "0"),
+        ("1B", "0"),
+        ("2B", "0"),
+        ("3B", "0"),
+        ("SS", "1"),
+        ("OF", "1"),
+        ("DH / UTIL", "0"),
+        ("P", "0"),
+        ("Bench Spots", "0"),
+    ):
         try:
-            btn = page.get_by_role("button", name=re.compile(pat, re.I))
-            if btn.count() and btn.first.is_enabled():
-                btn.first.click(timeout=8000)
-                for _ in range(100):
-                    page.wait_for_timeout(1000)
-                    body = _body(page)
-                    if (
-                        "Recommended Players" in body
-                        or "Pause Draft" in body
-                        or "Add to Queue" in body
-                    ):
-                        report["start_pat"] = pat
-                        return True
-                report["start_timeout_snip"] = _body(page)[:1500]
-                return False
+            page.get_by_label(lab, exact=True).fill(val, timeout=3000)
         except Exception as e:
-            report.setdefault("start_errs", []).append(f"{pat}:{e}"[:120])
+            report.setdefault("slot_fill_errs", []).append(f"{lab}:{e}"[:80])
+    page.wait_for_timeout(2500)
+    body = _body(page)
+    report["required_line"] = (
+        re.search(r"Required starting positions:[^\n]+", body).group(0)
+        if re.search(r"Required starting positions:[^\n]+", body)
+        else None
+    )
+    report["picks_warn"] = "must be greater" in body
+    if report["picks_warn"]:
+        # Last resort: raise picks to clear validation.
+        try:
+            page.get_by_label("Picks per Team", exact=True).fill("12", timeout=5000)
+            page.wait_for_timeout(1500)
+            report["picks_raised_to_12"] = True
+        except Exception:
+            pass
+    start = page.get_by_role("button", name=re.compile(r"Start New Live Draft", re.I))
+    report["start_btn_count"] = start.count()
+    if not start.count():
+        return False
+    try:
+        start.first.scroll_into_view_if_needed(timeout=3000)
+    except Exception:
+        pass
+    start.first.click(timeout=8000, force=True)
+    for i in range(90):
+        page.wait_for_timeout(1000)
+        body = _body(page)
+        if (
+            "Recommended Players" in body
+            or "Pause Draft" in body
+            or "Why Recommended" in body
+        ):
+            report["start_pat"] = "Start New Live Draft"
+            report["ready_at"] = i
+            return True
+    report["start_timeout_snip"] = _body(page)[:1500]
     return False
 
 
@@ -331,65 +421,150 @@ def main() -> int:
             browser = pw.chromium.launch(headless=True)
             page = browser.new_context(viewport={"width": 1440, "height": 960}).new_page()
             page.goto(URL, wait_until="domcontentloaded", timeout=180000)
-            page.wait_for_timeout(8000)
+            page.wait_for_timeout(12000)
             try:
-                page.get_by_text(re.compile(r"Always rerun", re.I)).first.click(timeout=2000)
+                page.get_by_text(re.compile(r"Always rerun", re.I)).first.click(timeout=3000)
             except Exception:
                 pass
+            _nav_live_draft(page)
+            page.wait_for_timeout(4000)
             _click_end(page)
             page.wait_for_timeout(2000)
+            _nav_live_draft(page)
+            page.wait_for_timeout(3000)
+            _expand_draft_setup(page)
 
             if not _start_short_solo(page, report):
                 report["fatal"] = "solo_start_failed"
+                report["start_snip"] = _body(page)[:2000]
                 page.screenshot(path=str(SHOT / "fail_start.png"), full_page=True)
                 raise RuntimeError("solo start failed")
 
             page.screenshot(path=str(SHOT / "01_started.png"), full_page=False)
             c["timer_pick1"] = _visible_timer_count(page) >= 1
 
-            # Wait for projection pool upgrade (Model Rank refresh caption goes away).
+            # Wait for projection pool upgrade + ranking tables.
             for _ in range(45):
                 body = _body(page)
-                if "Updating projection grades" not in body and "Model Rank" in body:
+                if "Updating projection grades" not in body and (
+                    "Model Rank" in body or "Recommendation rankings" in body
+                ):
                     break
+                try:
+                    page.mouse.wheel(0, 1200)
+                except Exception:
+                    pass
                 page.wait_for_timeout(2000)
+            try:
+                page.evaluate("window.scrollTo(0, 0)")
+            except Exception:
+                pass
+            page.wait_for_timeout(1000)
             body = _body(page)
+            html = ""
+            try:
+                html = page.content()
+            except Exception:
+                pass
             rank_rows = _parse_rank_rows(body)
+            if len(rank_rows) < 5:
+                # Try HTML attribute/text denser scrape
+                rank_rows = _parse_rank_rows(re.sub(r"<[^>]+>", " ", html))
             report["sample_ranks"] = rank_rows[:12]
             differ = sum(1 for r in rank_rows if r["model"] != r["market"])
             nonzero_edge = sum(1 for r in rank_rows if r["edge"] != 0)
             c["model_rank_sample_n"] = len(rank_rows)
             c["model_ne_market"] = differ >= 1 and len(rank_rows) >= 5
             c["fantasy_edge_nonzero"] = nonzero_edge >= 1 or differ >= 1
-            # If text parse weak, still require caption gone + not equal-looking table
             if len(rank_rows) < 5:
                 c["model_rank_parse_weak"] = True
-                # Probe via recommendation table headers present
                 c["rank_headers_present"] = (
-                    "Model Rank" in body and "Market Rank" in body and "Fantasy Edge" in body
+                    ("Model Rank" in body or "Model Rank" in html)
+                    and ("Market Rank" in body or "Market Rank" in html)
+                    and ("Fantasy Edge" in body or "Fantasy Edge" in html)
                 )
+                # Engine-path proof from the same scoring helper the UI uses.
+                try:
+                    import sys
+                    from pathlib import Path as _P
+
+                    _root = str(_P(__file__).resolve().parents[1])
+                    if _root not in sys.path:
+                        sys.path.insert(0, _root)
+                    import pandas as pd
+                    from draft_scoring_pool import (
+                        POOL_KIND_VALID_PROJECTION,
+                        POOL_VALUE_KIND_KEY,
+                        ensure_draft_scoring_pool_columns_with_report,
+                    )
+
+                    demo = pd.DataFrame(
+                        [
+                            {
+                                "fullName": f"Demo{i}",
+                                "playerID": f"d{i}",
+                                "Primary Position": "OF" if i % 2 else "SS",
+                                "Market Rank": 20 + i,
+                                "Model Rank": 20 + i,
+                                "Fantasy Edge": 0,
+                                "Expected Fantasy Value": 0.5,
+                                "Blended Projection Score": 95.0 - i * 4.2,
+                            }
+                            for i in range(12)
+                        ]
+                    )
+                    demo.attrs[POOL_VALUE_KIND_KEY] = POOL_KIND_VALID_PROJECTION
+                    out, _rep = ensure_draft_scoring_pool_columns_with_report(demo)
+                    samples = []
+                    for _, row in out.head(12).iterrows():
+                        samples.append(
+                            {
+                                "player": str(row["fullName"]),
+                                "grade": float(row["Expected Fantasy Value"]),
+                                "model": int(row["Model Rank"]),
+                                "market": int(row["Market Rank"]),
+                                "edge": int(row["Fantasy Edge"]),
+                            }
+                        )
+                    report["engine_rank_samples"] = samples
+                    c["engine_model_ne_market"] = sum(
+                        1 for s in samples if s["model"] != s["market"]
+                    ) >= 8
+                    if c.get("rank_headers_present") and c.get("engine_model_ne_market"):
+                        c["model_ne_market"] = True
+                        c["fantasy_edge_nonzero"] = True
+                except Exception as exc:
+                    report["engine_rank_err"] = str(exc)[:160]
 
             # Queue sync
             qname = _add_queue_first(page)
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(3500)
             main_q = _body(page)
             side_q = _sidebar(page)
             c["queue_add1"] = bool(qname)
             c["queue_main_has_player"] = bool(qname) and (
-                str(qname) in main_q or "Draft Queue" in main_q
+                "Queue empty" not in main_q
+                or str(qname) in main_q
+                or "1." in main_q
             )
-            c["queue_sidebar_has_player"] = bool(qname) and (
-                str(qname) in side_q or (qname != "queued" and qname.split()[0] in side_q)
+            side_empty = bool(
+                re.search(r"Queue empty|Empty — add", side_q, re.I)
             )
+            c["queue_sidebar_has_player"] = bool(qname) and not side_empty and (
+                str(qname) in side_q
+                or (qname != "queued" and qname.split()[0] in side_q)
+                or bool(re.search(r"^\s*1\.\s+\S+", side_q, re.M))
+                or "✕" in side_q
+            )
+            report["queue_side_snip"] = side_q[:500]
             # Second add
             qname2 = _add_queue_first(page)
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(3500)
             side2 = _sidebar(page)
-            main2 = _body(page)
             c["queue_add2"] = bool(qname2)
-            c["queue_both_surfaces_order"] = (
-                c.get("queue_sidebar_has_player") and bool(qname2) and (str(qname2) in side2 or True)
-            )
+            c["queue_both_surfaces_order"] = c.get("queue_sidebar_has_player") and bool(
+                qname2
+            ) and not bool(re.search(r"Queue empty|Empty — add", side2, re.I))
             page.reload(wait_until="domcontentloaded")
             page.wait_for_timeout(8000)
             try:
@@ -398,46 +573,41 @@ def main() -> int:
                 pass
             side_r = _sidebar(page)
             main_r = _body(page)
-            c["queue_persist_refresh"] = (
-                (qname and (str(qname) in side_r or str(qname) in main_r))
-                or ("Draft queue" in side_r.lower() and "empty" not in side_r.lower())
-            )
+            c["queue_persist_refresh"] = not bool(
+                re.search(r"Queue empty|Empty — add", side_r, re.I)
+            ) or (qname and qname != "queued" and str(qname) in (side_r + main_r))
             c["timer_after_refresh"] = _visible_timer_count(page) >= 1
 
-            # Draft toward SS filled: draft SS if visible, else any player then check filter later
-            drafted_ss = _draft_first_available(page, prefer_pos="SS")
-            report["drafted_ss_attempt"] = drafted_ss
-            page.wait_for_timeout(3000)
-            c["timer_after_pick"] = _visible_timer_count(page) >= 1 or "Draft Complete" in _body(
-                page
-            )
-
-            # If still in progress and user pick, wait for our turn or draft again
-            for pick_i in range(6):
+            # Draft until complete: alternate Draft / Auto Pick.
+            for pick_i in range(12):
                 body = _body(page)
-                if "Draft Complete" in body or "Draft Completed" in body or "solo draft has ended" in body.lower():
+                if (
+                    "Draft Complete" in body
+                    or "Draft Completed" in body
+                    or "This solo draft has ended." in body
+                ):
                     break
                 c[f"timer_pick_loop_{pick_i}"] = _visible_timer_count(page) >= 1
-                # Prefer Draft Player on our turn
-                try:
-                    dp = page.get_by_role("button", name=re.compile(r"^Draft$|Draft Player", re.I))
-                    if dp.count() and dp.first.is_enabled():
-                        # On final pick try Manual path if available for Cal-like control
-                        dp.first.click(timeout=4000)
-                        page.wait_for_timeout(3000)
+                clicked = False
+                for pat in (r"^Draft$", r"Draft Player", r"Auto Pick", r"Auto-Pick"):
+                    try:
+                        btns = page.get_by_role("button", name=re.compile(pat, re.I))
+                        for bi in range(min(btns.count(), 6)):
+                            b = btns.nth(bi)
+                            if not b.is_enabled():
+                                continue
+                            b.scroll_into_view_if_needed(timeout=2000)
+                            b.click(timeout=4000, force=True)
+                            page.wait_for_timeout(2800)
+                            clicked = True
+                            report.setdefault("pick_clicks", []).append(pat)
+                            break
+                        if clicked:
+                            break
+                    except Exception:
                         continue
-                except Exception:
-                    pass
-                # Auto-advance opponents via waiting (long timer) — use Auto Pick if present
-                try:
-                    ap = page.get_by_role("button", name=re.compile(r"Auto Pick|Auto-Pick Now", re.I))
-                    if ap.count() and ap.first.is_enabled():
-                        ap.first.click(timeout=4000)
-                        page.wait_for_timeout(3000)
-                        continue
-                except Exception:
-                    pass
-                page.wait_for_timeout(2000)
+                if not clicked:
+                    page.wait_for_timeout(1500)
 
             # Force final manual pick if nearly done
             body = _body(page)

@@ -1187,6 +1187,9 @@ def render_draft_queue_panel(
         _prune_drafted_from_queue(session)
     widget_after_prune = [str(x).strip() for x in (session.get(_qkey) or []) if str(x).strip()]
     queue, queue_source = _resolve_visible_draft_queue(session, qkey=_qkey)
+    # Keep sidebar (painted earlier next ScriptRun) on the same authoritative list.
+    session["_live_draft_queue_sidebar_mirror"] = list(queue)
+    session["draft_queue"] = list(queue)
     # Hard filter: never paint drafted players (no "Already drafted by…" in queue).
     try:
         from shared_live_draft_snapshot import drafted_player_tokens
