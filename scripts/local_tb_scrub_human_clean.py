@@ -19,7 +19,12 @@ def scrub(ws: Path) -> list[str]:
         if (
             "live_draft" in kl
             or "draft_room" in kl
-            or k in ("active_shared_draft_room_code", "draft_room_shared_meta")
+            or k in (
+                "active_shared_draft_room_code",
+                "draft_room_shared_meta",
+                "draft_queue",
+                "draft_state",
+            )
         ):
             if k == "page_filter_state":
                 continue

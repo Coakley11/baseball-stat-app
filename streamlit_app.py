@@ -28280,6 +28280,22 @@ elif active_page == "Live Draft Room":
                 except ImportError:
                     st.session_state.pop("_pending_manual_draft_pick", None)
                 _pending_manual_pick = False
+            # Force workspace disk save so browser reload keeps Draft Complete.
+            if st.session_state.pop("_live_draft_complete_persist_pending", None) or not st.session_state.get(
+                "_live_draft_complete_disk_committed"
+            ):
+                try:
+                    from live_draft_state import commit_live_draft_room
+
+                    commit_live_draft_room(
+                        st,
+                        st.session_state,
+                        room,
+                        reason="draft_complete",
+                    )
+                    st.session_state["_live_draft_complete_disk_committed"] = True
+                except Exception:
+                    pass
             try:
                 from live_draft_room_ui import render_live_draft_complete_banner
 

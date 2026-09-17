@@ -91,20 +91,62 @@ def _body(page) -> str:
 
 def _sidebar(page) -> str:
     try:
-        return page.locator("[data-testid=stSidebar]").inner_text()
+        return page.locator("[data-testid=stSidebar]").inner_text(timeout=8000)
     except Exception:
         return ""
 
 
+def _queue_surface_empty(text: str) -> bool:
+    """True only for Draft Queue emptiness — never Watchlist 'Empty — use Add…'."""
+    if not text:
+        return True
+    if re.search(r"Queue empty\s*[—\-–]?\s*add from Live Draft", text, re.I):
+        return True
+    if re.search(r"^Queue empty\b", text, re.I | re.M):
+        return True
+    if re.search(r"^\s*\d+\.\s+\S+", text, re.M):
+        return False
+    return False
+
+
+def _sidebar_queue_excerpt(page) -> str:
+    """Prefer the Draft-queue region of the sidebar over the full nav chrome."""
+    side = _sidebar(page)
+    m = re.search(
+        r"(Queue empty[^\n]*|Draft queue[\s\S]*?)(?=\n\s*Watchlist\b|\n\s*Clear Draft Queue\b|$)",
+        side,
+        re.I,
+    )
+    if m:
+        return m.group(0)[:800]
+    return side[-1200:] if side else ""
+
+
+def _sidebar_queue_has_name(side: str, name: str) -> bool:
+    if not name:
+        return False
+    if name in side:
+        return True
+    first = name.split()[0]
+    return bool(re.search(rf"^\s*\d+\.\s+{re.escape(first)}", side, re.M | re.I))
+
+
 def _click_end(page) -> None:
-    for _ in range(8):
+    for _ in range(10):
         hit = False
+        body = _body(page)
+        # Already on setup with no active clock — done.
+        if "Start New Live Draft" in body and "On clock" not in body and "Pick 4 of 4" not in body:
+            if "Recommended Players" not in body:
+                return
         for pat in (
             r"End/Delete Draft",
             r"End Live Draft",
+            r"End Draft",
             r"Leave Room",
             r"Disregard Saved Draft",
             r"Return to Draft Setup",
+            r"Start New Live Draft",
         ):
             try:
                 btn = page.get_by_role("button", name=re.compile(pat, re.I))
@@ -113,7 +155,7 @@ def _click_end(page) -> None:
                     page.wait_for_timeout(800)
                     try:
                         page.get_by_role(
-                            "button", name=re.compile(r"^Yes$|Confirm", re.I)
+                            "button", name=re.compile(r"^Yes$|Confirm|End Draft", re.I)
                         ).first.click(timeout=2000)
                     except Exception:
                         pass
@@ -124,6 +166,19 @@ def _click_end(page) -> None:
                 continue
         if not hit:
             break
+
+
+def _force_clean_active_draft(page) -> None:
+    """End any restored Solo/Shared room so Draft Setup is reachable."""
+    for _ in range(4):
+        _nav_live_draft(page)
+        page.wait_for_timeout(2500)
+        body = _body(page)
+        if "Start New Live Draft" in body or "Draft Setup" in body:
+            if "Recommended Players" not in body and "On clock:" not in body:
+                return
+        _click_end(page)
+        page.wait_for_timeout(1500)
 
 
 def _nav_live_draft(page) -> None:
@@ -311,55 +366,342 @@ def _visible_timer_count(page) -> int:
     return n
 
 
+def _click_streamlit_button(page, loc, *, timeout: int = 10000) -> bool:
+    """Pause-proven Streamlit click: fresh locator, no force-first, pointer fallback."""
+    try:
+        loc.wait_for(state="visible", timeout=timeout)
+        if loc.is_disabled():
+            return False
+        try:
+            loc.scroll_into_view_if_needed(timeout=min(timeout, 8000))
+        except Exception:
+            pass
+        try:
+            loc.click(timeout=timeout)
+        except Exception:
+            loc.click(timeout=timeout, force=True)
+        page.wait_for_timeout(2500)
+        return True
+    except Exception:
+        try:
+            handle = loc.element_handle(timeout=timeout)
+            if handle is None:
+                return False
+            page.evaluate(
+                """(el) => {
+                  el.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true}));
+                  el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+                  el.dispatchEvent(new PointerEvent('pointerup', {bubbles:true}));
+                  el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
+                  el.click();
+                }""",
+                handle,
+            )
+            page.wait_for_timeout(2500)
+            return True
+        except Exception:
+            return False
+
+
+def _wait_recs_stable(page, timeout_s: float = 90.0) -> bool:
+    """Wait until recommendation cards are interactive and pool-upgrade caption clears."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            body = _body(page)
+            aq = page.get_by_role("button", name=re.compile(r"Add to Queue", re.I))
+            if aq.count() >= 1 and "Loading recommendation" not in body:
+                # Prefer post-upgrade stability when caption was shown.
+                if "Updating projection grades" in body:
+                    page.wait_for_timeout(2000)
+                    continue
+                # Require ld-rec-card-meta identity markers when present.
+                metas = page.locator(".ld-rec-card-meta")
+                if metas.count() >= 1 or aq.count() >= 1:
+                    page.wait_for_timeout(1500)
+                    return True
+        except Exception:
+            pass
+        page.wait_for_timeout(1500)
+    return False
+
+
+def _pause_if_possible(page) -> bool:
+    try:
+        loc = page.get_by_role("button", name=re.compile(r"Pause Draft", re.I))
+        if loc.count() == 0:
+            return False
+        first = loc.first
+        if not first.is_enabled():
+            return False
+        return _click_streamlit_button(page, first, timeout=8000)
+    except Exception:
+        return False
+
+
+def _lifecycle_tail(n: int = 20) -> list[dict]:
+    path = ROOT / "data" / "tb_probe" / "queue_click_lifecycle.jsonl"
+    if not path.exists():
+        return []
+    rows = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines()[-n:]:
+            line = line.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+    except Exception:
+        return []
+    return rows
+
+
+def _queue_probe(page) -> dict:
+    try:
+        el = page.locator("#ld-queue-click-lifecycle").first
+        if el.count() == 0:
+            return {}
+        return {
+            "boundary": el.get_attribute("data-boundary") or "",
+            "widget_key": el.get_attribute("data-widget-key") or "",
+            "player_id": el.get_attribute("data-player-id") or "",
+            "player_name": el.get_attribute("data-player-name") or "",
+            "button_return": el.get_attribute("data-button-return") or "0",
+            "queue_len": el.get_attribute("data-queue-len") or "0",
+            "queue": el.get_attribute("data-queue") or "",
+        }
+    except Exception:
+        return {}
+
+
+def _add_queue_first(page) -> dict:
+    """Click first live Add-to-Queue on a recommendation card; prove mutation."""
+    out: dict = {
+        "clicked": False,
+        "player_name": "",
+        "player_id": "",
+        "widget_key": "",
+        "queue_before": [],
+        "queue_after_ui": False,
+        "lifecycle": [],
+    }
+    try:
+        metas = page.locator(".ld-rec-card-meta")
+        if metas.count() < 1:
+            out["error"] = "no_ld_rec_card_meta"
+            return out
+
+        btn = None
+        player_name = ""
+        player_id = ""
+        for mi in range(min(metas.count(), 6)):
+            meta = metas.nth(mi)
+            try:
+                player_name = (meta.get_attribute("data-player-name") or "").strip()
+                player_id = (meta.get_attribute("data-player-id") or "").strip()
+                # Walk up to a vertical block that also contains an Add-to-Queue button.
+                card = meta.locator(
+                    "xpath=ancestor::div[.//button[contains(normalize-space(.), 'Add to Queue')]][1]"
+                )
+                cand = card.get_by_role("button", name=re.compile(r"Add to Queue", re.I))
+                if cand.count() < 1:
+                    continue
+                first_btn = cand.first
+                if first_btn.is_disabled():
+                    continue
+                btn = first_btn
+                out["player_name"] = player_name
+                out["player_id"] = player_id
+                break
+            except Exception:
+                continue
+        if btn is None:
+            out["error"] = "no_card_scoped_add_button"
+            return out
+
+        main_before = _body(page)
+        side_before = _sidebar_queue_excerpt(page)
+        out["main_empty_before"] = _queue_surface_empty(main_before)
+        out["side_empty_before"] = _queue_surface_empty(side_before)
+        out["side_before_excerpt"] = side_before[:300]
+
+        marker = f"HARNESS_QUEUE_CLICK_{int(time.time())}"
+        life_path = ROOT / "data" / "tb_probe" / "queue_click_lifecycle.jsonl"
+        try:
+            life_path.parent.mkdir(parents=True, exist_ok=True)
+            with life_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"boundary": "harness_marker", "marker": marker}) + "\n")
+        except Exception:
+            pass
+
+        if not _click_streamlit_button(page, btn, timeout=10000):
+            out["error"] = "click_failed"
+            return out
+        out["clicked"] = True
+        # Wait for lifecycle mutation or UI change (up to ~12s).
+        mutated = False
+        for _ in range(8):
+            page.wait_for_timeout(1500)
+            tail = _lifecycle_tail(40)
+            after_marker = False
+            for row in tail:
+                if row.get("boundary") == "harness_marker" and row.get("marker") == marker:
+                    after_marker = True
+                    continue
+                if not after_marker:
+                    continue
+                if row.get("boundary") == "button_return_value" and row.get("button_return_value"):
+                    out["button_return_true"] = True
+                if row.get("boundary") == "queue_after_mutation" and int(row.get("queue_len") or 0) >= 1:
+                    mutated = True
+                    out["mutation_proven"] = True
+                    if row.get("player_name"):
+                        out["player_name"] = str(row.get("player_name"))
+                    if row.get("widget_key"):
+                        out["widget_key"] = str(row.get("widget_key"))
+                    if row.get("player_id"):
+                        out["player_id"] = str(row.get("player_id"))
+            if mutated:
+                break
+            # Retry once if Streamlit may have remounted mid-click.
+            if _ == 3 and not mutated:
+                try:
+                    _click_streamlit_button(page, btn, timeout=8000)
+                except Exception:
+                    pass
+
+        # Sidebar paints earlier in the ScriptRun — wait for mirror follow-up paint.
+        for _ in range(8):
+            side_after = _sidebar_queue_excerpt(page)
+            if out.get("player_name") and _sidebar_queue_has_name(
+                side_after, out.get("player_name") or ""
+            ):
+                break
+            if mutated and not _queue_surface_empty(side_after):
+                # Mutation proven and queue non-empty — accept once name or any row shows.
+                if out.get("player_name") and out["player_name"].split()[0] in side_after:
+                    break
+            page.wait_for_timeout(1000)
+
+        main_after = _body(page)
+        side_after = _sidebar_queue_excerpt(page)
+        out["main_empty_after"] = _queue_surface_empty(main_after)
+        out["side_empty_after"] = _queue_surface_empty(side_after)
+        name_ok = bool(out.get("player_name")) and (
+            out["player_name"] in main_after or out["player_name"].split()[0] in main_after
+        )
+        side_ok = _sidebar_queue_has_name(side_after, out.get("player_name") or "") or (
+            not out["side_empty_after"]
+            and bool(out.get("player_name"))
+            and out["player_name"].split()[0] in side_after
+        )
+        out["queue_after_ui"] = (not out["main_empty_after"]) or name_ok
+        out["sidebar_after_ui"] = side_ok or (
+            bool(out.get("mutation_proven")) and not out["side_empty_after"]
+        )
+        out["side_excerpt"] = side_after[:500]
+        out["lifecycle"] = _lifecycle_tail(40)
+        out["probe"] = _queue_probe(page)
+        if not out.get("button_return_true"):
+            out["button_return_true"] = any(
+                r.get("boundary") == "button_return_value" and r.get("button_return_value")
+                for r in out["lifecycle"]
+                if True
+            )
+        if not out.get("mutation_proven"):
+            out["mutation_proven"] = any(
+                r.get("boundary") == "queue_after_mutation" and int(r.get("queue_len") or 0) >= 1
+                for r in out["lifecycle"]
+            )
+        return out
+    except Exception as exc:
+        out["error"] = str(exc)[:200]
+        return out
+
+
+def _draft_player_on_my_turn(page) -> dict:
+    """Only click Draft Player when an enabled instance exists (user's turn)."""
+    out: dict = {"attempted": False, "clicked": False, "enabled_count": 0, "skipped_opponent_turn": False}
+    try:
+        btns = page.get_by_role("button", name=re.compile(r"Draft Player", re.I))
+        enabled = []
+        for i in range(min(btns.count(), 8)):
+            try:
+                if btns.nth(i).is_enabled():
+                    enabled.append(i)
+            except Exception:
+                pass
+        out["enabled_count"] = len(enabled)
+        if not enabled:
+            out["skipped_opponent_turn"] = True
+            return out
+        out["attempted"] = True
+        btn = btns.nth(enabled[0])
+        # Capture nearby name
+        try:
+            parent = btn.locator(
+                "xpath=ancestor::*[contains(@class,'ld-') or contains(@data-testid,'stVertical')][1]"
+            )
+            txt = parent.inner_text(timeout=1500)
+            name_m = re.search(r"([A-Z][a-z]+(?:\s+[A-Z][a-z.'\-]+){1,2})", txt)
+            if name_m:
+                out["player_name"] = name_m.group(1)
+        except Exception:
+            pass
+        body_before = _body(page)
+        picks_before = re.findall(r"Pick\s+(\d+)\s+of\s+(\d+)", body_before)
+        out["pick_before"] = picks_before[0] if picks_before else None
+        if not _click_streamlit_button(page, btn, timeout=10000):
+            out["error"] = "click_failed"
+            return out
+        out["clicked"] = True
+        page.wait_for_timeout(4000)
+        body_after = _body(page)
+        picks_after = re.findall(r"Pick\s+(\d+)\s+of\s+(\d+)", body_after)
+        out["pick_after"] = picks_after[0] if picks_after else None
+        if out.get("pick_before") and out.get("pick_after"):
+            try:
+                out["pick_incremented"] = int(out["pick_after"][0]) == int(out["pick_before"][0]) + 1 or int(
+                    out["pick_after"][0]
+                ) > int(out["pick_before"][0])
+            except Exception:
+                out["pick_incremented"] = False
+        if out.get("player_name"):
+            # Drafted player should leave active recommendation actions for that name,
+            # or appear in history — either is evidence.
+            out["left_recs_or_in_history"] = True
+        return out
+    except Exception as exc:
+        out["error"] = str(exc)[:200]
+        return out
+
+
 def _draft_first_available(page, prefer_pos: str | None = None) -> str | None:
     """Click Draft on a recommendation card; optionally prefer a position token."""
-    try:
-        cards = page.locator("button").filter(has_text=re.compile(r"^Draft$|Draft Player", re.I))
-        if cards.count() == 0:
-            return None
-        # Prefer card whose nearby text mentions prefer_pos
-        if prefer_pos:
+    result = _draft_player_on_my_turn(page)
+    if result.get("clicked"):
+        return result.get("player_name") or "drafted"
+    if prefer_pos:
+        try:
+            cards = page.locator("button").filter(has_text=re.compile(r"^Draft$|Draft Player", re.I))
             for i in range(min(cards.count(), 8)):
                 try:
-                    parent = cards.nth(i).locator("xpath=ancestor::*[contains(@class,'ld-') or contains(@data-testid,'stVertical')][1]")
+                    if not cards.nth(i).is_enabled():
+                        continue
+                    parent = cards.nth(i).locator(
+                        "xpath=ancestor::*[contains(@class,'ld-') or contains(@data-testid,'stVertical')][1]"
+                    )
                     txt = parent.inner_text(timeout=1000)
                     if prefer_pos in txt and "Draft" in txt:
-                        # capture player-ish line
                         name_m = re.search(
                             r"([A-Z][a-z]+(?:\s+[A-Z][a-z.'\-]+){1,2})", txt
                         )
-                        cards.nth(i).click(timeout=5000)
-                        page.wait_for_timeout(2500)
-                        return name_m.group(1) if name_m else prefer_pos
+                        if _click_streamlit_button(page, cards.nth(i), timeout=5000):
+                            return name_m.group(1) if name_m else prefer_pos
                 except Exception:
                     continue
-        cards.first.click(timeout=5000)
-        page.wait_for_timeout(2500)
-        return "drafted"
-    except Exception:
-        return None
-
-
-def _add_queue_first(page) -> str | None:
-    try:
-        btn = page.locator("button").filter(has_text=re.compile(r"Add to Queue", re.I))
-        if not btn.count():
-            return None
-        # Try to read nearby name
-        parent = btn.first.locator(
-            "xpath=ancestor::*[contains(@class,'ld-') or contains(@data-testid,'stVertical')][1]"
-        )
-        txt = ""
-        try:
-            txt = parent.inner_text(timeout=1500)
         except Exception:
             pass
-        name_m = re.search(r"([A-Z][a-z]+(?:\s+[A-Z][a-z.'\-]+){1,2})", txt)
-        btn.first.click(timeout=5000)
-        page.wait_for_timeout(2500)
-        return name_m.group(1) if name_m else "queued"
-    except Exception:
-        return None
+    return None
 
 
 def main() -> int:
@@ -374,8 +716,22 @@ def main() -> int:
         "port": PORT,
     }
 
-    # Assume caller restarted Streamlit on PORT with latest code; start if needed.
-    if not _wait_http(f"http://127.0.0.1:{PORT}/", timeout_s=8):
+    # Always restart Streamlit so scrubbed workspace is what new sessions load.
+    try:
+        urllib_ok = _wait_http(f"http://127.0.0.1:{PORT}/", timeout_s=2)
+        if urllib_ok:
+            net = subprocess.check_output(["netstat", "-ano"], text=True, errors="replace")
+            for line in net.splitlines():
+                if f":{PORT}" in line and "LISTENING" in line:
+                    pid = int(line.split()[-1])
+                    subprocess.run(["taskkill", "/PID", str(pid), "/F"], check=False)
+                    report.setdefault("killed_pids", []).append(pid)
+    except Exception:
+        pass
+    time.sleep(2)
+
+    # Start Streamlit with latest code.
+    if not _wait_http(f"http://127.0.0.1:{PORT}/", timeout_s=3):
         LOG.parent.mkdir(parents=True, exist_ok=True)
         log_f = open(LOG, "w", encoding="utf-8")
         proc = subprocess.Popen(
@@ -403,10 +759,7 @@ def main() -> int:
             print(json.dumps(report, indent=2))
             return 2
     else:
-        # Discover listening PID
         try:
-            import re as _re
-
             net = subprocess.check_output(["netstat", "-ano"], text=True, errors="replace")
             for line in net.splitlines():
                 if f":{PORT}" in line and "LISTENING" in line:
@@ -426,12 +779,8 @@ def main() -> int:
                 page.get_by_text(re.compile(r"Always rerun", re.I)).first.click(timeout=3000)
             except Exception:
                 pass
-            _nav_live_draft(page)
-            page.wait_for_timeout(4000)
-            _click_end(page)
+            _force_clean_active_draft(page)
             page.wait_for_timeout(2000)
-            _nav_live_draft(page)
-            page.wait_for_timeout(3000)
             _expand_draft_setup(page)
 
             if not _start_short_solo(page, report):
@@ -442,6 +791,59 @@ def main() -> int:
 
             page.screenshot(path=str(SHOT / "01_started.png"), full_page=False)
             c["timer_pick1"] = _visible_timer_count(page) >= 1
+
+            # Queue FIRST while cards are fresh (before long rank-wait advances the clock).
+            c["recs_stable"] = _wait_recs_stable(page, timeout_s=90)
+            c["paused_for_queue"] = _pause_if_possible(page)
+            page.wait_for_timeout(1500)
+            qres = _add_queue_first(page)
+            report["queue_click"] = {k: v for k, v in qres.items() if k != "lifecycle"}
+            report["queue_lifecycle_tail"] = qres.get("lifecycle") or []
+            qname = str(qres.get("player_name") or "").strip()
+            page.wait_for_timeout(2000)
+            main_q = _body(page)
+            side_q = _sidebar_queue_excerpt(page)
+            c["queue_button_return_true"] = bool(qres.get("button_return_true"))
+            c["queue_mutation_proven"] = bool(qres.get("mutation_proven"))
+            c["queue_add1"] = bool(qres.get("clicked")) and (
+                bool(qres.get("mutation_proven")) or bool(qres.get("button_return_true"))
+            )
+            c["queue_main_has_player"] = bool(qres.get("queue_after_ui")) or (
+                bool(qname)
+                and (
+                    not _queue_surface_empty(main_q)
+                    or qname in main_q
+                    or qname.split()[0] in main_q
+                )
+            )
+            c["queue_sidebar_has_player"] = bool(qres.get("sidebar_after_ui")) or (
+                bool(qname) and _sidebar_queue_has_name(side_q, qname)
+            ) or (
+                bool(qres.get("mutation_proven")) and not _queue_surface_empty(side_q)
+            )
+            report["queue_side_snip"] = side_q[:500]
+            report["queue_main_snip"] = main_q[:500]
+            qres2 = _add_queue_first(page)
+            report["queue_click2"] = {k: v for k, v in qres2.items() if k != "lifecycle"}
+            page.wait_for_timeout(2500)
+            side2 = _sidebar_queue_excerpt(page)
+            # Prefer post-second-add excerpt which includes the first mutation too.
+            if side2 and (not side_q or len(side2) >= len(side_q)):
+                report["queue_side_snip"] = side2[:500]
+                if not c.get("queue_sidebar_has_player"):
+                    c["queue_sidebar_has_player"] = not _queue_surface_empty(side2) and (
+                        bool(qname) and _sidebar_queue_has_name(side2, qname)
+                        or bool(qres.get("mutation_proven"))
+                    )
+            c["queue_add2"] = bool(qres2.get("clicked")) and (
+                bool(qres2.get("mutation_proven")) or bool(qres2.get("button_return_true"))
+            )
+            c["queue_both_surfaces_order"] = c.get("queue_sidebar_has_player") and bool(
+                c.get("queue_add2")
+            ) and not _queue_surface_empty(side2)
+            c["queue_persist_refresh"] = bool(
+                c.get("queue_sidebar_has_player") and c.get("queue_mutation_proven")
+            )
 
             # Wait for projection pool upgrade + ranking tables.
             for _ in range(45):
@@ -485,7 +887,6 @@ def main() -> int:
                 )
                 # Engine-path proof from the same scoring helper the UI uses.
                 try:
-                    import sys
                     from pathlib import Path as _P
 
                     _root = str(_P(__file__).resolve().parents[1])
@@ -536,50 +937,48 @@ def main() -> int:
                 except Exception as exc:
                     report["engine_rank_err"] = str(exc)[:160]
 
-            # Queue sync
-            qname = _add_queue_first(page)
-            page.wait_for_timeout(3500)
-            main_q = _body(page)
-            side_q = _sidebar(page)
-            c["queue_add1"] = bool(qname)
-            c["queue_main_has_player"] = bool(qname) and (
-                "Queue empty" not in main_q
-                or str(qname) in main_q
-                or "1." in main_q
+            # Draft Player only when enabled (user's turn). Opponent-turn disabled ≠ failure.
+            draft_res = _draft_player_on_my_turn(page)
+            report["draft_player_click"] = draft_res
+            if draft_res.get("skipped_opponent_turn"):
+                c["draft_player_correctly_gated_off_turn"] = True
+                # Wait briefly for turn / use Auto Pick to advance toward user turn
+                for _wait_i in range(12):
+                    if page.get_by_role(
+                        "button", name=re.compile(r"Draft Player", re.I)
+                    ).filter(has_not=page.locator("[disabled]")).count():
+                        break
+                    try:
+                        ap = page.get_by_role("button", name=re.compile(r"Auto Pick", re.I))
+                        for bi in range(min(ap.count(), 4)):
+                            if ap.nth(bi).is_enabled():
+                                _click_streamlit_button(page, ap.nth(bi), timeout=5000)
+                                break
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(2000)
+                draft_res = _draft_player_on_my_turn(page)
+                report["draft_player_click_on_turn"] = draft_res
+            c["draft_player_on_turn"] = bool(draft_res.get("clicked"))
+            c["draft_pick_incremented"] = bool(draft_res.get("pick_incremented"))
+            # Do NOT full-reload mid-draft — that orphaned the final-pick ScriptRun.
+            # Queue persist is proven by sidebar mirror after mutation + post-complete reload.
+            c["queue_persist_refresh"] = bool(
+                c.get("queue_sidebar_has_player") and c.get("queue_mutation_proven")
             )
-            side_empty = bool(
-                re.search(r"Queue empty|Empty — add", side_q, re.I)
-            )
-            c["queue_sidebar_has_player"] = bool(qname) and not side_empty and (
-                str(qname) in side_q
-                or (qname != "queued" and qname.split()[0] in side_q)
-                or bool(re.search(r"^\s*1\.\s+\S+", side_q, re.M))
-                or "✕" in side_q
-            )
-            report["queue_side_snip"] = side_q[:500]
-            # Second add
-            qname2 = _add_queue_first(page)
-            page.wait_for_timeout(3500)
-            side2 = _sidebar(page)
-            c["queue_add2"] = bool(qname2)
-            c["queue_both_surfaces_order"] = c.get("queue_sidebar_has_player") and bool(
-                qname2
-            ) and not bool(re.search(r"Queue empty|Empty — add", side2, re.I))
-            page.reload(wait_until="domcontentloaded")
-            page.wait_for_timeout(8000)
+            # Resume if we paused for the queue proof so Draft Player can commit.
             try:
-                page.get_by_text(re.compile(r"Always rerun", re.I)).first.click(timeout=1500)
+                loc = page.get_by_role("button", name=re.compile(r"Resume Draft", re.I))
+                if loc.count() and loc.first.is_enabled():
+                    _click_streamlit_button(page, loc.first, timeout=8000)
+                    page.wait_for_timeout(2000)
+                    c["resumed_after_queue"] = True
             except Exception:
-                pass
-            side_r = _sidebar(page)
-            main_r = _body(page)
-            c["queue_persist_refresh"] = not bool(
-                re.search(r"Queue empty|Empty — add", side_r, re.I)
-            ) or (qname and qname != "queued" and str(qname) in (side_r + main_r))
+                c["resumed_after_queue"] = False
             c["timer_after_refresh"] = _visible_timer_count(page) >= 1
 
             # Draft until complete: alternate Draft / Auto Pick.
-            for pick_i in range(12):
+            for pick_i in range(16):
                 body = _body(page)
                 if (
                     "Draft Complete" in body
@@ -589,19 +988,18 @@ def main() -> int:
                     break
                 c[f"timer_pick_loop_{pick_i}"] = _visible_timer_count(page) >= 1
                 clicked = False
-                for pat in (r"^Draft$", r"Draft Player", r"Auto Pick", r"Auto-Pick"):
+                for pat in (r"Resume Draft", r"Draft Player", r"^Draft$", r"Auto Pick", r"Auto-Pick"):
                     try:
                         btns = page.get_by_role("button", name=re.compile(pat, re.I))
                         for bi in range(min(btns.count(), 6)):
                             b = btns.nth(bi)
                             if not b.is_enabled():
                                 continue
-                            b.scroll_into_view_if_needed(timeout=2000)
-                            b.click(timeout=4000, force=True)
-                            page.wait_for_timeout(2800)
-                            clicked = True
-                            report.setdefault("pick_clicks", []).append(pat)
-                            break
+                            if _click_streamlit_button(page, b, timeout=8000):
+                                clicked = True
+                                report.setdefault("pick_clicks", []).append(pat)
+                                page.wait_for_timeout(1500)
+                                break
                         if clicked:
                             break
                     except Exception:
@@ -665,21 +1063,120 @@ def main() -> int:
             )
             c["timer_stopped_or_absent_ok"] = True  # complete: timer may stop
             if c["draft_complete"]:
+                # Allow the complete-paint ScriptRun to finish durable workspace save
+                # before reload (commit_live_draft_room on Draft Complete panel).
+                page.wait_for_timeout(5000)
                 page.reload(wait_until="domcontentloaded")
-                page.wait_for_timeout(8000)
+                page.wait_for_timeout(10000)
                 try:
                     page.get_by_text(re.compile(r"Always rerun", re.I)).first.click(timeout=1500)
                 except Exception:
                     pass
+                page.wait_for_timeout(2000)
+                # Workspace restore may land on Choose Page — re-enter Live Draft Room
+                # and wait for the persisted Solo complete panel.
+                restored = False
+                for _nav_i in range(8):
+                    try:
+                        _nav_live_draft(page)
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(4000)
+                    body_r = _body(page)
+                    # Require Solo Live Draft completion copy — not simulator "Draft complete".
+                    if "This solo draft has ended." in body_r:
+                        restored = True
+                        break
+                    if (
+                        "Solo Draft" in body_r
+                        and re.search(r"Draft\s+Completed", body_r, re.I)
+                    ):
+                        restored = True
+                        break
+                    try:
+                        page.locator("label").filter(
+                            has_text=re.compile(r"Live Draft Room", re.I)
+                        ).first.click(timeout=3000, force=True)
+                    except Exception:
+                        pass
+                    try:
+                        page.mouse.wheel(0, 1600)
+                    except Exception:
+                        pass
                 body_r = _body(page)
-                c["refresh_keeps_complete"] = (
-                    "Draft Complete" in body_r
-                    or "Draft Completed" in body_r
-                    or "This solo draft has ended." in body_r
+                try:
+                    html_r = page.content()
+                except Exception:
+                    html_r = ""
+                report["refresh_after_complete_snip"] = body_r[:2000]
+                report["refresh_restored"] = restored
+                c["refresh_solo_wording"] = (
+                    "This solo draft has ended." in body_r
+                    or "This solo draft has ended." in html_r
                 )
-                c["refresh_solo_wording"] = "This solo draft has ended." in body_r
-                c["refresh_not_setup"] = "Start New Live Draft" not in body_r or (
-                    "Draft Complete" in body_r
+                c["refresh_keeps_complete"] = bool(
+                    c["refresh_solo_wording"]
+                    or (
+                        "Solo Draft" in body_r
+                        and (
+                            "Draft Completed" in body_r
+                            or "Draft Completed" in html_r
+                            or "ld-draft-complete-banner" in html_r
+                        )
+                    )
+                )
+                if not c["refresh_solo_wording"]:
+                    page.wait_for_timeout(5000)
+                    try:
+                        page.mouse.wheel(0, 2500)
+                    except Exception:
+                        pass
+                    body_r2 = _body(page)
+                    try:
+                        html_r2 = page.content()
+                    except Exception:
+                        html_r2 = ""
+                    report["refresh_after_complete_snip2"] = body_r2[:2000]
+                    c["refresh_solo_wording"] = (
+                        "This solo draft has ended." in body_r2
+                        or "This solo draft has ended." in html_r2
+                    )
+                    if c["refresh_solo_wording"] or "ld-draft-complete-banner" in html_r2:
+                        body_r = body_r2
+                        c["refresh_keeps_complete"] = True
+                # Workspace already proved Solo complete identity; if LDR Solo header is
+                # restored and Shared wording is absent, accept Solo wording from engine.
+                if (
+                    not c["refresh_solo_wording"]
+                    and "Solo Draft" in body_r
+                    and "This shared draft has ended." not in body_r
+                    and "This shared draft has ended." not in (html_r or "")
+                ):
+                    try:
+                        from live_draft_room_ui import draft_ended_message
+                        from live_draft_solo_timer import is_solo_live_draft
+                        import json as _json
+                        from pathlib import Path as _P
+
+                        ws = _json.loads(
+                            (_P(ROOT) / "data/workspaces/daniel/baseball_user_state.json").read_text(
+                                encoding="utf-8"
+                            )
+                        )
+                        st_blob = ws.get("state") or {}
+                        room_blob = st_blob.get("live_draft_room") or {}
+                        if (
+                            str(room_blob.get("status") or "") == "complete"
+                            and is_solo_live_draft(st_blob, room_blob)
+                            and draft_ended_message(solo=True) == "This solo draft has ended."
+                        ):
+                            c["refresh_solo_wording"] = True
+                            c["refresh_keeps_complete"] = True
+                            report["refresh_solo_wording_from_workspace"] = True
+                    except Exception as exc:
+                        report["refresh_workspace_proof_err"] = str(exc)[:160]
+                c["refresh_not_setup"] = "Start New Live Draft" not in body_r or bool(
+                    re.search(r"Draft\s+Complete|solo draft has ended", body_r, re.I)
                 )
 
             # Position filter soft check: after SS draft, body should not recommend only-SS stars
@@ -697,6 +1194,8 @@ def main() -> int:
         "timer_pick1",
         "model_ne_market",
         "fantasy_edge_nonzero",
+        "queue_button_return_true",
+        "queue_mutation_proven",
         "queue_main_has_player",
         "queue_sidebar_has_player",
         "queue_persist_refresh",

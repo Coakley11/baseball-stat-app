@@ -213,6 +213,23 @@ def resolve_active_live_draft_mode(
         else:
             mode = preferred
             source = "preferred_next_draft_mode"
+    elif isinstance(live, dict) and live_status in ("complete", "completed"):
+        # Natural Draft Complete must keep Solo vs Shared identity for banners.
+        # ``complete`` is intentionally outside _ACTIVE_ROOM_STATUSES (not "in play"),
+        # but dropping the room stamp here made refresh show Shared ended copy on Solo.
+        if live_mode == SETUP_MODE_SOLO and not code:
+            mode = SETUP_MODE_SOLO
+            source = "runtime_solo_complete_stamp"
+        elif live_mode == SETUP_MODE_SHARED or bool(code) or bool(
+            live.get("room_code") or live_cfg.get("room_code")
+        ):
+            mode = SETUP_MODE_SHARED
+            source = "runtime_shared_complete_stamp"
+            if not code:
+                code = str(live.get("room_code") or live_cfg.get("room_code") or "").strip().upper()
+        else:
+            mode = preferred
+            source = "preferred_next_draft_mode"
     else:
         mode = preferred
         source = "preferred_next_draft_mode"

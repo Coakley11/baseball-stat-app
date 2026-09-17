@@ -160,11 +160,23 @@ def apply_live_draft_completion(room: dict[str, Any], session: dict[str, Any] | 
         room[COMPLETION_RECORD_KEY] = record
         if isinstance(session, dict):
             try:
-                from live_draft_state import LIVE_DRAFT_ROOM_KEY
+                from live_draft_state import LIVE_DRAFT_ROOM_KEY, write_canonical_live_draft_state
 
                 session[LIVE_DRAFT_ROOM_KEY] = room
+                # Durable canonical write immediately — do not rely solely on deferred
+                # pick flush, or browser reload can lose Draft Complete before disk save.
+                write_canonical_live_draft_state(
+                    session, room, reason="draft_complete", local_edit=True
+                )
+                session["_live_draft_complete_persist_pending"] = True
             except ImportError:
-                pass
+                try:
+                    from live_draft_state import LIVE_DRAFT_ROOM_KEY
+
+                    session[LIVE_DRAFT_ROOM_KEY] = room
+                except ImportError:
+                    pass
+                session["_live_draft_complete_persist_pending"] = True
     return room
 
 

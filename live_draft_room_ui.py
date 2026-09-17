@@ -1553,6 +1553,22 @@ def execute_rec_card_queue_click(
         pass
     before = [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
     try:
+        from live_draft_queue_click_lifecycle import note_queue_click_lifecycle
+
+        note_queue_click_lifecycle(
+            session,
+            "execute_entered",
+            widget_key=widget_key,
+            player_id=player_id,
+            player_name=name,
+            room_id=room_id,
+            pick_index=pick_idx,
+            queue_before=before,
+            button_return_value=True,
+        )
+    except ImportError:
+        pass
+    try:
         from live_draft_rec_fragment_exec_diag import record_rec_queue_callback_entry
 
         record_rec_queue_callback_entry(
@@ -1630,7 +1646,37 @@ def execute_rec_card_queue_click(
         # Mutate session immediately; skip recommendation rebuild on the follow-up paint.
         mark_live_draft_queue_tick(session)
         mutation_entered = True
+        try:
+            from live_draft_queue_click_lifecycle import note_queue_click_lifecycle
+
+            note_queue_click_lifecycle(
+                session,
+                "queue_before_mutation",
+                widget_key=widget_key,
+                player_id=player_id,
+                player_name=name,
+                queue_before=before,
+                button_return_value=True,
+            )
+        except ImportError:
+            pass
         after, added = add_player_to_draft_queue(session, name)
+        try:
+            from live_draft_queue_click_lifecycle import note_queue_click_lifecycle
+
+            note_queue_click_lifecycle(
+                session,
+                "queue_after_mutation",
+                widget_key=widget_key,
+                player_id=player_id,
+                player_name=name,
+                queue_before=before,
+                queue_after=list(after),
+                added=bool(added),
+                button_return_value=True,
+            )
+        except ImportError:
+            pass
     except ImportError:
         try:
             from draft_state import add_player_to_draft_queue
@@ -2278,12 +2324,41 @@ def render_live_draft_rec_cards(
                             except ImportError:
                                 pass
                         # Same ScriptRun return-value contract as Pause Draft (control center).
+                        try:
+                            from live_draft_queue_click_lifecycle import note_queue_click_lifecycle
+
+                            note_queue_click_lifecycle(
+                                session,
+                                "widget_rendered",
+                                widget_key=queue_widget_key,
+                                player_id=player_id,
+                                player_name=name,
+                                room_id=room_id,
+                                pick_index=pick_idx,
+                            )
+                        except ImportError:
+                            pass
                         _rec_queue_clicked = st.button(
                             "⭐ Add to Queue",
                             key=queue_widget_key,
                             use_container_width=True,
                             **_queue_help,
                         )
+                        try:
+                            from live_draft_queue_click_lifecycle import note_queue_click_lifecycle
+
+                            note_queue_click_lifecycle(
+                                session,
+                                "button_return_value",
+                                widget_key=queue_widget_key,
+                                player_id=player_id,
+                                player_name=name,
+                                room_id=room_id,
+                                pick_index=pick_idx,
+                                button_return_value=bool(_rec_queue_clicked),
+                            )
+                        except ImportError:
+                            pass
                         try:
                             from live_draft_rec_button_consumption_diag import (
                                 note_rec_queue_button_consumption,
@@ -2328,6 +2403,21 @@ def render_live_draft_rec_cards(
                                     player_id=player_id,
                                     player_name=name,
                                 )
+                                try:
+                                    from live_draft_queue_click_lifecycle import (
+                                        note_queue_click_lifecycle,
+                                    )
+
+                                    note_queue_click_lifecycle(
+                                        session,
+                                        "dispatch_entered",
+                                        widget_key=queue_widget_key,
+                                        player_id=player_id,
+                                        player_name=name,
+                                        button_return_value=True,
+                                    )
+                                except ImportError:
+                                    pass
                                 execute_rec_card_queue_click(
                                     session,
                                     name=name,
@@ -2338,6 +2428,22 @@ def render_live_draft_rec_cards(
                                     player_id=player_id,
                                 )
                                 if session.pop("_live_draft_queue_sidebar_rerun", None):
+                                    try:
+                                        from live_draft_queue_click_lifecycle import (
+                                            note_queue_click_lifecycle,
+                                        )
+
+                                        note_queue_click_lifecycle(
+                                            session,
+                                            "rerun_requested",
+                                            widget_key=queue_widget_key,
+                                            player_id=player_id,
+                                            player_name=name,
+                                            button_return_value=True,
+                                            rerun_requested=True,
+                                        )
+                                    except ImportError:
+                                        pass
                                     st.rerun()
                         except ImportError:
                             if _rec_queue_clicked:
@@ -2352,6 +2458,14 @@ def render_live_draft_rec_cards(
                                 )
                                 if session.pop("_live_draft_queue_sidebar_rerun", None):
                                     st.rerun()
+                        try:
+                            from live_draft_queue_click_lifecycle import (
+                                render_queue_click_lifecycle_probe,
+                            )
+
+                            render_queue_click_lifecycle_probe(st, session)
+                        except ImportError:
+                            pass
                     try:
                         from live_draft_rec_queue_click_trace import render_per_card_rec_queue_render_trace_marker
 

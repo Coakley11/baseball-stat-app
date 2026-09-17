@@ -343,6 +343,25 @@ class CompletionWordingTests(unittest.TestCase):
         self.assertEqual(draft_ended_message(solo=True), "This solo draft has ended.")
         self.assertEqual(draft_ended_message(solo=False), "This shared draft has ended.")
 
+    def test_complete_solo_room_keeps_solo_mode_on_refresh(self) -> None:
+        """status=complete is outside active statuses — must still stamp Solo for banners."""
+        from live_draft_setup_mode import resolve_active_live_draft_mode
+        from live_draft_solo_timer import is_solo_live_draft
+        from live_draft_room_ui import draft_ended_message
+
+        session: dict = {"preferred_next_draft_mode": "shared_multiplayer"}
+        room = {
+            "status": "complete",
+            "config": {"draft_setup_mode": "solo", "num_teams": 2, "picks_per_team": 2},
+            "teams": ["Team A", "Team B"],
+            "draft_board": [{"Pick": 1}, {"Pick": 2}, {"Pick": 3}, {"Pick": 4}],
+        }
+        resolved = resolve_active_live_draft_mode(session, room=room)
+        self.assertTrue(resolved.get("is_solo"))
+        self.assertEqual(resolved.get("source"), "runtime_solo_complete_stamp")
+        self.assertTrue(is_solo_live_draft(session, room))
+        self.assertEqual(draft_ended_message(solo=True), "This solo draft has ended.")
+
     def test_solo_static_timer_always_repaints(self) -> None:
         import inspect
 

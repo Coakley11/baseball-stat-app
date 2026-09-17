@@ -30,7 +30,6 @@ BOARD_CHANGE_SITES = (
     "live_draft_timer_ui.py",
     "live_draft_control_center_ui.py",
     "live_draft_expired_pick.py",
-    "live_draft_fast_solo_start.py",
 )
 
 
@@ -81,6 +80,20 @@ class BoardChangeSnapshotTests(unittest.TestCase):
                     stripped,
                     msg=f"{rel} still has a bare invalidate call: {stripped}",
                 )
+
+    def test_deferred_pool_upgrade_keeps_snapshot_and_patches_ranks(self) -> None:
+        """Pool upgrade must not remount Add-to-Queue widgets (keep snapshot + patch)."""
+        src = (ROOT / "live_draft_fast_solo_start.py").read_text(encoding="utf-8")
+        self.assertIn("keep_interactive_snapshot=True", src)
+        self.assertIn("patch_interactive_top_rec_ranks_from_pool", src)
+        self.assertIn("_solo_patch_ranks_after_pool_upgrade", src)
+        self.assertNotIn(
+            "invalidate_live_draft_ui_caches(session, keep_interactive_snapshot=False)",
+            src,
+        )
+        paint = (ROOT / "live_draft_rec_live_paint.py").read_text(encoding="utf-8")
+        self.assertIn("def patch_interactive_top_rec_ranks_from_pool", paint)
+        self.assertIn("rank_patch_preferred", paint)
 
 
 if __name__ == "__main__":

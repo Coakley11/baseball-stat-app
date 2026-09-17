@@ -405,20 +405,23 @@ def maybe_build_deferred_full_pool(session: dict[str, Any], *, force: bool = Fal
         from live_draft_ui_cache import invalidate_live_draft_ui_caches
         from live_draft_rerun_scope import force_live_draft_expensive_recompute
 
-        # Pool upgrade MUST drop the interactive top_rec snapshot — keeping it
-        # (board_change helper) left cards on Model Rank = Market Rank forever.
-        invalidate_live_draft_ui_caches(session, keep_interactive_snapshot=False)
+        # Keep the interactive snapshot identity (same player → same Add-to-Queue keys).
+        # Patch Model/Market/Edge from the upgraded pool onto those frozen rows so
+        # ranks refresh without remounting action widgets mid-click.
+        invalidate_live_draft_ui_caches(session, keep_interactive_snapshot=True)
+        try:
+            from live_draft_rec_live_paint import patch_interactive_top_rec_ranks_from_pool
+
+            patch_interactive_top_rec_ranks_from_pool(session, room, pool)
+        except ImportError:
+            pass
         force_live_draft_expensive_recompute(session)
-        session["_solo_force_rec_rebuild_after_pool_upgrade"] = True
+        # Prefer rank-patch path over wipe/rebuild (rebuild remounts clicked widgets).
+        session["_solo_patch_ranks_after_pool_upgrade"] = True
+        session.pop("_solo_force_rec_rebuild_after_pool_upgrade", None)
         session["_solo_deferred_pool_rerun"] = True
     except ImportError:
         session.pop("_live_draft_rec_cache", None)
-        try:
-            from live_draft_rec_live_paint import INTERACTIVE_TOP_REC_SNAPSHOT_KEY
-
-            session.pop(INTERACTIVE_TOP_REC_SNAPSHOT_KEY, None)
-        except ImportError:
-            pass
     return True
 
 

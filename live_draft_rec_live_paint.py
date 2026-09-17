@@ -236,6 +236,137 @@ def store_interactive_top_rec_snapshot(
     }
 
 
+_PATCH_RANK_COLS = (
+    "Model Rank",
+    "Market Rank",
+    "Fantasy Edge",
+    "Expected Fantasy Value",
+    "Blended Projection Score",
+    "Decision Score",
+    "Positional Fit",
+    "Draft Fit Score",
+)
+
+
+def patch_interactive_top_rec_ranks_from_pool(
+    session: dict[str, Any],
+    room: dict[str, Any] | None,
+    pool: Any,
+) -> dict[str, Any]:
+    """Patch display ranks onto the frozen interactive snapshot without remounting cards.
+
+    Deferred pool upgrade used to wipe ``INTERACTIVE_TOP_REC_SNAPSHOT_KEY`` and force a
+    full rebuild. That changed Add-to-Queue / Draft Player widget identity between the
+    ScriptRun that registered buttons and the ScriptRun that must consume ``st.button``
+    return values — Playwright clicks then never mutated the queue.
+
+    Keep the same player rows (same ``playerID`` / ``fullName`` → same widget keys) and
+    only refresh Model/Market/Edge/grade columns from the upgraded pool.
+    """
+    out: dict[str, Any] = {
+        "patched": False,
+        "rows": 0,
+        "matched": 0,
+        "model_ne_market": 0,
+    }
+    snap = session.get(INTERACTIVE_TOP_REC_SNAPSHOT_KEY)
+    if not isinstance(snap, dict):
+        return out
+    top = snap.get("top_rec")
+    if top is None or getattr(top, "empty", True):
+        return out
+    if pool is None or getattr(pool, "empty", True):
+        return out
+    try:
+        import pandas as pd
+    except ImportError:
+        return out
+
+    try:
+        patched = top.copy()
+    except Exception:
+        patched = top
+    if patched is None or getattr(patched, "empty", True):
+        return out
+
+    pool_by_id: dict[str, Any] = {}
+    pool_by_name: dict[str, Any] = {}
+    try:
+        for _, prow in pool.iterrows():
+            pid = str(prow.get("playerID") or prow.get("player_id") or "").strip()
+            pname = str(prow.get("fullName") or prow.get("Player") or "").strip().lower()
+            if pid:
+                pool_by_id[pid] = prow
+            if pname:
+                pool_by_name[pname] = prow
+    except Exception:
+        return out
+
+    matched = 0
+    model_ne = 0
+    try:
+        for idx in list(patched.index):
+            row = patched.loc[idx]
+            pid = str(row.get("playerID") or row.get("player_id") or "").strip()
+            pname = str(row.get("fullName") or row.get("Player") or "").strip().lower()
+            src = pool_by_id.get(pid) if pid else None
+            if src is None and pname:
+                src = pool_by_name.get(pname)
+            if src is None:
+                continue
+            matched += 1
+            for col in _PATCH_RANK_COLS:
+                try:
+                    if hasattr(src, "index") and col in src.index:
+                        patched.at[idx, col] = src[col]
+                    elif hasattr(src, "get") and src.get(col) is not None:
+                        patched.at[idx, col] = src.get(col)
+                except Exception:
+                    try:
+                        if hasattr(src, "index") and col in src.index:
+                            patched.loc[idx, col] = src[col]
+                    except Exception:
+                        pass
+            try:
+                market = pd.to_numeric(
+                    patched.at[idx, "Market Rank"] if "Market Rank" in patched.columns else None,
+                    errors="coerce",
+                )
+                model = pd.to_numeric(
+                    patched.at[idx, "Model Rank"] if "Model Rank" in patched.columns else None,
+                    errors="coerce",
+                )
+                if pd.notna(market) and pd.notna(model):
+                    patched.at[idx, "Fantasy Edge"] = float(market) - float(model)
+                    if int(model) != int(market):
+                        model_ne += 1
+            except Exception:
+                pass
+    except Exception as exc:
+        out["error"] = f"{type(exc).__name__}:{exc}"[:160]
+        return out
+
+    rid = ""
+    if isinstance(room, dict):
+        rid = str(room.get("draft_room_id") or "").strip()
+    rid = rid or str(snap.get("room_id") or "").strip()
+    store_interactive_top_rec_snapshot(session, patched, room_id=rid)
+    try:
+        _republish_top_rec_into_cache(session, room if isinstance(room, dict) else {"draft_room_id": rid}, patched)
+    except Exception:
+        pass
+    out.update(
+        {
+            "patched": True,
+            "rows": int(len(patched)),
+            "matched": int(matched),
+            "model_ne_market": int(model_ne),
+        }
+    )
+    session["_solo_interactive_rank_patch"] = dict(out)
+    return out
+
+
 def mark_heavy_rec_compute_done(session: dict[str, Any]) -> None:
     session[HEAVY_REC_COMPUTE_DONE_KEY] = True
 
@@ -422,16 +553,35 @@ def render_rec_interactive_widgets(
     prep = ensure_prepared_rec_interactive(session, room)
     status["prepared_synthesized"] = bool(prep.get("synthesized")) and not had_prep
     top_rec = _top_rec_from_cache(session)
-    if session.pop("_solo_force_rec_rebuild_after_pool_upgrade", None):
-        # Pool upgrade: never keep market-aligned Model Rank cards from cache/snapshot.
-        top_rec = None
+    # Pool upgrade: patch Model/Market/Edge onto the frozen interactive identity.
+    # Never wipe the snapshot here — that remounts Add-to-Queue keys and orphans clicks.
+    if session.pop("_solo_force_rec_rebuild_after_pool_upgrade", None) or session.pop(
+        "_solo_patch_ranks_after_pool_upgrade", None
+    ):
         status["force_rebuild_after_pool_upgrade"] = True
+        status["rank_patch_preferred"] = True
         try:
             from live_draft_ui_cache import invalidate_live_draft_ui_caches
 
-            invalidate_live_draft_ui_caches(session, keep_interactive_snapshot=False)
+            # Keep snapshot so widget keys stay stable across the upgrade rerun.
+            invalidate_live_draft_ui_caches(session, keep_interactive_snapshot=True)
         except ImportError:
-            session.pop(INTERACTIVE_TOP_REC_SNAPSHOT_KEY, None)
+            pass
+        pool = room.get("pool") if isinstance(room, dict) else None
+        patch_report = patch_interactive_top_rec_ranks_from_pool(session, room, pool)
+        status["rank_patch"] = dict(patch_report)
+        if patch_report.get("patched"):
+            top_rec = _top_rec_from_snapshot(session, room)
+            note_rec_run_stage(
+                session,
+                "rank_patched_after_pool_upgrade",
+                matched=int(patch_report.get("matched") or 0),
+                model_ne_market=int(patch_report.get("model_ne_market") or 0),
+            )
+        else:
+            # Snapshot missing — fall back to one rebuild (keys may change once).
+            top_rec = None
+            note_rec_run_stage(session, "rank_patch_fallback_rebuild")
     if top_rec is not None and not getattr(top_rec, "empty", True):
         status["cache_hit"] = True
         note_rec_run_stage(session, "cache_hit", top_rec_count=int(len(top_rec)))
@@ -439,11 +589,7 @@ def render_rec_interactive_widgets(
         note_rec_run_stage(session, "cache_miss")
         # Prefer last-good snapshot over expensive rebuild so the consuming ScriptRun
         # re-registers the same buttons without requiring an extra rerun.
-        # Skip snapshot restore after a forced pool-upgrade rebuild.
-        if status.get("force_rebuild_after_pool_upgrade"):
-            top_rec = None
-        else:
-            top_rec = _top_rec_from_snapshot(session, room)
+        top_rec = _top_rec_from_snapshot(session, room)
         if top_rec is not None and not getattr(top_rec, "empty", True):
             status["snapshot_used"] = True
             _republish_top_rec_into_cache(session, room, top_rec)
