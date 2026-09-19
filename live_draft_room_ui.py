@@ -925,6 +925,13 @@ def render_category_outlook_panel(st: Any, outlook: dict[str, Any]) -> None:
             f"Categories to strengthen</div>"
             f'<div class="ld-cat-strengthen-chips">{chips}</div></div>'
         )
+    elif outlook.get("pre_draft_neutral"):
+        strengthen_html = (
+            '<div class="ld-cat-strengthen">'
+            '<div class="ld-panel-title" style="font-size:0.95rem;margin-top:8px;">'
+            "Categories to strengthen</div>"
+            "<div>Neutral baseline — updates after your first pick.</div></div>"
+        )
     st.markdown(
         f'<div class="ld-category-outlook-panel">'
         f'<div class="ld-panel-title">Team Category Outlook</div>'
