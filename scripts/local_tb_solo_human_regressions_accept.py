@@ -300,7 +300,19 @@ def _start_short_solo(page, report: dict) -> bool:
             report["picks_raised_to_12"] = True
         except Exception:
             pass
+    # Cold Streamlit paint can take ~45–60s before Start appears.
     start = page.get_by_role("button", name=re.compile(r"Start New Live Draft", re.I))
+    for _wait_i in range(60):
+        report["start_btn_count"] = start.count()
+        if start.count():
+            report["start_btn_ready_at_s"] = _wait_i
+            break
+        page.wait_for_timeout(2000)
+        try:
+            page.get_by_text(re.compile(r"Always rerun", re.I)).first.click(timeout=500)
+        except Exception:
+            pass
+        start = page.get_by_role("button", name=re.compile(r"Start New Live Draft", re.I))
     report["start_btn_count"] = start.count()
     if not start.count():
         return False
