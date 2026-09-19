@@ -1430,7 +1430,18 @@ def render_draft_queue_panel(
                         session["_draft_queue_revision"] = (
                             int(session.get("_draft_queue_revision") or 0) + 1
                         )
+                        # Sidebar mirror must match canonical order immediately.
+                        session["_live_draft_queue_sidebar_mirror"] = list(queue)
+                        session["_live_draft_queue_last_good"] = list(queue)
                         rerun = True
+                    else:
+                        # Rejected reorder — remount Sortable on canonical order
+                        # so chips never drift from sidebar.
+                        session["_draft_queue_widget_epoch"] = (
+                            int(session.get("_draft_queue_widget_epoch") or 0) + 1
+                        )
+                        session["_draft_queue_skip_sortable_once"] = True
+                        sorted_queue = list(queue)
             session["_draft_queue_sortable_seen_rev"] = _q_rev
         except ImportError:
             if _enable_drag:
@@ -2567,6 +2578,40 @@ def render_live_manual_draft_panel(
                 help=str(reason_txt)[:200],
             )
             st.caption(reason_txt)
+
+        # Same canonical queue mutation as recommendation cards.
+        _manual_queue_key = f"manual_draft_queue_{str((room or {}).get('id') or 'solo')[:12]}_{visible_id or visible_name}"
+        _manual_queue_clicked = st.button(
+            "⭐ Add to Queue",
+            key=_manual_queue_key,
+            use_container_width=True,
+            disabled=not bool(visible_name),
+            help="Add the selected Manual Draft player to the Draft Queue (same queue as recommendation cards).",
+        )
+        if _manual_queue_clicked and visible_name:
+            try:
+                from draft_state import add_player_to_draft_queue
+
+                _q, _added = add_player_to_draft_queue(session, visible_name)
+                session["_live_draft_queue_sidebar_mirror"] = list(_q)
+                session["_live_draft_queue_last_good"] = list(_q)
+                if _added:
+                    session["_live_draft_queue_sidebar_rerun"] = True
+                    try:
+                        from live_draft_safe_mode import request_live_draft_rerun
+
+                        if request_live_draft_rerun(
+                            st,
+                            session,
+                            "manual_panel_queue",
+                            room=room if isinstance(room, dict) else None,
+                        ):
+                            return True
+                    except ImportError:
+                        st.rerun()
+                        return True
+            except Exception:
+                pass
 
         pending = session.get(PENDING_MANUAL_PICK_KEY)
         if isinstance(pending, dict) and pending.get("player_name"):

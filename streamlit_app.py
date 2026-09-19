@@ -26493,11 +26493,8 @@ elif active_page == "Live Draft Room":
                             st.markdown(f"**Room Code:** `{sc}`")
                         else:
                             st.warning("Room code missing — shared draft may not be joinable.")
-        elif not _shared_lobby_view and _solo_compact_viewport:
-            # Compact Solo: one-line room stamp — full banner pushes cards below the fold.
-            st.caption(
-                f"Solo Draft · {user_team or '—'} · {pick_label} · On clock: {on_clock_team}"
-            )
+        # Compact Solo already painted one league/status caption above; do not
+        # duplicate with a second "Solo Draft · Team · Pick · On clock" line.
         if not _shared_lobby_view and _multiplayer_draft:
             try:
                 from live_draft_room_ui import render_live_draft_status_badges
@@ -26656,7 +26653,7 @@ elif active_page == "Live Draft Room":
                 try:
                     from draft_ui import render_live_manual_draft_panel
 
-                    st.markdown("##### Manual Draft")
+                    # Heading owned by render_live_manual_draft_panel (avoid duplicate "Manual Draft").
                     st.caption(
                         "Browse any available legal player — you are not limited to the recommendation cards."
                     )
@@ -28370,7 +28367,28 @@ elif active_page == "Live Draft Room":
                 if recap_team and "Fantasy Team" in roster_df.columns:
                     team_recap = roster_df[roster_df["Fantasy Team"].astype(str).eq(recap_team)].copy()
                     if not team_recap.empty:
-                        team_recap = team_recap.rename(columns={"Player": "fullName", "MLB Team": "Team"})
+                        # Avoid pandas duplicate-column Series ambiguity in photo lookup:
+                        # rename can create two "Team" / "fullName" labels when fantasy
+                        # Team already exists alongside MLB Team.
+                        if "Player" in team_recap.columns and "fullName" not in team_recap.columns:
+                            team_recap["fullName"] = team_recap["Player"]
+                        elif "Player" in team_recap.columns and "fullName" in team_recap.columns:
+                            _full = team_recap["fullName"]
+                            if isinstance(_full, pd.DataFrame):
+                                _full = _full.iloc[:, 0]
+                            _plyr = team_recap["Player"]
+                            if isinstance(_plyr, pd.DataFrame):
+                                _plyr = _plyr.iloc[:, 0]
+                            team_recap["fullName"] = _full.fillna(_plyr)
+                        if "MLB Team" in team_recap.columns:
+                            if "Team" in team_recap.columns:
+                                # Keep fantasy Team; cards already fall back to MLB Team.
+                                pass
+                            else:
+                                team_recap = team_recap.rename(columns={"MLB Team": "Team"})
+                        # Collapse any accidental duplicate labels before row.get()
+                        if team_recap.columns.duplicated().any():
+                            team_recap = team_recap.loc[:, ~team_recap.columns.duplicated()].copy()
                         try:
                             from player_photos import render_completed_roster_recap
 

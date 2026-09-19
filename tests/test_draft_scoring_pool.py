@@ -262,8 +262,11 @@ class DraftScoringPoolTests(unittest.TestCase):
         fringe = out.loc[out["fullName"] == "Deep Fringe"].iloc[0]
         self.assertGreater(float(early["Expected Fantasy Value"]), float(fringe["Expected Fantasy Value"]))
         model = pd.to_numeric(out["Model Rank"], errors="coerce")
-        self.assertGreater(int(model.nunique()), 1)
-        self.assertLess(abs(float(fringe["Fantasy Edge"])), 50.0)
+        # Fast market fallback must not publish Model:=Market analytics.
+        self.assertFalse(model.notna().any())
+        edge = pd.to_numeric(out["Fantasy Edge"], errors="coerce")
+        self.assertFalse(edge.notna().any())
+        self.assertEqual(report.get("model_rank_repair"), "pending_projection_upgrade")
 
     def test_adp_count_scale_efv_coerced_to_player_grade_0_1(self) -> None:
         pool = pd.DataFrame(
@@ -336,7 +339,7 @@ class DraftScoringPoolTests(unittest.TestCase):
                     "playerID": "p1",
                     "fullName": "A",
                     "Primary Position": "OF",
-                    "Expected Fantasy Value": 95.0,
+                    "Expected Fantasy Value": 0.95,
                     "Market Rank": 10,
                     "Model Rank": 9999,
                 },
@@ -344,7 +347,7 @@ class DraftScoringPoolTests(unittest.TestCase):
                     "playerID": "p2",
                     "fullName": "B",
                     "Primary Position": "OF",
-                    "Expected Fantasy Value": 80.0,
+                    "Expected Fantasy Value": 0.80,
                     "Market Rank": 25,
                     "Model Rank": 9999,
                 },
@@ -352,7 +355,7 @@ class DraftScoringPoolTests(unittest.TestCase):
                     "playerID": "p3",
                     "fullName": "C",
                     "Primary Position": "OF",
-                    "Expected Fantasy Value": 50.0,
+                    "Expected Fantasy Value": 0.50,
                     "Market Rank": 100,
                     "Model Rank": 9999,
                 },
@@ -389,10 +392,12 @@ class DraftScoringPoolTests(unittest.TestCase):
         )
         out = ensure_draft_scoring_pool_columns(pool)
         fringe = out.loc[out["fullName"] == "Ben Fringe"].iloc[0]
-        self.assertLess(abs(float(fringe["Fantasy Edge"])), 5.0)
-        self.assertNotEqual(float(fringe["Model Rank"]), 1.0)
         model = pd.to_numeric(out["Model Rank"], errors="coerce")
-        self.assertGreater(int(model.nunique()), 1)
+        edge = pd.to_numeric(out["Fantasy Edge"], errors="coerce")
+        # Zero-EFV collapsed ranks → pending model (not Market−1 fake edge).
+        self.assertFalse(model.notna().any())
+        self.assertFalse(edge.notna().any())
+        self.assertTrue(pd.isna(fringe["Model Rank"]) or str(fringe["Model Rank"]) in ("<NA>", "nan", "None"))
 
     def test_valid_projection_pool_preserved(self) -> None:
         pool = pd.DataFrame(
@@ -466,8 +471,10 @@ class DraftScoringPoolTests(unittest.TestCase):
         deep = repaired.loc[repaired["fullName"] == "Deep Adp"].iloc[0]
         self.assertLessEqual(float(early["Expected Fantasy Value"]), 1.0)
         self.assertGreater(float(early["Expected Fantasy Value"]), float(deep["Expected Fantasy Value"]))
-        self.assertLess(float(early["Model Rank"]), float(deep["Model Rank"]))
-        self.assertLess(abs(float(deep["Fantasy Edge"])), 20.0)
+        # Model Rank stays pending on fast-market fallback — never Model:=Market.
+        self.assertTrue(pd.isna(early["Model Rank"]))
+        self.assertTrue(pd.isna(deep["Model Rank"]))
+        self.assertTrue(pd.isna(deep["Fantasy Edge"]))
         by_efv = repaired.sort_values("Expected Fantasy Value", ascending=False)
         self.assertEqual(str(by_efv.iloc[0]["fullName"]), "Early Market")
 

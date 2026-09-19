@@ -496,8 +496,48 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
 
     if _expiration_token_already_done(session, room, expiration_token):
-        record_expired_pick_perf(session, stage="token_already_processed", total_ms=_perf_ms(t_total))
-        return ExpiredPickPageResult(handled=True, ok=True, should_rerun=False, message="", error="")
+        # Sticky-zero heal: token marked done but clock still at 0 on an active
+        # draft — clear the bad "done" markers and fall through so Auto Pick can
+        # commit (or a fresh deadline is stamped after a real advance).
+        try:
+            _secs = float(live_draft_seconds_remaining(room) or 0)
+        except Exception:
+            _secs = 0.0
+        if room.get("status") == "in_progress" and _secs <= 0:
+            if str(session.get(LAST_PROCESSED_EXPIRATION_TOKEN_SESSION_KEY) or "").strip() == expiration_token:
+                session.pop(LAST_PROCESSED_EXPIRATION_TOKEN_SESSION_KEY, None)
+            try:
+                from live_draft_timer_logic import LAST_PROCESSED_EXPIRATION_TOKEN_KEY
+
+                if str(room.get(LAST_PROCESSED_EXPIRATION_TOKEN_KEY) or "").strip() == expiration_token:
+                    room.pop(LAST_PROCESSED_EXPIRATION_TOKEN_KEY, None)
+            except ImportError:
+                room.pop("last_processed_expiration_token", None)
+            if str(session.get(CLAIMED_EXPIRATION_TOKEN_KEY) or "").strip() == expiration_token:
+                session.pop(CLAIMED_EXPIRATION_TOKEN_KEY, None)
+            session.pop(AUTOPICK_ATTEMPTED_INDEX_KEY, None)
+            session.pop(AUTOPICK_LOCK_KEY, None)
+            session.pop(AUTOPICK_BACKOFF_INDEX_KEY, None)
+            session.pop(AUTOPICK_BACKOFF_UNTIL_KEY, None)
+            session.pop(RERUN_LOOP_PREVENTED_KEY, None)
+            record_expired_pick_perf(
+                session, stage="token_done_cleared_for_retry", total_ms=_perf_ms(t_total)
+            )
+            try:
+                from live_draft_timer_zero_lifecycle import note_timer_zero_lifecycle
+
+                note_timer_zero_lifecycle(
+                    session,
+                    "deadline_reached_retry_after_stale_token",
+                    room=room,
+                    expiration_token=expiration_token,
+                )
+            except ImportError:
+                pass
+            # Fall through into normal expire → autopick path.
+        else:
+            record_expired_pick_perf(session, stage="token_already_processed", total_ms=_perf_ms(t_total))
+            return ExpiredPickPageResult(handled=True, ok=True, should_rerun=False, message="", error="")
 
     if not clock_needs_autopick(session, room):
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
@@ -559,6 +599,19 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
     if not claim_expiration_token(session, expiration_token):
         record_expired_pick_perf(session, stage="token_claim_denied", total_ms=_perf_ms(t_total))
         return ExpiredPickPageResult(handled=True, ok=True, should_rerun=False, message="", error="")
+
+    try:
+        from live_draft_timer_zero_lifecycle import note_timer_zero_lifecycle
+
+        note_timer_zero_lifecycle(
+            session,
+            "expiration_ownership_acquired",
+            room=room,
+            expiration_token=expiration_token,
+        )
+        note_timer_zero_lifecycle(session, "deadline_reached", room=room, expiration_token=expiration_token)
+    except ImportError:
+        pass
 
     session[AUTOPICK_LOCK_KEY] = True
     record_autopick_diagnostics(session, autopick_in_progress_lock=True, autopick_commit_path=source)
@@ -659,6 +712,36 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
         # Persist the pre-advance token so duplicate Streamlit reruns cannot re-pick it.
         # Do not stamp timer_handled_index here — make_pick already reset the next deadline.
         remember_processed_expiration_token(session, room, expiration_token)
+        try:
+            from live_draft_timer_zero_lifecycle import note_timer_zero_lifecycle
+
+            note_timer_zero_lifecycle(
+                session,
+                "canonical_pick_commit_success",
+                room=room,
+                expiration_token=expiration_token,
+                selected_player=selected_name,
+                pick_index_before=idx_before,
+                pick_index_after=idx_after,
+                board_before=board_before,
+                board_after=board_after,
+            )
+            note_timer_zero_lifecycle(
+                session,
+                "current_pick_advanced",
+                room=room,
+                expiration_token=expiration_token,
+                pick_index=idx_after,
+            )
+            note_timer_zero_lifecycle(
+                session,
+                "new_deadline_created",
+                room=room,
+                expiration_token=expiration_token,
+                timer_deadline=room.get("timer_deadline"),
+            )
+        except ImportError:
+            pass
         # Successful pick resets the deadline; never leave an active draft parked at 0:00.
         if room.get("status") == "in_progress" and live_draft_seconds_remaining(room) <= 0:
             try:

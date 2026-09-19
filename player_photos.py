@@ -324,6 +324,34 @@ def resolve_mlbam_id(
     return None, "placeholder_no_mlbam_id"
 
 
+def _scalar_row_value(row: Any, *keys: str) -> Any:
+    """Read a row field as a scalar — never return a Series (duplicate columns)."""
+    if row is None or not hasattr(row, "get"):
+        return None
+    for key in keys:
+        try:
+            val = row.get(key)
+        except Exception:
+            val = None
+        if val is None:
+            continue
+        if isinstance(val, pd.Series):
+            non_null = val.dropna()
+            val = non_null.iloc[0] if not non_null.empty else None
+        elif isinstance(val, pd.DataFrame):
+            if val.empty:
+                continue
+            col0 = val.iloc[:, 0]
+            non_null = col0.dropna()
+            val = non_null.iloc[0] if not non_null.empty else None
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            continue
+        text = str(val).strip()
+        if text and text.lower() != "nan":
+            return val
+    return None
+
+
 def get_player_photo_info(
     *,
     player_id: str | None = None,
@@ -338,16 +366,21 @@ def get_player_photo_info(
     """Return headshot URL and identity fields for a player."""
     if row is not None:
         if player_id is None:
-            player_id = str(getattr(row, "get", lambda _k, _d=None: None)("playerID") or getattr(row, "get", lambda _k, _d=None: None)("player_id") or "").strip() or None
+            raw_id = _scalar_row_value(row, "playerID", "player_id")
+            player_id = str(raw_id).strip() if raw_id is not None else None
+            if not player_id:
+                player_id = None
         if full_name is None:
-            full_name = str(getattr(row, "get", lambda _k, _d=None: None)("fullName") or getattr(row, "get", lambda _k, _d=None: None)("Player") or "").strip() or None
+            raw_name = _scalar_row_value(row, "fullName", "Player")
+            full_name = str(raw_name).strip() if raw_name is not None else None
+            if not full_name:
+                full_name = None
         if mlbam_id is None:
             for col in ("MLBAM ID", "mlbam_id", "mlbamId"):
-                if hasattr(row, "get"):
-                    val = row.get(col)
-                    if val is not None and str(val).strip() not in ("", "nan"):
-                        mlbam_id = val
-                        break
+                val = _scalar_row_value(row, col)
+                if val is not None and str(val).strip() not in ("", "nan"):
+                    mlbam_id = val
+                    break
 
     resolved, resolve_source = resolve_mlbam_id(
         player_id=player_id,

@@ -438,11 +438,26 @@ def _ensure_draft_scoring_pool_columns(
         # Once a real Blended/projection pool is present, ALWAYS re-rank from the
         # model — do not keep the market-aligned copy just because ranks look filled.
         if has_blended:
-            out["Model Rank"] = _bl.rank(ascending=False, method="min")
-            report["model_rank_repair"] = "blended_projection_rank"
-            if "Model Rank" not in report.get("derived_columns", []):
-                report.setdefault("derived_columns", []).append("Model Rank")
-            model_bad = _bad_rank_mask(out["Model Rank"])
+            model_series = pd.to_numeric(out["Model Rank"], errors="coerce")
+            aligned_to_market = bool(
+                market_usable
+                and (
+                    (model_series == market_now).fillna(False).mean() >= 0.85
+                )
+            )
+            needs_blended_rerank = (
+                model_bad.any()
+                or _model_rank_series_is_degenerate(out["Model Rank"])
+                or aligned_to_market
+            )
+            if needs_blended_rerank:
+                out["Model Rank"] = _bl.rank(ascending=False, method="min")
+                report["model_rank_repair"] = "blended_projection_rank"
+                if "Model Rank" not in report.get("derived_columns", []):
+                    report.setdefault("derived_columns", []).append("Model Rank")
+                model_bad = _bad_rank_mask(out["Model Rank"])
+            else:
+                report["model_rank_repair"] = "preserved_existing_model_rank"
         elif efv_usable_now and (
             model_bad.any()
             or _model_rank_series_is_degenerate(out["Model Rank"])
@@ -465,10 +480,9 @@ def _ensure_draft_scoring_pool_columns(
                 report.setdefault("derived_columns", []).append("Model Rank")
             model_bad = _bad_rank_mask(out["Model Rank"])
     elif used_market_proxy_efv and market_usable:
-        out["Model Rank"] = market_now
-        if "Model Rank" not in report.get("derived_columns", []):
-            report.setdefault("derived_columns", []).append("Model Rank")
-        report["model_rank_repair"] = "aligned_to_market_rank"
+        # Pending model ranks — never publish Model:=Market as analytics.
+        out["Model Rank"] = pd.NA
+        report["model_rank_repair"] = "pending_projection_upgrade"
         report["pool_value_kind"] = POOL_KIND_FAST_MARKET_FALLBACK
     else:
         if model_bad.any() and efv_usable_now:
@@ -491,17 +505,15 @@ def _ensure_draft_scoring_pool_columns(
                     report.setdefault("derived_columns", []).append("Model Rank")
                 report["model_rank_repair"] = "efv_rank"
             elif market_usable:
-                out["Model Rank"] = market_now
-                if "Model Rank" not in report.get("derived_columns", []):
-                    report.setdefault("derived_columns", []).append("Model Rank")
-                report["model_rank_repair"] = "aligned_to_market_rank"
+                out["Model Rank"] = pd.NA
+                report["model_rank_repair"] = "pending_projection_upgrade"
                 report["pool_value_kind"] = POOL_KIND_FAST_MARKET_FALLBACK
             else:
                 report["model_rank_repair"] = "unresolved_degenerate"
 
     # --- Fantasy Edge ---
     # Only Market−Model when Model Rank is meaningful and on a comparable scale.
-    # Fast market-proxy pools intentionally neutralize Edge (Model aligned to Market).
+    # Fast market-proxy pools leave Edge pending until projection upgrade.
     model_meaningful = not _model_rank_series_is_degenerate(
         out["Model Rank"] if "Model Rank" in out.columns else None
     )
@@ -509,27 +521,26 @@ def _ensure_draft_scoring_pool_columns(
         not projection_authoritative
         and (used_market_proxy_efv or report.get("pool_value_kind") == POOL_KIND_FAST_MARKET_FALLBACK)
     ):
-        out["Fantasy Edge"] = 0.0
-        report["fantasy_edge_repair"] = "neutral_fast_market_fallback"
+        out["Fantasy Edge"] = pd.NA
+        report["fantasy_edge_repair"] = "pending_projection_upgrade"
         if "Fantasy Edge" not in report.get("derived_columns", []):
             report.setdefault("derived_columns", []).append("Fantasy Edge")
     elif (
         model_meaningful
         and "Market Rank" in out.columns
         and "Model Rank" in out.columns
+        and pd.to_numeric(out["Model Rank"], errors="coerce").notna().any()
     ):
         market = pd.to_numeric(out["Market Rank"], errors="coerce")
         model = pd.to_numeric(out["Model Rank"], errors="coerce")
-        computed_edge = (market - model).fillna(0.0)
-        # Always align Edge to ranks so prior Market−1 artifacts cannot persist
-        # after Model Rank repair.
+        computed_edge = market - model
         out["Fantasy Edge"] = computed_edge
         if "Fantasy Edge" not in report.get("derived_columns", []):
             report.setdefault("derived_columns", []).append("Fantasy Edge")
         report["fantasy_edge_repair"] = "from_market_minus_model"
     else:
-        out["Fantasy Edge"] = 0.0
-        report["fantasy_edge_repair"] = "neutralized_invalid_model"
+        out["Fantasy Edge"] = pd.NA
+        report["fantasy_edge_repair"] = "pending_valid_model"
         if "Fantasy Edge" not in report.get("derived_columns", []):
             report.setdefault("derived_columns", []).append("Fantasy Edge")
 
@@ -569,8 +580,21 @@ def _ensure_draft_scoring_pool_columns(
 
     for col, default in _SCORING_FALLBACK_DEFAULTS.items():
         if col not in out.columns:
+            # Do not invent Model Rank / Fantasy Edge on fast-market pending pools.
+            if report.get("pool_value_kind") == POOL_KIND_FAST_MARKET_FALLBACK and col in (
+                "Model Rank",
+                "Fantasy Edge",
+            ):
+                out[col] = pd.NA
+                continue
             out[col] = default
             report["default_filled_counts"][col] = len(out)
+            continue
+        if (
+            report.get("pool_value_kind") == POOL_KIND_FAST_MARKET_FALLBACK
+            and col in ("Model Rank", "Fantasy Edge")
+        ):
+            # Keep pending (NA) — never fill Model:=9999 or Edge:=0 as fake analytics.
             continue
         if col in ("Model Rank", "Market Rank"):
             bad = _bad_rank_mask(out[col])
@@ -587,6 +611,13 @@ def _ensure_draft_scoring_pool_columns(
         if bad.any():
             out.loc[bad, col] = default
             report["default_filled_counts"][col] = int(bad.sum())
+
+    # Fast-market pending: force Model Rank / Edge to NA even if prior rows had 9999.
+    if report.get("pool_value_kind") == POOL_KIND_FAST_MARKET_FALLBACK:
+        out["Model Rank"] = pd.NA
+        out["Fantasy Edge"] = pd.NA
+        report["model_rank_repair"] = "pending_projection_upgrade"
+        report["fantasy_edge_repair"] = "pending_projection_upgrade"
 
     # Final classification for callers / diagnostics.
     if report.get("pool_value_kind") != POOL_KIND_FAST_MARKET_FALLBACK:

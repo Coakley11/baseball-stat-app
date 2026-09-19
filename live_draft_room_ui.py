@@ -915,11 +915,22 @@ def render_category_outlook_panel(st: Any, outlook: dict[str, Any]) -> None:
         if strengths:
             insight_parts.append("<strong>Strengths:</strong> " + ", ".join(strengths))
     insight = "<br/>".join(insight_parts)
+    # Concise Live Draft surface sharing the same canonical weak-category list.
+    strengthen_html = ""
+    if needs and not outlook.get("pre_draft_neutral"):
+        chips = "".join(f'<span class="ld-cat-need-chip">{n}</span>' for n in needs[:5])
+        strengthen_html = (
+            f'<div class="ld-cat-strengthen">'
+            f'<div class="ld-panel-title" style="font-size:0.95rem;margin-top:8px;">'
+            f"Categories to strengthen</div>"
+            f'<div class="ld-cat-strengthen-chips">{chips}</div></div>'
+        )
     st.markdown(
         f'<div class="ld-category-outlook-panel">'
         f'<div class="ld-panel-title">Team Category Outlook</div>'
         f"{bar_html}"
         f'<div class="ld-cat-insight">{insight}</div>'
+        f"{strengthen_html}"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -971,7 +982,16 @@ def _format_detail_value(col: str, val: Any) -> str:
     except ImportError:
         pass
     if val is None or (isinstance(val, float) and pd.isna(val)):
+        if col in ("Model Rank", "Fantasy Edge"):
+            return "Pending"
         return "—"
+    try:
+        if pd.isna(val):
+            if col in ("Model Rank", "Fantasy Edge"):
+                return "Pending"
+            return "—"
+    except (TypeError, ValueError):
+        pass
     if col in ("Model Rank", "Market Rank"):
         try:
             return str(int(round(float(val))))
@@ -1065,37 +1085,51 @@ def build_rec_card_detail_body(
     category_needs: list[str] | None = None,
     rank: int = 0,
 ) -> str:
-    """Expanded analytics for Why Recommended — compact grid without repeating card facts."""
+    """Expanded analytics for Why Recommended — player-specific projection evidence."""
     cells: list[tuple[str, str]] = []
     pos = str(row.get("Primary Position") or "—")
 
+    def _proj(*cols: str) -> float:
+        for col in cols:
+            val = pd.to_numeric(row.get(col, np.nan), errors="coerce")
+            if pd.notna(val):
+                return float(val)
+        return float("nan")
+
+    hr = _proj("proj_HR", "HR")
+    rbi = _proj("proj_RBI", "RBI")
+    sb = _proj("proj_SB", "SB")
+    avg = _proj("proj_AVG", "AVG", "BA")
+    runs = _proj("proj_R", "R", "Runs")
+    if pd.notna(hr):
+        cells.append(("Power", f"{int(round(float(hr)))} projected HR"))
+    if pd.notna(rbi):
+        cells.append(("RBI", f"{int(round(float(rbi)))} projected RBI"))
+    if pd.notna(sb):
+        cells.append(("Speed", f"{int(round(float(sb)))} projected SB"))
+    if pd.notna(avg):
+        cells.append(("AVG", f"{float(avg):.3f} projected"))
+    if pd.notna(runs) and len(cells) < 4:
+        cells.append(("Runs", f"{int(round(float(runs)))} projected R"))
+
     if category_needs:
         cells.append(("Team needs", ", ".join(str(c) for c in category_needs[:4])))
-
-    scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
-    if pd.notna(scarcity) and float(scarcity) >= 0.5:
-        cells.append(("Scarcity", f"{pos} tier thinning ({float(scarcity):.2f})"))
 
     mkt = pd.to_numeric(row.get("Market Rank", np.nan), errors="coerce")
     mdl = pd.to_numeric(row.get("Model Rank", np.nan), errors="coerce")
     if pd.notna(mkt) and pd.notna(mdl):
         cells.append(
-            ("Market value", f"Model {int(round(float(mdl)))} vs market {int(round(float(mkt)))}")
+            ("Market value", f"Model #{int(round(float(mdl)))} vs market #{int(round(float(mkt)))}")
         )
+    elif pd.notna(mkt) and (mdl is None or pd.isna(mdl)):
+        cells.append(("Market value", f"Market #{int(round(float(mkt)))} · model pending"))
 
-    dfs = pd.to_numeric(row.get("Draft Fit Score", np.nan), errors="coerce")
-    if gaps and pos in gaps and pd.notna(dfs):
-        cells.append(("Roster fit", f"Fills an open {pos} position<br/>Fit Score: {float(dfs):.2f}"))
-    elif pd.notna(dfs):
-        cells.append(("Roster fit", f"Fit Score: {float(dfs):.2f}"))
-
-    risk = pd.to_numeric(row.get("Risk Penalty", np.nan), errors="coerce")
-    conf = pd.to_numeric(row.get("Projection Confidence", np.nan), errors="coerce")
-    if pd.notna(risk) or pd.notna(conf):
-        risk_txt = "lower" if pd.notna(risk) and float(risk) <= 0.35 else "moderate"
-        if pd.notna(conf) and float(conf) >= 0.65:
-            risk_txt = "low"
-        cells.append(("Risk level", f"{risk_txt} projection volatility"))
+    if gaps and pos in gaps:
+        cells.append(("Roster fit", f"Fills an open {pos} starter slot"))
+    else:
+        dfs = pd.to_numeric(row.get("Draft Fit Score", np.nan), errors="coerce")
+        if pd.notna(dfs):
+            cells.append(("Roster fit", f"Fit Score: {float(dfs):.2f}"))
 
     if not cells:
         return "Balanced upside and availability at this pick."
@@ -1286,7 +1320,7 @@ def build_rec_card_why_bullets(
     category_needs: list[str] | None = None,
     strengths: list[str] | None = None,
 ) -> list[str]:
-    """Deduped Why Recommended bullets — each idea appears once."""
+    """Player-specific Why Recommended bullets backed by projections / ranks / needs."""
     bullets: list[str] = []
     seen: set[str] = set()
     pos = str(row.get("Primary Position") or "").strip()
@@ -1302,71 +1336,82 @@ def build_rec_card_why_bullets(
         seen.add(dedupe_key)
         bullets.append(t)
 
-    if gaps and pos in gaps:
+    def _proj(*cols: str) -> float:
+        for col in cols:
+            val = pd.to_numeric(row.get(col, np.nan), errors="coerce")
+            if pd.notna(val):
+                return float(val)
+        return float("nan")
+
+    hr = _proj("proj_HR", "HR", "Projected HR")
+    rbi = _proj("proj_RBI", "RBI", "Projected RBI")
+    sb = _proj("proj_SB", "SB", "Projected SB")
+    avg = _proj("proj_AVG", "AVG", "BA", "Projected AVG")
+    runs = _proj("proj_R", "R", "Runs", "Projected R")
+    needs = [str(c).strip().upper() for c in (category_needs or []) if str(c).strip()]
+
+    if pd.notna(hr) and float(hr) >= 25:
+        _add(f"Projects {int(round(float(hr)))} HR — elite power production", key="hr")
+    elif pd.notna(hr) and float(hr) >= 18 and "HR" in needs:
+        _add(f"Projects {int(round(float(hr)))} HR to shore up your power need", key="hr_need")
+
+    if pd.notna(rbi) and float(rbi) >= 85:
+        _add(f"Strong RBI projection ({int(round(float(rbi)))})", key="rbi")
+    if pd.notna(sb) and float(sb) >= 15:
+        _add(f"Speed upside with {int(round(float(sb)))} projected SB", key="sb")
+    elif pd.notna(sb) and float(sb) >= 10 and "SB" in needs:
+        _add(f"Helps your SB category ({int(round(float(sb)))} projected)", key="sb_need")
+    if pd.notna(avg) and float(avg) >= 0.285:
+        _add(f"High AVG projection ({float(avg):.3f})", key="avg")
+    elif pd.notna(avg) and float(avg) >= 0.265 and ("AVG" in needs or "BA" in needs):
+        _add(f"Stabilizes AVG at {float(avg):.3f} while that category is weak", key="avg_need")
+    if pd.notna(runs) and float(runs) >= 85:
+        _add(f"Projects {int(round(float(runs)))} runs", key="runs")
+
+    if gaps and pos in gaps and len(bullets) < 3:
         open_of = sum(1 for g in gaps if g == "OF")
         if pos == "OF" and open_of >= 2:
-            try:
-                from live_draft_ux import format_of_slot_eligibility
-
-                _add(format_of_slot_eligibility(open_of), key="fills_position")
-            except ImportError:
-                _add(f"Fills {open_of} of your remaining OF slots", key="fills_position")
+            _add(f"Fills one of {open_of} remaining OF starter slots", key="fills_position")
         else:
-            _add(f"Fills one of your remaining {pos} slots", key="fills_position")
-
-    if category_needs:
-        labels = [str(c).strip() for c in category_needs[:2] if str(c).strip()]
-        if labels:
-            if len(labels) == 1:
-                _add(f"Helps address {labels[0]} deficit", key="category_need")
-            else:
-                _add(f"Helps address {' and '.join(labels)} deficits", key="category_need")
-    elif strengths:
-        _add(f"Strong {'/'.join(strengths[:2])} profile", key="category_strength")
-
-    scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
-    if pd.notna(scarcity) and float(scarcity) >= 0.55:
-        try:
-            from live_draft_ux import estimate_tier1_remaining, format_scarcity_explanation
-
-            tier1 = estimate_tier1_remaining(rec_df, pos) if pos else 0
-            _add(
-                format_scarcity_explanation(
-                    pos or "Position",
-                    tier1_remaining=tier1,
-                    picks_until_dropoff=3,
-                    scarcity_score=float(scarcity),
-                ),
-                key="scarcity",
-            )
-        except ImportError:
-            if pos:
-                _add(f"{pos} depth is thinning rapidly", key="scarcity")
-            else:
-                _add("Position depth is thinning rapidly", key="scarcity")
+            _add(f"Fills your open {pos} starter need", key="fills_position")
 
     mkt = pd.to_numeric(row.get("Market Rank", np.nan), errors="coerce")
     mdl = pd.to_numeric(row.get("Model Rank", np.nan), errors="coerce")
-    if pd.notna(mkt) and pd.notna(mdl):
+    if pd.notna(mkt) and pd.notna(mdl) and float(mdl) + 5 < float(mkt):
+        _add(
+            f"Model ranks him #{int(round(float(mdl)))} vs market #{int(round(float(mkt)))} — clear bargain",
+            key="rank_edge",
+        )
+    elif pd.notna(mkt) and pd.notna(mdl):
         _add(
             f"Model rank {int(round(float(mdl)))} vs market rank {int(round(float(mkt)))}",
             key="rank_edge",
         )
 
-    edge = pd.to_numeric(row.get("Fantasy Edge", np.nan), errors="coerce")
-    if pd.notna(edge) and float(edge) >= 8 and "rank_edge" not in seen:
-        _add(f"Strong market edge (+{int(round(float(edge)))})", key="market_edge")
+    # Keep badge ↔ why consistency: if a distinctive badge is present, ensure support.
+    if "Speed Boost" in badge_labels and "sb" not in seen and pd.notna(sb):
+        _add(f"Projected {int(round(float(sb)))} stolen bases back the Speed Boost badge", key="sb")
+    if "Model Bargain" in badge_labels and "rank_edge" not in seen and pd.notna(mkt) and pd.notna(mdl):
+        _add(
+            f"Model #{int(round(float(mdl)))} ahead of market #{int(round(float(mkt)))}",
+            key="rank_edge",
+        )
+    if "Fills Low-AVG Need" in badge_labels and "avg_need" not in seen and pd.notna(avg):
+        _add(f"Projects {float(avg):.3f} AVG into a weak roster category", key="avg_need")
 
-    surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
-    if pd.notna(surv) and float(surv) < 0.4 and "scarcity" not in seen:
-        pct = int(round(float(surv) * 100))
-        _add(f"Only {pct}% likely available next round", key="availability")
+    if strengths and len(bullets) < 2:
+        _add(f"Profile strength: {' / '.join(strengths[:2])}", key="category_strength")
+
+    scarcity = pd.to_numeric(row.get("Scarcity Score", np.nan), errors="coerce")
+    if pd.notna(scarcity) and float(scarcity) >= 0.55 and len(bullets) < 3:
+        if pos:
+            _add(f"{pos} depth is thinning at this stage of the draft", key="scarcity")
 
     if rank == 1 and not bullets:
-        _add("Best overall pick on the board", key="best_overall")
+        _add("Best overall pick on the board right now", key="best_overall")
     elif not bullets:
         _add("Balanced upside, roster fit, and availability", key="default")
-    return bullets[:3]
+    return bullets[:4]
 
 
 def build_draft_assistant_why_this_pick(

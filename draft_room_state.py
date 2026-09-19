@@ -2134,12 +2134,25 @@ def sync_live_draft_room_to_canonical_board(session: dict[str, Any], room: Any) 
         session["room_format"] = str(cfg.get("scoring_type"))
 
     out = apply_programmatic_board_update(session, table, reason="live_draft_sync")
-    set_canonical_draft_meta(
-        session,
-        mode=ACTIVE_DRAFT_MODE_LIVE,
-        source="live_draft_room",
-        pick_count=table_pick_count(out),
-    )
+    # Completed Live Draft becomes the Simulator's editable starting board —
+    # do not keep active_mode=live (that freezes normal simulation controls).
+    _live_status = str(room.get("status") or "").strip().lower()
+    if _live_status == "complete":
+        set_canonical_draft_meta(
+            session,
+            mode=ACTIVE_DRAFT_MODE_MANUAL,
+            source="completed_live_draft_import",
+            pick_count=table_pick_count(out),
+        )
+        session["_draft_room_editable_after_live_import"] = True
+        session.pop("_draft_room_review_only", None)
+    else:
+        set_canonical_draft_meta(
+            session,
+            mode=ACTIVE_DRAFT_MODE_LIVE,
+            source="live_draft_room",
+            pick_count=table_pick_count(out),
+        )
     session["_canonical_draft_last_live_sync"] = _utc_now_iso()
     return out
 

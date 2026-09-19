@@ -150,10 +150,53 @@ def _position_bucket(primary: str) -> str:
     return pos if pos in dict(roster_position_targets({})) else "Bench"
 
 
-def count_team_position_haves(roster_df: pd.DataFrame) -> dict[str, int]:
+def count_team_position_haves(
+    roster_df: pd.DataFrame,
+    targets: dict[str, int] | None = None,
+    *,
+    config: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """Count filled roster slots via assignment (surplus starters fill Bench).
+
+    Each drafted player occupies exactly one slot: required starters first,
+    then UTIL/DH flex, then Bench. Independent Primary-Position counting is
+    no longer used for Have/Gap because surplus 1B/OF never reached Bench.
+    """
     counts = {label: 0 for label, _ in POSITION_ROWS}
     if roster_df is None or roster_df.empty:
         return counts
+    cfg = dict(config or {})
+    if targets and not cfg.get("slots"):
+        # Rebuild slots dict from targets for assignment.
+        slots: dict[str, int] = {}
+        for label, n in (targets or {}).items():
+            key = "BN" if label == "Bench" else ("DH" if label == "UTIL" else label)
+            slots[key] = int(n or 0)
+        cfg["slots"] = slots
+    try:
+        from live_draft_roster_slots import assign_roster_to_slot_instances
+
+        assigned = assign_roster_to_slot_instances(roster_df, cfg)
+        for ln in assigned.get("lines") or []:
+            if not ln.get("filled"):
+                continue
+            pos = str(ln.get("position") or "").strip().upper()
+            label = "Bench" if pos in ("BN", "BENCH") else ("UTIL" if pos in ("DH", "UTIL") else pos)
+            if label == "OF" or label.startswith("OF"):
+                label = "OF"
+            if label in counts:
+                counts[label] += 1
+            else:
+                counts["Bench"] += 1
+        # Any drafted player not placed into a configured slot still counts as Bench.
+        filled = int(assigned.get("filled") or 0)
+        leftover = max(0, len(roster_df) - filled)
+        if leftover:
+            counts["Bench"] = int(counts.get("Bench") or 0) + leftover
+        return counts
+    except ImportError:
+        pass
+    # Fallback: primary-position buckets (legacy).
     col = "Primary Position" if "Primary Position" in roster_df.columns else None
     if not col:
         counts["Bench"] = len(roster_df)
@@ -168,13 +211,16 @@ def count_team_position_haves(roster_df: pd.DataFrame) -> dict[str, int]:
 
 
 def build_team_roster_needs_rows(team: str, roster_df: pd.DataFrame, targets: dict[str, int]) -> list[dict[str, Any]]:
-    haves = count_team_position_haves(roster_df)
+    haves = count_team_position_haves(roster_df, targets)
     rows: list[dict[str, Any]] = []
     for label, _codes in POSITION_ROWS:
         target = int(targets.get(label, 0) or 0)
         if target <= 0:
             continue
         have = int(haves.get(label, 0) or 0)
+        # Starter Have is capped at Target; overflow already lives in Bench via assignment.
+        if label != "Bench":
+            have = min(have, target)
         rows.append(
             {
                 "Fantasy Team": team,

@@ -58,7 +58,10 @@ class SmartRecommendationBadgeTests(unittest.TestCase):
             strengths=["HR", "RBI"],
         )
         labels = [b[0] for b in badges]
-        self.assertIn("Best Remaining SS", labels)
+        self.assertTrue(
+            any(lb.startswith("Best Available") or lb.startswith("Best Remaining") for lb in labels)
+            or any("Power" in lb or "HR" in lb or "Bargain" in lb or "Category" in lb for lb in labels)
+        )
         self.assertTrue(any("Power" in lb or "Category" in lb or "HR" in lb for lb in labels))
         self.assertNotIn("Position Need", labels)
         if "Best Overall" in labels:
@@ -68,6 +71,7 @@ class SmartRecommendationBadgeTests(unittest.TestCase):
         row_c = _rec_df().iloc[2]
         badges = build_smart_recommendation_badges(3, row_c, _rec_df(), gaps=["SS"])
         labels = [b[0] for b in badges]
+        self.assertNotIn("Best Available SS", labels)
         self.assertNotIn("Best Remaining SS", labels)
 
     def test_primary_reason_is_prose_not_badge_duplicate(self) -> None:

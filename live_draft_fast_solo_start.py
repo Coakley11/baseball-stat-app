@@ -158,10 +158,10 @@ def build_fast_market_pool(market_df: Any, *, min_rows: int = 400) -> Any:
         ):
             rank = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(len(df))
             df["Expected Fantasy Value"] = _market_rank_proxy_player_grade(rank, n_rows=len(df))
-        if "Model Rank" not in df.columns:
-            df["Model Rank"] = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(999)
-        if "Fantasy Edge" not in df.columns:
-            df["Fantasy Edge"] = 0
+        # Never paint Model Rank := Market Rank as if it were analytics.
+        # Leave Model Rank / Fantasy Edge pending until projection upgrade patches them.
+        df["Model Rank"] = pd.NA
+        df["Fantasy Edge"] = pd.NA
         df = ensure_draft_scoring_pool_columns(df)
         df.attrs[POOL_VALUE_KIND_KEY] = POOL_KIND_FAST_MARKET_FALLBACK
     except ImportError:
@@ -175,10 +175,8 @@ def build_fast_market_pool(market_df: Any, *, min_rows: int = 400) -> Any:
                 rank = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(len(df))
                 n = max(len(df), 1)
                 df["Expected Fantasy Value"] = ((n + 1 - rank) / float(n)).clip(lower=0.01, upper=1.0)
-        if "Model Rank" not in df.columns:
-            df["Model Rank"] = pd.to_numeric(df["Market Rank"], errors="coerce").fillna(999)
-        if "Fantasy Edge" not in df.columns:
-            df["Fantasy Edge"] = 0
+        df["Model Rank"] = pd.NA
+        df["Fantasy Edge"] = pd.NA
     df = df.drop_duplicates(subset=["fullName"], keep="first")
     if len(df) > int(min_rows):
         df = df.head(int(min_rows)).copy()

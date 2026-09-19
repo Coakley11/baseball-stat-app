@@ -91,6 +91,42 @@ class DraftLabAnalysisTests(unittest.TestCase):
         opts = draft_lab_roster_view_options(session)
         self.assertEqual(opts, ["All Teams", "Ariel", "Daniel"])
 
+    def test_surplus_1b_fills_bench_slots(self) -> None:
+        """Screenshot rule: 3×1B with Target 1B=1 / Bench=2 → Bench Have=2 Gap=0."""
+        targets = roster_position_targets({"slots": {"C": 0, "1B": 1, "2B": 0, "3B": 0, "SS": 0, "OF": 0, "DH": 0, "BN": 2}})
+        roster = pd.DataFrame(
+            [
+                {"Fantasy Team": "Team A", "fullName": "1B Alpha", "Primary Position": "1B", "Expected Fantasy Value": 0.9},
+                {"Fantasy Team": "Team A", "fullName": "1B Beta", "Primary Position": "1B", "Expected Fantasy Value": 0.7},
+                {"Fantasy Team": "Team A", "fullName": "1B Gamma", "Primary Position": "1B", "Expected Fantasy Value": 0.5},
+            ]
+        )
+        rows = build_team_roster_needs_rows("Team A", roster, targets)
+        by_pos = {r["Position"]: r for r in rows}
+        self.assertEqual(by_pos["1B"]["Have"], 1)
+        self.assertEqual(by_pos["1B"]["Gap"], 0)
+        self.assertEqual(by_pos["Bench"]["Have"], 2)
+        self.assertEqual(by_pos["Bench"]["Gap"], 0)
+        self.assertEqual(sum(int(r["Have"]) for r in rows), len(roster))
+
+    def test_multipos_ss_2b_fills_open_2b_not_double(self) -> None:
+        targets = roster_position_targets({"slots": {"C": 0, "1B": 0, "2B": 1, "3B": 0, "SS": 1, "OF": 0, "DH": 0, "BN": 1}})
+        roster = pd.DataFrame(
+            [
+                {"Fantasy Team": "Team A", "fullName": "SS Only", "Primary Position": "SS", "Positions": "SS", "Expected Fantasy Value": 0.8},
+                {"Fantasy Team": "Team A", "fullName": "SS/2B", "Primary Position": "SS", "Positions": "SS,2B", "Expected Fantasy Value": 0.7},
+                {"Fantasy Team": "Team A", "fullName": "Extra OF", "Primary Position": "OF", "Expected Fantasy Value": 0.4},
+            ]
+        )
+        rows = build_team_roster_needs_rows("Team A", roster, targets)
+        by_pos = {r["Position"]: r for r in rows}
+        self.assertEqual(by_pos["SS"]["Have"], 1)
+        self.assertEqual(by_pos["2B"]["Have"], 1)
+        self.assertEqual(by_pos["Bench"]["Have"], 1)
+        self.assertEqual(by_pos["SS"]["Gap"], 0)
+        self.assertEqual(by_pos["2B"]["Gap"], 0)
+        self.assertEqual(by_pos["Bench"]["Gap"], 0)
+
     def test_enrich_draft_metrics_no_crash_without_pool(self) -> None:
         out = enrich_lab_draft_metrics(_sample_draft(), None, {})
         self.assertEqual(len(out), 4)
