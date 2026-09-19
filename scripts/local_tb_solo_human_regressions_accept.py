@@ -100,8 +100,10 @@ def _queue_surface_empty(text: str) -> bool:
     """True only for Draft Queue emptiness — never Watchlist 'Empty — use Add…'."""
     if not text:
         return True
-    # Numbered queue rows win over any leftover empty caption elsewhere in the chrome.
+    # Numbered queue rows or inline "Draft Queue: Name" win over empty captions.
     if re.search(r"^\s*\d+\.\s+\S+", text, re.M):
+        return False
+    if re.search(r"Draft Queue:\s*\S+", text, re.I):
         return False
     if re.search(r"Queue empty\s*[—\-–]?\s*add from Live Draft", text, re.I):
         return True
@@ -120,7 +122,7 @@ def _sidebar_queue_excerpt(page) -> str:
     """Prefer the Draft-queue region of the sidebar over the full nav chrome."""
     side = _sidebar(page)
     m = re.search(
-        r"(Queue empty[^\n]*|Draft queue[\s\S]*?)(?=\n\s*Watchlist\b|\n\s*Clear Draft Queue\b|$)",
+        r"(Draft Queue:[^\n]*|Queue empty[^\n]*|Draft queue[\s\S]*?)(?=\n\s*Watchlist\b|\n\s*Clear Draft Queue\b|$)",
         side,
         re.I,
     )
@@ -135,6 +137,8 @@ def _sidebar_queue_has_name(side: str, name: str) -> bool:
     if name in side:
         return True
     first = name.split()[0]
+    if re.search(rf"Draft Queue:\s*.*{re.escape(first)}", side, re.I):
+        return True
     return bool(re.search(rf"^\s*\d+\.\s+{re.escape(first)}", side, re.M | re.I))
 
 

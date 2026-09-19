@@ -12747,88 +12747,12 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
     except Exception:
         _skip_sidebar_queue = False
     if _skip_sidebar_queue:
-        # Always resolve from the same canonical draft_queue key as the main panel.
         try:
-            from draft_state import DRAFT_QUEUE_KEY
-            from draft_ui import _resolve_visible_draft_queue
+            from live_draft_sidebar_queue import paint_live_draft_sidebar_queue_mirror
 
-            _mirror, _mirror_src = _resolve_visible_draft_queue(
-                st.session_state, qkey=DRAFT_QUEUE_KEY
-            )
+            paint_live_draft_sidebar_queue_mirror(st, st.session_state)
         except Exception:
-            try:
-                from draft_ui import _resolve_visible_draft_queue
-
-                _mirror, _mirror_src = _resolve_visible_draft_queue(
-                    st.session_state, qkey="draft_queue"
-                )
-            except Exception:
-                _mirror = [
-                    str(x).strip()
-                    for x in (
-                        st.session_state.get("_live_draft_queue_sidebar_mirror")
-                        or st.session_state.get("draft_queue")
-                        or []
-                    )
-                    if str(x).strip()
-                ]
-                _mirror_src = "fallback"
-        # Hard union: never leave sidebar empty when any canonical layer has names.
-        if not _mirror:
-            for _src_key in (
-                "draft_queue",
-                "_live_draft_queue_last_good",
-                "_live_draft_queue_sidebar_mirror",
-            ):
-                _cand = [
-                    str(x).strip()
-                    for x in (st.session_state.get(_src_key) or [])
-                    if str(x).strip()
-                ]
-                if _cand:
-                    _mirror = _cand
-                    _mirror_src = f"union:{_src_key}"
-                    break
-            if not _mirror:
-                _ds = st.session_state.get("draft_state")
-                if isinstance(_ds, dict):
-                    _cand = [str(x).strip() for x in (_ds.get("queue") or []) if str(x).strip()]
-                    if _cand:
-                        _mirror = _cand
-                        _mirror_src = "union:draft_state.queue"
-        st.session_state["_live_draft_queue_sidebar_mirror"] = list(_mirror)
-        st.session_state["_live_draft_queue_sidebar_source"] = str(_mirror_src)
-        if not _mirror:
             st.sidebar.caption("Queue empty — add from Live Draft Room.")
-        else:
-            for _mi, _mname in enumerate(_mirror[:12]):
-                _sc1, _sc2 = st.sidebar.columns([4, 1])
-                with _sc1:
-                    st.caption(f"{_mi + 1}. {_mname[:36]}{'…' if len(_mname) > 36 else ''}")
-                with _sc2:
-                    if st.button(
-                        "✕",
-                        key=f"sidebar_mirror_rm_{_mi}_{hash(_mname) & 0xFFFF:x}",
-                        help=f"Remove {_mname} from Draft Queue",
-                    ):
-                        try:
-                            from draft_state import remove_player_from_user_draft_queue
-
-                            remove_player_from_user_draft_queue(
-                                st.session_state,
-                                _mname,
-                                reason="sidebar_mirror_remove",
-                            )
-                        except ImportError:
-                            q = [
-                                p
-                                for p in (st.session_state.get("draft_queue") or [])
-                                if str(p).strip() != _mname
-                            ]
-                            st.session_state["draft_queue"] = q
-                        st.rerun()
-            if len(_mirror) > 12:
-                st.sidebar.caption(f"+{len(_mirror) - 12} more")
     else:
         try:
             if render_draft_queue_panel(
@@ -27209,6 +27133,28 @@ elif active_page == "Live Draft Room":
                     # Queue already painted with optimistic local state this pass.
                     # Do not schedule a second full-app rerun for add/remove-only.
                     pass
+            # Re-paint nav sidebar queue AFTER the main queue panel so both surfaces
+            # share the same canonical order in this ScriptRun (sidebar runs early).
+            try:
+                _page_q = str(st.session_state.get("active_page") or "").strip()
+                _live_q = st.session_state.get("live_draft_room")
+                _st_q = (
+                    str((_live_q or {}).get("status") or "").strip().lower()
+                    if isinstance(_live_q, dict)
+                    else ""
+                )
+                if _page_q == "Live Draft Room" and _st_q in (
+                    "in_progress",
+                    "paused",
+                    "waiting",
+                    "not_started",
+                    "ready",
+                ):
+                    from live_draft_sidebar_queue import paint_live_draft_sidebar_queue_mirror
+
+                    paint_live_draft_sidebar_queue_mirror(st, st.session_state)
+            except Exception:
+                pass
             try:
                 from live_draft_render_checkpoints import (
                     note_active_page_receipt,
