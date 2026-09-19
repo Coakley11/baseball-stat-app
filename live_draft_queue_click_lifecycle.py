@@ -20,7 +20,23 @@ _LOG_PATH = Path(__file__).resolve().parent / "data" / "tb_probe" / "queue_click
 
 
 def _queue_names(session: dict[str, Any]) -> list[str]:
-    return [str(x).strip() for x in (session.get("draft_queue") or []) if str(x).strip()]
+    try:
+        from draft_state import DRAFT_QUEUE_KEY
+
+        qkey = DRAFT_QUEUE_KEY
+    except ImportError:
+        qkey = "draft_queue"
+    names = [str(x).strip() for x in (session.get(qkey) or []) if str(x).strip()]
+    if names:
+        return names
+    for alt in ("_live_draft_queue_last_good", "_live_draft_queue_sidebar_mirror"):
+        names = [str(x).strip() for x in (session.get(alt) or []) if str(x).strip()]
+        if names:
+            return names
+    ds = session.get("draft_state")
+    if isinstance(ds, dict):
+        return [str(x).strip() for x in (ds.get("queue") or []) if str(x).strip()]
+    return []
 
 
 def note_queue_click_lifecycle(

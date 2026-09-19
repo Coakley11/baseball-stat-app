@@ -1108,6 +1108,15 @@ def _resolve_visible_draft_queue(
     if dirty_local and isinstance(ds, dict) and "queue" in ds:
         if canon:
             return canon, "draft_state.queue"
+        # Intentional empty after ✕ remove stays empty. But a same-session Add can
+        # leave widget briefly lagging while last_good / mirror already has names —
+        # never paint sidebar empty in that window (screenshot order desync).
+        last_good = _norm(session.get("_live_draft_queue_last_good"))
+        if last_good:
+            return last_good, "_live_draft_queue_last_good_while_dirty"
+        mirror = _norm(session.get("_live_draft_queue_sidebar_mirror"))
+        if mirror:
+            return mirror, "_live_draft_queue_sidebar_mirror_while_dirty"
         return [], "draft_state.queue_empty"
 
     if canon:
