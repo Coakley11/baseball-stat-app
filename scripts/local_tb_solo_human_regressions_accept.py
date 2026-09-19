@@ -100,12 +100,19 @@ def _queue_surface_empty(text: str) -> bool:
     """True only for Draft Queue emptiness — never Watchlist 'Empty — use Add…'."""
     if not text:
         return True
+    # Numbered queue rows win over any leftover empty caption elsewhere in the chrome.
+    if re.search(r"^\s*\d+\.\s+\S+", text, re.M):
+        return False
     if re.search(r"Queue empty\s*[—\-–]?\s*add from Live Draft", text, re.I):
         return True
     if re.search(r"^Queue empty\b", text, re.I | re.M):
         return True
-    if re.search(r"^\s*\d+\.\s+\S+", text, re.M):
-        return False
+    if re.search(
+        r"Empty\s*[—\-–]?\s*add players with.*Add to Queue",
+        text,
+        re.I,
+    ) and not re.search(r"^\s*\d+\.\s+\S+", text, re.M):
+        return True
     return False
 
 

@@ -12772,7 +12772,32 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
                     )
                     if str(x).strip()
                 ]
+                _mirror_src = "fallback"
+        # Hard union: never leave sidebar empty when any canonical layer has names.
+        if not _mirror:
+            for _src_key in (
+                "draft_queue",
+                "_live_draft_queue_last_good",
+                "_live_draft_queue_sidebar_mirror",
+            ):
+                _cand = [
+                    str(x).strip()
+                    for x in (st.session_state.get(_src_key) or [])
+                    if str(x).strip()
+                ]
+                if _cand:
+                    _mirror = _cand
+                    _mirror_src = f"union:{_src_key}"
+                    break
+            if not _mirror:
+                _ds = st.session_state.get("draft_state")
+                if isinstance(_ds, dict):
+                    _cand = [str(x).strip() for x in (_ds.get("queue") or []) if str(x).strip()]
+                    if _cand:
+                        _mirror = _cand
+                        _mirror_src = "union:draft_state.queue"
         st.session_state["_live_draft_queue_sidebar_mirror"] = list(_mirror)
+        st.session_state["_live_draft_queue_sidebar_source"] = str(_mirror_src)
         if not _mirror:
             st.sidebar.caption("Queue empty — add from Live Draft Room.")
         else:
