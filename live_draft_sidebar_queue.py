@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import time
+from pathlib import Path
 from typing import Any
+
+_PAINT_LOG = Path(__file__).resolve().parent / "data" / "tb_probe" / "sidebar_queue_paint.jsonl"
 
 
 def resolve_sidebar_queue_names(session: dict[str, Any]) -> tuple[list[str], str]:
@@ -30,25 +35,67 @@ def resolve_sidebar_queue_names(session: dict[str, Any]) -> tuple[list[str], str
         names = [str(x).strip() for x in (ds.get("queue") or []) if str(x).strip()]
         if names:
             return names, "draft_state.queue"
+    try:
+        writes = list(session.get("_live_draft_queue_write_log") or [])
+        for entry in reversed(writes):
+            if not isinstance(entry, dict):
+                continue
+            names = [str(x).strip() for x in (entry.get("new_session_queue") or []) if str(x).strip()]
+            if names:
+                return names, f"write_log:{entry.get('function')}"
+    except Exception:
+        pass
     return [], "empty"
 
 
 def paint_live_draft_sidebar_queue_mirror(st: Any, session: dict[str, Any]) -> list[str]:
-    """Paint numbered queue rows into the Streamlit sidebar (safe to call twice/run)."""
+    """Paint numbered queue rows into the Streamlit sidebar (idempotent per ScriptRun).
+
+    Caller owns the ``**Draft queue**`` heading — this paint must not duplicate it.
+    Safe to call once per run from the persistent workflow sidebar only.
+    """
+    if session.get("_live_draft_sidebar_queue_painted_this_run"):
+        return list(session.get("_live_draft_queue_sidebar_mirror") or [])
+    session["_live_draft_sidebar_queue_painted_this_run"] = True
+
     names, src = resolve_sidebar_queue_names(session)
-    session["_live_draft_queue_sidebar_mirror"] = list(names)
     session["_live_draft_queue_sidebar_source"] = str(src)
-    # Keep widget key aligned so later resolves cannot fall back to empty.
     if names:
+        session["_live_draft_queue_sidebar_mirror"] = list(names)
         session["draft_queue"] = list(names)
         session["_live_draft_queue_last_good"] = list(names)
     try:
-        st.sidebar.markdown("**Draft queue**")
+        _PAINT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _PAINT_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(
+                json.dumps(
+                    {
+                        "ts": time.time(),
+                        "src": src,
+                        "names": list(names)[:12],
+                        "draft_queue": [
+                            str(x).strip()
+                            for x in (session.get("draft_queue") or [])
+                            if str(x).strip()
+                        ][:12],
+                        "last_good": [
+                            str(x).strip()
+                            for x in (session.get("_live_draft_queue_last_good") or [])
+                            if str(x).strip()
+                        ][:12],
+                    }
+                )
+                + "\n"
+            )
     except Exception:
         pass
+
     if not names:
         st.sidebar.caption("Queue empty — add from Live Draft Room.")
         return []
+
+    # Compact scrape-friendly line (harness + human glance).
+    st.sidebar.caption("Draft Queue: " + ", ".join(names[:8]))
     for i, name in enumerate(names[:12]):
         c1, c2 = st.sidebar.columns([4, 1])
         with c1:

@@ -489,13 +489,32 @@ def sync_draft_queue(
         local_edit=True,
         sync_participant=bool(sync_participant),
     )
-    # Keep sidebar mirror identical to the single canonical queue.
-    if q:
-        session["_live_draft_queue_sidebar_mirror"] = list(q)
-        session["_live_draft_queue_last_good"] = list(q)
-    else:
+    # Prefer post-write session layers — empty overwrite may have been blocked, leaving
+    # draft_queue / draft_state.queue populated while the local `q` arg stayed [].
+    # Wiping last_good/mirror from a blocked empty write desynced sidebar vs main Queue.
+    effective = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+    if not effective:
+        ds = session.get("draft_state") if isinstance(session.get("draft_state"), dict) else {}
+        effective = _normalize_player_list(ds.get("queue"))
+    if effective:
+        session[DRAFT_QUEUE_KEY] = list(effective)
+        session["_live_draft_queue_sidebar_mirror"] = list(effective)
+        session["_live_draft_queue_last_good"] = list(effective)
+        q = list(effective)
+    elif reason_s.startswith(
+        (
+            "remove",
+            "clear_queue",
+            "clear_draft",
+            "drafted",
+            "queue_autopick",
+            "remove_from_queue",
+            "auto_remove_drafted",
+        )
+    ):
         session.pop("_live_draft_queue_last_good", None)
         session.pop("_live_draft_queue_sidebar_mirror", None)
+    # else: leave last_good/mirror intact (normalize/reconcile with transient empty widget)
     try:
         from live_draft_rerun_scope import mark_live_draft_queue_tick
 

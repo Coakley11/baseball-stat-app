@@ -40,3 +40,24 @@ class VisibleQueueResolveTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_normalize_empty_preserves_last_good_via_sync(self) -> None:
+        """Blocked empty normalize must not wipe last_good / mirror (sidebar desync)."""
+        from draft_state import DRAFT_QUEUE_KEY, mark_draft_local_edit, sync_draft_queue
+
+        session = {
+            DRAFT_QUEUE_KEY: [],
+            "_live_draft_queue_last_good": ["Kyle Schwarber"],
+            "_live_draft_queue_sidebar_mirror": ["Kyle Schwarber"],
+            "draft_state": {
+                "queue": ["Kyle Schwarber"],
+                "watchlist_focus": [],
+                "watchlist_favorites": [],
+            },
+        }
+        mark_draft_local_edit(session)
+        out = sync_draft_queue(session, [], reason="normalize_queue")
+        self.assertEqual(out, ["Kyle Schwarber"])
+        self.assertEqual(session.get(DRAFT_QUEUE_KEY), ["Kyle Schwarber"])
+        self.assertEqual(session.get("_live_draft_queue_last_good"), ["Kyle Schwarber"])
+        self.assertEqual(session.get("_live_draft_queue_sidebar_mirror"), ["Kyle Schwarber"])

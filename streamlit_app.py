@@ -12579,7 +12579,21 @@ def record_workflow_comparison_group(labels):
 def _workflow_normalize_draft_queue():
     from draft_state import sync_draft_queue
 
-    sync_draft_queue(st.session_state, st.session_state.get("draft_queue"), reason="normalize_queue")
+    # Never sync a transient empty widget over last-good / canonical layers — that wiped
+    # sidebar mirrors while Add-to-Queue lifecycle still showed players.
+    raw = st.session_state.get("draft_queue")
+    names = [str(x).strip() for x in (raw or []) if str(x).strip()]
+    if not names:
+        for key in ("_live_draft_queue_last_good", "_live_draft_queue_sidebar_mirror"):
+            alt = [str(x).strip() for x in (st.session_state.get(key) or []) if str(x).strip()]
+            if alt:
+                names = alt
+                break
+    if not names:
+        ds = st.session_state.get("draft_state")
+        if isinstance(ds, dict):
+            names = [str(x).strip() for x in (ds.get("queue") or []) if str(x).strip()]
+    sync_draft_queue(st.session_state, names, reason="normalize_queue")
 
 
 def _drafted_player_names_from_room():
@@ -12746,6 +12760,8 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
                 _skip_sidebar_queue = True
     except Exception:
         _skip_sidebar_queue = False
+    # One paint per ScriptRun (flag cleared here so a deferred end-of-page rerun repaints).
+    st.session_state.pop("_live_draft_sidebar_queue_painted_this_run", None)
     if _skip_sidebar_queue:
         try:
             from live_draft_sidebar_queue import paint_live_draft_sidebar_queue_mirror
@@ -27133,28 +27149,9 @@ elif active_page == "Live Draft Room":
                     # Queue already painted with optimistic local state this pass.
                     # Do not schedule a second full-app rerun for add/remove-only.
                     pass
-            # Re-paint nav sidebar queue AFTER the main queue panel so both surfaces
-            # share the same canonical order in this ScriptRun (sidebar runs early).
-            try:
-                _page_q = str(st.session_state.get("active_page") or "").strip()
-                _live_q = st.session_state.get("live_draft_room")
-                _st_q = (
-                    str((_live_q or {}).get("status") or "").strip().lower()
-                    if isinstance(_live_q, dict)
-                    else ""
-                )
-                if _page_q == "Live Draft Room" and _st_q in (
-                    "in_progress",
-                    "paused",
-                    "waiting",
-                    "not_started",
-                    "ready",
-                ):
-                    from live_draft_sidebar_queue import paint_live_draft_sidebar_queue_mirror
-
-                    paint_live_draft_sidebar_queue_mirror(st, st.session_state)
-            except Exception:
-                pass
+            # Sidebar Queue is painted once in render_persistent_workflow_sidebar.
+            # A follow-up full-app paint (deferred rerun after Add) refreshes it —
+            # do not mount a second sidebar queue after Watchlist.
             try:
                 from live_draft_render_checkpoints import (
                     note_active_page_receipt,

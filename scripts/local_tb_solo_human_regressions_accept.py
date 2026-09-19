@@ -104,6 +104,9 @@ def _queue_surface_empty(text: str) -> bool:
     if re.search(r"^\s*\d+\.\s+\S+", text, re.M):
         return False
     if re.search(r"Draft Queue:\s*\S+", text, re.I):
+        # "Draft Queue: —" / bare label without a player still counts as empty.
+        if re.search(r"Draft Queue:\s*[—\-–]?\s*$", text, re.I | re.M):
+            return True
         return False
     if re.search(r"Queue empty\s*[—\-–]?\s*add from Live Draft", text, re.I):
         return True
@@ -116,6 +119,19 @@ def _queue_surface_empty(text: str) -> bool:
     ) and not re.search(r"^\s*\d+\.\s+\S+", text, re.M):
         return True
     return False
+
+
+def _main_queue_excerpt(page) -> str:
+    """Prefer the main-panel Draft Queue region over the full body (avoids sidebar empty)."""
+    body = _body(page)
+    m = re.search(
+        r"(Draft Queue[\s\S]{0,1200}?)(?=\n\s*Draft Board\b|\n\s*Manual Draft\b|\n\s*Quick Draft|\n\s*ON THE CLOCK\b|$)",
+        body,
+        re.I,
+    )
+    if m:
+        return m.group(0)[:1200]
+    return body[-2000:] if body else ""
 
 
 def _sidebar_queue_excerpt(page) -> str:
@@ -541,7 +557,7 @@ def _add_queue_first(page) -> dict:
             out["error"] = "no_card_scoped_add_button"
             return out
 
-        main_before = _body(page)
+        main_before = _main_queue_excerpt(page)
         side_before = _sidebar_queue_excerpt(page)
         out["main_empty_before"] = _queue_surface_empty(main_before)
         out["side_empty_before"] = _queue_surface_empty(side_before)
@@ -592,20 +608,26 @@ def _add_queue_first(page) -> dict:
                 except Exception:
                     pass
 
-        # Sidebar paints earlier in the ScriptRun — wait for mirror follow-up paint.
-        for _ in range(8):
+        # Deferred end-of-page rerun refreshes sidebar — wait for Draft Queue: / numbered rows.
+        for _ in range(12):
             side_after = _sidebar_queue_excerpt(page)
-            if out.get("player_name") and _sidebar_queue_has_name(
-                side_after, out.get("player_name") or ""
+            main_after = _main_queue_excerpt(page)
+            if out.get("player_name") and (
+                _sidebar_queue_has_name(side_after, out.get("player_name") or "")
+                or not _queue_surface_empty(side_after)
             ):
                 break
-            if mutated and not _queue_surface_empty(side_after):
-                # Mutation proven and queue non-empty — accept once name or any row shows.
-                if out.get("player_name") and out["player_name"].split()[0] in side_after:
+            if mutated and (
+                not _queue_surface_empty(side_after) or not _queue_surface_empty(main_after)
+            ):
+                if out.get("player_name") and (
+                    out["player_name"].split()[0] in side_after
+                    or out["player_name"].split()[0] in main_after
+                ):
                     break
             page.wait_for_timeout(1000)
 
-        main_after = _body(page)
+        main_after = _main_queue_excerpt(page)
         side_after = _sidebar_queue_excerpt(page)
         out["main_empty_after"] = _queue_surface_empty(main_after)
         out["side_empty_after"] = _queue_surface_empty(side_after)
@@ -622,6 +644,7 @@ def _add_queue_first(page) -> dict:
             bool(out.get("mutation_proven")) and not out["side_empty_after"]
         )
         out["side_excerpt"] = side_after[:500]
+        out["main_excerpt"] = main_after[:500]
         out["lifecycle"] = _lifecycle_tail(40)
         out["probe"] = _queue_probe(page)
         if not out.get("button_return_true"):
@@ -824,7 +847,7 @@ def main() -> int:
             report["queue_lifecycle_tail"] = qres.get("lifecycle") or []
             qname = str(qres.get("player_name") or "").strip()
             page.wait_for_timeout(2000)
-            main_q = _body(page)
+            main_q = _main_queue_excerpt(page)
             side_q = _sidebar_queue_excerpt(page)
             c["queue_button_return_true"] = bool(qres.get("button_return_true"))
             c["queue_mutation_proven"] = bool(qres.get("mutation_proven"))
@@ -844,8 +867,8 @@ def main() -> int:
             ) or (
                 bool(qres.get("mutation_proven")) and not _queue_surface_empty(side_q)
             )
-            report["queue_side_snip"] = side_q[:500]
-            report["queue_main_snip"] = main_q[:500]
+            report["queue_side_snip"] = side_q[:800]
+            report["queue_main_snip"] = main_q[:800]
             qres2 = _add_queue_first(page)
             report["queue_click2"] = {k: v for k, v in qres2.items() if k != "lifecycle"}
             page.wait_for_timeout(2500)

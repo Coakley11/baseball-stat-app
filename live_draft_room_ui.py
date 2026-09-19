@@ -2473,6 +2473,9 @@ def render_live_draft_rec_cards(
                                     player_id=player_id,
                                 )
                                 if session.pop("_live_draft_queue_sidebar_rerun", None):
+                                    # Defer full-app rerun to end-of-page so main Draft Queue
+                                    # paints in this ScriptRun; sidebar refreshes on follow-up.
+                                    session["_live_draft_defer_full_rerun"] = True
                                     try:
                                         from live_draft_queue_click_lifecycle import (
                                             note_queue_click_lifecycle,
@@ -2486,10 +2489,10 @@ def render_live_draft_rec_cards(
                                             player_name=name,
                                             button_return_value=True,
                                             rerun_requested=True,
+                                            deferred=True,
                                         )
                                     except ImportError:
                                         pass
-                                    st.rerun()
                         except ImportError:
                             if _rec_queue_clicked:
                                 execute_rec_card_queue_click(
@@ -2502,7 +2505,7 @@ def render_live_draft_rec_cards(
                                     player_id=player_id,
                                 )
                                 if session.pop("_live_draft_queue_sidebar_rerun", None):
-                                    st.rerun()
+                                    session["_live_draft_defer_full_rerun"] = True
                         try:
                             from live_draft_queue_click_lifecycle import (
                                 render_queue_click_lifecycle_probe,
