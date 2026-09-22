@@ -861,14 +861,31 @@ def render_live_draft_status_badges(
     )
 
 
-def render_roster_tracker_panel(st: Any, tracker: dict[str, Any]) -> None:
-    """Checklist-style roster needs for the user's team."""
+def render_roster_tracker_panel(
+    st: Any,
+    tracker: dict[str, Any],
+    *,
+    category_needs: list[str] | None = None,
+) -> None:
+    """Team Needs — open positions plus categories to strengthen."""
     lines = tracker.get("lines") or []
-    if not lines:
+    if not lines and not category_needs:
         st.caption("No roster slots configured.")
         return
     filled = int(tracker.get("filled") or 0)
     target = int(tracker.get("target") or 0)
+    open_pos = [
+        str(ln.get("label") or "").strip()
+        for ln in lines
+        if not ln.get("filled") and str(ln.get("label") or "").strip()
+    ]
+    # Prefer explicit open_positions codes when present.
+    gaps = [str(g).strip() for g in (tracker.get("open_positions") or tracker.get("gaps") or []) if str(g).strip()]
+    pos_list = gaps or open_pos
+    cats = [str(c).strip() for c in (category_needs or []) if str(c).strip()]
+    # Normalize BA → AVG for display when league uses AVG label.
+    cat_display = [("AVG" if c.upper() in {"BA", "AVG"} else c.upper()) for c in cats]
+
     html_lines = []
     for ln in lines:
         mark = "✓" if ln.get("filled") else "✗"
@@ -876,9 +893,23 @@ def render_roster_tracker_panel(st: Any, tracker: dict[str, Any]) -> None:
         css = "" if ln.get("filled") else " open"
         html_lines.append(f'<div class="ld-roster-line{css}">{mark} {label}</div>')
     progress = f"Roster complete: {filled} / {target}" if target else ""
+
+    pos_chips = "".join(f'<span class="ld-cat-need-chip">{p}</span>' for p in pos_list[:8]) if pos_list else (
+        '<span class="ld-cat-need-chip">All positions filled / BPA</span>'
+    )
+    cat_chips = (
+        "".join(f'<span class="ld-cat-need-chip">{c}</span>' for c in cat_display[:6])
+        if cat_display
+        else '<span class="ld-cat-need-chip">Balanced</span>'
+    )
     st.markdown(
         f'<div class="ld-roster-tracker-panel">'
-        f'<div class="ld-panel-title">Roster Needs Checklist</div>'
+        f'<div class="ld-panel-title">Team Needs</div>'
+        f'<div class="ld-panel-title" style="font-size:0.95rem;margin-top:4px;">Positions</div>'
+        f'<div class="ld-cat-strengthen-chips">{pos_chips}</div>'
+        f'<div class="ld-panel-title" style="font-size:0.95rem;margin-top:8px;">'
+        f"Categories to strengthen</div>"
+        f'<div class="ld-cat-strengthen-chips">{cat_chips}</div>'
         f'{"".join(html_lines)}'
         f'<div class="ld-roster-progress">{progress}</div>'
         f"</div>",
@@ -1092,8 +1123,8 @@ def build_rec_card_detail_body(
     category_needs: list[str] | None = None,
     rank: int = 0,
 ) -> str:
-    """Expanded analytics for Why Recommended — player-specific projection evidence."""
-    cells: list[tuple[str, str]] = []
+    """Expanded analytics for Why Recommended — player-specific fantasy reasons first."""
+    reasons: list[str] = []
     pos = str(row.get("Primary Position") or "—")
 
     def _proj(*cols: str) -> float:
@@ -1108,49 +1139,69 @@ def build_rec_card_detail_body(
     sb = _proj("proj_SB", "SB")
     avg = _proj("proj_AVG", "AVG", "BA")
     runs = _proj("proj_R", "R", "Runs")
-    if pd.notna(hr):
-        cells.append(("Power", f"{int(round(float(hr)))} projected HR"))
-    if pd.notna(rbi):
-        cells.append(("RBI", f"{int(round(float(rbi)))} projected RBI"))
-    if pd.notna(sb):
-        cells.append(("Speed", f"{int(round(float(sb)))} projected SB"))
-    if pd.notna(avg):
-        cells.append(("AVG", f"{float(avg):.3f} projected"))
-    if pd.notna(runs) and len(cells) < 4:
-        cells.append(("Runs", f"{int(round(float(runs)))} projected R"))
+    needs = {str(c).strip().upper() for c in (category_needs or []) if str(c).strip()}
 
-    if category_needs:
-        cells.append(("Team needs", ", ".join(str(c) for c in category_needs[:4])))
+    if pd.notna(hr) and float(hr) >= 25:
+        reasons.append(f"Projects {int(round(float(hr)))} HR — elite power production")
+    elif pd.notna(hr) and float(hr) >= 18:
+        reasons.append(f"Projects {int(round(float(hr)))} HR")
+    if pd.notna(rbi) and float(rbi) >= 80:
+        reasons.append(f"Strong RBI projection ({int(round(float(rbi)))})")
+    if pd.notna(runs) and float(runs) >= 80:
+        reasons.append(f"Run producer — projects {int(round(float(runs)))} R")
+    if pd.notna(sb) and float(sb) >= 15:
+        reasons.append(f"Adds stolen-base production ({int(round(float(sb)))} SB)")
+    elif pd.notna(sb) and float(sb) >= 10 and "SB" in needs:
+        reasons.append(f"Helps a weak SB category ({int(round(float(sb)))} projected)")
+    if pd.notna(avg) and float(avg) >= 0.285:
+        reasons.append(f"High AVG upside ({float(avg):.3f})")
+    elif pd.notna(avg) and float(avg) >= 0.265 and ("AVG" in needs or "BA" in needs):
+        reasons.append(f"Helps a weak batting-average roster ({float(avg):.3f})")
+
+    if gaps and pos in gaps:
+        reasons.append(f"Fills your remaining {pos} starter slot")
+    if "C" == pos and gaps and "C" in gaps:
+        reasons.append("Addresses catcher scarcity")
 
     mkt = pd.to_numeric(row.get("Market Rank", np.nan), errors="coerce")
     mdl = pd.to_numeric(row.get("Model Rank", np.nan), errors="coerce")
-    if pd.notna(mkt) and pd.notna(mdl):
-        cells.append(
-            ("Market value", f"Model #{int(round(float(mdl)))} vs market #{int(round(float(mkt)))}")
-        )
-    elif pd.notna(mkt) and (mdl is None or pd.isna(mdl)):
-        cells.append(("Market value", f"Market #{int(round(float(mkt)))} · model pending"))
+    if pd.notna(mkt) and pd.notna(mdl) and float(mdl) < float(mkt) - 5:
+        edge = float(mkt) - float(mdl)
+        reasons.append(f"Model ranks him {int(round(edge))} spots above market (#{int(round(float(mdl)))} vs #{int(round(float(mkt)))})")
+    elif pd.notna(mkt) and pd.notna(mdl) and abs(float(mkt) - float(mdl)) <= 2:
+        # Tiny edge is not a primary reason — omit market-value marketing copy.
+        pass
 
-    if gaps and pos in gaps:
-        cells.append(("Roster fit", f"Fills an open {pos} starter slot"))
-    else:
+    toks: list[str] = []
+    for col in ("Positions", "Eligible Positions", "Position"):
+        raw = row.get(col) if hasattr(row, "get") else None
+        if raw is None:
+            continue
+        toks.extend(str(p).strip().upper() for p in str(raw).replace("/", ",").split(",") if str(p).strip())
+    uniq = {t for t in toks if t and t not in ("UTIL", "DH", "NA", pos.upper())}
+    if uniq:
+        reasons.append(f"Multi-position flexibility ({', '.join(sorted(uniq)[:3])})")
+
+    grade = pd.to_numeric(row.get("Expected Fantasy Value", np.nan), errors="coerce")
+    if pd.notna(grade):
+        g = float(grade)
+        g100 = g * 100.0 if g <= 1.5 else g
+        if g100 >= 80:
+            reasons.append(f"High overall Player Grade ({g100:.0f})")
+
+    # Prefer 2–4 player-specific reasons; never lead with Fit Score alone.
+    reasons = reasons[:4]
+    if not reasons:
         dfs = pd.to_numeric(row.get("Draft Fit Score", np.nan), errors="coerce")
-        if pd.notna(dfs):
-            cells.append(("Roster fit", f"Fit Score: {float(dfs):.2f}"))
+        if gaps and pos in gaps:
+            reasons.append(f"Fills an open {pos} starter slot")
+        elif pd.notna(dfs):
+            reasons.append(f"Strong blend of production and roster fit")
+        else:
+            reasons.append("Balanced upside and availability at this pick")
 
-    if not cells:
-        return "Balanced upside and availability at this pick."
-
-    row_html: list[str] = []
-    for i in range(0, len(cells), 3):
-        chunk = cells[i : i + 3]
-        row_cells = "".join(
-            f'<div class="ld-rec-detail-cell"><div class="ld-rec-detail-label">{label}</div>'
-            f'<div class="ld-rec-detail-value">{value}</div></div>'
-            for label, value in chunk
-        )
-        row_html.append(f'<div class="ld-rec-detail-row">{row_cells}</div>')
-    return f'<div class="ld-rec-detail-grid">{"".join(row_html)}</div>'
+    bullets = "".join(f"<li>{r}</li>" for r in reasons)
+    return f'<div class="ld-rec-why-reasons"><ul>{bullets}</ul></div>'
 
 
 def _rec_action_guidance(surv: float | None, rank: int) -> str:

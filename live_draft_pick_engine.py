@@ -136,11 +136,20 @@ def build_pick_verdict(
         return "Highest Decision Score available."
 
     if gap_list and (pos in gap_list or bucket in gap_list):
+        slot = pos or bucket
         if scarcity is not None and scarcity >= 0.70:
-            return f"Best positional fit before scarcity increased ({pos or bucket})."
-        if fit is not None and fit >= 1.0:
-            return "Best positional fit available."
-        return f"Filled {pos or bucket} need."
+            return f"Filled {slot} need before scarcity increased."
+        hr = _safe_float(data.get("proj_HR") or data.get("HR"))
+        if hr is not None and hr >= 28:
+            return f"Filled {slot} need with elite power ({int(round(hr))} HR)."
+        sb = _safe_float(data.get("proj_SB") or data.get("SB"))
+        if sb is not None and sb >= 18:
+            return f"Filled {slot} need with speed ({int(round(sb))} SB)."
+        if edge is not None and edge >= 10:
+            return f"Filled {slot} need — model {int(round(edge))} spots above market."
+        if grade is not None and grade >= 80:
+            return f"Filled {slot} need with strong Player Grade ({grade:.0f})."
+        return f"Filled {slot} need."
 
     if cats and edge is not None and edge >= 8:
         cat_txt = "/".join(cats[:2])

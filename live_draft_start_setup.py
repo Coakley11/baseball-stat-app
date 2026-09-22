@@ -262,6 +262,36 @@ def gate_start_new_live_draft_click(session: dict[str, Any]) -> dict[str, Any]:
         pass
 
     try:
+        from live_draft_setup_mode import is_solo_lobby
+
+        if is_solo_lobby(session):
+            clear_setup_validation_error(session)
+            session.pop("_live_draft_start_replace_resumable_pending", None)
+            session["_start_live_draft_mode"] = "new"
+            session["_start_live_draft_pending"] = True
+            session.pop("_simulator_to_live_show_confirm", None)
+            record_start_path_diagnostics(
+                session,
+                button_clicked=True,
+                validation_ok=True,
+                validation_error="",
+                solo_mode=True,
+                shared_mode=False,
+                draft_creation_attempted=False,
+                gate="on_start_prepared_solo_lobby",
+                final_status="pending_armed_solo_lobby",
+            )
+            return {
+                "armed": True,
+                "replace_pending": False,
+                "ok": True,
+                "error": "",
+                "check": {"ok": True, "solo_lobby": True},
+            }
+    except ImportError:
+        pass
+
+    try:
         from live_draft_setup_mode import is_solo_draft_mode
 
         solo_mode = bool(is_solo_draft_mode(session))

@@ -2381,12 +2381,22 @@ def render_live_manual_draft_panel(
     )
 
     # Position filter — narrow Manual Draft candidates by roster need.
+    # Changing the filter must not rebuild projection/recommendation scoring.
+    def _on_manual_position_filter_change() -> None:
+        try:
+            from live_draft_rerun_scope import mark_live_draft_manual_ui_tick
+
+            mark_live_draft_manual_ui_tick(session)
+        except ImportError:
+            pass
+
     position_options = ["All", "C", "1B", "2B", "3B", "SS", "OF", "SP", "RP", "UTIL"]
     pos_filter = st.selectbox(
         "Position filter",
         position_options,
         key="live_draft_manual_position_filter",
         help="Filter the Manual Draft pool by position.",
+        on_change=_on_manual_position_filter_change,
     )
     if pos_filter and pos_filter != "All" and available is not None and hasattr(available, "columns"):
         pos_col = "Primary Position" if "Primary Position" in available.columns else (
@@ -2492,6 +2502,12 @@ def render_live_manual_draft_panel(
     widget_key = manual_draft_candidate_widget_key(room)
 
     def _on_candidate_change() -> None:
+        try:
+            from live_draft_rerun_scope import mark_live_draft_manual_ui_tick
+
+            mark_live_draft_manual_ui_tick(session)
+        except ImportError:
+            pass
         _record_visible_draft_candidate(session, available, widget_key, source="on_change")
 
     selected_player = st.selectbox(

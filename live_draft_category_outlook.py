@@ -53,7 +53,7 @@ def compute_category_outlook(
             ("proj_HR", "HR", "sum"),
             ("proj_RBI", "RBI", "sum"),
             ("proj_BA", "AVG", "rate"),
-            ("proj_R", "Runs", "sum"),
+            ("proj_R", "R", "sum"),
         ]
     else:
         specs = [
@@ -61,7 +61,7 @@ def compute_category_outlook(
             ("proj_HR", "Power", "sum"),
             ("proj_RBI", "Run Production", "sum"),
             ("proj_OPS", "Walks/OPS", "rate"),
-            ("proj_R", "Runs", "sum"),
+            ("proj_R", "R", "sum"),
         ]
 
     # Before Pick 1 there is no roster — do not invent category deficits vs a 1-player baseline.

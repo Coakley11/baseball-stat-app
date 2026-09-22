@@ -230,6 +230,27 @@ def _live_draft_recommendations_impl(
     if scored is None or scored.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
+    # Warm Auto Pick for this on-clock team/pick so timer-zero can commit without
+    # rebuilding scoring under the 0-second boundary.
+    if isinstance(session, dict) and not scored.empty:
+        try:
+            board = room.get("draft_board") or []
+            board_n = len(board) if isinstance(board, list) else 0
+            session["_live_draft_autopick_warm"] = {
+                "key": (
+                    str(room.get("draft_room_id") or ""),
+                    int(room.get("current_pick_index") or 0),
+                    str(team_on_clock),
+                    int(board_n),
+                    str(rule).strip().lower(),
+                ),
+                "scored": scored,
+                "gaps": list(gaps or []),
+                "warmed_at": __import__("time").time(),
+            }
+        except Exception:
+            pass
+
     scored = ensure_recommendation_ranking_schema(scored)
     top_recommended = scored.head(top_n)
     best_available = safe_sort_recommendations(

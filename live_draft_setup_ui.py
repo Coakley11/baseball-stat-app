@@ -774,6 +774,7 @@ def render_shared_draft_ready_card(
         distinct = distinct_claimed_owner_count(
             session, room
         )
+
         if is_host and distinct < 2 and total >= 2:
             st.caption(
                 f"**{distinct}** distinct owner(s) — need **2** before starting (Phase 1)."
@@ -796,6 +797,65 @@ def render_shared_draft_ready_card(
             st.warning("Waiting for commissioner to start the draft.")
             if start_help:
                 st.caption(start_help)
+
+
+def render_solo_draft_ready_card(
+    st: Any,
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    on_start: Callable[[], None] | None = None,
+) -> None:
+    """Solo Ready lobby — draft interface loaded, Pick 1 clock not armed until Start Draft."""
+    try:
+        from live_draft_setup_mode import is_solo_lobby, start_prepared_solo_room
+    except ImportError:
+        return
+    if not is_solo_lobby(session, room=room):
+        return
+
+    teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
+    pick_order = room.get("pick_order") or []
+    total = len(pick_order)
+    start_disabled, start_help = start_button_disabled(session)
+
+    with st.container(border=True):
+        st.markdown("### Draft ready")
+        st.success(
+            "Solo draft room is prepared. Model/projection data can finish loading now — "
+            "the Pick 1 clock will **not** start until you press **Start Draft**."
+        )
+        st.caption(
+            f"**Mode:** Solo · **Teams:** {len(teams) or '—'} · "
+            f"**Scheduled picks:** {total or '—'} · **Timer:** not running"
+        )
+        clicked = st.button(
+            "Start Draft",
+            type="primary",
+            key="live_draft_solo_lobby_start_btn",
+            disabled=start_disabled,
+            help=start_help or "Begin Pick 1 with a full 60-second clock.",
+            use_container_width=True,
+        )
+        if clicked:
+            # Prefer direct start — avoids depending on the create-path pending handler.
+            try:
+                prep = start_prepared_solo_room(session, st)
+            except Exception as exc:
+                prep = {"handled": False, "ok": False, "error": str(exc)}
+            if not prep.get("ok"):
+                # Fallback to the shared Start New Live Draft callback path.
+                if on_start is not None:
+                    try:
+                        on_start()
+                    except Exception:
+                        pass
+                if prep.get("error"):
+                    st.error(str(prep.get("error")))
+            try:
+                st.rerun()
+            except Exception:
+                pass
 
 
 def render_edit_setup_expander(

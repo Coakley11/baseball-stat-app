@@ -497,10 +497,31 @@ def note_live_draft_board_pick_flash(session: dict[str, Any], st: Any, pick_coun
     should_highlight_latest_board_row(session, count)
     if render_live_draft_pick_announcement(session, st):
         return True
+    msg = _latest_pick_board_message(session)
     st.markdown(
-        '<div class="ld-board-pick-notice ld-pick-flash ld-board-new-pick">'
-        "Latest pick posted to the draft board."
-        "</div>",
+        f'<div class="ld-board-pick-notice ld-pick-flash ld-board-new-pick">{msg}</div>',
         unsafe_allow_html=True,
     )
     return True
+
+
+def _latest_pick_board_message(session: dict[str, Any]) -> str:
+    """Human-readable latest-pick copy from board / announcement snapshot."""
+    ann = session.get("_ld_last_pick_announcement")
+    if isinstance(ann, dict):
+        text = str(ann.get("message") or ann.get("text") or "").strip()
+        if text:
+            return text
+    room = session.get("live_draft_room")
+    if not isinstance(room, dict):
+        return "Latest pick posted to the draft board."
+    board = room.get("draft_board") or []
+    if not board:
+        return "Latest pick posted to the draft board."
+    last = board[-1] if isinstance(board[-1], dict) else {}
+    player = str(last.get("fullName") or last.get("Player") or "").strip() or "a player"
+    team = str(last.get("Fantasy Team") or last.get("Draft Team") or "").strip() or "a team"
+    pos = str(last.get("Primary Position") or last.get("Position") or "").strip()
+    pick_no = last.get("Pick") or last.get("pick") or len(board)
+    pos_bit = f" ({pos})" if pos else ""
+    return f"Pick {pick_no}: {team} drafted {player}{pos_bit}."

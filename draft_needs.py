@@ -76,11 +76,15 @@ def infer_position_needs(
 
 
 def _hitter_category_specs(fantasy_format: str) -> list[tuple[str, str, str]]:
-    """Projection column, display label, aggregation kind — hitters only."""
+    """Projection column, display label, aggregation kind — hitters only.
+
+    Standard 5x5 Roto includes all five counting/rate categories: HR, RBI, R, SB, AVG.
+    """
     if fantasy_format == "5x5 Roto":
         return [
             ("proj_HR", "HR", "sum"),
             ("proj_RBI", "RBI", "sum"),
+            ("proj_R", "R", "sum"),
             ("proj_SB", "SB", "sum"),
             ("proj_BA", "AVG", "rate"),
         ]

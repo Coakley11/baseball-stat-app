@@ -819,8 +819,24 @@ def live_draft_get_available(room: dict[str, Any] | None) -> pd.DataFrame:
     try:
         from draft_scoring_pool import ensure_draft_scoring_pool_columns_with_report
 
-        out, report = ensure_draft_scoring_pool_columns_with_report(out)
-        room["_live_draft_pool_scoring_diag"] = report
+        # Light interactive ScriptRuns (queue/filter) must not rebuild scoring columns.
+        _skip_ensure = False
+        try:
+            import streamlit as st
+
+            from live_draft_rerun_scope import live_draft_light_rerun_active
+
+            _skip_ensure = bool(live_draft_light_rerun_active(st.session_state))
+        except Exception:
+            _skip_ensure = False
+        if _skip_ensure and "Model Rank" in out.columns and "Market Rank" in out.columns:
+            room["_live_draft_pool_scoring_diag"] = {
+                "skipped_ensure": True,
+                "reason": "light_interactive_rerun",
+            }
+        else:
+            out, report = ensure_draft_scoring_pool_columns_with_report(out)
+            room["_live_draft_pool_scoring_diag"] = report
     except ImportError:
         pass
     return out
@@ -843,7 +859,18 @@ def has_active_live_draft(session: dict[str, Any]) -> bool:
     if not isinstance(blob, dict) or not blob.get("draft_room_id"):
         return False
     status = str(blob.get("status") or "").strip()
-    return status in ("in_progress", "paused")
+    if status in ("in_progress", "paused"):
+        return True
+    # Prepared Ready lobbies (Solo Start Draft / Shared waiting room).
+    if status == "not_started":
+        try:
+            from live_draft_setup_mode import is_shared_lobby, is_solo_lobby
+
+            if is_solo_lobby(session, blob) or is_shared_lobby(session, blob):
+                return True
+        except ImportError:
+            pass
+    return False
 
 
 def is_live_draft_locally_dirty(session: dict[str, Any]) -> bool:

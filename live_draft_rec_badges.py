@@ -67,26 +67,26 @@ def _eligible_trait_badges(
     avg = _proj(row, "proj_AVG", "AVG", "BA", "Projected AVG")
     runs = _proj(row, "proj_R", "R", "Runs", "Projected R")
 
-    if pd.notna(hr) and float(hr) >= 30:
+    if pd.notna(hr) and float(hr) >= 25:
         traits.append((90.0 + float(hr) / 10.0, "Elite Power", _BADGE_CSS["upside"], "power"))
-    elif pd.notna(hr) and float(hr) >= 22:
+    elif pd.notna(hr) and float(hr) >= 18:
         traits.append((70.0 + float(hr) / 10.0, "Top HR Projection", _BADGE_CSS["category"], "power"))
 
-    if pd.notna(rbi) and float(rbi) >= 90:
+    if pd.notna(rbi) and float(rbi) >= 80:
         traits.append((75.0 + float(rbi) / 20.0, "Strong RBI", _BADGE_CSS["category"], "rbi"))
 
-    if pd.notna(sb) and float(sb) >= 20:
+    if pd.notna(runs) and float(runs) >= 80:
+        traits.append((62.0 + float(runs) / 20.0, "Run Producer", _BADGE_CSS["category"], "runs"))
+
+    if pd.notna(sb) and float(sb) >= 15:
         traits.append((80.0 + float(sb) / 10.0, "Speed Boost", _BADGE_CSS["upside"], "speed"))
-    elif pd.notna(sb) and float(sb) >= 12 and ("SB" in needs or "SB" in strength_set):
+    elif pd.notna(sb) and float(sb) >= 10 and ("SB" in needs or "SB" in strength_set):
         traits.append((72.0, "Fills SB Need", _BADGE_CSS["category"], "speed_need"))
 
-    if pd.notna(avg) and float(avg) >= 0.290:
+    if pd.notna(avg) and float(avg) >= 0.285:
         traits.append((68.0 + float(avg) * 10.0, "High AVG", _BADGE_CSS["category"], "avg"))
-    elif pd.notna(avg) and float(avg) >= 0.270 and ("AVG" in needs or "BA" in needs):
+    elif pd.notna(avg) and float(avg) >= 0.265 and ("AVG" in needs or "BA" in needs):
         traits.append((66.0, "Fills Low-AVG Need", _BADGE_CSS["category"], "avg_need"))
-
-    if pd.notna(runs) and float(runs) >= 90:
-        traits.append((60.0 + float(runs) / 20.0, "Strong Runs", _BADGE_CSS["category"], "runs"))
 
     if "HR" in needs and pd.notna(hr) and float(hr) >= 18:
         traits.append((85.0, "Category Need: HR", _BADGE_CSS["category"], "cat_hr"))
@@ -193,11 +193,23 @@ def build_smart_recommendation_badges(
         if len(badges) >= 3:
             break
 
-    # Rank ordinals only as last-resort filler — never the dominant badge set.
+    # Prefer player-specific traits. Rank ordinals only when no trait evidence exists.
     if len(badges) < 1:
-        rank_labels = {1: "Best Overall", 2: "Second Best", 3: "Third Best"}
-        if rank in rank_labels:
-            _add(rank_labels[rank], _BADGE_CSS["gold"], concept=f"rank_{rank}")
+        grade = _num(row, "Expected Fantasy Value")
+        if pd.notna(grade):
+            g = float(grade)
+            # Support both 0–1 and 0–100 grade scales.
+            g100 = g * 100.0 if g <= 1.5 else g
+            if g100 >= 85:
+                _add("Elite Overall Grade", _BADGE_CSS["gold"], concept="grade")
+            elif g100 >= 70:
+                _add("Strong Player Grade", _BADGE_CSS["value"], concept="grade")
+        if len(badges) < 1 and gaps and pos and pos in gaps:
+            _add(f"Fills {pos} Slot", _BADGE_CSS["position"], concept="fill_position")
+        if len(badges) < 1:
+            rank_labels = {1: "Best Overall", 2: "Second Best", 3: "Third Best"}
+            if rank in rank_labels:
+                _add(rank_labels[rank], _BADGE_CSS["gold"], concept=f"rank_{rank}")
 
     return badges[:3]
 

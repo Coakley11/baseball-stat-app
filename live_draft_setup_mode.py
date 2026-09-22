@@ -736,6 +736,84 @@ def is_shared_lobby(session: dict[str, Any], room: dict[str, Any] | None = None)
     return bool(shared_room_code(session))
 
 
+def is_solo_lobby(session: dict[str, Any], room: dict[str, Any] | None = None) -> bool:
+    """Solo room prepared and waiting for Start Draft (timer not armed)."""
+    live = room if isinstance(room, dict) else session.get("live_draft_room")
+    if not isinstance(live, dict):
+        return False
+    if str(live.get("status") or "") != "not_started":
+        return False
+    if is_shared_multiplayer_intent(session, room=live):
+        return False
+    if shared_room_code(session):
+        return False
+    if not is_solo_draft_mode(session, room=live):
+        # Still treat as solo lobby when no shared intent and board empty.
+        if live.get("draft_board"):
+            return False
+    board = live.get("draft_board") or []
+    return not (isinstance(board, list) and len(board) > 0)
+
+
+def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, Any]:
+    """Start a prepared Solo Ready room — in_progress with timer cleared until board ready."""
+    result: dict[str, Any] = {"handled": False, "ok": False, "error": ""}
+    room = session.get("live_draft_room")
+    if not is_solo_lobby(session, room if isinstance(room, dict) else None):
+        return result
+    if not isinstance(room, dict):
+        return result
+    result["handled"] = True
+    room["status"] = "in_progress"
+    # Same as Shared: do not arm the pick clock here. First live-board paint is
+    # the readiness boundary so Start→Pick 1 always shows a full timer.
+    try:
+        from live_draft_timer_logic import live_draft_clear_timer
+
+        live_draft_clear_timer(room)
+    except ImportError:
+        room["timer_started_at"] = None
+        room["timer_deadline"] = None
+    room.pop("timer_live_ready_at", None)
+    room["timer_handled_index"] = -1
+    session["live_draft_room"] = room
+    user_team = str(
+        (room.get("config") or {}).get("your_team")
+        or (room.get("config") or {}).get("user_team")
+        or ""
+    )
+    if user_team:
+        session["room_your_team"] = user_team
+    try:
+        from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, set_canonical_draft_meta
+
+        set_canonical_draft_meta(
+            session,
+            mode=ACTIVE_DRAFT_MODE_LIVE,
+            source="start_prepared_solo_room",
+            pick_count=len(room.get("draft_board") or []),
+        )
+    except ImportError:
+        pass
+    try:
+        from live_draft_state import commit_live_draft_room
+
+        commit_live_draft_room(st_obj, session, room, reason="start_solo_draft")
+    except ImportError:
+        pass
+    try:
+        from live_draft_rerun_scope import force_live_draft_expensive_recompute
+
+        force_live_draft_expensive_recompute(session)
+    except ImportError:
+        pass
+    result["ok"] = True
+    session["_live_draft_start_feedback"] = (
+        "Solo draft started — Pick 1 clock begins when the live board is ready."
+    )
+    return result
+
+
 def should_show_full_draft_setup(session: dict[str, Any], room: dict[str, Any] | None = None) -> bool:
     """Full setup panel only before any live draft room exists.
 

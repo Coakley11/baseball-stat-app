@@ -10488,6 +10488,40 @@ def live_draft_build_board_df(room):
     for old, new in rename.items():
         if old in df.columns and new not in df.columns:
             df = df.rename(columns={old: new})
+    # Enrich MLB Team / projections from the live pool when pick records are sparse.
+    pool = room.get("pool") if isinstance(room, dict) else None
+    pool_by_id: dict = {}
+    try:
+        if pool is not None and not getattr(pool, "empty", True) and "playerID" in getattr(pool, "columns", []):
+            for _, prow in pool.iterrows():
+                pid = str(prow.get("playerID") or "").strip()
+                if pid:
+                    pool_by_id[pid] = prow
+    except Exception:
+        pool_by_id = {}
+    if pool_by_id and "playerID" in df.columns:
+        mlb_vals = []
+        for _, brow in df.iterrows():
+            pid = str(brow.get("playerID") or "").strip()
+            src = pool_by_id.get(pid)
+            fantasy = str(brow.get("Draft Team") or brow.get("Fantasy Team") or "").strip()
+            mlb = str(brow.get("MLB Team") or "").strip()
+            if src is not None:
+                pool_team = str(src.get("Team") or src.get("MLB Team") or "").strip()
+                if pool_team and pool_team != fantasy and not _looks_like_fantasy_team_label(pool_team):
+                    mlb = pool_team
+            if mlb and (mlb == fantasy or _looks_like_fantasy_team_label(mlb)):
+                mlb = ""
+            mlb_vals.append(mlb)
+        df["MLB Team"] = mlb_vals
+    elif "MLB Team" in df.columns and "Draft Team" in df.columns:
+        def _scrub(row):
+            mlb = str(row.get("MLB Team") or "").strip()
+            fantasy = str(row.get("Draft Team") or "").strip()
+            if mlb and (mlb == fantasy or _looks_like_fantasy_team_label(mlb)):
+                return ""
+            return mlb
+        df["MLB Team"] = df.apply(_scrub, axis=1)
     show = [
         "Round", "Pick", "Draft Team", "Player", "Primary Position", "MLB Team",
         "Expected Fantasy Value", "Model Rank", "Market Rank", "Fantasy Edge", "Pick Verdict",
@@ -10607,6 +10641,18 @@ def cached_live_draft_recommendations(session, room, top_n=8, team=None):
     return top_rec, best_avail, pos_fit, value_sleep
 
 
+def _looks_like_fantasy_team_label(value: str) -> bool:
+    """True for league display names that must never appear as MLB Team."""
+    s = str(value or "").strip()
+    if not s:
+        return False
+    if re.match(r"^Team\s+[A-Z0-9]+$", s, re.I):
+        return True
+    if s.lower() in {"team a", "team b", "team 1", "team 2"}:
+        return True
+    return False
+
+
 def live_draft_rosters_df(room):
     rows = []
     pool = room.get("pool") if isinstance(room, dict) else None
@@ -10645,13 +10691,24 @@ def live_draft_rosters_df(room):
                     "Expected Fantasy Value",
                     "Scarcity Score",
                     "Position Scarcity Score",
+                    "proj_HR",
+                    "proj_RBI",
+                    "proj_R",
+                    "proj_SB",
+                    "proj_BA",
+                    "proj_AVG",
+                    "proj_OPS",
+                    "AB",
+                    "Primary Position",
                 ):
                     if col in src.index:
                         val = src.get(col)
                         if val is not None and not (isinstance(val, float) and pd.isna(val)):
                             row[col] = val
+                fantasy = str(team).strip()
                 pool_team = str(src.get("Team") or src.get("MLB Team") or "").strip()
-                if pool_team and pool_team != str(team).strip():
+                # Never copy fantasy labels (Team A / Team B / roster name) into MLB Team.
+                if pool_team and pool_team != fantasy and not _looks_like_fantasy_team_label(pool_team):
                     row["MLB Team"] = pool_team
                 try:
                     market = pd.to_numeric(row.get("Market Rank"), errors="coerce")
@@ -10660,6 +10717,11 @@ def live_draft_rosters_df(room):
                         row["Fantasy Edge"] = float(market) - float(model)
                 except Exception:
                     pass
+            mlb_now = str(row.get("MLB Team") or "").strip()
+            if mlb_now and (
+                mlb_now == str(team).strip() or _looks_like_fantasy_team_label(mlb_now)
+            ):
+                row["MLB Team"] = ""
             rows.append(row)
     if not rows:
         return pd.DataFrame()
@@ -10673,6 +10735,10 @@ def live_draft_team_totals(room):
     rosters = live_draft_rosters_df(room)
     if rosters.empty:
         return pd.DataFrame()
+    # Prefer proj_BA; fall back to proj_AVG when pool uses AVG naming.
+    if "proj_BA" not in rosters.columns and "proj_AVG" in rosters.columns:
+        rosters = rosters.copy()
+        rosters["proj_BA"] = rosters["proj_AVG"]
     rows = []
     for team, g in rosters.groupby("Fantasy Team"):
         rows.append({
@@ -23661,8 +23727,10 @@ elif active_page == "Live Draft Room":
                 try:
                     from live_draft_setup_mode import (
                         is_shared_multiplayer_intent,
+                        is_solo_lobby,
                         shared_room_code,
                         start_prepared_shared_room,
+                        start_prepared_solo_room,
                     )
 
                     if is_shared_multiplayer_intent(st.session_state):
@@ -23689,6 +23757,19 @@ elif active_page == "Live Draft Room":
                                     record_start_live_draft_diagnostics(
                                         st.session_state, start_live_draft_error=_start_handler_err
                                     )
+                    elif is_solo_lobby(st.session_state):
+                        prep = start_prepared_solo_room(st.session_state, st)
+                        if prep.get("handled"):
+                            _skip_pool_build = True
+                            _start_handler_ok = bool(prep.get("ok"))
+                            if not prep.get("ok"):
+                                _start_handler_err = str(
+                                    prep.get("error") or "Could not start solo draft."
+                                )
+                                st.error(_start_handler_err)
+                                record_start_live_draft_diagnostics(
+                                    st.session_state, start_live_draft_error=_start_handler_err
+                                )
                 except ImportError:
                     pass
             if not _skip_pool_build:
@@ -24372,7 +24453,22 @@ elif active_page == "Live Draft Room":
                                 set_live_draft_setup_mode(
                                     st.session_state, SETUP_MODE_SOLO, persist=False, st=None
                                 )
-                            live_draft_start(new_room)
+                            # Simulator promote with existing picks: start immediately.
+                            # Brand-new Solo: leave not_started until Start Draft (full Pick 1 clock).
+                            _arm_clock_now = bool(_from_simulator and sim_pick_count > 0)
+                            if _arm_clock_now:
+                                live_draft_start(new_room)
+                            else:
+                                try:
+                                    from live_draft_timer_logic import live_draft_clear_timer
+
+                                    live_draft_clear_timer(new_room)
+                                except ImportError:
+                                    new_room["timer_started_at"] = None
+                                    new_room["timer_deadline"] = None
+                                new_room["status"] = "not_started"
+                                new_room.pop("timer_live_ready_at", None)
+                                new_room["timer_handled_index"] = -1
                             st.session_state["live_draft_room"] = new_room
                             st.session_state["room_your_team"] = user_team
                             try:
@@ -24380,7 +24476,9 @@ elif active_page == "Live Draft Room":
                                 from live_draft_fast_solo_start import note_start_stage
 
                                 begin_live_draft_paint(
-                                    st.session_state, new_room, state_source="solo_start"
+                                    st.session_state,
+                                    new_room,
+                                    state_source="solo_start" if _arm_clock_now else "solo_ready",
                                 )
                                 note_start_stage(st.session_state, "canonical_snapshot_installed")
                                 try:
@@ -24419,12 +24517,12 @@ elif active_page == "Live Draft Room":
 
                                 note_timed_step(
                                     st.session_state,
-                                    "solo_started",
+                                    "solo_started" if _arm_clock_now else "solo_ready",
                                     ok=True,
                                     t_step0=_t_solo,
                                     draft_id=str(new_room.get("draft_room_id") or ""),
                                     room_id=str(new_room.get("draft_room_id") or ""),
-                                    lifecycle="active_draft",
+                                    lifecycle="active_draft" if _arm_clock_now else "solo_lobby",
                                 )
                                 note_timed_step(
                                     st.session_state,
@@ -24470,9 +24568,15 @@ elif active_page == "Live Draft Room":
                                         user_team=user_team,
                                     )
                                 )
-                            else:
+                            elif _arm_clock_now:
                                 st.session_state["_live_draft_start_feedback"] = (
                                     f"Solo live draft started — you control all teams. "
+                                    f"Room ID **{new_room['draft_room_id']}**."
+                                )
+                            else:
+                                st.session_state["_live_draft_start_feedback"] = (
+                                    f"Solo draft **ready** — press **Start Draft** when you are "
+                                    f"prepared. Pick 1 clock will begin at 60. "
                                     f"Room ID **{new_room['draft_room_id']}**."
                                 )
                             st.success(st.session_state["_live_draft_start_feedback"])
@@ -25887,12 +25991,18 @@ elif active_page == "Live Draft Room":
         except ImportError:
             pass
         try:
-            from live_draft_setup_mode import is_shared_lobby, is_shared_multiplayer_intent, setup_is_read_only
+            from live_draft_setup_mode import (
+                is_shared_lobby,
+                is_shared_multiplayer_intent,
+                is_solo_lobby,
+                setup_is_read_only,
+            )
             from live_draft_setup_ui import (
                 _is_room_host,
                 render_draft_status_summary_card,
                 render_lobby_status_panel,
                 render_shared_draft_ready_card,
+                render_solo_draft_ready_card,
             )
             from draft_ui import on_start_new_live_draft
 
@@ -26094,6 +26204,35 @@ elif active_page == "Live Draft Room":
                         on_clock_team=_lobby_on_clock,
                         pick_label=_lobby_pick,
                     )
+            elif is_solo_lobby(st.session_state, room=room):
+                # Process Start Draft FIRST — never bury the click behind pool warm.
+                render_solo_draft_ready_card(
+                    st,
+                    st.session_state,
+                    room if isinstance(room, dict) else st.session_state.get("live_draft_room"),
+                    on_start=on_start_new_live_draft,
+                )
+                # One-shot model warm while Ready (timer still off). Skip once Start begins.
+                if is_solo_lobby(st.session_state, room=st.session_state.get("live_draft_room")):
+                    try:
+                        from live_draft_fast_solo_start import (
+                            _pool_has_projection_player_grades,
+                            maybe_build_deferred_full_pool,
+                        )
+
+                        if not st.session_state.get("_solo_lobby_pool_warm_done") and (
+                            st.session_state.get("_solo_needs_projection_player_grades")
+                            or not _pool_has_projection_player_grades(
+                                (st.session_state.get("live_draft_room") or {}).get("pool")
+                            )
+                        ):
+                            st.caption("Preparing draft model data… timer stays off until Start Draft.")
+                            if maybe_build_deferred_full_pool(st.session_state, force=True):
+                                st.session_state.pop("_solo_needs_projection_player_grades", None)
+                                st.session_state["_solo_projection_grade_rerun_done"] = True
+                            st.session_state["_solo_lobby_pool_warm_done"] = True
+                    except ImportError:
+                        pass
         except ImportError:
             pass
         try:
@@ -26514,7 +26653,20 @@ elif active_page == "Live Draft Room":
         if _solo_recs_here:
             # Always paint the on-clock timer before early recommendation cards so heavy
             # rec paint cannot leave an active Solo pick with zero visible timers.
-            if isinstance(slot, dict) and not bool(_draft_is_complete):
+            # Solo Ready lobby (not_started): never arm / show Pick 1 clock early.
+            _solo_lobby_ready = False
+            try:
+                from live_draft_setup_mode import is_solo_lobby as _is_solo_lobby_early
+
+                _solo_lobby_ready = bool(_is_solo_lobby_early(st.session_state, room))
+            except ImportError:
+                _solo_lobby_ready = str(room.get("status") or "") == "not_started"
+            if (
+                isinstance(slot, dict)
+                and not bool(_draft_is_complete)
+                and not _solo_lobby_ready
+                and str(room.get("status") or "") == "in_progress"
+            ):
                 try:
                     from live_draft_on_clock_ui import render_live_on_clock_banner
 
@@ -26553,6 +26705,32 @@ elif active_page == "Live Draft Room":
                 from live_draft_rec_live_paint import render_rec_interactive_widgets
 
                 # Historical Live Draft terminology (not "Recommended picks" / queue strip).
+                # Compact Team Needs strip — always visible before cards so category/position
+                # needs are not buried under deferred decision panels.
+                try:
+                    from live_draft_roster_tracker import build_team_roster_tracker
+                    from draft_needs import infer_hitter_category_needs, display_position_needs_label
+                    from live_draft_state import live_draft_get_available
+
+                    _tn_team = str(user_team or "").strip()
+                    if _tn_team:
+                        _tn_tracker = build_team_roster_tracker(room, _tn_team)
+                        _tn_gaps = list(_tn_tracker.get("open_positions") or _tn_tracker.get("gaps") or [])
+                        _tn_roster = __import__("pandas").DataFrame(
+                            (room.get("rosters") or {}).get(_tn_team) or []
+                        )
+                        _tn_avail = live_draft_get_available(room)
+                        _tn_cats = infer_hitter_category_needs(
+                            _tn_roster, _tn_avail, fantasy_format="5x5 Roto"
+                        ) if not _tn_roster.empty else []
+                        _pos_lbl = display_position_needs_label(_tn_gaps) if _tn_gaps else "All Positions / BPA"
+                        _cat_lbl = ", ".join(str(c) for c in (_tn_cats or [])[:5]) or "Balanced"
+                        st.markdown(
+                            f"**Team Needs** — Positions: {_pos_lbl} · "
+                            f"Categories to strengthen: {_cat_lbl}"
+                        )
+                except Exception:
+                    pass
                 st.markdown("##### Recommended Players")
                 if st.session_state.get("_solo_needs_projection_player_grades"):
                     st.caption(
@@ -27354,9 +27532,17 @@ elif active_page == "Live Draft Room":
                                         best_avail = _rec_entry.get("best_avail")
                                         pos_fit = _rec_entry.get("pos_fit")
                                         value_sleep = _rec_entry.get("value_sleep")
-                                    # Empty/missing cache would blank the UI — compute once for active rooms.
+                                    # Empty/missing cache would blank the UI — compute once for active rooms
+                                    # UNLESS this is a light interactive ScriptRun (queue/manual/timer).
                                     if top_rec is None or getattr(top_rec, "empty", True):
-                                        if _room_picking or not _skip_for_setup:
+                                        _light_skip = False
+                                        try:
+                                            from live_draft_rerun_scope import live_draft_light_rerun_active
+
+                                            _light_skip = live_draft_light_rerun_active(st.session_state)
+                                        except ImportError:
+                                            _light_skip = False
+                                        if (_room_picking or not _skip_for_setup) and not _light_skip:
                                             top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
                                                 st.session_state,
                                                 room,
@@ -27372,8 +27558,16 @@ elif active_page == "Live Draft Room":
                                     pos_fit = pd.DataFrame()
                                 if value_sleep is None:
                                     value_sleep = pd.DataFrame()
-                                # Last-chance: active room with empty tables after defer path — force recompute.
-                                if _room_picking and getattr(top_rec, "empty", True):
+                                # Last-chance: active room with empty tables after defer path — force recompute
+                                # only on heavy runs (never on queue/timer light ticks).
+                                _force_ok = True
+                                try:
+                                    from live_draft_rerun_scope import live_draft_light_rerun_active
+
+                                    _force_ok = not live_draft_light_rerun_active(st.session_state)
+                                except ImportError:
+                                    pass
+                                if _room_picking and getattr(top_rec, "empty", True) and _force_ok:
                                     top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
                                         st.session_state,
                                         room,
@@ -27410,6 +27604,7 @@ elif active_page == "Live Draft Room":
                                         top_n=_LIVE_REC_TOP_N,
                                         team=_rec_team,
                                     )
+                                    # Light runs: prefer cached available frame; avoid full pool scoring ensure.
                                     _available_cached = cached_live_draft_get_available(st.session_state, room)
                                 except ImportError:
                                     _ui_cache_key = None
@@ -27539,6 +27734,16 @@ elif active_page == "Live Draft Room":
                                             from page_perf_phases import session_perf_phase
 
                                             with session_perf_phase(st.session_state, "position_scarcity"):
+                                                try:
+                                                    from live_draft_room_ui import render_roster_tracker_panel
+
+                                                    render_roster_tracker_panel(
+                                                        st,
+                                                        _tracker,
+                                                        category_needs=_category_needs,
+                                                    )
+                                                except ImportError:
+                                                    pass
                                                 render_draft_decision_panel(
                                                     st,
                                                     st.session_state,
@@ -27550,6 +27755,16 @@ elif active_page == "Live Draft Room":
                                                     include_quick_tools=False,
                                                 )
                                         except ImportError:
+                                            try:
+                                                from live_draft_room_ui import render_roster_tracker_panel
+
+                                                render_roster_tracker_panel(
+                                                    st,
+                                                    _tracker,
+                                                    category_needs=_category_needs,
+                                                )
+                                            except ImportError:
+                                                pass
                                             render_draft_decision_panel(
                                                 st,
                                                 st.session_state,

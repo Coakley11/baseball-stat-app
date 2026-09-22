@@ -44,6 +44,65 @@ def _candidate_names(scored: pd.DataFrame, limit: int = 8) -> list[str]:
     return [str(x) for x in scored.head(limit)[col].astype(str).tolist() if str(x).strip()]
 
 
+def store_autopick_warm_cache(
+    session: dict[str, Any] | None,
+    room: dict[str, Any],
+    *,
+    team: str | None = None,
+) -> bool:
+    """Pre-score Auto Pick candidates for the current on-clock pick.
+
+    Called from heavy recommendation rebuilds so timer-zero can commit immediately.
+    """
+    if session is None or not isinstance(room, dict):
+        return False
+    try:
+        from live_draft_timer_logic import resolve_live_draft_on_clock_slot
+
+        slot = resolve_live_draft_on_clock_slot(room)
+    except ImportError:
+        slot = live_draft_current_slot(room)
+    if not isinstance(slot, dict):
+        return False
+    on_clock = str(slot.get("Team") or "").strip()
+    target_team = str(team or on_clock or "").strip()
+    if not target_team or target_team != on_clock:
+        # Only warm for the team that will Auto Pick at zero.
+        target_team = on_clock
+    if not target_team:
+        return False
+    if str(room.get("status") or "") != "in_progress":
+        return False
+    available = live_draft_get_available(room)
+    if available is None or getattr(available, "empty", True):
+        return False
+    roster_df = pd.DataFrame(room.get("rosters", {}).get(target_team, []))
+    cfg = dict(room.get("config", {}))
+    cfg["current_pick"] = int(slot.get("Pick", 1))
+    cfg["room"] = room
+    rule_key = str(cfg.get("auto_pick_rule", "balanced recommendation") or "balanced recommendation")
+    target_counts = live_draft_target_counts(cfg)
+    scored, gaps = score_available_for_rule(
+        available, roster_df, rule_key, target_counts, config=cfg
+    )
+    if scored is None or getattr(scored, "empty", True):
+        return False
+    board_n = _board_size(room)
+    session["_live_draft_autopick_warm"] = {
+        "key": (
+            str(room.get("draft_room_id") or ""),
+            int(room.get("current_pick_index") or 0),
+            str(target_team),
+            int(board_n),
+            str(rule_key).strip().lower(),
+        ),
+        "scored": scored,
+        "gaps": list(gaps or []),
+        "warmed_at": __import__("time").time(),
+    }
+    return True
+
+
 def live_draft_auto_pick(
     room: dict[str, Any],
     session: dict[str, Any] | None = None,
@@ -128,17 +187,40 @@ def live_draft_auto_pick(
     # Never reuse the UI recommendation cache for Auto Pick. That cache is painted for
     # the recommendation surface (often the user's team) and can disagree with the
     # on-clock team's roster needs / selected strategy.
+    # Prefer a warm on-clock scoring cache prepared during the active pick clock so
+    # zero-boundary Auto Pick does not rebuild the full analytics pipeline.
     rec_scored = pd.DataFrame()
     gaps: list[str] = []
     skip_reason = ""
     if session is not None:
         session["_live_draft_autopick_used_rec_cache"] = False
+        try:
+            warm = session.get("_live_draft_autopick_warm")
+            if isinstance(warm, dict):
+                warm_key = (
+                    str(room.get("draft_room_id") or ""),
+                    int(room.get("current_pick_index") or 0),
+                    str(team),
+                    int(board_before),
+                    str(configured_rule).strip().lower(),
+                )
+                if tuple(warm.get("key") or ()) == warm_key and isinstance(warm.get("scored"), pd.DataFrame):
+                    cand = warm["scored"]
+                    if not cand.empty:
+                        rec_scored = cand
+                        gaps = list(warm.get("gaps") or [])
+                        session["_live_draft_autopick_used_warm_cache"] = True
+        except Exception:
+            rec_scored = pd.DataFrame()
 
     # Authoritative Draft Setup Auto-Pick Rule — never invent a separate formula.
     rule_key = str(configured_rule or "balanced recommendation").strip() or "balanced recommendation"
-    rec_scored, gaps = score_available_for_rule(
-        available, roster_df, rule_key, target_counts, config=cfg
-    )
+    if rec_scored is None or getattr(rec_scored, "empty", True):
+        rec_scored, gaps = score_available_for_rule(
+            available, roster_df, rule_key, target_counts, config=cfg
+        )
+        if session is not None:
+            session["_live_draft_autopick_used_warm_cache"] = False
     if rec_scored.empty:
         if session is not None:
             session.pop("_live_draft_in_flight_auto_pick_key", None)

@@ -96,26 +96,44 @@ def force_live_draft_expensive_recompute(session: dict[str, Any]) -> None:
     session.pop(QUEUE_TICK_KEY, None)
     session.pop(PICK_TICK_KEY, None)
     session.pop(QUEUE_FAST_PAINT_KEY, None)
+    session.pop(LIGHT_RERUN_KEY, None)
 
 
 def live_draft_expensive_recompute_required(session: dict[str, Any]) -> bool:
-    """True when recommendations/scoring/category analysis should run."""
+    """True when recommendations/scoring/category analysis should run.
+
+    Light interactive runs (queue add/reorder, timer tick, optimistic pick, Manual Draft
+    filter) must stay under ~2s. Prefer ``LIGHT_RERUN_KEY`` so a prior consumer of the
+    one-shot tick flags cannot force a full scoring rebuild later in the same ScriptRun.
+    """
     if session.get(EXPENSIVE_WORK_KEY):
         session.pop(EXPENSIVE_WORK_KEY, None)
         session.pop(TIMER_TICK_KEY, None)
         session.pop(QUEUE_TICK_KEY, None)
         session.pop(PICK_TICK_KEY, None)
+        session.pop(LIGHT_RERUN_KEY, None)
         return True
-    if session.get(TIMER_TICK_KEY) or session.get(QUEUE_TICK_KEY) or session.get(PICK_TICK_KEY):
-        # One-shot: timer/queue/optimistic-pick ticks skip expensive work once, then clear.
+    # Light interactive ScriptRun — skip heavy scoring for the whole pass.
+    if session.get(LIGHT_RERUN_KEY) or session.get(TIMER_TICK_KEY) or session.get(QUEUE_TICK_KEY) or session.get(PICK_TICK_KEY):
         session.pop(TIMER_TICK_KEY, None)
         session.pop(QUEUE_TICK_KEY, None)
         session.pop(PICK_TICK_KEY, None)
+        # Keep LIGHT_RERUN_KEY until end-of-page consume so later sections also skip.
         return False
     # After a transactional pick, the next normal paint refreshes analytics.
     if session.pop("_live_draft_recs_pending_after_pick", None):
         return True
     return True
+
+
+def mark_live_draft_manual_ui_tick(session: dict[str, Any]) -> None:
+    """Manual Draft filter/candidate changes — light interactive, no scoring rebuild."""
+    session[LIGHT_RERUN_KEY] = True
+    session[QUEUE_TICK_KEY] = True
+    session.pop(TIMER_TICK_KEY, None)
+    session.pop(PICK_TICK_KEY, None)
+    session.pop(EXPENSIVE_WORK_KEY, None)
+    session.pop(QUEUE_FAST_PAINT_KEY, None)
 
 
 def live_draft_should_skip_recommendations(session: dict[str, Any], room: dict[str, Any] | None) -> bool:

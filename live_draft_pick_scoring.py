@@ -259,7 +259,13 @@ def _draft_lab_infer_category_needs(roster_df, available, fantasy_format="5x5 Ro
     if roster_df is None or roster_df.empty or available is None or available.empty:
         return []
     if fantasy_format == "5x5 Roto":
-        triples = [("proj_HR", "HR"), ("proj_RBI", "RBI"), ("proj_SB", "SB"), ("proj_BA", "BA")]
+        triples = [
+            ("proj_HR", "HR"),
+            ("proj_RBI", "RBI"),
+            ("proj_R", "R"),
+            ("proj_SB", "SB"),
+            ("proj_BA", "BA"),
+        ]
     else:
         triples = [
             ("proj_HR", "Power"),

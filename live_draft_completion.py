@@ -401,16 +401,30 @@ def resolve_live_draft_lifecycle(
 
     if status in ("waiting", "not_started"):
         try:
-            from live_draft_setup_mode import resolve_active_live_draft_mode
+            from live_draft_setup_mode import (
+                is_solo_draft_mode,
+                is_solo_lobby,
+                resolve_active_live_draft_mode,
+            )
 
             # Pass room= only — authoritative_room must be a shared document, not the live room blob.
             active = resolve_active_live_draft_mode(session, room=live)
             # resolve_active returns is_shared (not is_shared_multiplayer).
             if active.get("is_shared") or bool(code):
                 return LIFECYCLE_WAITING_SHARED_LOBBY
+            # Solo Ready lobby: room prepared, Start Draft not pressed yet.
+            if is_solo_draft_mode(session, room=live) or is_solo_lobby(session, live):
+                return LIFECYCLE_ACTIVE_DRAFT
         except Exception:
             if code:
                 return LIFECYCLE_WAITING_SHARED_LOBBY
+            try:
+                from live_draft_setup_mode import is_solo_draft_mode
+
+                if is_solo_draft_mode(session, room=live):
+                    return LIFECYCLE_ACTIVE_DRAFT
+            except Exception:
+                pass
         # Orphan not_started without a join code — clear and return to setup.
         session.pop("live_draft_room", None)
         session.pop("live_draft_state", None)
