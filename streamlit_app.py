@@ -10653,20 +10653,39 @@ def _looks_like_fantasy_team_label(value: str) -> bool:
     return False
 
 
-def live_draft_rosters_df(room):
+def live_draft_rosters_df(room, session=None):
     rows = []
     pool = room.get("pool") if isinstance(room, dict) else None
+    # Prefer canonical unified pool when room pool lacks projection grades.
+    try:
+        from live_draft_fast_solo_start import _pool_has_projection_player_grades
+
+        if not _pool_has_projection_player_grades(pool):
+            from live_draft_canonical_pool import load_canonical_unified_pool
+
+            canon = load_canonical_unified_pool(session if isinstance(session, dict) else None)
+            if canon is not None and not getattr(canon, "empty", True):
+                pool = canon
+    except Exception:
+        pass
     pool_by_id: dict = {}
+    pool_by_name: dict = {}
     try:
         import pandas as pd
 
-        if pool is not None and not getattr(pool, "empty", True) and "playerID" in getattr(pool, "columns", []):
+        if pool is not None and not getattr(pool, "empty", True):
+            name_col = "fullName" if "fullName" in pool.columns else ("Player" if "Player" in pool.columns else None)
             for _, prow in pool.iterrows():
                 pid = str(prow.get("playerID") or "").strip()
                 if pid:
                     pool_by_id[pid] = prow
+                if name_col:
+                    nm = str(prow.get(name_col) or "").strip().lower()
+                    if nm:
+                        pool_by_name[nm] = prow
     except Exception:
         pool_by_id = {}
+        pool_by_name = {}
     for team, players in (room.get("rosters") or {}).items():
         for p in players:
             row = dict(p)
@@ -10683,6 +10702,9 @@ def live_draft_rosters_df(room):
             # Prefer live pool analytics when available (fixes fast-start Model=Market freeze).
             pid = str(row.get("playerID") or row.get("player_id") or "").strip()
             src = pool_by_id.get(pid)
+            if src is None:
+                nm = str(row.get("fullName") or row.get("Player") or "").strip().lower()
+                src = pool_by_name.get(nm) if nm else None
             if src is not None:
                 for col in (
                     "Model Rank",
@@ -10691,6 +10713,7 @@ def live_draft_rosters_df(room):
                     "Expected Fantasy Value",
                     "Scarcity Score",
                     "Position Scarcity Score",
+                    "Blended Projection Score",
                     "proj_HR",
                     "proj_RBI",
                     "proj_R",
@@ -10698,11 +10721,13 @@ def live_draft_rosters_df(room):
                     "proj_BA",
                     "proj_AVG",
                     "proj_OPS",
+                    "proj_AB",
                     "AB",
                     "Primary Position",
+                    "playerID",
                 ):
-                    if col in src.index:
-                        val = src.get(col)
+                    if col in getattr(src, "index", []) or (hasattr(src, "get") and col in src):
+                        val = src.get(col) if hasattr(src, "get") else src[col]
                         if val is not None and not (isinstance(val, float) and pd.isna(val)):
                             row[col] = val
                 fantasy = str(team).strip()
@@ -10726,15 +10751,40 @@ def live_draft_rosters_df(room):
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
-    if "fullName" in df.columns:
-        df = df.rename(columns={"fullName": "Player"})
+    try:
+        from live_draft_canonical_pool import collapse_identity_columns, enrich_roster_frame_from_canonical
+
+        df = collapse_identity_columns(df)
+        df = enrich_roster_frame_from_canonical(df, session=session, room=room if isinstance(room, dict) else None)
+    except ImportError:
+        if "fullName" in df.columns and "Player" not in df.columns:
+            df = df.rename(columns={"fullName": "Player"})
+        elif "fullName" in df.columns and "Player" in df.columns:
+            # Avoid duplicate-label Assignment when both exist.
+            if df.columns.duplicated().any():
+                df = df.loc[:, ~df.columns.duplicated()].copy()
     return df
 
 
-def live_draft_team_totals(room):
-    rosters = live_draft_rosters_df(room)
+def live_draft_team_totals(room, session=None):
+    # Ensure room pool carries canonical projections before aggregating.
+    if isinstance(room, dict) and isinstance(session, dict):
+        try:
+            from live_draft_canonical_pool import attach_canonical_pool_to_room
+
+            attach_canonical_pool_to_room(session, room, force=False)
+            room = session.get("live_draft_room") or room
+        except ImportError:
+            pass
+    rosters = live_draft_rosters_df(room, session=session)
     if rosters.empty:
         return pd.DataFrame()
+    try:
+        from live_draft_canonical_pool import enrich_roster_frame_from_canonical
+
+        rosters = enrich_roster_frame_from_canonical(rosters, session=session, room=room)
+    except ImportError:
+        pass
     # Prefer proj_BA; fall back to proj_AVG when pool uses AVG naming.
     if "proj_BA" not in rosters.columns and "proj_AVG" in rosters.columns:
         rosters = rosters.copy()
@@ -10778,11 +10828,17 @@ def live_draft_export_frames(room):
     if "fullName" in avail_show.columns:
         avail_show = avail_show.rename(columns={"fullName": "Player"})
     totals_df = live_draft_team_totals(room)
+    try:
+        from live_draft_canonical_pool import collapse_identity_columns
+
+        team_rosters = collapse_identity_columns(live_draft_rosters_df(room))
+    except ImportError:
+        team_rosters = live_draft_rosters_df(room)
     return {
         "draft_configuration": config_rows,
         "roster_settings": slot_cfg,
         "draft_board": live_draft_build_board_df(room),
-        "team_rosters": live_draft_rosters_df(room),
+        "team_rosters": team_rosters,
         "available_players": avail_show,
         "team_projected_totals": (
             format_team_projected_totals_table(totals_df, for_export=True) if not totals_df.empty else totals_df
@@ -26212,24 +26268,28 @@ elif active_page == "Live Draft Room":
                     room if isinstance(room, dict) else st.session_state.get("live_draft_room"),
                     on_start=on_start_new_live_draft,
                 )
-                # One-shot model warm while Ready (timer still off). Skip once Start begins.
+                # Schedule canonical pool warm for a quiet ScriptRun — never block the
+                # Ready lobby / Start Draft button on a multi-minute projection rebuild.
                 if is_solo_lobby(st.session_state, room=st.session_state.get("live_draft_room")):
                     try:
                         from live_draft_fast_solo_start import (
                             _pool_has_projection_player_grades,
-                            maybe_build_deferred_full_pool,
                         )
 
-                        if not st.session_state.get("_solo_lobby_pool_warm_done") and (
-                            st.session_state.get("_solo_needs_projection_player_grades")
-                            or not _pool_has_projection_player_grades(
-                                (st.session_state.get("live_draft_room") or {}).get("pool")
-                            )
-                        ):
-                            st.caption("Preparing draft model data… timer stays off until Start Draft.")
-                            if maybe_build_deferred_full_pool(st.session_state, force=True):
-                                st.session_state.pop("_solo_needs_projection_player_grades", None)
-                                st.session_state["_solo_projection_grade_rerun_done"] = True
+                        _room_lobby = st.session_state.get("live_draft_room")
+                        _pool_lobby = (
+                            (_room_lobby or {}).get("pool") if isinstance(_room_lobby, dict) else None
+                        )
+                        if not _pool_has_projection_player_grades(_pool_lobby):
+                            st.session_state["_solo_needs_projection_player_grades"] = True
+                            st.session_state["_solo_deferred_pool_next_run"] = True
+                            if not st.session_state.get("_solo_lobby_pool_warm_note"):
+                                st.caption(
+                                    "Preparing draft model data in the background… "
+                                    "timer stays off until Start Draft."
+                                )
+                                st.session_state["_solo_lobby_pool_warm_note"] = True
+                        else:
                             st.session_state["_solo_lobby_pool_warm_done"] = True
                     except ImportError:
                         pass
@@ -26705,32 +26765,42 @@ elif active_page == "Live Draft Room":
                 from live_draft_rec_live_paint import render_rec_interactive_widgets
 
                 # Historical Live Draft terminology (not "Recommended picks" / queue strip).
-                # Compact Team Needs strip — always visible before cards so category/position
-                # needs are not buried under deferred decision panels.
+                # Compact Team Needs graphic — always visible before cards (single source).
                 try:
-                    from live_draft_roster_tracker import build_team_roster_tracker
-                    from draft_needs import infer_hitter_category_needs, display_position_needs_label
+                    from live_draft_roster_tracker import build_team_roster_tracker, roster_df_for_team
+                    from draft_needs import infer_hitter_category_need_levels
                     from live_draft_state import live_draft_get_available
+                    from live_draft_room_ui import render_roster_tracker_panel
 
                     _tn_team = str(user_team or "").strip()
                     if _tn_team:
                         _tn_tracker = build_team_roster_tracker(room, _tn_team)
-                        _tn_gaps = list(_tn_tracker.get("open_positions") or _tn_tracker.get("gaps") or [])
-                        _tn_roster = __import__("pandas").DataFrame(
-                            (room.get("rosters") or {}).get(_tn_team) or []
-                        )
+                        _tn_roster = roster_df_for_team(room, _tn_team)
                         _tn_avail = live_draft_get_available(room)
-                        _tn_cats = infer_hitter_category_needs(
-                            _tn_roster, _tn_avail, fantasy_format="5x5 Roto"
-                        ) if not _tn_roster.empty else []
-                        _pos_lbl = display_position_needs_label(_tn_gaps) if _tn_gaps else "All Positions / BPA"
-                        _cat_lbl = ", ".join(str(c) for c in (_tn_cats or [])[:5]) or "Balanced"
-                        st.markdown(
-                            f"**Team Needs** — Positions: {_pos_lbl} · "
-                            f"Categories to strengthen: {_cat_lbl}"
+                        _tn_levels = infer_hitter_category_need_levels(
+                            _tn_roster,
+                            _tn_avail,
+                            fantasy_format=str(
+                                (room.get("config") or {}).get("fantasy_format")
+                                or (room.get("config") or {}).get("scoring_type")
+                                or "5x5 Roto"
+                            ),
                         )
+                        _tn_cats = [str(d.get("label") or "") for d in _tn_levels if d.get("label")]
+                        _tn_level_map = {
+                            str(d.get("label") or "").upper(): str(d.get("level") or "Low")
+                            for d in _tn_levels
+                            if d.get("label")
+                        }
+                        render_roster_tracker_panel(
+                            st,
+                            _tn_tracker,
+                            category_needs=_tn_cats,
+                            category_levels=_tn_level_map,
+                        )
+                        st.session_state["_live_draft_team_needs_rendered"] = True
                 except Exception:
-                    pass
+                    st.session_state.pop("_live_draft_team_needs_rendered", None)
                 st.markdown("##### Recommended Players")
                 if st.session_state.get("_solo_needs_projection_player_grades"):
                     st.caption(
@@ -27635,6 +27705,7 @@ elif active_page == "Live Draft Room":
                                 _tracker_team = str(user_team or cfg.get("your_team") or cfg.get("user_team") or "").strip()
                                 _gaps: list[str] = []
                                 _category_needs: list[str] = []
+                                _category_levels: dict = {}
                                 if _tracker_team and _tracker_team != "—":
                                     try:
                                         from live_draft_render_trace import ldr_section
@@ -27731,17 +27802,47 @@ elif active_page == "Live Draft Room":
                                                     category_needs=_category_needs,
                                                 )
                                         try:
+                                            from draft_needs import infer_hitter_category_need_levels
+
+                                            _fmt = str(
+                                                cfg.get("fantasy_format")
+                                                or cfg.get("scoring_type")
+                                                or "5x5 Roto"
+                                            )
+                                            try:
+                                                _levels_roster = roster_df_for_team(room, _tracker_team)
+                                            except Exception:
+                                                _levels_roster = None
+                                            _levels = infer_hitter_category_need_levels(
+                                                _levels_roster,
+                                                _available_cached,
+                                                fantasy_format=_fmt,
+                                            )
+                                            _category_levels = {
+                                                str(d.get("label") or "").upper(): str(d.get("level") or "Low")
+                                                for d in _levels
+                                                if d.get("label")
+                                            }
+                                            if _levels and not _category_needs:
+                                                _category_needs = [str(d["label"]) for d in _levels]
+                                        except ImportError:
+                                            pass
+                                        try:
                                             from page_perf_phases import session_perf_phase
 
                                             with session_perf_phase(st.session_state, "position_scarcity"):
                                                 try:
                                                     from live_draft_room_ui import render_roster_tracker_panel
 
-                                                    render_roster_tracker_panel(
-                                                        st,
-                                                        _tracker,
-                                                        category_needs=_category_needs,
-                                                    )
+                                                    if not st.session_state.get(
+                                                        "_live_draft_team_needs_rendered"
+                                                    ):
+                                                        render_roster_tracker_panel(
+                                                            st,
+                                                            _tracker,
+                                                            category_needs=_category_needs,
+                                                            category_levels=_category_levels,
+                                                        )
                                                 except ImportError:
                                                     pass
                                                 render_draft_decision_panel(
@@ -27758,11 +27859,15 @@ elif active_page == "Live Draft Room":
                                             try:
                                                 from live_draft_room_ui import render_roster_tracker_panel
 
-                                                render_roster_tracker_panel(
-                                                    st,
-                                                    _tracker,
-                                                    category_needs=_category_needs,
-                                                )
+                                                if not st.session_state.get(
+                                                    "_live_draft_team_needs_rendered"
+                                                ):
+                                                    render_roster_tracker_panel(
+                                                        st,
+                                                        _tracker,
+                                                        category_needs=_category_needs,
+                                                        category_levels=_category_levels,
+                                                    )
                                             except ImportError:
                                                 pass
                                             render_draft_decision_panel(
@@ -28377,7 +28482,7 @@ elif active_page == "Live Draft Room":
                 pass
 
         st.subheader("Team Rosters")
-        roster_df = live_draft_rosters_df(room)
+        roster_df = live_draft_rosters_df(room, session=st.session_state)
         try:
             from live_draft_render_checkpoints import note_active_page_receipt
 
@@ -28433,11 +28538,11 @@ elif active_page == "Live Draft Room":
                             f"{type(_roster_paint_exc).__name__}"
                         )
 
-        totals_df = live_draft_team_totals(room)
+        totals_df = live_draft_team_totals(room, session=st.session_state)
         if not totals_df.empty:
             st.markdown('<div class="live-draft-totals-panel">', unsafe_allow_html=True)
             st.subheader("Team Projected Totals")
-            st.caption("Live projected category totals by fantasy team — updates after each pick.")
+            st.caption("Canonical projected category totals by fantasy team — updates after each pick.")
             totals_show = [
                 "Fantasy Team", "Players", "Projected Team Rank", "Total Projected Fantasy Value",
                 "Projected HR", "Projected RBI", "Projected R", "Projected SB", "Projected AVG", "Projected OPS",
@@ -28550,28 +28655,21 @@ elif active_page == "Live Draft Room":
                 if recap_team and "Fantasy Team" in roster_df.columns:
                     team_recap = roster_df[roster_df["Fantasy Team"].astype(str).eq(recap_team)].copy()
                     if not team_recap.empty:
-                        # Avoid pandas duplicate-column Series ambiguity in photo lookup:
-                        # rename can create two "Team" / "fullName" labels when fantasy
-                        # Team already exists alongside MLB Team.
+                        # Upstream schema: unique identity columns — never assign a
+                        # multi-column DataFrame into fullName (duplicate Player labels).
+                        try:
+                            from live_draft_canonical_pool import collapse_identity_columns
+
+                            team_recap = collapse_identity_columns(team_recap)
+                        except ImportError:
+                            if team_recap.columns.duplicated().any():
+                                team_recap = team_recap.loc[:, ~team_recap.columns.duplicated()].copy()
                         if "Player" in team_recap.columns and "fullName" not in team_recap.columns:
+                            team_recap = team_recap.copy()
                             team_recap["fullName"] = team_recap["Player"]
-                        elif "Player" in team_recap.columns and "fullName" in team_recap.columns:
-                            _full = team_recap["fullName"]
-                            if isinstance(_full, pd.DataFrame):
-                                _full = _full.iloc[:, 0]
-                            _plyr = team_recap["Player"]
-                            if isinstance(_plyr, pd.DataFrame):
-                                _plyr = _plyr.iloc[:, 0]
-                            team_recap["fullName"] = _full.fillna(_plyr)
-                        if "MLB Team" in team_recap.columns:
-                            if "Team" in team_recap.columns:
-                                # Keep fantasy Team; cards already fall back to MLB Team.
-                                pass
-                            else:
-                                team_recap = team_recap.rename(columns={"MLB Team": "Team"})
-                        # Collapse any accidental duplicate labels before row.get()
-                        if team_recap.columns.duplicated().any():
-                            team_recap = team_recap.loc[:, ~team_recap.columns.duplicated()].copy()
+                        assert bool(getattr(team_recap.columns, "is_unique", True)), (
+                            "completed roster frame has duplicate columns"
+                        )
                         try:
                             from player_photos import render_completed_roster_recap
 

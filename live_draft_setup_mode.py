@@ -764,6 +764,23 @@ def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, 
     if not isinstance(room, dict):
         return result
     result["handled"] = True
+    # Never block Start Draft on a cold projection rebuild — schedule quiet attach.
+    try:
+        from live_draft_fast_solo_start import _pool_has_projection_player_grades
+
+        if not _pool_has_projection_player_grades(room.get("pool")):
+            session["_solo_needs_projection_player_grades"] = True
+            session["_solo_deferred_pool_next_run"] = True
+        else:
+            try:
+                from live_draft_canonical_pool import attach_canonical_pool_to_room
+
+                attach_canonical_pool_to_room(session, room, force=False)
+                room = session.get("live_draft_room") or room
+            except ImportError:
+                pass
+    except ImportError:
+        pass
     room["status"] = "in_progress"
     # Same as Shared: do not arm the pick clock here. First live-board paint is
     # the readiness boundary so Start→Pick 1 always shows a full timer.

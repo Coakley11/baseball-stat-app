@@ -604,7 +604,7 @@ _PROJECTION_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "RBI": ("proj_RBI", "Projected RBI"),
     "R": ("proj_R", "Projected R"),
     "SB": ("proj_SB", "Projected SB"),
-    "BA": ("proj_BA", "Projected AVG", "Projected BA"),
+    "BA": ("proj_BA", "proj_AVG", "Projected AVG", "Projected BA", "AVG", "BA"),
     "OBP": ("proj_OBP", "Projected OBP"),
     "SLG": ("proj_SLG", "Projected SLG"),
     "OPS": ("proj_OPS", "Projected OPS"),
@@ -658,8 +658,15 @@ def projection_stat_plausible(stat: str, value: float | None) -> bool:
 
 
 def compact_fantasy_stat_line(row: Any, *, prefix: str = "Proj:", require_projection: bool = True) -> str:
-    """One-line projected fantasy stats for draft recommendation cards."""
+    """One-line projected fantasy stats for draft recommendation cards / Queue."""
     parts: list[str] = []
+
+    # Prefer AVG first for 5×5 hitters (compact Queue: AVG · HR · RBI · R · SB).
+    ba_val = extract_projection_value(row, "BA")
+    if ba_val is None and not require_projection:
+        ba_val = _coerce_float(_row_get(row, "BA"))
+    if ba_val is not None and projection_stat_plausible("BA", ba_val):
+        parts.append(f"{ba_val:.3f} AVG")
 
     for stat, label in (("HR", "HR"), ("RBI", "RBI"), ("R", "R"), ("SB", "SB")):
         val = extract_projection_value(row, stat)
@@ -671,12 +678,7 @@ def compact_fantasy_stat_line(row: Any, *, prefix: str = "Proj:", require_projec
             continue
         parts.append(f"{int(round(val))} {label}")
 
-    ba_val = extract_projection_value(row, "BA")
-    if ba_val is None and not require_projection:
-        ba_val = _coerce_float(_row_get(row, "BA"))
-    if ba_val is not None and projection_stat_plausible("BA", ba_val):
-        parts.append(f"{ba_val:.3f} AVG")
-    elif not parts:
+    if not parts:
         obp_val = extract_projection_value(row, "OBP")
         if obp_val is not None:
             parts.append(f"OBP {obp_val:.3f}")
@@ -750,11 +752,14 @@ def roster_fit_display(row: Any) -> str:
         val = _row_get(row, "Roster Fit Score")
     if val is None or (isinstance(val, float) and pd.isna(val)):
         val = _row_get(row, "roster_fit_score_at_pick")
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        val = _row_get(row, "Positional Fit")
     # Scored recommendation rows can carry 0.0 legitimately — treat missing only.
     if val is None or (isinstance(val, float) and pd.isna(val)):
-        return "Roster Fit calculating…"
+        # Prefer a quiet dash over a permanent "calculating…" spinner for Queue.
+        return "—"
     result = fmt_roster_fit_score(val)
-    return result if result else "Roster Fit calculating…"
+    return result if result else "—"
 
 
 def decision_score_display(row: Any) -> str:

@@ -818,6 +818,7 @@ def render_solo_draft_ready_card(
     pick_order = room.get("pick_order") or []
     total = len(pick_order)
     start_disabled, start_help = start_button_disabled(session)
+    timer_sec = int((room.get("config") or {}).get("timer_seconds") or 60)
 
     with st.container(border=True):
         st.markdown("### Draft ready")
@@ -834,7 +835,7 @@ def render_solo_draft_ready_card(
             type="primary",
             key="live_draft_solo_lobby_start_btn",
             disabled=start_disabled,
-            help=start_help or "Begin Pick 1 with a full 60-second clock.",
+            help=start_help or f"Begin Pick 1 with a full {timer_sec}-second clock.",
             use_container_width=True,
         )
         if clicked:

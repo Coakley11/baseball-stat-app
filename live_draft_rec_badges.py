@@ -193,25 +193,25 @@ def build_smart_recommendation_badges(
         if len(badges) >= 3:
             break
 
-    # Prefer player-specific traits. Rank ordinals only when no trait evidence exists.
-    if len(badges) < 1:
+    # Prefer player-specific traits. Aim for ~2 useful badges when evidence exists.
+    if len(badges) < 2:
+        pos = str(row.get("Primary Position") or "").strip()
+        if gaps and pos and pos in gaps:
+            _add(f"Fills {pos} Need", _BADGE_CSS["position"], concept="fill_position")
         grade = _num(row, "Expected Fantasy Value")
-        if pd.notna(grade):
+        if pd.notna(grade) and len(badges) < 2:
             g = float(grade)
-            # Support both 0–1 and 0–100 grade scales.
             g100 = g * 100.0 if g <= 1.5 else g
             if g100 >= 85:
                 _add("Elite Overall Grade", _BADGE_CSS["gold"], concept="grade")
             elif g100 >= 70:
                 _add("Strong Player Grade", _BADGE_CSS["value"], concept="grade")
-        if len(badges) < 1 and gaps and pos and pos in gaps:
-            _add(f"Fills {pos} Slot", _BADGE_CSS["position"], concept="fill_position")
         if len(badges) < 1:
             rank_labels = {1: "Best Overall", 2: "Second Best", 3: "Third Best"}
             if rank in rank_labels:
                 _add(rank_labels[rank], _BADGE_CSS["gold"], concept=f"rank_{rank}")
 
-    return badges[:3]
+    return badges[:2] if len(badges) >= 2 else badges[:3]
 
 
 _GENERIC_RANK_BADGES = frozenset({"Best Overall", "Second Best", "Third Best"})

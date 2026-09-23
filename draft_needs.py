@@ -109,7 +109,27 @@ def infer_hitter_category_needs(
 
     Uses team sums for counting stats and team mean for rate stats (AVG/OPS).
     Never includes pitcher categories (ERA, WHIP, K, SV, W, etc.).
+    Never returns strategy/projection-mode labels such as Balanced.
     """
+    detailed = infer_hitter_category_need_levels(
+        roster_df,
+        pool_df,
+        fantasy_format=fantasy_format,
+        draft_complete=draft_complete,
+        weakness_ratio=weakness_ratio,
+    )
+    return [d["label"] for d in detailed]
+
+
+def infer_hitter_category_need_levels(
+    roster_df: pd.DataFrame | None,
+    pool_df: pd.DataFrame | None,
+    *,
+    fantasy_format: str = "5x5 Roto",
+    draft_complete: bool = False,
+    weakness_ratio: float = 0.92,
+) -> list[dict[str, str]]:
+    """Return [{label, level}] where level is Low / Moderate / Critical."""
     if draft_complete:
         return []
     roster_df = roster_df if roster_df is not None else pd.DataFrame()
@@ -117,9 +137,20 @@ def infer_hitter_category_needs(
     if roster_df.empty or pool_df.empty:
         return []
 
+    # Align proj_BA / proj_AVG aliases so rate checks never miss.
+    roster_df = roster_df.copy()
+    pool_df = pool_df.copy()
+    if "proj_BA" not in roster_df.columns and "proj_AVG" in roster_df.columns:
+        roster_df["proj_BA"] = roster_df["proj_AVG"]
+    if "proj_BA" not in pool_df.columns and "proj_AVG" in pool_df.columns:
+        pool_df["proj_BA"] = pool_df["proj_AVG"]
+
     n_players = max(1, len(roster_df))
-    needs: list[str] = []
+    needs: list[dict[str, str]] = []
+    seen: set[str] = set()
     for col, label, kind in _hitter_category_specs(fantasy_format):
+        if label.lower() in {"balanced", "conservative", "progressive"}:
+            continue
         if col not in pool_df.columns or col not in roster_df.columns:
             continue
         pool_med = float(pd.to_numeric(pool_df[col], errors="coerce").median() or 0)
@@ -131,9 +162,19 @@ def infer_hitter_category_needs(
             team_val = float(vals.mean()) if vals.notna().any() else 0.0
         else:
             team_val = float(pd.to_numeric(roster_df[col], errors="coerce").fillna(0).sum())
-        if expected > 0 and team_val < expected * weakness_ratio:
-            if label not in needs:
-                needs.append(label)
+        if expected <= 0 or team_val >= expected * weakness_ratio:
+            continue
+        if label in seen:
+            continue
+        ratio = team_val / expected if expected else 0.0
+        if ratio < 0.70:
+            level = "Critical"
+        elif ratio < 0.85:
+            level = "Low"
+        else:
+            level = "Moderate"
+        seen.add(label)
+        needs.append({"label": label, "level": level})
     return needs
 
 

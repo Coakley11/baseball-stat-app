@@ -99,10 +99,8 @@ def format_queue_player_metrics_line(pool_row: Any, session: dict[str, Any] | No
         score_bits: list[str] = []
         if ds and ds != "Not available":
             score_bits.append(f"Decision Score {ds}")
-        if rf and rf not in ("Not available", "Roster Fit calculating…", "0.00"):
+        if rf and rf not in ("Not available", "Roster Fit calculating…", "0.00", "—"):
             score_bits.append(f"Roster Fit {rf}")
-        elif rf == "Roster Fit calculating…":
-            score_bits.append(rf)
         if score_bits:
             bits.append(" · ".join(score_bits))
         return " · ".join(bits)

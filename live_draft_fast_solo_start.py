@@ -192,17 +192,6 @@ def _pool_has_projection_player_grades(pool: Any) -> bool:
     """True when pool carries real projection Player Grade inputs (not fast-market only)."""
     if pool is None or getattr(pool, "empty", True):
         return False
-    cols = set(str(c) for c in getattr(pool, "columns", []))
-    if cols.intersection(
-        {
-            "Blended Projection Score",
-            "Projected Production Score",
-            "Realistic Base Projection Score",
-            "proj_HR",
-            "proj_RBI",
-        }
-    ):
-        return True
     try:
         from draft_scoring_pool import POOL_KIND_FAST_MARKET_FALLBACK, POOL_VALUE_KIND_KEY
 
@@ -210,6 +199,31 @@ def _pool_has_projection_player_grades(pool: Any) -> bool:
             return False
     except ImportError:
         pass
+    cols = set(str(c) for c in getattr(pool, "columns", []))
+    # Require a real blended score column — proj_* alone can be zero placeholders.
+    if "Blended Projection Score" in cols or "Projected Production Score" in cols:
+        try:
+            import pandas as pd
+
+            blend_col = (
+                "Blended Projection Score"
+                if "Blended Projection Score" in cols
+                else "Projected Production Score"
+            )
+            vals = pd.to_numeric(pool[blend_col], errors="coerce")
+            if vals.notna().any() and float(vals.fillna(0).max()) > 0:
+                return True
+        except Exception:
+            return True
+    if "proj_HR" in cols and "proj_RBI" in cols:
+        try:
+            import pandas as pd
+
+            hr = pd.to_numeric(pool["proj_HR"], errors="coerce").fillna(0)
+            if float(hr.max()) > 0:
+                return True
+        except Exception:
+            pass
     return False
 
 
@@ -249,21 +263,25 @@ def _backfill_drafted_analytics_from_pool(room: dict[str, Any], pool: Any) -> in
 
     Fast Solo Start may stamp Model Rank = Market Rank (Edge 0) onto early picks.
     After the real projection pool loads, refresh drafted board/roster analytics from
-    the upgraded pool by playerID without changing Decision Score formulas.
+    the upgraded pool by playerID (then fullName) without changing Decision Score formulas.
     """
     if pool is None or getattr(pool, "empty", True) or not isinstance(room, dict):
         return 0
     import pandas as pd
 
     df = pool if isinstance(pool, pd.DataFrame) else pd.DataFrame(pool)
-    if "playerID" not in df.columns:
-        return 0
     by_id: dict[str, dict[str, Any]] = {}
+    by_name: dict[str, dict[str, Any]] = {}
+    name_col = "fullName" if "fullName" in df.columns else ("Player" if "Player" in df.columns else None)
     for _, row in df.iterrows():
+        rec = row.to_dict()
         pid = str(row.get("playerID") or "").strip()
-        if not pid:
-            continue
-        by_id[pid] = row.to_dict()
+        if pid and "playerID" in df.columns:
+            by_id[pid] = rec
+        if name_col:
+            nm = str(row.get(name_col) or "").strip().lower()
+            if nm:
+                by_name[nm] = rec
     fields = (
         "Model Rank",
         "Market Rank",
@@ -279,11 +297,14 @@ def _backfill_drafted_analytics_from_pool(room: dict[str, Any], pool: Any) -> in
         "proj_SB",
         "proj_BA",
         "proj_OPS",
+        "proj_AB",
+        "AB",
         "proj_W",
         "proj_SV",
         "proj_K",
         "proj_ERA",
         "proj_WHIP",
+        "playerID",
     )
     updated = 0
 
@@ -292,7 +313,10 @@ def _backfill_drafted_analytics_from_pool(room: dict[str, Any], pool: Any) -> in
         if not isinstance(rec, dict):
             return
         pid = str(rec.get("playerID") or rec.get("player_id") or "").strip()
-        src = by_id.get(pid)
+        src = by_id.get(pid) if pid else None
+        if not src:
+            nm = str(rec.get("fullName") or rec.get("Player") or "").strip().lower()
+            src = by_name.get(nm) if nm else None
         if not src:
             return
         # Preserve fantasy Team / Fantasy Team; restore MLB club from pool.
@@ -300,6 +324,8 @@ def _backfill_drafted_analytics_from_pool(room: dict[str, Any], pool: Any) -> in
         fantasy = str(rec.get("Fantasy Team") or "").strip()
         if pool_team and pool_team != fantasy:
             rec["MLB Team"] = pool_team
+        if not pid and src.get("playerID"):
+            rec["playerID"] = src.get("playerID")
         for col in fields:
             if col == "MLB Team":
                 continue
@@ -328,11 +354,32 @@ def _backfill_drafted_analytics_from_pool(room: dict[str, Any], pool: Any) -> in
 
 
 def maybe_build_deferred_full_pool(session: dict[str, Any], *, force: bool = False) -> bool:
-    """After first active-page paint, attach the full projection pool to the live room."""
+    """After first active-page paint (or Solo Ready), attach the canonical projection pool.
+
+    Also allowed for ``not_started`` Ready lobbies so Start Draft does not begin on a
+    market-only pool (zeros / Model≈Market).
+    """
     room = session.get("live_draft_room")
-    if not isinstance(room, dict) or str(room.get("status") or "") not in ("in_progress", "paused"):
+    if not isinstance(room, dict) or str(room.get("status") or "") not in (
+        "not_started",
+        "in_progress",
+        "paused",
+        "complete",
+    ):
         session.pop(DEFERRED_FULL_POOL_KEY, None)
         return False
+
+    # Prefer the shared canonical attach helper (same pool as Draft Assistant).
+    try:
+        from live_draft_canonical_pool import attach_canonical_pool_to_room
+
+        attached = attach_canonical_pool_to_room(session, room, force=force)
+        if attached.get("ok") and (attached.get("attached") or not force):
+            if attached.get("attached"):
+                note_start_stage(session, "deferred_full_pool_done", via="canonical_attach")
+            return bool(attached.get("attached") or attached.get("reason") == "already_has_projections")
+    except ImportError:
+        pass
 
     existing = room.get("pool")
     needs_upgrade = force or not _pool_has_projection_player_grades(existing)

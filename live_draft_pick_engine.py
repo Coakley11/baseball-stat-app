@@ -104,6 +104,7 @@ def build_pick_verdict(
     *,
     gaps: list[str] | None = None,
     pick_no: int | None = None,
+    fantasy_team: str | None = None,
 ) -> str:
     """Short user-facing verdict explaining why this player was chosen over alternatives."""
     if hasattr(row, "to_dict"):
@@ -115,36 +116,44 @@ def build_pick_verdict(
     gap_list = [str(g).strip() for g in (gaps or []) if str(g).strip()]
     pick = int(pick_no) if pick_no is not None else int(_safe_float(data.get("Pick")) or 0)
     market = _safe_float(data.get("Market Rank"))
+    model = _safe_float(data.get("Model Rank"))
     edge = _safe_float(data.get("Fantasy Edge"))
+    if edge is None and market is not None and model is not None:
+        edge = float(market) - float(model)
     dec = _display_decision_score(data.get("Decision Score") or data.get("decision_score_at_pick"))
     fit = _safe_float(data.get("Draft Fit Score") or data.get("roster_fit_score_at_pick"))
     scarcity = _safe_float(data.get("Scarcity Score") or data.get("scarcity_score_at_pick"))
     grade = _display_player_grade(data.get("Expected Fantasy Value"))
     cats = _category_list(data)
+    team = str(fantasy_team or data.get("Fantasy Team") or data.get("Draft Team") or "").strip()
+    team_pos = f"{team}'s {pos}" if team and pos else (pos or bucket)
+    hr = _safe_float(data.get("proj_HR") or data.get("HR"))
+    sb = _safe_float(data.get("proj_SB") or data.get("SB"))
+    rbi = _safe_float(data.get("proj_RBI") or data.get("RBI"))
+    runs = _safe_float(data.get("proj_R") or data.get("R"))
 
     if pick and market and market - pick >= 20:
         edge_txt = f" (+{int(round(edge))} vs market)" if edge and edge > 0 else ""
         return f"Major value pick (+{int(round(market - pick))} vs ADP){edge_txt}."
 
     if edge is not None and edge >= 30:
-        return f"Major value pick (+{int(round(edge))} vs market)."
+        return f"Model ranks him {int(round(edge))} spots above the market."
 
     if edge is not None and edge >= 15:
-        return f"Value pick (+{int(round(edge))} vs market)."
-
-    if dec is not None and dec >= 90:
-        return "Highest Decision Score available."
+        return f"Model ranks him {int(round(edge))} spots above the market."
 
     if gap_list and (pos in gap_list or bucket in gap_list):
-        slot = pos or bucket
+        slot = team_pos or pos or bucket
+        if hr is not None and hr >= 28:
+            return f"Filled {slot} need and added elite HR production ({int(round(hr))} HR)."
+        if sb is not None and sb >= 18:
+            return f"Added needed SB while filling {slot} ({int(round(sb))} SB)."
+        if rbi is not None and rbi >= 90:
+            return f"Filled {slot} need with strong RBI production ({int(round(rbi))})."
+        if runs is not None and runs >= 90 and "R" in cats:
+            return f"Filled {slot} need and boosted Runs ({int(round(runs))} R)."
         if scarcity is not None and scarcity >= 0.70:
             return f"Filled {slot} need before scarcity increased."
-        hr = _safe_float(data.get("proj_HR") or data.get("HR"))
-        if hr is not None and hr >= 28:
-            return f"Filled {slot} need with elite power ({int(round(hr))} HR)."
-        sb = _safe_float(data.get("proj_SB") or data.get("SB"))
-        if sb is not None and sb >= 18:
-            return f"Filled {slot} need with speed ({int(round(sb))} SB)."
         if edge is not None and edge >= 10:
             return f"Filled {slot} need — model {int(round(edge))} spots above market."
         if grade is not None and grade >= 80:
@@ -155,8 +164,18 @@ def build_pick_verdict(
         cat_txt = "/".join(cats[:2])
         return f"Added projected {cat_txt} impact (+{int(round(edge))} vs market)."
 
+    if market is not None and pos and (not gap_list or pos in gap_list):
+        # Best market among eligible at position is a distinctive reason.
+        if grade is not None and grade >= 90 and pos:
+            return f"Highest Player Grade among remaining eligible {pos}."
+        if market <= 20 and pos:
+            return f"Best Market Rank among eligible {pos}."
+
+    if grade is not None and grade >= 90 and pos:
+        return f"Highest Player Grade among remaining eligible {pos} ({grade:.0f})."
+
     if grade is not None and grade >= 85:
-        return f"Highest player grade remaining ({grade:.1f})."
+        return f"Highest player grade remaining ({grade:.0f})."
 
     if scarcity is not None and scarcity >= 0.75:
         label = pos or "hitters"
@@ -170,6 +189,9 @@ def build_pick_verdict(
 
     if bucket == "UTIL":
         return "Filled utility slot."
+
+    if dec is not None and dec >= 90:
+        return "Highest Decision Score available."
 
     if dec is not None and dec >= 75:
         return f"Strong Decision Score ({dec:.1f})."

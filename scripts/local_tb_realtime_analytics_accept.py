@@ -183,17 +183,41 @@ def _create_ready_solo(page, report: dict) -> bool:
         page.wait_for_timeout(2000)
     body0 = _body(page)
     # Already in Solo Ready lobby — require the Start Draft button, not just copy.
+    # Reject broken stubs (Pick 1 of 0 / empty teams / no scheduled picks).
     ready_btn0 = page.get_by_role("button", name=re.compile(r"^Start Draft$", re.I))
-    if ready_btn0.count() and (
-        "Draft ready" in body0
-        or "Pick 1 clock will begin" in body0
-        or "Solo draft" in body0
+    broken_ready = bool(
+        re.search(r"Pick\s*1\s*of\s*0\b", body0, re.I)
+        or re.search(r"Scheduled picks:\s*[—\-]\b", body0, re.I)
+        or re.search(r"Teams:\s*[—\-]\b", body0, re.I)
+        or ("pool_rows= None" in body0 and "avail= 0" in body0)
+    )
+    if (
+        ready_btn0.count()
+        and not broken_ready
+        and (
+            "Draft ready" in body0
+            or "Pick 1 clock will begin" in body0
+            or "Solo draft" in body0
+        )
     ):
         report["ready_reused_existing"] = True
         report["clock_before_start"] = bool(
             re.search(r"TIME REMAINING\s+[1-9]", body0, re.I)
         )
         return True
+    if broken_ready:
+        report["broken_ready_detected"] = True
+        _click_end(page)
+        page.wait_for_timeout(2000)
+        try:
+            page.get_by_role("button", name=re.compile(r"Return to Live Draft Lobby|Start Over|Delete", re.I)).first.click(
+                timeout=4000, force=True
+            )
+            page.wait_for_timeout(2000)
+        except Exception:
+            pass
+        _nav_live_draft(page)
+        page.wait_for_timeout(2000)
 
     _expand_draft_setup(page)
     try:
@@ -222,12 +246,28 @@ def _create_ready_solo(page, report: dict) -> bool:
         if not picks.count():
             picks = page.get_by_label(re.compile(r"Picks per Team", re.I))
         picks.first.fill("5", timeout=8000)
+        try:
+            timer = page.get_by_label("Timer per Pick", exact=True)
+            if not timer.count():
+                timer = page.get_by_label(re.compile(r"Timer per Pick", re.I))
+            if timer.count():
+                timer.first.fill("8", timeout=5000)
+                report["timer_set_8"] = True
+        except Exception:
+            pass
         report["teams_picks_set"] = True
     except Exception as e:
         report["setup_fill_err"] = str(e)[:160]
-        # If setup is inaccessible but Ready is visible, continue.
+        # If setup is inaccessible but a *healthy* Ready is visible, continue.
         body = _body(page)
-        if "Draft ready" in body or re.search(r"\bStart Draft\b", body):
+        broken_now = bool(
+            re.search(r"Pick\s*1\s*of\s*0\b", body, re.I)
+            or re.search(r"Scheduled picks:\s*[—\-]\b", body, re.I)
+            or re.search(r"Teams:\s*[—\-]\b", body, re.I)
+        )
+        if not broken_now and (
+            "Draft ready" in body or re.search(r"\bStart Draft\b", body)
+        ):
             report["ready_after_setup_fail"] = True
             return True
         return False
@@ -332,20 +372,17 @@ def _press_start_draft(page, report: dict) -> bool:
             rem = int(m.group(1))
         live_markers = (
             ("Pause Draft" in body)
-            or ("ON THE CLOCK" in body.upper())
-            or ("On clock:" in body)
-            or ("picks made" in body.lower())
-            or (rem is not None and rem >= 45)
-            or ("Recommended Players" in body and "Draft ready" not in body)
+            or ("TIME REMAINING" in body.upper())
+            or ("Manual Draft" in body and re.search(r"On the Clock|ON THE CLOCK", body, re.I))
+            or (rem is not None and rem >= 1)
         )
+        # Never treat Ready-lobby recommendation cards as a live start.
+        if "Draft ready" in body or re.search(r"Waiting for Start Draft", body, re.I):
+            live_markers = False
         if live_markers and not still_ready:
             report["pick1_timer"] = rem
             report["live_at_s"] = i
-            if rem is not None and rem >= 45:
-                report["pick1_full_clock"] = True
-            else:
-                report["pick1_full_clock"] = True
-                report["pick1_timer_inferred"] = True
+            report["pick1_full_clock"] = bool(rem is not None and rem >= 1)
             return True
         if i in (5, 15, 30) and still_ready:
             # Retry click if Ready stuck.

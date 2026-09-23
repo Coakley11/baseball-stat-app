@@ -469,6 +469,7 @@ def inject_live_draft_room_styles(st: Any) -> None:
         .ld-rec-edge-neu { color: #2563eb; font-weight: 900; }
         .ld-rec-edge-neg { color: #dc2626; font-weight: 900; }
         .ld-roster-tracker-panel,
+        .ld-team-needs-panel,
         .ld-category-outlook-panel {
             background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
             border: 1px solid #bfdbfe;
@@ -477,11 +478,70 @@ def inject_live_draft_room_styles(st: Any) -> None:
             margin-bottom: 14px;
         }
         .ld-roster-tracker-panel .ld-panel-title,
+        .ld-team-needs-panel .ld-panel-title,
         .ld-category-outlook-panel .ld-panel-title {
             font-size: 14px;
             font-weight: 800;
             color: #1e3a8a;
             margin-bottom: 8px;
+        }
+        .ld-team-needs-panel .ld-panel-subtitle {
+            font-size: 12px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: #64748b;
+            margin: 10px 0 6px 0;
+        }
+        .ld-need-slot {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            margin: 4px 0;
+            border-radius: 10px;
+            font-size: 14px;
+            line-height: 1.35;
+            color: #0f172a;
+            border: 1px solid #e2e8f0;
+            background: #ffffff;
+        }
+        .ld-need-slot.ld-need-ok {
+            background: linear-gradient(90deg, #f0fdf4 0%, #ffffff 70%);
+            border-color: #bbf7d0;
+        }
+        .ld-need-slot.ld-need-open {
+            background: linear-gradient(90deg, #fff7ed 0%, #ffffff 70%);
+            border-color: #fed7aa;
+        }
+        .ld-need-mark { font-size: 14px; }
+        .ld-need-cat-block { margin-top: 8px; }
+        .ld-need-cat-ok { font-size: 13px; color: #64748b; }
+        .ld-cat-strengthen-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+        .ld-cat-need-chip {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            background: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #fecaca;
+        }
+        .ld-cat-need-chip.ld-cat-moderate {
+            background: #ffedd5;
+            color: #9a3412;
+            border-color: #fdba74;
+        }
+        .ld-cat-need-chip.ld-cat-low {
+            background: #fef3c7;
+            color: #92400e;
+            border-color: #fcd34d;
+        }
+        .ld-cat-need-chip.ld-cat-critical {
+            background: #fecaca;
+            color: #7f1d1d;
+            border-color: #f87171;
         }
         .ld-roster-line { font-size: 14px; line-height: 1.55; color: #0f172a; font-family: ui-monospace, monospace; }
         .ld-roster-line.open { color: #b45309; font-weight: 700; }
@@ -573,6 +633,7 @@ def inject_live_draft_room_styles(st: Any) -> None:
             .ld-rec-badge-row { gap: 4px; margin: 6px 0 4px 0; }
             .ld-rec-card-reason { font-size: 0.85rem; }
             .ld-roster-tracker-panel,
+            .ld-team-needs-panel,
             .ld-category-outlook-panel { padding: 10px 12px; margin-bottom: 10px; }
             .ld-pos-heat-grid { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; }
             div[data-testid="stDataFrame"] { font-size: 12px; }
@@ -866,51 +927,113 @@ def render_roster_tracker_panel(
     tracker: dict[str, Any],
     *,
     category_needs: list[str] | None = None,
+    category_levels: dict[str, str] | None = None,
+    scarcity_by_pos: dict[str, str] | None = None,
 ) -> None:
-    """Team Needs — open positions plus categories to strengthen."""
-    lines = tracker.get("lines") or []
-    if not lines and not category_needs:
+    """One consolidated Team Needs graphic — roster slots + categories to strengthen."""
+    lines = list(tracker.get("lines") or [])
+    cats = [str(c).strip() for c in (category_needs or []) if str(c).strip()]
+    # Never treat projection/strategy modes as scoring categories.
+    cats = [c for c in cats if c.lower() not in {"balanced", "conservative", "progressive"}]
+    cat_display = [("AVG" if c.upper() in {"BA", "AVG"} else c.upper()) for c in cats]
+    levels = {str(k).upper(): str(v) for k, v in (category_levels or {}).items()}
+    scarcity = {str(k).upper(): str(v) for k, v in (scarcity_by_pos or {}).items()}
+
+    if not lines and not cat_display:
         st.caption("No roster slots configured.")
         return
+
+    # Collapse bench slot instances (BN 1, BN 2, …) into one Bench summary.
+    starter_lines: list[dict[str, Any]] = []
+    bench_open = 0
+    bench_total = 0
+    for ln in lines:
+        pos = str(ln.get("position") or "").strip().upper()
+        label = str(ln.get("label") or pos or "").strip()
+        if pos in {"BN", "BENCH"} or label.upper().startswith("BN"):
+            bench_total += 1
+            if not ln.get("filled"):
+                bench_open += 1
+            continue
+        starter_lines.append(ln)
+
+    # Aggregate duplicate starter positions (e.g. three OF) into one row.
+    grouped: dict[str, dict[str, Any]] = {}
+    for ln in starter_lines:
+        pos = str(ln.get("position") or ln.get("label") or "").strip().upper() or "—"
+        bucket = grouped.setdefault(pos, {"pos": pos, "need": 0, "filled": 0, "total": 0})
+        bucket["total"] += 1
+        if ln.get("filled"):
+            bucket["filled"] += 1
+        else:
+            bucket["need"] += 1
+
+    roster_html: list[str] = []
+    for pos, info in grouped.items():
+        need = int(info["need"])
+        filled = need == 0
+        scar = scarcity.get(pos, "")
+        scar_bit = f" · {scar} scarcity" if scar else ""
+        if filled:
+            roster_html.append(
+                f'<div class="ld-need-slot ld-need-ok">'
+                f'<span class="ld-need-mark">✅</span> '
+                f"<strong>{pos}</strong> — Complete{scar_bit}</div>"
+            )
+        else:
+            need_txt = f"Need {need}" if need != 1 else "Need 1"
+            roster_html.append(
+                f'<div class="ld-need-slot ld-need-open">'
+                f'<span class="ld-need-mark">❌</span> '
+                f"<strong>{pos}</strong> — {need_txt}{scar_bit}</div>"
+            )
+    if bench_total:
+        if bench_open <= 0:
+            roster_html.append(
+                '<div class="ld-need-slot ld-need-ok">'
+                '<span class="ld-need-mark">✅</span> '
+                "<strong>Bench</strong> — Complete</div>"
+            )
+        else:
+            spots = "spot" if bench_open == 1 else "spots"
+            roster_html.append(
+                f'<div class="ld-need-slot ld-need-open">'
+                f'<span class="ld-need-mark">❌</span> '
+                f"<strong>Bench</strong> — {bench_open} {spots} open</div>"
+            )
+
     filled = int(tracker.get("filled") or 0)
     target = int(tracker.get("target") or 0)
-    open_pos = [
-        str(ln.get("label") or "").strip()
-        for ln in lines
-        if not ln.get("filled") and str(ln.get("label") or "").strip()
-    ]
-    # Prefer explicit open_positions codes when present.
-    gaps = [str(g).strip() for g in (tracker.get("open_positions") or tracker.get("gaps") or []) if str(g).strip()]
-    pos_list = gaps or open_pos
-    cats = [str(c).strip() for c in (category_needs or []) if str(c).strip()]
-    # Normalize BA → AVG for display when league uses AVG label.
-    cat_display = [("AVG" if c.upper() in {"BA", "AVG"} else c.upper()) for c in cats]
+    progress = f"{filled} / {target} roster slots filled" if target else ""
 
-    html_lines = []
-    for ln in lines:
-        mark = "✓" if ln.get("filled") else "✗"
-        label = str(ln.get("label") or "")
-        css = "" if ln.get("filled") else " open"
-        html_lines.append(f'<div class="ld-roster-line{css}">{mark} {label}</div>')
-    progress = f"Roster complete: {filled} / {target}" if target else ""
+    if cat_display:
+        cat_bits = []
+        for c in cat_display[:6]:
+            lvl = levels.get(c) or levels.get("BA" if c == "AVG" else c) or "Low"
+            cat_bits.append(
+                f'<span class="ld-cat-need-chip ld-cat-{lvl.lower()}">'
+                f"{c} — {lvl}</span>"
+            )
+        cat_section = (
+            '<div class="ld-need-cat-block">'
+            '<div class="ld-panel-subtitle">Categories to strengthen</div>'
+            f'<div class="ld-cat-strengthen-chips">{"".join(cat_bits)}</div>'
+            "</div>"
+        )
+    else:
+        cat_section = (
+            '<div class="ld-need-cat-block">'
+            '<div class="ld-panel-subtitle">Categories to strengthen</div>'
+            '<div class="ld-need-cat-ok">No weak categories vs pool baseline yet.</div>'
+            "</div>"
+        )
 
-    pos_chips = "".join(f'<span class="ld-cat-need-chip">{p}</span>' for p in pos_list[:8]) if pos_list else (
-        '<span class="ld-cat-need-chip">All positions filled / BPA</span>'
-    )
-    cat_chips = (
-        "".join(f'<span class="ld-cat-need-chip">{c}</span>' for c in cat_display[:6])
-        if cat_display
-        else '<span class="ld-cat-need-chip">Balanced</span>'
-    )
     st.markdown(
-        f'<div class="ld-roster-tracker-panel">'
+        f'<div class="ld-team-needs-panel">'
         f'<div class="ld-panel-title">Team Needs</div>'
-        f'<div class="ld-panel-title" style="font-size:0.95rem;margin-top:4px;">Positions</div>'
-        f'<div class="ld-cat-strengthen-chips">{pos_chips}</div>'
-        f'<div class="ld-panel-title" style="font-size:0.95rem;margin-top:8px;">'
-        f"Categories to strengthen</div>"
-        f'<div class="ld-cat-strengthen-chips">{cat_chips}</div>'
-        f'{"".join(html_lines)}'
+        f'<div class="ld-panel-subtitle">Roster</div>'
+        f'{"".join(roster_html)}'
+        f"{cat_section}"
         f'<div class="ld-roster-progress">{progress}</div>'
         f"</div>",
         unsafe_allow_html=True,
@@ -1137,24 +1260,27 @@ def build_rec_card_detail_body(
     hr = _proj("proj_HR", "HR")
     rbi = _proj("proj_RBI", "RBI")
     sb = _proj("proj_SB", "SB")
-    avg = _proj("proj_AVG", "AVG", "BA")
+    avg = _proj("proj_AVG", "proj_BA", "AVG", "BA")
     runs = _proj("proj_R", "R", "Runs")
     needs = {str(c).strip().upper() for c in (category_needs or []) if str(c).strip()}
+    needs.discard("BALANCED")
 
     if pd.notna(hr) and float(hr) >= 25:
-        reasons.append(f"Projects {int(round(float(hr)))} HR — elite power production")
+        reasons.append(f"Projects for {int(round(float(hr)))} HR — elite power")
     elif pd.notna(hr) and float(hr) >= 18:
-        reasons.append(f"Projects {int(round(float(hr)))} HR")
+        reasons.append(f"Projects for {int(round(float(hr)))} HR")
     if pd.notna(rbi) and float(rbi) >= 80:
-        reasons.append(f"Strong RBI projection ({int(round(float(rbi)))})")
+        reasons.append(f"Projected {int(round(float(rbi)))} RBI")
     if pd.notna(runs) and float(runs) >= 80:
-        reasons.append(f"Run producer — projects {int(round(float(runs)))} R")
+        reasons.append(f"Projects for {int(round(float(runs)))} R — run producer")
+    elif "R" in needs and pd.notna(runs) and float(runs) >= 60:
+        reasons.append(f"Helps your weakest category: Runs ({int(round(float(runs)))} projected)")
     if pd.notna(sb) and float(sb) >= 15:
-        reasons.append(f"Adds stolen-base production ({int(round(float(sb)))} SB)")
+        reasons.append(f"Projects for {int(round(float(sb)))} SB — major speed contribution")
     elif pd.notna(sb) and float(sb) >= 10 and "SB" in needs:
         reasons.append(f"Helps a weak SB category ({int(round(float(sb)))} projected)")
     if pd.notna(avg) and float(avg) >= 0.285:
-        reasons.append(f"High AVG upside ({float(avg):.3f})")
+        reasons.append(f"Strong {float(avg):.3f} projected AVG")
     elif pd.notna(avg) and float(avg) >= 0.265 and ("AVG" in needs or "BA" in needs):
         reasons.append(f"Helps a weak batting-average roster ({float(avg):.3f})")
 
